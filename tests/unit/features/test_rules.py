@@ -24,6 +24,7 @@ from octop.infra.features import catalog as catalog_module
 from octop.infra.features.catalog import (
     MAX_INJECTED_RULES,
     Feature,
+    ScopedRule,
     build_user_prompt,
 )
 from octop.infra.features.rules import (
@@ -53,14 +54,17 @@ def db(tmp_path: Path) -> SqlitePool:
 
 @pytest.fixture
 def user_id(db: SqlitePool) -> int:
-    """A real ``users`` row — rules record the reviewer through a foreign key."""
+    """A real ``users`` row — rules record their reviewer, and now their owner,
+    through foreign keys. The id is pinned to :data:`USER_ID` so a task row built
+    with ``USER_ID`` and a rule owned by ``USER_ID`` refer to the same person.
+    """
     with db.connect() as conn:
         conn.execute(
-            "INSERT INTO users(username, password_hash, role, created_at) VALUES (?, ?, ?, 0)",
-            ("reviewer", "h", "user"),
+            "INSERT INTO users(id, username, password_hash, role, created_at) "
+            "VALUES (?, ?, ?, ?, 0)",
+            (USER_ID, "reviewer", "h", "user"),
         )
-        row = conn.execute("SELECT id FROM users WHERE username = ?", ("reviewer",)).fetchone()
-    return int(row[0])
+    return USER_ID
 
 
 @pytest.fixture
@@ -187,7 +191,7 @@ def test_prompt_without_rules_is_byte_identical_to_the_old_renderer() -> None:
     assert build_user_prompt(feature, inputs) == expected
     assert build_user_prompt(feature, inputs, rules=None) == expected
     assert build_user_prompt(feature, inputs, rules=[]) == expected
-    assert build_user_prompt(feature, inputs, rules=[" ", ""]) == expected
+    assert build_user_prompt(feature, inputs, rules=[ScopedRule(" "), ScopedRule("")]) == expected
     assert build_user_prompt(feature, inputs) == _legacy_prompt(feature, inputs)
 
 
@@ -219,7 +223,11 @@ def test_rules_come_last_as_a_labeled_separate_paragraph() -> None:
     feature = _feature()
     inputs = {"topic": "季度采购"}
 
-    prompt = build_user_prompt(feature, inputs, rules=["客户名写全称", "金额保留两位小数"])
+    prompt = build_user_prompt(
+        feature,
+        inputs,
+        rules=[ScopedRule("客户名写全称"), ScopedRule("金额保留两位小数")],
+    )
 
     assert prompt == (
         "整理以下输入：\n- 主题：季度采购\n\n"
@@ -234,7 +242,9 @@ def test_rules_come_last_as_a_labeled_separate_paragraph() -> None:
 def test_rules_heading_follows_the_template_language() -> None:
     feature = _feature(user_template="Summarize {{inputs}}")
 
-    prompt = build_user_prompt(feature, {"topic": "Roadmap"}, rules=["Spell names in full"])
+    prompt = build_user_prompt(
+        feature, {"topic": "Roadmap"}, rules=[ScopedRule("Spell names in full")]
+    )
 
     assert "NOT part of the current input" in prompt
     assert "历史修正记录" not in prompt
@@ -243,7 +253,7 @@ def test_rules_heading_follows_the_template_language() -> None:
 def test_at_most_ten_rules_are_injected() -> None:
     feature = _feature()
     inputs = {"topic": "x"}
-    eleven = [f"规则 {index}" for index in range(1, 12)]
+    eleven = [ScopedRule(f"规则 {index}") for index in range(1, 12)]
 
     ten_prompt = build_user_prompt(feature, inputs, rules=eleven[:MAX_INJECTED_RULES])
     eleven_prompt = build_user_prompt(feature, inputs, rules=eleven)
@@ -306,7 +316,10 @@ def test_parse_rule_reply_reads_json_and_rejects_junk() -> None:
             parse_rule_reply(junk)
 
 
-async def test_extract_writes_draft_rules_with_their_sources(rules: FeatureRuleRepo) -> None:
+async def test_extract_writes_draft_rules_with_their_sources(
+    rules: FeatureRuleRepo,
+    user_id: int,
+) -> None:
     tasks = _Tasks(
         [
             _task("finalized-2", diff=REPLACE_DIFF, finalized_at=300),
@@ -325,6 +338,8 @@ async def test_extract_writes_draft_rules_with_their_sources(rules: FeatureRuleR
         tasks_repo=tasks,  # type: ignore[arg-type]
         feature=_feature(),
         runner=runner,
+        owner_user_id=user_id,
+        user_ids=[user_id],
     )
 
     assert [row.rule_text for row in created] == ["客户名写全称", "金额保留两位小数"]
@@ -358,6 +373,8 @@ async def test_extract_without_finalized_tasks_never_calls_the_agent(
             tasks_repo=tasks,  # type: ignore[arg-type]
             feature=_feature(),
             runner=runner,
+            owner_user_id=USER_ID,
+            user_ids=[USER_ID],
         )
 
     assert runner.prompts == []
@@ -373,6 +390,8 @@ async def test_unparsable_reply_writes_no_half_baked_rules(rules: FeatureRuleRep
             tasks_repo=tasks,  # type: ignore[arg-type]
             feature=_feature(),
             runner=_Runner("我认为不需要总结规则。"),
+            owner_user_id=USER_ID,
+            user_ids=[USER_ID],
         )
 
     assert rules.list_for_feature("quote-draft") == []
@@ -386,6 +405,8 @@ async def test_extract_can_legitimately_find_no_rules(rules: FeatureRuleRepo) ->
         tasks_repo=tasks,  # type: ignore[arg-type]
         feature=_feature(),
         runner=_Runner("[]"),
+        owner_user_id=USER_ID,
+        user_ids=[USER_ID],
     )
 
     assert created == []

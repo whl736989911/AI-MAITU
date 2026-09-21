@@ -20,6 +20,7 @@ import {
   type FeatureCase,
   type FeatureFinalizedTask,
   type FeatureRule,
+  type FeatureRuleScope,
 } from "../../../api/modules/features";
 import { useAsyncResource } from "../../../hooks/useAsyncResource";
 import { apiErrorMessage, parseApiError } from "../../../utils/apiError";
@@ -30,12 +31,15 @@ const EMPTY_CASES: FeatureCase[] = [];
 
 /** A backend answer the user should read as guidance, not as an error. */
 export interface LearningNotice {
-  kind: "info" | "warning";
+  kind: "info" | "warning" | "success";
   /** i18n key of the short headline; the panel renders it. */
   titleKey: string;
   /** Server-supplied detail, when it adds anything to the headline. */
   detail?: string;
 }
+
+/** Where a personal rule can be submitted to. */
+export type RuleSubmitTarget = Exclude<FeatureRuleScope, "personal">;
 
 export interface FeatureLearning {
   rules: FeatureRule[];
@@ -44,10 +48,19 @@ export interface FeatureLearning {
   pendingRules: number;
   refreshRules: () => Promise<void>;
   extracting: boolean;
-  extractRules: () => Promise<void>;
+  /** Induce from the chosen layer's corrections. */
+  extractRules: (scope: FeatureRuleScope) => Promise<void>;
   extractNotice: LearningNotice | null;
   reviewingRuleId: string | null;
   reviewRule: (rule: FeatureRule, approve: boolean) => Promise<void>;
+  submittingRuleId: string | null;
+  submitRule: (
+    rule: FeatureRule,
+    target: RuleSubmitTarget,
+    reason?: string,
+  ) => Promise<void>;
+  /** Set after a submit: says in plain words that the personal rule still stands. */
+  submitNotice: LearningNotice | null;
 
   cases: FeatureCase[];
   casesLoading: boolean;
@@ -117,6 +130,8 @@ export function useFeatureLearning(
     null,
   );
   const [reviewingRuleId, setReviewingRuleId] = useState<string | null>(null);
+  const [submittingRuleId, setSubmittingRuleId] = useState<string | null>(null);
+  const [submitNotice, setSubmitNotice] = useState<LearningNotice | null>(null);
 
   const resetRun = useCallback(() => {
     setFinalized(null);
@@ -204,45 +219,86 @@ export function useFeatureLearning(
     [refreshRules, setRules, t],
   );
 
-  const extractRules = useCallback(async () => {
-    setExtracting(true);
-    setExtractNotice(null);
-    try {
-      const result = await featuresApi.extractRules(id);
-      if (result.rules.length === 0) {
-        setExtractNotice({
-          kind: "info",
-          titleKey: "features.rulesExtractEmpty",
-        });
-      } else {
-        message.success(
-          t("features.rulesExtracted", { count: result.rules.length }),
-        );
+  const extractRules = useCallback(
+    async (scope: FeatureRuleScope) => {
+      setExtracting(true);
+      setExtractNotice(null);
+      try {
+        const result = await featuresApi.extractRules(id, scope);
+        if (result.rules.length === 0) {
+          setExtractNotice({
+            kind: "info",
+            titleKey: "features.rulesExtractEmpty",
+          });
+        } else {
+          message.success(
+            t("features.rulesExtracted", { count: result.rules.length }),
+          );
+        }
+        await refreshRules();
+      } catch (err) {
+        const code = parseApiError(err)?.code;
+        if (code === "FEATURE_RULE_NO_SAMPLES") {
+          setExtractNotice({
+            kind: "info",
+            titleKey: "features.rulesExtractNoSamples",
+            detail: apiErrorMessage(
+              err,
+              t("features.rulesExtractNoSamples"),
+              t,
+            ),
+          });
+        } else if (code === "FEATURE_RULE_EXTRACTION_FAILED") {
+          setExtractNotice({
+            kind: "warning",
+            titleKey: "features.rulesExtractFailed",
+            detail: apiErrorMessage(err, t("features.rulesExtractFailed"), t),
+          });
+        } else {
+          message.error(
+            apiErrorMessage(err, t("features.rulesExtractFailed"), t),
+          );
+        }
+      } finally {
+        setExtracting(false);
       }
-      await refreshRules();
-    } catch (err) {
-      const code = parseApiError(err)?.code;
-      if (code === "FEATURE_RULE_NO_SAMPLES") {
-        setExtractNotice({
-          kind: "info",
-          titleKey: "features.rulesExtractNoSamples",
-          detail: apiErrorMessage(err, t("features.rulesExtractNoSamples"), t),
+    },
+    [id, refreshRules, t],
+  );
+
+  const submitRule = useCallback(
+    async (rule: FeatureRule, target: RuleSubmitTarget, reason?: string) => {
+      setSubmittingRuleId(rule.id);
+      setSubmitNotice(null);
+      try {
+        await featuresApi.submitRule(rule.id, target, reason);
+        message.success(t("features.ruleSubmitted"));
+        // The submission's one real trap: a copy now waits for review, so the
+        // user may believe their own rule is on hold too. It is not, and the
+        // notice below says so until the next action replaces it.
+        setSubmitNotice({
+          kind: "success",
+          titleKey:
+            target === "unit"
+              ? "features.ruleSubmitNoticeTitleUnit"
+              : "features.ruleSubmitNoticeTitleGlobal",
+          detail: t("features.ruleSubmitNoticeDetail", {
+            scope: t(
+              target === "unit"
+                ? "features.ruleScopeUnit"
+                : "features.ruleScopeGlobal",
+            ),
+          }),
         });
-      } else if (code === "FEATURE_RULE_EXTRACTION_FAILED") {
-        setExtractNotice({
-          kind: "warning",
-          titleKey: "features.rulesExtractFailed",
-          detail: apiErrorMessage(err, t("features.rulesExtractFailed"), t),
-        });
-      } else {
-        message.error(
-          apiErrorMessage(err, t("features.rulesExtractFailed"), t),
-        );
+        await refreshRules();
+      } catch (err) {
+        message.error(apiErrorMessage(err, t("features.ruleSubmitFailed"), t));
+      } finally {
+        setSubmittingRuleId(null);
       }
-    } finally {
-      setExtracting(false);
-    }
-  }, [id, refreshRules, t]);
+    },
+    [refreshRules, t],
+  );
 
   return {
     rules,
@@ -254,6 +310,9 @@ export function useFeatureLearning(
     extractNotice,
     reviewingRuleId,
     reviewRule,
+    submittingRuleId,
+    submitRule,
+    submitNotice,
     cases,
     casesLoading,
     refreshCases,

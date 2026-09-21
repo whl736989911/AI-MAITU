@@ -7,6 +7,16 @@ later prompts for that feature only.
 
 Nothing past the induction step is automatic: a draft rule is inert until a
 person approves it, and rules never cross feature boundaries.
+
+Rules do live at three layers, though, and this module is where the layers meet:
+a *personal* rule is immediate and private (its owner approves it), a *unit* rule
+is read by a whole department (its unit admin approves it), and a *global* rule
+is read by everyone (only an admin approves it). A run injects the caller's
+personal rules, then their department's, then the global ones — narrow layer
+first, so the caller's own corrections always fit the prompt's cap — and the
+prompt tags each rule with the layer it came from. A personal rule can be
+submitted up a layer; that writes a *new* draft there and leaves the personal
+rule exactly as it was.
 """
 
 from __future__ import annotations
@@ -22,11 +32,16 @@ from octop.infra.db.repos.feature_rules import (
     APPROVED,
     DRAFT,
     REJECTED,
+    SCOPE_GLOBAL,
+    SCOPE_PERSONAL,
+    SCOPE_UNIT,
+    SCOPES,
     FeatureRuleRepo,
     FeatureRuleRow,
 )
 from octop.infra.db.repos.feature_tasks import FeatureTaskRepo, FeatureTaskRow
 from octop.infra.features.catalog import MAX_INJECTED_RULES, Feature
+from octop.infra.users.identity import Role
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +95,14 @@ class RuleExtractionFailed(RuleError):
     """The extractor reply could not be turned into rules."""
 
 
+class RuleScopeInvalid(RuleError):
+    """A rule cannot live at the requested layer (bad target, or a missing owner/unit)."""
+
+
+class RuleScopeForbidden(RuleError):
+    """The caller's role or unit does not reach the layer the rule lives at."""
+
+
 @dataclass(frozen=True)
 class RuleSample:
     """One finalized task's correction, ready to render into a prompt."""
@@ -92,14 +115,24 @@ def finalized_samples(
     tasks: Sequence[FeatureTaskRow],
     *,
     limit: int = MAX_SOURCE_TASKS,
+    user_ids: Sequence[int] | None = None,
 ) -> list[RuleSample]:
     """The evidence an extraction reads: finalized diffs, newest finalized first.
 
     A row whose ``diff_json`` is unreadable is skipped with a warning — one
     corrupt row must not block learning from every other correction, and it is
     never silently counted as a "no edits" positive sample.
+
+    ``user_ids`` narrows the evidence to those people's runs, which is what the
+    personal layer (one person) and the unit layer (one department) read.
+    ``None`` — the default, and the global layer — reads everyone's.
     """
-    finalized = [task for task in tasks if task.finalized_at is not None]
+    allowed = None if user_ids is None else {int(user_id) for user_id in user_ids}
+    finalized = [
+        task
+        for task in tasks
+        if task.finalized_at is not None and (allowed is None or task.user_id in allowed)
+    ]
     finalized.sort(key=lambda task: (task.finalized_at or 0, task.id), reverse=True)
 
     samples: list[RuleSample] = []
@@ -176,6 +209,10 @@ async def extract_rules(
     tasks_repo: FeatureTaskRepo,
     feature: Feature,
     runner: ExtractionRunner,
+    scope: str = SCOPE_PERSONAL,
+    owner_user_id: int | None = None,
+    unit_key: str | None = None,
+    user_ids: Sequence[int] | None = None,
 ) -> list[FeatureRuleRow]:
     """Induce draft rules for *feature* from its finalized task diffs.
 
@@ -183,9 +220,24 @@ async def extract_rules(
     failed or unparsable extraction writes nothing. Every written rule carries
     the ids of the diffs it was induced from (contract §1.3: no rule without
     provenance) and lands in ``draft`` — a human decides whether it is used.
+
+    *scope* decides which layer the drafts land in and therefore who reviews
+    them: ``personal`` (the default) needs the *owner_user_id* it writes for,
+    ``unit`` needs the *unit_key* of the department it writes for, and ``global``
+    writes for everyone. *user_ids* is the matching evidence filter — the caller
+    resolves a unit's members — and ``None`` reads every user's runs. The agent
+    never picks the layer: it is the layer the caller asked for, and a scope that
+    cannot hold a rule (personal without an owner, unit without a unit) is
+    refused before the agent runs at all.
     """
+    layer, layer_owner, layer_unit = _checked_layer(
+        scope,
+        owner_user_id=owner_user_id,
+        unit_key=unit_key,
+    )
     samples = finalized_samples(
         tasks_repo.list_for_feature(feature.id, limit=TASK_SCAN_LIMIT),
+        user_ids=user_ids,
     )
     if not samples:
         raise RuleNoSamples(f"feature {feature.id!r} has no finalized tasks to learn from")
@@ -196,6 +248,9 @@ async def extract_rules(
         rule_texts=rules,
         source_task_ids=[sample.task_id for sample in samples],
         proposed_by=PROPOSED_BY_AI,
+        scope=layer,
+        owner_user_id=layer_owner,
+        unit_key=layer_unit,
     )
 
 
@@ -229,17 +284,147 @@ def review_rule(
     return updated
 
 
-def injectable_rule_rows(repo: FeatureRuleRepo, feature_id: str) -> list[FeatureRuleRow]:
-    """Approved rules for one feature — the only rules a prompt may carry.
+def may_review_rule(
+    row: FeatureRuleRow,
+    *,
+    user_id: int,
+    role: str,
+    unit_key: str | None,
+) -> bool:
+    """Whether this caller may decide *row*'s review — by layer, not by module key.
 
-    Newest-reviewed first, capped at
-    :data:`~octop.infra.features.catalog.MAX_INJECTED_RULES` so the prompt block
-    cannot grow without bound as the rule set ages. Rows rather than texts: the
-    caller records *which* rules a run injected (``feature_tasks.injected_rule_ids``),
-    and a prompt that drops blank text would otherwise disagree with the record.
+    Having the ``features`` permission is what puts someone in front of the
+    review queue; it says nothing about whose rules they get to decide. A personal
+    rule is its owner's alone (an admin stepping in would put words in someone
+    else's prompts), a unit rule belongs to that department's unit admin — and to
+    an admin, who runs every department — and a global rule reaches the whole
+    deployment, so it stays an admin-only decision.
     """
-    rows = repo.list_approved(feature_id, limit=MAX_INJECTED_RULES)
+    if row.scope == SCOPE_PERSONAL:
+        return row.owner_user_id is not None and row.owner_user_id == user_id
+    if row.scope == SCOPE_UNIT:
+        # An admin runs every department, so the unit match is required of the
+        # unit admin only — an admin has no department of their own to match.
+        if role == Role.ADMIN:
+            return True
+        return role == Role.UNIT_ADMIN and bool(row.unit_key) and row.unit_key == unit_key
+    if row.scope == SCOPE_GLOBAL:
+        return role == Role.ADMIN
+    return False
+
+
+def submit_rule(
+    repo: FeatureRuleRepo,
+    rule_id: str,
+    *,
+    target_scope: str,
+    submitter_id: int,
+    role: str,
+    unit_key: str | None,
+) -> FeatureRuleRow:
+    """Propose one personal rule to a wider layer and return the new draft.
+
+    The personal rule is not touched: it keeps working for its owner whether or
+    not the wider layer adopts it, and a rejection upstream must not cost someone
+    a rule they had already approved for themselves. What is written is a *new*
+    draft row at *target_scope*, carrying the original's provenance so the wider
+    layer can see which corrections it was induced from.
+
+    Only a personal rule can be submitted (the wider layers are not a hierarchy to
+    move rules around in), and only its owner submits it. ``unit_key`` is the
+    submitter's *current* department — the rule goes where its author belongs
+    today, not where they belonged when they wrote it — and a department target
+    without one is refused. Reaching the global layer is an admin's call, matching
+    who may approve there.
+    """
+    existing = repo.get(rule_id)
+    if existing is None:
+        raise RuleNotFound(f"rule {rule_id!r} not found")
+    if existing.scope != SCOPE_PERSONAL:
+        raise RuleScopeInvalid(
+            f"rule {rule_id!r} is {existing.scope}-scoped: only a personal rule can be submitted"
+        )
+    if existing.owner_user_id != submitter_id:
+        raise RuleScopeForbidden(f"rule {rule_id!r} belongs to another user")
+    if target_scope == SCOPE_GLOBAL:
+        if role != Role.ADMIN:
+            raise RuleScopeForbidden("only an admin may submit a rule to the global layer")
+        layer_owner, layer_unit = None, None
+    elif target_scope == SCOPE_UNIT:
+        if not unit_key:
+            raise RuleScopeInvalid(
+                "you are not in an org unit: submitting to a department needs one"
+            )
+        layer_owner, layer_unit = None, unit_key
+    else:
+        raise RuleScopeInvalid(f"unknown submit target {target_scope!r}")
+
+    created = repo.create_many(
+        feature_id=existing.feature_id,
+        rule_texts=[existing.rule_text],
+        source_task_ids=existing.source_task_id_list(),
+        proposed_by=f"user:{submitter_id}",
+        scope=target_scope,
+        owner_user_id=layer_owner,
+        unit_key=layer_unit,
+    )
+    if not created:
+        raise RuleScopeInvalid(f"rule {rule_id!r} holds no text to submit")
+    return created[0]
+
+
+def injectable_rule_rows(
+    repo: FeatureRuleRepo,
+    feature_id: str,
+    *,
+    user_id: int | None = None,
+    unit_key: str | None = None,
+) -> list[FeatureRuleRow]:
+    """Approved rules one caller's prompts get — the only rules a prompt may carry.
+
+    The caller's three layers, narrowest first: personal, then their department's,
+    then global. That order is decided by the query, so the cap at
+    :data:`~octop.infra.features.catalog.MAX_INJECTED_RULES` fills with the rules
+    closest to the caller first — an org-wide rule can never crowd out someone's
+    personal one — and it is the order the prompt tags them in.
+
+    Rows rather than texts: the caller records *which* rules a run injected
+    (``feature_tasks.injected_rule_ids``) and labels each one with its layer, and a
+    prompt that dropped blank text would otherwise disagree with the record.
+    """
+    rows = repo.list_injectable(
+        feature_id,
+        user_id=user_id,
+        unit_key=unit_key,
+        limit=MAX_INJECTED_RULES,
+    )
     return [row for row in rows if str(row.rule_text).strip()]
+
+
+def _checked_layer(
+    scope: str,
+    *,
+    owner_user_id: int | None,
+    unit_key: str | None,
+) -> tuple[str, int | None, str | None]:
+    """Normalize one new rule's layer into the columns that hold it.
+
+    A personal rule without an owner and a unit rule without a unit are write
+    errors, not layers: nothing would ever read them back. Normalizing here keeps
+    both write paths (extraction and submission) from storing a rule that is
+    invisible by construction.
+    """
+    if scope not in SCOPES:
+        raise RuleScopeInvalid(f"unknown rule scope {scope!r}")
+    if scope == SCOPE_PERSONAL:
+        if owner_user_id is None:
+            raise RuleScopeInvalid("a personal rule needs the user it belongs to")
+        return scope, int(owner_user_id), None
+    if scope == SCOPE_UNIT:
+        if not unit_key:
+            raise RuleScopeInvalid("a unit rule needs the org unit it belongs to")
+        return scope, None, str(unit_key)
+    return scope, None, None
 
 
 def _parse_diff(task: FeatureTaskRow) -> list[dict[str, str]] | None:

@@ -9,18 +9,22 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
-from typing import Any
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import get_server, require_admin, require_permission
 from octop.api.routers.chat.turn import resolve_thread_id
 from octop.infra.agents.middleware.feature_prompt import stamp_feature_system_prompt
 from octop.infra.db.repos.feature_cases import FeatureCaseRow
-from octop.infra.db.repos.feature_rules import FeatureRuleRow
+from octop.infra.db.repos.feature_rules import (
+    SCOPE_PERSONAL,
+    SCOPE_UNIT,
+    FeatureRuleRow,
+)
 from octop.infra.db.repos.feature_tasks import FeatureTaskRow
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.features import (
@@ -31,6 +35,7 @@ from octop.infra.features import (
     FeatureNotFound,
     FeatureReadOnly,
     FeatureStore,
+    ScopedRule,
     build_user_prompt,
 )
 from octop.infra.features.diff import diff_segments
@@ -39,12 +44,17 @@ from octop.infra.features.rules import (
     RuleExtractionFailed,
     RuleNoSamples,
     RuleNotFound,
+    RuleScopeForbidden,
+    RuleScopeInvalid,
     extract_rules,
     injectable_rule_rows,
+    may_review_rule,
     review_rule,
+    submit_rule,
 )
 from octop.infra.features.schema import ALLOWED_ICONS, ALLOWED_OUTPUT_KINDS
 from octop.infra.gateway.process import build_harness_request
+from octop.infra.users.identity import Role
 from octop.infra.utils.llm_text import strip_thinking
 
 logger = logging.getLogger(__name__)
@@ -393,7 +403,12 @@ async def run_feature(
     agent_id = _run_agent_id(server, user.id)
     repo = server.services.repos.feature_tasks_repo
     inputs = json.dumps(body.inputs, ensure_ascii=False)
-    rules = injectable_rule_rows(server.services.repos.feature_rules_repo, feature.id)
+    rules = injectable_rule_rows(
+        server.services.repos.feature_rules_repo,
+        feature.id,
+        user_id=int(user.id),
+        unit_key=getattr(user, "org_unit", None),
+    )
     rule_ids = json.dumps([rule.id for rule in rules], ensure_ascii=False)
     try:
         output = await _run_agent_turn(
@@ -403,7 +418,9 @@ async def run_feature(
             text=build_user_prompt(
                 feature,
                 body.inputs,
-                rules=[rule.rule_text for rule in rules],
+                # The prompt says where each rule came from: a personal rule is the
+                # caller's own habit, a global one is an org-wide requirement.
+                rules=[ScopedRule(text=rule.rule_text, scope=rule.scope) for rule in rules],
             ),
             system_prompt=feature.system_prompt,
         )
@@ -435,8 +452,16 @@ async def run_feature(
     return {"task_id": row.id, "output": output, "output_kind": feature.output_kind}
 
 
-def _rule_dict(row: FeatureRuleRow) -> dict[str, Any]:
-    """Rule payload for the review UI — provenance included."""
+def _unit_labels(server: Any) -> dict[str, str]:
+    """``{unit_key: label_zh}`` — resolved once per response, not once per rule."""
+    assert server.services is not None
+    return {
+        row.key: (row.label_zh or row.key) for row in server.services.repos.org_unit_repo.list_all()
+    }
+
+
+def _rule_dict(row: FeatureRuleRow, unit_labels: Mapping[str, str]) -> dict[str, Any]:
+    """Rule payload for the review UI — provenance, scope, and layer included."""
     return {
         "id": row.id,
         "feature_id": row.feature_id,
@@ -447,24 +472,90 @@ def _rule_dict(row: FeatureRuleRow) -> dict[str, Any]:
         "approved_by": row.approved_by,
         "created_at": row.created_at,
         "reviewed_at": row.reviewed_at,
+        "scope": row.scope,
+        "owner_user_id": row.owner_user_id,
+        "unit_key": row.unit_key,
+        # The department name, so a unit rule reads as one without the UI having
+        # to resolve keys itself; a deleted unit falls back to its key.
+        "unit_label": None if row.unit_key is None else unit_labels.get(row.unit_key, row.unit_key),
     }
 
 
-def _review_one(server: Any, rule_id: str, *, approve: bool, reviewer_id: int) -> dict[str, Any]:
-    """Shared body of approve/reject — the reviewer is always the caller."""
+def _review_one(server: Any, rule_id: str, *, approve: bool, user: Any) -> dict[str, Any]:
+    """Shared body of approve/reject — the reviewer is the caller, by scope."""
     assert server.services is not None
-    try:
-        row = review_rule(
-            server.services.repos.feature_rules_repo,
-            rule_id,
-            approve=approve,
-            reviewer_id=reviewer_id,
+    repo = server.services.repos.feature_rules_repo
+    existing = repo.get(rule_id)
+    if existing is None:
+        raise OctopError(ErrorCode.NOT_FOUND, f"rule {rule_id!r} not found")
+    if not may_review_rule(
+        existing,
+        user_id=int(user.id),
+        role=user.role,
+        unit_key=getattr(user, "org_unit", None),
+    ):
+        raise OctopError(
+            ErrorCode.FEATURE_RULE_SCOPE_FORBIDDEN,
+            f"rule {rule_id!r} is {existing.scope}-scoped: it is not yours to review",
+            details={
+                "scope": existing.scope,
+                "unit_key": existing.unit_key,
+                "owner_user_id": existing.owner_user_id,
+            },
         )
+    try:
+        row = review_rule(repo, rule_id, approve=approve, reviewer_id=int(user.id))
     except RuleNotFound as exc:
         raise OctopError(ErrorCode.NOT_FOUND, str(exc)) from exc
     except RuleAlreadyReviewed as exc:
         raise OctopError(ErrorCode.FEATURE_RULE_REVIEWED, str(exc)) from exc
-    return _rule_dict(row)
+    return _rule_dict(row, _unit_labels(server))
+
+
+def _extraction_scope(
+    server: Any, user: Any, scope: str
+) -> tuple[int | None, str | None, list[int] | None]:
+    """Resolve one extraction request into ``(owner, unit, evidence users)``.
+
+    Personal reads the caller's own runs, unit reads the caller's own department
+    (which needs the role to reach it and a unit to read), and global reads
+    everyone. Refusing here rather than filtering later is the point: a scope the
+    caller cannot reach must not run the extractor at all, and the drafts it
+    writes are stamped with the layer the caller asked for.
+    """
+    assert server.services is not None
+    unit_key = getattr(user, "org_unit", None)
+    if scope == SCOPE_PERSONAL:
+        return int(user.id), None, [int(user.id)]
+    if scope == SCOPE_UNIT:
+        if not user.is_admin and user.role != Role.UNIT_ADMIN:
+            raise OctopError(
+                ErrorCode.FEATURE_RULE_SCOPE_FORBIDDEN,
+                "extracting department rules needs the unit_admin role or an admin",
+                details={"scope": scope, "unit_key": unit_key},
+            )
+        if not unit_key:
+            raise OctopError(
+                ErrorCode.FEATURE_RULE_SUBMIT_INVALID,
+                "you are not in an org unit: there is no department to extract rules for",
+                details={"scope": scope},
+            )
+        return None, unit_key, _unit_member_ids(server, unit_key)
+    if not user.is_admin:
+        raise OctopError(
+            ErrorCode.FEATURE_RULE_SCOPE_FORBIDDEN,
+            "extracting global rules is an admin decision",
+            details={"scope": scope},
+        )
+    return None, None, None
+
+
+def _unit_member_ids(server: Any, unit_key: str) -> list[int]:
+    """User ids of one department — the runs a department extraction may read."""
+    assert server.services is not None
+    return [
+        int(row.id) for row in server.services.repos.user_repo.list() if row.org_unit == unit_key
+    ]
 
 
 @router.post("/{feature_id}/rules/extract", summary="Induce draft rules from finalized tasks")
@@ -472,15 +563,25 @@ async def extract_feature_rules(
     feature_id: str,
     user: Any = Depends(require_permission("features")),
     server: Any = Depends(get_server),
+    scope: Literal["personal", "unit", "global"] = Query(
+        "personal",
+        description=(
+            "personal: learn from your own runs (default); "
+            "unit: from your department's runs (unit_admin or admin); "
+            "global: from every run (admin only)"
+        ),
+    ),
 ) -> dict[str, Any]:
-    """Run the extractor once over this feature's finalized corrections.
+    """Run the extractor once over the corrections of one scope layer.
 
-    Output is always ``draft``: the extractor proposes, a human disposes. A run
-    that cannot be parsed writes nothing at all.
+    Output is always ``draft``: the extractor proposes, a human disposes — and a
+    draft of a wider layer waits for that layer's reviewer. A run that cannot be
+    parsed writes nothing at all.
     """
     assert server.services is not None
     feature = _require_feature(server, feature_id)
     agent_id = _run_agent_id(server, user.id)
+    owner_user_id, unit_key, user_ids = _extraction_scope(server, user, scope)
 
     async def runner(prompt: str) -> str:
         # ``extract_rules`` calls the runner with the prompt positionally, while
@@ -495,11 +596,17 @@ async def extract_feature_rules(
             tasks_repo=server.services.repos.feature_tasks_repo,
             feature=feature,
             runner=runner,
+            scope=scope,
+            owner_user_id=owner_user_id,
+            unit_key=unit_key,
+            user_ids=user_ids,
         )
     except OctopError:
         raise
     except RuleNoSamples as exc:
         raise OctopError(ErrorCode.FEATURE_RULE_NO_SAMPLES, str(exc)) from exc
+    except RuleScopeInvalid as exc:
+        raise OctopError(ErrorCode.FEATURE_RULE_SUBMIT_INVALID, str(exc)) from exc
     except RuleExtractionFailed as exc:
         logger.warning("rule extraction for feature %s produced nothing: %s", feature.id, exc)
         raise OctopError(ErrorCode.FEATURE_RULE_EXTRACTION_FAILED, str(exc)) from exc
@@ -510,20 +617,88 @@ async def extract_feature_rules(
             ErrorCode.FEATURE_RULE_EXTRACTION_FAILED,
             f"rule extraction for feature {feature.id!r} failed: {reason}",
         ) from exc
-    return {"feature_id": feature.id, "rules": [_rule_dict(row) for row in rows]}
+    labels = _unit_labels(server)
+    return {"feature_id": feature.id, "rules": [_rule_dict(row, labels) for row in rows]}
 
 
 @router.get("/{feature_id}/rules", summary="List rules of one feature")
 async def list_feature_rules(
     feature_id: str,
-    _user: Any = Depends(require_permission("features")),
+    user: Any = Depends(require_permission("features")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Every rule of this feature, newest first — unreviewed drafts included."""
+    """Rules of this feature the caller may see, newest first.
+
+    That is the global layer, the caller's own department, and the caller's own
+    personal rules — under any status, since the review queue needs the drafts.
+    Other people's personal rules stay private to them (nobody else may decide
+    them anyway), so the list and the review guard answer the same question.
+    """
     assert server.services is not None
     feature = _require_feature(server, feature_id)
-    rows = server.services.repos.feature_rules_repo.list_for_feature(feature.id)
-    return {"feature_id": feature.id, "rules": [_rule_dict(row) for row in rows]}
+    rows = server.services.repos.feature_rules_repo.list_visible(
+        feature.id,
+        user_id=int(user.id),
+        unit_key=getattr(user, "org_unit", None),
+        is_admin=bool(user.is_admin),
+    )
+    labels = _unit_labels(server)
+    return {"feature_id": feature.id, "rules": [_rule_dict(row, labels) for row in rows]}
+
+
+class FeatureRuleSubmitBody(BaseModel):
+    """Which wider layer a personal rule is proposed to, and why."""
+
+    target_scope: Literal["unit", "global"]
+    reason: str | None = None
+
+
+@router.post("/rules/{rule_id}/submit", summary="Submit a personal rule to a wider scope")
+async def submit_feature_rule(
+    rule_id: str,
+    body: FeatureRuleSubmitBody,
+    user: Any = Depends(require_permission("features")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Propose one personal rule to the caller's department, or to everyone.
+
+    The submission is a *new draft* in the target layer — the personal rule is
+    left exactly as it was and keeps working for its owner, whatever the wider
+    layer decides. The reason is recorded in the audit log; the rule carries the
+    provenance of the corrections it came from.
+    """
+    assert server.services is not None
+    try:
+        row = submit_rule(
+            server.services.repos.feature_rules_repo,
+            rule_id,
+            target_scope=body.target_scope,
+            submitter_id=int(user.id),
+            role=user.role,
+            unit_key=getattr(user, "org_unit", None),
+        )
+    except RuleNotFound as exc:
+        raise OctopError(ErrorCode.NOT_FOUND, str(exc)) from exc
+    except RuleScopeInvalid as exc:
+        raise OctopError(ErrorCode.FEATURE_RULE_SUBMIT_INVALID, str(exc)) from exc
+    except RuleScopeForbidden as exc:
+        raise OctopError(ErrorCode.FEATURE_RULE_SCOPE_FORBIDDEN, str(exc)) from exc
+    server.services.audit_repo.write(
+        actor=user.username,
+        action="feature_rule.submit",
+        target=rule_id,
+        payload=json.dumps(
+            {
+                "rule_id": row.id,
+                "feature_id": row.feature_id,
+                "target_scope": row.scope,
+                "unit_key": row.unit_key,
+                "reason": body.reason,
+            },
+            ensure_ascii=False,
+        ),
+    )
+    return {"rule": _rule_dict(row, _unit_labels(server))}
 
 
 @router.post("/rules/{rule_id}/approve", summary="Approve a draft rule")
@@ -532,8 +707,8 @@ async def approve_feature_rule(
     user: Any = Depends(require_permission("features")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Let an approved rule into future prompts of its feature."""
-    return _review_one(server, rule_id, approve=True, reviewer_id=user.id)
+    """Let an approved rule into the prompts of the layer it belongs to."""
+    return _review_one(server, rule_id, approve=True, user=user)
 
 
 @router.post("/rules/{rule_id}/reject", summary="Reject a draft rule")
@@ -543,7 +718,7 @@ async def reject_feature_rule(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Retire a rule for good — rejected rules are never injected."""
-    return _review_one(server, rule_id, approve=False, reviewer_id=user.id)
+    return _review_one(server, rule_id, approve=False, user=user)
 
 
 class FeatureFinalizeBody(BaseModel):
