@@ -14,15 +14,22 @@
  *   GET    /api/users                        ``users``
  *   POST   /api/users                        ``users``; org_unit needs admin
  *   PATCH  /api/users/{id}                   ``users``; role / org_unit /
- *                                            disabled need admin
- *                                            (``_assert_admin`` /
+ *                                            disabled / denied_permissions
+ *                                            need admin (``_assert_admin`` /
  *                                            ``_assert_can_administer``)
  *   POST   /api/users/{id}/reset-password    admin
  *   POST   /api/users/{id}/unlock-login      ``users``
  *   DELETE /api/users/{id}                   admin (``require_admin``)
+ *
+ * ``denied_permissions`` is the last leg of ``role ∪ unit ∪ grant − deny``
+ * and outranks the other three, so the edit drawer never shows a tick without
+ * saying whether it survives: keys the department grants are tagged, and a
+ * key on the deny list is flagged wherever it appears. On the wire the field
+ * is three-state — omitted keeps the stored list, ``null`` clears it, an
+ * array replaces it — so an untouched picker sends nothing.
  */
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   Button,
   Modal,
@@ -46,6 +53,7 @@ import { message } from "@/utils/antdMessage";
 import { ResizableTable } from "@/components/ResizableTable";
 
 import {
+  Ban,
   Bot,
   Building2,
   Check,
@@ -64,7 +72,9 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  ShieldOff,
   Trash2,
+  TriangleAlert,
   User,
   UserRound,
   Mail,
@@ -109,6 +119,12 @@ interface UserRow {
   login_retry_after_seconds?: number;
   created_at?: number;
   permissions?: string[];
+  /**
+   * Keys this account is refused, whoever grants them (``role ∪ unit ∪ grant
+   * − deny``). Admin-writable only; absent from an older backend, in which
+   * case the deny editor simply reads as empty.
+   */
+  denied_permissions?: string[];
   /** Org unit key — non-admin accounts can carry the unit scope. */
   org_unit?: string | null;
   workspace_root_dir?: string | null;
@@ -183,6 +199,8 @@ interface EditValues extends PolicyFormValues {
   role: OctopRole;
   org_unit?: string;
   permissions?: string[];
+  /** Deny list; only sent once the picker was touched (see ``denyTouched``). */
+  denied_permissions?: string[];
 }
 
 interface ResetValues {
@@ -435,11 +453,114 @@ function OrgUnitField({
   );
 }
 
+/** One category of the permission catalog, split into page groups. */
+interface PermissionGroup {
+  category: string;
+  label: string;
+  items: PermissionCatalogItem[];
+  /** Keys belonging to no page: rendered above the page boxes. */
+  standalone: PermissionCatalogItem[];
+  pages: { page: string; label: string; items: PermissionCatalogItem[] }[];
+}
+
+/**
+ * Category → page grouping of the catalog. Shared by the grant and the deny
+ * picker so both show the same catalog, in the same order and shape.
+ */
+function groupPermissionCatalog(
+  catalog: PermissionCatalogItem[],
+  labels: { settings: string; control: string; admin: string },
+): PermissionGroup[] {
+  const order = [
+    { category: "settings", label: labels.settings },
+    { category: "control", label: labels.control },
+    { category: "admin", label: labels.admin },
+  ];
+  return order
+    .map((g) => {
+      const items = catalog.filter((p) => p.category === g.category);
+      const pages: PermissionGroup["pages"] = [];
+      const standalone: PermissionCatalogItem[] = [];
+      for (const item of items) {
+        if (!item.page) {
+          standalone.push(item);
+          continue;
+        }
+        const existing = pages.find((p) => p.page === item.page);
+        if (existing) {
+          existing.items.push(item);
+        } else {
+          pages.push({
+            page: item.page,
+            label: item.page_label || item.page,
+            items: [item],
+          });
+        }
+      }
+      return { ...g, items, standalone, pages };
+    })
+    .filter((g) => g.items.length > 0);
+}
+
+/** Why a chip's own state is not the whole story for one catalog key. */
+type ChipTag = "own" | "unit" | "deny";
+
+/**
+ * Provenance markers shown on a chip. Both pickers pass only the sources that
+ * add information there: the deny picker marks what a deny would take away
+ * (granted directly / by the department), the grant picker marks the two
+ * reasons a tick or an untick would not decide the outcome (a department
+ * grant, and the deny list, which outranks everything).
+ */
+function chipSources(
+  key: string,
+  sources: {
+    ownKeys?: Set<string>;
+    unitGrantedKeys?: Set<string>;
+    deniedKeys?: Set<string>;
+  },
+): ChipTag[] {
+  const tags: ChipTag[] = [];
+  if (sources.ownKeys?.has(key)) tags.push("own");
+  if (sources.unitGrantedKeys?.has(key)) tags.push("unit");
+  if (sources.deniedKeys?.has(key)) tags.push("deny");
+  return tags;
+}
+
+const CHIP_TAG_LABELS: Record<ChipTag, string> = {
+  own: "adminUsers.permSourceOwn",
+  unit: "adminUsers.permSourceUnit",
+  deny: "adminUsers.permDenyBadge",
+};
+
+function ChipTagList({ tags }: { tags: ChipTag[] }) {
+  const { t } = useTranslation();
+  if (tags.length === 0) return null;
+  return (
+    <span className={styles.permChipTags}>
+      {tags.map((tag) => (
+        <span
+          key={tag}
+          className={`${styles.permChipTag} ${
+            tag === "deny" ? styles.permChipTagDenied : ""
+          }`}
+        >
+          {t(CHIP_TAG_LABELS[tag])}
+        </span>
+      ))}
+    </span>
+  );
+}
+
 interface PermissionCheckboxPickerProps {
   value?: string[];
   onChange?: (value: string[]) => void;
   catalog: PermissionCatalogItem[];
   disabled?: boolean;
+  /** Keys the account's org unit grants: a cleared box does not remove them. */
+  unitGrantedKeys?: Set<string>;
+  /** Keys on the deny list: a ticked box does not turn them on. */
+  deniedKeys?: Set<string>;
 }
 
 function PermissionCheckboxPicker({
@@ -447,55 +568,22 @@ function PermissionCheckboxPicker({
   onChange,
   catalog,
   disabled,
+  unitGrantedKeys,
+  deniedKeys,
 }: PermissionCheckboxPickerProps) {
   const { t } = useTranslation();
   const selected = value ?? [];
   const selectedSet = useMemo(() => new Set(selected), [selected]);
 
-  const groups = useMemo(() => {
-    const order = [
-      {
-        category: "settings",
-        label: t("adminUsers.permGroupSettings"),
-      },
-      {
-        category: "control",
-        label: t("adminUsers.permGroupControl"),
-      },
-      {
-        category: "admin",
-        label: t("adminUsers.permGroupAdmin"),
-      },
-    ] as const;
-    return order
-      .map((g) => {
-        const items = catalog.filter((p) => p.category === g.category);
-        const pages: {
-          page: string;
-          label: string;
-          items: PermissionCatalogItem[];
-        }[] = [];
-        const standalone: PermissionCatalogItem[] = [];
-        for (const item of items) {
-          if (!item.page) {
-            standalone.push(item);
-            continue;
-          }
-          const existing = pages.find((p) => p.page === item.page);
-          if (existing) {
-            existing.items.push(item);
-          } else {
-            pages.push({
-              page: item.page,
-              label: item.page_label || item.page,
-              items: [item],
-            });
-          }
-        }
-        return { ...g, items, standalone, pages };
-      })
-      .filter((g) => g.items.length > 0);
-  }, [catalog, t]);
+  const groups = useMemo(
+    () =>
+      groupPermissionCatalog(catalog, {
+        settings: t("adminUsers.permGroupSettings"),
+        control: t("adminUsers.permGroupControl"),
+        admin: t("adminUsers.permGroupAdmin"),
+      }),
+    [catalog, t],
+  );
 
   const toggle = (key: string, checked: boolean) => {
     if (disabled) return;
@@ -541,12 +629,24 @@ function PermissionCheckboxPicker({
           <div className={styles.permGrid} role="group">
             {items.map((item) => {
               const checked = selectedSet.has(item.key);
+              const tags = chipSources(item.key, {
+                unitGrantedKeys,
+                deniedKeys,
+              });
+              // Explains the tick that lies: a department grant survives an
+              // untick, a deny survives a tick.
+              const title = tags.includes("deny")
+                ? t("adminUsers.permGrantDeniedNote")
+                : tags.includes("unit")
+                  ? t("adminUsers.permGrantUnitNote")
+                  : undefined;
               return (
                 <button
                   key={`${item.key}:${item.label}`}
                   type="button"
                   disabled={disabled}
                   aria-pressed={checked}
+                  title={title}
                   className={`${styles.permChip} ${
                     checked ? styles.permChipSelected : ""
                   }`}
@@ -556,6 +656,7 @@ function PermissionCheckboxPicker({
                     {checked ? <Check size={12} strokeWidth={2.5} /> : null}
                   </span>
                   <span className={styles.permChipLabel}>{item.label}</span>
+                  <ChipTagList tags={tags} />
                 </button>
               );
             })}
@@ -606,6 +707,152 @@ function PermissionCheckboxPicker({
                         </Checkbox>
                         <span className={styles.permGroupCount}>
                           {pageChecked}/{pageKeys.length}
+                        </span>
+                      </div>
+                      {renderChips(page.items)}
+                    </div>
+                  );
+                })}
+              </>
+            )}
+          </section>
+        );
+      })}
+    </div>
+  );
+}
+
+interface PermissionDenyPickerProps {
+  value?: string[];
+  onChange?: (value: string[]) => void;
+  catalog: PermissionCatalogItem[];
+  /** Keys granted to this account itself — a deny here revokes a real grant. */
+  grantedKeys: Set<string>;
+  /** Keys the account's department grants — deny is the per-user way out. */
+  unitGrantedKeys: Set<string>;
+}
+
+/**
+ * The deny leg of ``role ∪ unit ∪ grant − deny``: same catalog and grouping as
+ * the grant picker, red instead of brand-coloured. Each selected chip names
+ * what the deny actually takes away, because a key can be granted to this
+ * account directly, by its department, or by nothing at all — and in the last
+ * case the deny is still meaningful: it is a standing rule that keeps every
+ * later grant of that key from taking effect.
+ */
+function PermissionDenyPicker({
+  value,
+  onChange,
+  catalog,
+  grantedKeys,
+  unitGrantedKeys,
+}: PermissionDenyPickerProps) {
+  const { t } = useTranslation();
+  const denied = value ?? [];
+  const deniedSet = useMemo(() => new Set(denied), [denied]);
+
+  const groups = useMemo(
+    () =>
+      groupPermissionCatalog(catalog, {
+        settings: t("adminUsers.permGroupSettings"),
+        control: t("adminUsers.permGroupControl"),
+        admin: t("adminUsers.permGroupAdmin"),
+      }),
+    [catalog, t],
+  );
+
+  const toggle = (key: string, isDenied: boolean) => {
+    if (isDenied) {
+      onChange?.(denied.filter((k) => k !== key));
+      return;
+    }
+    onChange?.([...denied, key]);
+  };
+
+  if (catalog.length === 0) {
+    return (
+      <div className={styles.permEmpty}>
+        <Text type="secondary">{t("adminUsers.permCatalogEmpty")}</Text>
+      </div>
+    );
+  }
+
+  const deniedTotal = catalog.filter((p) => deniedSet.has(p.key)).length;
+
+  return (
+    <div className={styles.permPicker}>
+      {deniedTotal > 0 ? (
+        <div className={styles.permDenyCount}>
+          <ShieldOff size={14} strokeWidth={2} />
+          <span>{t("adminUsers.permDenyCount", { count: deniedTotal })}</span>
+        </div>
+      ) : null}
+      {groups.map((group) => {
+        const keys = group.items.map((i) => i.key);
+        const deniedCount = keys.filter((k) => deniedSet.has(k)).length;
+        const renderChips = (items: PermissionCatalogItem[]) => (
+          <div className={styles.permGrid} role="group">
+            {items.map((item) => {
+              const isDenied = deniedSet.has(item.key);
+              const tags = chipSources(item.key, {
+                ownKeys: grantedKeys,
+                unitGrantedKeys,
+              });
+              const title = isDenied
+                ? tags.includes("unit")
+                  ? t("adminUsers.permDenyUnitNote")
+                  : tags.includes("own")
+                    ? t("adminUsers.permDenyGrantedNote")
+                    : t("adminUsers.permDenyAbsentNote")
+                : undefined;
+              return (
+                <button
+                  key={`${item.key}:${item.label}`}
+                  type="button"
+                  aria-pressed={isDenied}
+                  title={title}
+                  className={`${styles.permChip} ${
+                    isDenied ? styles.permChipDenied : ""
+                  }`}
+                  onClick={() => toggle(item.key, isDenied)}
+                >
+                  <span className={styles.permChipCheck} aria-hidden>
+                    {isDenied ? <Ban size={12} strokeWidth={2.5} /> : null}
+                  </span>
+                  <span className={styles.permChipLabel}>{item.label}</span>
+                  <ChipTagList tags={tags} />
+                </button>
+              );
+            })}
+          </div>
+        );
+        return (
+          <section key={group.category} className={styles.permGroup}>
+            <div className={styles.permGroupHeader}>
+              <span className={styles.permGroupTitle}>{group.label}</span>
+              <span className={styles.permGroupCount}>
+                {deniedCount}/{keys.length}
+              </span>
+            </div>
+            {group.pages.length === 0 ? (
+              renderChips(group.items)
+            ) : (
+              <>
+                {group.standalone.length > 0
+                  ? renderChips(group.standalone)
+                  : null}
+                {group.pages.map((page) => {
+                  const pageDenied = page.items.filter((i) =>
+                    deniedSet.has(i.key),
+                  ).length;
+                  return (
+                    <div key={page.page} className={styles.permPage}>
+                      <div className={styles.permPageHeader}>
+                        <span className={styles.permPageTitle}>
+                          {page.label}
+                        </span>
+                        <span className={styles.permGroupCount}>
+                          {pageDenied}/{page.items.length}
                         </span>
                       </div>
                       {renderChips(page.items)}
@@ -1004,6 +1251,15 @@ export default function UsersListPanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const { viewMode, setViewMode, showCardView } = useCardTableView("table");
   const [permCatalog, setPermCatalog] = useState<PermissionCatalogItem[]>([]);
+  /** Module keys the department in the edit drawer grants its members. */
+  const [editUnitGrants, setEditUnitGrants] = useState<string[]>([]);
+  /**
+   * Whether the admin touched the deny picker. ``denied_permissions`` is
+   * three-state on the wire (omitted = keep, ``null`` = clear, array = set),
+   * so an untouched drawer omits it instead of rewriting the stored list.
+   */
+  const [denyTouched, setDenyTouched] = useState(false);
+  const unitGrantRequest = useRef<string | null>(null);
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([]);
   const [fsTreeRoot, setFsTreeRoot] = useState(HOST_FS_ROOT);
   const [workspaceRootAllowed, setWorkspaceRootAllowed] = useState(true);
@@ -1015,6 +1271,20 @@ export default function UsersListPanel() {
     }
     return map;
   }, [permCatalog]);
+
+  /** Short labels for the "deny wins" list, where full paths would bury it. */
+  const permShortLabelByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of permCatalog) {
+      map.set(item.key, item.label);
+    }
+    return map;
+  }, [permCatalog]);
+
+  const unitGrantedKeys = useMemo(
+    () => new Set(editUnitGrants),
+    [editUnitGrants],
+  );
 
   /**
    * Module keys this actor may hand out. The backend (``_assert_can_assign``)
@@ -1308,14 +1578,43 @@ export default function UsersListPanel() {
     setCreateOpen(true);
   };
 
+  /**
+   * The edit drawer's department grants — what explains a permission the
+   * account holds without a tick of its own, and what a deny would take away.
+   * Reloaded whenever the drawer's department changes, and dropped on a stale
+   * response so a slow request cannot label the next account.
+   */
+  const loadUnitGrants = useCallback((unitKey: string | null | undefined) => {
+    const key = unitKey ?? null;
+    unitGrantRequest.current = key;
+    if (!key) {
+      setEditUnitGrants([]);
+      return;
+    }
+    request<{ unit_key: string; permissions: string[] }>(
+      `/org-units/${encodeURIComponent(key)}/permissions`,
+    )
+      .then((res) => {
+        if (unitGrantRequest.current !== key) return;
+        setEditUnitGrants(res.permissions ?? []);
+      })
+      .catch(() => {
+        if (unitGrantRequest.current !== key) return;
+        setEditUnitGrants([]);
+      });
+  }, []);
+
   const openEdit = (row: UserRow) => {
     setEditTarget(row);
+    setDenyTouched(false);
+    loadUnitGrants(row.org_unit);
     editForm.setFieldsValue({
       display_name: row.display_name ?? "",
       email: row.email ?? "",
       role: row.role,
       org_unit: row.org_unit ?? undefined,
       permissions: [...(row.permissions ?? [])],
+      denied_permissions: [...(row.denied_permissions ?? [])],
       limit_workspace_root: workspaceRootAllowed
         ? Boolean(row.workspace_root_dir)
         : false,
@@ -1378,6 +1677,13 @@ export default function UsersListPanel() {
       body.org_unit = values.role === "admin" ? null : values.org_unit ?? null;
       body.permissions =
         values.role === "admin" ? [] : values.permissions ?? [];
+      // Deny is admin-only on the backend, and a PATCH carries it as
+      // omit = keep / null = clear / array = set. Only a touched picker sends
+      // it, so saving the display name never rewrites the stored deny list.
+      if (denyTouched) {
+        const denied = values.denied_permissions ?? [];
+        body.denied_permissions = denied.length > 0 ? denied : null;
+      }
     } else if (canSubmitPermissions) {
       body.permissions = values.permissions ?? [];
     }
@@ -2046,6 +2352,13 @@ export default function UsersListPanel() {
           requiredMark={false}
           onFinish={onEditSubmit}
           className={styles.createUserForm}
+          onValuesChange={(changed) => {
+            // Fires on user edits only (``setFieldsValue`` does not), which is
+            // exactly the "touched" signal the three-state deny field needs.
+            if ("denied_permissions" in changed) setDenyTouched(true);
+            // Rebinding the department changes which keys its grants cover.
+            if ("org_unit" in changed) loadUnitGrants(changed.org_unit);
+          }}
         >
           <div className={styles.createSection}>
             <div className={styles.createSectionTitle}>
@@ -2127,11 +2440,73 @@ export default function UsersListPanel() {
                   <>
                     {admin && <OrgUnitField options={orgUnitOptions} />}
                     <Form.Item
-                      label={t("adminUsers.colPermissions")}
-                      name="permissions"
-                      className={styles.createUserPermItem}
+                      noStyle
+                      shouldUpdate={(prev, cur) =>
+                        prev.permissions !== cur.permissions ||
+                        prev.denied_permissions !== cur.denied_permissions
+                      }
                     >
-                      <PermissionCheckboxPicker catalog={assignableCatalog} />
+                      {({ getFieldValue }) => {
+                        const granted = new Set<string>(
+                          getFieldValue("permissions") ?? [],
+                        );
+                        const denied: string[] =
+                          getFieldValue("denied_permissions") ?? [];
+                        const deniedSet = new Set(denied);
+                        // A deny outranks role, department and grant, so these
+                        // keys are checked and still off: state it instead of
+                        // leaving a tick that buys nothing on screen.
+                        const beaten = denied.filter(
+                          (key) => granted.has(key) || unitGrantedKeys.has(key),
+                        );
+                        return (
+                          <>
+                            {beaten.length > 0 ? (
+                              <div className={styles.permDenyWarn}>
+                                <TriangleAlert size={15} strokeWidth={2} />
+                                <span>
+                                  {t("adminUsers.permDenyConflict", {
+                                    keys: beaten
+                                      .map(
+                                        (key) =>
+                                          permShortLabelByKey.get(key) ?? key,
+                                      )
+                                      .join("、"),
+                                  })}
+                                </span>
+                              </div>
+                            ) : null}
+                            <Form.Item
+                              label={t("adminUsers.colPermissions")}
+                              name="permissions"
+                              className={styles.createUserPermItem}
+                            >
+                              <PermissionCheckboxPicker
+                                catalog={assignableCatalog}
+                                unitGrantedKeys={unitGrantedKeys}
+                                deniedKeys={deniedSet}
+                              />
+                            </Form.Item>
+                            {/* Deny is admin-only (``_assert_admin`` on the
+                                users router), so it is both hidden without the
+                                role and free of the key-level gate that limits
+                                a non-admin's grants: full catalog. */}
+                            {admin ? (
+                              <Form.Item
+                                label={t("adminUsers.permDenyLabel")}
+                                name="denied_permissions"
+                                extra={t("adminUsers.permDenyHint")}
+                              >
+                                <PermissionDenyPicker
+                                  catalog={permCatalog}
+                                  grantedKeys={granted}
+                                  unitGrantedKeys={unitGrantedKeys}
+                                />
+                              </Form.Item>
+                            ) : null}
+                          </>
+                        );
+                      }}
                     </Form.Item>
                   </>
                 );

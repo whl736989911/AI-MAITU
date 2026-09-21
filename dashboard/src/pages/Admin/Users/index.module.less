@@ -263,6 +263,93 @@
   line-height: 1.3;
 }
 
+/* Chip that is on the deny list. Red, never brand-coloured: it reads as the
+   opposite of ``permChipSelected`` and must not be mistaken for a grant. */
+.permChipDenied {
+  border-color: color-mix(
+    in srgb,
+    var(--fn-color-danger, #ef4444) 45%,
+    transparent
+  );
+  background: color-mix(
+    in srgb,
+    var(--fn-color-danger, #ef4444) 8%,
+    transparent
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--fn-color-danger, #ef4444) 18%, transparent);
+  color: var(--fn-color-danger, #ef4444);
+}
+
+.permChipDenied .permChipCheck {
+  border-color: var(--fn-color-danger, #ef4444);
+  background: var(--fn-color-danger, #ef4444);
+}
+
+/* Provenance tags ("Department" / "Direct") on a chip. */
+.permChipTags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.permChipTag {
+  padding: 0 5px;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 4px;
+  background: var(--fn-bg-secondary, var(--fn-bg-elevated));
+  color: var(--fn-text-tertiary);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.permChipTagDenied {
+  border-color: color-mix(
+    in srgb,
+    var(--fn-color-danger, #ef4444) 45%,
+    transparent
+  );
+  color: var(--fn-color-danger, #ef4444);
+}
+
+.permDenyCount {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+  color: var(--fn-color-danger, #ef4444);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* "Deny wins" notice — same shape as ``permAdminHint`` in danger tones. */
+.permDenyWarn {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  border-radius: var(--fn-radius-md, 8px);
+  background: color-mix(
+    in srgb,
+    var(--fn-color-danger, #ef4444) 8%,
+    transparent
+  );
+  border: 1px solid
+    color-mix(in srgb, var(--fn-color-danger, #ef4444) 22%, transparent);
+  color: var(--fn-text-secondary);
+  font-size: 13px;
+  line-height: 1.45;
+
+  svg {
+    flex-shrink: 0;
+    margin-top: 1px;
+    color: var(--fn-color-danger, #ef4444);
+  }
+}
+
 .rolePicker {
   display: grid;
   grid-template-columns: 1fr;
