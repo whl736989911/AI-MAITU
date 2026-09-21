@@ -449,15 +449,49 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
             },
         )
     ).status_code == 403
+    # The same grant spelled differently: a role named at creation. Refusing the
+    # edit above is worthless if ``users`` can mint the admin account instead —
+    # and this victimless route comes with a password the caller chose.
+    assert (
+        await c.post(
+            "/api/users",
+            headers=support,
+            json={
+                "username": "planted_admin",
+                "password": TEST_PASSWORD,
+                "role": "admin",
+            },
+        )
+    ).status_code == 403
+    assert (
+        await c.post(
+            "/api/users",
+            headers=support,
+            json={
+                "username": "planted_unit",
+                "password": TEST_PASSWORD,
+                "role": "unit_admin",
+            },
+        )
+    ).status_code == 403
+    # Creating a plain account is what the module key is *for*; it stays open.
+    created = await c.post(
+        "/api/users",
+        headers=support,
+        json={"username": "plain", "password": TEST_PASSWORD, "role": "user"},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["role"] == "user"
 
     # Nothing leaked through the refusals.
     victim = (await c.get(f"/api/users/{victim_id}", headers=auth)).json()
     assert victim["role"] == "user"
     assert victim["disabled"] is False
     assert victim["org_unit"] is None
-    assert "planted" not in [
-        u["username"] for u in (await c.get("/api/users", headers=auth)).json()
-    ]
+    usernames = [u["username"] for u in (await c.get("/api/users", headers=auth)).json()]
+    assert "planted" not in usernames
+    assert "planted_admin" not in usernames
+    assert "planted_unit" not in usernames
     assert (
         await c.post("/api/auth/login", json={"username": "victim", "password": TEST_PASSWORD})
     ).status_code == 200
@@ -512,6 +546,17 @@ async def test_admin_can_still_administer_accounts(env):
         },
     )
     assert resident.status_code == 201 and resident.json()["org_unit"] == "ops"
+
+    # A role named at creation is the admin's to grant too: the gate above
+    # refuses the ``users`` key, it does not refuse everybody.
+    for role in ("admin", "unit_admin"):
+        made = await c.post(
+            "/api/users",
+            headers=auth,
+            json={"username": f"made_{role}", "password": TEST_PASSWORD, "role": role},
+        )
+        assert made.status_code == 201, made.text
+        assert made.json()["role"] == role
 
     me = (await c.get("/api/auth/me", headers=auth)).json()
     assert (await c.delete(f"/api/users/{me['id']}", headers=auth)).status_code == 403

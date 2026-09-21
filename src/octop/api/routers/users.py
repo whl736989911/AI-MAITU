@@ -2,12 +2,13 @@
 
 Two gates, deliberately distinct:
 
-* the ``users`` module key opens this surface — listing accounts, creating one,
-  editing profile fields, and granting module keys the actor itself holds;
-* the operations that move the authorization boundary itself — role changes,
-  another account's password / disabled state / deletion, and department
-  assignment — require the ``admin`` role (``_assert_admin`` /
-  ``_assert_can_administer``).
+* the ``users`` module key opens this surface — listing accounts, creating a
+  plain ``user`` account, editing profile fields, and granting module keys the
+  actor itself holds;
+* the operations that move the authorization boundary itself — a role grant
+  (whether the role is set at creation or by a later edit), another account's
+  password / disabled state / deletion, and department assignment — require the
+  ``admin`` role (``_assert_admin`` / ``_assert_can_administer``).
 
 Guarding is on the *target*, not on "is this me": promoting yourself is the same
 escalation as promoting somebody else, and a department carries module grants,
@@ -254,6 +255,12 @@ async def create_user(
     if "token_quota" in policy_kwargs:
         normalize_token_quota(policy_kwargs["token_quota"])
     role = Role(body.role)
+    if role is not Role.USER:
+        # Creating a non-``user`` account is a role grant, so it needs the same
+        # gate as changing one later. Without it ``users`` alone mints a fresh
+        # admin — a second door to exactly what the PATCH guard closes, and one
+        # that needs no victim: the caller knows the password it just chose.
+        _assert_admin(actor, "create a non-user account")
     user = await server.user_manager.create(
         username=body.username,
         password=body.password,
