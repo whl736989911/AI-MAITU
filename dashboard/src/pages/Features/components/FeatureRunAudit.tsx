@@ -20,6 +20,7 @@ import {
 } from "../../../api/modules/features";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { formatMessageTime } from "../../../utils/formatMessageTime";
+import { epochMillis } from "./featureArtifacts";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import styles from "../index.module.less";
 
@@ -35,6 +36,12 @@ const STEP_STATUS_LABEL_KEYS: Record<FeatureStepStatus, string> = {
 const EDIT_SOURCE_LABEL_KEYS: Record<string, string> = {
   approve: "features.runAuditSourceApprove",
   rewind: "features.runAuditSourceRewind",
+};
+
+/** A rewind leaves two records behind: the correction, and what it replaced. */
+const EDIT_KIND_LABEL_KEYS: Record<string, string> = {
+  edit: "features.runAuditKindEdit",
+  void: "features.runAuditKindVoid",
 };
 
 /** A raw JSON value as the audit reports it; ``null`` is a value, not a blank. */
@@ -152,9 +159,12 @@ export default function FeatureRunAudit({
                     {t("features.runStepAttempts", { count: step.attempts })}
                   </span>
                 )}
-                {step.started_at !== null && (
+                {epochMillis(step.started_at) !== null && (
                   <span className={styles.runStepMeta}>
-                    {formatMessageTime(step.started_at, timeZone)}
+                    {formatMessageTime(
+                      epochMillis(step.started_at) as number,
+                      timeZone,
+                    )}
                   </span>
                 )}
               </div>
@@ -191,18 +201,23 @@ export default function FeatureRunAudit({
                     >
                       <div className={styles.auditEditHead}>
                         <code>{edit.artifact}</code>
+                        <Tag color={edit.kind === "void" ? undefined : "blue"}>
+                          {t(EDIT_KIND_LABEL_KEYS[edit.kind] ?? edit.kind)}
+                        </Tag>
                         <Tag>{t(EDIT_SOURCE_LABEL_KEYS[edit.source] ?? edit.source)}</Tag>
                         <span className={styles.runStepMeta}>
                           {t("features.runAuditBy")} {edit.by_user_id ?? "—"}
                         </span>
                         <span className={styles.runStepMeta}>
-                          {formatMessageTime(edit.at, timeZone)}
+                          {formatMessageTime(epochMillis(edit.at) ?? 0, timeZone)}
                         </span>
                       </div>
                       <div className={styles.auditDiff}>
                         <div className={styles.auditDiffSide}>
                           <span className={styles.auditDiffLabel}>
-                            {t("features.runAuditBefore")}
+                            {edit.kind === "void"
+                              ? t("features.runAuditBeforeVoided")
+                              : t("features.runAuditBefore")}
                           </span>
                           <pre className={styles.runValue}>
                             {valueText(edit.before)}
@@ -212,9 +227,15 @@ export default function FeatureRunAudit({
                           <span className={styles.auditDiffLabel}>
                             {t("features.runAuditAfter")}
                           </span>
-                          <pre className={styles.runValue}>
-                            {valueText(edit.after)}
-                          </pre>
+                          {edit.kind === "void" ? (
+                            <div className={styles.runStepEmpty}>
+                              {t("features.runAuditVoided")}
+                            </div>
+                          ) : (
+                            <pre className={styles.runValue}>
+                              {valueText(edit.after)}
+                            </pre>
+                          )}
                         </div>
                       </div>
                     </div>

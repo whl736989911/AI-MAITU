@@ -398,7 +398,6 @@ export function emptyStep(): FeatureStep {
     output: { name: "", schema: "" },
     prompt: "",
     gate: "auto",
-    allow_edit: false,
     on_failure: "abort",
   };
 }
@@ -430,8 +429,9 @@ export function stepToFormValue(step: FeatureStep): FeatureStep {
  * collapsed: ``inputs`` is always written (empty means "consumes nothing"),
  * ``tools`` only when the author declared a list at all (absent inherits the
  * run's tool surface, while ``[]`` means this step may use none — two different
- * runs), and ``allow_edit`` only for the gates that can stop for a person (the
- * server refuses it as unused on an automatic gate).
+ * runs), and ``allow_edit`` is always written for a gate that can stop for a
+ * person (the server requires it there) while an automatic gate keeps whatever a
+ * definition already declared rather than having it deleted by this editor.
  */
 export function stepsFromFormValues(
   steps: readonly FeatureStep[] | undefined,
@@ -454,7 +454,11 @@ export function stepsFromFormValues(
     if (!step.mode) delete next.mode;
     if (!step.gate) delete next.gate;
     if (!step.on_failure) delete next.on_failure;
-    if (step.gate === "confirm" || step.gate === "validate") {
+    if (
+      step.gate === "confirm" ||
+      step.gate === "validate" ||
+      step.allow_edit !== undefined
+    ) {
       next.allow_edit = step.allow_edit === true;
     } else {
       delete next.allow_edit;
@@ -470,11 +474,16 @@ export function stepsFromFormValues(
 }
 
 /**
- * Checks the definition format insists on beyond ''is it filled in''.
+ * Checks the definition format refuses at write time, beyond ''is it filled in''.
  *
  * A ``validate`` gate releases only an object artifact that carries a boolean
  * ``passed``; naming the steps that break it keeps a refusal the server would
  * make next to the fields that caused it.
+ *
+ * What is *not* here: ``mode: "orchestrate"`` and ``agent_role``. The server
+ * stores both and refuses the **run** instead (``FEATURE_STEP_UNSUPPORTED``,
+ * never degraded to a single agent), so this editor warns about them on the step
+ * and lets the definition be written as it stands.
  */
 export function validateGateProblems(steps: readonly FeatureStep[]): string[] {
   return steps
@@ -493,28 +502,6 @@ export function duplicateStepIds(steps: readonly FeatureStep[]): string[] {
     else seen.add(id);
   }
   return [...duplicates];
-}
-
-/**
- * Steps this build cannot run, by id and by the key that makes them unrunnable.
- *
- * ``orchestrate`` and ``agent_role`` are part of the step schema but have no
- * implementation yet, and the server refuses them (400) rather than running the
- * step some other way. Naming them here keeps that refusal in front of the
- * author, next to the fields, instead of only in a round trip's error body.
- */
-export function unsupportedSteps(steps: readonly FeatureStep[]): {
-  orchestrate: string[];
-  agentRole: string[];
-} {
-  const orchestrate: string[] = [];
-  const agentRole: string[] = [];
-  for (const step of steps) {
-    const id = step.id.trim() || step.name.trim();
-    if (step.mode === "orchestrate") orchestrate.push(id);
-    if ((step.agent_role ?? "").trim()) agentRole.push(id);
-  }
-  return { orchestrate, agentRole };
 }
 
 /** Artifact names the steps before ``index`` produce — what this step may consume. */

@@ -32,9 +32,11 @@ import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import FeatureRunAudit from "./FeatureRunAudit";
 import {
   artifactsBefore,
+  epochMillis,
   parseArtifactEdits,
   seedDrafts,
   type ArtifactDrafts,
+  type RewindArtifact,
 } from "./featureArtifacts";
 import styles from "../index.module.less";
 
@@ -144,12 +146,21 @@ export interface FeatureRunStepsProps {
   run: FeatureStepRun;
   /** The run as the server answered last — approving and rewinding go through it. */
   onRunChange: (next: FeatureStepRun) => void;
+  /**
+   * Which steps of the *definition* declare ``allow_edit``, by step id.
+   *
+   * A run row does not carry it, and the server refuses an edit to an artifact
+   * whose step does not declare it — so a correction is offered only where it can
+   * land, and the steps it cannot land on are named as such.
+   */
+  editableSteps: Record<string, boolean>;
 }
 
 export default function FeatureRunSteps({
   featureId,
   run,
   onRunChange,
+  editableSteps,
 }: FeatureRunStepsProps) {
   const { t } = useTranslation();
   const timeZone = useServerTimezone();
@@ -158,7 +169,7 @@ export default function FeatureRunSteps({
   const [gateDrafts, setGateDrafts] = useState<ArtifactDrafts>({});
   const [rewind, setRewind] = useState<{
     step: FeatureRunStep;
-    artifacts: FeatureRunArtifact[];
+    artifacts: RewindArtifact[];
   } | null>(null);
   const [rewindDrafts, setRewindDrafts] = useState<ArtifactDrafts>({});
   /** What the server held when this gate was last rendered, per artifact. */
@@ -222,7 +233,10 @@ export default function FeatureRunSteps({
 
   const confirmRewind = useCallback(async () => {
     if (!rewind) return;
-    const parsed = parseArtifactEdits(rewind.artifacts, rewindDrafts);
+    const parsed = parseArtifactEdits(
+      rewind.artifacts.map((item) => item.artifact),
+      rewindDrafts,
+    );
     if ("failure" in parsed) {
       message.error(
         t("features.runInvalidJson", { artifact: parsed.failure.artifact }),
@@ -346,7 +360,16 @@ export default function FeatureRunSteps({
       )}
 
       <ol className={styles.runStepList}>
-        {run.steps.map((step) => (
+        {run.steps.map((step) => {
+          // A correction is a write to the step that *produced* the artifact, so
+          // it is offered only where the definition declares ``allow_edit`` for
+          // that step; the server refuses the rest.
+          const correctable = artifactsBefore(
+            run.steps,
+            step.seq,
+            editableSteps,
+          ).some((item) => item.editable);
+          return (
           <li
             key={step.id}
             className={step.voided ? styles.runStepVoided : styles.runStep}
@@ -364,9 +387,9 @@ export default function FeatureRunSteps({
                   {t("features.runStepAttempts", { count: step.attempts })}
                 </span>
               )}
-              {step.started_at !== null && (
+              {epochMillis(step.started_at) !== null && (
                 <span className={styles.runStepMeta}>
-                  {formatMessageTime(step.started_at, timeZone)}
+                  {formatMessageTime(epochMillis(step.started_at) as number, timeZone)}
                 </span>
               )}
               <div className={styles.runStepTools}>
@@ -385,20 +408,32 @@ export default function FeatureRunSteps({
                         {t("features.runStepRewind")}
                       </Button>
                     </Tooltip>
-                    <Tooltip title={t("features.runStepRewindFixHint")}>
-                      <Button
-                        type="text"
-                        size="small"
-                        icon={<Wrench size={13} />}
-                        onClick={() => {
-                          const artifacts = artifactsBefore(run.steps, step.seq);
-                          setRewindDrafts(seedDrafts(artifacts));
-                          setRewind({ step, artifacts });
-                        }}
-                      >
-                        {t("features.runStepRewindFix")}
-                      </Button>
-                    </Tooltip>
+                    {correctable && (
+                      <Tooltip title={t("features.runStepRewindFixHint")}>
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<Wrench size={13} />}
+                          onClick={() => {
+                            const artifacts = artifactsBefore(
+                              run.steps,
+                              step.seq,
+                              editableSteps,
+                            );
+                            setRewindDrafts(
+                              seedDrafts(
+                                artifacts
+                                  .filter((item) => item.editable)
+                                  .map((item) => item.artifact),
+                              ),
+                            );
+                            setRewind({ step, artifacts });
+                          }}
+                        >
+                          {t("features.runStepRewindFix")}
+                        </Button>
+                      </Tooltip>
+                    )}
                   </>
                 )}
               </div>
@@ -410,7 +445,8 @@ export default function FeatureRunSteps({
 
             <ArtifactTags artifacts={step.artifacts} />
           </li>
-        ))}
+          );
+        })}
       </ol>
 
       <Modal
@@ -434,13 +470,39 @@ export default function FeatureRunSteps({
           />
         ) : (
           rewind && (
-            <ArtifactEditors
-              artifacts={rewind.artifacts}
-              drafts={rewindDrafts}
-              onChange={(name, text) =>
-                setRewindDrafts((current) => ({ ...current, [name]: text }))
-              }
-            />
+            <>
+              <ArtifactEditors
+                artifacts={rewind.artifacts
+                  .filter((item) => item.editable)
+                  .map((item) => item.artifact)}
+                drafts={rewindDrafts}
+                onChange={(name, text) =>
+                  setRewindDrafts((current) => ({ ...current, [name]: text }))
+                }
+              />
+              {rewind.artifacts
+                .filter((item) => !item.editable)
+                .map((item) => (
+                  <div className={styles.runArtifactEditor} key={item.artifact.name}>
+                    <div className={styles.runArtifactEditorHead}>
+                      <code>{item.artifact.name}</code>
+                      <span className={styles.runArtifactSchema}>
+                        {item.artifact.schema}
+                      </span>
+                      <span className={styles.runStepEmpty}>
+                        {t("features.runRewindStepReadOnly", {
+                          step: item.stepName,
+                        })}
+                      </span>
+                    </div>
+                    <pre className={styles.runValue}>
+                      {typeof item.artifact.value === "string"
+                        ? item.artifact.value
+                        : JSON.stringify(item.artifact.value, null, 2)}
+                    </pre>
+                  </div>
+                ))}
+            </>
           )
         )}
       </Modal>

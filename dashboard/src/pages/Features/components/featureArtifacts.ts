@@ -14,6 +14,19 @@ import type {
   FeatureRunStep,
 } from "../../../api/modules/features";
 
+/**
+ * A run timestamp as milliseconds, whatever unit the API used.
+ *
+ * The run tables store epoch **seconds**; an API contract once said
+ * milliseconds, and a value read in the wrong unit renders as 1970. The two are
+ * separated cleanly by 1e12 — a millisecond value only falls below it before
+ * 2001, and a seconds value only rises above it after the year 33658.
+ */
+export function epochMillis(value: number | null | undefined): number | null {
+  if (typeof value !== "number" || value <= 0) return null;
+  return value < 1_000_000_000_000 ? value * 1000 : value;
+}
+
 /** What an artifact looks like while somebody is editing it: JSON as typed. */
 export type ArtifactDrafts = Record<string, string>;
 
@@ -84,22 +97,46 @@ export function parseArtifactEdits(
   return { edits };
 }
 
+/** One artifact a rerun could inject, and where it came from. */
+export interface RewindArtifact {
+  artifact: FeatureRunArtifact;
+  /** The step that produced it — a correction is a write *to that step*. */
+  stepId: string;
+  stepName: string;
+  /**
+   * Whether that step declares ``allow_edit``. The server refuses an edit to an
+   * artifact whose step does not, so the editor offers only the ones it can land.
+   */
+  editable: boolean;
+}
+
 /**
- * The artifacts a rerun may inject: those produced by steps strictly before
+ * The artifacts a rerun could inject: those produced by steps strictly before
  * ``seq`` that a rewind does not discard, with the latest producer winning when
  * two steps write the same name.
+ *
+ * ``allowEdit`` is the definition's own declaration per step id; a run row does
+ * not carry it, and an edit naming a step without it is refused by the server.
  */
 export function artifactsBefore(
   steps: FeatureRunStep[],
   seq: number,
-): FeatureRunArtifact[] {
-  const alive: FeatureRunArtifact[] = [];
+  allowEdit: Record<string, boolean>,
+): RewindArtifact[] {
+  const alive: RewindArtifact[] = [];
   for (const step of steps) {
     if (step.seq >= seq || step.voided) continue;
     for (const artifact of step.artifacts) {
-      const existing = alive.findIndex((item) => item.name === artifact.name);
+      const existing = alive.findIndex(
+        (item) => item.artifact.name === artifact.name,
+      );
       if (existing >= 0) alive.splice(existing, 1);
-      alive.push(artifact);
+      alive.push({
+        artifact,
+        stepId: step.id,
+        stepName: step.name,
+        editable: allowEdit[step.id] === true,
+      });
     }
   }
   return alive;

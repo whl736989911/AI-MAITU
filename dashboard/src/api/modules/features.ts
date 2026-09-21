@@ -304,7 +304,7 @@ export interface FeatureRunStep {
   on_failure: FeatureStepOnFailure;
   mode: FeatureStepMode;
   artifacts: FeatureRunArtifact[];
-  /** Epoch milliseconds; ``null`` while the step has not reached that point. */
+  /** Epoch **seconds**; ``null`` while the step has not reached that point. */
   started_at: number | null;
   ended_at: number | null;
   error: string | null;
@@ -351,14 +351,22 @@ export interface FeatureStepRun extends FeatureRunState {
 /** Edits injected at a gate or a rewind: ``{artifact name: new value}``. */
 export type FeatureArtifactEdits = Record<string, unknown>;
 
-/** One human change to an artifact, as the audit reports it. */
+/**
+ * One write a person made to an artifact, as the audit reports it.
+ *
+ * ``kind`` is what separates the two things a rewind leaves behind: the
+ * correction that was injected (``edit``, before → after) and the value that was
+ * discarded to make room for it (``void``, before → ``null``). Both stay in the
+ * trail, which is what makes "who changed what" answerable after a rerun.
+ */
 export interface FeatureHumanEdit {
   artifact: string;
+  kind: "edit" | "void";
   /** Raw JSON values; ``null`` when the artifact did not exist before. */
   before: unknown;
   after: unknown;
   by_user_id: number | null;
-  /** Epoch milliseconds. */
+  /** Epoch **seconds** (run tables store seconds; see ``epochMillis``). */
   at: number;
   source: "approve" | "rewind";
 }
@@ -386,6 +394,8 @@ export interface FeatureRunAuditStep {
 export interface FeatureRunAudit {
   task_id: string;
   feature_id: string;
+  /** Where the run stands now, so the trail is read in the state it left. */
+  status: FeatureRunStatus;
   /** The configuration the run started under (design 4). */
   snapshot: Record<string, unknown>;
   steps: FeatureRunAuditStep[];

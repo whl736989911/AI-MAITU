@@ -68,8 +68,9 @@ function awaitingGateRun(
         artifacts: [
           { name: "l1_rows", schema: "table:12cols", value: [["A", "钢", 2]] },
         ],
-        started_at: 1_760_000_000_000,
-        ended_at: 1_760_000_001_000,
+        // Epoch seconds: the unit the run tables actually store.
+        started_at: Math.floor(Date.now() / 1000),
+        ended_at: Math.floor(Date.now() / 1000),
         error: null,
         attempts: 1,
         voided: false,
@@ -85,7 +86,7 @@ function awaitingGateRun(
         artifacts: [
           { name: "l1_rows", schema: "table:12cols", value: [["A", "钢", 2]] },
         ],
-        started_at: 1_760_000_002_000,
+        started_at: Math.floor(Date.now() / 1000),
         ended_at: null,
         error: null,
         attempts: 1,
@@ -122,10 +123,25 @@ function awaitingGateRun(
   };
 }
 
-function renderPanel(run: FeatureStepRun = awaitingGateRun()) {
+/**
+ * Which steps of the definition allow a human write. ``confirm_l1`` is the step
+ * the engine's own scenario declares it on; ``extract_l1`` deliberately does not.
+ */
+const EDITABLE_STEPS = { confirm_l1: true, extract_l1: false, op_design: false };
+
+
+function renderPanel(
+  run: FeatureStepRun = awaitingGateRun(),
+  editableSteps: Record<string, boolean> = EDITABLE_STEPS,
+) {
   const onRunChange = vi.fn();
   render(
-    <FeatureRunSteps featureId="bom-extract" run={run} onRunChange={onRunChange} />,
+    <FeatureRunSteps
+      featureId="bom-extract"
+      run={run}
+      onRunChange={onRunChange}
+      editableSteps={editableSteps}
+    />,
   );
   return { onRunChange };
 }
@@ -216,22 +232,41 @@ describe("<FeatureRunSteps />", () => {
     expect(screen.getByText(/\[\s*\[\s*"A",\s*"钢",\s*2\s*\]\s*\]/)).toBeInTheDocument();
   });
 
-  it("reruns from an earlier step with the correction it was given", async () => {
+  it("offers a correction only for artifacts whose step allows one", async () => {
     const user = userEvent.setup();
+    const run = awaitingGateRun();
     const rewound = awaitingGateRun({ status: "running", pending_gate: null });
     rewindFeatureRun.mockResolvedValue(rewound);
-    const { onRunChange } = renderPanel();
+    // The target has to be a step that already ran, with two earlier producers:
+    // one that refuses edits and one that allows them.
+    const { onRunChange } = renderPanel({
+      ...run,
+      steps: [
+        {
+          ...run.steps[0],
+          artifacts: [{ name: "raw_rows", schema: "text", value: "原始行" }],
+        },
+        { ...run.steps[1], status: "succeeded" },
+        {
+          ...run.steps[2],
+          status: "succeeded",
+          artifacts: [{ name: "ops", schema: "list", value: ["下料"] }],
+        },
+        { ...run.steps[2], id: "self_check", name: "自检清单验证", seq: 3, status: "running" },
+      ],
+    });
 
-    // Two steps have already run, so both offer a rerun; the run is stopped at
-    // the second of them.
+    // Two steps have a correctable artifact before them (extract_l1 does not
+    // allow edits, confirm_l1 does); the run is stopped at the last of them.
     await user.click(
-      screen.getAllByRole("button", {
-        name: "features.runStepRewindFix",
-      })[1],
+      screen.getAllByRole("button", { name: "features.runStepRewindFix" })[1],
     );
 
-    // The modal offers the artifacts the rewind keeps — those of earlier steps.
     const dialog = within(await screen.findByRole("dialog"));
+    expect(dialog.getAllByText("features.runRewindStepReadOnly")).toHaveLength(2);
+    expect(dialog.getByText("原始行")).toBeInTheDocument();
+    expect(dialog.getAllByRole("textbox")).toHaveLength(1);
+
     fireEvent.change(dialog.getByRole("textbox"), {
       target: { value: '[["A","钢",9]]' },
     });
@@ -240,13 +275,27 @@ describe("<FeatureRunSteps />", () => {
     );
 
     await waitFor(() => expect(rewindFeatureRun).toHaveBeenCalledOnce());
+    // The correction names the artifact of the step that allows one — and nothing
+    // from the step that does not, which the server would refuse as a whole.
     expect(rewindFeatureRun).toHaveBeenCalledWith(
       "bom-extract",
       TASK,
-      "confirm_l1",
+      "self_check",
       { l1_rows: [["A", "钢", 9]] },
     );
     expect(onRunChange).toHaveBeenCalledWith(rewound);
+  });
+
+  it("hides the correction entry where no earlier step allows an edit", () => {
+    renderPanel(awaitingGateRun(), { extract_l1: false, confirm_l1: false });
+
+    // A doomed request is not offered: the plain rerun is still there.
+    expect(
+      screen.queryByRole("button", { name: "features.runStepRewindFix" }),
+    ).toBeNull();
+    expect(
+      screen.getAllByRole("button", { name: "features.runStepRewind" }).length,
+    ).toBeGreaterThan(0);
   });
 
   it("reruns from a step without edits when nothing was changed", async () => {
@@ -317,6 +366,7 @@ describe("<FeatureRunSteps />", () => {
     const audit: FeatureRunAudit = {
       task_id: TASK,
       feature_id: "bom-extract",
+      status: "awaiting_gate",
       snapshot: { model: "openai/gpt-4o" },
       steps: [
         {
@@ -325,10 +375,11 @@ describe("<FeatureRunSteps />", () => {
           human_edits: [
             {
               artifact: "l1_rows",
+              kind: "edit",
               before: "切削速度 120",
               after: "切削速度 100",
               by_user_id: 7,
-              at: 1_760_000_003_000,
+              at: Math.floor(Date.now() / 1000),
               source: "approve",
             },
           ],
@@ -348,7 +399,58 @@ describe("<FeatureRunSteps />", () => {
     // Both sides of the correction, exactly as the audit recorded them.
     expect(screen.getByText("切削速度 120")).toBeInTheDocument();
     expect(screen.getByText("切削速度 100")).toBeInTheDocument();
+    expect(screen.getByText("features.runAuditKindEdit")).toBeInTheDocument();
+    // Seconds read as milliseconds would have rendered as 1970.
+    expect(screen.queryByText(/1970/)).toBeNull();
     expect(getFeatureRunAudit).toHaveBeenCalledWith("bom-extract", TASK);
+  });
+
+  it("shows what a rerun discarded as discarded, not as an edit to nothing", async () => {
+    const user = userEvent.setup();
+    const audit: FeatureRunAudit = {
+      task_id: TASK,
+      feature_id: "bom-extract",
+      status: "succeeded",
+      snapshot: {},
+      steps: [
+        {
+          ...awaitingGateRun().steps[2],
+          inputs: [{ name: "l1_rows", schema: "list", value: ["L1 001 机架"] }],
+          artifacts: [
+            { name: "ops", schema: "list", value: ["下料", "机加工", "检验"] },
+          ],
+          human_edits: [
+            {
+              artifact: "ops",
+              kind: "void",
+              before: ["下料", "机加工"],
+              after: null,
+              by_user_id: 1,
+              at: Math.floor(Date.now() / 1000),
+              source: "rewind",
+            },
+          ],
+        },
+      ],
+    };
+    getFeatureRunAudit.mockResolvedValue(audit);
+    renderPanel();
+
+    await user.click(
+      screen.getByRole("button", { name: "features.runAuditOpen" }),
+    );
+
+    expect(
+      await screen.findByText("features.runAuditKindVoid"),
+    ).toBeInTheDocument();
+    // The discarded value is on screen, and the other side says it is gone.
+    expect(screen.getByText("features.runAuditBeforeVoided")).toBeInTheDocument();
+    expect(screen.getByText("features.runAuditVoided")).toBeInTheDocument();
+    // The discarded value itself is on screen: the rerun replaced it, nobody
+    // edited it into nothing.
+    expect(
+      screen.getByText(/\[\s*"下料",\s*"机加工"\s*\]/),
+    ).toBeInTheDocument();
   });
 
   it("keeps a refused edit on screen with the reason the server gave", async () => {

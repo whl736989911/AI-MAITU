@@ -415,7 +415,7 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
     ]);
   });
 
-  it("refuses a loaded step this build cannot run, naming it", async () => {
+  it("warns about an unimplemented step without blocking or rewriting the save", async () => {
     const user = userEvent.setup();
     render(
       <FeatureSettingsDrawer
@@ -442,14 +442,18 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
       />,
     );
 
+    await user.click(screen.getByText("features.settingsSectionSteps"));
+    expect(
+      await screen.findByText("features.settingsStepModeRefused"),
+    ).toBeInTheDocument();
+
     await user.click(screen.getByRole("button", { name: "common.save" }));
 
-    // Reported next to the fields instead of only in the server's error body,
-    // and nothing was written.
-    expect(
-      await screen.findByText("features.settingsStepUnsupportedMode"),
-    ).toBeInTheDocument();
-    expect(updateFeature).not.toHaveBeenCalled();
+    await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
+    // The server stores an orchestrate step and refuses the *run* (never
+    // degrading it), so the editor neither blocks the write nor rewrites the
+    // mode behind the author's back.
+    expect(lastUpdate()[1].steps?.[0].mode).toBe("orchestrate");
   });
 
   it("refuses a validate gate whose artifact could never pass", async () => {

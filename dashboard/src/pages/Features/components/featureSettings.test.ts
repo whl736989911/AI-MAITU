@@ -9,7 +9,6 @@ import {
   isValidFeatureId,
   normalizeSchema,
   schemaForType,
-  unsupportedSteps,
   validateGateProblems,
   type FeatureFormValues,
 } from "./featureSettings";
@@ -408,20 +407,24 @@ describe("feature settings form ⇄ step skeleton", () => {
     expect("tools" in inherited).toBe(false);
   });
 
-  it("writes the human-edit switch only for a gate that can stop for a person", () => {
+  it("writes the human-edit switch where it means something, and never deletes one", () => {
     const steps = formValuesToDefinition(
       withSteps([
-        stepFixture({ id: "auto_step", gate: "auto", allow_edit: true }),
+        stepFixture({ id: "auto_plain", gate: "auto" }),
+        stepFixture({ id: "auto_declared", gate: "auto", allow_edit: true }),
         stepFixture({ id: "confirm_step", gate: "confirm", allow_edit: false }),
         stepFixture({ id: "validate_step", gate: "validate", allow_edit: true }),
       ]),
       null,
     ).steps ?? [];
 
-    // The server refuses ``allow_edit`` on an automatic gate as an unused field.
+    // Nothing was declared on the automatic step: nothing is written.
     expect("allow_edit" in steps[0]).toBe(false);
-    expect(steps[1].allow_edit).toBe(false);
-    expect(steps[2].allow_edit).toBe(true);
+    // Declared by a definition: kept verbatim rather than deleted by a save.
+    expect(steps[1].allow_edit).toBe(true);
+    // Required by the server wherever a person can stop the run.
+    expect(steps[2].allow_edit).toBe(false);
+    expect(steps[3].allow_edit).toBe(true);
   });
 
   it("keeps a step key this build cannot name", () => {
@@ -440,17 +443,6 @@ describe("feature settings form ⇄ step skeleton", () => {
     // Absence is what "single-shot" already means; an empty list would claim
     // the editor had looked at a skeleton that is not there.
     expect("steps" in definition).toBe(false);
-  });
-
-  it("names the steps this build cannot run", () => {
-    const unsupported = unsupportedSteps([
-      stepFixture({ id: "op_design", mode: "orchestrate" }),
-      stepFixture({ id: "tooling", agent_role: "刀具选型" }),
-      stepFixture({ id: "fine" }),
-    ]);
-
-    expect(unsupported.orchestrate).toEqual(["op_design"]);
-    expect(unsupported.agentRole).toEqual(["tooling"]);
   });
 
   it("names a validate gate whose artifact could never pass", () => {

@@ -54,7 +54,6 @@ import {
   formValuesToDefinition,
   incompleteCopyFields,
   isValidFeatureId,
-  unsupportedSteps,
   validateGateProblems,
   type FeatureFieldRow,
   type FeatureFormValues,
@@ -188,29 +187,18 @@ export default function FeatureSettingsDrawer({
         );
         return;
       }
-      // Two step settings are part of the format and unimplemented here, and one
-      // gate combination can never release: the server refuses all three, so the
-      // author hears it next to the rows rather than from an error body.
-      const steps = values.steps ?? [];
-      const unsupported = unsupportedSteps(steps);
-      const problems = [
-        ...unsupported.orchestrate.map((step) =>
-          t("features.settingsStepUnsupportedMode", { step }),
-        ),
-        ...unsupported.agentRole.map((step) =>
-          t("features.settingsStepUnsupportedAgentRole", { step }),
-        ),
-      ];
-      const badGates = validateGateProblems(steps);
+      // A ``validate`` gate that no object artifact could ever satisfy is refused
+      // by the server at write time, so it is named here first. Nothing else about
+      // a step blocks the save: ``mode: "orchestrate"`` and ``agent_role`` are
+      // stored as written and refused at *run* time, and the step block warns
+      // about them in place rather than pretending they saved.
+      const badGates = validateGateProblems(values.steps ?? []);
       if (badGates.length > 0) {
-        problems.push(
+        setSaveError(
           t("features.settingsStepValidateSchemaRefused", {
             steps: badGates.join(", "),
           }),
         );
-      }
-      if (problems.length > 0) {
-        setSaveError(problems.join("\n"));
         return;
       }
       setSaving(true);

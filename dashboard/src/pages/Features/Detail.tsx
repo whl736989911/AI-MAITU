@@ -394,6 +394,11 @@ export default function FeatureDetailPage() {
       : null;
   const editable =
     canManage && metaReady && !meta.bundled_ids.includes(feature.id);
+  // A correction at a rerun is a write to the step that produced the artifact,
+  // and only a step declaring ``allow_edit`` accepts one.
+  const editableSteps = Object.fromEntries(
+    (feature.steps ?? []).map((step) => [step.id, step.allow_edit === true]),
+  );
 
   return (
     <PageShell
@@ -456,6 +461,7 @@ export default function FeatureDetailPage() {
                   featureId={feature.id}
                   run={stepRun}
                   onRunChange={handleRunChange}
+                  editableSteps={editableSteps}
                 />
               )}
               {result ? (

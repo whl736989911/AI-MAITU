@@ -5,6 +5,7 @@ import type {
 } from "../../../api/modules/features";
 import {
   artifactsBefore,
+  epochMillis,
   parseArtifactEdits,
   seedDrafts,
 } from "./featureArtifacts";
@@ -111,11 +112,33 @@ describe("artifact drafts ⇄ edits", () => {
       }),
     ];
 
+    const allowEdit = { read_bom: true, cross_check: false };
+
     // Rerunning op_design (seq 2) keeps what the steps before it produced, with
     // the later writer of a shared name winning — and discards the voided step.
-    expect(artifactsBefore(steps, 2)).toEqual([
-      artifact("bom_rows", [["L1", "B"]]),
+    expect(artifactsBefore(steps, 2, allowEdit)).toEqual([
+      {
+        artifact: artifact("bom_rows", [["L1", "B"]]),
+        stepId: "cross_check",
+        stepName: "提取 L1",
+        // The write lands on the step that produced the artifact, so that is
+        // where the definition's ``allow_edit`` is read.
+        editable: false,
+      },
     ]);
-    expect(artifactsBefore(steps, 0)).toEqual([]);
+  });
+});
+
+describe("run timestamps", () => {
+  it("reads the seconds the run tables store as milliseconds", () => {
+    // 2026-09-21 in seconds; read as milliseconds it would render as 1970.
+    expect(epochMillis(1_789_996_052)).toBe(1_789_996_052_000);
+  });
+
+  it("leaves a millisecond value alone and treats nothing as no time", () => {
+    expect(epochMillis(1_789_996_052_000)).toBe(1_789_996_052_000);
+    expect(epochMillis(null)).toBeNull();
+    expect(epochMillis(0)).toBeNull();
+    expect(epochMillis(undefined)).toBeNull();
   });
 });
