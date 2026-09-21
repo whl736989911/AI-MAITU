@@ -14,7 +14,7 @@ from dataclasses import asdict
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import current_user, get_server, require_permission
 
@@ -29,22 +29,28 @@ from octop.infra.knowledge.data_sources import (
     DataSourceSyncFailed,
     DataSourceSyncUnsupported,
 )
+from octop.infra.knowledge.url_fetch import UrlFetchError
 from octop.infra.server import OctopServer
 from octop.infra.users.identity import User
 from octop.infra.utils.locale import resolve_request_locale
+from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 
 class CreateDataSourceBody(BaseModel):
+    # ``extra="forbid"``: a body field this API does not write must fail loudly.
+    # Silently dropping one is how a source ends up configured but inert.
+    model_config = ConfigDict(extra="forbid")
+
     name: str = Field(min_length=1, max_length=200, description="Display name.")
     kind: str = Field(description="One of: " + ", ".join(KINDS) + ".")
     config: dict[str, Any] = Field(
         default_factory=dict,
         description=(
             "Kind-specific settings. upload: document_id or path of a document in the base; "
-            "url: url; connector: connector_id."
+            "url: url of the page to fetch; connector: connector_id."
         ),
     )
 
@@ -74,7 +80,24 @@ def _map_data_source_error(
             details={"kind": exc.kind},
         )
     if isinstance(exc, DataSourceSyncFailed):
-        return _map_knowledge_error(exc.cause, locale=locale, server=server)
+        cause = exc.cause
+        # A fetch that ran and failed is not an internal error: say what the
+        # URL did, so the user can fix it.
+        if isinstance(cause, (OutboundFetchError, UrlFetchError)):
+            return OctopError(
+                ErrorCode.DATA_SOURCE_FETCH_FAILED,
+                str(cause),
+                details={"reason": str(cause)},
+            )
+        if isinstance(cause, UnsafeOutboundUrl):
+            return OctopError(
+                ErrorCode.DATA_SOURCE_INVALID,
+                str(cause),
+                details={"reason": str(cause)},
+            )
+        return _map_knowledge_error(cause, locale=locale, server=server)
+    if isinstance(exc, UnsafeOutboundUrl):
+        return OctopError(ErrorCode.DATA_SOURCE_INVALID, str(exc), details={"reason": str(exc)})
     if isinstance(exc, PermissionError):
         return OctopError.localized(ErrorCode.KNOWLEDGE_FORBIDDEN, locale)
     if isinstance(exc, LookupError):

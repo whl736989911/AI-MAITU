@@ -146,6 +146,18 @@ class DataSourceRepo:
         with self._db.transaction() as conn:
             conn.execute(f"UPDATE data_sources SET {', '.join(fields)} WHERE id = ?", params)
 
+    def update_config(self, ds_id: str, config: dict[str, Any]) -> None:
+        """Replace ``config_json`` — sync records the document it wrote here."""
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE data_sources SET config_json = ?, updated_at = ? WHERE id = ?",
+                (
+                    json.dumps(config, ensure_ascii=False, separators=(",", ":")),
+                    now_ts(),
+                    ds_id,
+                ),
+            )
+
     def delete(self, ds_id: str) -> None:
         with self._db.transaction() as conn:
             conn.execute("DELETE FROM data_sources WHERE id = ?", (ds_id,))

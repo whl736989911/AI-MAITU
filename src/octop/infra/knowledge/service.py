@@ -78,13 +78,34 @@ def _resolve_content_type(filename: str, content_type: str) -> str:
     return ct
 
 
+def knowledge_content_type(suffix: str) -> str | None:
+    """The content type a file extension maps to (``.md`` → ``text/markdown``).
+
+    The one type table behind uploads answers this, so a URL source cannot
+    accept a type an upload would reject (or the other way round).
+    """
+    return _EXT_TO_CONTENT_TYPE.get(suffix.strip().lower())
+
+
+def knowledge_suffix_for_content_type(content_type: str) -> str | None:
+    """The stored extension for a served content type, when it is supported."""
+    wanted = (content_type or "").split(";")[0].strip().lower()
+    if not wanted:
+        return None
+    for suffix, mapped in _EXT_TO_CONTENT_TYPE.items():
+        if mapped == wanted:
+            return suffix
+    return None
+
+
 class KnowledgeService:
     """Apply ownership while keeping control-plane rows and files synchronized."""
 
     def __init__(self, services: Any) -> None:
         self._services = services
 
-    def _max_document_bytes(self) -> int:
+    def max_document_bytes(self) -> int:
+        """The size ceiling one knowledge document may reach."""
         config = getattr(self._services, "config", None)
         limit = getattr(config, "max_upload_bytes", None)
         if isinstance(limit, int) and limit > 0:
@@ -311,7 +332,7 @@ class KnowledgeService:
         if document.content_type not in _TEXT_CONTENT_TYPES:
             raise ValueError("unsupported knowledge document content type: not editable text")
         encoded = content.encode("utf-8")
-        limit = self._max_document_bytes()
+        limit = self.max_document_bytes()
         if len(encoded) > limit:
             raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
         write_document(kb_id, document.id, document.filename, encoded)
@@ -375,10 +396,97 @@ class KnowledgeService:
             self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
         )
         base = self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
-        limit = self._max_document_bytes()
+        limit = self.max_document_bytes()
         if len(content) > limit:
             raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
         rel = normalize_kb_path(path or filename)
+        name = path_basename(rel)
+        if not name:
+            raise ValueError("invalid knowledge document filename")
+        if (
+            Path(name).suffix.lower() in OCR_IMAGE_SUFFIXES
+            and not load_ocr_config(self._services.settings_repo.get).enabled
+        ):
+            raise ValueError("knowledge OCR must be enabled for image documents")
+        resolved_type = _resolve_content_type(name, content_type)
+        if resolved_type not in _ALLOWED_CONTENT_TYPES:
+            raise ValueError(f"unsupported knowledge document content type: {content_type}")
+        # The per-base limit lives on the KB row (schema v10). 0 = unlimited.
+        document = self._repo.create_document(
+            kb_id=kb_id,
+            filename=name,
+            path=rel,
+            content_type=resolved_type,
+            byte_size=len(content),
+            max_documents=base.max_documents,
+        )
+        try:
+            write_document(kb_id, document.id, name, content)
+        except Exception:
+            self._repo.delete_document(document.id)
+            raise
+        return cast(KnowledgeDocumentRow, document)
+
+    def replace_document_content(
+        self,
+        kb_id: str,
+        doc_id: str,
+        *,
+        actor_user_id: int,
+        path: str,
+        content_type: str,
+        content: bytes,
+        is_admin: bool = False,
+    ) -> KnowledgeDocumentRow:
+        """Overwrite an existing document's bytes and reset it for reprocessing.
+
+        The counterpart of :meth:`upload_document` for a source that refetches
+        the same document (a URL data source): the row keeps its id — so its
+        citations and index entries stay attached — while filename, size, type,
+        and status follow the new bytes. A changed extension leaves no stale
+        file behind.
+        """
+        assert_knowledge_usable(
+            self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
+        )
+        base = self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        document = self._repo.get_document(doc_id)
+        if document is None or document.kb_id != kb_id or document.is_dir:
+            raise ValueError(f"knowledge document {doc_id!r} is not in this knowledge base")
+        limit = self.max_document_bytes()
+        if len(content) > limit:
+            raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
+        rel = normalize_kb_path(path or document.path)
+        name = path_basename(rel)
+        if not name:
+            raise ValueError("invalid knowledge document filename")
+        if (
+            Path(name).suffix.lower() in OCR_IMAGE_SUFFIXES
+            and not load_ocr_config(self._services.settings_repo.get).enabled
+        ):
+            raise ValueError("knowledge OCR must be enabled for image documents")
+        resolved_type = _resolve_content_type(name, content_type)
+        if resolved_type not in _ALLOWED_CONTENT_TYPES:
+            raise ValueError(f"unsupported knowledge document content type: {content_type}")
+        previous_filename = document.filename
+        write_document(kb_id, doc_id, name, content)
+        if previous_filename != name:
+            delete_document_file(kb_id, doc_id, previous_filename)
+        self._repo.update_document(
+            doc_id,
+            filename=name,
+            path=rel,
+            content_type=resolved_type,
+            byte_size=len(content),
+            status="pending",
+            error_message="",
+            chunk_count=0,
+        )
+        refreshed = self._repo.get_document(doc_id)
+        if refreshed is None:
+            raise RuntimeError(f"knowledge document update failed: {doc_id}")
+        return cast(KnowledgeDocumentRow, refreshed)
+
         name = path_basename(rel)
         if not name:
             raise ValueError("invalid knowledge document filename")

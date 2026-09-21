@@ -101,6 +101,8 @@ class ErrorCode(StrEnum):
     # of reporting a success it never performed.
     DATA_SOURCE_INVALID = "DATA_SOURCE_INVALID"
     DATA_SOURCE_SYNC_UNSUPPORTED = "DATA_SOURCE_SYNC_UNSUPPORTED"
+    # A url source that was allowed to sync but whose fetch/response failed.
+    DATA_SOURCE_FETCH_FAILED = "DATA_SOURCE_FETCH_FAILED"
     AVATAR_INVALID = "AVATAR_INVALID"
     AVATAR_TOO_LARGE = "AVATAR_TOO_LARGE"
     INVITE_INVALID = "INVITE_INVALID"
@@ -230,6 +232,7 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_NAME_INVALID: 400,
     ErrorCode.DATA_SOURCE_INVALID: 400,
     ErrorCode.DATA_SOURCE_SYNC_UNSUPPORTED: 400,
+    ErrorCode.DATA_SOURCE_FETCH_FAILED: 502,
     ErrorCode.AVATAR_INVALID: 400,
     ErrorCode.AVATAR_TOO_LARGE: 413,
     ErrorCode.INVITE_INVALID: 400,

@@ -22,6 +22,7 @@ from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.knowledge import data_sources as data_sources_module
 from octop.infra.knowledge import jobs as jobs_module
 from octop.infra.knowledge import service as service_module
 from octop.infra.knowledge.data_sources import (
@@ -29,9 +30,12 @@ from octop.infra.knowledge.data_sources import (
     DataSourceSyncFailed,
     DataSourceSyncUnsupported,
 )
+from octop.infra.knowledge.files import document_path
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.knowledge.url_fetch import FetchedDocument
 from octop.infra.utils.paths import PathLayout
+from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
 
 _DOC_TEXT = "# Handbook\n\nRefunds are processed within five business days.\n"
 
@@ -95,6 +99,14 @@ def _chunk_count(base_id: str) -> int:
         return int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
 
 
+def _indexed_text(base_id: str) -> str:
+    """Every chunk text in the base's index — what retrieval can actually see."""
+    path = KnowledgeIndex(base_id).path
+    with sqlite3.connect(path) as conn:
+        rows = conn.execute("SELECT text FROM chunks").fetchall()
+    return "\n".join(str(row[0]) for row in rows)
+
+
 def test_upload_source_sync_ingests_the_document(
     env: SimpleNamespace, people: SimpleNamespace
 ) -> None:
@@ -118,17 +130,11 @@ def test_upload_source_sync_ingests_the_document(
     assert _chunk_count(base.id) == refreshed.chunk_count
 
 
-def test_url_and_connector_sync_refuse_instead_of_reporting_success(
+def test_connector_sync_refuses_instead_of_reporting_success(
     env: SimpleNamespace, people: SimpleNamespace
 ) -> None:
+    """A connector source has nothing to pull from: it must say so, not pretend."""
     base = env.services.knowledge_repo.create_base(owner_user_id=people.owner, name="Docs")
-    url_source = env.sources.create(
-        base.id,
-        actor_user_id=people.owner,
-        name="Site",
-        kind="url",
-        config={"url": "https://example.com/handbook"},
-    )
     connector_source = env.sources.create(
         base.id,
         actor_user_id=people.owner,
@@ -137,14 +143,194 @@ def test_url_and_connector_sync_refuse_instead_of_reporting_success(
         config={"connector_id": "cn1234"},
     )
 
-    for source, kind in ((url_source, "url"), (connector_source, "connector")):
-        with pytest.raises(DataSourceSyncUnsupported) as raised:
-            env.sources.sync(source.id, actor_user_id=people.owner)
-        assert raised.value.kind == kind
-        row = env.services.data_sources_repo.get(source.id)
-        assert row.sync_status == "failed"
-        assert kind in (row.sync_error or "")
-        assert row.last_synced_at is None
+    with pytest.raises(DataSourceSyncUnsupported) as raised:
+        env.sources.sync(connector_source.id, actor_user_id=people.owner)
+
+    assert raised.value.kind == "connector"
+    row = env.services.data_sources_repo.get(connector_source.id)
+    assert row.sync_status == "failed"
+    assert "connector" in (row.sync_error or "")
+    assert row.last_synced_at is None
+
+
+def _url_source(env: SimpleNamespace, owner_id: int, *, url: str = "https://example.com/handbook"):
+    base = env.services.knowledge_repo.create_base(owner_user_id=owner_id, name="Docs")
+    source = env.sources.create(
+        base.id,
+        actor_user_id=owner_id,
+        name="Handbook",
+        kind="url",
+        config={"url": url},
+    )
+    return base, source
+
+
+def _fetched(body: str, *, filename: str = "Handbook.html", content_type: str = "text/html"):
+    return FetchedDocument(
+        filename=filename,
+        content_type=content_type,
+        content=body.encode("utf-8"),
+        final_url="https://example.com/handbook",
+    )
+
+
+def test_url_source_sync_ingests_the_fetched_page(
+    env: SimpleNamespace, people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The fetched page must end up parsed, chunked, and indexed for real."""
+    base, source = _url_source(env, people.owner)
+    page = "<h1>Refund policy</h1><p>Refunds are processed within five business days.</p>"
+    monkeypatch.setattr(data_sources_module, "fetch_document", lambda *_a, **_k: _fetched(page))
+
+    synced = env.sources.sync(source.id, actor_user_id=people.owner)
+
+    assert synced.sync_status == "ok"
+    assert synced.sync_error is None
+    assert synced.last_synced_at is not None
+    document = env.services.knowledge_repo.get_document(synced.config["document_id"])
+    assert document is not None
+    assert document.path == "Handbook.html"
+    assert document.content_type == "text/html"
+    assert document.status == "ready"
+    assert document.chunk_count > 0
+    assert document_path(base.id, document.id, document.filename).exists()
+    assert _chunk_count(base.id) == document.chunk_count
+    stored = _indexed_text(base.id)
+    assert "Refund policy" in stored
+    assert "five business days" in stored
+
+
+def test_url_sync_refreshes_the_same_document_instead_of_duplicating_it(
+    env: SimpleNamespace, people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base, source = _url_source(env, people.owner)
+    monkeypatch.setattr(
+        data_sources_module, "fetch_document", lambda *_a, **_k: _fetched("<p>old text</p>")
+    )
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    monkeypatch.setattr(
+        data_sources_module, "fetch_document", lambda *_a, **_k: _fetched("<p>new rules</p>")
+    )
+    refreshed = env.sources.sync(source.id, actor_user_id=people.owner)
+
+    documents = [
+        row for row in env.services.knowledge_repo.list_documents(base.id) if not row.is_dir
+    ]
+    assert [row.id for row in documents] == [refreshed.config["document_id"]]
+    stored = _indexed_text(base.id)
+    assert "new rules" in stored
+    assert "old text" not in stored
+    assert env.services.knowledge_repo.get_document(documents[0].id).status == "ready"
+
+
+def test_url_sync_after_the_document_is_deleted_ingests_a_fresh_one(
+    env: SimpleNamespace, people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base, source = _url_source(env, people.owner)
+    monkeypatch.setattr(
+        data_sources_module, "fetch_document", lambda *_a, **_k: _fetched("<p>text</p>")
+    )
+    first = env.sources.sync(source.id, actor_user_id=people.owner)
+    env.knowledge.delete_document(base.id, first.config["document_id"], actor_user_id=people.owner)
+
+    second = env.sources.sync(source.id, actor_user_id=people.owner)
+
+    assert second.sync_status == "ok"
+    assert second.config["document_id"] != first.config["document_id"]
+    document = env.services.knowledge_repo.get_document(second.config["document_id"])
+    assert document is not None
+    assert document.status == "ready"
+    assert _chunk_count(base.id) == document.chunk_count
+
+
+@pytest.mark.parametrize(
+    ("url", "reason"),
+    [
+        ("http://example.com/handbook", "https"),
+        ("https://localhost/handbook", "localhost"),
+        ("https://127.0.0.1/handbook", "private"),
+        ("https://192.168.1.10/handbook", "private"),
+        ("https://169.254.169.254/latest/meta-data", "private"),
+    ],
+)
+def test_url_source_creation_refuses_targets_the_guard_rejects(
+    env: SimpleNamespace, people: SimpleNamespace, url: str, reason: str
+) -> None:
+    """SSRF: an internal or plain-http target never becomes a stored source."""
+    base = env.services.knowledge_repo.create_base(owner_user_id=people.owner, name="Docs")
+
+    with pytest.raises(UnsafeOutboundUrl, match=reason):
+        env.sources.create(
+            base.id, actor_user_id=people.owner, name="SSRF", kind="url", config={"url": url}
+        )
+
+    assert env.services.data_sources_repo.list_for_base(base.id) == []
+
+
+@pytest.mark.parametrize(
+    ("error", "reason"),
+    [
+        (OutboundFetchError("HTTP 404 Not Found for https://example.com/handbook"), "404"),
+        (UnsafeOutboundUrl("private or reserved IP addresses are not allowed"), "private"),
+    ],
+)
+def test_url_sync_failures_are_recorded_and_leave_no_document_behind(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+    error: Exception,
+    reason: str,
+) -> None:
+    """A failed fetch is a failed sync: no empty document, no 'ok'."""
+    base, source = _url_source(env, people.owner)
+
+    def _boom(*_args: object, **_kwargs: object) -> FetchedDocument:
+        raise error
+
+    monkeypatch.setattr(data_sources_module, "fetch_document", _boom)
+
+    with pytest.raises(DataSourceSyncFailed) as raised:
+        env.sources.sync(source.id, actor_user_id=people.owner)
+
+    assert raised.value.cause is error
+    row = env.services.data_sources_repo.get(source.id)
+    assert row.sync_status == "failed"
+    assert reason in (row.sync_error or "")
+    assert row.last_synced_at is None
+    assert env.services.knowledge_repo.list_documents(base.id) == []
+
+
+def test_url_and_upload_configs_reject_fields_their_kind_cannot_use(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+    """A field this kind cannot honour is an error, not a silently dropped key."""
+    base, document = _uploaded_document(env, people.owner)
+
+    with pytest.raises(ValueError, match="config.path"):
+        env.sources.create(
+            base.id,
+            actor_user_id=people.owner,
+            name="Site",
+            kind="url",
+            config={"url": "https://example.com/", "path": "nope.md"},
+        )
+    with pytest.raises(ValueError, match="config.url"):
+        env.sources.create(
+            base.id,
+            actor_user_id=people.owner,
+            name="Handbook",
+            kind="upload",
+            config={"document_id": document.id, "url": "https://example.com/"},
+        )
+    with pytest.raises(ValueError, match="config.url"):
+        env.sources.create(
+            base.id,
+            actor_user_id=people.owner,
+            name="Feishu",
+            kind="connector",
+            config={"connector_id": "cn1", "url": "https://example.com/"},
+        )
 
 
 def test_upload_sync_reports_a_failed_ingest(env: SimpleNamespace, people: SimpleNamespace) -> None:
