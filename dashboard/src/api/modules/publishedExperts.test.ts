@@ -12,17 +12,19 @@ beforeEach(() => {
 
 describe("publishedExpertsApi", () => {
   it("uses publish lifecycle endpoints for an agent-owned template", () => {
+    const refreshBody = {
+      name: "Updated",
+      description: "New description",
+      welcome_message: { zh: "欢迎", en: "Welcome" },
+    };
+
     publishedExpertsApi.list();
     publishedExpertsApi.publish("agent-1", {
       name: "Research assistant",
       description: "Finds sources",
       slug: "research-assistant",
     });
-    publishedExpertsApi.refresh("expert/1", {
-      name: "Updated",
-      description: "New description",
-      welcome_message: { zh: "欢迎", en: "Welcome" },
-    });
+    publishedExpertsApi.refresh("expert/1", refreshBody);
     publishedExpertsApi.unpublish("expert/1");
 
     expect(request).toHaveBeenNthCalledWith(1, "/experts/published");
@@ -43,6 +45,7 @@ describe("publishedExpertsApi", () => {
       "/experts/published/expert%2F1/refresh",
       {
         method: "POST",
+        body: JSON.stringify(refreshBody),
       },
     );
     expect(request).toHaveBeenNthCalledWith(
