@@ -587,6 +587,29 @@ class UserManager:
             payload=role.value,
         )
 
+    async def set_org_unit(self, username: str, unit_key: str | None) -> None:
+        """Bind the account to an org unit (``None`` clears the binding).
+
+        The cached ``User`` is updated in the same step: unit grants are resolved
+        from ``user.org_unit`` on every permission check, so a stale cache would
+        keep serving the previous unit's grants (or none) for the rest of the
+        process life — the editor's save would look like it did nothing.
+        """
+        row = self._services.user_repo.get_by_username(username)
+        if row is None:
+            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+        self._services.user_repo.set_org_unit(row.id, unit_key)
+        async with self._lock:
+            current = self._users.get(username)
+            if current is not None:
+                current.org_unit = unit_key
+        self._services.audit_repo.write(
+            actor=ACTOR_ADMIN,
+            action="user.set_org_unit",
+            target=username,
+            payload=unit_key or "",
+        )
+
     async def set_display_name(self, username: str, display_name: str | None) -> None:
         row = self._services.user_repo.get_by_username(username)
         if row is None:

@@ -8,6 +8,8 @@ guards are exactly about what those tables hold.
 Covered refusals: a duplicate key, an unknown parent, a reparent that would make
 the unit its own ancestor (including the degenerate self-parent case), deleting a
 unit that still has children, and deleting a unit that is still assigned to users.
+Department grant writes are covered too: replace-not-merge semantics, unknown
+units and unknown module keys, and the ``unit_admin`` scope (own unit only).
 """
 
 from __future__ import annotations
@@ -20,15 +22,19 @@ import pytest
 from octop.api.routers.org_units import (
     OrgUnitCreateBody,
     OrgUnitPatchBody,
+    OrgUnitPermissionsBody,
     create_org_unit,
     delete_org_unit,
+    get_org_unit_permissions,
     patch_org_unit,
+    set_org_unit_permissions,
 )
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.identity import Role
 
 
 @pytest.fixture
@@ -209,3 +215,138 @@ async def test_patch_and_delete_reject_unknown_unit(world: SimpleNamespace) -> N
     with pytest.raises(OctopError) as exc:
         await delete_org_unit("ghost", user=world.admin, server=world.server)
     assert exc.value.code is ErrorCode.NOT_FOUND
+
+
+async def test_unit_permissions_roundtrip(world: SimpleNamespace) -> None:
+    """A grant lands in ``org_unit_permissions`` and a later write replaces it."""
+    await _create(world, "ops")
+
+    stored = await set_org_unit_permissions(
+        "ops",
+        OrgUnitPermissionsBody(permissions=["browser", "knowledge_bases"]),
+        user=world.admin,
+        server=world.server,
+    )
+    assert stored == {"unit_key": "ops", "permissions": ["browser", "knowledge_bases"]}
+    assert await get_org_unit_permissions("ops", _user=world.admin, server=world.server) == {
+        "unit_key": "ops",
+        "permissions": ["browser", "knowledge_bases"],
+    }
+
+    # Replace, not merge: dropping a key is the only way to revoke it.
+    replaced = await set_org_unit_permissions(
+        "ops",
+        OrgUnitPermissionsBody(permissions=["knowledge_bases"]),
+        user=world.admin,
+        server=world.server,
+    )
+    assert replaced["permissions"] == ["knowledge_bases"]
+    with world.db.connect() as conn:
+        rows = conn.execute(
+            "SELECT permission_key FROM org_unit_permissions WHERE unit_key = 'ops'"
+        ).fetchall()
+    assert [r["permission_key"] for r in rows] == ["knowledge_bases"]
+
+
+async def test_unit_permissions_reject_unknown_unit_and_key(world: SimpleNamespace) -> None:
+    await _create(world, "ops")
+
+    with pytest.raises(OctopError) as exc:
+        await get_org_unit_permissions("ghost", _user=world.admin, server=world.server)
+    assert exc.value.code is ErrorCode.NOT_FOUND
+
+    with pytest.raises(OctopError) as exc:
+        await set_org_unit_permissions(
+            "ops",
+            OrgUnitPermissionsBody(permissions=["not_a_module"]),
+            user=world.admin,
+            server=world.server,
+        )
+    assert exc.value.code is ErrorCode.FORBIDDEN
+    assert exc.value.status == 400
+    assert await get_org_unit_permissions("ops", _user=world.admin, server=world.server) == {
+        "unit_key": "ops",
+        "permissions": [],
+    }
+
+
+@pytest.mark.parametrize(
+    ("role", "org_unit", "allowed"),
+    [
+        (Role.UNIT_ADMIN, "ops", True),
+        (Role.UNIT_ADMIN, "sales", False),
+        (Role.UNIT_ADMIN, None, False),
+        (Role.USER, "ops", False),
+    ],
+    ids=["own unit", "other unit", "no unit", "plain member"],
+)
+async def test_unit_permission_writes_are_scoped_to_own_unit(
+    world: SimpleNamespace, role: Role, org_unit: str | None, allowed: bool
+) -> None:
+    """``unit_admin`` administers its own department; nobody else's."""
+    await _create(world, "ops")
+    await _create(world, "sales")
+    actor = SimpleNamespace(
+        id=9,
+        is_admin=False,
+        role=role,
+        org_unit=org_unit,
+        permissions=["users"],
+        denied_permissions=[],
+    )
+
+    if not allowed:
+        with pytest.raises(OctopError) as exc:
+            await set_org_unit_permissions(
+                "ops",
+                OrgUnitPermissionsBody(permissions=["users"]),
+                user=actor,
+                server=world.server,
+            )
+        assert exc.value.code is ErrorCode.FORBIDDEN
+        assert exc.value.status == 403
+        assert world.units.list_unit_permissions("ops") == []
+        return
+
+    written = await set_org_unit_permissions(
+        "ops",
+        OrgUnitPermissionsBody(permissions=["users"]),
+        user=actor,
+        server=world.server,
+    )
+    assert written["permissions"] == ["users"]
+
+
+async def test_unit_admin_may_not_grant_keys_it_does_not_hold(world: SimpleNamespace) -> None:
+    """Granting is delegation, not self-escalation: held keys only."""
+    await _create(world, "ops")
+    holder = SimpleNamespace(
+        id=9,
+        is_admin=False,
+        role=Role.UNIT_ADMIN,
+        org_unit="ops",
+        permissions=["users"],
+        denied_permissions=[],
+    )
+
+    with pytest.raises(OctopError) as exc:
+        await set_org_unit_permissions(
+            "ops",
+            OrgUnitPermissionsBody(permissions=["users", "security"]),
+            user=holder,
+            server=world.server,
+        )
+    assert exc.value.code is ErrorCode.FORBIDDEN
+    assert exc.value.details["missing"] == ["security"]
+    assert world.units.list_unit_permissions("ops") == []
+
+    # Keys the department already has count as held: a PUT replaces the whole
+    # set, so the admin must be able to re-submit what is already granted.
+    world.units.set_grants("ops", ["knowledge_bases"])
+    kept = await set_org_unit_permissions(
+        "ops",
+        OrgUnitPermissionsBody(permissions=["users", "knowledge_bases"]),
+        user=holder,
+        server=world.server,
+    )
+    assert kept["permissions"] == ["users", "knowledge_bases"]

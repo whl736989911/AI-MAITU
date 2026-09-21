@@ -245,3 +245,279 @@ async def test_admin_can_set_resource_policy(env, tmp_path, monkeypatch):
     assert r.status_code == 200
     assert r.json()["workspace_root_dir"] is None
     assert r.json()["token_quota"] is None
+
+
+async def test_user_org_unit_roundtrip(env):
+    """Save -> store -> read back -> echo: the editor's org_unit must survive."""
+    c, _srv, auth = env
+    created = await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "sales", "label_zh": "销售部", "label_en": "Sales"},
+    )
+    assert created.status_code == 201, created.text
+    uid = (
+        await c.post(
+            "/api/users",
+            headers=auth,
+            json={"username": "alice", "password": "TestPass12", "role": "user"},
+        )
+    ).json()["id"]
+
+    r = await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "sales"})
+    assert r.status_code == 200, r.text
+    assert r.json()["org_unit"] == "sales"
+
+    listed = (await c.get("/api/users", headers=auth)).json()
+    assert next(u for u in listed if u["id"] == uid)["org_unit"] == "sales"
+    assert (await c.get(f"/api/users/{uid}", headers=auth)).json()["org_unit"] == "sales"
+
+    # An omitted field keeps the binding; an explicit null clears it.
+    kept = await c.patch(f"/api/users/{uid}", headers=auth, json={"display_name": "Alice"})
+    assert kept.json()["org_unit"] == "sales"
+    cleared = await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": None})
+    assert cleared.json()["org_unit"] is None
+
+
+async def test_create_user_with_org_unit_and_unknown_unit_refused(env):
+    c, _srv, auth = env
+    await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "ops", "label_zh": "运维", "label_en": "Operations"},
+    )
+
+    r = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "bob",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "ops",
+        },
+    )
+    assert r.status_code == 201, r.text
+    assert r.json()["org_unit"] == "ops"
+
+    # An unknown unit is refused instead of stored as a binding that resolves to
+    # no grants at all.
+    ghost = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "carol",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "ghost",
+        },
+    )
+    assert ghost.status_code == 404, ghost.text
+    assert "carol" not in [u["username"] for u in (await c.get("/api/users", headers=auth)).json()]
+
+    uid = next(
+        u for u in (await c.get("/api/users", headers=auth)).json() if u["username"] == "bob"
+    )["id"]
+    moved = await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "ghost"})
+    assert moved.status_code == 404, moved.text
+    assert (await c.get(f"/api/users/{uid}", headers=auth)).json()["org_unit"] == "ops"
+
+
+async def test_user_write_rejects_unknown_body_field(env):
+    """A field the API does not write must fail, not disappear."""
+    c, _srv, auth = env
+    uid = (
+        await c.post(
+            "/api/users",
+            headers=auth,
+            json={"username": "dave", "password": "TestPass12", "role": "user"},
+        )
+    ).json()["id"]
+
+    r = await c.patch(f"/api/users/{uid}", headers=auth, json={"not_a_field": 1})
+    assert r.status_code == 422, r.text
+
+    r = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "erin",
+            "password": "TestPass12",
+            "role": "user",
+            "not_a_field": 1,
+        },
+    )
+    assert r.status_code == 422, r.text
+
+
+async def test_department_grant_reaches_members(env):
+    """The 'unit' leg: a department grant reaches every member of the unit."""
+    c, _srv, auth = env
+    await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "sales", "label_zh": "销售部", "label_en": "Sales"},
+    )
+    uid = (
+        await c.post(
+            "/api/users",
+            headers=auth,
+            json={"username": "alice", "password": "TestPass12", "role": "user"},
+        )
+    ).json()["id"]
+    await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "sales"})
+
+    granted = await c.put(
+        "/api/org-units/sales/permissions",
+        headers=auth,
+        json={"permissions": ["users"]},
+    )
+    assert granted.status_code == 200, granted.text
+
+    tok = (
+        await c.post("/api/auth/login", json={"username": "alice", "password": "TestPass12"})
+    ).json()["access_token"]
+    alice = {"Authorization": f"Bearer {tok}"}
+    me = await c.get("/api/auth/me", headers=alice)
+    assert "users" in me.json()["permissions"]
+    # The module really opens up for the member, not just on the profile payload.
+    assert (await c.get("/api/users", headers=alice)).status_code == 200
+
+    # Leaving the department drops the grant again.
+    await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": None})
+    assert "users" not in (await c.get("/api/auth/me", headers=alice)).json()["permissions"]
+    assert (await c.get("/api/users", headers=alice)).status_code == 403
+
+
+async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
+    """``users`` opens the page; it does not hand over roles or accounts."""
+    from tests.support.auth import TEST_PASSWORD, create_user
+
+    c, _srv, auth = env
+    await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "ops", "label_zh": "运维", "label_en": "Operations"},
+    )
+    support = await create_user(c, auth, username="helpdesk", permissions=["users"])
+    await create_user(c, auth, username="victim")
+    rows = (await c.get("/api/users", headers=auth)).json()
+    victim_id = next(u["id"] for u in rows if u["username"] == "victim")
+    me = (await c.get("/api/auth/me", headers=support)).json()
+
+    # The module key still opens what it names: listing and profile edits.
+    assert (await c.get("/api/users", headers=support)).status_code == 200
+    renamed = await c.patch(
+        f"/api/users/{victim_id}", headers=support, json={"display_name": "renamed by support"}
+    )
+    assert renamed.status_code == 200, renamed.text
+
+    # Everything that moves the authorization boundary is admin-only.
+    assert (
+        await c.patch(f"/api/users/{victim_id}", headers=support, json={"role": "admin"})
+    ).status_code == 403
+    assert (
+        await c.patch(f"/api/users/{me['id']}", headers=support, json={"role": "admin"})
+    ).status_code == 403
+    assert (
+        await c.post(
+            f"/api/users/{victim_id}/reset-password",
+            headers=support,
+            json={"new_password": "Taken12345"},
+        )
+    ).status_code == 403
+    assert (
+        await c.patch(f"/api/users/{victim_id}", headers=support, json={"disabled": True})
+    ).status_code == 403
+    assert (await c.delete(f"/api/users/{victim_id}", headers=support)).status_code == 403
+    assert (
+        await c.patch(f"/api/users/{victim_id}", headers=support, json={"org_unit": "ops"})
+    ).status_code == 403
+    # A department carries module grants, so binding *yourself* is escalation too.
+    assert (
+        await c.patch(f"/api/users/{me['id']}", headers=support, json={"org_unit": "ops"})
+    ).status_code == 403
+    assert (
+        await c.post(
+            "/api/users",
+            headers=support,
+            json={
+                "username": "planted",
+                "password": "TestPass12",
+                "role": "user",
+                "org_unit": "ops",
+            },
+        )
+    ).status_code == 403
+
+    # Nothing leaked through the refusals.
+    victim = (await c.get(f"/api/users/{victim_id}", headers=auth)).json()
+    assert victim["role"] == "user"
+    assert victim["disabled"] is False
+    assert victim["org_unit"] is None
+    assert "planted" not in [
+        u["username"] for u in (await c.get("/api/users", headers=auth)).json()
+    ]
+    assert (
+        await c.post("/api/auth/login", json={"username": "victim", "password": TEST_PASSWORD})
+    ).status_code == 200
+
+
+async def test_admin_can_still_administer_accounts(env):
+    """The same operations keep working for an admin — including on others."""
+    from tests.support.auth import TEST_PASSWORD, create_user
+
+    c, _srv, auth = env
+    await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "ops", "label_zh": "运维", "label_en": "Operations"},
+    )
+    await create_user(c, auth, username="target")
+    uid = next(
+        u["id"]
+        for u in (await c.get("/api/users", headers=auth)).json()
+        if u["username"] == "target"
+    )
+
+    promoted = await c.patch(f"/api/users/{uid}", headers=auth, json={"role": "unit_admin"})
+    assert promoted.status_code == 200 and promoted.json()["role"] == "unit_admin"
+
+    reset = await c.post(
+        f"/api/users/{uid}/reset-password", headers=auth, json={"new_password": "Rotated12345"}
+    )
+    assert reset.status_code == 204, reset.text
+    assert (
+        await c.post("/api/auth/login", json={"username": "target", "password": "Rotated12345"})
+    ).status_code == 200
+
+    assert (await c.patch(f"/api/users/{uid}", headers=auth, json={"disabled": True})).json()[
+        "disabled"
+    ] is True
+    assert (await c.patch(f"/api/users/{uid}", headers=auth, json={"disabled": False})).json()[
+        "disabled"
+    ] is False
+
+    bound = await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "ops"})
+    assert bound.status_code == 200 and bound.json()["org_unit"] == "ops"
+
+    resident = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "resident",
+            "password": TEST_PASSWORD,
+            "role": "user",
+            "org_unit": "ops",
+        },
+    )
+    assert resident.status_code == 201 and resident.json()["org_unit"] == "ops"
+
+    me = (await c.get("/api/auth/me", headers=auth)).json()
+    assert (await c.delete(f"/api/users/{me['id']}", headers=auth)).status_code == 403
+    assert (
+        await c.patch(f"/api/users/{me['id']}", headers=auth, json={"role": "user"})
+    ).status_code == 403
+
+    assert (await c.delete(f"/api/users/{uid}", headers=auth)).status_code == 204
+    assert (await c.get(f"/api/users/{uid}", headers=auth)).status_code == 404

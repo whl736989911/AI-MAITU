@@ -1,4 +1,18 @@
-"""Admin CRUD for users."""
+"""Admin CRUD for users.
+
+Two gates, deliberately distinct:
+
+* the ``users`` module key opens this surface — listing accounts, creating one,
+  editing profile fields, and granting module keys the actor itself holds;
+* the operations that move the authorization boundary itself — role changes,
+  another account's password / disabled state / deletion, and department
+  assignment — require the ``admin`` role (``_assert_admin`` /
+  ``_assert_can_administer``).
+
+Guarding is on the *target*, not on "is this me": promoting yourself is the same
+escalation as promoting somebody else, and a department carries module grants,
+so binding an account to one is a permission grant by another name.
+"""
 
 from __future__ import annotations
 
@@ -6,9 +20,9 @@ import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from octop.api.deps import current_user, get_server, require_permission
+from octop.api.deps import current_user, get_server, require_admin, require_permission
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role, User
 from octop.infra.users.permissions import PERMISSIONS
@@ -23,22 +37,40 @@ router = APIRouter()
 
 
 class UserCreateBody(BaseModel):
+    # ``extra="forbid"``: a body field this API does not write must fail loudly.
+    # Silently dropping one is how ``org_unit`` stayed unset while the editor
+    # reported a successful save.
+    model_config = ConfigDict(extra="forbid")
+
     username: str = Field(min_length=1, max_length=64)
     password: str = Field(min_length=1, max_length=200)
     role: str = "user"
     display_name: str | None = None
     email: str | None = Field(default=None, max_length=254)
     permissions: list[str] = Field(default_factory=list)
+    org_unit: str | None = Field(
+        default=None, max_length=64, description="Org unit key, or null for no unit scope."
+    )
     workspace_root_dir: str | None = None
     token_quota: int | None = Field(default=None, ge=0)
 
 
 class UserPatchBody(BaseModel):
+    """Partial update; an omitted field keeps its stored value.
+
+    ``org_unit`` is tri-state: omitted keeps the binding, ``null`` clears it, a
+    key moves the account. It rides ``model_fields_set`` like ``email``, so an
+    omitted field is never confused with an explicit ``null``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     role: str | None = None
     display_name: str | None = None
     email: str | None = Field(default=None, max_length=254)
     disabled: bool | None = None
     permissions: list[str] | None = None
+    org_unit: str | None = Field(default=None, max_length=64)
     workspace_root_dir: str | None = None
     token_quota: int | None = Field(default=None, ge=0)
 
@@ -67,6 +99,9 @@ def _row_to_dict(r: Any, policy: Any | None = None) -> dict[str, Any]:
         "login_retry_after_seconds": retry_after,
         "created_at": int(r.created_at),
         "permissions": list(getattr(r, "permissions", None) or []),
+        # The editor round-trips this field, so a missing key would read as
+        # "no unit" and re-open as "不指定（仅基础权限）".
+        "org_unit": getattr(r, "org_unit", None),
         **public_policy_fields(policy),
     }
 
@@ -78,6 +113,52 @@ def _policy_kwargs_from_body(body: UserCreateBody | UserPatchBody) -> dict[str, 
     if "token_quota" in body.model_fields_set:
         policy_kwargs["token_quota"] = body.token_quota
     return policy_kwargs
+
+
+def _assert_admin(actor: User, action: str) -> None:
+    """Refuse anything but an admin; ``action`` names the attempt.
+
+    The ``users`` key opens the management page — it does not carry the role
+    system, the account-recovery path, or department assignment. A caller that
+    holds ``users`` but not ``admin`` could otherwise promote itself, take over
+    an admin account, or lock one out; the module key would then be equivalent
+    to ``admin`` in effect and the role boundary would be decorative.
+    """
+    if actor.is_admin:
+        return
+    raise OctopError(ErrorCode.FORBIDDEN, f"admin required to {action}")
+
+
+def _assert_can_administer(actor: User, target_user_id: int, action: str) -> None:
+    """:func:`_assert_admin`, but an account may still act on itself.
+
+    Used where the self case cannot escalate (disabling yourself, re-setting
+    your own password): the guard is on *who is being acted on*, never on "is
+    this me and am I being careful".
+    """
+    if actor.is_admin or target_user_id == actor.id:
+        return
+    raise OctopError(
+        ErrorCode.FORBIDDEN,
+        f"admin required to {action}",
+        details={"user_id": target_user_id},
+    )
+
+
+def _assert_org_unit_exists(server: Any, unit_key: str) -> None:
+    """Refuse a binding to a unit that does not exist.
+
+    ``users.org_unit`` is a plain text column with no foreign key, so an unknown
+    key would be stored happily and then resolve to *no* grants — a department
+    whose permissions quietly never arrive. Refusing here keeps that failure
+    loud and next to the write.
+    """
+    if server.services.repos.org_unit_repo.get(unit_key) is None:
+        raise OctopError(
+            ErrorCode.NOT_FOUND,
+            f"org unit {unit_key!r} not found",
+            details={"unit_key": unit_key, "reason": f"unknown org unit {unit_key!r}"},
+        )
 
 
 def _assert_can_assign(actor: User, permissions: list[str]) -> None:
@@ -163,6 +244,10 @@ async def create_user(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     _assert_can_assign(actor, body.permissions)
+    if body.org_unit is not None:
+        # A department carries module grants, so this binds permissions.
+        _assert_admin(actor, "bind an account to a department")
+        _assert_org_unit_exists(server, body.org_unit)
     policy_kwargs = _policy_kwargs_from_body(body)
     if "workspace_root_dir" in policy_kwargs:
         normalize_workspace_root_dir(policy_kwargs["workspace_root_dir"])
@@ -177,6 +262,8 @@ async def create_user(
         email=body.email,
         permissions=body.permissions,
     )
+    if body.org_unit is not None:
+        await server.user_manager.set_org_unit(user.username, body.org_unit)
     if policy_kwargs:
         await server.user_manager.set_resource_policy(user.username, **policy_kwargs)
     row = server.user_manager.get_row(user.id)
@@ -215,6 +302,7 @@ async def patch_user(
             new_permissions=body.permissions,
         )
     if body.role is not None:
+        _assert_admin(actor, "change a role")
         if user_id == actor.id and Role(body.role) is not Role.ADMIN:
             raise OctopError(ErrorCode.FORBIDDEN, "cannot demote yourself")
         await server.user_manager.set_role(row.username, Role(body.role))
@@ -222,9 +310,18 @@ async def patch_user(
         await server.user_manager.set_display_name(row.username, body.display_name)
     if "email" in body.model_fields_set:
         await server.user_manager.set_email(row.username, body.email)
+    if "org_unit" in body.model_fields_set:
+        # Explicit ``null`` clears the binding; an omitted field was filtered out
+        # above, so this branch never runs for "leave it as it is".
+        _assert_admin(actor, "change the department of an account")
+        if body.org_unit is not None:
+            _assert_org_unit_exists(server, body.org_unit)
+        await server.user_manager.set_org_unit(row.username, body.org_unit)
     if body.disabled is True:
+        _assert_can_administer(actor, user_id, "disable another account")
         await server.user_manager.disable(row.username)
     elif body.disabled is False:
+        _assert_can_administer(actor, user_id, "enable another account")
         await server.user_manager.enable(row.username)
     if body.permissions is not None:
         await server.user_manager.set_permissions(row.username, body.permissions)
@@ -256,21 +353,29 @@ async def unlock_user_login(
 async def reset_password(
     user_id: int,
     body: ResetPasswordBody,
-    _: Any = Depends(require_permission("users")),
+    actor: Any = Depends(require_permission("users")),
     server: Any = Depends(get_server),
 ) -> None:
+    """Set a new password without the old one — an account-recovery action.
+
+    Admin-only for anyone else's account: password reset *is* account takeover,
+    so an operator holding only ``users`` must not be able to aim it at an admin
+    (or at a colleague). Setting your own stays open — it cannot escalate.
+    """
     row = server.user_manager.get_row(user_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+    _assert_can_administer(actor, user_id, "reset another account's password")
     await server.user_manager.reset_password(row.username, body.new_password)
 
 
 @router.delete("/{user_id}", status_code=204)
 async def delete_user(
     user_id: int,
-    actor: Any = Depends(require_permission("users")),
+    actor: Any = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> None:
+    """Delete an account. Admin-only: ``users`` manages, it does not remove."""
     if user_id == actor.id:
         raise OctopError(ErrorCode.FORBIDDEN, "cannot delete yourself")
     row = server.user_manager.get_row(user_id)

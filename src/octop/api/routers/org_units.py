@@ -30,6 +30,14 @@ repo's generic 400 "invalid arguments" code — covers the cycle refusal, and
 ``details`` keys must avoid ``key`` and ``locale``: ``to_envelope`` forwards them
 into ``tr(key, locale, ...)``, so a ``details["key"]`` breaks localization with a
 ``TypeError`` instead of returning a response.
+
+Department permission grants (``org_unit_permissions``) are the "unit" leg of
+``role ∪ unit ∪ grant − deny``, so they live here rather than in the user
+editor: one row per (unit, module key), and every member of the unit gains the
+key through ``sharing``/``deps`` resolution. Writing them needs the ``users``
+module *and* one of: the ``admin`` role, or the ``unit_admin`` role **of that
+same unit** — a department admin administers its own department and nothing
+else, and only with keys it holds itself (see :func:`_assert_can_grant`).
 """
 
 from __future__ import annotations
@@ -37,12 +45,14 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import get_server, require_admin, require_permission
 from octop.infra.db.repos._base import UNSET
 from octop.infra.db.repos.org_units import OrgUnitRepo, OrgUnitRow
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.identity import Role
+from octop.infra.users.permissions import resolve_permissions, validate_permission_keys
 
 router = APIRouter()
 
@@ -68,6 +78,16 @@ class OrgUnitPatchBody(BaseModel):
     sort_order: int | None = None
 
 
+class OrgUnitPermissionsBody(BaseModel):
+    """The unit's whole grant set; ``PUT`` replaces, it does not merge."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    permissions: list[str] = Field(
+        default_factory=list, description="Module keys every member of the unit gains."
+    )
+
+
 def _unit_payload(unit: OrgUnitRow) -> dict[str, Any]:
     """Single-unit body: the list shape plus the order the editor round-trips."""
     return {
@@ -84,6 +104,51 @@ def _missing_unit(key: str) -> OctopError:
         f"org unit {key!r} not found",
         details={"unit_key": key, "reason": f"unknown org unit {key!r}"},
     )
+
+
+def _assert_can_manage_grants(user: Any, unit_key: str) -> None:
+    """Admin, or the ``unit_admin`` of *that* unit, may change its grants.
+
+    The scope check is the whole point of the role: a department admin that
+    could edit another department's grants would be a system admin with a
+    narrower UI, and one department could widen another's access.
+    """
+    if getattr(user, "is_admin", False):
+        return
+    is_unit_admin = str(getattr(user, "role", "")) == Role.UNIT_ADMIN.value
+    if is_unit_admin and getattr(user, "org_unit", None) == unit_key:
+        return
+    raise OctopError(
+        ErrorCode.FORBIDDEN,
+        f"admin or {unit_key!r} unit admin required",
+        details={"unit_key": unit_key, "reason": "not the admin of this department"},
+    )
+
+
+def _assert_can_grant(repo: OrgUnitRepo, user: Any, unit_key: str, permissions: list[str]) -> None:
+    """A department admin may only grant keys it holds itself.
+
+    The same rule the user editor applies to non-admin actors
+    (``users._assert_can_assign``): without it, granting would be
+    self-escalation — the admin could hand its own department ``security`` and
+    hold it a request later. The held set is resolved *within this unit*, so the
+    grants the department already has can be re-submitted (``PUT`` replaces the
+    whole set, and a department's grants are normally wider than its admin's
+    personal ones).
+    """
+    held = resolve_permissions(
+        role=getattr(user, "role", None),
+        permissions=list(getattr(user, "permissions", None) or []),
+        denied=list(getattr(user, "denied_permissions", None) or []),
+        unit_grants=set(repo.list_unit_permissions(unit_key)),
+    )
+    missing = sorted(set(permissions) - held)
+    if missing:
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            "cannot grant permissions you do not hold",
+            details={"unit_key": unit_key, "missing": missing},
+        )
 
 
 def _assert_parent_exists(repo: OrgUnitRepo, parent_key: str) -> None:
@@ -202,6 +267,50 @@ async def patch_org_unit(
     )
     assert updated is not None  # exists: checked above, and ``key`` is immutable
     return _unit_payload(updated)
+
+
+@router.get("/{unit_key}/permissions", summary="List a department's permission grants")
+async def get_org_unit_permissions(
+    unit_key: str,
+    _user: Any = Depends(require_permission("users")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Module keys every member of ``unit_key`` gains (empty list = none)."""
+    repo = server.services.repos.org_unit_repo
+    if repo.get(unit_key) is None:
+        raise _missing_unit(unit_key)
+    return {"unit_key": unit_key, "permissions": repo.list_unit_permissions(unit_key)}
+
+
+@router.put(
+    "/{unit_key}/permissions",
+    summary="Replace a department's permission grants",
+)
+async def set_org_unit_permissions(
+    unit_key: str,
+    body: OrgUnitPermissionsBody,
+    user: Any = Depends(require_permission("users")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Replace the unit's grants; the body is the whole set, not a delta.
+
+    A replace (not a merge) is what makes *revoking* a department's module
+    possible at all: with a merge there would be no way to express "this
+    department no longer gets ``browser``".
+    """
+    repo = server.services.repos.org_unit_repo
+    if repo.get(unit_key) is None:
+        raise _missing_unit(unit_key)
+    _assert_can_manage_grants(user, unit_key)
+    try:
+        keys = validate_permission_keys(body.permissions)
+    except ValueError as exc:
+        # Same 400 shape the user editor uses for an unknown module key.
+        raise OctopError(ErrorCode.FORBIDDEN, str(exc), status=400) from exc
+    if not getattr(user, "is_admin", False):
+        _assert_can_grant(repo, user, unit_key, keys)
+    repo.set_grants(unit_key, keys)
+    return {"unit_key": unit_key, "permissions": keys}
 
 
 @router.delete(
