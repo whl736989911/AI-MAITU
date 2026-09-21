@@ -82,21 +82,9 @@ export const SECURITY_TAB_PERMISSIONS = {
 } as const;
 
 /**
- * True when the holder bypasses every module gate: the ``admin`` role, or an
- * explicit ``*`` grant. ``unit_admin`` is deliberately excluded — its power is
- * the org-unit resource scope, not extra module keys.
- */
-export function hasFullPermission(
-  user: PermissionHolder | null | undefined,
-): boolean {
-  if (!user) return false;
-  if (user.role === "admin") return true;
-  return (user.permissions ?? []).includes(ALL_PERMISSIONS_KEY);
-}
-
-/**
  * True when the holder has the ``admin`` role itself. Mirrors the backend
- * ``require_admin`` gate (role only — a ``*`` grant does not qualify).
+ * ``require_admin`` gate (role only — a ``*`` grant does not qualify) and is
+ * the only predicate a role-only gate may use.
  */
 export function isSystemAdmin(
   user: PermissionHolder | null | undefined,
@@ -110,8 +98,9 @@ export function userCan(
   key: string,
 ): boolean {
   if (!user) return false;
-  if (hasFullPermission(user)) return true;
-  return (user.permissions ?? []).includes(key);
+  if (isSystemAdmin(user)) return true;
+  const held = user.permissions ?? [];
+  return held.includes(key) || held.includes(ALL_PERMISSIONS_KEY);
 }
 
 /** True when the user holds any of the given keys (admin bypasses). */
@@ -120,16 +109,16 @@ export function userCanAny(
   keys: readonly string[],
 ): boolean {
   if (!user) return false;
-  if (hasFullPermission(user)) return true;
+  if (isSystemAdmin(user)) return true;
   const held = new Set(user.permissions ?? []);
-  return keys.some((k) => held.has(k));
+  return held.has(ALL_PERMISSIONS_KEY) || keys.some((k) => held.has(k));
 }
 
 export function canAccessKeys(
   user: PermissionHolder | null | undefined,
   keys: PermissionKeys,
 ): boolean {
-  if (keys === "admin") return hasFullPermission(user);
+  if (keys === "admin") return isSystemAdmin(user);
   return userCanAny(user, keys);
 }
 

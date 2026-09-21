@@ -117,10 +117,14 @@ async def list_cron(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    """List scheduled jobs for an agent."""
+    """List scheduled jobs for an agent.
+
+    Managing cron is the owner's: a caller the ACL only lets *open* the agent
+    gets the same 403 as ``get_cron`` / ``patch_cron``, instead of an empty
+    list that reads as "this agent has no jobs".
+    """
     agent_row = require_agent_row(agent_id, user=user, as_user=None, server=server)
-    if not _user_may_manage_agent_cron(agent_row=agent_row, user=user):
-        return []
+    _assert_cron_manage(agent_id=agent_id, agent_row=agent_row, user=user)
     return [
         r.to_public_dict(include_agent=True)
         for r in _get_cron_manager(server).list_by_agent(agent_id)

@@ -770,11 +770,18 @@ function ChatPageInner() {
           setBrowserLastRecordingId(status.latestRecordingId);
         }
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // A failed probe leaves the recording state unknown: say so instead of
+        // reading it as "not recording" and hiding a broken recorder.
+        if (cancelled) return;
+        antMessage.error(
+          apiErrorMessage(error, t("remoteBrowser.checkFailed"), t),
+        );
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t]);
 
   // Regenerate: re-send the last user message before this assistant message
   const handleRegenerate = useCallback(

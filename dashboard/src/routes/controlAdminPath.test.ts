@@ -132,10 +132,16 @@ describe("pathPermissionKeys", () => {
     ).toBe(true);
   });
 
-  it("treats an explicit wildcard grant as full access", () => {
+  it("treats an explicit wildcard grant as every module key, not as the admin role", () => {
     const wildcard = { role: "user", permissions: ["*"] };
+    // Module gates: ``*`` stands for the whole catalog.
     expect(canAccessPath(wildcard, "/admin/users")).toBe(true);
-    expect(canAccessPath(wildcard, "/acp")).toBe(true);
+    expect(canAccessPath(wildcard, "/workbench/browser")).toBe(true);
+    // Role-only gates: the backend's ``require_admin`` never reads
+    // ``permissions``, so a ``*`` grant must not open admin-only routes.
+    expect(pathPermissionKeys("/acp")).toBe("admin");
+    expect(canAccessPath(wildcard, "/acp")).toBe(false);
+    expect(canAccessPath({ role: "user", permissions: [] }, "/acp")).toBe(false);
   });
 });
 
