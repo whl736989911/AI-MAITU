@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
-import { useTranslation } from "react-i18next";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
-import { apiErrorMessage } from "../../../utils/apiError";
-import { message as antMessage } from "../../../utils/antdMessage";
 import * as chatStore from "./chatStore";
 import { onSessionEvent } from "./chatStore";
 import { formatThreadTitle } from "../utils/threadTitle";
@@ -312,7 +309,6 @@ export function resetSessionStoreForTests() {
 
 export function useSessions(agentId: string | null) {
   syncStoreToAgent(agentId);
-  const { t } = useTranslation();
   const { sessions, loading, hasMore, loadingMore } = useSyncExternalStore(
     subscribeSessionStore,
     getSessionSnapshot,
@@ -522,8 +518,11 @@ export function useSessions(agentId: string | null) {
       try {
         await octopThreadsApi.patch(agentId, id, { pinned });
         return true;
-      } catch (error) {
+      } catch {
         // A rejected PATCH must not keep rendering as if it had been stored.
+        // The UI layer toasts (see ``handlePinSession`` in
+        // useChatSessionActions): this store module stays free of antd/i18n so
+        // the lazily imported chat-history chunk does not pull them in.
         if (previous !== undefined) {
           setModuleSessions((prev) =>
             sortSessions(
@@ -531,11 +530,10 @@ export function useSessions(agentId: string | null) {
             ),
           );
         }
-        antMessage.error(apiErrorMessage(error, t("chat.pinFailed"), t));
         return false;
       }
     },
-    [agentId, t],
+    [agentId],
   );
 
   const renameSession = useCallback(
@@ -549,17 +547,18 @@ export function useSessions(agentId: string | null) {
       try {
         await octopThreadsApi.rename(agentId, id, next);
         return true;
-      } catch (error) {
+      } catch {
+        // Same contract as ``pinSession``: roll back, report ``false``, let the
+        // caller surface the failure.
         if (previous !== undefined) {
           setModuleSessions((prev) =>
             prev.map((s) => (s.id === id ? { ...s, name: previous } : s)),
           );
         }
-        antMessage.error(apiErrorMessage(error, t("chat.renameFailed"), t));
         return false;
       }
     },
-    [agentId, t],
+    [agentId],
   );
 
   const syncSession = useCallback(

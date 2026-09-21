@@ -1,5 +1,7 @@
 import { useCallback } from "react";
 import { useNavigate } from "react-router-dom";
+import { useTranslation } from "react-i18next";
+import { message as antMessage } from "../../../utils/antdMessage";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
 import * as chatStore from "./chatStore";
 import { EMPTY_CHAT_SESSION_KEY } from "../constants";
@@ -15,6 +17,8 @@ interface UseChatSessionActionsParams {
   setSelectedModel: (model: string | null) => void;
   setHasBrowserTool: (value: boolean) => void;
   deleteSession: (id: string) => Promise<boolean>;
+  renameSession: (id: string, name: string) => Promise<boolean>;
+  pinSession: (id: string, pinned: boolean) => Promise<boolean>;
   clearMessages: () => void;
   resetNavForAgentSwitch: () => void;
   markInitialNavDone: (agentId: string) => void;
@@ -30,11 +34,14 @@ export function useChatSessionActions({
   setSelectedModel,
   setHasBrowserTool,
   deleteSession,
+  renameSession,
+  pinSession,
   clearMessages,
   resetNavForAgentSwitch,
   markInitialNavDone,
 }: UseChatSessionActionsParams) {
   const navigate = useNavigate();
+  const { t } = useTranslation();
 
   const handleNewChat = useCallback(() => {
     setSelectedModel(null);
@@ -158,11 +165,37 @@ export function useChatSessionActions({
     ],
   );
 
+  /**
+   * Rename the given session, surfacing a rejected write. ``renameSession``
+   * rolls the optimistic local change back and resolves ``false``; this handler
+   * owns the user-visible error so the store layer needs no UI imports.
+   */
+  const handleRenameSession = useCallback(
+    async (id: string, name: string): Promise<boolean> => {
+      const stored = await renameSession(id, name);
+      if (!stored) antMessage.error(t("chat.renameFailed"));
+      return stored;
+    },
+    [renameSession, t],
+  );
+
+  /** Pin/unpin counterpart of {@link handleRenameSession}. */
+  const handlePinSession = useCallback(
+    async (id: string, pinned: boolean): Promise<boolean> => {
+      const stored = await pinSession(id, pinned);
+      if (!stored) antMessage.error(t("chat.pinFailed"));
+      return stored;
+    },
+    [pinSession, t],
+  );
+
   return {
     handleNewChat,
     handleNewChatWithAgent,
     handleSelectSession,
     navigateToAgent,
     handleDeleteSession,
+    handleRenameSession,
+    handlePinSession,
   };
 }

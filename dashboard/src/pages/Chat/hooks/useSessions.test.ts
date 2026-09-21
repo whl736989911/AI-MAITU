@@ -11,7 +11,6 @@ import {
 const listMock = vi.fn();
 const patchMock = vi.fn();
 const renameMock = vi.fn();
-const errorToastMock = vi.fn();
 
 vi.mock("../../../api/modules/octopThreads", () => ({
   octopThreadsApi: {
@@ -21,15 +20,6 @@ vi.mock("../../../api/modules/octopThreads", () => ({
     patch: (...args: unknown[]) => patchMock(...args),
     rename: (...args: unknown[]) => renameMock(...args),
     rebind: vi.fn(),
-  },
-}));
-
-vi.mock("../../../utils/antdMessage", () => ({
-  message: {
-    error: (...args: unknown[]) => errorToastMock(...args),
-    success: vi.fn(),
-    info: vi.fn(),
-    warning: vi.fn(),
   },
 }));
 
@@ -193,7 +183,6 @@ describe("useSessions rename / pin persistence", () => {
     listMock.mockReset();
     patchMock.mockReset();
     renameMock.mockReset();
-    errorToastMock.mockReset();
     listMock.mockResolvedValue([threadRow("thr_keep", { title: "Keep me" })]);
   });
 
@@ -209,16 +198,16 @@ describe("useSessions rename / pin persistence", () => {
     return result;
   }
 
-  it("reports a rejected rename", async () => {
+  it("reports a rejected rename as not stored", async () => {
     renameMock.mockRejectedValue(threadNotFoundError());
     const result = await mountWithThread();
 
+    let stored: boolean | undefined;
     await act(async () => {
-      await result.current.renameSession("thr_keep", "Renamed locally");
+      stored = await result.current.renameSession("thr_keep", "Renamed locally");
     });
 
-    expect(errorToastMock).toHaveBeenCalledTimes(1);
-    expect(errorToastMock.mock.calls[0][0]).toContain("thread not found");
+    expect(stored).toBe(false);
   });
 
   it("drops a rejected rename from the list", async () => {
@@ -232,16 +221,16 @@ describe("useSessions rename / pin persistence", () => {
     expect(result.current.sessions[0].name).toBe("Keep me");
   });
 
-  it("reports a rejected pin", async () => {
+  it("reports a rejected pin as not stored", async () => {
     patchMock.mockRejectedValue(threadNotFoundError());
     const result = await mountWithThread();
 
+    let stored: boolean | undefined;
     await act(async () => {
-      await result.current.pinSession("thr_keep", true);
+      stored = await result.current.pinSession("thr_keep", true);
     });
 
-    expect(errorToastMock).toHaveBeenCalledTimes(1);
-    expect(errorToastMock.mock.calls[0][0]).toContain("thread not found");
+    expect(stored).toBe(false);
   });
 
   it("drops a rejected pin from the list", async () => {
@@ -265,7 +254,6 @@ describe("useSessions rename / pin persistence", () => {
     });
 
     expect(stored).toBe(true);
-    expect(errorToastMock).not.toHaveBeenCalled();
     expect(result.current.sessions[0].name).toBe("Renamed on server");
   });
 
@@ -279,7 +267,6 @@ describe("useSessions rename / pin persistence", () => {
     });
 
     expect(stored).toBe(true);
-    expect(errorToastMock).not.toHaveBeenCalled();
     expect(result.current.sessions[0].pinned).toBe(true);
   });
 });

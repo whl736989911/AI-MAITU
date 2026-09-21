@@ -682,6 +682,8 @@ function ChatPageInner() {
     handleSelectSession,
     navigateToAgent,
     handleDeleteSession,
+    handleRenameSession,
+    handlePinSession,
   } = useChatSessionActions({
     resolvedAgentId,
     activeThreadId,
@@ -692,6 +694,8 @@ function ChatPageInner() {
     setSelectedModel,
     setHasBrowserTool,
     deleteSession,
+    renameSession,
+    pinSession,
     clearMessages,
     resetNavForAgentSwitch,
     markInitialNavDone,
@@ -991,8 +995,8 @@ function ChatPageInner() {
         handleNewChatWithAgent(agentId);
       }}
       onDeleteSession={handleDeleteSession}
-      onRenameSession={renameSession}
-      onPinSession={pinSession}
+      onRenameSession={handleRenameSession}
+      onPinSession={handlePinSession}
       onForkSession={handleForkSession}
       forkDisabled={sessionForkDisabled}
       forkDisabledHint={sessionForkDisabledHint}
@@ -1093,8 +1097,8 @@ function ChatPageInner() {
               <ChatTitleBar
                 session={activeSession}
                 title={activeSessionTitle}
-                onRename={renameSession}
-                onPin={pinSession}
+                onRename={handleRenameSession}
+                onPin={handlePinSession}
                 onFork={handleForkSession}
                 onDelete={handleDeleteSession}
                 forkDisabled={sessionForkDisabled}
