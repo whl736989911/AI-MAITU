@@ -14,10 +14,11 @@ Effective access is ``role ∪ unit ∪ grant − deny`` (see
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Protocol
 
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role
 
 
@@ -331,3 +332,38 @@ def effective_permissions(
 ) -> list[str]:
     """Permissions to expose on ``/auth/me`` / login (admin gets the full catalog)."""
     return sorted(_resolve_user(user, unit_grants))
+
+
+def assert_can_grant(
+    user: PermissionUser,
+    permissions: Iterable[str],
+    *,
+    unit_grants: set[str] | None = None,
+    details: Mapping[str, Any] | None = None,
+) -> None:
+    """Refuse handing out keys ``user`` does not effectively hold.
+
+    Granting is delegation, not self-escalation. The held set is
+    :func:`effective_permissions` — the very set ``/auth/me`` publishes as the
+    editor's checkbox set — so a key the UI offers is a key this accepts, and a
+    key held down by a deny is never grantable.
+
+    Every grant surface resolves through here (the user editor's ``permissions``
+    field, a department's grant set), so the two cannot drift apart.
+    ``unit_grants`` is the scope the held set is resolved in: the actor's *own*
+    department in the user editor, the department being edited for a unit admin
+    — which lets that admin re-submit grants its department already has.
+    """
+    if getattr(user, "is_admin", False):
+        return
+    missing = sorted(set(permissions) - _resolve_user(user, unit_grants))
+    if not missing:
+        return
+    payload: dict[str, Any] = {"missing": missing}
+    if details:
+        payload.update(details)
+    raise OctopError(
+        ErrorCode.FORBIDDEN,
+        "cannot grant permissions you do not hold",
+        details=payload,
+    )

@@ -37,7 +37,9 @@ editor: one row per (unit, module key), and every member of the unit gains the
 key through ``sharing``/``deps`` resolution. Writing them needs the ``users``
 module *and* one of: the ``admin`` role, or the ``unit_admin`` role **of that
 same unit** — a department admin administers its own department and nothing
-else, and only with keys it holds itself (see :func:`_assert_can_grant`).
+else, and only with keys it holds itself (``permissions.assert_can_grant`` — the
+same rule and the same function the user editor applies, resolved in the scope
+of *this* unit).
 """
 
 from __future__ import annotations
@@ -52,7 +54,7 @@ from octop.infra.db.repos._base import UNSET
 from octop.infra.db.repos.org_units import OrgUnitRepo, OrgUnitRow
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role
-from octop.infra.users.permissions import resolve_permissions, validate_permission_keys
+from octop.infra.users.permissions import assert_can_grant, validate_permission_keys
 
 router = APIRouter()
 
@@ -123,32 +125,6 @@ def _assert_can_manage_grants(user: Any, unit_key: str) -> None:
         f"admin or {unit_key!r} unit admin required",
         details={"unit_key": unit_key, "reason": "not the admin of this department"},
     )
-
-
-def _assert_can_grant(repo: OrgUnitRepo, user: Any, unit_key: str, permissions: list[str]) -> None:
-    """A department admin may only grant keys it holds itself.
-
-    The same rule the user editor applies to non-admin actors
-    (``users._assert_can_assign``): without it, granting would be
-    self-escalation — the admin could hand its own department ``security`` and
-    hold it a request later. The held set is resolved *within this unit*, so the
-    grants the department already has can be re-submitted (``PUT`` replaces the
-    whole set, and a department's grants are normally wider than its admin's
-    personal ones).
-    """
-    held = resolve_permissions(
-        role=getattr(user, "role", None),
-        permissions=list(getattr(user, "permissions", None) or []),
-        denied=list(getattr(user, "denied_permissions", None) or []),
-        unit_grants=set(repo.list_unit_permissions(unit_key)),
-    )
-    missing = sorted(set(permissions) - held)
-    if missing:
-        raise OctopError(
-            ErrorCode.FORBIDDEN,
-            "cannot grant permissions you do not hold",
-            details={"unit_key": unit_key, "missing": missing},
-        )
 
 
 def _assert_parent_exists(repo: OrgUnitRepo, parent_key: str) -> None:
@@ -308,7 +284,17 @@ async def set_org_unit_permissions(
         # Same 400 shape the user editor uses for an unknown module key.
         raise OctopError(ErrorCode.FORBIDDEN, str(exc), status=400) from exc
     if not getattr(user, "is_admin", False):
-        _assert_can_grant(repo, user, unit_key, keys)
+        # Delegation, not self-escalation: a unit admin may only hand out keys
+        # it holds. Same rule and same function as the user editor
+        # (``users._assert_can_assign``), resolved in the scope of *this*
+        # department — ``PUT`` replaces the whole set, so its admin must be able
+        # to re-submit the grants the department already carries.
+        assert_can_grant(
+            user,
+            keys,
+            unit_grants=set(repo.list_unit_permissions(unit_key)),
+            details={"unit_key": unit_key},
+        )
     repo.set_grants(unit_key, keys)
     return {"unit_key": unit_key, "permissions": keys}
 

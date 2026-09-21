@@ -4,7 +4,8 @@ Two gates, deliberately distinct:
 
 * the ``users`` module key opens this surface — listing accounts, creating a
   plain ``user`` account, editing profile fields, and granting module keys the
-  actor itself holds;
+  actor *effectively* holds (``role ∪ department ∪ grant − deny``: the very set
+  ``/auth/me`` publishes as the editor's checkboxes — ``_assert_can_assign``);
 * the operations that move the authorization boundary itself — a role grant
   (whether the role is set at creation or by a later edit), another account's
   password / disabled state / deletion, department assignment, and permission
@@ -26,10 +27,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
-from octop.api.deps import current_user, get_server, require_admin, require_permission
+from octop.api.deps import (
+    current_user,
+    get_server,
+    request_unit_grants,
+    require_admin,
+    require_permission,
+)
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role, User
-from octop.infra.users.permissions import PERMISSIONS, validate_permission_keys
+from octop.infra.users.permissions import PERMISSIONS, assert_can_grant, validate_permission_keys
 from octop.infra.users.resource_policy import (
     normalize_token_quota,
     normalize_workspace_root_dir,
@@ -187,17 +194,20 @@ def _assert_denied_keys_known(denied: list[str] | None) -> list[str]:
         raise OctopError(ErrorCode.FORBIDDEN, str(exc), status=400) from exc
 
 
-def _assert_can_assign(actor: User, permissions: list[str]) -> None:
-    """Non-admin actors may only grant permissions they themselves hold."""
-    if actor.is_admin:
-        return
-    missing = sorted(set(permissions) - set(actor.permissions or []))
-    if missing:
-        raise OctopError(
-            ErrorCode.FORBIDDEN,
-            "cannot grant permissions you do not hold",
-            details={"missing": missing},
-        )
+def _assert_can_assign(request: Request, server: Any, actor: User, permissions: list[str]) -> None:
+    """Non-admin actors may only grant keys they *effectively* hold.
+
+    The held set is resolved (``role ∪ department ∪ grant − deny``) through
+    :func:`octop.infra.users.permissions.assert_can_grant` — the same resolution
+    ``/auth/me`` publishes as the editor's checkbox set, so a key the UI offers
+    is a key this accepts. Reading the stored column alone instead showed a
+    department's grants as checkable and then refused the submit. The department
+    grants come from the per-request cache ``current_user`` already warmed.
+
+    This is one rule with ``org_units.set_org_unit_permissions``, which resolves
+    the same set in the scope of the department being edited.
+    """
+    assert_can_grant(actor, permissions, unit_grants=request_unit_grants(request, server, actor))
 
 
 def _can_manage_users(row: Any) -> bool:
@@ -265,11 +275,12 @@ async def list_users(
 
 @router.post("", status_code=201)
 async def create_user(
+    request: Request,
     body: UserCreateBody,
     actor: Any = Depends(require_permission("users")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    _assert_can_assign(actor, body.permissions)
+    _assert_can_assign(request, server, actor, body.permissions)
     if body.org_unit is not None:
         # A department carries module grants, so this binds permissions.
         _assert_admin(actor, "bind an account to a department")
@@ -328,6 +339,7 @@ async def get_user(
 @router.patch("/{user_id}")
 async def patch_user(
     user_id: int,
+    request: Request,
     body: UserPatchBody,
     actor: Any = Depends(require_permission("users")),
     server: Any = Depends(get_server),
@@ -336,7 +348,7 @@ async def patch_user(
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
     if body.permissions is not None:
-        _assert_can_assign(actor, body.permissions)
+        _assert_can_assign(request, server, actor, body.permissions)
         _assert_not_last_user_manager(
             server,
             actor=actor,

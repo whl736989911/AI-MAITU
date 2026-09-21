@@ -4,10 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pytest
+
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role, User
 from octop.infra.users.permissions import (
     ALL_PERMISSION_KEYS,
     BASELINE_PERMISSIONS,
+    assert_can_grant,
     effective_permissions,
     resolve_permissions,
     role_default_permissions,
@@ -222,3 +226,32 @@ def test_wrappers_accept_legacy_user_shape_without_role_or_denied() -> None:
     assert effective_permissions(member) == ["browser"]
     assert user_has_permission(member, "browser") is True
     assert user_has_permission(member, "providers") is False
+
+
+def test_assert_can_grant_uses_the_effective_set() -> None:
+    """Granting is bounded by ``role ∪ unit ∪ grant − deny``, not by the stored column."""
+    holder = _user(Role.USER, permissions=["users", "terminal"], denied=["terminal"])
+
+    # Stored grant: held.
+    assert_can_grant(holder, ["users"])
+    # Department grant: held, and the reason the two grant surfaces share this
+    # function.
+    assert_can_grant(holder, ["browser"], unit_grants={"browser"})
+    # Denied: subtracted, so not grantable — even though it is still stored.
+    with pytest.raises(OctopError) as exc:
+        assert_can_grant(holder, ["terminal"])
+    assert exc.value.code is ErrorCode.FORBIDDEN
+    assert exc.value.details["missing"] == ["terminal"]
+    # Neither stored nor granted.
+    with pytest.raises(OctopError) as exc:
+        assert_can_grant(holder, ["users", "security"], unit_grants={"browser"})
+    assert exc.value.details["missing"] == ["security"]
+    # Caller context rides along with the missing keys.
+    with pytest.raises(OctopError) as exc:
+        assert_can_grant(holder, ["security"], details={"unit_key": "eng"})
+    assert exc.value.details == {"missing": ["security"], "unit_key": "eng"}
+
+
+def test_assert_can_grant_admin_bypasses() -> None:
+    admin = _user(Role.ADMIN, permissions=[], denied=["browser"])
+    assert_can_grant(admin, ["browser", "security"])

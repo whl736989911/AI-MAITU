@@ -761,3 +761,115 @@ async def test_deny_rejects_unknown_key_and_stores_nothing(env):
     assert refused.status_code == 400, refused.text
     usernames = [u["username"] for u in (await c.get("/api/users", headers=auth)).json()]
     assert "bob" not in usernames
+
+
+async def test_department_granted_key_is_assignable(env):
+    """A key the department carries is offered by the picker, so saving it must work.
+
+    Regression: the guard compared the *stored* column, while ``/auth/me`` (and
+    therefore the checkbox set) resolves the department grants too — so a key
+    the editor displayed as assignable came back 403 on submit.
+    """
+    from tests.support.auth import TEST_PASSWORD, create_user, resolve_user_id
+
+    c, _srv, auth = env
+    await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "sales", "label_zh": "销售部", "label_en": "Sales"},
+    )
+    granted = await c.put(
+        "/api/org-units/sales/permissions",
+        headers=auth,
+        json={"permissions": ["terminal"]},
+    )
+    assert granted.status_code == 200, granted.text
+
+    lead = await create_user(c, auth, username="lead", role="unit_admin", permissions=["users"])
+    lead_id = await resolve_user_id(c, auth, "lead")
+    await create_user(c, auth, username="member")
+    member_id = await resolve_user_id(c, auth, "member")
+    bound = await c.patch(f"/api/users/{lead_id}", headers=auth, json={"org_unit": "sales"})
+    assert bound.status_code == 200, bound.text
+
+    # Exactly the set the editor renders as checkboxes: department included.
+    assert "terminal" in (await c.get("/api/auth/me", headers=lead)).json()["permissions"]
+
+    patched = await c.patch(
+        f"/api/users/{member_id}", headers=lead, json={"permissions": ["terminal"]}
+    )
+    assert patched.status_code == 200, patched.text
+    assert "terminal" in patched.json()["permissions"]
+
+    # The same grant through the other call site (create).
+    created = await c.post(
+        "/api/users",
+        headers=lead,
+        json={
+            "username": "handover",
+            "password": TEST_PASSWORD,
+            "role": "user",
+            "permissions": ["terminal"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["permissions"] == ["terminal"]
+
+    # Held keys only, still: the department grant does not widen the guard into
+    # "anything goes".
+    refused = await c.patch(
+        f"/api/users/{member_id}", headers=lead, json={"permissions": ["terminal", "security"]}
+    )
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["error"]["details"]["missing"] == ["security"]
+    assert (await c.get(f"/api/users/{member_id}", headers=auth)).json()["permissions"] == [
+        "terminal"
+    ]
+
+    # Both grant surfaces resolve the same set for this actor now: the editor's
+    # PATCH accepts ``terminal``, and the department's own PUT re-submits it.
+    re_granted = await c.put(
+        "/api/org-units/sales/permissions", headers=lead, json={"permissions": ["terminal"]}
+    )
+    assert re_granted.status_code == 200, re_granted.text
+
+
+async def test_denied_key_cannot_be_passed_on(env):
+    """A deny subtracts the key, so its holder must not be able to grant it.
+
+    Regression: the guard read the stored grants, so a key that was granted
+    *and* denied — absent from the effective set ``/auth/me`` reports — could
+    still be handed to somebody else.
+    """
+    from tests.support.auth import create_user, resolve_user_id
+
+    c, _srv, auth = env
+    operator = await create_user(c, auth, username="operator", permissions=["users", "terminal"])
+    operator_id = await resolve_user_id(c, auth, "operator")
+    await create_user(c, auth, username="member")
+    member_id = await resolve_user_id(c, auth, "member")
+    denied = await c.patch(
+        f"/api/users/{operator_id}", headers=auth, json={"denied_permissions": ["terminal"]}
+    )
+    assert denied.status_code == 200, denied.text
+
+    held = (await c.get("/api/auth/me", headers=operator)).json()["permissions"]
+    assert "terminal" not in held
+    assert "users" in held
+    before = (await c.get(f"/api/users/{member_id}", headers=auth)).json()["permissions"]
+
+    refused = await c.patch(
+        f"/api/users/{member_id}", headers=operator, json={"permissions": ["terminal"]}
+    )
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["error"]["details"]["missing"] == ["terminal"]
+    # Refused means nothing was written.
+    assert (await c.get(f"/api/users/{member_id}", headers=auth)).json()["permissions"] == before
+
+    # The deny is what refused, not a blanket lock: a key it does hold still goes
+    # through.
+    allowed = await c.patch(
+        f"/api/users/{member_id}", headers=operator, json={"permissions": ["users"]}
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["permissions"] == ["users"]
