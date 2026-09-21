@@ -7,7 +7,9 @@
  *     continues it; it never starts a second one.
  *   - Nothing here is inferred from the definition. Every step's status, gate,
  *     artifacts and error come from the run itself, so a definition edited after
- *     the run started cannot make this view lie about what happened.
+ *     the run started cannot make this view lie about what happened. That
+ *     includes what a step dispatched: the subagents are the run's own record of
+ *     the split the model chose, not the skeleton the definition declares.
  *   - A refusal is shown as it came. An edit the server rejects (a value that
  *     does not fit the artifact's schema, a gate that does not allow editing) is
  *     reported verbatim instead of being retried or quietly dropped.
@@ -29,6 +31,7 @@ import { apiErrorMessage } from "../../../utils/apiError";
 import { formatMessageTime } from "../../../utils/formatMessageTime";
 import { message } from "@/utils/antdMessage";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
+import FeatureDecomposition from "./FeatureDecomposition";
 import FeatureRunAudit from "./FeatureRunAudit";
 import {
   artifactsBefore,
@@ -444,6 +447,8 @@ export default function FeatureRunSteps({
             )}
 
             <ArtifactTags artifacts={step.artifacts} />
+
+            <FeatureDecomposition decomposition={step.decomposition} />
           </li>
           );
         })}

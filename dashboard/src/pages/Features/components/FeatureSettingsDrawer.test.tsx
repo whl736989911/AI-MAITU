@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, { type UserEvent } from "@testing-library/user-event";
 import type {
   Feature,
   FeatureCapabilities,
@@ -364,7 +364,18 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
     return screen.findByRole("button", { name: "features.settingsStepsAdd" });
   }
 
-  it("writes the step the author built, with orchestrate left unreachable", async () => {
+  /**
+   * Reveal the block without adding a row: the Add button is the proof the rows
+   * are mounted, so a case that starts from a declared step must not click it —
+   * clicking would leave a second, empty row whose required fields refuse the
+   * save.
+   */
+  async function revealSteps(user: UserEvent) {
+    await user.click(screen.getByText("features.settingsSectionSteps"));
+    await screen.findByRole("button", { name: "features.settingsStepsAdd" });
+  }
+
+  it("writes the step the author built, with the mode the author chose", async () => {
     const user = userEvent.setup();
     renderDrawer();
 
@@ -384,8 +395,8 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
       "出工艺包",
     );
 
-    // The self-decomposing mode is in the schema and not selectable: offering it
-    // would promise a parallel decomposition this build refuses to run.
+    // The self-decomposing mode is the author's call: both modes are on offer
+    // and picking one is what gets written.
     const modeInput = document.querySelector<HTMLInputElement>(
       'input[id$="_mode"]',
     );
@@ -394,7 +405,6 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
     const orchestrate = await screen.findByTitle(
       "features.settingsStepModeOrchestrate",
     );
-    expect(orchestrate.className).toContain("disabled");
     await user.click(orchestrate);
 
     await user.click(screen.getByRole("button", { name: "common.save" }));
@@ -405,7 +415,7 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
       {
         id: "op_design",
         name: "工序设计",
-        mode: "agent",
+        mode: "orchestrate",
         inputs: [],
         output: { name: "ops", schema: "list" },
         prompt: "出工艺包",
@@ -415,7 +425,7 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
     ]);
   });
 
-  it("warns about an unimplemented step without blocking or rewriting the save", async () => {
+  it("writes an orchestrate step running as its named subagent, without a refusal", async () => {
     const user = userEvent.setup();
     render(
       <FeatureSettingsDrawer
@@ -427,6 +437,7 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
               id: "op_design",
               name: "工序设计",
               mode: "orchestrate",
+              agent_role: "engineering/engineering-code-reviewer",
               inputs: [],
               output: { name: "ops", schema: "list" },
               prompt: "出工艺包",
@@ -442,18 +453,72 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
       />,
     );
 
-    await user.click(screen.getByText("features.settingsSectionSteps"));
-    expect(
-      await screen.findByText("features.settingsStepModeRefused"),
-    ).toBeInTheDocument();
+    await revealSteps(user);
+    // How a step runs is writable, so nothing here calls the mode or the role
+    // unimplemented: the editor warns about neither.
+    expect(screen.queryByText("features.settingsStepModeRefused")).toBeNull();
+    expect(screen.queryByText(/settingsStepAgentRoleRefused/)).toBeNull();
 
     await user.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
-    // The server stores an orchestrate step and refuses the *run* (never
-    // degrading it), so the editor neither blocks the write nor rewrites the
-    // mode behind the author's back.
-    expect(lastUpdate()[1].steps?.[0].mode).toBe("orchestrate");
+    const [, body] = lastUpdate();
+    expect(body.steps?.[0].mode).toBe("orchestrate");
+    expect(body.steps?.[0].agent_role).toBe(
+      "engineering/engineering-code-reviewer",
+    );
+  });
+
+  it("lets the author pick the subagent a step runs as", async () => {
+    const user = userEvent.setup();
+    render(
+      <FeatureSettingsDrawer
+        open
+        feature={{
+          ...FEATURE,
+          steps: [
+            {
+              id: "op_design",
+              name: "工序设计",
+              mode: "agent",
+              inputs: [],
+              output: { name: "ops", schema: "list" },
+              prompt: "出工艺包",
+              gate: "auto",
+              on_failure: "abort",
+            },
+          ],
+        }}
+        meta={META}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onDeleted={vi.fn()}
+      />,
+    );
+
+    await revealSteps(user);
+    // The roles on offer are the caller's own subagents, so the picker can only
+    // name one the run could actually start.
+    await user.click(screen.getByLabelText("features.settingsStepAgentRole"));
+    await user.click(await screen.findByTitle("researcher"));
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
+    // Picking a role adds it to the step and changes nothing else about it.
+    expect(lastUpdate()[1].steps).toEqual([
+      {
+        id: "op_design",
+        name: "工序设计",
+        mode: "agent",
+        agent_role: "researcher",
+        inputs: [],
+        output: { name: "ops", schema: "list" },
+        prompt: "出工艺包",
+        gate: "auto",
+        on_failure: "abort",
+      },
+    ]);
   });
 
   it("refuses a validate gate whose artifact could never pass", async () => {

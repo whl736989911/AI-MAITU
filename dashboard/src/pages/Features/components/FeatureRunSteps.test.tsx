@@ -130,6 +130,78 @@ function awaitingGateRun(
 const EDITABLE_STEPS = { confirm_l1: true, extract_l1: false, op_design: false };
 
 
+/**
+ * One orchestrate step and the split the run recorded for it: three subagents,
+ * a ceiling of two, and the third held back until a slot freed up. The record is
+ * the run's own — the view renders what it says and nothing it does not.
+ */
+function orchestrateRun(): FeatureStepRun {
+  const base = awaitingGateRun();
+  const started = Math.floor(Date.now() / 1000);
+  return {
+    ...base,
+    status: "succeeded",
+    pending_gate: null,
+    steps: [
+      base.steps[0],
+      {
+        ...base.steps[2],
+        status: "succeeded",
+        mode: "orchestrate",
+        decomposition: {
+          mode: "orchestrate",
+          role: "engineering-process-planner",
+          declared: 2,
+          ceiling: 2,
+          peak: 2,
+          waited: 1,
+          dispatches: [
+            {
+              ordinal: 1,
+              role: "engineering-tooling",
+              task: "选出刀具",
+              status: "succeeded",
+              error: null,
+              result: "刀具：硬质合金立铣刀",
+              truncated: false,
+              started_at: started,
+              ended_at: started + 5,
+              waited_ms: 0,
+              slots: 1,
+            },
+            {
+              ordinal: 2,
+              role: "engineering-time-standard",
+              task: "定工时",
+              status: "succeeded",
+              error: null,
+              result: "工时：12 分钟",
+              truncated: true,
+              started_at: started,
+              ended_at: started + 8,
+              waited_ms: 0,
+              slots: 2,
+            },
+            {
+              ordinal: 3,
+              role: "engineering-nc-programmer",
+              task: "生成 NC 程序",
+              status: "failed",
+              error: "缺少后处理器配置",
+              result: null,
+              truncated: false,
+              started_at: started + 8,
+              ended_at: null,
+              waited_ms: 4200,
+              slots: 1,
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
 function renderPanel(
   run: FeatureStepRun = awaitingGateRun(),
   editableSteps: Record<string, boolean> = EDITABLE_STEPS,
@@ -451,6 +523,103 @@ describe("<FeatureRunSteps />", () => {
     expect(
       screen.getByText(/\[\s*"下料",\s*"机加工"\s*\]/),
     ).toBeInTheDocument();
+  });
+
+  it("shows what an orchestrate step dispatched, and the ceiling that held it back", () => {
+    renderPanel(orchestrateRun());
+
+    // The record's own sentence: how many subagents this step dispatched.
+    expect(
+      screen.getByText("features.runStepDecomposition"),
+    ).toBeInTheDocument();
+    // The ceiling it ran under, what really ran at once and what had to wait —
+    // the three facts that make "the cap bit" checkable after the fact.
+    expect(
+      screen.getByText("features.runStepDispatchCeilingDeclared"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("features.runStepDispatchPeak"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("features.runStepDispatchWaited"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("features.runStepDispatchRole"),
+    ).toBeInTheDocument();
+
+    // Which subagent each dispatch ran as, what it was given, what it answered.
+    expect(screen.getByText("engineering-tooling")).toBeInTheDocument();
+    expect(screen.getByText("engineering-nc-programmer")).toBeInTheDocument();
+    expect(screen.getByText("定工时")).toBeInTheDocument();
+    expect(screen.getByText("刀具：硬质合金立铣刀")).toBeInTheDocument();
+    expect(screen.getByText("工时：12 分钟")).toBeInTheDocument();
+
+    // A dispatch that failed carries its own error rather than a blank answer.
+    expect(screen.getByText("缺少后处理器配置")).toBeInTheDocument();
+    // An answer cut at the recorded cap says so instead of passing for the whole.
+    expect(
+      screen.getByText("features.runStepDispatchTruncated"),
+    ).toBeInTheDocument();
+  });
+
+  it("says an orchestrate step dispatched nothing instead of showing a blank", () => {
+    const base = awaitingGateRun();
+    renderPanel({
+      ...base,
+      status: "succeeded",
+      pending_gate: null,
+      steps: [
+        {
+          ...base.steps[2],
+          status: "succeeded",
+          mode: "orchestrate",
+          decomposition: {
+            mode: "orchestrate",
+            role: null,
+            declared: null,
+            ceiling: 8,
+            peak: 0,
+            waited: 0,
+            dispatches: [],
+          },
+        },
+      ],
+    });
+
+    expect(
+      screen.getByText("features.runStepDecomposition"),
+    ).toBeInTheDocument();
+    // The step declared no ceiling of its own, so the platform's applied.
+    expect(
+      screen.getByText("features.runStepDispatchCeilingDefault"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("features.runStepDispatchNone")).toBeInTheDocument();
+  });
+
+  it("keeps the dispatch record in the audit, so a wrong result can be traced", async () => {
+    const user = userEvent.setup();
+    const orchestrated = orchestrateRun().steps[1];
+    const audit: FeatureRunAudit = {
+      task_id: TASK,
+      feature_id: "bom-extract",
+      status: "succeeded",
+      snapshot: {},
+      steps: [
+        { ...orchestrated, inputs: [], human_edits: [] },
+      ],
+    };
+    getFeatureRunAudit.mockResolvedValue(audit);
+    renderPanel();
+
+    await user.click(
+      screen.getByRole("button", { name: "features.runAuditOpen" }),
+    );
+
+    expect(
+      await screen.findByText("features.runStepDecomposition"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("engineering-time-standard")).toBeInTheDocument();
+    expect(screen.getByText("缺少后处理器配置")).toBeInTheDocument();
   });
 
   it("keeps a refused edit on screen with the reason the server gave", async () => {

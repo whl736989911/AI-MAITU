@@ -224,8 +224,8 @@ export interface FeatureRunResponse {
 
 /**
  * How one step is executed. ``orchestrate`` — the model decomposing the step and
- * dispatching subagents itself — is **not implemented** in this build: the
- * server refuses such a definition rather than falling back to ``agent``.
+ * dispatching subagents itself — is a real mode: the run lets the model split the
+ * step, and records what it split it into (``decomposition`` on the run's steps).
  */
 export type FeatureStepMode = "agent" | "orchestrate";
 
@@ -256,9 +256,9 @@ export interface FeatureStep {
   /** Tool whitelist for this step; absent leaves the feature's own set. */
   tools?: string[];
   /**
-   * Ceiling for the model's own parallel dispatch. Validated and stored only:
-   * this build has no parallel dispatch yet (``orchestrate`` is unimplemented),
-   * so the value never starts anything here.
+   * Ceiling for the model's own parallel dispatch — a cap, never a plan. The
+   * model decides how to split the step and how many subagents to run; this only
+   * bounds how many may run at once, which is why a value here starts nothing.
    */
   max_parallel?: number | null;
   output: FeatureStepOutput;
@@ -267,7 +267,7 @@ export interface FeatureStep {
   /** Whether a person may edit the artifacts at this step's gate. */
   allow_edit?: boolean;
   on_failure?: FeatureStepOnFailure;
-  /** Subagent role for the step. **Not implemented** — the server refuses it. */
+  /** Subagent type the step runs as; absent runs it as the feature's own agent. */
   agent_role?: string;
 }
 
@@ -294,6 +294,68 @@ export interface FeatureRunArtifact {
   value: unknown;
 }
 
+/**
+ * One subagent a step dispatched, as the run recorded it (design 7.8).
+ *
+ * There is no ``depends_on`` and no output variable here, and that is deliberate:
+ * the dispatch channel the model has takes only a subagent type and a task text,
+ * so a dependency it never uttered would be invented. Sequencing is recorded as
+ * what really happened instead — ``ordinal``, the time window, and ``slots``, the
+ * number of dispatches that were running when this one started (overlapping
+ * windows ran in parallel; a dispatch that started after another ended waited).
+ */
+export interface FeatureStepDispatch {
+  /** Position this dispatch has in the record as the run reads it back. */
+  ordinal: number;
+  /** The subagent type the model passed, verbatim. */
+  role: string;
+  /** The task text the model gave that subagent — what it actually got. */
+  task: string;
+  status: "succeeded" | "failed";
+  error: string | null;
+  /** The subagent's answer; ``null`` when the run recorded none. */
+  result: string | null;
+  /** ``result`` was cut at the recorded cap — it is not the whole answer. */
+  truncated: boolean;
+  /** Epoch **seconds**. */
+  started_at: number;
+  /** Epoch **seconds**; ``null`` while the dispatch has not ended. */
+  ended_at: number | null;
+  /** This call found no free slot and had to queue for one. */
+  waited: boolean;
+  /** How long it queued for a slot; ``0`` on a call that still had to wait. */
+  waited_ms: number;
+  /** Dispatches running at the moment this one started. */
+  slots: number;
+}
+
+/**
+ * What one step dispatched, and the ceiling that bounded it (design 7.7/7.8).
+ *
+ * The split is the model's — the platform does not choose how many subagents run,
+ * it caps them and records what happened. ``declared`` / ``ceiling`` / ``peak`` /
+ * ``waited`` are that record: the step's own declaration, the cap actually
+ * enforced, how many ran at once, and how many dispatches were held back by the
+ * cap. A step that never orchestrated and ran no named subagent carries no record
+ * at all (``null``), which is why the view hides the section rather than showing
+ * an empty one.
+ */
+export interface FeatureStepDecomposition {
+  /** The mode the step ran under. */
+  mode: FeatureStepMode;
+  /** The step's declared ``agent_role``, when it has one. */
+  role: string | null;
+  /** The step's own ``max_parallel``; ``null`` when the step declared none. */
+  declared: number | null;
+  /** The ceiling enforced on this step: its own declaration, or the platform's default. */
+  ceiling: number;
+  /** Subagents that really ran at once. */
+  peak: number;
+  /** Dispatches that had to wait for a free slot — what the ceiling actually held back. */
+  waited: number;
+  dispatches: FeatureStepDispatch[];
+}
+
 /** One step as a run reports it. */
 export interface FeatureRunStep {
   id: string;
@@ -304,6 +366,11 @@ export interface FeatureRunStep {
   on_failure: FeatureStepOnFailure;
   mode: FeatureStepMode;
   artifacts: FeatureRunArtifact[];
+  /**
+   * What this step dispatched, or ``null`` when it neither orchestrated nor ran
+   * as a named subagent — ``null`` is the absence of a record, not an empty one.
+   */
+  decomposition?: FeatureStepDecomposition | null;
   /** Epoch **seconds**; ``null`` while the step has not reached that point. */
   started_at: number | null;
   ended_at: number | null;
@@ -382,6 +449,8 @@ export interface FeatureRunAuditStep {
   mode: FeatureStepMode;
   inputs: FeatureRunArtifact[];
   artifacts: FeatureRunArtifact[];
+  /** Same record the run reports; the audit reads it from the same response field. */
+  decomposition?: FeatureStepDecomposition | null;
   human_edits: FeatureHumanEdit[];
   error: string | null;
   started_at: number | null;

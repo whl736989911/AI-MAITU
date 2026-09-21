@@ -371,9 +371,9 @@ export const FEATURE_STEP_GATES: FeatureStepGate[] = [
 ];
 
 /**
- * Modes a step may declare. ``orchestrate`` is listed because it is part of the
- * step schema — but this build has no implementation behind it, and the picker
- * shows it as unavailable rather than letting a definition look runnable.
+ * Modes a step may declare: ``agent`` runs the step with one agent, and
+ * ``orchestrate`` has the step's agent decompose the step and dispatch
+ * subagents itself. Both are offered, because both are what a run can do.
  */
 export const FEATURE_STEP_MODES: FeatureStepMode[] = ["agent", "orchestrate"];
 
@@ -480,10 +480,9 @@ export function stepsFromFormValues(
  * ``passed``; naming the steps that break it keeps a refusal the server would
  * make next to the fields that caused it.
  *
- * What is *not* here: ``mode: "orchestrate"`` and ``agent_role``. The server
- * stores both and refuses the **run** instead (``FEATURE_STEP_UNSUPPORTED``,
- * never degraded to a single agent), so this editor warns about them on the step
- * and lets the definition be written as it stands.
+ * What is *not* here: ``mode`` and ``agent_role``. How a step runs is the
+ * author's call and the definition is stored as written — this function names
+ * only what the format refuses outright.
  */
 export function validateGateProblems(steps: readonly FeatureStep[]): string[] {
   return steps

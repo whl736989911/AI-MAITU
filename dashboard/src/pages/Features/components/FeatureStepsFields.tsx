@@ -4,11 +4,10 @@
  * before it.
  *
  * What the author sees here is what a run will do — nothing about a step is
- * implied. Two fields of the schema are part of the format but have no
- * implementation behind them yet, and neither is allowed to look runnable:
- * ``mode: "orchestrate"`` and ``agent_role`` are shown with what they are, and
- * the server refuses a definition that sets them instead of running the step
- * some other way.
+ * implied. Two fields of the schema say how the step runs: ``mode`` picks
+ * between one agent doing the step's job and an agent that decomposes the step
+ * and dispatches subagents itself, and ``agent_role`` names the subagent a step
+ * runs as.
  *
  * The tool whitelist needs the caller's tool catalogue, which costs an agent
  * start; like the capability block it is fetched only once this block is opened,
@@ -21,7 +20,10 @@ import { InputNumber, Alert, AutoComplete, Button, Checkbox, Collapse, Form, Inp
 import { ArrowDown, ArrowUp, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { useTranslation } from "react-i18next";
-import type { FeatureStep } from "../../../api/modules/features";
+import type {
+  FeatureStep,
+  FeatureStepMode,
+} from "../../../api/modules/features";
 import {
   artifactNamesBefore,
   emptyStep,
@@ -44,6 +46,11 @@ const FAILURE_LABEL_KEYS: Record<string, string> = {
   abort: "features.settingsStepFailureAbort",
   escalate: "features.settingsStepFailureEscalate",
   retry: "features.settingsStepFailureRetry",
+};
+
+const MODE_LABEL_KEYS: Record<FeatureStepMode, string> = {
+  agent: "features.settingsStepModeAgent",
+  orchestrate: "features.settingsStepModeOrchestrate",
 };
 
 /** The artifact schemas the definition format accepts, offered as suggestions. */
@@ -214,14 +221,22 @@ export default function FeatureStepsFields({ open }: FeatureStepsFieldsProps) {
                     <Select
                       options={FEATURE_STEP_MODES.map((mode) => ({
                         value: mode,
-                        // Orchestration is in the step schema and not in this
-                        // build: offering it as a choice would promise parallel
-                        // decomposition the server refuses to run.
-                        disabled: mode === "orchestrate",
-                        label:
-                          mode === "orchestrate"
-                            ? t("features.settingsStepModeOrchestrate")
-                            : t("features.settingsStepModeAgent"),
+                        label: t(MODE_LABEL_KEYS[mode]),
+                      }))}
+                    />
+                  </Form.Item>
+
+                  <Form.Item
+                    name={[field.name, "agent_role"]}
+                    label={t("features.settingsStepAgentRole")}
+                    tooltip={t("features.settingsStepAgentRoleHint")}
+                  >
+                    <Select
+                      allowClear
+                      placeholder={t("features.settingsStepAgentRolePlaceholder")}
+                      options={choices.subagents.map((role) => ({
+                        value: role,
+                        label: role,
                       }))}
                     />
                   </Form.Item>
@@ -341,24 +356,6 @@ export default function FeatureStepsFields({ open }: FeatureStepsFieldsProps) {
                   )}
                 </div>
 
-                {step?.mode === "orchestrate" && (
-                  <Alert
-                    type="warning"
-                    showIcon
-                    message={t("features.settingsStepModeRefused")}
-                  />
-                )}
-                {step?.agent_role !== undefined &&
-                  step.agent_role !== null &&
-                  String(step.agent_role).trim() !== "" && (
-                    <Alert
-                      type="warning"
-                      showIcon
-                      message={t("features.settingsStepAgentRoleRefused", {
-                        role: step.agent_role,
-                      })}
-                    />
-                  )}
                 {step?.gate === "validate" &&
                   step?.output?.schema !== undefined &&
                   step.output.schema !== "" &&

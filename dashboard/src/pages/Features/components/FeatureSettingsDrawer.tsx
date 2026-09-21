@@ -189,9 +189,8 @@ export default function FeatureSettingsDrawer({
       }
       // A ``validate`` gate that no object artifact could ever satisfy is refused
       // by the server at write time, so it is named here first. Nothing else about
-      // a step blocks the save: ``mode: "orchestrate"`` and ``agent_role`` are
-      // stored as written and refused at *run* time, and the step block warns
-      // about them in place rather than pretending they saved.
+      // a step blocks the save: ``mode`` and ``agent_role`` say how the step runs,
+      // and the write carries both through exactly as the author left them.
       const badGates = validateGateProblems(values.steps ?? []);
       if (badGates.length > 0) {
         setSaveError(

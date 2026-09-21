@@ -1,11 +1,13 @@
 /**
- * The audit of one run: what every step took in, what it produced, and every
- * change a person made to an artifact on the way.
+ * The audit of one run: what every step took in, what it produced, every subagent
+ * it dispatched, and every change a person made to an artifact on the way.
  *
  * The before/after pair is the point of the view. A run that was corrected by
  * hand has to say so afterwards — "this step's input was edited from X to Y at
  * this time, by this account" — otherwise a mistake that survives into a
- * delivery cannot be traced back to the correction that caused it.
+ * delivery cannot be traced back to the correction that caused it. The dispatch
+ * record answers the same question about a step that made its own plan: which
+ * subagents ran, what each was given, and what each answered (design 7.8).
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -21,6 +23,7 @@ import {
 import { apiErrorMessage } from "../../../utils/apiError";
 import { formatMessageTime } from "../../../utils/formatMessageTime";
 import { epochMillis } from "./featureArtifacts";
+import FeatureDecomposition from "./FeatureDecomposition";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import styles from "../index.module.less";
 
@@ -170,6 +173,8 @@ export default function FeatureRunAudit({
               </div>
 
               {step.error && <Alert type="error" showIcon message={step.error} />}
+
+              <FeatureDecomposition decomposition={step.decomposition} />
 
               <div className={styles.auditSection}>
                 <div className={styles.auditSectionTitle}>

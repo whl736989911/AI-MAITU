@@ -1261,3 +1261,61 @@
   font-size: 11px;
   color: var(--fn-text-tertiary);
 }
+
+// ── Task steps: what a step dispatched (7.8) ────────────────────────────────
+
+.dispatchList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+/* The record's own heading: how many subagents this step dispatched. */
+.dispatchTitle {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fn-text-quaternary);
+}
+
+/* One dispatch: the subagent, the task it was given, and its answer. */
+.dispatch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--fn-bg-primary);
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-sm);
+}
+
+.dispatchHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The subagent type, verbatim as the model passed it. */
+.dispatchRole {
+  font-family: var(--fn-font-mono);
+  font-size: 12px;
+  color: var(--fn-text-primary);
+}
+
+.dispatchTask {
+  font-size: 12px;
+  color: var(--fn-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.dispatchMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  font-size: 11px;
+  color: var(--fn-text-tertiary);
+}
+
