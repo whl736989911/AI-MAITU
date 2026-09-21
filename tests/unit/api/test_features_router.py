@@ -11,7 +11,7 @@ import pytest
 from octop.api.routers import features as features_router
 from octop.infra.agents.middleware.feature_prompt import CONFIG_KEY
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.features import Feature, build_user_prompt
+from octop.infra.features import Feature, ScopedRule, build_user_prompt
 from octop.infra.users.identity import Role, User
 
 USER_ID = 7
@@ -80,18 +80,27 @@ class _FakeTaskRepo:
 
 
 class _FakeRuleRepo:
-    """Only the read ``run_feature`` needs: approved rules for one feature.
+    """Only the read ``run_feature`` needs: the rules one caller's prompt gets.
 
-    ``(rule_id, rule_text)`` pairs, newest-approved first, exactly as
-    ``FeatureRuleRepo.list_approved`` returns them.
+    ``(rule_id, rule_text)`` pairs in the order
+    ``FeatureRuleRepo.list_injectable`` returns them (narrow layer first), and
+    every rule is the global layer the doubles are written with.
     """
 
     def __init__(self, approved: list[tuple[str, str]] | None = None) -> None:
         self._approved = approved or []
 
-    def list_approved(self, feature_id: str, limit: int) -> list[Any]:
+    def list_injectable(
+        self,
+        feature_id: str,
+        *,
+        user_id: int | None,
+        unit_key: str | None,
+        limit: int,
+    ) -> list[Any]:
         return [
-            SimpleNamespace(id=rule_id, rule_text=text) for rule_id, text in self._approved[:limit]
+            SimpleNamespace(id=rule_id, rule_text=text, scope="global")
+            for rule_id, text in self._approved[:limit]
         ]
 
 
@@ -388,7 +397,7 @@ async def test_run_feature_records_the_agent_and_the_injected_rules() -> None:
     assert registry.requests[0]["messages"][0]["content"] == build_user_prompt(
         feature,
         {"topic": "增长"},
-        rules=["Prefer bullet points"],
+        rules=[ScopedRule("Prefer bullet points", "global")],
     )
 
 
@@ -556,6 +565,7 @@ async def test_every_route_requires_the_features_permission() -> None:
         "/{feature_id}/run",
         "/rules/{rule_id}/approve",
         "/rules/{rule_id}/reject",
+        "/rules/{rule_id}/submit",
         "/tasks/{task_id}/finalize",
         "/tasks/{task_id}/promote",
     }

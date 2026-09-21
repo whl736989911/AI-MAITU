@@ -986,7 +986,8 @@ def _ensure_feature_learning_schema(db: DatabasePool) -> None:
         # Rules are per-feature: the quote-draft rules must not reach meeting
         # notes. ``source_task_ids`` is required so every rule can be traced
         # back to the diffs it was induced from; injection filters on
-        # (feature_id, status).
+        # (feature_id, status) and ranks by ``scope`` (v23: personal | unit |
+        # global, with ``owner_user_id`` / ``unit_key`` naming the layer).
         conn.execute(
             f"""
             CREATE TABLE IF NOT EXISTS feature_rules (
@@ -998,7 +999,10 @@ def _ensure_feature_learning_schema(db: DatabasePool) -> None:
               proposed_by     TEXT NOT NULL,
               approved_by     {int_type} REFERENCES users(id) ON DELETE SET NULL,
               created_at      {int_type} NOT NULL,
-              reviewed_at     {int_type}
+              reviewed_at     {int_type},
+              scope           TEXT NOT NULL DEFAULT 'global',
+              owner_user_id   {int_type} REFERENCES users(id) ON DELETE CASCADE,
+              unit_key        TEXT
             )
             """
         )
@@ -1019,6 +1023,33 @@ def _ensure_feature_task_snapshot_schema(db: DatabasePool) -> None:
         return
     _ensure_column(db, "feature_tasks", "agent_id", "TEXT")
     _ensure_column(db, "feature_tasks", "injected_rule_ids", "TEXT")
+
+
+def _ensure_feature_rule_scope_schema(db: DatabasePool) -> None:
+    """Add the scope columns (schema v23) to ``feature_rules``.
+
+    Runs on every boot, like the v18/v19/v20/v22 helpers: databases whose
+    watermark skipped 23 — a clamp, or a build that stamped the version without
+    the DDL — still get the columns the three rule layers are read and written
+    through. ``scope`` defaults to ``global``, which is the layer every pre-v23
+    rule was in fact already read from.
+    """
+    if not _table_exists(db, "feature_rules"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    _ensure_column(db, "feature_rules", "scope", "TEXT NOT NULL DEFAULT 'global'")
+    _ensure_column(
+        db,
+        "feature_rules",
+        "owner_user_id",
+        f"{int_type} REFERENCES users(id) ON DELETE CASCADE",
+    )
+    _ensure_column(db, "feature_rules", "unit_key", "TEXT")
+    with db.connect() as conn:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_rules_feature_scope "
+            "ON feature_rules (feature_id, scope, status)"
+        )
 
 
 def _ensure_data_sources_schema(db: DatabasePool) -> None:
@@ -2050,6 +2081,7 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_feature_learning_schema(db)
         _ensure_data_sources_schema(db)
         _ensure_feature_task_snapshot_schema(db)
+        _ensure_feature_rule_scope_schema(db)
 
 
 def _max_discovered_version(dialect: str) -> int:
@@ -2326,6 +2358,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 23:
+        _ensure_feature_rule_scope_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2375,3 +2412,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_feature_learning_schema(db)
     _ensure_data_sources_schema(db)
     _ensure_feature_task_snapshot_schema(db)
+    _ensure_feature_rule_scope_schema(db)

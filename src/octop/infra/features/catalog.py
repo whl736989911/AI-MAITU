@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -34,7 +35,8 @@ MAX_INJECTED_RULES = 10
 Rules accumulate as people correct drafts, so the block is capped: an unbounded
 list would crowd out the current inputs and let stale rules bury fresh ones.
 :func:`build_user_prompt` keeps the first ``MAX_INJECTED_RULES`` entries it is
-given, so callers order them newest-approved first.
+given, so callers order them narrowest layer first (personal, then the caller's
+unit — see :func:`octop.infra.features.rules.injectable_rule_rows`).
 """
 
 _CJK_RE = re.compile(r"[\u3400-\u9fff]")
@@ -48,6 +50,31 @@ _RULES_HEADING_EN = (
     "(human-reviewed and approved). They are NOT part of the current input:"
 )
 """Wording that keeps approved rules from reading as part of the user's input."""
+
+_SCOPE_TAGS: dict[str, tuple[str, str]] = {
+    "personal": ("【个人规则】", "【Personal rule】"),
+    "unit": ("【部门规则】", "【Department rule】"),
+    "global": ("【全局规则】", "【Global rule】"),
+}
+"""Source-layer tags keyed by ``feature_rules.scope`` (schema v23).
+
+The model has to be able to tell a colleague's personal preference from a
+requirement the whole organization agreed on, so every rule says where it came
+from. A layer this table does not know renders untagged rather than guessed at.
+"""
+
+
+@dataclass(frozen=True)
+class ScopedRule:
+    """One rule to inject, plus the layer it came from.
+
+    ``scope`` is a ``feature_rules.scope`` value (``personal`` | ``unit`` |
+    ``global``); ``None`` renders the rule without a tag, which is what a caller
+    that only has texts gets.
+    """
+
+    text: str
+    scope: str | None = None
 
 
 @dataclass(frozen=True)
@@ -201,7 +228,7 @@ def build_user_prompt(
     feature: Feature,
     inputs: dict[str, Any],
     *,
-    rules: list[str] | None = None,
+    rules: Sequence[ScopedRule] | None = None,
 ) -> str:
     """Render ``prompt.user_template`` with *inputs*.
 
@@ -212,11 +239,13 @@ def build_user_prompt(
     JSON. Unknown ``{{placeholder}}`` tokens are left untouched.
 
     *rules* are the approved, human-reviewed requirements distilled from past
-    corrections (M4 self-improvement). They are appended as their own labeled
-    paragraph so the model cannot mistake them for the user's current input; blank
-    entries are dropped and at most :data:`MAX_INJECTED_RULES` are used, so callers
-    order them newest-approved first. ``None`` (the default) injects nothing and
-    the rendered template is returned verbatim.
+    corrections (M4 self-improvement), each with the scope layer it came from. They
+    are appended as their own labeled paragraph so the model cannot mistake them
+    for the user's current input; blank entries are dropped and at most
+    :data:`MAX_INJECTED_RULES` are used, so callers order them narrowest layer
+    first. A rule that names its layer is tagged with it, which is how the model
+    tells a personal preference from an org-wide requirement. ``None`` (the
+    default) injects nothing and the rendered template is returned verbatim.
     """
     rendered = {
         "inputs": _render_inputs_text(feature, inputs),
@@ -226,7 +255,7 @@ def build_user_prompt(
         lambda match: rendered.get(match.group(1), match.group(0)),
         feature.user_template,
     )
-    injected = [text for rule in rules or [] if (text := str(rule).strip())]
+    injected = [rule for rule in rules or [] if str(rule.text).strip()]
     if not injected:
         return prompt
     block = _render_rules_block(injected[:MAX_INJECTED_RULES], chinese=_looks_chinese(prompt))
@@ -249,11 +278,18 @@ def _render_inputs_text(feature: Feature, inputs: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def _render_rules_block(rules: list[str], *, chinese: bool) -> str:
-    """One labeled paragraph of approved rules — heading plus numbered lines."""
+def _render_rules_block(rules: Sequence[ScopedRule], *, chinese: bool) -> str:
+    """One labeled paragraph of approved rules — heading plus numbered lines.
+
+    Each line carries the layer its rule came from (``【个人规则】…``), so the
+    heading itself can stay about provenance and authority rather than about
+    scope. A rule without a named layer is numbered like the others.
+    """
     heading = _RULES_HEADING_ZH if chinese else _RULES_HEADING_EN
     lines = [heading]
-    lines.extend(f"{index}. {text}" for index, text in enumerate(rules, start=1))
+    for index, rule in enumerate(rules, start=1):
+        tag = _SCOPE_TAGS.get(str(rule.scope), ("", ""))[0 if chinese else 1]
+        lines.append(f"{index}. {tag}{str(rule.text).strip()}")
     return "\n".join(lines)
 
 

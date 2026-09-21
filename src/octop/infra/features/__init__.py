@@ -4,6 +4,7 @@ from octop.infra.features.catalog import (
     MANIFEST_FILENAME,
     Feature,
     FeatureCatalog,
+    ScopedRule,
     build_user_prompt,
     default_library_root,
 )
@@ -13,6 +14,7 @@ __all__ = [
     "MANIFEST_FILENAME",
     "Feature",
     "FeatureCatalog",
+    "ScopedRule",
     "build_user_prompt",
     "default_library_root",
     "feature_json_schema",

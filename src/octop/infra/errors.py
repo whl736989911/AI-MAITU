@@ -125,6 +125,11 @@ class ErrorCode(StrEnum):
     FEATURE_RULE_REVIEWED = "FEATURE_RULE_REVIEWED"
     FEATURE_RULE_NO_SAMPLES = "FEATURE_RULE_NO_SAMPLES"
     FEATURE_RULE_EXTRACTION_FAILED = "FEATURE_RULE_EXTRACTION_FAILED"
+    # Rule scopes: who may decide a rule is the layer it lives in, so a refusal
+    # has to be its own code (having the module permission is not enough), and a
+    # submit the target layer cannot hold is a bad request rather than a refusal.
+    FEATURE_RULE_SCOPE_FORBIDDEN = "FEATURE_RULE_SCOPE_FORBIDDEN"
+    FEATURE_RULE_SUBMIT_INVALID = "FEATURE_RULE_SUBMIT_INVALID"
     # Org units: a refused delete names the department, so the provider codes
     # (whose message reads "provider") cannot carry it.
     ORG_UNIT_HAS_CHILDREN = "ORG_UNIT_HAS_CHILDREN"
@@ -238,6 +243,8 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.FEATURE_RULE_REVIEWED: 409,
     ErrorCode.FEATURE_RULE_NO_SAMPLES: 409,
     ErrorCode.FEATURE_RULE_EXTRACTION_FAILED: 502,
+    ErrorCode.FEATURE_RULE_SCOPE_FORBIDDEN: 403,
+    ErrorCode.FEATURE_RULE_SUBMIT_INVALID: 400,
     ErrorCode.ORG_UNIT_HAS_CHILDREN: 409,
     ErrorCode.ORG_UNIT_IN_USE: 409,
 }

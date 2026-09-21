@@ -413,6 +413,8 @@
     "FEATURE_RULE_REVIEWED": "该规则已经审核过，审核结论不可更改；如需补充，请重新抽取生成新规则。",
     "FEATURE_RULE_NO_SAMPLES": "暂时没有可供归纳的素材：请先定稿至少一次功能运行结果。",
     "FEATURE_RULE_EXTRACTION_FAILED": "规则抽取失败：模型回复无法解析成规则列表，未保存任何规则，请重试。",
+    "FEATURE_RULE_SCOPE_FORBIDDEN": "这条规则不在你的处理范围内：个人规则由本人处理，部门规则由本部门的管理员处理，全局规则由系统管理员处理。",
+    "FEATURE_RULE_SUBMIT_INVALID": "无法提交这条规则：只能提交个人规则，且提交到部门时你需要先归属一个部门。",
     "ORG_UNIT_HAS_CHILDREN": "该部门下还有下级部门，请先处理。",
     "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。"
   },
