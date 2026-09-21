@@ -29,6 +29,7 @@ import type { LucideIcon } from "lucide-react";
 import {
   Building2,
   Check,
+  CircleHelp,
   Globe2,
   Send,
   Sparkles,
@@ -40,6 +41,7 @@ import type { OctopUser } from "../../../api/modules/auth";
 import type {
   FeatureRule,
   FeatureRuleScope,
+  FeatureRuleScopeValue,
   FeatureRuleStatus,
 } from "../../../api/modules/features";
 import { BRAND } from "../../../brand.generated";
@@ -65,6 +67,23 @@ const STATUS_ORDER: FeatureRuleStatus[] = ["draft", "approved", "rejected"];
  * the panel shows on top is what the prompt honours first.
  */
 const SCOPE_ORDER: FeatureRuleScope[] = ["personal", "unit", "global"];
+
+/**
+ * The heading a rule lands under when the panel cannot name its layer. The three
+ * above are the ones this build knows how to talk about; a stored layer that is
+ * anything else — ``"unknown"`` from the server, a value an older or newer build
+ * wrote, a payload that carries no layer at all — still gets its rule rendered,
+ * under this heading and its explanation. A rule that leaves the screen without
+ * a word is worse than a rule under a heading that says so.
+ */
+const UNKNOWN_SCOPE = "unknown";
+
+/** Whether *scope* is one of the three layers this build knows how to talk about. */
+function isFeatureRuleScope(
+  scope: FeatureRuleScopeValue | null | undefined,
+): scope is FeatureRuleScope {
+  return SCOPE_ORDER.some((known) => known === scope);
+}
 
 const SCOPE_LABEL_KEY: Record<FeatureRuleScope, string> = {
   personal: "features.ruleScopePersonal",
@@ -96,10 +115,29 @@ const SCOPE_ICON: Record<FeatureRuleScope, LucideIcon> = {
 /**
  * Which layer a rule speaks for. Grouping already says this, but a card is
  * read on its own: the colour and the icon make the layer legible without
- * looking up at the heading.
+ * looking up at the heading. A layer this build cannot name is tagged in the
+ * warning colour and says so — the card still appears, and the tag is how the
+ * reader knows the panel is not sitting on a finer answer.
  */
-function ScopeTag({ scope }: { scope: FeatureRuleScope }) {
+function ScopeTag({
+  scope,
+}: {
+  scope: FeatureRuleScopeValue | null | undefined;
+}) {
   const { t } = useTranslation();
+  if (!isFeatureRuleScope(scope)) {
+    return (
+      <Tooltip title={t("features.ruleScopeUnknownHint")}>
+        <Tag
+          color="warning"
+          icon={<CircleHelp size={12} />}
+          style={{ marginInlineEnd: 0 }}
+        >
+          {t("features.ruleScopeUnknown")}
+        </Tag>
+      </Tooltip>
+    );
+  }
   const Icon = SCOPE_ICON[scope];
   return (
     <Tooltip title={t(SCOPE_HINT_KEY[scope])}>
@@ -175,6 +213,11 @@ function canReviewRule(rule: FeatureRule, user: OctopUser | null): boolean {
       );
     case "global":
       return isSystemAdmin(user);
+    // A layer this build cannot name has no reviewer it can point at: whichever
+    // role the value might imply, deciding it would be a guess. The card stays on
+    // screen and its buttons stay off it (`hidden, never disabled`).
+    default:
+      return false;
   }
 }
 
@@ -245,6 +288,16 @@ function RuleCard({
         {rule.scope === "unit" && unit !== null && (
           <span className={styles.ruleMetaItem}>
             {t("features.ruleUnitLabel", { unit })}
+          </span>
+        )}
+        {!isFeatureRuleScope(rule.scope) && (
+          <span className={styles.ruleMetaItem}>
+            {t("features.ruleScopeUnknownStored", {
+              scope:
+                typeof rule.scope === "string" && rule.scope.trim() !== ""
+                  ? rule.scope.trim()
+                  : UNKNOWN_SCOPE,
+            })}
           </span>
         )}
         <span className={styles.ruleMetaItem}>
@@ -370,6 +423,38 @@ function RuleCard({
   );
 }
 
+/** One heading's worth of rules: the layer's name, its count, and who the layer reaches. */
+function RuleGroup({
+  title,
+  hint,
+  hintClassName,
+  testId,
+  rules,
+  learning,
+}: {
+  title: string;
+  hint: string;
+  hintClassName?: string;
+  testId?: string;
+  rules: FeatureRule[];
+  learning: FeatureLearning;
+}) {
+  return (
+    <section className={styles.group} data-testid={testId}>
+      <div className={styles.groupHead}>
+        <h3 className={styles.groupTitle}>{title}</h3>
+        <span className={styles.groupCount}>{rules.length}</span>
+        <span className={hintClassName ?? styles.groupHint}>{hint}</span>
+      </div>
+      <div className={styles.ruleList}>
+        {rules.map((rule) => (
+          <RuleCard key={rule.id} rule={rule} learning={learning} />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function RulesPanel({
   learning,
 }: {
@@ -382,6 +467,13 @@ export default function RulesPanel({
   const scopes = extractScopes(user);
   const [extractScope, setExtractScope] =
     useState<FeatureRuleScope>("personal");
+  // Whatever the server reports for a layer, the rule is rendered: under its
+  // layer when this build knows it, under the unfiled heading when it does not.
+  const unfiled = rules
+    .filter((rule) => !isFeatureRuleScope(rule.scope))
+    .sort(
+      (a, b) => STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status),
+    );
 
   return (
     <div className={styles.panel}>
@@ -446,33 +538,38 @@ export default function RulesPanel({
           description={t("features.rulesNoneHint")}
         />
       ) : (
-        SCOPE_ORDER.map((scope) => {
-          const group = rules
-            .filter((rule) => rule.scope === scope)
-            .sort(
-              (a, b) =>
-                STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status),
+        <>
+          {SCOPE_ORDER.map((scope) => {
+            const group = rules
+              .filter((rule) => rule.scope === scope)
+              .sort(
+                (a, b) =>
+                  STATUS_ORDER.indexOf(a.status) -
+                  STATUS_ORDER.indexOf(b.status),
+              );
+            if (group.length === 0) return null;
+            return (
+              <RuleGroup
+                key={scope}
+                title={t(SCOPE_LABEL_KEY[scope])}
+                hint={t(SCOPE_HINT_KEY[scope])}
+                rules={group}
+                learning={learning}
+              />
             );
-          if (group.length === 0) return null;
-          return (
-            <section className={styles.group} key={scope}>
-              <div className={styles.groupHead}>
-                <h3 className={styles.groupTitle}>
-                  {t(SCOPE_LABEL_KEY[scope])}
-                </h3>
-                <span className={styles.groupCount}>{group.length}</span>
-                <span className={styles.groupHint}>
-                  {t(SCOPE_HINT_KEY[scope])}
-                </span>
-              </div>
-              <div className={styles.ruleList}>
-                {group.map((rule) => (
-                  <RuleCard key={rule.id} rule={rule} learning={learning} />
-                ))}
-              </div>
-            </section>
-          );
-        })
+          })}
+          {unfiled.length > 0 && (
+            <RuleGroup
+              key={UNKNOWN_SCOPE}
+              testId="rules-unfiled-group"
+              title={t("features.ruleScopeUnknownGroup")}
+              hint={t("features.ruleScopeUnknownGroupHint")}
+              hintClassName={styles.groupHintWarn}
+              rules={unfiled}
+              learning={learning}
+            />
+          )}
+        </>
       )}
     </div>
   );

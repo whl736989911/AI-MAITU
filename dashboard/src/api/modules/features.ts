@@ -158,14 +158,28 @@ export type FeatureRuleStatus = "draft" | "approved" | "rejected";
  */
 export type FeatureRuleScope = "personal" | "unit" | "global";
 
+/**
+ * The layer as the server reports it. The three names above are the layers this
+ * build knows how to group by; anything else is a stored value it cannot name —
+ * ``"unknown"`` from the server, a layer written by an older or newer build, or
+ * a payload that carries no layer at all. Such a rule must still be rendered
+ * (the rules panel files it under its unfiled heading), never dropped.
+ */
+export type FeatureRuleScopeValue = FeatureRuleScope | (string & {});
+
 /** One induced rule plus the provenance the review UI has to show. */
 export interface FeatureRule {
   id: string;
   feature_id: string;
   rule_text: string;
   status: FeatureRuleStatus;
-  /** The layer this rule belongs to; decide who may review it, never trust it to. */
-  scope: FeatureRuleScope;
+  /**
+   * The layer this rule belongs to; decide who may review it, never trust it to.
+   * The server always sends one — ``"unknown"`` when it cannot name the stored
+   * layer — but it is typed optional because a payload can arrive without it, and
+   * a rule whose layer cannot be read has to render (unfiled), not disappear.
+   */
+  scope?: FeatureRuleScopeValue | null;
   /** Owner of a personal rule; ``null`` for unit and global rules. */
   owner_user_id: number | null;
   /** Org unit a unit rule speaks for; ``null`` for personal and global rules. */
