@@ -3,6 +3,7 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type {
   Feature,
+  FeatureCapabilities,
   FeatureDefinitionBody,
   FeatureMeta,
 } from "../../../api/modules/features";
@@ -14,17 +15,20 @@ import type {
  * received. The pure mapping is covered in ``featureSettings.test.ts``.
  */
 
-const { createFeature, updateFeature, deleteFeature } = vi.hoisted(() => ({
-  createFeature: vi.fn(),
-  updateFeature: vi.fn(),
-  deleteFeature: vi.fn(),
-}));
+const { createFeature, updateFeature, deleteFeature, getFeatureCapabilities } =
+  vi.hoisted(() => ({
+    createFeature: vi.fn(),
+    updateFeature: vi.fn(),
+    deleteFeature: vi.fn(),
+    getFeatureCapabilities: vi.fn(),
+  }));
 
 vi.mock("../../../api/modules/features", () => ({
   featuresApi: {
     createFeature,
     updateFeature,
     deleteFeature,
+    getFeatureCapabilities,
     listFeatures: vi.fn(),
     getFeature: vi.fn(),
     getFeatureMeta: vi.fn(),
@@ -68,6 +72,20 @@ const FEATURE: Feature = {
   ui_schema: { order: ["customer", "items", "deadline"], widgets: { customer: "textarea" } },
   user_template: "{{inputs}}",
   system_prompt: "You draft quotes.",
+  agent: null,
+};
+
+/** What ``GET /features/_capabilities`` answers for this admin. */
+const CAPABILITIES: FeatureCapabilities = {
+  models: [{ ref: "openai/gpt-4o", label: "gpt-4o" }],
+  tools: [
+    { name: "browser_use", category: "web" },
+    { name: "read_file", category: "files" },
+  ],
+  skills: ["meeting-notes"],
+  subagents: ["researcher"],
+  mcp_servers: [{ name: "github", label: "GitHub" }],
+  knowledge_bases: [{ id: "kb-1", name: "报价口径" }],
 };
 
 /** Last write the mocked API saw, as ``[id, body]``. */
@@ -99,6 +117,7 @@ describe("<FeatureSettingsDrawer />", () => {
     updateFeature.mockResolvedValue({ feature_id: "quote-draft" });
     createFeature.mockResolvedValue({ feature_id: "quote-draft" });
     deleteFeature.mockResolvedValue(undefined);
+    getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
   });
 
   it("seeds from the definition and writes the edited document back", async () => {
@@ -227,5 +246,101 @@ describe("<FeatureSettingsDrawer />", () => {
       await screen.findByText(/input_schema\.properties must be a non-empty object/),
     ).toBeInTheDocument();
     expect(onSaved).not.toHaveBeenCalled();
+  });
+
+  it("asks for the capability choices only once the block is opened", async () => {
+    const user = userEvent.setup();
+    renderDrawer();
+
+    // Opening the drawer must not start an agent: the choices that need one are
+    // behind the disclosure.
+    expect(getFeatureCapabilities).not.toHaveBeenCalled();
+
+    await user.click(screen.getByText("features.settingsSectionCapability"));
+
+    await waitFor(() => expect(getFeatureCapabilities).toHaveBeenCalledOnce());
+    // The fields the choices feed only exist once they arrived.
+    expect(
+      await screen.findByText("features.settingsCapabilitySkills"),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps a declared capability layer that was never opened", async () => {
+    const user = userEvent.setup();
+    render(
+      <FeatureSettingsDrawer
+        open
+        feature={{ ...FEATURE, agent: { model: "openai/gpt-4o", skills: [] } }}
+        meta={META}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onDeleted={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
+    // Saving without opening the block must not drop what the definition
+    // declares: its fields are unmounted, and antd only reports registered ones.
+    expect(lastUpdate()[1].agent).toEqual({
+      model: "openai/gpt-4o",
+      skills: [],
+    });
+  });
+
+  it("reports a failed capability load instead of offering empty lists", async () => {
+    const user = userEvent.setup();
+    getFeatureCapabilities.mockRejectedValue(
+      new Error(
+        'Request failed: 500 Internal Server Error - {"error":{"code":"AGENT_FAILED",' +
+          '"message":"Agent 启动失败。"}}',
+      ),
+    );
+    renderDrawer();
+
+    await user.click(screen.getByText("features.settingsSectionCapability"));
+
+    expect(
+      await screen.findByText("features.settingsCapabilityLoadFailed"),
+    ).toBeInTheDocument();
+    // Empty lists would read as "this agent has none" and let the editor
+    // declare a scope no run could honour.
+    expect(
+      screen.queryByText("features.settingsCapabilitySkills"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("writes the declared capability layer and drops what was left inherited", async () => {
+    const user = userEvent.setup();
+    getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
+    render(
+      <FeatureSettingsDrawer
+        open
+        feature={{
+          ...FEATURE,
+          agent: {
+            model: "openai/gpt-4o",
+            tools_disabled: ["browser_use"],
+            skills: [],
+          },
+        }}
+        meta={META}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onDeleted={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
+    const [, body] = lastUpdate();
+    expect(body.agent).toEqual({
+      model: "openai/gpt-4o",
+      tools_disabled: ["browser_use"],
+      // Declared as none, and still written as none.
+      skills: [],
+    });
   });
 });

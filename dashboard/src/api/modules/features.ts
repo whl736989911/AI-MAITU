@@ -64,6 +64,79 @@ export interface Feature extends FeatureSummary {
   ui_schema: FeatureUiSchema;
   user_template: string;
   system_prompt: string | null;
+  /**
+   * The feature's capability layer: what every run of it may use (design 5.1).
+   * ``null`` means the definition declares none at all — not an empty layer —
+   * and such a run keeps whatever the caller's own agent has.
+   */
+  agent: FeatureAgent | null;
+}
+
+/**
+ * Capability layer of one feature's own agent.
+ *
+ * Every key is optional by contract: an absent key *inherits* the caller's
+ * agent, while a present list is a scope — and an empty list is the explicit
+ * "none of them". That difference is why this is not all ``?: string[]`` with
+ * ``?? []`` defaults anywhere: dropping ``[]`` would silently widen the run.
+ */
+export interface FeatureAgent {
+  /** ``<provider>/<model>`` the run must use; absent inherits the agent's default. */
+  model?: string | null;
+  temperature?: number | null;
+  top_p?: number | null;
+  max_tokens?: number | null;
+  max_iters?: number | null;
+  max_input_length?: number | null;
+  /** Built-in tools this run switches off. */
+  tools_disabled?: string[] | null;
+  /** Skills the run may use; ``[]`` disables all of them. */
+  skills?: string[] | null;
+  /** Subagent types the run may dispatch; ``[]`` hides ``task`` entirely. */
+  subagents?: string[] | null;
+  /** Connectors to mount, with the *caller's* credentials (design 5.2). */
+  mcp_servers?: string[] | null;
+  /** Knowledge bases the run may read, intersected with the caller's visibility. */
+  knowledge_base_ids?: string[] | null;
+}
+
+/** One connectable MCP server, as the caller's own instances allow. */
+export interface FeatureConnectorChoice {
+  name: string;
+  label: string;
+}
+
+export interface FeatureKnowledgeBaseChoice {
+  id: string;
+  name: string;
+}
+
+export interface FeatureModelChoice {
+  ref: string;
+  label: string;
+}
+
+export interface FeatureToolChoice {
+  name: string;
+  category: string;
+}
+
+/**
+ * Everything a definition's ``agent`` node may name, resolved for the *caller*
+ * behind ``GET /api/features/_capabilities``.
+ *
+ * Separate from ``FeatureMeta`` because skills and subagents can only be read
+ * off a live agent: this call needs one, and the editor makes it when the
+ * capability block is opened rather than when the drawer opens.
+ */
+export interface FeatureCapabilities {
+  models: FeatureModelChoice[];
+  /** Built-in tools a feature may switch off (never the always-on ones). */
+  tools: FeatureToolChoice[];
+  skills: string[];
+  subagents: string[];
+  mcp_servers: FeatureConnectorChoice[];
+  knowledge_bases: FeatureKnowledgeBaseChoice[];
 }
 
 export interface FeatureUnit {
@@ -114,6 +187,12 @@ export interface FeatureDefinitionBody {
   prompt: FeaturePromptBody;
   output: { kind: FeatureOutputKind };
   permissions: FeaturePermissionsBody;
+  /**
+   * The capability layer, as authored. ``null`` writes no layer at all and a
+   * node without keys is dropped — the server omits what was never declared
+   * rather than storing nulls that would read back as deliberate choices.
+   */
+  agent: FeatureAgent | null;
 }
 
 /** Both write endpoints answer with the id they wrote. */
@@ -243,6 +322,12 @@ export const featuresApi = {
   listFeatures: () => request<FeatureListResponse>("/features"),
   /** Definition-format metadata for the settings editor. */
   getFeatureMeta: () => request<FeatureMeta>("/features/_meta"),
+  /**
+   * The capability choices that need the caller's own agent. Costs an agent
+   * start, so the editor asks for it only once its capability block is opened.
+   */
+  getFeatureCapabilities: () =>
+    request<FeatureCapabilities>("/features/_capabilities"),
   getFeature: (id: string) =>
     request<Feature>(`/features/${encodeURIComponent(id)}`),
   /** Create one feature; the id is the caller's (409 when it is already taken). */

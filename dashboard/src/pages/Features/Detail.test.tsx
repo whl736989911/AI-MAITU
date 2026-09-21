@@ -78,6 +78,7 @@ const FEATURE: Feature = {
   ui_schema: { order: ["customer"] },
   user_template: "{{inputs}}",
   system_prompt: null,
+  agent: null,
 };
 
 function metaWith(bundled: string[]): FeatureMeta {

@@ -50,6 +50,7 @@ function featureFixture(overrides: Partial<Feature> = {}): Feature {
     ui_schema: { order: ["customer", "items", "deadline"] },
     user_template: "{{inputs}}",
     system_prompt: "You draft quotes.",
+    agent: null,
     ...overrides,
   };
 }
@@ -257,5 +258,88 @@ describe("feature settings form ⇄ definition", () => {
     expect(isValidFeatureId("Quote-Draft")).toBe(false);
     expect(isValidFeatureId("-quote")).toBe(false);
     expect(isValidFeatureId("q".repeat(65))).toBe(false);
+  });
+});
+
+describe("capability layer ⇄ form", () => {
+  /** The definition's own capability block, as the editor holds it. */
+  function withCapability(agent: Partial<Feature["agent"]>): Feature {
+    return featureFixture({ agent: agent as Feature["agent"] });
+  }
+
+  it("writes no layer at all when nothing is declared", () => {
+    const definition = formValuesToDefinition(fixtureValues(), null);
+
+    expect(definition.agent).toBeNull();
+  });
+
+  it("keeps inheritance and an explicit none apart", () => {
+    const values = featureToFormValues(
+      withCapability({ skills: [], subagents: ["writer"] }),
+    );
+
+    expect(values.skills).toEqual([]);
+    expect(values.subagents).toEqual(["writer"]);
+    expect(values.mcp_servers).toBeUndefined();
+
+    const definition = formValuesToDefinition(values, null);
+
+    // ``skills: []`` means "no skills in this run"; an absent key means the
+    // caller's own agent decides — collapsing either one widens the run.
+    expect(definition.agent).toEqual({ skills: [], subagents: ["writer"] });
+  });
+
+  it("carries a declared model and the runtime knobs back out", () => {
+    const values = featureToFormValues(
+      withCapability({
+        model: "openai/gpt-4o",
+        temperature: 0.3,
+        max_tokens: 1024,
+        max_iters: 40,
+        max_input_length: 64_000,
+        tools_disabled: ["browser_use"],
+      }),
+    );
+
+    expect(values.agentModel).toBe("openai/gpt-4o");
+    expect(formValuesToDefinition(values, null).agent).toEqual({
+      model: "openai/gpt-4o",
+      temperature: 0.3,
+      max_tokens: 1024,
+      max_iters: 40,
+      max_input_length: 64_000,
+      tools_disabled: ["browser_use"],
+    });
+  });
+
+  it("reads an inherited model as the picker's auto value", () => {
+    const values = featureToFormValues(withCapability({ temperature: 0.1 }));
+
+    expect(values.agentModel).toBe("");
+    expect(formValuesToDefinition(values, null).agent).toEqual({
+      temperature: 0.1,
+    });
+  });
+
+  it("drops the keys the author cleared rather than writing nulls", () => {
+    const values = featureToFormValues(
+      withCapability({
+        model: "openai/gpt-4o",
+        temperature: 0.3,
+        knowledge_base_ids: ["kb-1"],
+      }),
+    );
+
+    const definition = formValuesToDefinition(
+      {
+        ...values,
+        agentModel: "",
+        temperature: null,
+        knowledge_base_ids: undefined,
+      },
+      null,
+    );
+
+    expect(definition.agent).toBeNull();
   });
 });

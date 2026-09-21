@@ -43,6 +43,7 @@ import { BRAND } from "../../../brand.generated";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { message } from "@/utils/antdMessage";
 import SchemaNodeEditor from "./SchemaNodeEditor";
+import { FeatureCapabilitySection } from "./FeatureCapabilityFields";
 import {
   ALL_UNITS_KEY,
   emptyFieldRow,
@@ -246,7 +247,14 @@ export default function FeatureSettingsDrawer({
             form={form}
             layout="vertical"
             className={styles.settingsForm}
-            onFinish={(values) => void handleSubmit(values)}
+            onFinish={() =>
+              // The whole store, not just the registered fields: the capability
+              // block is collapsed by default, and a collapsed antd ``Collapse``
+              // does not mount its content — so its fields are *unregistered*,
+              // and ``onFinish``'s values would silently drop the declared
+              // capability layer on every save that never opened it.
+              void handleSubmit(form.getFieldsValue(true) as FeatureFormValues)
+            }
           >
             {saveError && (
               <Alert
@@ -511,6 +519,8 @@ export default function FeatureSettingsDrawer({
                 />
               </Form.Item>
             </SettingsSection>
+
+            <FeatureCapabilitySection />
 
             <SettingsSection
               titleKey="features.settingsSectionOutput"

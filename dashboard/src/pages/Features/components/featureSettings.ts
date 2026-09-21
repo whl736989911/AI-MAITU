@@ -14,6 +14,7 @@
 
 import type {
   Feature,
+  FeatureAgent,
   FeatureDefinitionBody,
   FeatureFieldSchema,
   FeatureFieldType,
@@ -80,7 +81,44 @@ export interface FeatureFormValues {
   allowUnits: string[];
   allowRoles: string[];
   fields: FeatureFieldRow[];
+  /**
+   * Capability layer, as the shared expert fields bind it.
+   *
+   * ``agentModel`` uses the expert picker's sentinel (``""`` = inherit the
+   * caller's agent, the expert's "auto"), the runtime knobs are ``null`` when
+   * unset, and each scope list is ``undefined`` when the feature declares
+   * nothing — which is a different fact from ``[]``, "explicitly none".
+   */
+  agentModel: string;
+  max_iters: number | null;
+  max_input_length: number | null;
+  temperature: number | null;
+  top_p: number | null;
+  max_tokens: number | null;
+  knowledge_base_ids?: string[];
+  mcp_servers?: string[];
+  toolsDisabled?: string[];
+  skills?: string[];
+  subagents?: string[];
 }
+
+/** The scope lists of the capability block, as ``feature.json`` names them. */
+export const FEATURE_SCOPE_KEYS = [
+  "skills",
+  "subagents",
+  "mcp_servers",
+  "knowledge_base_ids",
+] as const;
+export type FeatureScopeKey = (typeof FEATURE_SCOPE_KEYS)[number];
+
+/** Runtime knobs the capability block shares with the expert drawers. */
+export const FEATURE_RUNTIME_KEYS = [
+  "max_iters",
+  "max_input_length",
+  "temperature",
+  "top_p",
+  "max_tokens",
+] as const;
 
 /** Bilingual copy that carries nothing but whitespace is not copy. */
 function hasCopy(text: { zh?: string; en?: string } | undefined): boolean {
@@ -228,6 +266,80 @@ function fieldRowsFromSchema(
   }));
 }
 
+/** A declared list, or ``undefined`` when the definition inherits instead. */
+function declaredList(value: unknown): string[] | undefined {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string")
+    : undefined;
+}
+
+/**
+ * The capability layer of a loaded definition, flattened.
+ *
+ * ``null``/absent stays ``undefined``: a feature that declares no scope must
+ * load as "inherit", never as "explicitly none".
+ */
+function capabilityFormValues(
+  agent: FeatureAgent | null,
+): Pick<
+  FeatureFormValues,
+  | "agentModel"
+  | "max_iters"
+  | "max_input_length"
+  | "temperature"
+  | "top_p"
+  | "max_tokens"
+  | "knowledge_base_ids"
+  | "mcp_servers"
+  | "toolsDisabled"
+  | "skills"
+  | "subagents"
+> {
+  const numberOrNull = (value: unknown): number | null =>
+    typeof value === "number" ? value : null;
+  return {
+    // ``""`` is the expert picker's "auto": here it means "inherit the agent".
+    agentModel: typeof agent?.model === "string" ? agent.model : "",
+    max_iters: numberOrNull(agent?.max_iters),
+    max_input_length: numberOrNull(agent?.max_input_length),
+    temperature: numberOrNull(agent?.temperature),
+    top_p: numberOrNull(agent?.top_p),
+    max_tokens: numberOrNull(agent?.max_tokens),
+    knowledge_base_ids: declaredList(agent?.knowledge_base_ids),
+    mcp_servers: declaredList(agent?.mcp_servers),
+    toolsDisabled: declaredList(agent?.tools_disabled),
+    skills: declaredList(agent?.skills),
+    subagents: declaredList(agent?.subagents),
+  };
+}
+
+/**
+ * The ``agent`` node to write, or ``null`` when nothing is declared.
+ *
+ * A cleared list is *omitted* rather than written as ``[]``: those are the two
+ * halves of the contract (inherit vs none), and collapsing one into the other
+ * would silently widen or narrow every run of this feature.
+ */
+export function capabilityFromFormValues(
+  values: FeatureFormValues,
+): FeatureAgent | null {
+  const agent: FeatureAgent = {};
+  const model = values.agentModel.trim();
+  if (model) agent.model = model;
+  for (const key of FEATURE_RUNTIME_KEYS) {
+    const value = values[key];
+    if (typeof value === "number") agent[key] = value;
+  }
+  if (values.toolsDisabled !== undefined) {
+    agent.tools_disabled = cleanList(values.toolsDisabled);
+  }
+  for (const key of FEATURE_SCOPE_KEYS) {
+    const list = values[key];
+    if (list !== undefined) agent[key] = cleanList(list);
+  }
+  return Object.keys(agent).length > 0 ? agent : null;
+}
+
 /** A loaded definition, flattened into the settings form. */
 export function featureToFormValues(feature: Feature): FeatureFormValues {
   return {
@@ -245,6 +357,7 @@ export function featureToFormValues(feature: Feature): FeatureFormValues {
     allowUnits: stringList(feature.permissions?.allow_units),
     allowRoles: stringList(feature.permissions?.allow_roles),
     fields: fieldRowsFromSchema(feature.input_schema, feature.ui_schema),
+    ...capabilityFormValues(feature.agent),
   };
 }
 
@@ -265,6 +378,7 @@ export function emptyFormValues(meta: FeatureMeta): FeatureFormValues {
     allowUnits: [],
     allowRoles: [],
     fields: [emptyFieldRow()],
+    ...capabilityFormValues(null),
   };
 }
 
@@ -347,5 +461,6 @@ export function formValuesToDefinition(
     },
     output: { kind: values.outputKind },
     permissions,
+    agent: capabilityFromFormValues(values),
   };
 }

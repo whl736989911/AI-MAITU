@@ -923,6 +923,50 @@
   line-height: 1.65;
 }
 
+// ── Capability layer ────────────────────────────────────────────────────────
+
+/*
+ * The block is a disclosure rather than an always-open section: opening the
+ * drawer must not start an agent (the choices that need one are fetched on
+ * expand), and this is what tells the reader the fields come from the server.
+ */
+.capabilityCollapse {
+  background: transparent;
+  border: none;
+
+  :global(.ant-collapse-header) {
+    padding: 0 0 10px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--fn-text-primary);
+  }
+
+  :global(.ant-collapse-content-box) {
+    padding: 0;
+  }
+}
+
+.capabilityStatus {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+/* A scope list and its "inherit" switch, which is what tells them apart. */
+.scopeRow {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+
+  @media (max-width: 767px) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 6px;
+  }
+}
+
 /*
  * Placeholder names are shown as literal code rather than interpolated copy —
  * i18next would otherwise eat the braces the user has to type.
