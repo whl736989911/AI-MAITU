@@ -30,6 +30,7 @@ import {
   type FeatureInputs,
   type FeatureOutputKind,
   type FeatureRunResponse,
+  type FeatureStepRun,
 } from "../../api/modules/features";
 import { EmptyState } from "../../components/EmptyState";
 import LazyMarkdown from "../../components/Markdown/LazyMarkdown";
@@ -43,6 +44,7 @@ import { isSystemAdmin } from "../../utils/permissions";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useServerTimezone } from "../../hooks/useServerTimezone";
 import CasesPanel from "./components/CasesPanel";
+import FeatureRunSteps from "./components/FeatureRunSteps";
 import FeatureSettingsDrawer from "./components/FeatureSettingsDrawer";
 import RulesPanel from "./components/RulesPanel";
 import SchemaForm, {
@@ -257,6 +259,11 @@ export default function FeatureDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState<FeatureRunResponse | null>(null);
+  /**
+   * The run as the step engine reports it — present only for a definition that
+   * declares steps. It is the same run across a gate: approving continues it.
+   */
+  const [stepRun, setStepRun] = useState<FeatureStepRun | null>(null);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -280,6 +287,7 @@ export default function FeatureDetailPage() {
   useEffect(() => {
     setInputs({});
     setResult(null);
+    setStepRun(null);
     setDraft("");
     setEditing(false);
     resetRun();
@@ -309,15 +317,51 @@ export default function FeatureDetailPage() {
         pruneBlankInputs(inputs),
       );
       resetRun();
-      setDraft(run.output);
       setEditing(false);
-      setResult(run);
+      if ("steps" in run) {
+        // A definition with steps answers with the run itself. Nothing is
+        // delivered yet at a gate, so the pane shows the run and not a draft.
+        setStepRun(run);
+        setDraft(run.output ?? "");
+        setResult(
+          run.output === null
+            ? null
+            : {
+                task_id: run.task_id,
+                output: run.output,
+                output_kind: run.output_kind,
+              },
+        );
+      } else {
+        setStepRun(null);
+        setDraft(run.output);
+        setResult(run);
+      }
     } catch (err) {
       message.error(apiErrorMessage(err, t("features.runFailed"), t));
     } finally {
       setRunning(false);
     }
   }, [feature, inputs, lang, resetRun, t]);
+
+  /**
+   * Approving a gate, rewinding, or refreshing re-answers with the same run in a
+   * new state. Its text follows: a run that delivered nothing yet keeps the pane
+   * on the step view rather than showing an empty draft.
+   */
+  const handleRunChange = useCallback((next: FeatureStepRun) => {
+    setStepRun(next);
+    setDraft(next.output ?? "");
+    setResult(
+      next.output === null
+        ? null
+        : {
+            task_id: next.task_id,
+            output: next.output,
+            output_kind: next.output_kind,
+          },
+    );
+  }, []);
 
   if (loading) {
     return (
@@ -395,27 +439,42 @@ export default function FeatureDetailPage() {
         </section>
         <section className={styles.pane}>
           <div className={styles.paneTitle}>
-            {finalizedResult
-              ? t("features.finalizedTitle")
-              : t("features.draftTitle")}
+            {stepRun && !result
+              ? t("features.runStepsTitle")
+              : finalizedResult
+                ? t("features.finalizedTitle")
+                : t("features.draftTitle")}
           </div>
           {running ? (
             <div className={styles.loading}>
               <Spin />
             </div>
-          ) : result ? (
-            <DraftPane
-              result={result}
-              learning={learning}
-              draft={draft}
-              onDraftChange={setDraft}
-              editing={editing}
-              onEditingChange={setEditing}
-            />
           ) : (
-            <div className={styles.resultEmpty}>
-              {t("features.resultEmpty")}
-            </div>
+            <>
+              {stepRun && (
+                <FeatureRunSteps
+                  featureId={feature.id}
+                  run={stepRun}
+                  onRunChange={handleRunChange}
+                />
+              )}
+              {result ? (
+                <DraftPane
+                  result={result}
+                  learning={learning}
+                  draft={draft}
+                  onDraftChange={setDraft}
+                  editing={editing}
+                  onEditingChange={setEditing}
+                />
+              ) : (
+                !stepRun && (
+                  <div className={styles.resultEmpty}>
+                    {t("features.resultEmpty")}
+                  </div>
+                )
+              )}
+            </>
           )}
         </section>
       </div>

@@ -70,6 +70,11 @@ export interface Feature extends FeatureSummary {
    * and such a run keeps whatever the caller's own agent has.
    */
   agent: FeatureAgent | null;
+  /**
+   * The run's step skeleton, in order — empty (or absent) means the run stays
+   * single-shot, exactly as it behaved before steps existed.
+   */
+  steps?: FeatureStep[];
 }
 
 /**
@@ -193,6 +198,12 @@ export interface FeatureDefinitionBody {
    * rather than storing nulls that would read back as deliberate choices.
    */
   agent: FeatureAgent | null;
+  /**
+   * The step skeleton to write. Omitted when the editor holds no step at all:
+   * an empty list and an absent list both mean "single-shot", and writing the
+   * empty one would only add a key that says nothing.
+   */
+  steps?: FeatureStep[];
 }
 
 /** Both write endpoints answer with the id they wrote. */
@@ -209,6 +220,175 @@ export interface FeatureRunResponse {
   task_id: string;
   output: string;
   output_kind: FeatureOutputKind;
+}
+
+/**
+ * How one step is executed. ``orchestrate`` — the model decomposing the step and
+ * dispatching subagents itself — is **not implemented** in this build: the
+ * server refuses such a definition rather than falling back to ``agent``.
+ */
+export type FeatureStepMode = "agent" | "orchestrate";
+
+/** Where the run stops around a step: nowhere, for a person, or for a check. */
+export type FeatureStepGate = "auto" | "confirm" | "validate";
+
+/** What a failed step does: stop the run, ask a person, or try again. */
+export type FeatureStepOnFailure = "abort" | "escalate" | "retry";
+
+/**
+ * The typed artifact a step produces — the value later steps consume under
+ * ``inputs``. ``schema`` is free text written in the artifact's own vocabulary
+ * (``"table:12cols"``); the platform passes it along, it does not interpret it.
+ */
+export interface FeatureStepOutput {
+  name: string;
+  schema: string;
+}
+
+/** One step of a definition, exactly as ``feature.json`` stores it (design 7.10). */
+export interface FeatureStep {
+  id: string;
+  name: string;
+  /** Absent means the definition never declared one — not a default. */
+  mode?: FeatureStepMode;
+  /** Artifact names from earlier steps this step consumes. */
+  inputs?: string[];
+  /** Tool whitelist for this step; absent leaves the feature's own set. */
+  tools?: string[];
+  /**
+   * Ceiling for the model's own parallel dispatch. Validated and stored only:
+   * this build has no parallel dispatch yet (``orchestrate`` is unimplemented),
+   * so the value never starts anything here.
+   */
+  max_parallel?: number | null;
+  output: FeatureStepOutput;
+  prompt: string;
+  gate?: FeatureStepGate;
+  /** Whether a person may edit the artifacts at this step's gate. */
+  allow_edit?: boolean;
+  on_failure?: FeatureStepOnFailure;
+  /** Subagent role for the step. **Not implemented** — the server refuses it. */
+  agent_role?: string;
+}
+
+/** Run-level state. Every one of these is settled by the time the API answers. */
+export type FeatureRunStatus =
+  | "running"
+  | "awaiting_gate"
+  | "succeeded"
+  | "failed"
+  | "escalated";
+
+export type FeatureStepStatus =
+  | "pending"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "escalated"
+  | "voided";
+
+/** One artifact as a run reports it: its schema plus the value it holds. */
+export interface FeatureRunArtifact {
+  name: string;
+  schema: string;
+  value: unknown;
+}
+
+/** One step as a run reports it. */
+export interface FeatureRunStep {
+  id: string;
+  name: string;
+  seq: number;
+  status: FeatureStepStatus;
+  gate: FeatureStepGate;
+  on_failure: FeatureStepOnFailure;
+  mode: FeatureStepMode;
+  artifacts: FeatureRunArtifact[];
+  /** Epoch milliseconds; ``null`` while the step has not reached that point. */
+  started_at: number | null;
+  ended_at: number | null;
+  error: string | null;
+  attempts: number;
+  /** A rewind discarded this step's result; it will be produced again. */
+  voided: boolean;
+}
+
+/**
+ * The gate the run is stopped at.
+ *
+ * ``allow_edit`` is the step's own declaration: when false, the artifacts are
+ * shown but the server refuses an ``edits`` body.
+ */
+export interface FeaturePendingGate {
+  step_id: string;
+  name: string;
+  gate: FeatureStepGate;
+  allow_edit: boolean;
+  artifacts: FeatureRunArtifact[];
+}
+
+/** ``GET /features/{id}/runs/{task_id}`` — the step-level state of one run. */
+export interface FeatureRunState {
+  task_id: string;
+  feature_id: string;
+  status: FeatureRunStatus;
+  /** Id of the step the run is at; ``null`` before it starts one. */
+  current_step: string | null;
+  steps: FeatureRunStep[];
+  pending_gate: FeaturePendingGate | null;
+}
+
+/**
+ * What ``POST /features/{id}/run`` answers for a definition that declares steps:
+ * the run state itself, plus whatever text the run has produced so far. A run
+ * stopped at a gate carries ``output: null`` — nothing is delivered yet.
+ */
+export interface FeatureStepRun extends FeatureRunState {
+  output: string | null;
+  output_kind: FeatureOutputKind;
+}
+
+/** Edits injected at a gate or a rewind: ``{artifact name: new value}``. */
+export type FeatureArtifactEdits = Record<string, unknown>;
+
+/** One human change to an artifact, as the audit reports it. */
+export interface FeatureHumanEdit {
+  artifact: string;
+  /** Raw JSON values; ``null`` when the artifact did not exist before. */
+  before: unknown;
+  after: unknown;
+  by_user_id: number | null;
+  /** Epoch milliseconds. */
+  at: number;
+  source: "approve" | "rewind";
+}
+
+/** One step of the audit trail: what went in, what came out, who changed what. */
+export interface FeatureRunAuditStep {
+  id: string;
+  name: string;
+  seq: number;
+  status: FeatureStepStatus;
+  gate: FeatureStepGate;
+  on_failure: FeatureStepOnFailure;
+  mode: FeatureStepMode;
+  inputs: FeatureRunArtifact[];
+  artifacts: FeatureRunArtifact[];
+  human_edits: FeatureHumanEdit[];
+  error: string | null;
+  started_at: number | null;
+  ended_at: number | null;
+  attempts: number;
+  voided: boolean;
+}
+
+/** ``GET /features/{id}/runs/{task_id}/audit`` — the run plus what a person changed. */
+export interface FeatureRunAudit {
+  task_id: string;
+  feature_id: string;
+  /** The configuration the run started under (design 4). */
+  snapshot: Record<string, unknown>;
+  steps: FeatureRunAuditStep[];
 }
 
 /** Values collected by the schema-driven form, keyed by property name. */
@@ -346,10 +526,61 @@ export const featuresApi = {
   deleteFeature: (id: string) =>
     request<void>(`/features/${encodeURIComponent(id)}`, { method: "DELETE" }),
   runFeature: (id: string, inputs: FeatureInputs) =>
-    request<FeatureRunResponse>(`/features/${encodeURIComponent(id)}/run`, {
-      method: "POST",
-      body: JSON.stringify({ inputs }),
-    }),
+    request<FeatureRunResponse | FeatureStepRun>(
+      `/features/${encodeURIComponent(id)}/run`,
+      {
+        method: "POST",
+        body: JSON.stringify({ inputs }),
+      },
+    ),
+  /**
+   * Step-level state of one run. A run that stopped at a gate, failed or was
+   * rewound answers with what is true *now* — nothing here is inferred.
+   */
+  getFeatureRun: (id: string, taskId: string) =>
+    request<FeatureStepRun>(
+      `/features/${encodeURIComponent(id)}/runs/${encodeURIComponent(taskId)}`,
+    ),
+  /**
+   * Release the gate the run is waiting at, continuing the *same* run. ``edits``
+   * may only name the gated step's own artifacts, and only when that step
+   * declares ``allow_edit``; anything else is refused by the server.
+   */
+  approveFeatureRun: (
+    id: string,
+    taskId: string,
+    edits?: FeatureArtifactEdits,
+  ) =>
+    request<FeatureStepRun>(
+      `/features/${encodeURIComponent(id)}/runs/${encodeURIComponent(taskId)}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify(edits ? { edits } : {}),
+      },
+    ),
+  /**
+   * Go back to step ``toStep`` and run on from there, voiding everything it
+   * produced. Passing ``edits`` makes it the *rerun with fixes*: the artifacts
+   * named there are injected, and the server records before/after in the audit.
+   */
+  rewindFeatureRun: (
+    id: string,
+    taskId: string,
+    toStep: string,
+    edits?: FeatureArtifactEdits,
+  ) =>
+    request<FeatureStepRun>(
+      `/features/${encodeURIComponent(id)}/runs/${encodeURIComponent(taskId)}/rewind`,
+      {
+        method: "POST",
+        body: JSON.stringify(edits ? { to_step: toStep, edits } : { to_step: toStep }),
+      },
+    ),
+  /** What each step took in and produced, and every human edit to an artifact. */
+  getFeatureRunAudit: (id: string, taskId: string) =>
+    request<FeatureRunAudit>(
+      `/features/${encodeURIComponent(id)}/runs/${encodeURIComponent(taskId)}/audit`,
+    ),
   /** Store the approved text for one run. One-way: a run finalizes once (409 on retry). */
   finalizeTask: (taskId: string, final: string) =>
     request<FeatureFinalizedTask>(

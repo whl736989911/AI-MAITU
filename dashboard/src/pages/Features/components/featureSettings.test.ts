@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { Feature } from "../../../api/modules/features";
+import type { Feature, FeatureStep } from "../../../api/modules/features";
 import {
+  artifactNamesBefore,
   emptyFormValues,
   featureToFormValues,
   formValuesToDefinition,
@@ -8,6 +9,8 @@ import {
   isValidFeatureId,
   normalizeSchema,
   schemaForType,
+  unsupportedSteps,
+  validateGateProblems,
   type FeatureFormValues,
 } from "./featureSettings";
 
@@ -341,5 +344,133 @@ describe("capability layer ⇄ form", () => {
     );
 
     expect(definition.agent).toBeNull();
+  });
+});
+
+/**
+ * The step skeleton (design 7.10) rides through the same form. What matters here
+ * is the omitted-vs-declared difference the run depends on: an inherited tool
+ * scope is not "no tools", an automatic gate carries no ``allow_edit``, and a
+ * step key this build cannot name is never deleted by a save that did not show it.
+ */
+describe("feature settings form ⇄ step skeleton", () => {
+  function stepFixture(overrides: Partial<FeatureStep> = {}): FeatureStep {
+    return {
+      id: "extract_l1",
+      name: "提取 L1",
+      mode: "agent",
+      inputs: ["bom_rows"],
+      output: { name: "l1_rows", schema: "table:12cols" },
+      prompt: "读出层级列，过滤 L1",
+      gate: "auto",
+      on_failure: "abort",
+      ...overrides,
+    };
+  }
+
+  function withSteps(steps: FeatureStep[]): FeatureFormValues {
+    return { ...fixtureValues(), steps };
+  }
+
+  it("round-trips the skeleton in order, with what each step consumes and produces", () => {
+    const definition = formValuesToDefinition(
+      withSteps([
+        stepFixture({ id: "read_bom", name: "读 BOM", inputs: [], gate: "auto" }),
+        stepFixture({ gate: "confirm", allow_edit: true }),
+      ]),
+      null,
+    );
+
+    expect(definition.steps?.map((step) => step.id)).toEqual([
+      "read_bom",
+      "extract_l1",
+    ]);
+    expect(definition.steps?.[1]).toMatchObject({
+      inputs: ["bom_rows"],
+      output: { name: "l1_rows", schema: "table:12cols" },
+      gate: "confirm",
+      allow_edit: true,
+    });
+  });
+
+  it("keeps a declared tool scope apart from an inherited one", () => {
+    const [declared, inherited] = formValuesToDefinition(
+      withSteps([
+        stepFixture({ id: "a", tools: [] }),
+        stepFixture({ id: "b", tools: undefined }),
+      ]),
+      null,
+    ).steps ?? [];
+
+    // "This step may use no tools" and "leave the run's tools alone" are two
+    // different runs; collapsing either into the other widens or narrows it.
+    expect(declared.tools).toEqual([]);
+    expect("tools" in inherited).toBe(false);
+  });
+
+  it("writes the human-edit switch only for a gate that can stop for a person", () => {
+    const steps = formValuesToDefinition(
+      withSteps([
+        stepFixture({ id: "auto_step", gate: "auto", allow_edit: true }),
+        stepFixture({ id: "confirm_step", gate: "confirm", allow_edit: false }),
+        stepFixture({ id: "validate_step", gate: "validate", allow_edit: true }),
+      ]),
+      null,
+    ).steps ?? [];
+
+    // The server refuses ``allow_edit`` on an automatic gate as an unused field.
+    expect("allow_edit" in steps[0]).toBe(false);
+    expect(steps[1].allow_edit).toBe(false);
+    expect(steps[2].allow_edit).toBe(true);
+  });
+
+  it("keeps a step key this build cannot name", () => {
+    const exotic = {
+      ...stepFixture(),
+      retry_limit: 3,
+    } as FeatureStep;
+    const written = formValuesToDefinition(withSteps([exotic]), null).steps?.[0];
+
+    expect((written as Record<string, unknown>).retry_limit).toBe(3);
+  });
+
+  it("writes no steps key at all when the author declared none", () => {
+    const definition = formValuesToDefinition(withSteps([]), null);
+
+    // Absence is what "single-shot" already means; an empty list would claim
+    // the editor had looked at a skeleton that is not there.
+    expect("steps" in definition).toBe(false);
+  });
+
+  it("names the steps this build cannot run", () => {
+    const unsupported = unsupportedSteps([
+      stepFixture({ id: "op_design", mode: "orchestrate" }),
+      stepFixture({ id: "tooling", agent_role: "刀具选型" }),
+      stepFixture({ id: "fine" }),
+    ]);
+
+    expect(unsupported.orchestrate).toEqual(["op_design"]);
+    expect(unsupported.agentRole).toEqual(["tooling"]);
+  });
+
+  it("names a validate gate whose artifact could never pass", () => {
+    const problems = validateGateProblems([
+      stepFixture({ id: "self_check", gate: "validate", output: { name: "check", schema: "table:4cols" } }),
+      stepFixture({ id: "self_check_ok", gate: "validate", output: { name: "check", schema: "object" } }),
+      stepFixture({ id: "no_gate" }),
+    ]);
+
+    expect(problems).toEqual(["self_check"]);
+  });
+
+  it("suggests only the artifacts earlier steps produce", () => {
+    const steps = [
+      stepFixture({ id: "a", output: { name: "bom_rows", schema: "table" } }),
+      stepFixture({ id: "b", output: { name: "drawing", schema: "text" } }),
+      stepFixture({ id: "c" }),
+    ];
+
+    expect(artifactNamesBefore(steps, 0)).toEqual([]);
+    expect(artifactNamesBefore(steps, 2)).toEqual(["bom_rows", "drawing"]);
   });
 });

@@ -22,6 +22,10 @@ import type {
   FeatureMeta,
   FeatureOutputKind,
   FeaturePermissionsBody,
+  FeatureStep,
+  FeatureStepGate,
+  FeatureStepMode,
+  FeatureStepOnFailure,
   FeatureUiSchema,
 } from "../../../api/modules/features";
 
@@ -100,6 +104,12 @@ export interface FeatureFormValues {
   toolsDisabled?: string[];
   skills?: string[];
   subagents?: string[];
+  /**
+   * The run's step skeleton, in order (design 7.10). Held as the whole step
+   * object: the editor binds the fields it owns and a save writes back what it
+   * did not touch, so a definition never loses a key this build cannot name.
+   */
+  steps: FeatureStep[];
 }
 
 /** The scope lists of the capability block, as ``feature.json`` names them. */
@@ -340,6 +350,186 @@ export function capabilityFromFormValues(
   return Object.keys(agent).length > 0 ? agent : null;
 }
 
+/* ── Task steps (design 7.10) ────────────────────────────────────────────── */
+
+/**
+ * Step ids as the server matches them (the store's ``_STEP_ID_RE``): a rewind
+ * names a step by its id, so the editor holds the same line here instead of
+ * letting the round trip discover it.
+ */
+const STEP_ID_PATTERN = /^[a-z][a-z0-9_]*$/;
+
+export function isValidStepId(id: string): boolean {
+  return STEP_ID_PATTERN.test(id);
+}
+
+/** Gates a step may declare, in the order the picker offers them. */
+export const FEATURE_STEP_GATES: FeatureStepGate[] = [
+  "auto",
+  "confirm",
+  "validate",
+];
+
+/**
+ * Modes a step may declare. ``orchestrate`` is listed because it is part of the
+ * step schema — but this build has no implementation behind it, and the picker
+ * shows it as unavailable rather than letting a definition look runnable.
+ */
+export const FEATURE_STEP_MODES: FeatureStepMode[] = ["agent", "orchestrate"];
+
+/** What a failed step may do, in the order the picker offers them. */
+export const FEATURE_STEP_FAILURES: FeatureStepOnFailure[] = [
+  "abort",
+  "escalate",
+  "retry",
+];
+
+/**
+ * A new step: one agent, no gate, no fixed tools, and a failure stops the run
+ * instead of guessing. Every one of these is a control the author can see and
+ * change before saving.
+ */
+export function emptyStep(): FeatureStep {
+  return {
+    id: "",
+    name: "",
+    mode: "agent",
+    inputs: [],
+    output: { name: "", schema: "" },
+    prompt: "",
+    gate: "auto",
+    allow_edit: false,
+    on_failure: "abort",
+  };
+}
+
+/**
+ * A loaded step, copied for the form.
+ *
+ * The copy is shallow-but-complete: keys this editor knows are cloned so an edit
+ * cannot reach the definition object behind it, and keys it does *not* know ride
+ * along untouched — a definition is never rewritten into what this build
+ * happens to understand.
+ */
+export function stepToFormValue(step: FeatureStep): FeatureStep {
+  return {
+    ...step,
+    inputs: [...(step.inputs ?? [])],
+    ...(step.tools ? { tools: [...step.tools] } : {}),
+    output: {
+      name: step.output?.name ?? "",
+      schema: step.output?.schema ?? "",
+    },
+  };
+}
+
+/**
+ * The steps to write.
+ *
+ * Omitted vs declared is a real difference in this schema, so nothing is
+ * collapsed: ``inputs`` is always written (empty means "consumes nothing"),
+ * ``tools`` only when the author declared a list at all (absent inherits the
+ * run's tool surface, while ``[]`` means this step may use none — two different
+ * runs), and ``allow_edit`` only for the gates that can stop for a person (the
+ * server refuses it as unused on an automatic gate).
+ */
+export function stepsFromFormValues(
+  steps: readonly FeatureStep[] | undefined,
+): FeatureStep[] {
+  return (steps ?? []).map((step) => {
+    // Copies the row and then owns the keys this editor manages: a step key the
+    // editor cannot name (written by a newer build, or by hand) survives the
+    // round trip instead of being deleted by a save that never saw it.
+    const next: FeatureStep = {
+      ...step,
+      id: step.id.trim(),
+      name: step.name.trim(),
+      inputs: cleanList(step.inputs),
+      output: {
+        name: (step.output?.name ?? "").trim(),
+        schema: (step.output?.schema ?? "").trim(),
+      },
+      prompt: step.prompt.trim(),
+    };
+    if (!step.mode) delete next.mode;
+    if (!step.gate) delete next.gate;
+    if (!step.on_failure) delete next.on_failure;
+    if (step.gate === "confirm" || step.gate === "validate") {
+      next.allow_edit = step.allow_edit === true;
+    } else {
+      delete next.allow_edit;
+    }
+    if (step.tools === undefined) delete next.tools;
+    else next.tools = cleanList(step.tools);
+    if (typeof step.max_parallel !== "number") delete next.max_parallel;
+    const role = (step.agent_role ?? "").trim();
+    if (role) next.agent_role = role;
+    else delete next.agent_role;
+    return next;
+  });
+}
+
+/**
+ * Checks the definition format insists on beyond ''is it filled in''.
+ *
+ * A ``validate`` gate releases only an object artifact that carries a boolean
+ * ``passed``; naming the steps that break it keeps a refusal the server would
+ * make next to the fields that caused it.
+ */
+export function validateGateProblems(steps: readonly FeatureStep[]): string[] {
+  return steps
+    .filter((step) => step.gate === "validate" && step.output?.schema !== "object")
+    .map((step) => step.id.trim() || step.name.trim());
+}
+
+/** Step ids used by more than one step — a rewind target has to be unambiguous. */
+export function duplicateStepIds(steps: readonly FeatureStep[]): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const step of steps) {
+    const id = step.id.trim();
+    if (!id) continue;
+    if (seen.has(id)) duplicates.add(id);
+    else seen.add(id);
+  }
+  return [...duplicates];
+}
+
+/**
+ * Steps this build cannot run, by id and by the key that makes them unrunnable.
+ *
+ * ``orchestrate`` and ``agent_role`` are part of the step schema but have no
+ * implementation yet, and the server refuses them (400) rather than running the
+ * step some other way. Naming them here keeps that refusal in front of the
+ * author, next to the fields, instead of only in a round trip's error body.
+ */
+export function unsupportedSteps(steps: readonly FeatureStep[]): {
+  orchestrate: string[];
+  agentRole: string[];
+} {
+  const orchestrate: string[] = [];
+  const agentRole: string[] = [];
+  for (const step of steps) {
+    const id = step.id.trim() || step.name.trim();
+    if (step.mode === "orchestrate") orchestrate.push(id);
+    if ((step.agent_role ?? "").trim()) agentRole.push(id);
+  }
+  return { orchestrate, agentRole };
+}
+
+/** Artifact names the steps before ``index`` produce — what this step may consume. */
+export function artifactNamesBefore(
+  steps: readonly FeatureStep[],
+  index: number,
+): string[] {
+  const names: string[] = [];
+  for (const step of steps.slice(0, index)) {
+    const name = step.output?.name?.trim();
+    if (name && !names.includes(name)) names.push(name);
+  }
+  return names;
+}
+
 /** A loaded definition, flattened into the settings form. */
 export function featureToFormValues(feature: Feature): FeatureFormValues {
   return {
@@ -358,6 +548,7 @@ export function featureToFormValues(feature: Feature): FeatureFormValues {
     allowRoles: stringList(feature.permissions?.allow_roles),
     fields: fieldRowsFromSchema(feature.input_schema, feature.ui_schema),
     ...capabilityFormValues(feature.agent),
+    steps: (feature.steps ?? []).map(stepToFormValue),
   };
 }
 
@@ -379,6 +570,8 @@ export function emptyFormValues(meta: FeatureMeta): FeatureFormValues {
     allowRoles: [],
     fields: [emptyFieldRow()],
     ...capabilityFormValues(null),
+    // No steps: a new feature runs as one shot until its author adds a skeleton.
+    steps: [],
   };
 }
 
@@ -443,7 +636,8 @@ export function formValuesToDefinition(
   if (roles.length > 0) permissions.allow_roles = roles;
 
   const systemPrompt = values.systemPrompt.trim();
-  return {
+  const steps = stepsFromFormValues(values.steps);
+  const body: FeatureDefinitionBody = {
     id: values.id.trim(),
     label: { zh: values.labelZh.trim(), en: values.labelEn.trim() },
     description: {
@@ -463,4 +657,8 @@ export function formValuesToDefinition(
     permissions,
     agent: capabilityFromFormValues(values),
   };
+  // No step at all writes no key: "single-shot" is what the absence already
+  // means, and an empty list would only claim the editor had looked at it.
+  if (steps.length > 0) body.steps = steps;
+  return body;
 }

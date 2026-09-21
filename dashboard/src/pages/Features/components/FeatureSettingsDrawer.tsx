@@ -44,6 +44,7 @@ import { apiErrorMessage } from "../../../utils/apiError";
 import { message } from "@/utils/antdMessage";
 import SchemaNodeEditor from "./SchemaNodeEditor";
 import { FeatureCapabilitySection } from "./FeatureCapabilityFields";
+import { FeatureStepsSection } from "./FeatureStepsFields";
 import {
   ALL_UNITS_KEY,
   emptyFieldRow,
@@ -53,6 +54,8 @@ import {
   formValuesToDefinition,
   incompleteCopyFields,
   isValidFeatureId,
+  unsupportedSteps,
+  validateGateProblems,
   type FeatureFieldRow,
   type FeatureFormValues,
 } from "./featureSettings";
@@ -183,6 +186,31 @@ export default function FeatureSettingsDrawer({
             fields: incomplete.join(", "),
           }),
         );
+        return;
+      }
+      // Two step settings are part of the format and unimplemented here, and one
+      // gate combination can never release: the server refuses all three, so the
+      // author hears it next to the rows rather than from an error body.
+      const steps = values.steps ?? [];
+      const unsupported = unsupportedSteps(steps);
+      const problems = [
+        ...unsupported.orchestrate.map((step) =>
+          t("features.settingsStepUnsupportedMode", { step }),
+        ),
+        ...unsupported.agentRole.map((step) =>
+          t("features.settingsStepUnsupportedAgentRole", { step }),
+        ),
+      ];
+      const badGates = validateGateProblems(steps);
+      if (badGates.length > 0) {
+        problems.push(
+          t("features.settingsStepValidateSchemaRefused", {
+            steps: badGates.join(", "),
+          }),
+        );
+      }
+      if (problems.length > 0) {
+        setSaveError(problems.join("\n"));
         return;
       }
       setSaving(true);
@@ -521,6 +549,8 @@ export default function FeatureSettingsDrawer({
             </SettingsSection>
 
             <FeatureCapabilitySection />
+
+            <FeatureStepsSection />
 
             <SettingsSection
               titleKey="features.settingsSectionOutput"

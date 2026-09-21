@@ -989,3 +989,275 @@
     border-radius: var(--fn-radius-sm);
   }
 }
+
+// ── Task steps: the run view ────────────────────────────────────────────────
+
+/*
+ * The run panel sits inside the draft pane and is read top-down: where the run
+ * is, what it waits for, then the skeleton with each step's own state.
+ */
+.runPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.runHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.runTaskId {
+  font-family: var(--fn-font-mono);
+  font-size: 11px;
+  color: var(--fn-text-tertiary);
+}
+
+.runHeadTools {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* The gate the run is stopped at: the deliverable, and the way to release it. */
+.runGate {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  background: var(--fn-bg-secondary);
+  border: 1px solid var(--fn-border-secondary);
+  border-left: 3px solid var(--fn-color-warning, var(--fn-color-brand));
+  border-radius: var(--fn-radius-md);
+}
+
+.runGateHead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.runGateStep {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.runGateFooter {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.runStepList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.runStep {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--fn-bg-secondary);
+  border: 1px solid var(--fn-border-secondary);
+  border-left: 3px solid var(--fn-color-brand);
+  border-radius: var(--fn-radius-md);
+}
+
+/* A rewound step keeps its place in the list and shows that it was discarded. */
+.runStepVoided {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  background: var(--fn-bg-secondary);
+  border: 1px dashed var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  opacity: 0.65;
+}
+
+.runStepHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.runStepSeq {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fn-text-secondary);
+  background: var(--fn-bg-tertiary);
+  border-radius: 50%;
+}
+
+.runStepName {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.runStepId {
+  font-family: var(--fn-font-mono);
+  font-size: 11px;
+  color: var(--fn-text-tertiary);
+}
+
+.runStepMeta {
+  font-size: 11px;
+  color: var(--fn-text-tertiary);
+}
+
+.runStepTools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.runStepEmpty {
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+.runArtifactTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.runArtifactTag {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  font-family: var(--fn-font-mono);
+  font-size: 11px;
+}
+
+.runArtifactSchema {
+  font-family: var(--fn-font-mono);
+  font-size: 11px;
+  color: var(--fn-text-tertiary);
+}
+
+.runArtifactEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.runArtifactEditorHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+/* Values are shown as they are stored: raw JSON, never reworded. */
+.runValue {
+  max-height: 240px;
+  margin: 0;
+  padding: 8px 10px;
+  overflow: auto;
+  font-family: var(--fn-font-mono);
+  font-size: 11px;
+  line-height: 1.6;
+  color: var(--fn-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--fn-bg-tertiary);
+  border-radius: var(--fn-radius-sm);
+}
+
+// ── Task steps: the audit ───────────────────────────────────────────────────
+
+.audit {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.auditMeta {
+  font-family: var(--fn-font-mono);
+  font-size: 11px;
+  color: var(--fn-text-tertiary);
+}
+
+.auditStep {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+  background: var(--fn-bg-secondary);
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+}
+
+.auditSection {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.auditSectionTitle {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fn-text-quaternary);
+}
+
+/* One human change: the artifact, then the value before and after it. */
+.auditEdit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--fn-bg-primary);
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-sm);
+}
+
+.auditEditHead {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.auditDiff {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+
+  @media (max-width: 767px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.auditDiffSide {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.auditDiffLabel {
+  font-size: 11px;
+  color: var(--fn-text-tertiary);
+}

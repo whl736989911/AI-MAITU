@@ -42,6 +42,10 @@ vi.mock("@/utils/antdMessage", () => ({
 
 import FeatureSettingsDrawer from "./FeatureSettingsDrawer";
 
+// Every case here drives a real antd form; the 5s default is a coin flip once
+// the suite runs its files in parallel.
+vi.setConfig({ testTimeout: 30_000 });
+
 const META: FeatureMeta = {
   units: ["general", "sales"],
   icons: ["receipt", "file-text"],
@@ -342,5 +346,221 @@ describe("<FeatureSettingsDrawer />", () => {
       // Declared as none, and still written as none.
       skills: [],
     });
+  });
+});
+
+describe("<FeatureSettingsDrawer /> step skeleton", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateFeature.mockResolvedValue({ feature_id: "quote-draft" });
+    createFeature.mockResolvedValue({ feature_id: "quote-draft" });
+    deleteFeature.mockResolvedValue(undefined);
+    getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
+  });
+
+  /** The block's own disclosure, which is what mounts the step rows. */
+  async function openSteps(user: ReturnType<typeof userEvent.setup>) {
+    await user.click(screen.getByText("features.settingsSectionSteps"));
+    return screen.findByRole("button", { name: "features.settingsStepsAdd" });
+  }
+
+  it("writes the step the author built, with orchestrate left unreachable", async () => {
+    const user = userEvent.setup();
+    renderDrawer();
+
+    await user.click(await openSteps(user));
+    await user.type(screen.getByPlaceholderText("op_design"), "op_design");
+    await user.type(
+      screen.getByPlaceholderText("features.settingsStepNamePlaceholder"),
+      "工序设计",
+    );
+    await user.type(screen.getByPlaceholderText("bom_rows"), "ops");
+    await user.type(
+      screen.getByLabelText("features.settingsStepOutputSchema"),
+      "list",
+    );
+    await user.type(
+      screen.getByLabelText("features.settingsStepPrompt"),
+      "出工艺包",
+    );
+
+    // The self-decomposing mode is in the schema and not selectable: offering it
+    // would promise a parallel decomposition this build refuses to run.
+    const modeInput = document.querySelector<HTMLInputElement>(
+      'input[id$="_mode"]',
+    );
+    expect(modeInput).not.toBeNull();
+    await user.click(modeInput as HTMLInputElement);
+    const orchestrate = await screen.findByTitle(
+      "features.settingsStepModeOrchestrate",
+    );
+    expect(orchestrate.className).toContain("disabled");
+    await user.click(orchestrate);
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
+    const [, body] = lastUpdate();
+    expect(body.steps).toEqual([
+      {
+        id: "op_design",
+        name: "工序设计",
+        mode: "agent",
+        inputs: [],
+        output: { name: "ops", schema: "list" },
+        prompt: "出工艺包",
+        gate: "auto",
+        on_failure: "abort",
+      },
+    ]);
+  });
+
+  it("refuses a loaded step this build cannot run, naming it", async () => {
+    const user = userEvent.setup();
+    render(
+      <FeatureSettingsDrawer
+        open
+        feature={{
+          ...FEATURE,
+          steps: [
+            {
+              id: "op_design",
+              name: "工序设计",
+              mode: "orchestrate",
+              inputs: [],
+              output: { name: "ops", schema: "list" },
+              prompt: "出工艺包",
+              gate: "auto",
+              on_failure: "abort",
+            },
+          ],
+        }}
+        meta={META}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onDeleted={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    // Reported next to the fields instead of only in the server's error body,
+    // and nothing was written.
+    expect(
+      await screen.findByText("features.settingsStepUnsupportedMode"),
+    ).toBeInTheDocument();
+    expect(updateFeature).not.toHaveBeenCalled();
+  });
+
+  it("refuses a validate gate whose artifact could never pass", async () => {
+    const user = userEvent.setup();
+    render(
+      <FeatureSettingsDrawer
+        open
+        feature={{
+          ...FEATURE,
+          steps: [
+            {
+              id: "self_check",
+              name: "自检清单",
+              mode: "agent",
+              inputs: [],
+              output: { name: "check", schema: "table:4cols" },
+              prompt: "逐条核对",
+              gate: "validate",
+              allow_edit: false,
+              on_failure: "abort",
+            },
+          ],
+        }}
+        meta={META}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onDeleted={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    expect(
+      await screen.findByText("features.settingsStepValidateSchemaRefused"),
+    ).toBeInTheDocument();
+    expect(updateFeature).not.toHaveBeenCalled();
+  });
+
+  it("reports a failed step-block load instead of offering an empty tool list", async () => {
+    const user = userEvent.setup();
+    getFeatureCapabilities.mockRejectedValue(
+      new Error(
+        'Request failed: 500 Internal Server Error - {"error":{"code":"AGENT_FAILED",' +
+          '"message":"Agent 启动失败。"}}',
+      ),
+    );
+    renderDrawer();
+
+    await user.click(screen.getByText("features.settingsSectionSteps"));
+
+    expect(
+      await screen.findByText("features.settingsCapabilityLoadFailed"),
+    ).toBeInTheDocument();
+    // An empty tool list would read as "this step may use no tools" — a scope
+    // nobody declared.
+    expect(
+      screen.queryByRole("button", { name: "features.settingsStepsAdd" }),
+    ).toBeNull();
+  });
+});
+
+describe("<FeatureSettingsDrawer /> scope placeholders", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    updateFeature.mockResolvedValue({ feature_id: "quote-draft" });
+    createFeature.mockResolvedValue({ feature_id: "quote-draft" });
+    deleteFeature.mockResolvedValue(undefined);
+    getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
+  });
+
+  /** The placeholder the user sees on one scope select, found by its label. */
+  function scopePlaceholder(labelKey: string): string | undefined {
+    const item = screen.getByText(labelKey).closest(".ant-form-item");
+    return (
+      item?.querySelector(".ant-select-selection-placeholder")?.textContent ??
+      undefined
+    );
+  }
+
+  it("does not tell a declared-empty scope that it inherits", async () => {
+    const user = userEvent.setup();
+    render(
+      <FeatureSettingsDrawer
+        open
+        feature={{ ...FEATURE, agent: { skills: [] } }}
+        meta={META}
+        onClose={vi.fn()}
+        onSaved={vi.fn()}
+        onDeleted={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByText("features.settingsSectionCapability"));
+    await screen.findByText("features.settingsCapabilitySkills");
+
+    // "Skills: []" means the run uses none of them — the placeholder said
+    // "inherit" and told the author the opposite of what the field does.
+    expect(scopePlaceholder("features.settingsCapabilitySkills")).toBe(
+      "features.settingsCapabilityScopeNone",
+    );
+  });
+
+  it("keeps the inherit placeholder where the scope really is inherited", async () => {
+    const user = userEvent.setup();
+    renderDrawer();
+
+    await user.click(screen.getByText("features.settingsSectionCapability"));
+    await screen.findByText("features.settingsCapabilitySkills");
+
+    expect(scopePlaceholder("features.settingsCapabilitySkills")).toBe(
+      "features.settingsCapabilityScopePlaceholder",
+    );
   });
 });

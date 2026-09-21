@@ -25,18 +25,14 @@
  * subagents are files managed through their own drawers.
  */
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { Alert, Button, Checkbox, Collapse, Form, Select, Spin } from "antd";
 import { RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
-import {
-  featuresApi,
-  type FeatureCapabilities,
-} from "../../../api/modules/features";
 import { AgentAdvancedConfigFields } from "../../../components/AgentAdvancedConfigFields";
-import { apiErrorMessage } from "../../../utils/apiError";
 import ExpertComposerDefaultsFields from "../../Experts/components/ExpertComposerDefaultsFields";
 import { MODEL_AUTO_VALUE } from "../../../utils/modelOptions";
+import { useFeatureCapabilities } from "./useFeatureCapabilities";
 import styles from "../index.module.less";
 
 /** One declared list: ``undefined`` inherits, an array is the scope itself. */
@@ -51,20 +47,28 @@ const SCOPE_FIELDS = [
 /**
  * One declared-vs-inherited list, using the same switch the reused connector /
  * knowledge-base fields render (``ExpertComposerDefaultsFields``'s
- * ``ScopeField``) so the whole block reads the same way.
+ * ``ScopeField``) so every scope in the drawer reads the same way.
+ *
+ * Also used by the step block, whose tool whitelist follows the same convention:
+ * a list is a scope the author declared, and leaving it inherited keeps whatever
+ * the run would otherwise have.
  */
-function DeclaredListField({
+export function DeclaredListField({
   name,
   labelKey,
   hintKey,
   options,
   loading,
+  inheritLabel,
 }: {
-  name: string;
+  /** Form path — a plain name, or a nested path inside a repeated card. */
+  name: string | (string | number)[];
   labelKey: string;
   hintKey: string;
   options: { value: string; label: string }[];
   loading: boolean;
+  /** Defaults to the capability block's wording. */
+  inheritLabel?: string;
 }) {
   const { t } = useTranslation();
   const form = Form.useFormInstance<Record<string, unknown>>();
@@ -83,7 +87,14 @@ function DeclaredListField({
             loading={loading}
             disabled={inherited}
             options={options}
-            placeholder={t("features.settingsCapabilityScopePlaceholder")}
+            // The two states mean opposite things, so they cannot share a
+            // placeholder: "inherit" while an empty list is declared tells the
+            // author their scope is the caller's when the run will use none.
+            placeholder={
+              inherited
+                ? t("features.settingsCapabilityScopePlaceholder")
+                : t("features.settingsCapabilityScopeNone")
+            }
           />
         </Form.Item>
         <Checkbox
@@ -92,7 +103,7 @@ function DeclaredListField({
             form.setFieldValue(name, event.target.checked ? undefined : [])
           }
         >
-          {t("features.settingsCapabilityInherit")}
+          {inheritLabel ?? t("features.settingsCapabilityInherit")}
         </Checkbox>
       </div>
     </Form.Item>
@@ -108,33 +119,7 @@ export default function FeatureCapabilityFields({
   open,
 }: FeatureCapabilityFieldsProps) {
   const { t } = useTranslation();
-  const [choices, setChoices] = useState<FeatureCapabilities | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setChoices(await featuresApi.getFeatureCapabilities());
-    } catch (err) {
-      // Reported, never answered with empty lists: "could not load" and "you
-      // have none" are different facts, and empty lists would let this editor
-      // declare a scope no run could honour.
-      setChoices(null);
-      setError(
-        apiErrorMessage(err, t("features.settingsCapabilityLoadFailed"), t),
-      );
-    } finally {
-      setLoading(false);
-    }
-  }, [t]);
-
-  useEffect(() => {
-    if (open && choices === null && !loading && error === null) {
-      void load();
-    }
-  }, [open, choices, loading, error, load]);
+  const { choices, loading, error, load } = useFeatureCapabilities(open);
 
   if (loading) {
     return (
