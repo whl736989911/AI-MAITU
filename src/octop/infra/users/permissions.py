@@ -233,6 +233,8 @@ ALL_PERMISSION_KEYS: set[str] = set(PERMISSIONS)
 
 # Settings-group keys: shown in the picker and pre-checked for new users.
 # They are still stored explicitly — not silently granted without being written.
+# ``role_default_permissions`` therefore never implies them for a non-admin role:
+# an unset (or unchecked) key means no access.
 BASELINE_PERMISSIONS: set[str] = {key for key, p in PERMISSIONS.items() if p.category == "settings"}
 
 
@@ -247,10 +249,16 @@ def _as_set(values: Iterable[str] | None) -> set[str]:
 
 
 def role_default_permissions(role: Role | str | None) -> set[str]:
-    """Module keys implied by the role alone (admin -> full catalog)."""
+    """Module keys implied by the role alone (admin -> full catalog).
+
+    Only ``admin`` implies keys. Other roles start empty and are granted keys
+    explicitly (stored grants, org-unit grants, or ``BASELINE_PERMISSIONS``
+    written at user creation), so revoking a key in the user editor really
+    revokes it.
+    """
     if _role_value(role) == Role.ADMIN:
         return set(ALL_PERMISSION_KEYS)
-    return set(BASELINE_PERMISSIONS)
+    return set()
 
 
 def unit_permissions(unit_key: str | None, repo: Any) -> set[str]:

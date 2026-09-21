@@ -564,14 +564,12 @@ async def test_every_route_requires_the_features_permission() -> None:
         keys: list[str] = []
         for dep in route.dependant.dependencies:
             try:
-                # ``features`` sits in BASELINE_PERMISSIONS, so an empty grant list
-                # still resolves to it. Denying the key is what actually proves the
-                # gate is on ``features`` and not on some other permission. The
-                # server double is passed explicitly because a direct call does not
-                # run FastAPI's DI.
+                # Module keys are granted explicitly, so a user with no grants is
+                # rejected by the gate on ``features``. The server double is passed
+                # explicitly because a direct call does not run FastAPI's DI.
                 await dep.call(
                     _request(),
-                    _user(permissions=(), denied=("features",)),
+                    _user(permissions=()),
                     _request().app.state.octop_server,
                 )
             except OctopError as exc:
