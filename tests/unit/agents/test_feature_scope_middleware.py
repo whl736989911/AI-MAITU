@@ -98,6 +98,69 @@ def test_a_run_without_a_scope_reads_back_as_none(monkeypatch) -> None:
     )
 
 
+def test_a_step_allow_list_round_trips_only_when_it_is_declared() -> None:
+    """An inherit stays the absence of the key — nothing is written as null."""
+    request: dict[str, Any] = {}
+
+    feature_scope.stamp_feature_scope(
+        request, feature_scope.FeatureRunScope(tools_allowed=("read_file",))
+    )
+
+    assert request["configurable"][feature_scope.CONFIG_KEY]["tools_allowed"] == ["read_file"]
+    read_back = feature_scope.feature_scope_from_config(
+        {"octop_feature_scope": {"tools_disabled": [], "subagents": None}}
+    )
+    assert read_back is not None and read_back.tools_allowed is None
+
+
+def test_a_step_allow_list_keeps_only_the_tools_it_names(monkeypatch) -> None:
+    """7.3's per-step whitelist: "this step reads the PDF and nothing else"."""
+    _configure(
+        monkeypatch,
+        {"tools_disabled": [], "subagents": None, "tools_allowed": ["read_file"]},
+    )
+
+    request = feature_scope.FeatureScopeMiddleware()._apply(
+        _model_request([_tool("read_file"), _tool("browser_use"), _tool("execute")])
+    )
+
+    assert [feature_scope.tool_name(tool) for tool in request.tools] == ["read_file"]
+
+
+def test_a_tool_outside_the_step_allow_list_is_refused_at_call_time(monkeypatch) -> None:
+    _configure(
+        monkeypatch,
+        {"tools_disabled": [], "subagents": None, "tools_allowed": ["read_file"]},
+    )
+    called: list[Any] = []
+
+    def handler(request: ToolCallRequest) -> str:
+        called.append(request)
+        return "executed"
+
+    result = feature_scope.FeatureScopeMiddleware().wrap_tool_call(
+        _tool_request("execute"), handler
+    )
+
+    assert isinstance(result, ToolMessage)
+    assert result.status == "error"
+    assert "read_file" in str(result.content)
+    assert called == []
+
+
+def test_an_empty_step_allow_list_allows_no_tool_at_all(monkeypatch) -> None:
+    """``[]`` is a scope, not an inherit: the step runs without tools."""
+    _configure(monkeypatch, {"tools_disabled": [], "subagents": None, "tools_allowed": []})
+
+    request = feature_scope.FeatureScopeMiddleware()._apply(_model_request([_tool("read_file")]))
+
+    assert request.tools == []
+    refused = feature_scope.FeatureScopeMiddleware().wrap_tool_call(
+        _tool_request("read_file"), lambda request: "executed"
+    )
+    assert isinstance(refused, ToolMessage) and refused.status == "error"
+
+
 def test_disabled_tools_are_dropped_from_the_models_tool_list(monkeypatch) -> None:
     _configure(monkeypatch, {"tools_disabled": ["browser_use"], "subagents": None})
 

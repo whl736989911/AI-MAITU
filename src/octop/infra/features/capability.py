@@ -79,6 +79,14 @@ class ResolvedCapability:
         }
 
 
+def _audit_names(payload: Mapping[str, Any], key: str) -> tuple[str, ...] | None:
+    """One recorded scope: ``None`` when the snapshot recorded an inherit."""
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return None
+    return tuple(str(item) for item in value)
+
+
 def _intersect(
     declared: tuple[str, ...],
     available: set[str],
@@ -114,6 +122,29 @@ async def _available_subagents(server: Any, agent_id: str) -> set[str]:
     """Subagent types the caller's agent can dispatch."""
     summaries = await server.app_runtime.agent_registry.list_subagent_summaries(agent_id)
     return {str(row.get("name") or "") for row in summaries} - {""}
+
+
+def capability_from_audit(payload: Mapping[str, Any]) -> ResolvedCapability:
+    """Rebuild one resolved layer from a run snapshot — the resume path.
+
+    ``ResolvedCapability.audit`` is the inverse, so a run that stopped at a human
+    gate continues under the configuration it was approved under instead of
+    whatever the definition says today: a model swapped mid-run would otherwise
+    make the run's own snapshot describe something else. Recorded values are read
+    back as recorded — an inherit stays an inherit, an empty scope stays empty.
+    """
+    model = payload.get("model")
+    runtime = payload.get("runtime")
+    disabled = _audit_names(payload, "tools_disabled")
+    return ResolvedCapability(
+        model=model if isinstance(model, str) else None,
+        runtime_overrides=dict(runtime) if isinstance(runtime, Mapping) else {},
+        tools_disabled=disabled or (),
+        skills=_audit_names(payload, "skills"),
+        subagents=_audit_names(payload, "subagents"),
+        mcp_servers=_audit_names(payload, "mcp_servers"),
+        knowledge_base_ids=_audit_names(payload, "knowledge_base_ids"),
+    )
 
 
 def _usable_model(server: Any, declared: str) -> str:
@@ -214,7 +245,11 @@ async def resolve_capability(
     )
 
 
-def stamp_capability(request: dict[str, Any], capability: ResolvedCapability) -> None:
+def stamp_capability(
+    request: dict[str, Any],
+    capability: ResolvedCapability,
+    scope: FeatureRunScope | None = None,
+) -> None:
     """Put the resolved capability onto one harness request, in place.
 
     Only the channels that need a request key are set here: the model
@@ -223,10 +258,16 @@ def stamp_capability(request: dict[str, Any], capability: ResolvedCapability) ->
     the tool / subagent scope (``FeatureScopeMiddleware``). MCP connectors and
     knowledge bases need lookups of their own — the router resolves those, because
     it is also what reports them in the run log.
+
+    *scope* overrides the tool / subagent part of the layer for this one request,
+    which is how a step's own ``tools`` allow-list narrows a feature's run without
+    touching the rest of the capability (the model, the skills, the knobs): the
+    step's turn is not a different feature, it is the same feature with a smaller
+    tool surface.
     """
     from octop.infra.agents.middleware.feature_scope import stamp_feature_scope  # noqa: PLC0415
 
-    stamp_feature_scope(request, capability.run_scope())
+    stamp_feature_scope(request, scope if scope is not None else capability.run_scope())
     configurable = dict(request.get("configurable") or {})
     if capability.runtime_overrides:
         configurable[CONFIGURABLE_AGENT_RUNTIME_OVERRIDES] = dict(capability.runtime_overrides)
@@ -241,6 +282,7 @@ def stamp_capability(request: dict[str, Any], capability: ResolvedCapability) ->
 __all__ = [
     "CapabilityUnavailable",
     "ResolvedCapability",
+    "capability_from_audit",
     "resolve_capability",
     "stamp_capability",
 ]

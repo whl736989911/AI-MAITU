@@ -28,6 +28,18 @@ from pathlib import Path
 from typing import Any
 
 from octop.infra.features.schema import validate_manifest
+from octop.infra.features.steps import (
+    GATE_VALIDATE,
+    SCHEMA_LIST,
+    SCHEMA_OBJECT,
+    SCHEMA_TABLE,
+    SCHEMA_TEXT,
+    VERDICT_FIELD,
+    Artifact,
+    FeatureStep,
+    StepInputMissing,
+    parse_steps,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +69,49 @@ _RULES_HEADING_EN = (
     "(human-reviewed and approved). They are NOT part of the current input:"
 )
 """Wording that keeps approved rules from reading as part of the user's input."""
+
+_STEP_INPUTS_HEADING_ZH = "本步骤的输入产物（前序步骤已产出的结构化数据，直接使用，不要重新推断）："
+_STEP_INPUTS_HEADING_EN = (
+    "Input artifacts of this step (structured data an earlier step produced; use it "
+    "as given instead of re-deriving it):"
+)
+
+_CONTRACT_HEADINGS: dict[str, str] = {
+    "zh": "输出契约（必须遵守）",
+    "en": "Output contract (mandatory)",
+}
+"""Heading of the engine-written block that states the shape it accepts back."""
+
+_CONTRACT_LINES: dict[str, dict[str, str]] = {
+    "zh": {
+        "text": "只输出本步骤的文本产物，不要输出 JSON。",
+        "list": "只输出一个 JSON 数组，不要输出其它内容。",
+        "object": "只输出一个 JSON 对象，不要输出其它内容。",
+        "table": (
+            "只输出一个 JSON 二维数组（每行是等长的单元格数组，或等键的对象），不要输出其它内容。"
+        ),
+        "table_n": (
+            "只输出一个 JSON 二维数组，每行恰好 {cols} 个单元格（或 {cols} 个键的对象），"
+            "不要输出其它内容。"
+        ),
+        "passed": "对象必须包含布尔字段 {field}：true 表示通过，false 表示不通过。",
+    },
+    "en": {
+        "text": "Answer with this step's text only; do not wrap it in JSON.",
+        "list": "Answer with one JSON array and nothing else.",
+        "object": "Answer with one JSON object and nothing else.",
+        "table": (
+            "Answer with one JSON array of rows (each row an equally long array of cells, "
+            "or an object with equal keys) and nothing else."
+        ),
+        "table_n": (
+            "Answer with one JSON array of rows, each row exactly {cols} cells (or an "
+            "object with {cols} keys) and nothing else."
+        ),
+        "passed": "The object must carry a boolean {field}: true passes, false does not.",
+    },
+}
+"""The output contract the engine states per artifact type (7.2's 类型化产物)."""
 
 _SCOPE_TAGS: dict[str, tuple[str, str]] = {
     "personal": ("【个人规则】", "【Personal rule】"),
@@ -197,6 +252,8 @@ class Feature:
     output_kind: str
     permissions: dict[str, Any]
     agent: FeatureAgent | None = None
+    steps: tuple[FeatureStep, ...] = ()
+    """Task steps this feature runs, in order (empty = one-shot run, M1's behaviour)."""
 
 
 class FeatureCatalog:
@@ -372,6 +429,9 @@ def _load_feature(feature_dir: Path, manifest_path: Path) -> tuple[Feature | Non
             agent=(
                 FeatureAgent.from_dict(raw["agent"]) if isinstance(raw.get("agent"), dict) else None
             ),
+            # Already validated by ``validate_manifest`` above: parsing it again
+            # here is what turns the declaration into the engine's own types.
+            steps=tuple(parse_steps(raw.get("steps"))[0]),
         ),
         None,
     )
@@ -400,10 +460,7 @@ def build_user_prompt(
     tells a personal preference from an org-wide requirement. ``None`` (the
     default) injects nothing and the rendered template is returned verbatim.
     """
-    rendered = {
-        "inputs": _render_inputs_text(feature, inputs),
-        "inputs_json": json.dumps(inputs, ensure_ascii=False, indent=2),
-    }
+    rendered = _placeholder_values(feature, inputs)
     prompt = _PLACEHOLDER_RE.sub(
         lambda match: rendered.get(match.group(1), match.group(0)),
         feature.user_template,
@@ -413,6 +470,89 @@ def build_user_prompt(
         return prompt
     block = _render_rules_block(injected[:MAX_INJECTED_RULES], chinese=_looks_chinese(prompt))
     return f"{prompt}\n\n{block}"
+
+
+def render_template(template: str, feature: Feature, inputs: dict[str, Any]) -> str:
+    """Render one template's ``{{inputs}}`` / ``{{inputs_json}}`` placeholders.
+
+    The same two placeholders as ``prompt.user_template``, over the same rendered
+    values — a step's own prompt is written in the same language as the feature's,
+    and reading the form inputs must not mean two conventions.
+    """
+    rendered = _placeholder_values(feature, inputs)
+    return _PLACEHOLDER_RE.sub(
+        lambda match: rendered.get(match.group(1), match.group(0)),
+        template,
+    )
+
+
+def _placeholder_values(feature: Feature, inputs: dict[str, Any]) -> dict[str, str]:
+    """``{{placeholder}}`` → the text it renders to (unknown ones stay put)."""
+    return {
+        "inputs": _render_inputs_text(feature, inputs),
+        "inputs_json": json.dumps(inputs, ensure_ascii=False, indent=2),
+    }
+
+
+def render_step_prompt(
+    step: FeatureStep,
+    feature: Feature,
+    inputs: dict[str, Any],
+    artifacts: Mapping[str, Artifact],
+    *,
+    locale: str = "zh",
+) -> str:
+    """One step's turn: its own prompt, its inputs as data, its output contract.
+
+    The inputs are rendered as JSON under the artifact names the definition gave
+    them. That is what makes a step consume the *previous step's data* rather than
+    a paragraph about it (7.2) — the value is the one the engine parsed, not the
+    prose the model wrote to produce it.
+
+    The contract is written by the engine, not by the author: the engine is what
+    parses the answer back, so it is what states the exact shape it will accept.
+    Prompts stay in the author's language; the contract follows the caller's.
+    """
+    chinese = str(locale).lower().startswith("zh")
+    blocks = [render_template(step.prompt, feature, inputs)]
+    if step.inputs:
+        sections = []
+        for name in step.inputs:
+            artifact = artifacts.get(name)
+            if artifact is None:
+                raise StepInputMissing(
+                    f"step {step.id!r} needs artifact {name!r}, which the run does not have"
+                )
+            sections.append(
+                f"### {artifact.name} ({artifact.schema})\n"
+                f"```json\n{json.dumps(artifact.value, ensure_ascii=False, indent=2)}\n```"
+            )
+        heading = _STEP_INPUTS_HEADING_ZH if chinese else _STEP_INPUTS_HEADING_EN
+        blocks.append("\n\n".join([heading, *sections]))
+    blocks.append(_contract_block(step, chinese=chinese))
+    return "\n\n".join(blocks)
+
+
+def _contract_block(step: FeatureStep, *, chinese: bool) -> str:
+    """The shape the engine will accept back from this step's turn."""
+    language = "zh" if chinese else "en"
+    lines = _CONTRACT_LINES[language]
+    schema = step.output.schema
+    if schema == SCHEMA_TEXT:
+        body = lines["text"]
+    elif schema == SCHEMA_LIST:
+        body = lines["list"]
+    elif schema == SCHEMA_OBJECT:
+        body = lines["object"]
+    elif schema == SCHEMA_TABLE:
+        body = lines["table"]
+    else:
+        columns = schema[len("table:") : -len("cols")]
+        body = lines["table_n"].format(cols=columns)
+    parts = [f"{_CONTRACT_HEADINGS[language]}: {body}"]
+    if step.gate == GATE_VALIDATE:
+        parts.append(lines["passed"].format(field=VERDICT_FIELD))
+    return "\n".join(parts)
 
 
 def _render_inputs_text(feature: Feature, inputs: dict[str, Any]) -> str:

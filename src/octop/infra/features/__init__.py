@@ -3,6 +3,7 @@
 from octop.infra.features.capability import (
     CapabilityUnavailable,
     ResolvedCapability,
+    capability_from_audit,
     resolve_capability,
     stamp_capability,
 )
@@ -14,6 +15,7 @@ from octop.infra.features.catalog import (
     ScopedRule,
     build_user_prompt,
     default_library_root,
+    render_step_prompt,
 )
 from octop.infra.features.schema import feature_json_schema, validate_manifest
 from octop.infra.features.store import (
@@ -42,8 +44,10 @@ __all__ = [
     "ResolvedCapability",
     "ScopedRule",
     "build_user_prompt",
+    "capability_from_audit",
     "default_library_root",
     "feature_json_schema",
+    "render_step_prompt",
     "resolve_capability",
     "stamp_capability",
     "validate_manifest",

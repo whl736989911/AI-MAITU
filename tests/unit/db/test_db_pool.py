@@ -75,6 +75,9 @@ def test_run_migrations_creates_tables(db: SqlitePool):
         "resource_acl",
         "resource_acl_grants",
         "resource_acl_changes",
+        "feature_runs",
+        "feature_step_runs",
+        "feature_step_edits",
     }
     assert expected.issubset(names)
     assert "knowledge_base_members" not in names
@@ -111,7 +114,14 @@ def test_run_migrations_idempotent(db: SqlitePool):
         }
         case_cols = {r["name"] for r in conn.execute("PRAGMA table_info(feature_cases)").fetchall()}
         rule_cols = {r["name"] for r in conn.execute("PRAGMA table_info(feature_rules)").fetchall()}
-    assert v == 23
+        run_cols = {r["name"] for r in conn.execute("PRAGMA table_info(feature_runs)").fetchall()}
+        step_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(feature_step_runs)").fetchall()
+        }
+        edit_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(feature_step_edits)").fetchall()
+        }
+    assert v == 24
     assert "login_failed_count" in cols
     assert "login_locked_until" in cols
     assert "preferences_json" in cols
@@ -156,6 +166,31 @@ def test_run_migrations_idempotent(db: SqlitePool):
     # Schema v22: the run snapshot (which agent ran it, which rules it injected).
     assert {"agent_id", "injected_rule_ids"}.issubset(feature_task_cols)
     assert case_cols == {"task_id", "feature_id", "promoted_by", "promoted_at", "note"}
+    # Schema v24: a stepped run's state, the artifacts its steps produced, and the
+    # log of every artifact a human changed (before and after).
+    assert {"status", "current_step", "current_seq", "pending_gate", "plan", "snapshot"}.issubset(
+        run_cols
+    )
+    assert {
+        "seq",
+        "step_id",
+        "status",
+        "artifact_name",
+        "artifact_schema",
+        "artifact_value",
+        "attempts",
+        "error",
+        "started_at",
+        "ended_at",
+    }.issubset(step_cols)
+    assert {
+        "artifact",
+        "before_value",
+        "after_value",
+        "by_user_id",
+        "kind",
+        "source",
+    }.issubset(edit_cols)
     # Schema v23: the layer a rule lives at, and who it belongs to.
     assert rule_cols == {
         "id",
@@ -199,7 +234,7 @@ def test_watermark_at_19_without_capture_schema_is_repaired(tmp_path: Path) -> N
             r["name"]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 23
+    assert version == 24
     assert {"diff_json", "finalized_at"}.issubset(task_cols)
     assert {"feature_cases", "feature_rules"}.issubset(tables)
 
@@ -224,7 +259,7 @@ def test_watermark_at_21_without_run_snapshot_is_repaired(tmp_path: Path) -> Non
     with pool.connect() as conn:
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()}
-    assert version == 23
+    assert version == 24
     assert {"agent_id", "injected_rule_ids"}.issubset(task_cols)
 
 
@@ -253,9 +288,41 @@ def test_watermark_at_22_without_rule_scope_is_repaired(tmp_path: Path) -> None:
         rule_indexes = {
             r["name"] for r in conn.execute("PRAGMA index_list(feature_rules)").fetchall()
         }
-    assert version == 23
+    assert version == 24
     assert {"scope", "owner_user_id", "unit_key"}.issubset(rule_cols)
     assert "idx_feature_rules_feature_scope" in rule_indexes
+
+
+def test_watermark_at_23_without_step_run_tables_is_repaired(tmp_path: Path) -> None:
+    """A v23 database still gets the step-run tables.
+
+    Same shape as the repairs above: a clamp, or a build that stamped 24 without
+    the DDL, leaves a database a stepped run cannot record its state in. The run
+    row is written before the first step runs, so a missing table would only
+    surface as a failed run — with the run that failed already logged.
+    """
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    with pool.connect() as conn:
+        conn.execute("DROP TABLE feature_step_edits")
+        conn.execute("DROP TABLE feature_step_runs")
+        conn.execute("DROP TABLE feature_runs")
+        conn.execute("UPDATE _schema_version SET version = 23")
+
+    run_migrations(pool)
+
+    with pool.connect() as conn:
+        version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
+        tables = {
+            r["name"]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        step_indexes = {
+            r["name"] for r in conn.execute("PRAGMA index_list(feature_step_runs)").fetchall()
+        }
+    assert version == 24
+    assert {"feature_runs", "feature_step_runs", "feature_step_edits"}.issubset(tables)
+    assert "idx_feature_step_runs_step" in step_indexes
 
 
 def test_watermark_at_20_without_data_sources_is_repaired(tmp_path: Path) -> None:
@@ -284,7 +351,7 @@ def test_watermark_at_20_without_data_sources_is_repaired(tmp_path: Path) -> Non
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(data_sources)").fetchall()}
-    assert version == 23
+    assert version == 24
     assert "data_sources" in tables
     assert {"knowledge_base_id", "kind", "config_json", "sync_status"}.issubset(cols)
 
@@ -325,7 +392,7 @@ def test_migration_002_idempotent_when_column_already_present(tmp_path: Path) ->
     with pool.connect() as conn:
         v = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         cron_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cron_jobs)").fetchall()}
-    assert v == 23
+    assert v == 24
     assert "mcp_servers" in cron_cols
     assert "skill_packages" in {
         r["name"]
@@ -512,7 +579,7 @@ def test_stuck_version_6_without_permissions_column_is_repaired(tmp_path: Path) 
     with pool.connect() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-    assert version == 23
+    assert version == 24
     assert "permissions" in cols
 
 
@@ -537,7 +604,7 @@ def test_schema_v10_without_projection_tables_is_repaired(tmp_path: Path) -> Non
         }
         kb_cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
         cron_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cron_jobs)").fetchall()}
-    assert version == 23
+    assert version == 24
     assert {"thread_messages", "thread_history_projection", "trajectory_events"}.issubset(
         table_names
     )
@@ -572,7 +639,7 @@ def test_ahead_of_max_schema_version_clamps_to_max(tmp_path: Path) -> None:
             r["name"]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 23
+    assert version == 24
     assert "skill_package_id" in pkg_cols
     assert "published_expert_id" in pub_cols
     assert "user_invites" in invite_tables
@@ -660,7 +727,7 @@ def test_pre_squash_schema_version_clamped_and_knowledge_tables_filled(
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
-    assert version == 23
+    assert version == 24
     assert "permissions" in user_cols
     assert {
         "published_experts",
@@ -866,7 +933,7 @@ def test_v14_to_v15_adds_sso_provider_kind_without_rebuilding(tmp_path: Path) ->
         bound = conn.execute(
             "SELECT sso_provider_id FROM users WHERE username = 'sso-admin'"
         ).fetchone()[0]
-    assert version == 23
+    assert version == 24
     assert int(row["id"]) == int(provider_id)
     assert row["kind"] == "oidc"
     assert row["extra"] == "{}"

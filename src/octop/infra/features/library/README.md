@@ -54,6 +54,8 @@ library/
 | `prompt` | 是 | object | `user_template`（必填）、`system_file`（可选，相对本目录） |
 | `output` | 是 | object | `kind`：`markdown` / `json` / `text` |
 | `permissions` | 否 | object | `allow_units` / `allow_roles` 字符串数组；M1 只存不判 |
+| `agent` | 否 | object | 功能自有 agent 的能力层：`model`/温度/token 上限/`tools_disabled`/`skills`/`subagents`/`mcp_servers`/`knowledge_base_ids`。缺省（或 `null`）继承调用者的 agent，空数组表示"一个都不要"；知识库与连接器再按调用者可见范围收窄 |
+| `steps` | 否 | array | 任务步骤，见下文。缺省或空数组 = 单次运行（只用 `prompt.user_template` 跑一轮） |
 
 ## input_schema 允许的子集
 
@@ -93,6 +95,80 @@ library/
 | `{{inputs_json}}` | 输入的原始 JSON |
 
 其余 `{{…}}` 原样保留，不会报错。空值和未填写的字段会被省略。
+
+## 任务步骤 `steps`
+
+一个功能要么单次运行，要么声明 `steps`：**按顺序执行的步骤**，每一步产出**一个带类型的产品**（artifact），
+后一步直接读前一步的**结构化数据**，而不是读它写的那段话。步骤之间可以插**人工门**和**校验门**。
+
+```jsonc
+"steps": [
+  {
+    "id": "extract_l1",                       // 小写标识符，功能内唯一
+    "name": "提取 L1 项",
+    "mode": "agent",                          // 只支持 agent
+    "inputs": [],                             // 前序步骤产出的 artifact 名
+    "tools": ["read_file"],                   // 本步工具白名单；缺省=继承，[]=一个工具都不给
+    "max_parallel": 4,                        // 7.7 的并发上限；只做校验与记录，本轮不并发
+    "output": { "name": "bom_rows", "schema": "table:4cols" },
+    "prompt": "读 BOM PDF，识别层级列，过滤 L1。",  // 同样支持 {{inputs}} / {{inputs_json}}
+    "gate": "auto",                           // auto | confirm | validate
+    "on_failure": "abort"                     // abort | escalate | retry
+  },
+  {
+    "id": "report",
+    "name": "摘要报告",
+    "mode": "agent",
+    "inputs": ["bom_rows"],
+    "output": { "name": "summary", "schema": "object" },
+    "prompt": "按材质推导 Coating，输出待确认清单。",
+    "gate": "confirm",
+    "allow_edit": true,
+    "on_failure": "escalate"
+  }
+]
+```
+
+| 字段 | 必填 | 说明 |
+|---|---|---|
+| `id` | 是 | 步骤 id：小写标识符（`^[a-z][a-z0-9_]{0,63}$`），功能内唯一 |
+| `name` | 是 | 步骤名，展示用 |
+| `mode` | 是 | `agent`（一步一个 agent）。`orchestrate`（模型自主拆解并行调度子 agent）**尚未实现**：定义可以存，但**运行会被明确拒绝**（`FEATURE_STEP_UNSUPPORTED`），不会降级成 `agent` |
+| `inputs` | 否 | 要读的 artifact 名。必须是**更早的步骤**产出的名字（写错会在保存时被拒），它们以 JSON 形式进入本步提示词 |
+| `tools` | 否 | 本步工具白名单。缺省 = 继承运行的工具面；`[]` = 本步一个工具都不用。名字必须是真实的内置工具名 |
+| `max_parallel` | 否 | 正整数。**只做校验与记录**：本轮不实现步骤内并行，也不声称会并发 |
+| `output` | 是 | `{"name": …, "schema": …}`，见下 |
+| `prompt` | 是 | 本步提示词；`{{inputs}}` / `{{inputs_json}}` 渲染运行表单的值（与 `prompt.user_template` 同一套占位符） |
+| `gate` | 是 | `auto`（跑完继续）/ `confirm`（停下来等人批准）/ `validate`（读产物里的布尔 `passed`，不为真就不许交付） |
+| `allow_edit` | 否 | 人工能否改这一步的产物（默认否）。在 gate 上批准时可以改；回退重跑时也可以把它当输入改掉——**两种改法都进审计** |
+| `on_failure` | 是 | `abort`（这次运行算失败）/ `escalate`（**停给人工决定，平台不擅自决定**）/ `retry`（再试一次，仍失败则按 abort） |
+| `agent_role` | 否 | 指定用哪个子 agent 跑这一步。**尚未实现**：与 `orchestrate` 一样，运行会被明确拒绝 |
+
+### `output.schema` 允许的产物类型
+
+| 写法 | 产物 |
+|---|---|
+| `text` | 纯文本（原样） |
+| `list` | JSON 数组 |
+| `object` | JSON 对象 |
+| `table` | JSON 二维数组（每行等长；也可以是等键的对象数组） |
+| `table:<N>cols` | 同上，且每行恰好 N 个单元格（例如 `table:12cols`） |
+
+引擎会**从模型回复里取出 JSON 并校验形状**：形状不对（比如声明 4 列却给了 3 列）就算这一步失败，
+按 `on_failure` 处理——**不会把一段文字当成表格传给下一步**。
+
+### 运行与重跑
+
+- `POST /api/features/{id}/run`：有 `steps` 的定义从这里开始跑，停在门或跑完为止，返回运行状态。
+- `GET /api/features/{id}/runs/{task_id}`：这次运行停在哪一步、每步状态与产物、在等哪个门。
+- `POST .../runs/{task_id}/approve`：**批准后继续同一个运行**（不是新起一次），可带 `edits` 改产物。
+- `POST .../runs/{task_id}/rewind`：`{"to_step": "<步骤 id>", "edits": {...}}`。不带 `edits` 是**回退重跑**
+  （作废该步及之后的全部产物，从那里重跑）；带 `edits` 是**带修正重跑**（人工改过的中间产物被注入，
+  改前改后都记进审计）。
+- `GET .../runs/{task_id}/audit`：每步的输入/产物，以及**人工改过什么**（含改前改后、谁改的、什么时候）。
+
+运行状态是**持久化**的：门停下来之后，运行不会因为请求结束而消失，批准时按数据库里的状态继续
+（带着前面各步已经产出的产物），不会重跑已经跑过的步骤。
 
 ## 排错
 

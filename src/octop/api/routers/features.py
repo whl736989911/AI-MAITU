@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from typing import Any, Literal
 
@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from octop.api.deps import get_server, require_admin, require_permission
 from octop.api.routers.chat.turn import resolve_thread_id
 from octop.infra.agents.middleware.feature_prompt import stamp_feature_system_prompt
+from octop.infra.agents.middleware.feature_scope import FeatureRunScope, stamp_feature_scope
 from octop.infra.agents.providers.store import enabled_model_refs
 from octop.infra.agents.tool_catalog import BUILTIN_TOOL_CATALOG, CRITICAL_TOOLS
 from octop.infra.db.repos.feature_cases import FeatureCaseRow
@@ -41,6 +42,8 @@ from octop.infra.features import (
     ResolvedCapability,
     ScopedRule,
     build_user_prompt,
+    capability_from_audit,
+    render_step_prompt,
     resolve_capability,
     stamp_capability,
 )
@@ -59,7 +62,27 @@ from octop.infra.features.rules import (
     review_rule,
     submit_rule,
 )
+from octop.infra.features.runs import (
+    RUN_RUNNING,
+    RUN_SUCCEEDED,
+    FeatureRunEngine,
+    RunEditInvalid,
+    RunNotAtGate,
+    RunState,
+    RunTaken,
+    StepTurn,
+    refuse_unsupported,
+)
 from octop.infra.features.schema import ALLOWED_ICONS, ALLOWED_OUTPUT_KINDS
+from octop.infra.features.steps import (
+    STEP_VOIDED,
+    Artifact,
+    FeatureStep,
+    StepUnknown,
+    StepUnsupported,
+    output_kind_of,
+    render_value,
+)
 from octop.infra.gateway.process import build_harness_request
 from octop.infra.knowledge.default_open import stamp_turn_knowledge_config
 from octop.infra.users.identity import Role
@@ -121,6 +144,7 @@ class FeatureDefinitionBody(BaseModel):
     output: dict[str, Any] = Field(default_factory=dict)
     permissions: dict[str, Any] | None = None
     agent: dict[str, Any] | None = None
+    steps: list[dict[str, Any]] | None = None
     version: int | None = None
 
 
@@ -188,6 +212,9 @@ def _feature_dict(feature: Feature) -> dict[str, Any]:
             # layer: the editor must be able to tell "nothing declared" from
             # "declared, and everything in it is empty".
             "agent": feature.agent.as_dict() if feature.agent is not None else None,
+            # Verbatim, as authored: the editor reads a step back to edit it, and
+            # an empty list is the same fact as "this feature has no steps".
+            "steps": [step.as_dict() for step in feature.steps],
         }
     )
     return data
@@ -349,6 +376,7 @@ async def _stamp_capability(
     user_id: int,
     is_admin: bool,
     locale: str,
+    scope: FeatureRunScope | None = None,
 ) -> None:
     """Put a resolved capability onto the run's harness request.
 
@@ -358,8 +386,12 @@ async def _stamp_capability(
     per-turn registry instead of the agent), and the knowledge bases are stamped
     from the caller's visible set, which is also what builds the catalog the
     ``search_knowledge`` tool description is written from.
+
+    *scope* narrows the tool / subagent part for one request (a step's ``tools``
+    allow-list); the rest of the capability — model, knobs, skills, connectors,
+    knowledge — is the feature's own and stays the same on every step.
     """
-    stamp_capability(request, capability)
+    stamp_capability(request, capability, scope)
     if capability.mcp_servers:
         failed = await server.app_runtime.agent_registry.prepare_chat_mcp(
             agent_id,
@@ -393,6 +425,7 @@ async def _run_agent_turn(
     text: str,
     system_prompt: str | None = None,
     capability: ResolvedCapability | None = None,
+    scope: FeatureRunScope | None = None,
     is_admin: bool = False,
     locale: str = "zh",
 ) -> str:
@@ -449,7 +482,13 @@ async def _run_agent_turn(
             user_id=user_id,
             is_admin=is_admin,
             locale=locale,
+            scope=scope,
         )
+    elif scope is not None:
+        # A step's tool allow-list is a scope of its own: even a feature that
+        # declares no capability layer has to honour "this step reads the PDF and
+        # nothing else", and dropping it here would hand the step every tool.
+        stamp_feature_scope(request, scope)
     output: str | None = None
 
     async def _stream() -> None:
@@ -471,6 +510,445 @@ async def _run_agent_turn(
     await gateway.run_in_session(agent_id, session_key, _stream)
     assert output is not None
     return output
+
+
+# --- stepped runs (design 7.x) ---------------------------------------------
+
+
+def _run_engine(server: Any) -> FeatureRunEngine:
+    """The engine over this server's run tables."""
+    assert server.services is not None
+    return FeatureRunEngine(
+        server.services.repos.feature_runs_repo,
+        server.services.repos.feature_tasks_repo,
+    )
+
+
+@contextmanager
+def _run_errors() -> Iterator[None]:
+    """Map the run engine's refusals onto the stable API error codes."""
+    try:
+        yield
+    except StepUnsupported as exc:
+        raise OctopError(
+            ErrorCode.FEATURE_STEP_UNSUPPORTED, str(exc), details={"reason": str(exc)}
+        ) from exc
+    except (RunNotAtGate, RunTaken) as exc:
+        raise OctopError(ErrorCode.FEATURE_RUN_NOT_AT_GATE, str(exc)) from exc
+    except (RunEditInvalid, StepUnknown) as exc:
+        raise OctopError(
+            ErrorCode.FEATURE_RUN_REQUEST_INVALID, str(exc), details={"reason": str(exc)}
+        ) from exc
+
+
+def _artifact_dict(artifact: Artifact) -> dict[str, Any]:
+    """One artifact as the API reports it: name, declared type, and the value."""
+    return artifact.as_dict()
+
+
+def _step_dict(state: RunState, step: FeatureStep, seq: int) -> dict[str, Any]:
+    """One step's row of a run — status, artifact, error, timing, attempts."""
+    row = state.row_of(step.id)
+    artifact = row.artifact()
+    return {
+        "id": step.id,
+        "name": step.name,
+        "seq": seq,
+        "status": row.status,
+        "gate": step.gate,
+        "mode": step.mode,
+        "on_failure": step.on_failure,
+        "attempts": row.attempts,
+        "started_at": row.started_at,
+        "ended_at": row.ended_at,
+        "error": row.error,
+        "voided": row.status == STEP_VOIDED,
+        "artifacts": [] if artifact is None else [_artifact_dict(artifact)],
+    }
+
+
+def _run_state_dict(state: RunState) -> dict[str, Any]:
+    """One run as the API reports it: where it is, and what it produced so far.
+
+    ``output``/``output_kind`` describe the run's deliverable — the last step's
+    artifact, once the run got there — and follow that artifact's own declared
+    type rather than the definition's ``output.kind``, because on a stepped run the
+    deliverable *is* the final artifact.
+    """
+    pending = state.row.pending_gate_payload()
+    output: str | None = None
+    output_kind: str | None = None
+    if state.row.status == RUN_SUCCEEDED:
+        final = state.final_artifact()
+        if final is not None:
+            step, artifact = final
+            output = render_value(step.output, artifact.value)
+            output_kind = output_kind_of(step.output)
+    pending_gate: dict[str, Any] | None = None
+    if pending is not None:
+        gate_step = state.step(str(pending["step_id"]))
+        gated = state.row_of(gate_step.id).artifact()
+        pending_gate = {
+            "step_id": gate_step.id,
+            "name": gate_step.name,
+            "gate": pending["gate"],
+            "allow_edit": bool(pending.get("allow_edit")),
+            "artifacts": [] if gated is None else [_artifact_dict(gated)],
+        }
+    return {
+        "task_id": state.task_id,
+        "feature_id": state.row.feature_id,
+        "status": state.row.status,
+        "current_step": state.row.current_step,
+        "steps": [_step_dict(state, step, seq) for seq, step in enumerate(state.plan)],
+        "pending_gate": pending_gate,
+        "output": output,
+        "output_kind": output_kind,
+    }
+
+
+def _audit_dict(state: RunState) -> dict[str, Any]:
+    """What each step consumed and produced, and every human write on it.
+
+    An input the run no longer holds reads as ``value: null`` rather than being
+    dropped: "this step's input is not in the run any more" is what a rewind looks
+    like afterwards, and an audit that hid it would describe a run that never
+    happened.
+    """
+    artifacts = state.artifacts()
+    steps: list[dict[str, Any]] = []
+    for seq, step in enumerate(state.plan):
+        entries = [
+            {
+                "artifact": edit.artifact,
+                "kind": edit.kind,
+                "before": edit.before(),
+                "after": edit.after(),
+                "by_user_id": edit.by_user_id,
+                "source": edit.source,
+                "at": edit.created_at,
+            }
+            for edit in state.edits
+            if edit.step_id == step.id
+        ]
+        steps.append(
+            {
+                **_step_dict(state, step, seq),
+                "inputs": [
+                    artifacts[name].as_dict()
+                    if name in artifacts
+                    else {"name": name, "schema": None, "value": None}
+                    for name in step.inputs
+                ],
+                "human_edits": entries,
+            }
+        )
+    return {
+        "task_id": state.task_id,
+        "feature_id": state.row.feature_id,
+        "status": state.row.status,
+        "snapshot": state.row.snapshot_payload(),
+        "steps": steps,
+    }
+
+
+def _require_run(server: Any, feature: Feature, task_id: str, user: Any) -> RunState:
+    """The run of *feature* this caller may act on, or the refusal that says why.
+
+    A run belongs to whoever started it — the same rule the task log uses for
+    finalizing — and it is addressed under its feature: a task id from another
+    feature is not found here rather than acted on.
+    """
+    state = _run_engine(server).state(task_id)
+    if state is None or state.row.feature_id != feature.id:
+        raise OctopError(ErrorCode.FEATURE_RUN_NOT_FOUND, f"feature run {task_id!r} does not exist")
+    if state.row.user_id != int(user.id) and not user.is_admin:
+        raise OctopError(ErrorCode.FORBIDDEN, f"feature run {task_id!r} belongs to another user")
+    return state
+
+
+def _step_scope(step: FeatureStep, capability: ResolvedCapability | None) -> FeatureRunScope | None:
+    """The tool surface of one step's turn: the run's scope, narrowed by the step.
+
+    ``tools`` absent inherits whatever the feature's capability layer set, and
+    ``[]`` allows no tool at all — the same None-versus-empty convention the
+    capability layer uses for skills and subagents.
+    """
+    if step.tools is None:
+        return None if capability is None else capability.run_scope()
+    base = capability.run_scope() if capability is not None else FeatureRunScope()
+    return FeatureRunScope(
+        tools_disabled=base.tools_disabled,
+        subagents=base.subagents,
+        tools_allowed=step.tools,
+    )
+
+
+def _step_turn(
+    server: Any,
+    feature: Feature,
+    *,
+    agent_id: str,
+    user: Any,
+    inputs: dict[str, Any],
+    capability: ResolvedCapability | None,
+) -> StepTurn:
+    """One step's turn: render its prompt, run it, hand the answer back.
+
+    This reuses the single-shot run's own turn (``_run_agent_turn``, which the
+    harness ``stream`` already backs) instead of a second executor: a step *is* an
+    agent turn, with a narrower tool surface and a prompt built from the artifacts
+    it declared. Nothing here decomposes or schedules — that is 7.6's other mode,
+    and it is not built.
+    """
+    locale = str(getattr(user, "locale", None) or "zh")
+
+    async def turn(step: FeatureStep, artifacts: Mapping[str, Artifact]) -> str:
+        return await _run_agent_turn(
+            server,
+            agent_id=agent_id,
+            user_id=int(user.id),
+            text=render_step_prompt(step, feature, inputs, artifacts, locale=locale),
+            system_prompt=feature.system_prompt,
+            capability=capability,
+            scope=_step_scope(step, capability),
+            is_admin=bool(getattr(user, "is_admin", False)),
+            locale=locale,
+        )
+
+    return turn
+
+
+def _run_snapshot(
+    feature: Feature,
+    *,
+    agent_id: str,
+    capability: ResolvedCapability | None,
+    rules: Sequence[FeatureRuleRow],
+    inputs: dict[str, Any],
+    locale: str,
+) -> dict[str, Any]:
+    """What produced this run — design §4's snapshot, for a stepped run.
+
+    The definition version, the agent and model, the capability the caller's run
+    actually got, the rules that rode its prompts, the form values its steps read,
+    and the plan as frozen. Enough to answer "which configuration produced this"
+    without re-reading a definition that may since have changed — and it is what a
+    resumed run is rebuilt from.
+    """
+    return {
+        "feature_id": feature.id,
+        "feature_version": feature.version,
+        "agent_id": agent_id,
+        "model": capability.model if capability is not None else None,
+        "capability": capability.audit() if capability is not None else None,
+        "rules": [{"id": rule.id, "scope": rule.scope} for rule in rules],
+        "inputs": inputs,
+        "locale": locale,
+        "steps": [step.snapshot() for step in feature.steps],
+    }
+
+
+def _resume_turn(server: Any, feature: Feature, state: RunState, user: Any) -> StepTurn:
+    """The turn a resumed run uses — the configuration the run started with.
+
+    The agent, the form inputs and the capability layer come from the run's own
+    log (the task row and the snapshot), not from today's definition: a run that
+    stopped at a gate continues under the configuration it was approved under, and
+    an edit to the definition lands on the next run. The feature's ``PROMPT.md`` is
+    the exception — it is the feature's standing instruction set (design 7.4's 60KB
+    rules document is one), so a correction to it reaches a run still in flight
+    rather than being ignored until the next one.
+    """
+    assert server.services is not None
+    task = server.services.repos.feature_tasks_repo.get(state.task_id)
+    if task is None or not task.agent_id:
+        raise OctopError(
+            ErrorCode.FEATURE_RUN_NOT_FOUND,
+            f"feature run {state.task_id!r} has no agent recorded",
+        )
+    payload = state.row.snapshot_payload()
+    declared = payload.get("capability")
+    capability = capability_from_audit(declared) if isinstance(declared, Mapping) else None
+    inputs = json.loads(task.inputs)
+    return _step_turn(
+        server,
+        feature,
+        agent_id=str(task.agent_id),
+        user=user,
+        inputs=inputs if isinstance(inputs, dict) else {},
+        capability=capability,
+    )
+
+
+async def _run_steps(
+    server: Any,
+    feature: Feature,
+    inputs: dict[str, Any],
+    user: Any,
+) -> dict[str, Any]:
+    """Execute a stepped definition through the linear engine.
+
+    The run is logged *before* it runs and updated as it goes: a run that stopped
+    at a human gate is a run still in progress, so its ``feature_tasks`` row says
+    ``running`` until the run actually ends. A plan this build cannot run is
+    refused before anything is written — the unimplemented ``orchestrate`` mode
+    must leave no half-run that later reads as if it had executed.
+    """
+    assert server.services is not None
+    agent_id = _run_agent_id(server, user.id)
+    repo = server.services.repos.feature_tasks_repo
+    rules = injectable_rule_rows(
+        server.services.repos.feature_rules_repo,
+        feature.id,
+        user_id=int(user.id),
+        unit_key=getattr(user, "org_unit", None),
+    )
+    locale = str(getattr(user, "locale", None) or "zh")
+    with _run_errors():
+        refuse_unsupported(feature.id, feature.steps)
+        capability = await resolve_capability(server, feature.agent, agent_id=agent_id, user=user)
+        logger.info(
+            "feature %s stepped run scope user=%s agent=%s %s",
+            feature.id,
+            user.id,
+            agent_id,
+            json.dumps(
+                capability.audit() if capability is not None else {"declared": False},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
+        row = repo.create(
+            feature_id=feature.id,
+            user_id=user.id,
+            inputs=json.dumps(inputs, ensure_ascii=False),
+            status=RUN_RUNNING,
+            agent_id=agent_id,
+            injected_rule_ids=json.dumps([rule.id for rule in rules], ensure_ascii=False),
+        )
+        state = await _run_engine(server).start(
+            task_id=row.id,
+            feature_id=feature.id,
+            user_id=int(user.id),
+            plan=feature.steps,
+            snapshot=_run_snapshot(
+                feature,
+                agent_id=agent_id,
+                capability=capability,
+                rules=rules,
+                inputs=inputs,
+                locale=locale,
+            ),
+            run_turn=_step_turn(
+                server,
+                feature,
+                agent_id=agent_id,
+                user=user,
+                inputs=inputs,
+                capability=capability,
+            ),
+        )
+    return _run_state_dict(state)
+
+
+class FeatureRunApproveBody(BaseModel):
+    """A human's answer at a gate; ``edits`` corrects the gated step's artifact."""
+
+    edits: dict[str, Any] | None = None
+
+
+class FeatureRunRewindBody(BaseModel):
+    """Where to go back to — and, for 带修正重跑, what the human corrected.
+
+    ``to_step`` is a step id; step ids are lowercase identifiers, so an integer is
+    never an id and is read as the step's position in the plan instead.
+    """
+
+    to_step: str | int
+    edits: dict[str, Any] | None = None
+
+
+@router.get("/{feature_id}/runs/{task_id}", summary="Get one run's step states")
+async def get_feature_run(
+    feature_id: str,
+    task_id: str,
+    user: Any = Depends(require_permission("features")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Where a stepped run is, what each step produced, and the gate it waits on."""
+    feature = _require_feature(server, feature_id)
+    return _run_state_dict(_require_run(server, feature, task_id, user))
+
+
+@router.post("/{feature_id}/runs/{task_id}/approve", summary="Approve a run's gate")
+async def approve_feature_run(
+    feature_id: str,
+    task_id: str,
+    body: FeatureRunApproveBody | None = None,
+    user: Any = Depends(require_permission("features")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Answer the gate a run waits on and continue **the same run**.
+
+    Approving does not start a second run: the steps before the gate keep the
+    artifacts they produced, and only the steps after it are asked of the model
+    again. ``edits`` corrects the gated step's own artifact (and only that one, and
+    only when the step declares ``allow_edit``); a check gate that did not pass
+    cannot be approved past at all — the remedy is a rewind with the corrected
+    artifact.
+    """
+    feature = _require_feature(server, feature_id)
+    state = _require_run(server, feature, task_id, user)
+    with _run_errors():
+        resumed = await _run_engine(server).approve(
+            state,
+            edits=body.edits if body is not None else None,
+            by_user_id=int(user.id),
+            run_turn=_resume_turn(server, feature, state, user),
+        )
+    return _run_state_dict(resumed)
+
+
+@router.post("/{feature_id}/runs/{task_id}/rewind", summary="Rewind a run to a step")
+async def rewind_feature_run(
+    feature_id: str,
+    task_id: str,
+    body: FeatureRunRewindBody,
+    user: Any = Depends(require_permission("features")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Go back to a step, void what came after it, and walk on from there.
+
+    Without ``edits`` this is 回退重跑: every step from the target on loses its
+    artifact and runs again. With them it is 带修正重跑: the corrected values are
+    injected as the artifacts the target step consumes, and both the correction and
+    the void it replaced stay in the audit — the discarded value is kept in the
+    void record, so "who changed what" is answerable after the rerun.
+    """
+    feature = _require_feature(server, feature_id)
+    state = _require_run(server, feature, task_id, user)
+    with _run_errors():
+        resumed = await _run_engine(server).rewind(
+            state,
+            to_step=body.to_step,
+            edits=body.edits,
+            by_user_id=int(user.id),
+            run_turn=_resume_turn(server, feature, state, user),
+        )
+    return _run_state_dict(resumed)
+
+
+@router.get("/{feature_id}/runs/{task_id}/audit", summary="Audit one run")
+async def audit_feature_run(
+    feature_id: str,
+    task_id: str,
+    user: Any = Depends(require_permission("features")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Every step's inputs and artifacts, and every human write, before and after."""
+    feature = _require_feature(server, feature_id)
+    return _audit_dict(_require_run(server, feature, task_id, user))
 
 
 @router.get("", summary="List enterprise features")
@@ -613,6 +1091,11 @@ async def run_feature(
     """
     assert server.services is not None
     feature = _require_feature(server, feature_id)
+    if feature.steps:
+        # A stepped definition runs through the step engine — the same endpoint,
+        # because it is the same act from the caller's side. Its own gates decide
+        # where it stops, and the row it logs says so.
+        return await _run_steps(server, feature, body.inputs, user)
     agent_id = _run_agent_id(server, user.id)
     repo = server.services.repos.feature_tasks_repo
     inputs = json.dumps(body.inputs, ensure_ascii=False)

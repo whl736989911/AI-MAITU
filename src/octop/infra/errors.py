@@ -137,6 +137,15 @@ class ErrorCode(StrEnum):
     # submit the target layer cannot hold is a bad request rather than a refusal.
     FEATURE_RULE_SCOPE_FORBIDDEN = "FEATURE_RULE_SCOPE_FORBIDDEN"
     FEATURE_RULE_SUBMIT_INVALID = "FEATURE_RULE_SUBMIT_INVALID"
+    # Stepped runs: a run that does not exist (or belongs to another feature), an
+    # action that does not fit the state the run is in (approving a check gate that
+    # did not pass, approving a run nobody is waiting on), a request that would put
+    # a value where the definition says it cannot go, and a step declaring a mode
+    # or field this build does not implement — refused, never run as something else.
+    FEATURE_RUN_NOT_FOUND = "FEATURE_RUN_NOT_FOUND"
+    FEATURE_RUN_NOT_AT_GATE = "FEATURE_RUN_NOT_AT_GATE"
+    FEATURE_RUN_REQUEST_INVALID = "FEATURE_RUN_REQUEST_INVALID"
+    FEATURE_STEP_UNSUPPORTED = "FEATURE_STEP_UNSUPPORTED"
     # Org units: a refused delete names the department, so the provider codes
     # (whose message reads "provider") cannot carry it.
     ORG_UNIT_HAS_CHILDREN = "ORG_UNIT_HAS_CHILDREN"
@@ -255,6 +264,10 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.FEATURE_ALREADY_EXISTS: 409,
     ErrorCode.FEATURE_RULE_SCOPE_FORBIDDEN: 403,
     ErrorCode.FEATURE_RULE_SUBMIT_INVALID: 400,
+    ErrorCode.FEATURE_RUN_NOT_FOUND: 404,
+    ErrorCode.FEATURE_RUN_NOT_AT_GATE: 409,
+    ErrorCode.FEATURE_RUN_REQUEST_INVALID: 400,
+    ErrorCode.FEATURE_STEP_UNSUPPORTED: 501,
     ErrorCode.ORG_UNIT_HAS_CHILDREN: 409,
     ErrorCode.ORG_UNIT_IN_USE: 409,
 }

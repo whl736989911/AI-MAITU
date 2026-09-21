@@ -16,6 +16,7 @@ from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
 from octop.infra.db.repos.feature_cases import FeatureCaseRepo
 from octop.infra.db.repos.feature_rules import FeatureRuleRepo
+from octop.infra.db.repos.feature_runs import FeatureRunRepo
 from octop.infra.db.repos.feature_tasks import FeatureTaskRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
@@ -52,6 +53,7 @@ class RepoBundle:
     channel_repo: ChannelRepo
     cron_repo: CronJobRepo
     feature_tasks_repo: FeatureTaskRepo
+    feature_runs_repo: FeatureRunRepo
     feature_rules_repo: FeatureRuleRepo
     session_repo: SessionRepo
     thread_repo: ThreadRepo
@@ -87,6 +89,7 @@ class RepoBundle:
             channel_repo=ChannelRepo(db),
             cron_repo=CronJobRepo(db),
             feature_tasks_repo=FeatureTaskRepo(db),
+            feature_runs_repo=FeatureRunRepo(db),
             feature_rules_repo=FeatureRuleRepo(db),
             session_repo=SessionRepo(db),
             thread_repo=ThreadRepo(db),

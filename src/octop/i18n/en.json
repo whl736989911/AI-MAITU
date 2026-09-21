@@ -418,6 +418,10 @@
     "FEATURE_ALREADY_EXISTS": "A feature with this id already exists. Choose another id — a feature that ships with the application cannot be overwritten.",
     "FEATURE_RULE_SCOPE_FORBIDDEN": "This rule is outside the scope you may review: a personal rule belongs to its owner, a department rule to that department's unit admin, and a global rule to an admin.",
     "FEATURE_RULE_SUBMIT_INVALID": "Cannot submit this rule: only a personal rule can be submitted, and submitting to a department needs you to belong to one.",
+    "FEATURE_RUN_NOT_FOUND": "That feature run does not exist.",
+    "FEATURE_RUN_NOT_AT_GATE": "This run is not waiting at a gate, so this action cannot be applied to it.",
+    "FEATURE_RUN_REQUEST_INVALID": "The run request is invalid: {reason}.",
+    "FEATURE_STEP_UNSUPPORTED": "The feature's steps declare something this build does not implement yet: {reason}. The run was refused and no step was executed.",
     "ORG_UNIT_HAS_CHILDREN": "This department still has sub-departments; move or delete them first.",
     "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first."
   },

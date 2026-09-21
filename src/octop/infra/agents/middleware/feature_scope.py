@@ -70,9 +70,16 @@ class FeatureRunScope:
 
     tools_disabled: tuple[str, ...] = ()
     subagents: tuple[str, ...] | None = None
+    tools_allowed: tuple[str, ...] | None = None
+    """An allow-list for this run: ``None`` inherits, ``()`` allows no tool at all.
+
+    A step's own tool surface (7.3's per-step whitelist). Unlike
+    ``tools_disabled`` — which names what is taken away — this names what is left,
+    which is what "this step may read the PDF and nothing else" has to mean.
+    """
 
     def is_empty(self) -> bool:
-        return not self.tools_disabled and self.subagents is None
+        return not self.tools_disabled and self.subagents is None and self.tools_allowed is None
 
 
 def stamp_feature_scope(request: dict[str, Any], scope: FeatureRunScope) -> None:
@@ -85,10 +92,15 @@ def stamp_feature_scope(request: dict[str, Any], scope: FeatureRunScope) -> None
     if scope.is_empty():
         return
     configurable = dict(request.get("configurable") or {})
-    configurable[CONFIG_KEY] = {
+    payload: dict[str, Any] = {
         "tools_disabled": list(scope.tools_disabled),
         "subagents": None if scope.subagents is None else list(scope.subagents),
     }
+    if scope.tools_allowed is not None:
+        # Written only when a step actually narrows the surface: an inherit is the
+        # absence of the key, exactly as the reader below reads it.
+        payload["tools_allowed"] = list(scope.tools_allowed)
+    configurable[CONFIG_KEY] = payload
     request["configurable"] = configurable
 
 
@@ -111,9 +123,11 @@ def feature_scope_from_config(configurable: Mapping[str, Any]) -> FeatureRunScop
         return None
     disabled = raw.get("tools_disabled")
     subagents = raw.get("subagents")
+    allowed = raw.get("tools_allowed")
     return FeatureRunScope(
         tools_disabled=tuple(str(name) for name in disabled) if isinstance(disabled, list) else (),
         subagents=tuple(str(name) for name in subagents) if isinstance(subagents, list) else None,
+        tools_allowed=(tuple(str(name) for name in allowed) if isinstance(allowed, list) else None),
     )
 
 
@@ -180,6 +194,10 @@ class FeatureScopeMiddleware(AgentMiddleware[Any, Any]):
             disabled = set(scope.tools_disabled)
             tools = [tool for tool in tools if tool_name(tool) not in disabled]
 
+        if scope.tools_allowed is not None:
+            allowed = set(scope.tools_allowed)
+            tools = [tool for tool in tools if tool_name(tool) in allowed]
+
         if scope.subagents is not None:
             # An empty allow-list hides ``task`` outright: a tool the run may
             # never use would be a standing invitation to call it.
@@ -225,6 +243,12 @@ class FeatureScopeMiddleware(AgentMiddleware[Any, Any]):
             return (
                 f"Tool {name!r} is not available in this run: it is disabled by the "
                 "feature's configuration."
+            )
+        if scope.tools_allowed is not None and name not in set(scope.tools_allowed):
+            logger.info("feature scope: refused tool %s outside the step allow-list", name)
+            return (
+                f"Tool {name!r} is not available in this run: this step may only use "
+                f"{', '.join(scope.tools_allowed) if scope.tools_allowed else '(no tools)'}."
             )
         if name != TASK_TOOL_NAME or scope.subagents is None:
             return None

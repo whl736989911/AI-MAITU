@@ -42,6 +42,7 @@ _DEFINITION_KEYS = frozenset(
         "output",
         "permissions",
         "agent",
+        "steps",
     }
 )
 _PROMPT_KEYS = frozenset({"user_template", "system_prompt"})
@@ -224,6 +225,14 @@ def _manifest(definition: dict[str, Any], feature_id: str) -> tuple[dict[str, An
     for key in ("color", "ui_schema", "permissions"):
         if definition.get(key) is not None:
             manifest[key] = definition[key]
+
+    # The step plan is the run's skeleton, so it is written as authored (validated
+    # by ``validate_manifest`` below) — the editor has to read back exactly what
+    # it wrote, gates and all. ``[]`` is dropped: no steps is the same fact as
+    # "this feature has no steps".
+    steps = definition.get("steps")
+    if steps:
+        manifest["steps"] = steps
 
     agent_node = _agent_manifest(definition.get("agent"))
     if agent_node:

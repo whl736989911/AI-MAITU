@@ -15,6 +15,14 @@ from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any
 
+from octop.infra.features.steps import (
+    GATES,
+    MODES,
+    ON_FAILURES,
+    SCHEMA_FORMS,
+    parse_steps,
+)
+
 # 定义格式版本；只有结构被真正改动时才递增。
 SUPPORTED_VERSIONS: tuple[int, ...] = (1,)
 
@@ -182,6 +190,9 @@ def validate_manifest(data: dict[str, Any], dir_name: str | None = None) -> list
 
     if "agent" in data:
         _check_agent(data["agent"], errors)
+
+    if "steps" in data:
+        errors.extend(parse_steps(data["steps"])[1])
 
     return errors
 
@@ -470,6 +481,7 @@ _FEATURE_JSON_SCHEMA: dict[str, Any] = {
         "output": {"$ref": "#/$defs/output"},
         "permissions": {"$ref": "#/$defs/permissions"},
         "agent": {"$ref": "#/$defs/agent"},
+        "steps": {"$ref": "#/$defs/steps"},
     },
     "$defs": {
         "localized": {
@@ -663,6 +675,118 @@ _FEATURE_JSON_SCHEMA: dict[str, Any] = {
                         "Knowledge bases this feature searches; only ones the caller "
                         "may read are mounted."
                     ),
+                },
+            },
+        },
+        "steps": {
+            "type": "array",
+            "description": (
+                "Task steps this feature runs, in order. Each step's turn produces one "
+                "typed artifact, and a later step reads earlier artifacts as data rather "
+                "than as prose. Gates stop the run for a human or for a check. Absent or "
+                "empty means a one-shot run of prompt.user_template."
+            ),
+            "items": {"$ref": "#/$defs/step"},
+        },
+        "step": {
+            "type": "object",
+            "required": ["id", "name", "mode", "output", "prompt", "gate", "on_failure"],
+            "additionalProperties": False,
+            "properties": {
+                "id": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                    "description": "Step id, unique within the feature.",
+                },
+                "name": {"type": "string", "minLength": 1},
+                "mode": {
+                    "enum": list(MODES),
+                    "description": (
+                        "'agent' runs the step as one agent turn. 'orchestrate' (the model "
+                        "decomposes the step and schedules subagents, design 7.6) is part of "
+                        "the format but not implemented: a run declaring it is refused "
+                        "outright and never degraded to 'agent'."
+                    ),
+                },
+                "inputs": {
+                    "type": "array",
+                    "items": {"type": "string", "pattern": "^[a-z][a-z0-9_]{0,63}$"},
+                    "description": (
+                        "Artifacts earlier steps produced. They reach this step's prompt as "
+                        "JSON under these names; a name no earlier step produces is refused."
+                    ),
+                },
+                "tools": {
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "null"},
+                    ],
+                    "description": (
+                        "Tool allow-list for this step's turn only. Absent/null inherits the "
+                        "run's tool surface, [] allows none."
+                    ),
+                },
+                "max_parallel": {
+                    "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
+                    "description": (
+                        "Ceiling for the model's own parallelism inside this step (design "
+                        "7.7). Validated and recorded; this build does not schedule in "
+                        "parallel yet, and never claims it does."
+                    ),
+                },
+                "output": {"$ref": "#/$defs/stepOutput"},
+                "prompt": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": (
+                        "This step's own prompt. '{{inputs}}' / '{{inputs_json}}' render the "
+                        "run form's values, exactly as prompt.user_template does."
+                    ),
+                },
+                "gate": {
+                    "enum": list(GATES),
+                    "description": (
+                        "'auto' walks on; 'confirm' stops the run for a human; 'validate' "
+                        "refuses to deliver unless the artifact's boolean 'passed' is true."
+                    ),
+                },
+                "allow_edit": {
+                    "type": "boolean",
+                    "description": (
+                        "Whether a human may correct this step's artifact when its gate "
+                        "stops the run. Required on a confirm/validate gate, refused on auto."
+                    ),
+                },
+                "on_failure": {
+                    "enum": list(ON_FAILURES),
+                    "description": (
+                        "'abort' fails the run; 'escalate' stops it for a human instead of "
+                        "deciding alone; 'retry' gets a second attempt and then aborts."
+                    ),
+                },
+                "agent_role": {
+                    "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}],
+                    "description": (
+                        "Named subagent this step should run as. Not implemented: a run "
+                        "declaring it is refused outright."
+                    ),
+                },
+            },
+        },
+        "stepOutput": {
+            "type": "object",
+            "required": ["name", "schema"],
+            "additionalProperties": False,
+            "description": "The typed artifact one step produces.",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "pattern": "^[a-z][a-z0-9_]{0,63}$",
+                    "description": "Artifact name later steps consume through 'inputs'.",
+                },
+                "schema": {
+                    "type": "string",
+                    "description": f"One of: {SCHEMA_FORMS}.",
                 },
             },
         },

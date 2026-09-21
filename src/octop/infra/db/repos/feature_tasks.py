@@ -117,6 +117,28 @@ class FeatureTaskRepo:
             ).fetchall()
         return map_rows(rows, FeatureTaskRow)
 
+    def finish(
+        self,
+        task_id: str,
+        *,
+        status: str,
+        draft: str | None,
+        error: str | None,
+    ) -> FeatureTaskRow | None:
+        """Close a stepped run's task row once it reaches a terminal state.
+
+        A stepped run is logged *before* it runs — its first gate is not the end of
+        it — so the row it was opened with is updated here. Gated runs that are
+        still waiting keep ``status='running'``: "succeeded" has to mean the run
+        finished, or the capture M4 reads would learn from half a run.
+        """
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE feature_tasks SET status = ?, draft = ?, error = ? WHERE id = ?",
+                (status, draft, error, task_id),
+            )
+        return self.get(task_id)
+
     def finalize(self, task_id: str, *, final: str, diff_json: str) -> FeatureTaskRow | None:
         """Stamp the human-approved text once; ``None`` when already finalized.
 

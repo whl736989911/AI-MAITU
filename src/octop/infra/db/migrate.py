@@ -1051,6 +1051,61 @@ def _ensure_feature_rule_scope_schema(db: DatabasePool) -> None:
         )
 
 
+def _ensure_feature_step_runs_schema(db: DatabasePool) -> None:
+    """Create the step-run tables (schema v24) when missing.
+
+    Runs on every boot, like the v18-v23 helpers: databases whose watermark
+    skipped 24 — a clamp, or a build that stamped the version without the DDL —
+    still get the tables a stepped run writes its state to. A missing one would
+    only surface as a failed run at runtime, because the run row is written
+    before the first step runs.
+    """
+    if not _table_exists(db, "feature_tasks") or not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS feature_runs ("
+            "task_id TEXT PRIMARY KEY REFERENCES feature_tasks(id) ON DELETE CASCADE, "
+            "feature_id TEXT NOT NULL, "
+            "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+            "status TEXT NOT NULL, current_step TEXT, current_seq INTEGER, pending_gate TEXT, "
+            "plan TEXT NOT NULL, snapshot TEXT, error TEXT, "
+            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_runs_feature "
+            "ON feature_runs (feature_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_runs_user ON feature_runs (user_id, created_at)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS feature_step_runs ("
+            "task_id TEXT NOT NULL REFERENCES feature_runs(task_id) ON DELETE CASCADE, "
+            "seq INTEGER NOT NULL, step_id TEXT NOT NULL, status TEXT NOT NULL, "
+            "artifact_name TEXT, artifact_schema TEXT, artifact_value TEXT, "
+            "attempts INTEGER NOT NULL DEFAULT 0, error TEXT, "
+            f"started_at {int_type}, ended_at {int_type}, PRIMARY KEY (task_id, seq))"
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_step_runs_step "
+            "ON feature_step_runs (task_id, step_id)"
+        )
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS feature_step_edits ("
+            "id TEXT PRIMARY KEY, "
+            "task_id TEXT NOT NULL REFERENCES feature_runs(task_id) ON DELETE CASCADE, "
+            "step_id TEXT NOT NULL, artifact TEXT NOT NULL, before_value TEXT, after_value TEXT, "
+            "by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
+            "kind TEXT NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_step_edits_task "
+            "ON feature_step_edits (task_id, created_at)"
+        )
+
+
 def _ensure_data_sources_schema(db: DatabasePool) -> None:
     """Create the data-source table (schema v20) when missing.
 
@@ -2079,6 +2134,7 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_data_sources_schema(db)
         _ensure_feature_task_snapshot_schema(db)
         _ensure_feature_rule_scope_schema(db)
+        _ensure_feature_step_runs_schema(db)
 
 
 def _max_discovered_version(dialect: str) -> int:
@@ -2360,6 +2416,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 24:
+        _ensure_feature_step_runs_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2410,3 +2471,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_data_sources_schema(db)
     _ensure_feature_task_snapshot_schema(db)
     _ensure_feature_rule_scope_schema(db)
+    _ensure_feature_step_runs_schema(db)
