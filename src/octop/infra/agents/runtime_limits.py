@@ -46,10 +46,9 @@ def runtime_overrides_from_configurable(configurable: Any) -> dict[str, Any]:
     if not isinstance(raw, Mapping):
         return {}
     return {
-        key: raw[key]
-        for key in AGENT_RUNTIME_CONFIG_KEYS
-        if key in raw and raw[key] is not None
+        key: raw[key] for key in AGENT_RUNTIME_CONFIG_KEYS if key in raw and raw[key] is not None
     }
+
 
 _DEFAULT_MAX_INPUT_TOKENS = 128_000
 

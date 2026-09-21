@@ -150,6 +150,73 @@ def test_create_without_a_system_prompt_writes_no_prompt_file(
     assert loaded is not None and loaded.system_prompt is None
 
 
+def test_capability_layer_is_written_as_declared(
+    store: FeatureStore,
+    store_root: Path,
+    catalog: FeatureCatalog,
+) -> None:
+    """The ``agent`` node lands in ``feature.json`` and reads back as authored."""
+    layer = {
+        "model": "openai/gpt-4o",
+        "temperature": 0.3,
+        "tools_disabled": ["browser_use"],
+        "skills": [],
+        "subagents": ["researcher"],
+        "mcp_servers": ["github"],
+        "knowledge_base_ids": ["kb-1"],
+    }
+
+    store.create(_definition(agent=layer))
+
+    manifest = json.loads(
+        (store_root / "weekly-report" / "feature.json").read_text(encoding="utf-8")
+    )
+    assert manifest["agent"] == layer
+    loaded = catalog.get("weekly-report")
+    assert loaded is not None and loaded.agent is not None
+    assert loaded.agent.as_dict() == layer
+    assert loaded.agent.runtime_values() == {"temperature": 0.3}
+
+
+def test_capability_layer_omits_what_was_never_declared(
+    store: FeatureStore,
+    store_root: Path,
+) -> None:
+    """A cleared key disappears rather than sitting in the file as ``null``.
+
+    ``null`` and absent read the same way here, but only one of them tells the
+    next reader that nothing was declared — the other looks like a value.
+    """
+    store.create(_definition(agent={"model": "openai/gpt-4o", "temperature": None, "skills": None}))
+
+    manifest = json.loads(
+        (store_root / "weekly-report" / "feature.json").read_text(encoding="utf-8")
+    )
+    assert manifest["agent"] == {"model": "openai/gpt-4o"}
+
+
+def test_a_definition_without_a_capability_layer_writes_no_agent_node(
+    store: FeatureStore,
+    store_root: Path,
+    catalog: FeatureCatalog,
+) -> None:
+    """An untouched definition keeps the file it started from."""
+    store.create(_definition())
+    assert "agent" not in json.loads(
+        (store_root / "weekly-report" / "feature.json").read_text(encoding="utf-8")
+    )
+
+    # A write is a full replace: an update that declares no layer clears the one
+    # an earlier save had, rather than leaving a stale scope in place.
+    store.update("weekly-report", _definition(unit="support"))
+    cleared = json.loads(
+        (store_root / "weekly-report" / "feature.json").read_text(encoding="utf-8")
+    )
+    assert "agent" not in cleared
+    loaded = catalog.get("weekly-report")
+    assert loaded is not None and loaded.agent is None
+
+
 def test_invalid_definition_is_refused_and_nothing_is_written(
     store: FeatureStore,
     store_root: Path,

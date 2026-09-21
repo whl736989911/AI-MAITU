@@ -370,9 +370,7 @@ def _load_feature(feature_dir: Path, manifest_path: Path) -> tuple[Feature | Non
             output_kind=raw["output"]["kind"],
             permissions=raw.get("permissions") or {},
             agent=(
-                FeatureAgent.from_dict(raw["agent"])
-                if isinstance(raw.get("agent"), dict)
-                else None
+                FeatureAgent.from_dict(raw["agent"]) if isinstance(raw.get("agent"), dict) else None
             ),
         ),
         None,

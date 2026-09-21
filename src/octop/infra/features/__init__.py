@@ -1,5 +1,11 @@
 """Public interface for the enterprise feature directory."""
 
+from octop.infra.features.capability import (
+    CapabilityUnavailable,
+    ResolvedCapability,
+    resolve_capability,
+    stamp_capability,
+)
 from octop.infra.features.catalog import (
     MANIFEST_FILENAME,
     Feature,
@@ -8,12 +14,6 @@ from octop.infra.features.catalog import (
     ScopedRule,
     build_user_prompt,
     default_library_root,
-)
-from octop.infra.features.capability import (
-    CapabilityUnavailable,
-    ResolvedCapability,
-    resolve_capability,
-    stamp_capability,
 )
 from octop.infra.features.schema import feature_json_schema, validate_manifest
 from octop.infra.features.store import (

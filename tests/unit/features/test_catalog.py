@@ -188,6 +188,65 @@ def test_validate_manifest_accepts_bundled_library() -> None:
     assert catalog.warnings() == []
 
 
+def test_validate_manifest_accepts_a_capability_layer() -> None:
+    """Every key the layer declares is optional, and an empty list is a scope."""
+    errors = validate_manifest(
+        _manifest(
+            "quote-draft",
+            agent={
+                "model": "openai/gpt-4o",
+                "temperature": 0.3,
+                "top_p": 0.9,
+                "max_tokens": 2048,
+                "max_iters": 40,
+                "max_input_length": 64_000,
+                "tools_disabled": ["browser_use"],
+                "skills": [],
+                "subagents": ["researcher"],
+                "mcp_servers": [],
+                "knowledge_base_ids": ["kb-1"],
+            },
+        )
+    )
+
+    assert errors == []
+
+
+def test_validate_manifest_reports_every_capability_problem() -> None:
+    """A capability the run could not honour must not be storable in silence."""
+    errors = validate_manifest(
+        _manifest(
+            "quote-draft",
+            agent={
+                "model": "gpt-4o",
+                "temperature": 3,
+                "max_tokens": 0,
+                "skills": "meeting-notes",
+                "subagents": ["writer", "writer"],
+                "tools_disabled": ["no-such-tool", "task"],
+                "unknown_key": True,
+            },
+        )
+    )
+
+    assert "agent.model must name a model as 'provider/model'" in errors
+    assert "agent.temperature must be between 0 and 2" in errors
+    assert "agent.max_tokens must be between 1 and inf" in errors
+    assert "agent.skills must be an array of non-empty strings or null" in errors
+    assert "agent.subagents must not repeat the same entry" in errors
+    assert "agent uses unsupported keys: 'unknown_key'" in errors
+    # ``normalize_tools_disabled`` drops the always-on names without a word, so a
+    # stored one would look applied while doing nothing.
+    assert any(error.startswith("agent.tools_disabled cannot disable") for error in errors)
+    assert any("agent.tools_disabled names unknown built-in tools" in error for error in errors)
+
+
+def test_validate_manifest_refuses_a_capability_layer_that_is_not_an_object() -> None:
+    assert validate_manifest(_manifest("quote-draft", agent=["model"])) == [
+        "agent must be an object"
+    ]
+
+
 def test_build_user_prompt_substitutes_known_placeholders_only(tmp_path: Path) -> None:
     feature = _load_feature(
         tmp_path,

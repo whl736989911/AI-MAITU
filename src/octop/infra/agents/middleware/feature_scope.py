@@ -133,9 +133,7 @@ def _restricted_task_description(description: str, allowed: tuple[str, ...]) -> 
     guessing at a changed layout would silently advertise subagents that cannot be
     used.
     """
-    allowed_line = _ALLOWED_SUBAGENTS_LINE.format(
-        names=", ".join(allowed) if allowed else "(none)"
-    )
+    allowed_line = _ALLOWED_SUBAGENTS_LINE.format(names=", ".join(allowed) if allowed else "(none)")
     lines = description.splitlines()
     header_at = next(
         (index for index, line in enumerate(lines) if line.strip() == _TASK_AGENTS_HEADER),

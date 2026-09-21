@@ -406,7 +406,9 @@ def _check_agent(node: Any, errors: list[str]) -> None:
             {name for name in disabled if name not in known and name not in CRITICAL_TOOLS}
         )
         if unknown_tools:
-            errors.append(f"agent.tools_disabled names unknown built-in tools: {_quoted(unknown_tools)}")
+            errors.append(
+                f"agent.tools_disabled names unknown built-in tools: {_quoted(unknown_tools)}"
+            )
 
 
 def _number(value: float) -> str:

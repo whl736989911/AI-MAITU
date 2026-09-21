@@ -184,8 +184,7 @@ async def resolve_capability(
     knowledge_base_ids: tuple[str, ...] = ()
     if declared.knowledge_base_ids is not None:
         visible = {
-            str(base.id)
-            for base in server.services.repos.knowledge_repo.list_visible(int(user.id))
+            str(base.id) for base in server.services.repos.knowledge_repo.list_visible(int(user.id))
         }
         knowledge_base_ids = _intersect(
             declared.knowledge_base_ids,

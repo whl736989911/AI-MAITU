@@ -267,26 +267,29 @@ def _knowledge_base_choices(server: Any, user: Any) -> list[dict[str, str]]:
     return [{"id": str(base.id), "name": str(base.name)} for base in bases]
 
 
-async def _agent_scoped_choices(server: Any, user: Any, key: str) -> list[str]:
-    """Skills / subagents of the caller's own agent — what a run could ever use.
+async def _capability_agent_id(server: Any, user: Any) -> str:
+    """The caller's own agent, started — the agent its capability lists come from.
 
-    A caller with no agent of their own (an account that never opened the
-    dashboard) gets an empty list rather than an error: the editor simply offers
-    nothing to pick.
+    Skills and subagents are read off a *live* harness handle
+    (``list_skill_summaries`` starts with ``get_agent``), and a run boots the
+    caller's agent the same way, so booting it here is what makes the editor
+    describe exactly the agent a run would use. Nothing is swallowed: an agent
+    that cannot start is reported, because an empty skills list would read as
+    "this agent has no skills" and quietly offer the wrong choices.
     """
-    try:
-        agent_id = _run_agent_id(server, int(user.id))
-    except OctopError:
-        return []
+    agent_id = _run_agent_id(server, int(user.id))
+    if not _is_agent_running(server, agent_id):
+        await server.app_runtime.agent_registry.start(agent_id)
+    return agent_id
+
+
+async def _agent_scoped_choices(server: Any, agent_id: str, key: str) -> list[str]:
+    """Skills / subagents of *agent_id* — what a run of it could ever use."""
     registry = server.app_runtime.agent_registry
     if key == "skills":
         summaries = await registry.list_skill_summaries(agent_id)
         return sorted(
-            {
-                str(summary.get("name") or "")
-                for summary in summaries
-                if summary.get("enabled")
-            }
+            {str(summary.get("name") or "") for summary in summaries if summary.get("enabled")}
             - {""}
         )
     summaries = await registry.list_subagent_summaries(agent_id)
@@ -300,12 +303,16 @@ async def _capability_choices(server: Any, user: Any) -> dict[str, Any]:
     their readable knowledge bases, their agent's skills and subagents), so the
     editor offers exactly what a run started by this caller could really use — the
     same rule the run path applies (design 5.2).
+
+    This is the one editor call that needs an agent, which is why it is not part
+    of ``_meta``: opening the editor must not depend on one agent starting.
     """
+    agent_id = await _capability_agent_id(server, user)
     return {
         "models": _model_choices(server),
         "tools": _tool_choices(),
-        "skills": await _agent_scoped_choices(server, user, "skills"),
-        "subagents": await _agent_scoped_choices(server, user, "subagents"),
+        "skills": await _agent_scoped_choices(server, agent_id, "skills"),
+        "subagents": await _agent_scoped_choices(server, agent_id, "subagents"),
         "mcp_servers": _connector_choices(server, user),
         "knowledge_bases": _knowledge_base_choices(server, user),
     }
@@ -481,16 +488,18 @@ async def list_features(
 
 @router.get("/_meta", summary="Choices the feature editor offers")
 async def feature_meta(
-    user: Any = Depends(require_permission("features")),
+    _user: Any = Depends(require_permission("features")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Metadata for authoring a definition: units, icons, output kinds, capability.
+    """Metadata for authoring a definition: units, icons, output kinds, ownership.
 
     ``bundled_ids`` is what tells the editor which definitions it must not offer
     to edit — it comes from the store's own writability test, so a greyed-out
-    button and a refused write can never disagree. ``capabilities`` lists what the
-    *caller* may name in a definition's ``agent`` block, resolved through their own
-    visibility exactly like the runs are.
+    button and a refused write can never disagree.
+
+    Nothing here touches an agent: this is the call the editor makes on open, and
+    a definition's metadata has to load whether or not any agent can start. The
+    choices that *are* read off the caller's agent live in ``_capabilities``.
     """
     store = _require_store(server)
     return {
@@ -498,8 +507,26 @@ async def feature_meta(
         "icons": list(ALLOWED_ICONS),
         "output_kinds": list(ALLOWED_OUTPUT_KINDS),
         "bundled_ids": store.read_only_ids(),
-        "capabilities": await _capability_choices(server, user),
     }
+
+
+@router.get("/_capabilities", summary="Choices that need the caller's agent")
+async def feature_capabilities(
+    user: Any = Depends(require_permission("features")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """What the capability layer of a definition may name — skills and subagents
+    included, which only the caller's own agent can answer for.
+
+    Split from ``_meta`` on purpose. Listing skills means starting the caller's
+    agent (the registry reads them off the live harness handle), and that must not
+    be a precondition for opening the editor: the settings drawer loads ``_meta``
+    on open and calls this only when the capability block is expanded. An agent
+    that cannot start is reported here rather than answered with empty lists —
+    "could not load" and "you have none" are different facts, and the editor shows
+    the first as an error.
+    """
+    return await _capability_choices(server, user)
 
 
 @router.get("/{feature_id}", summary="Get one feature definition")
