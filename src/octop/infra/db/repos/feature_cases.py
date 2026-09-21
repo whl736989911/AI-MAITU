@@ -71,9 +71,7 @@ class FeatureCaseRepo:
         row, so a double click cannot silently rewrite the provenance.
         """
         with self._db.transaction() as conn:
-            task = conn.execute(
-                "SELECT id FROM feature_tasks WHERE id = ?", (task_id,)
-            ).fetchone()
+            task = conn.execute("SELECT id FROM feature_tasks WHERE id = ?", (task_id,)).fetchone()
             if task is None:
                 return None
             conn.execute(

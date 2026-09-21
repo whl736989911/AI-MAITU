@@ -212,9 +212,7 @@ def test_private_base_is_not_readable_by_another_user(
         env.sources.list_for_base(base.id, actor_user_id=people.viewer)
 
 
-def test_read_access_follows_resource_acl(
-    env: SimpleNamespace, people: SimpleNamespace
-) -> None:
+def test_read_access_follows_resource_acl(env: SimpleNamespace, people: SimpleNamespace) -> None:
     """The reader's access is the ACL's, not any row-level share flag."""
     base, _document = _uploaded_document(env, people.owner, shared=False)
     acl = ResourceAclRepo(env.pool)

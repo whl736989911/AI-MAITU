@@ -337,9 +337,9 @@ def test_list_visible_bases_is_the_rule_for_every_viewer(service: KnowledgeServi
             for resource_id, entry_row in entries.items()
             if can_access(entry_row, user_id=user_id, role=role, unit_key=unit_key)
         }
-        assert {
-            base.id for base in service.list_visible_bases(actor_user_id=user_id)
-        } == allowed, f"list/{name}"
+        assert {base.id for base in service.list_visible_bases(actor_user_id=user_id)} == allowed, (
+            f"list/{name}"
+        )
 
     # The property the deleted ``list_all()`` branch provided, kept explicit.
     assert {base.id for base in service.list_visible_bases(actor_user_id=admin)} == set(entries)

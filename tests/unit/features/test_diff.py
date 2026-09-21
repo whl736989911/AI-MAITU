@@ -9,9 +9,7 @@ def _draft_side(ops: list[dict[str, str]], draft: str) -> list[str]:
     """Replay *ops* against the draft text: keeps/removes/replaces contribute."""
     out: list[str] = []
     for op in ops:
-        if op["op"] == "keep":
-            out.append(op["text"])
-        elif op["op"] == "remove":
+        if op["op"] == "keep" or op["op"] == "remove":
             out.append(op["text"])
         elif op["op"] == "replace":
             out.append(op["draft"])
@@ -23,9 +21,7 @@ def _final_side(ops: list[dict[str, str]], final: str) -> list[str]:
     """Replay *ops* against the final text: keeps/adds/replaces contribute."""
     out: list[str] = []
     for op in ops:
-        if op["op"] == "keep":
-            out.append(op["text"])
-        elif op["op"] == "add":
+        if op["op"] == "keep" or op["op"] == "add":
             out.append(op["text"])
         elif op["op"] == "replace":
             out.append(op["final"])
@@ -74,9 +70,7 @@ def test_pure_removal_reports_the_dropped_segment() -> None:
 def test_replaced_segment_carries_both_sides() -> None:
     ops = diff_segments("客户：张三", "客户：张三（全称：张三丰）")
 
-    assert ops == [
-        {"op": "replace", "draft": "客户：张三", "final": "客户：张三（全称：张三丰）"}
-    ]
+    assert ops == [{"op": "replace", "draft": "客户：张三", "final": "客户：张三（全称：张三丰）"}]
 
 
 def test_reordered_segments_survive_replay() -> None:

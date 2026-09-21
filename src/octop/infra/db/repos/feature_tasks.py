@@ -104,8 +104,7 @@ class FeatureTaskRepo:
     def list_for_user(self, user_id: int, limit: int = 50) -> list[FeatureTaskRow]:
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM feature_tasks WHERE user_id = ? "
-                "ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM feature_tasks WHERE user_id = ? ORDER BY created_at DESC LIMIT ?",
                 (user_id, limit),
             ).fetchall()
         return map_rows(rows, FeatureTaskRow)
@@ -113,8 +112,7 @@ class FeatureTaskRepo:
     def list_for_feature(self, feature_id: str, limit: int = 50) -> list[FeatureTaskRow]:
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM feature_tasks WHERE feature_id = ? "
-                "ORDER BY created_at DESC LIMIT ?",
+                "SELECT * FROM feature_tasks WHERE feature_id = ? ORDER BY created_at DESC LIMIT ?",
                 (feature_id, limit),
             ).fetchall()
         return map_rows(rows, FeatureTaskRow)

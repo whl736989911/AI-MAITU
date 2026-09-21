@@ -129,9 +129,7 @@ def test_catalog_skips_invalid_definitions_and_keeps_valid_ones(tmp_path: Path) 
         warning.startswith("bad-kind/feature.json: ") and "output.kind" in warning
         for warning in warnings
     )
-    assert any(
-        warning.startswith("broken-json/feature.json: invalid JSON") for warning in warnings
-    )
+    assert any(warning.startswith("broken-json/feature.json: invalid JSON") for warning in warnings)
 
 
 def test_missing_system_file_skips_definition(tmp_path: Path) -> None:
@@ -172,7 +170,7 @@ def test_validate_manifest_reports_structural_problems() -> None:
         },
     )
     errors = validate_manifest(broken)
-    assert any("input_schema uses unsupported keys: 'extra'" == error for error in errors)
+    assert any(error == "input_schema uses unsupported keys: 'extra'" for error in errors)
     assert any("input_schema.properties.rows.type" in error for error in errors)
 
     assert validate_manifest(_manifest("x", label="hello")) == [
@@ -232,7 +230,9 @@ def test_build_user_prompt_renders_rows_and_skips_blank_fields(tmp_path: Path) -
         ui_schema={"order": ["rows"]},
     )
 
-    prompt = build_user_prompt(feature, {"rows": [["笔记本", "2", "6500"], ["显示器", "3", "1200"]]})
+    prompt = build_user_prompt(
+        feature, {"rows": [["笔记本", "2", "6500"], ["显示器", "3", "1200"]]}
+    )
 
     assert "- 明细：\n  - 笔记本 | 2 | 6500\n  - 显示器 | 3 | 1200" in prompt
     assert build_user_prompt(feature, {"rows": []}).strip() == "整理以下输入："

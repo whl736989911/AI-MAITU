@@ -109,12 +109,8 @@ def test_run_migrations_idempotent(db: SqlitePool):
         feature_task_cols = {
             r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()
         }
-        case_cols = {
-            r["name"] for r in conn.execute("PRAGMA table_info(feature_cases)").fetchall()
-        }
-        rule_cols = {
-            r["name"] for r in conn.execute("PRAGMA table_info(feature_rules)").fetchall()
-        }
+        case_cols = {r["name"] for r in conn.execute("PRAGMA table_info(feature_cases)").fetchall()}
+        rule_cols = {r["name"] for r in conn.execute("PRAGMA table_info(feature_rules)").fetchall()}
     assert v == 22
     assert "login_failed_count" in cols
     assert "login_locked_until" in cols
@@ -194,9 +190,7 @@ def test_watermark_at_19_without_capture_schema_is_repaired(tmp_path: Path) -> N
 
     with pool.connect() as conn:
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        task_cols = {
-            r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()
-        }
+        task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()}
         tables = {
             r["name"]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
@@ -577,9 +571,7 @@ def test_current_watermark_repairs_pre_v13_connectors_schema(tmp_path: Path) -> 
 
     with pool.connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(connectors)").fetchall()}
-        indexes = {
-            row["name"] for row in conn.execute("PRAGMA index_list(connectors)").fetchall()
-        }
+        indexes = {row["name"] for row in conn.execute("PRAGMA index_list(connectors)").fetchall()}
         user_id = conn.execute("SELECT id FROM users WHERE username = 'owner'").fetchone()[0]
         conn.execute(
             "INSERT INTO connectors("

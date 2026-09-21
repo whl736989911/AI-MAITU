@@ -42,7 +42,9 @@ _PLACEHOLDER_RE = re.compile(r"\{\{(\w+)\}\}")
 _ZH_SEPARATOR = "："
 _EN_SEPARATOR = ": "
 
-_RULES_HEADING_ZH = "以下要求来自历史修正记录归纳（人工审核通过），不是本次输入的一部分，请一并遵守："
+_RULES_HEADING_ZH = (
+    "以下要求来自历史修正记录归纳（人工审核通过），不是本次输入的一部分，请一并遵守："
+)
 _RULES_HEADING_EN = (
     "The following requirements were distilled from past corrections "
     "(human-reviewed and approved). They are NOT part of the current input:"

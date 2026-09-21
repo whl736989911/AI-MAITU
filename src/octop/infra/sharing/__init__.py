@@ -124,11 +124,7 @@ def can_access(
     # Unit scope compares against the entry's snapshot. ``unit_key`` is NULL
     # when the unit was deleted (``ON DELETE SET NULL``); such an entry falls
     # back to owner-only rather than matching every unassigned user.
-    if (
-        entry.visibility == VISIBILITY_UNIT
-        and unit_key is not None
-        and unit_key == entry.unit_key
-    ):
+    if entry.visibility == VISIBILITY_UNIT and unit_key is not None and unit_key == entry.unit_key:
         return True
     grants = _grants(entry)
     if ("user", str(user_id)) in grants:

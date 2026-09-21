@@ -79,7 +79,9 @@ def world(tmp_path: Path) -> World:
 
     users = UserRepo(pool)
     owner = users.create(username="owner", password_hash="h", role="user", org_unit="sales")
-    sales_peer = users.create(username="peer_sales", password_hash="h", role="user", org_unit="sales")
+    sales_peer = users.create(
+        username="peer_sales", password_hash="h", role="user", org_unit="sales"
+    )
     eng_peer = users.create(username="peer_eng", password_hash="h", role="user", org_unit="eng")
     unassigned = users.create(username="peer_none", password_hash="h", role="user")
     admin = users.create(username="admin", password_hash="h", role="admin")
@@ -169,9 +171,7 @@ def test_connector_list_and_knowledge_base_scope_resolve_the_same_rule(world: Wo
 
 def test_connector_list_is_what_the_rule_permits(world: World) -> None:
     """Named cells, so a rule change has to be a decision here as well."""
-    visible = {
-        name: world.visible_connectors(user_id) for name, user_id in world.viewers.items()
-    }
+    visible = {name: world.visible_connectors(user_id) for name, user_id in world.viewers.items()}
     expected = {
         ("private", "owner"): True,
         ("private", "peer_sales"): False,

@@ -220,7 +220,10 @@ async def test_finalize_by_another_user_is_forbidden() -> None:
 
     with pytest.raises(OctopError) as excinfo:
         await features_router.finalize_feature_task(
-            "task-1", features_router.FeatureFinalizeBody(final="甲\n丙"), _user(OTHER_USER_ID), server
+            "task-1",
+            features_router.FeatureFinalizeBody(final="甲\n丙"),
+            _user(OTHER_USER_ID),
+            server,
         )
 
     assert excinfo.value.code is ErrorCode.FORBIDDEN
@@ -260,7 +263,11 @@ async def test_second_finalize_is_a_conflict() -> None:
 async def test_finalize_diff_is_computed_from_the_stored_draft() -> None:
     server, repo, _ = _server(task=_task(draft="旧草稿"))
     repo.finalize_result = _task(
-        draft="旧草稿", final="新定稿", diff_json="[]", status=FINALIZED_STATUS, finalized_at=FINISHED_AT
+        draft="旧草稿",
+        final="新定稿",
+        diff_json="[]",
+        status=FINALIZED_STATUS,
+        finalized_at=FINISHED_AT,
     )
 
     await features_router.finalize_feature_task(
@@ -327,9 +334,7 @@ async def test_promote_by_another_user_is_forbidden() -> None:
     server, _, cases = _server(task=_task(final="甲\n丙", finalized_at=FINISHED_AT))
 
     with pytest.raises(OctopError) as excinfo:
-        await features_router.promote_feature_task(
-            "task-1", None, _user(OTHER_USER_ID), server
-        )
+        await features_router.promote_feature_task("task-1", None, _user(OTHER_USER_ID), server)
 
     assert excinfo.value.code is ErrorCode.FORBIDDEN
     assert cases.promoted == []

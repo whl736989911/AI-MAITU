@@ -944,8 +944,7 @@ def _ensure_feature_tasks_schema(db: DatabasePool) -> None:
             "ON feature_tasks (user_id, created_at)"
         )
         conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_tasks_feature_id "
-            "ON feature_tasks (feature_id)"
+            "CREATE INDEX IF NOT EXISTS idx_feature_tasks_feature_id ON feature_tasks (feature_id)"
         )
 
 
@@ -1166,9 +1165,7 @@ def _ensure_resource_acl_schema(db: DatabasePool) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_resource_acl_owner ON resource_acl (owner_user_id)"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_resource_acl_unit ON resource_acl (unit_key)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_resource_acl_unit ON resource_acl (unit_key)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_resource_acl_grants_grantee "
             "ON resource_acl_grants (grantee_type, grantee_id)"

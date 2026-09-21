@@ -56,9 +56,7 @@ def test_promote_reads_the_content_through_the_task_reference(db: SqlitePool) ->
     task_id = _finalized_task(db, user_id)
     repo = FeatureCaseRepo(db)
 
-    case = repo.promote(
-        task_id, feature_id="quote-draft", promoted_by=user_id, note="客户名写全称"
-    )
+    case = repo.promote(task_id, feature_id="quote-draft", promoted_by=user_id, note="客户名写全称")
 
     assert case is not None
     assert case.task_id == task_id

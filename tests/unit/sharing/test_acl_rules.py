@@ -81,9 +81,7 @@ def test_impact_scope_narrowing_is_self() -> None:
         (_entry(visibility="public"), _entry(), False),
     ],
 )
-def test_requires_approval_only_for_org(
-    before: AclEntry, after: AclEntry, expected: bool
-) -> None:
+def test_requires_approval_only_for_org(before: AclEntry, after: AclEntry, expected: bool) -> None:
     assert requires_approval(before, after) is expected
 
 

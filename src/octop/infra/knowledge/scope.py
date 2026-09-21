@@ -32,6 +32,4 @@ def may_read_knowledge_base(
 
     ``None`` denies: access is granted by a row, never by its absence.
     """
-    return entry is not None and can_access(
-        entry, user_id=user_id, role=role, unit_key=unit_key
-    )
+    return entry is not None and can_access(entry, user_id=user_id, role=role, unit_key=unit_key)
