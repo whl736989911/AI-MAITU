@@ -10,6 +10,10 @@ tolerant: a manifest that fails :func:`~octop.infra.features.schema.validate_man
 (or that points at a missing system prompt) is skipped and recorded in
 :meth:`FeatureCatalog.warnings`, so a single bad directory never takes the
 feature directory offline.
+
+Besides the bundled library, a catalog can scan writable overlay roots
+(``~/.octop/features/``) — :mod:`octop.infra.features.store` is what writes them.
+An overlay wins on an id collision, so an edited feature stays edited.
 """
 
 from __future__ import annotations
@@ -78,11 +82,21 @@ class FeatureCatalog:
     The library is read once on first access (:meth:`list`, :meth:`get`,
     :meth:`warnings`) and cached; call :meth:`reload` after adding or editing a
     definition on disk.
+
+    ``extra_roots`` are writable overlays — normally ``~/.octop/features/``, the
+    directory the settings UI writes to. A definition found in an extra root
+    **wins over the bundled one carrying the same id**: an edit somebody made
+    must survive a restart, whereas the bundled copy would silently restore the
+    shipped wording on every boot. An overlay that fails validation is skipped
+    like any other bad definition, leaving the bundled one in place.
     """
 
-    def __init__(self, root: Path | None = None) -> None:
+    def __init__(self, root: Path | None = None, extra_roots: list[Path] | None = None) -> None:
         self._root = Path(root) if root is not None else default_library_root()
+        self._extra_roots = [Path(extra) for extra in extra_roots or []]
         self._features: dict[str, Feature] = {}
+        self._feature_dirs: dict[str, Path] = {}
+        self._bundled_ids: set[str] = set()
         self._warnings: list[str] = []
         self._loaded = False
 
@@ -90,6 +104,11 @@ class FeatureCatalog:
     def root(self) -> Path:
         """Library root this catalog scans."""
         return self._root
+
+    @property
+    def roots(self) -> tuple[Path, ...]:
+        """Every scanned root, bundled library first — later roots override."""
+        return (self._root, *self._extra_roots)
 
     def list(self) -> list[Feature]:
         """Every valid feature, sorted by ``unit`` then label (zh, en, id)."""
@@ -101,12 +120,27 @@ class FeatureCatalog:
         self._ensure_loaded()
         return self._features.get(feature_id)
 
+    def feature_dir(self, feature_id: str) -> Path | None:
+        """Directory the effective definition of *feature_id* was loaded from."""
+        self._ensure_loaded()
+        return self._feature_dirs.get(feature_id)
+
+    def is_bundled(self, feature_id: str) -> bool:
+        """Whether *feature_id* is served from the read-only bundled library."""
+        self._ensure_loaded()
+        return feature_id in self._bundled_ids
+
     def reload(self) -> None:
-        """Re-scan the library root from disk, replacing the cached catalog."""
+        """Re-scan every root from disk, replacing the cached catalog."""
         features: dict[str, Feature] = {}
+        feature_dirs: dict[str, Path] = {}
+        bundled_ids: set[str] = set()
         warnings: list[str] = []
-        if self._root.is_dir():
-            for entry in sorted(self._root.iterdir()):
+        for root in self.roots:
+            if not root.is_dir():
+                continue
+            from_bundled = _same_path(root, self._root)
+            for entry in sorted(root.iterdir()):
                 if not entry.is_dir():
                     continue
                 manifest_path = entry / MANIFEST_FILENAME
@@ -118,18 +152,27 @@ class FeatureCatalog:
                     warnings.append(f"{entry.name}/{MANIFEST_FILENAME}: {reason}")
                     logger.warning("feature %s skipped: %s", entry.name, reason)
                     continue
+                # A later root overrides: the overlay is the edited version.
                 features[feature.id] = feature
-        else:
+                feature_dirs[feature.id] = entry
+                if from_bundled:
+                    bundled_ids.add(feature.id)
+                else:
+                    bundled_ids.discard(feature.id)
+        if not self._root.is_dir():
             warnings.append(f"library root not found: {self._root}")
             logger.warning("feature library root %s not found", self._root)
 
         self._features = features
+        self._feature_dirs = feature_dirs
+        self._bundled_ids = bundled_ids
         self._warnings = warnings
         self._loaded = True
         logger.info(
-            "feature catalog loaded: %d features (%d skipped)",
+            "feature catalog loaded: %d features (%d skipped, %d bundled)",
             len(features),
             len(warnings),
+            len(bundled_ids),
         )
 
     def warnings(self) -> builtins.list[str]:
@@ -145,6 +188,14 @@ class FeatureCatalog:
 def default_library_root() -> Path:
     """Return the in-package feature library directory."""
     return Path(__file__).parent / "library"
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    """Whether two roots point at the same directory (symlinks/case included)."""
+    try:
+        return left.resolve() == right.resolve()
+    except OSError:
+        return left == right
 
 
 def _sort_key(feature: Feature) -> tuple[str, str, str, str]:

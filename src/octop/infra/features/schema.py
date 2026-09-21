@@ -23,6 +23,58 @@ ALLOWED_FIELD_TYPES: tuple[str, ...] = ("string", "number", "integer", "boolean"
 ALLOWED_FORMATS: tuple[str, ...] = ("textarea", "date", "email")
 ALLOWED_OUTPUT_KINDS: tuple[str, ...] = ("markdown", "json", "text")
 
+ALLOWED_ICONS: tuple[str, ...] = (
+    "receipt",
+    "file-text",
+    "file-check",
+    "file-spreadsheet",
+    "clipboard-list",
+    "scroll-text",
+    "calculator",
+    "banknote",
+    "wallet",
+    "bar-chart-3",
+    "trending-up",
+    "users",
+    "building-2",
+    "briefcase",
+    "handshake",
+    "mail",
+    "calendar",
+    "clock",
+    "database",
+    "globe",
+    "languages",
+    "pen-tool",
+    "palette",
+    "presentation",
+    "shopping-bag",
+    "package",
+    "list-todo",
+    "book-open",
+    "search",
+    "shield-check",
+    "truck",
+    "wrench",
+    "camera",
+    "sparkles",
+    "lightbulb",
+    "target",
+    "message-square-text",
+    "waypoints",
+    "layout-grid",
+    "workflow",
+    "boxes",
+    "layers",
+)
+"""Icon names a definition may name, offered by the settings UI.
+
+Mirrors the dashboard's curated ``FeatureIcon`` map: those are the names that
+render as a real lucide icon instead of falling back to the generic one, so the
+editor only ever offers these. ``icon_name`` itself stays free-form — the format
+accepts any non-empty string, and an unlisted one degrades to the fallback icon.
+"""
+
 _LOCALES: tuple[str, ...] = ("zh", "en")
 _ROOT_SCHEMA_KEYS = frozenset({"type", "properties", "required", "title", "description"})
 _FIELD_SCHEMA_KEYS = frozenset({"type", "title", "description", "format", "enum", "items"})

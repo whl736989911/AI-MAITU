@@ -70,6 +70,15 @@ class PathLayout:
         return self.root / "published_experts"
 
     @property
+    def features_dir(self) -> Path:
+        """User-authored feature definitions: ``~/.octop/features/``.
+
+        Overlays the in-package library root, which ships read-only — see
+        :class:`octop.infra.features.catalog.FeatureCatalog`.
+        """
+        return self.root / "features"
+
+    @property
     def skill_packages_dir(self) -> Path:
         """Global skill package content: ``~/.octop/skill-packages/``."""
         return self.root / "skill-packages"

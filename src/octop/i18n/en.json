@@ -413,6 +413,8 @@
     "FEATURE_RULE_REVIEWED": "This rule was already reviewed. A decision is final — extract again to propose a new rule instead.",
     "FEATURE_RULE_NO_SAMPLES": "There is nothing to learn from yet: finalize at least one feature run first.",
     "FEATURE_RULE_EXTRACTION_FAILED": "Rule extraction failed: the model reply could not be read as a list of rules. No rule was saved — try again.",
+    "FEATURE_INVALID": "This feature definition is not valid: {errors}. Nothing was saved.",
+    "FEATURE_ALREADY_EXISTS": "A feature with this id already exists. Choose another id — a feature that ships with the application cannot be overwritten.",
     "ORG_UNIT_HAS_CHILDREN": "This department still has sub-departments; move or delete them first.",
     "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first."
   },

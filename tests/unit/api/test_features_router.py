@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -11,7 +12,8 @@ import pytest
 from octop.api.routers import features as features_router
 from octop.infra.agents.middleware.feature_prompt import CONFIG_KEY
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.features import Feature, build_user_prompt
+from octop.infra.features import Feature, FeatureCatalog, FeatureStore, build_user_prompt
+from octop.infra.features.schema import ALLOWED_ICONS, ALLOWED_OUTPUT_KINDS
 from octop.infra.users.identity import Role, User
 
 USER_ID = 7
@@ -549,6 +551,7 @@ async def test_every_route_requires_the_features_permission() -> None:
     routes = {route.path: route for route in features_router.router.routes}
     assert set(routes) == {
         "",
+        "/_meta",
         "/{feature_id}",
         "/{feature_id}/cases",
         "/{feature_id}/rules",
@@ -578,3 +581,195 @@ async def test_every_route_requires_the_features_permission() -> None:
             except Exception:
                 continue  # not a permission gate (e.g. get_server needs a Request)
         assert keys == ["features"], path
+
+
+def _write_bundled(library: Path, feature_id: str, unit: str = "general") -> None:
+    """Ship one definition into a stand-in bundled library."""
+    directory = library / feature_id
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "feature.json").write_text(
+        json.dumps(
+            {
+                "id": feature_id,
+                "version": 1,
+                "label": {"zh": f"{feature_id}·中文", "en": f"{feature_id} en"},
+                "description": {"zh": "描述", "en": "description"},
+                "icon_name": "file-text",
+                "unit": unit,
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"topic": {"type": "string", "title": {"zh": "主题", "en": "T"}}},
+                },
+                "prompt": {"user_template": "{{inputs}}"},
+                "output": {"kind": "markdown"},
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+class _FakeOrgUnitRepo:
+    """Organisation units the editor may group a feature under."""
+
+    def __init__(self, keys: list[str]) -> None:
+        self._keys = keys
+
+    def list_all(self) -> list[Any]:
+        return [SimpleNamespace(key=key) for key in self._keys]
+
+
+def _write_server(
+    tmp_path: Path,
+    *,
+    units: list[str] | None = None,
+) -> tuple[Any, FeatureCatalog, FeatureStore, Path]:
+    """Server double wired to a real catalog and store over temporary directories."""
+    library = tmp_path / "library"
+    _write_bundled(library, "meeting-notes")
+    store_root = tmp_path / "features"
+    catalog = FeatureCatalog(library, extra_roots=[store_root])
+    catalog.reload()
+    store = FeatureStore(store_root, catalog)
+    server = SimpleNamespace(
+        feature_catalog=catalog,
+        feature_store=store,
+        paths=SimpleNamespace(features_dir=store_root),
+        services=SimpleNamespace(
+            repos=SimpleNamespace(org_unit_repo=_FakeOrgUnitRepo(units or [])),
+        ),
+    )
+    return server, catalog, store, library
+
+
+def _body(feature_id: str = "weekly-report", **overrides: Any) -> Any:
+    """A create/update body as the settings UI sends it."""
+    definition: dict[str, Any] = {
+        "id": feature_id,
+        "label": {"zh": "周报", "en": "Weekly report"},
+        "description": {"zh": "整理周报", "en": "Write a weekly report"},
+        "icon_name": "clipboard-list",
+        "unit": "general",
+        "input_schema": {
+            "type": "object",
+            "properties": {"notes": {"type": "string", "title": {"zh": "记录", "en": "Notes"}}},
+        },
+        "prompt": {"user_template": "整理：{{inputs}}", "system_prompt": "Be concise."},
+        "output": {"kind": "markdown"},
+    }
+    definition.update(overrides)
+    return features_router.FeatureDefinitionBody(**definition)
+
+
+async def test_feature_meta_offers_the_editors_choices(tmp_path: Path) -> None:
+    server, _catalog, _store, _library = _write_server(tmp_path, units=["sales", "support"])
+
+    payload = await features_router.feature_meta(_user(), server)
+
+    assert payload["icons"] == list(ALLOWED_ICONS)
+    assert payload["output_kinds"] == list(ALLOWED_OUTPUT_KINDS)
+    assert payload["units"] == ["general", "sales", "support"]
+    assert payload["bundled_ids"] == ["meeting-notes"]
+
+
+async def test_create_feature_writes_into_the_user_directory(tmp_path: Path) -> None:
+    server, catalog, store, library = _write_server(tmp_path)
+
+    payload = await features_router.create_feature(_body(), _user(), _user(), server)
+
+    assert payload == {"feature_id": "weekly-report"}
+    manifest = json.loads(
+        (store.root / "weekly-report" / "feature.json").read_text(encoding="utf-8")
+    )
+    assert manifest["prompt"]["system_file"] == "PROMPT.md"
+    assert (store.root / "weekly-report" / "PROMPT.md").read_text(encoding="utf-8") == "Be concise."
+    loaded = catalog.get("weekly-report")
+    assert loaded is not None
+    assert loaded.label == {"zh": "周报", "en": "Weekly report"}
+    assert loaded.system_prompt == "Be concise."
+    # The shipped library is never a write target.
+    assert sorted(entry.name for entry in library.iterdir()) == ["meeting-notes"]
+
+
+async def test_create_feature_refuses_an_invalid_definition_and_writes_nothing(
+    tmp_path: Path,
+) -> None:
+    server, catalog, store, _library = _write_server(tmp_path)
+    body = _body(input_schema={"type": "array", "properties": {}})
+
+    with pytest.raises(OctopError) as excinfo:
+        await features_router.create_feature(body, _user(), _user(), server)
+
+    assert excinfo.value.code is ErrorCode.FEATURE_INVALID
+    assert "input_schema.type must be 'object'" in excinfo.value.message
+    assert "input_schema.type must be 'object'" in str(excinfo.value.details["errors"])
+    assert not (store.root / "weekly-report").exists()
+    assert catalog.get("weekly-report") is None
+
+
+async def test_create_feature_refuses_an_id_the_catalog_already_serves(tmp_path: Path) -> None:
+    server, _catalog, store, _library = _write_server(tmp_path)
+
+    with pytest.raises(OctopError) as excinfo:
+        await features_router.create_feature(_body("meeting-notes"), _user(), _user(), server)
+
+    assert excinfo.value.code is ErrorCode.FEATURE_ALREADY_EXISTS
+    assert not (store.root / "meeting-notes").exists()
+
+
+async def test_update_feature_edits_the_user_definition(tmp_path: Path) -> None:
+    server, catalog, store, _library = _write_server(tmp_path)
+    await features_router.create_feature(_body(), _user(), _user(), server)
+
+    payload = await features_router.update_feature(
+        "weekly-report",
+        _body(unit="support", prompt={"user_template": "改写：{{inputs}}"}),
+        _user(),
+        _user(),
+        server,
+    )
+
+    assert payload == {"feature_id": "weekly-report"}
+    loaded = catalog.get("weekly-report")
+    assert loaded is not None
+    assert loaded.unit == "support"
+    assert loaded.user_template == "改写：{{inputs}}"
+    assert loaded.system_prompt is None
+    assert not (store.root / "weekly-report" / "PROMPT.md").exists()
+
+
+async def test_update_and_delete_refuse_a_bundled_definition(tmp_path: Path) -> None:
+    server, _catalog, _store, library = _write_server(tmp_path)
+    shipped = library / "meeting-notes" / "feature.json"
+    before = shipped.read_text(encoding="utf-8")
+
+    with pytest.raises(OctopError) as update_excinfo:
+        await features_router.update_feature(
+            "meeting-notes", _body("meeting-notes"), _user(), _user(), server
+        )
+    with pytest.raises(OctopError) as delete_excinfo:
+        await features_router.delete_feature("meeting-notes", _user(), _user(), server)
+
+    assert update_excinfo.value.code is ErrorCode.FORBIDDEN
+    assert delete_excinfo.value.code is ErrorCode.FORBIDDEN
+    assert "bundled" in update_excinfo.value.message
+    assert shipped.read_text(encoding="utf-8") == before
+
+
+async def test_delete_feature_removes_the_user_definition(tmp_path: Path) -> None:
+    server, catalog, store, _library = _write_server(tmp_path)
+    await features_router.create_feature(_body(), _user(), _user(), server)
+
+    assert await features_router.delete_feature("weekly-report", _user(), _user(), server) is None
+
+    assert not (store.root / "weekly-report").exists()
+    assert catalog.get("weekly-report") is None
+
+
+async def test_update_feature_unknown_id_is_not_found(tmp_path: Path) -> None:
+    server, _catalog, _store, _library = _write_server(tmp_path)
+
+    with pytest.raises(OctopError) as excinfo:
+        await features_router.update_feature("ghost", _body("ghost"), _user(), _user(), server)
+
+    assert excinfo.value.code is ErrorCode.NOT_FOUND

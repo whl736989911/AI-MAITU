@@ -413,6 +413,8 @@
     "FEATURE_RULE_REVIEWED": "该规则已经审核过，审核结论不可更改；如需补充，请重新抽取生成新规则。",
     "FEATURE_RULE_NO_SAMPLES": "暂时没有可供归纳的素材：请先定稿至少一次功能运行结果。",
     "FEATURE_RULE_EXTRACTION_FAILED": "规则抽取失败：模型回复无法解析成规则列表，未保存任何规则，请重试。",
+    "FEATURE_INVALID": "功能定义不合法：{errors}。没有写入任何内容。",
+    "FEATURE_ALREADY_EXISTS": "已存在同 id 的功能，请换一个 id——随应用发布的预置功能不能被覆盖。",
     "ORG_UNIT_HAS_CHILDREN": "该部门下还有下级部门，请先处理。",
     "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。"
   },

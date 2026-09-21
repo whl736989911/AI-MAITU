@@ -236,3 +236,51 @@ def test_build_user_prompt_renders_rows_and_skips_blank_fields(tmp_path: Path) -
 
     assert "- 明细：\n  - 笔记本 | 2 | 6500\n  - 显示器 | 3 | 1200" in prompt
     assert build_user_prompt(feature, {"rows": []}).strip() == "整理以下输入："
+
+
+def test_extra_root_overrides_the_bundled_definition(tmp_path: Path) -> None:
+    """An edited feature must stay edited: the overlay is the version to serve."""
+    library = tmp_path / "library"
+    overlay = tmp_path / "features"
+    _write_feature(library, "meeting-notes", _manifest("meeting-notes", unit="general"))
+    _write_feature(overlay, "meeting-notes", _manifest("meeting-notes", unit="sales"))
+
+    catalog = FeatureCatalog(library, extra_roots=[overlay])
+    catalog.reload()
+
+    feature = catalog.get("meeting-notes")
+    assert feature is not None
+    assert feature.unit == "sales"
+    assert catalog.feature_dir("meeting-notes") == overlay / "meeting-notes"
+    assert catalog.is_bundled("meeting-notes") is False
+
+
+def test_bundled_definition_stays_when_the_overlay_is_invalid(tmp_path: Path) -> None:
+    """A bad overlay is skipped like any bad definition, not a reason to vanish."""
+    library = tmp_path / "library"
+    overlay = tmp_path / "features"
+    _write_feature(library, "meeting-notes", _manifest("meeting-notes", unit="general"))
+    _write_feature(overlay, "meeting-notes", _manifest("meeting-notes", input_schema={"type": "z"}))
+
+    catalog = FeatureCatalog(library, extra_roots=[overlay])
+    catalog.reload()
+
+    feature = catalog.get("meeting-notes")
+    assert feature is not None
+    assert feature.unit == "general"
+    assert catalog.is_bundled("meeting-notes") is True
+    assert catalog.feature_dir("meeting-notes") == library / "meeting-notes"
+    assert any(warning.startswith("meeting-notes/feature.json:") for warning in catalog.warnings())
+
+
+def test_missing_overlay_root_is_not_a_warning(tmp_path: Path) -> None:
+    """Nothing has been saved yet on a fresh install — that is not a problem."""
+    library = tmp_path / "library"
+    _write_feature(library, "meeting-notes")
+
+    catalog = FeatureCatalog(library, extra_roots=[tmp_path / "features"])
+    catalog.reload()
+
+    assert catalog.warnings() == []
+    assert [feature.id for feature in catalog.list()] == ["meeting-notes"]
+    assert catalog.roots == (library, tmp_path / "features")

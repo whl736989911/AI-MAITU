@@ -9,19 +9,30 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from octop.api.deps import get_server, require_permission
+from octop.api.deps import get_server, require_admin, require_permission
 from octop.api.routers.chat.turn import resolve_thread_id
 from octop.infra.agents.middleware.feature_prompt import stamp_feature_system_prompt
 from octop.infra.db.repos.feature_cases import FeatureCaseRow
 from octop.infra.db.repos.feature_rules import FeatureRuleRow
 from octop.infra.db.repos.feature_tasks import FeatureTaskRow
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.features import Feature, FeatureCatalog, build_user_prompt
+from octop.infra.features import (
+    Feature,
+    FeatureAlreadyExists,
+    FeatureCatalog,
+    FeatureDefinitionInvalid,
+    FeatureNotFound,
+    FeatureReadOnly,
+    FeatureStore,
+    build_user_prompt,
+)
 from octop.infra.features.diff import diff_segments
 from octop.infra.features.rules import (
     RuleAlreadyReviewed,
@@ -32,6 +43,7 @@ from octop.infra.features.rules import (
     injectable_rule_rows,
     review_rule,
 )
+from octop.infra.features.schema import ALLOWED_ICONS, ALLOWED_OUTPUT_KINDS
 from octop.infra.gateway.process import build_harness_request
 from octop.infra.utils.llm_text import strip_thinking
 
@@ -63,8 +75,70 @@ class FeatureRunBody(BaseModel):
     inputs: dict[str, Any] = Field(default_factory=dict)
 
 
+class FeatureDefinitionBody(BaseModel):
+    """One feature definition as authored in the settings UI (create and update).
+
+    Field types stay loose on purpose: ``validate_manifest`` is the single judge
+    of whether a definition is usable, so this model only shapes the request for
+    the docs — everything it can carry reaches the store, which refuses a bad
+    definition with ``FEATURE_INVALID`` and every reason it found, instead of a
+    pydantic 422 that would swallow the specifics.
+
+    ``prompt.system_prompt`` is the ``PROMPT.md`` text; the file name is not part
+    of the API, because the store always writes ``PROMPT.md`` and normalises the
+    manifest to match.
+    """
+
+    model_config = ConfigDict(extra="allow")
+
+    id: str = ""
+    label: dict[str, Any] = Field(default_factory=dict)
+    description: dict[str, Any] = Field(default_factory=dict)
+    icon_name: str = ""
+    color: str | None = None
+    unit: str = ""
+    input_schema: dict[str, Any] = Field(default_factory=dict)
+    ui_schema: dict[str, Any] | None = None
+    prompt: dict[str, Any] = Field(default_factory=dict)
+    output: dict[str, Any] = Field(default_factory=dict)
+    permissions: dict[str, Any] | None = None
+    version: int | None = None
+
+
 class _FeatureRunFailed(RuntimeError):
     """A run that finished without usable output (HITL or empty text)."""
+
+
+def _require_store(server: Any) -> FeatureStore:
+    """The server's feature store — absent only while the server is not started."""
+    store: FeatureStore | None = server.feature_store
+    if store is None:
+        raise OctopError(ErrorCode.INTERNAL_ERROR, "feature store not available")
+    return store
+
+
+@contextmanager
+def _store_errors() -> Iterator[None]:
+    """Map feature-store refusals onto the stable API error codes."""
+    try:
+        yield
+    except FeatureDefinitionInvalid as exc:
+        raise OctopError(
+            ErrorCode.FEATURE_INVALID,
+            f"invalid feature definition: {exc}",
+            details={"errors": "; ".join(exc.errors)},
+        ) from exc
+    except FeatureAlreadyExists as exc:
+        raise OctopError(ErrorCode.FEATURE_ALREADY_EXISTS, str(exc)) from exc
+    except FeatureNotFound as exc:
+        raise OctopError(ErrorCode.NOT_FOUND, str(exc)) from exc
+    except FeatureReadOnly as exc:
+        raise OctopError(ErrorCode.FORBIDDEN, str(exc)) from exc
+    except OSError as exc:
+        raise OctopError(
+            ErrorCode.INTERNAL_ERROR,
+            f"could not write the feature definition: {exc}",
+        ) from exc
 
 
 def _summary_dict(feature: Feature) -> dict[str, Any]:
@@ -107,6 +181,14 @@ def _unit_counts(features: list[Feature]) -> list[dict[str, Any]]:
 def _catalog_features(server: Any) -> list[Feature]:
     catalog = server.feature_catalog
     return [] if catalog is None else catalog.list()
+
+
+def _unit_keys(server: Any) -> list[str]:
+    """Unit keys the editor offers: organisation units plus units already in use."""
+    keys = {feature.unit for feature in _catalog_features(server)}
+    if server.services is not None:
+        keys.update(row.key for row in server.services.repos.org_unit_repo.list_all())
+    return sorted(keys)
 
 
 def _require_feature(server: Any, feature_id: str) -> Feature:
@@ -210,6 +292,26 @@ async def list_features(
     }
 
 
+@router.get("/_meta", summary="Choices the feature editor offers")
+async def feature_meta(
+    _user: Any = Depends(require_permission("features")),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Metadata for authoring a definition: unit keys, icons, output kinds.
+
+    ``bundled_ids`` is what tells the editor which definitions it must not offer
+    to edit — it comes from the store's own writability test, so a greyed-out
+    button and a refused write can never disagree.
+    """
+    store = _require_store(server)
+    return {
+        "units": _unit_keys(server),
+        "icons": list(ALLOWED_ICONS),
+        "output_kinds": list(ALLOWED_OUTPUT_KINDS),
+        "bundled_ids": store.read_only_ids(),
+    }
+
+
 @router.get("/{feature_id}", summary="Get one feature definition")
 async def get_feature(
     feature_id: str,
@@ -218,6 +320,57 @@ async def get_feature(
 ) -> dict[str, Any]:
     """Return the full definition backing the schema-driven run form."""
     return _feature_dict(_require_feature(server, feature_id))
+
+
+@router.post("", status_code=201, summary="Create a feature")
+async def create_feature(
+    body: FeatureDefinitionBody,
+    _user: Any = Depends(require_permission("features")),
+    _admin: Any = Depends(require_admin()),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Save a new feature definition into ``~/.octop/features/<id>/``.
+
+    Admin-only: a feature is instance-wide configuration (which model, tools and
+    prompt everybody gets), unlike the runs and rules any member may contribute.
+    """
+    store = _require_store(server)
+    with _store_errors():
+        feature_id = store.create(body.model_dump())
+    return {"feature_id": feature_id}
+
+
+@router.put("/{feature_id}", summary="Update a feature")
+async def update_feature(
+    feature_id: str,
+    body: FeatureDefinitionBody,
+    _user: Any = Depends(require_permission("features")),
+    _admin: Any = Depends(require_admin()),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Overwrite one user feature definition.
+
+    A bundled definition is refused outright rather than copied into the user
+    directory: a silent copy would fork the shipped definition, and later
+    versions of the application would never reach that installation again.
+    """
+    store = _require_store(server)
+    with _store_errors():
+        updated = store.update(feature_id, body.model_dump())
+    return {"feature_id": updated}
+
+
+@router.delete("/{feature_id}", status_code=204, summary="Delete a feature")
+async def delete_feature(
+    feature_id: str,
+    _user: Any = Depends(require_permission("features")),
+    _admin: Any = Depends(require_admin()),
+    server: Any = Depends(get_server),
+) -> None:
+    """Remove one user feature definition; a bundled one cannot be deleted."""
+    store = _require_store(server)
+    with _store_errors():
+        store.delete(feature_id)
 
 
 @router.post("/{feature_id}/run", summary="Run a feature once")

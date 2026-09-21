@@ -125,6 +125,11 @@ class ErrorCode(StrEnum):
     FEATURE_RULE_REVIEWED = "FEATURE_RULE_REVIEWED"
     FEATURE_RULE_NO_SAMPLES = "FEATURE_RULE_NO_SAMPLES"
     FEATURE_RULE_EXTRACTION_FAILED = "FEATURE_RULE_EXTRACTION_FAILED"
+    # Feature definitions authored in the settings UI: a refused definition names
+    # every problem at once (a generic validation code would hide them), and an id
+    # the catalog already serves may not be shadowed by a second definition.
+    FEATURE_INVALID = "FEATURE_INVALID"
+    FEATURE_ALREADY_EXISTS = "FEATURE_ALREADY_EXISTS"
     # Org units: a refused delete names the department, so the provider codes
     # (whose message reads "provider") cannot carry it.
     ORG_UNIT_HAS_CHILDREN = "ORG_UNIT_HAS_CHILDREN"
@@ -238,6 +243,8 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.FEATURE_RULE_REVIEWED: 409,
     ErrorCode.FEATURE_RULE_NO_SAMPLES: 409,
     ErrorCode.FEATURE_RULE_EXTRACTION_FAILED: 502,
+    ErrorCode.FEATURE_INVALID: 400,
+    ErrorCode.FEATURE_ALREADY_EXISTS: 409,
     ErrorCode.ORG_UNIT_HAS_CHILDREN: 409,
     ErrorCode.ORG_UNIT_IN_USE: 409,
 }
