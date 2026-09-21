@@ -14,6 +14,7 @@ feature directory offline.
 
 from __future__ import annotations
 
+import builtins
 import json
 import logging
 import re
@@ -131,7 +132,7 @@ class FeatureCatalog:
             len(warnings),
         )
 
-    def warnings(self) -> list[str]:
+    def warnings(self) -> builtins.list[str]:
         """Skipped definitions with their reasons (empty when the library is clean)."""
         self._ensure_loaded()
         return list(self._warnings)

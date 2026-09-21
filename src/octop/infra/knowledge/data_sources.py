@@ -54,7 +54,7 @@ class DataSourceSyncUnsupported(RuntimeError):
 class DataSourceSyncFailed(RuntimeError):
     """A sync attempt ran and failed; :attr:`cause` is the underlying error."""
 
-    def __init__(self, cause: BaseException) -> None:
+    def __init__(self, cause: Exception) -> None:
         self.cause = cause
         super().__init__(str(cause))
 

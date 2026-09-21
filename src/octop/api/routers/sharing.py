@@ -26,6 +26,7 @@ from octop.infra.db.repos.resource_acl import (
     CHANGE_REJECTED,
     CHANGE_ROLLED_BACK,
     AclChangeRow,
+    ResourceAclRepo,
     decode_acl_state,
 )
 from octop.infra.errors import ErrorCode, OctopError
@@ -146,14 +147,16 @@ def _result_payload(
 
 
 def _resolve_change(server: Any, change_id: str) -> AclChangeRow:
-    change = _services(server).repos.resource_acl_repo.get_change(change_id)
+    repo: ResourceAclRepo = _services(server).repos.resource_acl_repo
+    change = repo.get_change(change_id)
     if change is None:
         raise OctopError(ErrorCode.NOT_FOUND, f"change {change_id!r} not found")
     return change
 
 
 def _in_force(server: Any, change: AclChangeRow) -> AclEntry | None:
-    return _services(server).repos.resource_acl_repo.get(change.resource_type, change.resource_id)
+    repo: ResourceAclRepo = _services(server).repos.resource_acl_repo
+    return repo.get(change.resource_type, change.resource_id)
 
 
 def _outcome(server: Any, change_id: str) -> dict[str, Any]:

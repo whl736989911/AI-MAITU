@@ -21,7 +21,7 @@ from octop.infra.db.repos.feature_cases import FeatureCaseRow
 from octop.infra.db.repos.feature_rules import FeatureRuleRow
 from octop.infra.db.repos.feature_tasks import FeatureTaskRow
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.features import Feature, build_user_prompt
+from octop.infra.features import Feature, FeatureCatalog, build_user_prompt
 from octop.infra.features.diff import diff_segments
 from octop.infra.features.rules import (
     RuleAlreadyReviewed,
@@ -110,7 +110,7 @@ def _catalog_features(server: Any) -> list[Feature]:
 
 
 def _require_feature(server: Any, feature_id: str) -> Feature:
-    catalog = server.feature_catalog
+    catalog: FeatureCatalog | None = server.feature_catalog
     feature = None if catalog is None else catalog.get(feature_id)
     if feature is None:
         raise OctopError(ErrorCode.NOT_FOUND, f"feature {feature_id!r} not found")

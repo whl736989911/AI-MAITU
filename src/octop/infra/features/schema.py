@@ -11,6 +11,7 @@ for editors and offline tooling.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from copy import deepcopy
 from typing import Any
 
@@ -93,7 +94,7 @@ def validate_manifest(data: dict[str, Any], dir_name: str | None = None) -> list
     return errors
 
 
-def _quoted(values: tuple[str, ...] | list[str]) -> str:
+def _quoted(values: Iterable[object]) -> str:
     return ", ".join(f"'{value}'" for value in values)
 
 

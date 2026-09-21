@@ -246,7 +246,7 @@ def _as_set(values: Iterable[str] | None) -> set[str]:
     return {str(v) for v in values} if values else set()
 
 
-def role_default_permissions(role: str) -> set[str]:
+def role_default_permissions(role: Role | str | None) -> set[str]:
     """Module keys implied by the role alone (admin -> full catalog)."""
     if _role_value(role) == Role.ADMIN:
         return set(ALL_PERMISSION_KEYS)
@@ -262,7 +262,7 @@ def unit_permissions(unit_key: str | None, repo: Any) -> set[str]:
 
 def resolve_permissions(
     *,
-    role: str,
+    role: Role | str | None,
     permissions: list[str] | None,
     denied: list[str] | None,
     unit_grants: set[str] | None,
