@@ -59,7 +59,10 @@ async def test_browser_profile_blocks_when_user_missing(monkeypatch) -> None:
 
     handler.assert_not_awaited()
     assert getattr(result, "status", None) == "error"
-    assert "no Octop user id" in str(result.content)
+    # Brand-neutral: the block reason must name what is missing, not the brand.
+    text = str(result.content)
+    assert "browser_use blocked" in text
+    assert "user id" in text
 
 
 @pytest.mark.asyncio

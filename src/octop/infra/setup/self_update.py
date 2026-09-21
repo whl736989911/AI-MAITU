@@ -666,7 +666,7 @@ def run_upgrade(
         if cmd is None:
             return UpgradeResult(
                 success=False,
-                error="pip is not available for the Octop virtual environment.",
+                error="pip is not available for the MAITU Smart Manufacturing virtual environment.",
                 mirror_errors=mirror_errors,
             )
         rc, err_snippet = _run_install(cmd, mirror)
@@ -683,7 +683,7 @@ def run_upgrade(
     if cmd is None:
         return UpgradeResult(
             success=False,
-            error="pip is not available for the Octop virtual environment.",
+            error="pip is not available for the MAITU Smart Manufacturing virtual environment.",
             mirror_errors=mirror_errors,
         )
     rc, err_snippet = _run_install(cmd, "pypi.org")

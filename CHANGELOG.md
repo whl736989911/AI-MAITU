@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 修复
+
+- PostgreSQL 库回滚后再升级不再导致服务无法启动：021 / 018 迁移中把旧共享标记镜像进 `resource_acl` 的语句，改为先判断列是否仍存在（已被删除则跳过）。此前把版本回滚到不含 021 的构建、再升级回来，会因 `is_shared` 已被删除而报 `UndefinedColumn`，`octop-server` 起不来；SQLite 走等价 helper 不受影响
+
 ## [1.0.1] - 2026-09-18
 
 ### 新增

@@ -67,7 +67,7 @@ from starlette.websockets import WebSocketState
 
 from octop.api.common.agent import assert_agent_owner
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
-from octop.api.deps import get_server, require_permission, resolve_user_from_token
+from octop.api.deps import get_server, require_permission, resolve_user_from_token, unit_grants_for
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils import posix_compat
@@ -152,7 +152,7 @@ def _detect_shell() -> str:
 
 
 _ZSH_WEB_TERMINAL_RC = """\
-# Octop web terminal — reduce stray blank / spacer lines in browser PTYs.
+# MAITU Smart Manufacturing web terminal — reduce stray blank / spacer lines in browser PTYs.
 export PROMPT_EOL_MARK=
 if [[ -f "${HOME}/.zshrc" ]]; then
   source "${HOME}/.zshrc"
@@ -522,7 +522,7 @@ async def terminal_ws(
     except OctopError as exc:
         await websocket.close(code=4001, reason=f"auth: {exc.code.value}")
         return
-    if not user_has_permission(user, "terminal"):
+    if not user_has_permission(user, "terminal", unit_grants=unit_grants_for(server, user)):
         await websocket.close(code=4003, reason="permission required")
         return
     assert server.app_runtime is not None

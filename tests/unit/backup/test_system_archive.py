@@ -1175,13 +1175,13 @@ def test_restore_repairs_old_physical_schema_with_current_watermark(tmp_path: Pa
     with target_pool.connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(connectors)").fetchall()}
         connector = conn.execute(
-            "SELECT instance_id, shared FROM connectors WHERE instance_id = 'instance-1'"
+            "SELECT instance_id, config_json FROM connectors WHERE instance_id = 'instance-1'"
         ).fetchone()
 
-    assert result["schema_version"] == 15
-    assert "shared" in columns
+    assert result["schema_version"] == 21
+    assert "shared" not in columns
     assert connector is not None
-    assert connector["shared"] == 0
+    assert connector["instance_id"] == "instance-1"
     target_pool.close()
 
 
@@ -1232,7 +1232,7 @@ def test_refuse_newer_schema_backup_before_database_replace(
     assert excinfo.value.code == ErrorCode.BACKUP_SCHEMA_INCOMPATIBLE
     assert excinfo.value.details == {
         "archive_schema_version": 999,
-        "runtime_schema_version": 15,
+        "runtime_schema_version": 21,
     }
     with pool.connect() as conn:
         assert (

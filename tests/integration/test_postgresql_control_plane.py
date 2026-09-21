@@ -340,3 +340,101 @@ def test_pg_knowledge_base_max_documents_schema_and_crud() -> None:
         assert fetched.max_documents == 200
     finally:
         pool.close()
+
+
+@requires_postgresql
+@pytest.mark.postgresql
+def test_pg_reapplying_v21_after_a_rollback_still_reaches_v21() -> None:
+    """A rolled-back deployment must still be able to upgrade.
+
+    ``_reconcile_pre_squash_schema_version`` rewinds ``_schema_version`` to the
+    highest migration the *running build* ships, so rolling a release back to a
+    build without 021 leaves a v21 schema stamped 20. Re-deploying then applies
+    ``021_drop_legacy_share_columns.pg.sql`` a second time, against flag columns
+    it has already dropped. PostgreSQL resolves column references at parse time,
+    so an unguarded mirror raises ``UndefinedColumn`` and the server never
+    boots. SQLite dispatches to an idempotent helper instead, which is why local
+    development and CI never see it.
+    """
+    from octop.infra.db.migrate import run_migrations
+    from octop.infra.db.pool import PostgresPool
+
+    pool = PostgresPool(_conninfo())
+
+    def _version() -> int:
+        with pool.connect() as conn:
+            return int(conn.execute("SELECT version FROM _schema_version").fetchone()[0])
+
+    def _columns() -> list[str]:
+        with pool.connect() as conn:
+            rows = conn.execute(
+                "SELECT table_name, column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' ORDER BY table_name, ordinal_position"
+            ).fetchall()
+        return [f"{row[0]}.{row[1]}" for row in rows]
+
+    try:
+        _reset_public_schema(pool)
+        run_migrations(pool)
+        assert _version() == 21
+        upgraded = _columns()
+
+        # What a build without 021 does to a v21 database when it boots.
+        with pool.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = 20")
+
+        run_migrations(pool)
+
+        assert _version() == 21
+        assert _columns() == upgraded
+    finally:
+        pool.close()
+
+
+@requires_postgresql
+@pytest.mark.postgresql
+def test_pg_v21_mirror_still_runs_when_the_flag_columns_are_present() -> None:
+    """The existence guard must skip a dropped column, not the mirror itself.
+
+    A database whose watermark skipped the v18 backfill still carries the flags
+    on the way to v21, and its published resources have to reach
+    ``resource_acl`` before the columns go.
+    """
+    from octop.infra.db.migrate import run_migrations
+    from octop.infra.db.pool import PostgresPool
+
+    pool = PostgresPool(_conninfo())
+    try:
+        _reset_public_schema(pool)
+        run_migrations(pool)
+
+        # Rebuild the v20 shape: the flag back, one published agent, no ACL row.
+        with pool.connect() as conn:
+            conn.execute("ALTER TABLE agents ADD COLUMN is_shared INTEGER NOT NULL DEFAULT 0")
+            user_id = conn.execute(
+                "INSERT INTO users(username, password_hash, role, created_at) "
+                "VALUES ('legacy_mirror', 'h', 'user', 1) RETURNING id"
+            ).fetchone()[0]
+            conn.execute(
+                "INSERT INTO agents(agent_id, user_id, name, enabled, is_shared, "
+                "created_at, updated_at) VALUES ('ag_legacy_shared', %s, 'Legacy', 1, 1, 1, 1)",
+                (user_id,),
+            )
+            conn.execute("UPDATE _schema_version SET version = 20")
+
+        run_migrations(pool)
+
+        with pool.connect() as conn:
+            row = conn.execute(
+                "SELECT visibility FROM resource_acl "
+                "WHERE resource_type = 'agent' AND resource_id = 'ag_legacy_shared'"
+            ).fetchone()
+            columns = conn.execute(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_schema = 'public' AND table_name = 'agents'"
+            ).fetchall()
+        assert row is not None
+        assert row[0] == "public"
+        assert "is_shared" not in {column[0] for column in columns}
+    finally:
+        pool.close()

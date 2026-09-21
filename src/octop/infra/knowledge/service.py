@@ -1,6 +1,7 @@
 """Knowledge-base ownership checks and document upload orchestration.
 
-Visibility is owner or instance-wide ``shared``.
+Visibility is decided by ``resource_acl`` (see ``octop.infra.sharing``); the
+legacy per-base share column is only still written as a compatibility mirror.
 """
 
 from __future__ import annotations
@@ -25,6 +26,8 @@ from octop.infra.knowledge.ocr import (
 )
 from octop.infra.knowledge.parse import parse_document
 from octop.infra.knowledge.relpath import normalize_kb_path, path_basename, path_parent
+from octop.infra.knowledge.scope import may_read_knowledge_base
+from octop.infra.sharing import user_scope
 
 MAX_DOCS_PER_KB = 100
 MAX_BASES_PER_OWNER = 20
@@ -126,11 +129,15 @@ class KnowledgeService:
             ),
         )
 
-    def list_visible_bases(
-        self, *, actor_user_id: int, is_admin: bool = False
-    ) -> list[KnowledgeBaseRow]:
-        if is_admin:
-            return cast(list[KnowledgeBaseRow], self._repo.list_all())
+    def list_visible_bases(self, *, actor_user_id: int) -> list[KnowledgeBaseRow]:
+        """Knowledge bases this actor may use, per the one access rule.
+
+        There is deliberately no ``is_admin`` branch: ``list_all() if is_admin``
+        repeated the admin bypass that ``sharing.can_access`` already applies
+        first, so that branch skipped the rule set instead of going through it
+        and every later rule would have had to be remembered here too. An admin
+        still sees everything, because rule 1 of the rule set is that bypass.
+        """
         return cast(list[KnowledgeBaseRow], self._repo.list_visible(actor_user_id))
 
     def update_base(
@@ -324,7 +331,16 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
         base = self._require_base(kb_id)
-        if is_admin or base.owner_user_id == actor_user_id or base.shared:
+        # The legacy share column is a write-only mirror: a share applied
+        # through the sharing pipeline never lands there, so the ACL row is the
+        # only thing that may decide this.
+        role, unit_key = user_scope(self._services.user_repo.get(actor_user_id))
+        if may_read_knowledge_base(
+            self._repo.acl_entry(kb_id),
+            user_id=actor_user_id,
+            role="admin" if is_admin else role,
+            unit_key=unit_key,
+        ):
             return base
         raise PermissionError("knowledge base read access is required")
 

@@ -1,13 +1,17 @@
 """Host filesystem browsing for dashboard forms (root_dir pickers).
 
 Security notes:
-- Authenticated users only (JWT).
+- **Admin only** (``require_admin``): this surface browses the *host* filesystem,
+  so every endpoint here leaks or mutates host paths. Regular members keep
+  workspace-scoped browsing through ``routers/workspace.py`` and
+  ``routers/agent_files.py``, never host paths.
 - Paths are resolved with ``os.path.realpath`` and must stay under the browse
   tree root (``startswith`` containment — CodeQL-recognized sanitizer).
   A denylist further blocks sensitive mounts (``/proc``, ``/sys``, ``/dev``,
   ``/etc``, ``/root`` on POSIX). The process home is never denied (so uid 0
   with home ``/root`` can use the default picker path).
-- All authenticated users may browse from host root ``/`` (denylist still applies).
+- Admins browse from host root ``/`` (denylist still applies); a
+  ``workspace_root_dir`` policy still jails the tree for admins who have one.
   The UI default ``root_dir`` is the process home on bare metal, or host ``/``
   when Octop runs inside a container (override with ``OCTOP_IN_CONTAINER``).
 - Directory listing is capped and skips unreadable entries.
@@ -23,7 +27,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from octop.api.deps import current_user, get_server
+from octop.api.deps import get_server, require_admin
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import User
 from octop.infra.users.resource_policy import (
@@ -73,10 +77,10 @@ class RenameBody(BaseModel):
 
 @router.get(
     "/defaults",
-    summary="Default root_dir picker bounds for the current user",
+    summary="Default root_dir picker bounds (admin host browse tree)",
 )
 async def filesystem_defaults(
-    user: User = Depends(current_user),
+    user: User = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return the process home path and browse-tree root (host ``/`` on POSIX).
@@ -107,7 +111,7 @@ async def filesystem_defaults(
 @router.get("/dirs")
 async def list_host_dirs(
     path: str = Query("/", description="Absolute host directory to list"),
-    user: User = Depends(current_user),
+    user: User = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Single-level directory listing for lazy folder pickers."""
@@ -128,7 +132,7 @@ async def list_host_dirs(
 @router.post("/probe")
 async def probe_host_dir(
     body: ProbeBody,
-    user: User = Depends(current_user),
+    user: User = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Check whether Octop can use *path* as a local backend root_dir."""
@@ -146,7 +150,7 @@ async def probe_host_dir(
     summary="Best-effort ensure bubblewrap for scoped root_dir",
 )
 async def ensure_bwrap(
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_admin()),
 ) -> dict[str, Any]:
     """Ensure ``bwrap`` is available when saving a non-host-root backend.
 
@@ -162,7 +166,7 @@ async def ensure_bwrap(
     summary="Detect whether Docker CLI/daemon are available",
 )
 async def get_docker_status(
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_admin()),
 ) -> dict[str, Any]:
     """Probe Docker without attempting installation.
 
@@ -176,7 +180,7 @@ async def get_docker_status(
     summary="Best-effort ensure Docker Engine for sandbox backends",
 )
 async def post_ensure_docker(
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_admin()),
 ) -> dict[str, Any]:
     """Detect Docker; on Linux with passwordless sudo, try package install.
 
@@ -189,7 +193,7 @@ async def post_ensure_docker(
 @router.post("/mkdir")
 async def mkdir_host_dir(
     body: MkdirBody,
-    user: User = Depends(current_user),
+    user: User = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Create a child directory under *path* for root_dir pickers."""
@@ -209,7 +213,7 @@ async def mkdir_host_dir(
 @router.post("/rename")
 async def rename_host_directory(
     body: RenameBody,
-    user: User = Depends(current_user),
+    user: User = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Rename a host directory (basename only) for root_dir pickers."""

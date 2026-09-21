@@ -22,8 +22,22 @@ vi.mock("@/utils/antdMessage", () => ({
   },
 }));
 
+// The host-filesystem browser renders only for the admin role; the fallback
+// path (plain input) is covered by the "non-admin" case below.
+const { useCurrentUserMock } = vi.hoisted(() => ({
+  useCurrentUserMock: vi.fn(),
+}));
+
+vi.mock("../../../hooks/useCurrentUser", () => ({
+  useCurrentUser: useCurrentUserMock,
+}));
+
 import { request } from "../../../api/request";
+import type { OctopUser } from "../../../api/modules/auth";
 import RootDirSelect from "./RootDirSelect";
+
+const ADMIN_USER = { role: "admin" } as OctopUser;
+const PLAIN_USER = { role: "user" } as OctopUser;
 
 const mockedRequest = vi.mocked(request);
 
@@ -45,6 +59,7 @@ function hoverTreeNode(dropdown: HTMLElement, text: string) {
 describe("<RootDirSelect /> mkdir + rename", () => {
   beforeEach(() => {
     mockedRequest.mockReset();
+    useCurrentUserMock.mockReturnValue(ADMIN_USER);
   });
 
   it("creates a folder under the clicked parent and enters rename mode without selecting it", async () => {
@@ -291,5 +306,28 @@ describe("<RootDirSelect /> mkdir + rename", () => {
       selector!.querySelector('[data-testid="root-dir-mkdir-/"]'),
     ).toBeNull();
     expect(selector!.querySelector("[data-root-dir-actions]")).toBeNull();
+  });
+
+  it("degrades to a plain path input for non-admins (no browse requests)", async () => {
+    useCurrentUserMock.mockReturnValue(PLAIN_USER);
+    const onChange = vi.fn();
+
+    render(
+      <I18nextProvider i18n={i18n}>
+        <RootDirSelect value="/srv/data" onChange={onChange} />
+      </I18nextProvider>,
+    );
+
+    const input = screen.getByRole("textbox");
+    expect(input).toHaveValue("/srv/data");
+
+    fireEvent.change(input, { target: { value: "/srv/other" } });
+    expect(onChange).toHaveBeenCalledWith("/srv/other");
+
+    // The admin-only /filesystem endpoints must stay untouched.
+    expect(mockedRequest).not.toHaveBeenCalled();
+    expect(
+      screen.queryByRole("combobox"),
+    ).not.toBeInTheDocument();
   });
 });

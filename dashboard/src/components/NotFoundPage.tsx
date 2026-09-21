@@ -1,7 +1,8 @@
 import { Button } from "antd";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { OctopEmptyMascot } from "./EmptyState";
+import { SearchX } from "lucide-react";
+import { EmptyStateIcon } from "./EmptyState";
 import styles from "./NotFoundPage.module.less";
 
 /** Catch-all placeholder for dashboard paths that do not match any route. */
@@ -11,7 +12,7 @@ export default function NotFoundPage() {
   return (
     <div className={styles.wrap}>
       <div className={styles.inner}>
-        <OctopEmptyMascot size={140} className={styles.mascot} />
+        <EmptyStateIcon icon={SearchX} size={96} />
         <h1 className={styles.title}>{t("common.notFound")}</h1>
         <p className={styles.hint}>{t("common.notFoundHint")}</p>
         <Button type="primary" onClick={() => navigate("/chat")}>

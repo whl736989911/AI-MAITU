@@ -22,6 +22,11 @@ vi.mock("@/utils/antdMessage", () => ({
   },
 }));
 
+// The host-filesystem browser renders only for the admin role.
+vi.mock("../../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => ({ role: "admin" }),
+}));
+
 import { request } from "../../../api/request";
 import RootDirSelect from "./RootDirSelect";
 

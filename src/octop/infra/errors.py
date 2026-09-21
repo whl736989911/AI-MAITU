@@ -97,6 +97,10 @@ class ErrorCode(StrEnum):
     KNOWLEDGE_UNSUPPORTED_TYPE = "KNOWLEDGE_UNSUPPORTED_TYPE"
     KNOWLEDGE_NAME_TAKEN = "KNOWLEDGE_NAME_TAKEN"
     KNOWLEDGE_NAME_INVALID = "KNOWLEDGE_NAME_INVALID"
+    # Data sources: a kind whose ingest is not implemented must refuse instead
+    # of reporting a success it never performed.
+    DATA_SOURCE_INVALID = "DATA_SOURCE_INVALID"
+    DATA_SOURCE_SYNC_UNSUPPORTED = "DATA_SOURCE_SYNC_UNSUPPORTED"
     AVATAR_INVALID = "AVATAR_INVALID"
     AVATAR_TOO_LARGE = "AVATAR_TOO_LARGE"
     INVITE_INVALID = "INVITE_INVALID"
@@ -110,6 +114,21 @@ class ErrorCode(StrEnum):
     CAPTCHA_REQUIRED = "CAPTCHA_REQUIRED"
     CAPTCHA_FAILED = "CAPTCHA_FAILED"
     CONFIG_FILE_CORRUPT = "CONFIG_FILE_CORRUPT"
+    # Feature self-improvement capture: a finalized task is the anchor of the
+    # learning signal, so it is one-way; and only finalized tasks can become
+    # cases (nothing to learn from otherwise).
+    FEATURE_TASK_FINALIZED = "FEATURE_TASK_FINALIZED"
+    FEATURE_TASK_NOT_FINALIZED = "FEATURE_TASK_NOT_FINALIZED"
+    # Feature rules: a review decision is final (the audit trail records which
+    # rules a prompt was built from), induction needs finalized diffs to read,
+    # and an unparsable extractor reply must not be mistaken for "no rules".
+    FEATURE_RULE_REVIEWED = "FEATURE_RULE_REVIEWED"
+    FEATURE_RULE_NO_SAMPLES = "FEATURE_RULE_NO_SAMPLES"
+    FEATURE_RULE_EXTRACTION_FAILED = "FEATURE_RULE_EXTRACTION_FAILED"
+    # Org units: a refused delete names the department, so the provider codes
+    # (whose message reads "provider") cannot carry it.
+    ORG_UNIT_HAS_CHILDREN = "ORG_UNIT_HAS_CHILDREN"
+    ORG_UNIT_IN_USE = "ORG_UNIT_IN_USE"
 
 
 _DEFAULT_STATUS: dict[ErrorCode, int] = {
@@ -199,6 +218,8 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_UNSUPPORTED_TYPE: 400,
     ErrorCode.KNOWLEDGE_NAME_TAKEN: 409,
     ErrorCode.KNOWLEDGE_NAME_INVALID: 400,
+    ErrorCode.DATA_SOURCE_INVALID: 400,
+    ErrorCode.DATA_SOURCE_SYNC_UNSUPPORTED: 400,
     ErrorCode.AVATAR_INVALID: 400,
     ErrorCode.AVATAR_TOO_LARGE: 413,
     ErrorCode.INVITE_INVALID: 400,
@@ -212,6 +233,13 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.CAPTCHA_REQUIRED: 400,
     ErrorCode.CAPTCHA_FAILED: 400,
     ErrorCode.CONFIG_FILE_CORRUPT: 400,
+    ErrorCode.FEATURE_TASK_FINALIZED: 409,
+    ErrorCode.FEATURE_TASK_NOT_FINALIZED: 409,
+    ErrorCode.FEATURE_RULE_REVIEWED: 409,
+    ErrorCode.FEATURE_RULE_NO_SAMPLES: 409,
+    ErrorCode.FEATURE_RULE_EXTRACTION_FAILED: 502,
+    ErrorCode.ORG_UNIT_HAS_CHILDREN: 409,
+    ErrorCode.ORG_UNIT_IN_USE: 409,
 }
 
 

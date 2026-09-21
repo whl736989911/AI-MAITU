@@ -49,8 +49,8 @@ import feishuIcon from "../assets/channels/feishu.svg";
 import dingtalkIcon from "../assets/channels/dingtalk.svg";
 import wecomIcon from "../assets/channels/wecom.svg";
 import styles from "./AvatarDropdown.module.less";
+import { BRAND } from "../brand.generated";
 
-const GITHUB_URL = "https://github.com/TencentCloud/Octop";
 const APP_OAUTH_KINDS = new Set(["feishu", "dingtalk", "wecom"]);
 
 function oauthProviderIcon(kind: string): ReactNode {
@@ -247,7 +247,11 @@ export default function AvatarDropdown({
 
   const currentLang = i18n.language?.startsWith("zh") ? "zh" : "en";
   const roleLabel =
-    role === "admin" ? t("account.roleAdmin") : t("account.roleUser");
+    role === "admin"
+      ? t("account.roleAdmin")
+      : role === "unit_admin"
+        ? t("account.roleUnitAdmin")
+        : t("account.roleUser");
 
   const displayName = user?.display_name || user?.username || "—";
   const initials = (user?.display_name || user?.username || "?")
@@ -367,16 +371,18 @@ export default function AvatarDropdown({
         <span>{t("account.helpFeedback")}</span>
       </a>
 
-      <a
-        className={styles.menuItem}
-        href={GITHUB_URL}
-        target="_blank"
-        rel="noopener noreferrer"
-        onClick={() => setMenuOpen(false)}
-      >
-        <Github size={16} strokeWidth={1.8} />
-        <span>{t("account.projectUrl")}</span>
-      </a>
+      {BRAND.links.projectRepo && (
+        <a
+          className={styles.menuItem}
+          href={BRAND.links.projectRepo}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => setMenuOpen(false)}
+        >
+          <Github size={16} strokeWidth={1.8} />
+          <span>{t("account.projectUrl")}</span>
+        </a>
+      )}
 
       <button type="button" className={styles.menuItem} onClick={openSettings}>
         <Settings size={16} strokeWidth={1.8} />

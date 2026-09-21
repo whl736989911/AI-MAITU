@@ -61,6 +61,27 @@ export function isNotFoundApiError(error: unknown): boolean {
   return /\b404\b/i.test(msg) || /not found/i.test(msg);
 }
 
+/** True when a failed ``request`` / ``requestBlob`` looks like HTTP 403 / FORBIDDEN. */
+export function isForbiddenApiError(error: unknown): boolean {
+  const parsed = parseApiError(error);
+  if (parsed?.code === "FORBIDDEN") return true;
+  const msg = error instanceof Error ? error.message : String(error ?? "");
+  return /\b403\b/i.test(msg) || /forbidden/i.test(msg);
+}
+
+/**
+ * Message for an admin-only call that a non-admin reached. A 403 gets the
+ * ``common.adminRequired`` copy instead of the server's bare English detail.
+ */
+export function adminOnlyErrorMessage(
+  error: unknown,
+  fallback: string,
+  t: TFunction,
+): string {
+  if (isForbiddenApiError(error)) return t("common.adminRequired");
+  return apiErrorMessage(error, fallback, t);
+}
+
 /**
  * Turn a failed API call into user-facing text.
  * When `t` is provided, known `apiErrors.<CODE>` keys take precedence.

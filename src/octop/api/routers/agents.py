@@ -13,7 +13,7 @@ from octop.api.common.agent import assert_agent_access_row, assert_agent_owner
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
 from octop.api.common.validators import assert_user_backend_root_dirs
 from octop.api.common.workspace import require_agent_workspace
-from octop.api.deps import current_user, get_server
+from octop.api.deps import current_user, get_server, unit_grants_for
 from octop.infra.agents.avatar import (
     agent_avatar_api_path,
     delete_workspace_avatar,
@@ -127,6 +127,7 @@ def _row_dict(
     viewer_user_id: int | None = None,
     owner_username: str | None = None,
     bootstrap_pending: bool | None = None,
+    is_shared: bool,
 ) -> dict[str, Any]:
     cfg = parse_config_json(row.config_json)
     public_cfg = {
@@ -168,7 +169,7 @@ def _row_dict(
         "mcp_servers": id_list_from_row(row, "mcp_servers"),
         "published_expert_id": row.published_expert_id,
         "welcome_message": welcome_from_row(row),
-        "is_shared": bool(int(getattr(row, "is_shared", 0) or 0)),
+        "is_shared": is_shared,
         "is_owner": row.user_id is not None and row.user_id == viewer_user_id,
         "owner_username": owner_username,
         **agent_runtime_values(cfg),
@@ -193,7 +194,9 @@ async def list_agents(
     agents other users have explicitly shared.
     Holders of the ``users`` permission (and admins) may pass ``scope=all``.
     """
-    if scope == "all" and not user_has_permission(user, "users"):
+    if scope == "all" and not user_has_permission(
+        user, "users", unit_grants=unit_grants_for(server, user)
+    ):
         raise OctopError(
             ErrorCode.FORBIDDEN,
             "permission required",
@@ -202,6 +205,10 @@ async def list_agents(
 
     assert server.app_runtime is not None
     registry = server.app_runtime.agent_registry
+    # Published-to-everyone ids come from ``resource_acl``: ``agents.is_shared``
+    # is a write-only mirror that a share applied through the sharing pipeline
+    # never updates.
+    public_ids = server.services.agent_repo.public_agent_ids()
     if scope == "all":
         rows = registry.list_rows()
         user_ids = {r.user_id for r in rows if r.user_id is not None}
@@ -216,6 +223,7 @@ async def list_agents(
                 viewer_user_id=user.id,
                 owner_username=username_by_id.get(r.user_id) if r.user_id is not None else None,
                 bootstrap_pending=_bootstrap_pending_for(server, r.agent_id),
+                is_shared=r.agent_id in public_ids,
             )
             for r in rows
         ]
@@ -242,6 +250,7 @@ async def list_agents(
                     shared_owner_username_by_id.get(r.user_id) if r.user_id is not None else None
                 ),
                 bootstrap_pending=_bootstrap_pending_for(server, r.agent_id),
+                is_shared=r.agent_id in public_ids,
             )
             for r in rows
         ],
@@ -302,6 +311,7 @@ async def create_agent(
         viewer_user_id=user.id,
         owner_username=user.username,
         bootstrap_pending=_bootstrap_pending_for(server, row.agent_id),
+        is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
     )
 
 
@@ -331,12 +341,13 @@ async def get_agent(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    assert_agent_access_row(row, user)
+    assert_agent_access_row(row, user, acl=server.services.repos.resource_acl_repo)
     return _row_dict(
         row,
         viewer_user_id=user.id,
         owner_username=_owner_username(server, row),
         bootstrap_pending=_bootstrap_pending_for(server, agent_id),
+        is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
     )
 
 
@@ -407,6 +418,7 @@ async def patch_agent(
         viewer_user_id=user.id,
         owner_username=user.username,
         bootstrap_pending=_bootstrap_pending_for(server, agent_id),
+        is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
     )
 
 

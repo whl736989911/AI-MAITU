@@ -8,7 +8,7 @@ import {
   triggerInstall,
   waitForInstallPrompt,
 } from "../../pwa-prompt";
-import { isDesktopShell } from "../../utils/desktopChrome";
+import { BRAND } from "../../brand.generated";
 import styles from "./index.module.less";
 
 const DISMISSED_KEY = "pwa:install-dismissed";
@@ -52,7 +52,7 @@ export function IosGuide({ onClose }: { onClose: () => void }) {
           <X size={18} />
         </button>
         <div className={styles.guideTitle}>添加到主屏幕</div>
-        <p className={styles.guideDesc}>将 Octop 安装为 App，随时一键打开。</p>
+        <p className={styles.guideDesc}>将 {BRAND.name.zh} 安装为 App，随时一键打开。</p>
         <ol className={styles.guideList}>
           <li>
             <span className={styles.guideStep}>1</span>
@@ -116,8 +116,8 @@ export function DesktopInstallGuide({ onClose }: { onClose: () => void }) {
           <li>
             <span className={styles.guideStep}>2</span>
             <span>
-              或打开浏览器菜单，选择「{isEdge ? "应用" : "安装"} Octop」/
-              Install Octop
+              或打开浏览器菜单，选择「{isEdge ? "应用" : "安装"} {BRAND.name.zh}」/
+              Install {BRAND.shortName.en}
             </span>
           </li>
           <li>
@@ -166,7 +166,7 @@ export default function PwaInstallPrompt({
     () => !!localStorage.getItem(DISMISSED_KEY),
   );
 
-  if (isStandalone() || isDesktopShell() || installState.installed) return null;
+  if (isStandalone() || installState.installed) return null;
 
   // Chat right float: always expose the install entry until the app is
   // installed (ignore Header dismiss + beforeinstallprompt lag). Dev has no
@@ -263,7 +263,7 @@ export function PwaAutoPrompt() {
   const [show, setShow] = useState(false);
 
   useEffect(() => {
-    if (!isIosDevice() || isStandalone() || isDesktopShell()) return;
+    if (!isIosDevice() || isStandalone()) return;
     if (
       localStorage.getItem(DISMISSED_KEY) ||
       localStorage.getItem(IOS_SHOWN_KEY)

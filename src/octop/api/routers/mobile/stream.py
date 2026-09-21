@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from octop.api.deps import resolve_user_from_token
+from octop.api.deps import resolve_user_from_token, unit_grants_for
 from octop.infra.mobile.adb import (
     KEYCODE_APP_SWITCH,
     KEYCODE_BACK,
@@ -517,7 +517,7 @@ async def mobile_stream_ws(
             )
             await websocket.close(code=4001, reason=f"auth failed: {exc}")
             return
-        if not user_has_permission(user, "mobile"):
+        if not user_has_permission(user, "mobile", unit_grants=unit_grants_for(server, user)):
             await websocket.close(code=4003, reason="permission required")
             return
 

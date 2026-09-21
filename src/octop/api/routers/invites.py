@@ -154,5 +154,5 @@ async def redeem_invite(
         "access_token": token,
         "token_type": "Bearer",
         "expires_in": ttl,
-        "user": _user_json(user, locale=user.locale),
+        "user": _user_json(user, server=server, locale=user.locale),
     }

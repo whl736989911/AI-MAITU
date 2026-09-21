@@ -1,7 +1,6 @@
 import { Button } from "antd";
 import { Inbox, AlertCircle } from "lucide-react";
 import type { ReactNode } from "react";
-import { OctopEmptyMascot } from "./OctopEmptyMascot";
 
 interface EmptyStateProps {
   /** Icon element. Overrides the default for the current variant. */
@@ -18,9 +17,8 @@ interface EmptyStateProps {
    * Visual variant:
    * - empty: inbox icon
    * - error: alert icon
-   * - mascot: shared Octop empty mascot (prefer for list/detail empty shells)
    */
-  variant?: "empty" | "error" | "mascot";
+  variant?: "empty" | "error";
   className?: string;
 }
 
@@ -44,8 +42,6 @@ export function EmptyState({
         strokeWidth={1.2}
         style={{ color: "var(--fn-color-danger)" }}
       />
-    ) : variant === "mascot" ? (
-      <OctopEmptyMascot />
     ) : (
       <Inbox
         size={40}
@@ -100,5 +96,4 @@ export function EmptyState({
   );
 }
 
-export { OctopEmptyMascot } from "./OctopEmptyMascot";
-export { OCTOP_EMPTY_MASCOT_SRC } from "../../assets/mascot";
+export { EmptyStateIcon } from "./EmptyStateIcon";

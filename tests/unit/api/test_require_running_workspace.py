@@ -9,6 +9,7 @@ import pytest
 
 from octop.api.common.workspace import require_running_workspace
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.sharing import AclEntry
 
 
 def _server(
@@ -18,7 +19,21 @@ def _server(
     registry.get_row.return_value = row
     registry.get_agent.side_effect = get_agent
     registry.workspace_for_agent.return_value = workspace_for_agent
-    return SimpleNamespace(app_runtime=SimpleNamespace(agent_registry=registry))
+    # ``require_agent_row`` decides access from ``resource_acl``; the agent in
+    # every case below is private to user 1, which is also the caller.
+    acl = MagicMock()
+    acl.get.return_value = AclEntry(
+        resource_type="agent",
+        resource_id="A1",
+        owner_user_id=1,
+        visibility="private",
+        unit_key=None,
+        version=1,
+    )
+    return SimpleNamespace(
+        app_runtime=SimpleNamespace(agent_registry=registry),
+        services=SimpleNamespace(repos=SimpleNamespace(resource_acl_repo=acl)),
+    )
 
 
 @pytest.mark.asyncio

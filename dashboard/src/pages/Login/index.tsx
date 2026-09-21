@@ -9,6 +9,7 @@ import { clearAuthToken, setAuthToken } from "../../api";
 import { authApi, type OauthProviderStatus } from "../../api/modules/auth";
 import { apiErrorMessage } from "../../utils/apiError";
 import { refreshServerLabels } from "../../i18n";
+import { BRAND, wordmark } from "../../brand.generated";
 import { applyUserLocale, applyGuestLocale } from "../../utils/locale";
 import { useTheme } from "../../context/ThemeContext";
 import {
@@ -245,8 +246,8 @@ export default function LoginPage() {
         }}
       >
         <img
-          src={isDark ? "/logo_name_dark.png" : "/logo_name.png"}
-          alt="Octop"
+          src={wordmark(isDark)}
+          alt={BRAND.name.en}
           style={{
             height: 48,
             width: "auto",

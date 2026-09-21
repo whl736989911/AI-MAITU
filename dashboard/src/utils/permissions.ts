@@ -1,9 +1,13 @@
 /** Client-side helpers mirroring backend ``user_has_permission``. */
 
 export type PermissionHolder = {
-  role: "admin" | "user" | string;
+  /** ``admin`` bypasses every gate; ``unit_admin`` does not (its scope is the unit). */
+  role: "admin" | "unit_admin" | "user" | string;
   permissions?: string[] | null;
 };
+
+/** Wildcard key: an explicit grant of every module key. */
+export const ALL_PERMISSIONS_KEY = "*";
 
 /** Any-of module keys, or ``"admin"`` for role-only. */
 export type PermissionKeys = readonly string[] | "admin";
@@ -21,6 +25,8 @@ export const PERM = {
   desktop: ["desktop"],
   mobile: ["mobile"],
   usersPage: ["users", "sso"],
+  /** Org-unit directory: the backend mounts ``/api/org-units`` on ``users``. */
+  orgUnits: ["users"],
   modelsPage: ["providers", "ollama_models", "onnx_models", "voice", "search"],
   storage: ["storage_backends"],
   plugins: ["plugins"],
@@ -39,6 +45,7 @@ export const NAV_PERMISSIONS = {
   "remote-phone": PERM.mobile,
   acp: "admin",
   "admin-users": PERM.usersPage,
+  "admin-org-units": PERM.orgUnits,
   models: PERM.modelsPage,
   "admin-storage": PERM.storage,
   "admin-plugins": PERM.plugins,
@@ -74,13 +81,36 @@ export const SECURITY_TAB_PERMISSIONS = {
   audit: "admin_console",
 } as const;
 
+/**
+ * True when the holder bypasses every module gate: the ``admin`` role, or an
+ * explicit ``*`` grant. ``unit_admin`` is deliberately excluded — its power is
+ * the org-unit resource scope, not extra module keys.
+ */
+export function hasFullPermission(
+  user: PermissionHolder | null | undefined,
+): boolean {
+  if (!user) return false;
+  if (user.role === "admin") return true;
+  return (user.permissions ?? []).includes(ALL_PERMISSIONS_KEY);
+}
+
+/**
+ * True when the holder has the ``admin`` role itself. Mirrors the backend
+ * ``require_admin`` gate (role only — a ``*`` grant does not qualify).
+ */
+export function isSystemAdmin(
+  user: PermissionHolder | null | undefined,
+): boolean {
+  return user?.role === "admin";
+}
+
 /** True when the user may access the module ``key`` (admin bypasses). */
 export function userCan(
   user: PermissionHolder | null | undefined,
   key: string,
 ): boolean {
   if (!user) return false;
-  if (user.role === "admin") return true;
+  if (hasFullPermission(user)) return true;
   return (user.permissions ?? []).includes(key);
 }
 
@@ -90,7 +120,7 @@ export function userCanAny(
   keys: readonly string[],
 ): boolean {
   if (!user) return false;
-  if (user.role === "admin") return true;
+  if (hasFullPermission(user)) return true;
   const held = new Set(user.permissions ?? []);
   return keys.some((k) => held.has(k));
 }
@@ -99,7 +129,7 @@ export function canAccessKeys(
   user: PermissionHolder | null | undefined,
   keys: PermissionKeys,
 ): boolean {
-  if (keys === "admin") return Boolean(user && user.role === "admin");
+  if (keys === "admin") return hasFullPermission(user);
   return userCanAny(user, keys);
 }
 
@@ -154,6 +184,11 @@ export function pathPermissionKeys(pathname: string): PermissionKeys | null {
     pathname.startsWith("/admin/updates")
   ) {
     return PERM.advancedPage;
+  }
+  // Org-unit directory: reading it is part of the users module (the backend
+  // mounts ``/api/org-units`` on "users"), writes are admin-gated server-side.
+  if (pathname.startsWith("/admin/org-units")) {
+    return PERM.orgUnits;
   }
   if (pathname.startsWith("/admin/")) {
     return "admin";

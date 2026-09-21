@@ -28,6 +28,7 @@ import {
   LayoutGrid,
   List as ListIcon,
   MoreHorizontal,
+  Package,
   PanelLeftClose,
   PanelLeftOpen,
   Pencil,
@@ -47,7 +48,7 @@ import type {
 } from "../../api/types/skillPackage";
 import { CardSkeleton } from "../../components/Skeleton";
 import { CopyableResourceId } from "../../components/CopyableResourceId";
-import { EmptyState, OctopEmptyMascot } from "../../components/EmptyState";
+import { EmptyState, EmptyStateIcon } from "../../components/EmptyState";
 import StreamSetupGuide from "../../components/StreamSetupGuide/StreamSetupGuide";
 import { useCardTableView } from "../../hooks/useCardTableView";
 import { useHorizontalResize } from "../../hooks/useHorizontalResize";
@@ -539,7 +540,6 @@ export default function SkillPackagesPage() {
       <CardSkeleton count={6} />
     ) : skills.length === 0 ? (
       <EmptyState
-        variant="mascot"
         title={t("skillPackages.emptySkills")}
         description={t("skillPackages.subtitle")}
         actionLabel={canMutate ? t("skillPackages.createSkill") : undefined}
@@ -600,9 +600,7 @@ export default function SkillPackagesPage() {
           <StreamSetupGuide
             className={styles.emptyGuide}
             wide
-            icon={
-              <OctopEmptyMascot size={120} className={styles.setupMascot} />
-            }
+            icon={<EmptyStateIcon icon={Package} />}
             title={t("skillPackages.emptyGuideTitle")}
             description={t("skillPackages.emptyGuideDesc")}
             steps={[
@@ -796,7 +794,7 @@ export default function SkillPackagesPage() {
               ) : null}
               {!selected && !detailLoading ? (
                 <div className={styles.emptyDetail}>
-                  <OctopEmptyMascot size={180} />
+                  <EmptyStateIcon icon={Package} />
                   <p className={styles.emptyDetailText}>
                     {t("skillPackages.selectPackage")}
                   </p>

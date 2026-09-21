@@ -44,14 +44,16 @@ def _tool_by_name(tools: list, name: str):
 
 def test_build_mobile_tools_empty_when_disabled() -> None:
     cfg = OctopConfig()
-    tools = build_mobile_tools(cfg, user_repo=MagicMock())
+    tools = build_mobile_tools(cfg, user_repo=MagicMock(), org_unit_repo=MagicMock())
     assert tools == []
 
 
 def test_build_mobile_tools_registers_when_adb_present() -> None:
     user_repo = MagicMock()
     with patch("octop.infra.mobile.tools.find_adb", return_value="/adb"):
-        tools = build_mobile_tools(_enabled_config(), user_repo=user_repo)
+        tools = build_mobile_tools(
+            _enabled_config(), user_repo=user_repo, org_unit_repo=MagicMock()
+        )
     names = {t.name for t in tools}
     assert "mobile_screenshot" in names
     assert "mobile_tap" in names
@@ -63,7 +65,9 @@ async def test_mobile_tap_requires_permission() -> None:
     user_repo = MagicMock()
     user_repo.get.return_value = SimpleNamespace(is_admin=False, permissions=["browser"])
     with patch("octop.infra.mobile.tools.find_adb", return_value="/adb"):
-        tools = build_mobile_tools(_enabled_config(), user_repo=user_repo)
+        tools = build_mobile_tools(
+            _enabled_config(), user_repo=user_repo, org_unit_repo=MagicMock()
+        )
     tap_tool = _tool_by_name(tools, "mobile_tap")
     with (
         _configurable(user="1", user_is_admin=False, locale="en"),
@@ -84,7 +88,9 @@ async def test_mobile_tap_success() -> None:
     user_repo = MagicMock()
     user_repo.get.return_value = SimpleNamespace(is_admin=False, permissions=["mobile"])
     with patch("octop.infra.mobile.tools.find_adb", return_value="/adb"):
-        tools = build_mobile_tools(_enabled_config(), user_repo=user_repo)
+        tools = build_mobile_tools(
+            _enabled_config(), user_repo=user_repo, org_unit_repo=MagicMock()
+        )
     tap_tool = _tool_by_name(tools, "mobile_tap")
     try:
         with (
@@ -106,7 +112,9 @@ async def test_mobile_tap_success() -> None:
 async def test_mobile_handoff_admin_bypass() -> None:
     user_repo = MagicMock()
     with patch("octop.infra.mobile.tools.find_adb", return_value="/adb"):
-        tools = build_mobile_tools(_enabled_config(), user_repo=user_repo)
+        tools = build_mobile_tools(
+            _enabled_config(), user_repo=user_repo, org_unit_repo=MagicMock()
+        )
     handoff = _tool_by_name(tools, "mobile_handoff_to_user")
     with _configurable(user="1", user_is_admin=True, locale="en"):
         out = await handoff.ainvoke({"reason": "login captcha"})

@@ -46,6 +46,9 @@ def test_run_migrations_creates_tables(db: SqlitePool):
         "providers",
         "channels",
         "cron_jobs",
+        "feature_tasks",
+        "feature_cases",
+        "feature_rules",
         "sessions",
         "threads",
         "connectors",
@@ -63,9 +66,15 @@ def test_run_migrations_creates_tables(db: SqlitePool):
         "published_experts",
         "knowledge_bases",
         "knowledge_documents",
+        "data_sources",
         "sso_providers",
         "sso_login_states",
         "trajectory_events",
+        "org_units",
+        "org_unit_permissions",
+        "resource_acl",
+        "resource_acl_grants",
+        "resource_acl_changes",
     }
     assert expected.issubset(names)
     assert "knowledge_base_members" not in names
@@ -97,11 +106,22 @@ def test_run_migrations_idempotent(db: SqlitePool):
         sso_indexes = {
             r["name"] for r in conn.execute("PRAGMA index_list(sso_providers)").fetchall()
         }
-    assert v == 15
+        feature_task_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()
+        }
+        case_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(feature_cases)").fetchall()
+        }
+        rule_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(feature_rules)").fetchall()
+        }
+    assert v == 21
     assert "login_failed_count" in cols
     assert "login_locked_until" in cols
     assert "preferences_json" in cols
     assert "permissions" in cols
+    assert {"org_unit", "denied_permissions"}.issubset(cols)
+    assert {"org_units", "org_unit_permissions"}.issubset(table_names)
     assert "workspace_root_dir" not in cols
     assert "token_quota" not in cols
     assert "user_policies" in table_names
@@ -115,7 +135,12 @@ def test_run_migrations_idempotent(db: SqlitePool):
     assert "task_type" in cron_cols
     assert "mcp_servers" in cron_cols
     assert "name" in cron_cols
-    assert "shared" in connector_cols
+    # Schema v21 dropped the legacy global share booleans (visibility lives in
+    # ``resource_acl``); ``max_documents`` must survive the SQLite rebuild.
+    assert "shared" not in connector_cols
+    assert "shared" not in kb_cols
+    assert "is_shared" not in agent_cols
+    assert "max_documents" in kb_cols
     assert "idx_connectors_user_display_name" in connector_indexes
     assert {"model_ref", "reasoning_mode", "reasoning_effort", "artifacts"}.issubset(thread_cols)
     assert {
@@ -131,6 +156,83 @@ def test_run_migrations_idempotent(db: SqlitePool):
     assert "skill_packages" in table_names
     assert "knowledge_base_id" in kb_cols
     assert {"document_id", "path", "is_dir"}.issubset(doc_cols)
+    assert {"diff_json", "finalized_at"}.issubset(feature_task_cols)
+    assert case_cols == {"task_id", "feature_id", "promoted_by", "promoted_at", "note"}
+    assert rule_cols == {
+        "id",
+        "feature_id",
+        "rule_text",
+        "status",
+        "source_task_ids",
+        "proposed_by",
+        "approved_by",
+        "created_at",
+        "reviewed_at",
+    }
+
+
+def test_watermark_at_19_without_capture_schema_is_repaired(tmp_path: Path) -> None:
+    """A DB stamped 19 by a clamp or a parallel build still gets the v19 schema.
+
+    The capture columns and the case/rule tables are written by the self-improvement
+    loop, so a missing one would only surface as a failed finalize at runtime.
+    """
+    db_path = tmp_path / "octop.db"
+    pool = SqlitePool(db_path)
+    with pool.connect() as conn:
+        conn.executescript(
+            (
+                Path(__file__).resolve().parents[3]
+                / "src/octop/infra/db/migrations/001_initial.sql"
+            ).read_text()
+        )
+        conn.execute("UPDATE _schema_version SET version = 19")
+
+    run_migrations(pool)
+
+    with pool.connect() as conn:
+        version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
+        task_cols = {
+            r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()
+        }
+        tables = {
+            r["name"]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+    assert version == 21
+    assert {"diff_json", "finalized_at"}.issubset(task_cols)
+    assert {"feature_cases", "feature_rules"}.issubset(tables)
+
+
+def test_watermark_at_20_without_data_sources_is_repaired(tmp_path: Path) -> None:
+    """A DB stamped 20 by a clamp or a parallel build still gets ``data_sources``.
+
+    The table is written by the data-source endpoints, so a missing one would
+    only surface as a failed create at runtime.
+    """
+    db_path = tmp_path / "octop.db"
+    pool = SqlitePool(db_path)
+    with pool.connect() as conn:
+        conn.executescript(
+            (
+                Path(__file__).resolve().parents[3]
+                / "src/octop/infra/db/migrations/001_initial.sql"
+            ).read_text()
+        )
+        conn.execute("UPDATE _schema_version SET version = 20")
+
+    run_migrations(pool)
+
+    with pool.connect() as conn:
+        version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
+        tables = {
+            r["name"]
+            for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
+        }
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(data_sources)").fetchall()}
+    assert version == 21
+    assert "data_sources" in tables
+    assert {"knowledge_base_id", "kind", "config_json", "sync_status"}.issubset(cols)
 
 
 def test_repair_legacy_schema_ensures_columns(tmp_path: Path) -> None:
@@ -169,7 +271,7 @@ def test_migration_002_idempotent_when_column_already_present(tmp_path: Path) ->
     with pool.connect() as conn:
         v = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         cron_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cron_jobs)").fetchall()}
-    assert v == 15
+    assert v == 21
     assert "mcp_servers" in cron_cols
     assert "skill_packages" in {
         r["name"]
@@ -229,6 +331,8 @@ def test_migration_005_preserves_populated_users_and_constraints(tmp_path: Path)
             "sso_provider_id": None,
             "sso_subject": None,
             "permissions": "[]",
+            "org_unit": None,
+            "denied_permissions": None,
         }
         assert dict(agent) == {
             "agent_id": "legacy-agent",
@@ -290,6 +394,54 @@ def test_migration_005_preserves_populated_users_and_constraints(tmp_path: Path)
             )
 
 
+def test_legacy_users_rebuild_preserves_org_unit_columns(tmp_path: Path) -> None:
+    """A pre-005 DB rebuilds ``users``; the v17 scope columns must be carried over."""
+    db_path = tmp_path / "octop.db"
+    pool = SqlitePool(db_path)
+    migrations = Path(__file__).resolve().parents[3] / "src/octop/infra/db/migrations"
+    with pool.connect() as conn:
+        conn.executescript((migrations / "001_initial.sql").read_text(encoding="utf-8"))
+        conn.execute("UPDATE _schema_version SET version = 4")
+        # Simulate a DB that already carries the v17 columns with data; the
+        # legacy SSO rebuild recreates ``users`` from an explicit column list.
+        conn.execute("ALTER TABLE users ADD COLUMN org_unit TEXT")
+        conn.execute("ALTER TABLE users ADD COLUMN denied_permissions TEXT")
+        conn.execute(
+            """
+            INSERT INTO users(
+              id, username, password_hash, role, display_name, disabled, locale,
+              created_at, login_failed_count, login_locked_until, preferences_json,
+              org_unit, denied_permissions
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                7,
+                "unit-user",
+                "hash",
+                "user",
+                "Unit User",
+                0,
+                "zh",
+                10,
+                0,
+                0,
+                "{}",
+                "ops",
+                '["browser"]',
+            ),
+        )
+
+    run_migrations(pool)
+
+    with pool.connect() as conn:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (7,)).fetchone()
+        columns = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    assert {"org_unit", "denied_permissions"}.issubset(columns)
+    assert row is not None
+    assert row["org_unit"] == "ops"
+    assert row["denied_permissions"] == '["browser"]'
+
+
 def test_stuck_version_6_without_permissions_column_is_repaired(tmp_path: Path) -> None:
     """Pre-squash version clamp can leave schema at 6 without users.permissions."""
     db_path = tmp_path / "octop.db"
@@ -306,7 +458,7 @@ def test_stuck_version_6_without_permissions_column_is_repaired(tmp_path: Path) 
     with pool.connect() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-    assert version == 15
+    assert version == 21
     assert "permissions" in cols
 
 
@@ -331,7 +483,7 @@ def test_schema_v10_without_projection_tables_is_repaired(tmp_path: Path) -> Non
         }
         kb_cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
         cron_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cron_jobs)").fetchall()}
-    assert version == 15
+    assert version == 21
     assert {"thread_messages", "thread_history_projection", "trajectory_events"}.issubset(
         table_names
     )
@@ -366,7 +518,7 @@ def test_ahead_of_max_schema_version_clamps_to_max(tmp_path: Path) -> None:
             r["name"]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 15
+    assert version == 21
     assert "skill_package_id" in pkg_cols
     assert "published_expert_id" in pub_cols
     assert "user_invites" in invite_tables
@@ -399,6 +551,9 @@ def test_current_watermark_repairs_pre_v13_connectors_schema(tmp_path: Path) -> 
 
     with pool.connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(connectors)").fetchall()}
+        indexes = {
+            row["name"] for row in conn.execute("PRAGMA index_list(connectors)").fetchall()
+        }
         user_id = conn.execute("SELECT id FROM users WHERE username = 'owner'").fetchone()[0]
         conn.execute(
             "INSERT INTO connectors("
@@ -411,7 +566,11 @@ def test_current_watermark_repairs_pre_v13_connectors_schema(tmp_path: Path) -> 
             (user_id,),
         ).fetchone()[0]
 
-    assert "shared" in columns
+    # The v13 rebuild no longer creates the retired share flag, and the unique
+    # display-name index is what makes two same-named connectors legal.
+    assert {"instance_id", "mcp_server_name"}.issubset(columns)
+    assert "shared" not in columns
+    assert "idx_connectors_user_display_name" in indexes
     assert count == 2
     pool.close()
 
@@ -449,7 +608,7 @@ def test_pre_squash_schema_version_clamped_and_knowledge_tables_filled(
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
-    assert version == 15
+    assert version == 21
     assert "permissions" in user_cols
     assert {
         "published_experts",
@@ -655,7 +814,7 @@ def test_v14_to_v15_adds_sso_provider_kind_without_rebuilding(tmp_path: Path) ->
         bound = conn.execute(
             "SELECT sso_provider_id FROM users WHERE username = 'sso-admin'"
         ).fetchone()[0]
-    assert version == 15
+    assert version == 21
     assert int(row["id"]) == int(provider_id)
     assert row["kind"] == "oidc"
     assert row["extra"] == "{}"

@@ -22,7 +22,9 @@ async def test_api_docs_endpoint(tmp_octop_home: Path) -> None:
             assert "/api/openapi.json" in r.text
             spec = c.get("/api/openapi.json")
             assert spec.status_code == 200
-            assert spec.json()["info"]["title"] == "Octop API"
+            # The title text is brand-owned (brand.config.json); serving a spec
+            # with an info block is the contract here.
+            assert spec.json()["info"]["title"]
 
 
 async def test_api_docs_disabled_by_default(tmp_octop_home: Path) -> None:

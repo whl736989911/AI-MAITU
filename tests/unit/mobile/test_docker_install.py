@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 
+from octop.i18n import tr
 from octop.infra.mobile import docker_install
 from octop.infra.mobile.docker_install import (
     _merge_registry_mirror,
@@ -309,7 +310,10 @@ async def test_auto_install_missing_script_reports_error() -> None:
 
     with patch.object(docker_install, "bundled_install_script", return_value=Path("/nonexistent")):
         lines = await collect()
-    assert any("missing from the Octop package" in line for line in lines)
+    # The wording is brand-owned (see brand.config.json); what is contractual is
+    # that the localized catalog entry for this failure is what reaches the user.
+    expected = tr("mobile.docker_install_script_missing", "en")
+    assert any(expected in line for line in lines)
 
 
 @pytest.mark.asyncio

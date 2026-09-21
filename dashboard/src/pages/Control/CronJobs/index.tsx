@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { Button, Card, Empty, Form, Segmented, Spin, Tooltip } from "antd";
-import { LayoutGrid, List, RefreshCw } from "lucide-react";
+import { CalendarClock, LayoutGrid, List, RefreshCw } from "lucide-react";
 import type { CronJobSpecOutput } from "../../../api/types";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
@@ -16,7 +16,7 @@ import {
 import type { CronJobFormValues } from "./useCronJobs";
 import { useCardTableView } from "../../../hooks/useCardTableView";
 import { showConfirmModal } from "../../../utils/confirmModal";
-import { OctopEmptyMascot } from "../../../components/EmptyState";
+import { EmptyStateIcon } from "../../../components/EmptyState";
 import { ResizableTable } from "../../../components/ResizableTable";
 import PageShell from "../../../layouts/PageShell";
 import { useAgent } from "../../../context/AgentContext";
@@ -42,7 +42,7 @@ function CronJobsEmptyState({
   return (
     <div className={styles.emptyState}>
       <div className={styles.emptyStateIcon}>
-        <OctopEmptyMascot />
+        <EmptyStateIcon icon={CalendarClock} />
       </div>
       <h2 className={styles.emptyStateTitle}>{t("cronJobs.noJobs")}</h2>
       <p className={styles.emptyStateDesc}>{t("cronJobs.noJobsDesc")}</p>

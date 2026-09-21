@@ -16,7 +16,7 @@ from octop.config import OctopConfig
 from octop.i18n import tr
 from octop.infra.mobile.adb import find_adb, list_devices, screencap_png, shell, swipe, tap
 from octop.infra.mobile.setup import mobile_status
-from octop.infra.users.permissions import user_has_permission
+from octop.infra.users.permissions import unit_permissions, user_has_permission
 from octop.infra.utils.paths import PathLayout
 
 MOBILE_SCREENSHOT = "mobile_screenshot"
@@ -34,7 +34,12 @@ def _tool_ctx() -> dict[str, Any]:
     return get_config().get("configurable") or {}
 
 
-def _require_mobile_access(config: OctopConfig, ctx: dict[str, Any], user_repo: Any) -> None:
+def _require_mobile_access(
+    config: OctopConfig,
+    ctx: dict[str, Any],
+    user_repo: Any,
+    org_unit_repo: Any,
+) -> None:
     if not config.capabilities.mobile.enabled:
         raise ValueError("Remote Phone is not enabled on this host")
     user_raw = ctx.get("user")
@@ -43,7 +48,10 @@ def _require_mobile_access(config: OctopConfig, ctx: dict[str, Any], user_repo: 
     if ctx.get("user_is_admin"):
         return
     row = user_repo.get(int(user_raw))
-    if row is None or not user_has_permission(row, "mobile"):
+    if row is None:
+        raise ValueError("mobile permission required")
+    grants = unit_permissions(getattr(row, "org_unit", None), org_unit_repo)
+    if not user_has_permission(row, "mobile", unit_grants=grants):
         raise ValueError("mobile permission required")
 
 
@@ -74,7 +82,11 @@ async def _resolve_device(device: str | None) -> str:
 
 
 def build_mobile_tools(
-    config: OctopConfig, *, user_repo: Any, paths: PathLayout | None = None
+    config: OctopConfig,
+    *,
+    user_repo: Any,
+    org_unit_repo: Any,
+    paths: PathLayout | None = None,
 ) -> list[StructuredTool]:
     """Return adb mobile tools when ``capabilities.mobile.enabled``."""
     if not config.capabilities.mobile.enabled:
@@ -90,7 +102,7 @@ def build_mobile_tools(
         try:
             ctx = _tool_ctx()
             locale = str(ctx.get("locale") or "en")
-            _require_mobile_access(config, ctx, user_repo)
+            _require_mobile_access(config, ctx, user_repo, org_unit_repo)
             _require_ready(config, locale=locale)
             serial = await _resolve_device(device)
             png = await asyncio.to_thread(screencap_png, serial)
@@ -121,7 +133,7 @@ def build_mobile_tools(
         try:
             ctx = _tool_ctx()
             locale = str(ctx.get("locale") or "en")
-            _require_mobile_access(config, ctx, user_repo)
+            _require_mobile_access(config, ctx, user_repo, org_unit_repo)
             _require_ready(config, locale=locale)
             serial = await _resolve_device(device)
             ok = await asyncio.to_thread(tap, serial, x, y)
@@ -142,7 +154,7 @@ def build_mobile_tools(
         try:
             ctx = _tool_ctx()
             locale = str(ctx.get("locale") or "en")
-            _require_mobile_access(config, ctx, user_repo)
+            _require_mobile_access(config, ctx, user_repo, org_unit_repo)
             _require_ready(config, locale=locale)
             serial = await _resolve_device(device)
             ok = await asyncio.to_thread(swipe, serial, x1, y1, x2, y2, duration_ms)
@@ -159,7 +171,7 @@ def build_mobile_tools(
         try:
             ctx = _tool_ctx()
             locale = str(ctx.get("locale") or "en")
-            _require_mobile_access(config, ctx, user_repo)
+            _require_mobile_access(config, ctx, user_repo, org_unit_repo)
             _require_ready(config, locale=locale)
             serial = await _resolve_device(device)
             pkg = package.strip()
@@ -182,7 +194,7 @@ def build_mobile_tools(
         try:
             ctx = _tool_ctx()
             locale = str(ctx.get("locale") or "en")
-            _require_mobile_access(config, ctx, user_repo)
+            _require_mobile_access(config, ctx, user_repo, org_unit_repo)
             _require_ready(config, locale=locale)
             serial = await _resolve_device(device)
             dump_cmd = f"sh -c 'uiautomator dump {_UI_DUMP_PATH} && cat {_UI_DUMP_PATH}'"
@@ -206,7 +218,7 @@ def build_mobile_tools(
         try:
             ctx = _tool_ctx()
             locale = str(ctx.get("locale") or "en")
-            _require_mobile_access(config, ctx, user_repo)
+            _require_mobile_access(config, ctx, user_repo, org_unit_repo)
             msg = tr(
                 "mobile.handoff_message",
                 locale,

@@ -1,7 +1,6 @@
 import type { ReactNode } from "react";
+import { Spin } from "antd";
 import styles from "./StreamConnectingIndicator.module.less";
-
-const MASCOT_TYPE = `${import.meta.env.BASE_URL}octop-mascot-type.webp`;
 
 interface StreamConnectingIndicatorProps {
   /** Status line under the animation (e.g. 「连接中」). */
@@ -16,7 +15,7 @@ interface StreamConnectingIndicatorProps {
 
 /**
  * Shared connecting / waiting-frame indicator for remote browser & desktop.
- * Uses the same Octop mascot loop as chat thinking bubbles.
+ * Uses the global brand spinner (see ``OctopSpinner``).
  */
 export default function StreamConnectingIndicator({
   label,
@@ -34,13 +33,7 @@ export default function StreamConnectingIndicator({
 
   return (
     <div className={rootClass}>
-      <img
-        className={styles.mascot}
-        src={MASCOT_TYPE}
-        alt=""
-        aria-hidden
-        draggable={false}
-      />
+      <Spin size="large" />
       <div className={styles.label}>{label}</div>
       {hint ? <div className={styles.hint}>{hint}</div> : null}
     </div>

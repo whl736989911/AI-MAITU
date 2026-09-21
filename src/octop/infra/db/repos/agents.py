@@ -2,10 +2,21 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from octop.infra.db.pool import DatabasePool
-from octop.infra.db.repos._base import UNSET, DbRow, bool_int, map_rows, now_ts, optional_updates
+from octop.infra.db.repos._base import (
+    UNSET,
+    DbRow,
+    bool_int,
+    map_rows,
+    now_ts,
+    optional_updates,
+    sql_in_placeholders,
+)
+from octop.infra.db.repos.resource_acl import ResourceAclRepo, owner_unit_key
+from octop.infra.sharing import VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
 
 
 def _opt_str(r: DbRow, key: str) -> str | None:
@@ -37,7 +48,6 @@ class AgentRow:
     updated_at: int
     icon: str | None = None
     template_name: str | None = None
-    is_shared: int = 0
     color: str | None = None
     icon_name: str | None = None
     icon_url: str | None = None
@@ -49,10 +59,6 @@ class AgentRow:
 
     @classmethod
     def from_row(cls, r: DbRow) -> AgentRow:
-        try:
-            is_shared = int(r["is_shared"])
-        except KeyError:
-            is_shared = 0
         return cls(
             id=r["id"],
             agent_id=r["agent_id"],
@@ -70,7 +76,6 @@ class AgentRow:
             updated_at=r["updated_at"],
             icon=r["icon"],
             template_name=r["template_name"],
-            is_shared=is_shared,
             color=_opt_str(r, "color"),
             icon_name=_opt_str(r, "icon_name"),
             icon_url=_opt_str(r, "icon_url"),
@@ -85,6 +90,7 @@ class AgentRow:
 class AgentRepo:
     def __init__(self, db: DatabasePool) -> None:
         self._db = db
+        self._acl = ResourceAclRepo(db)
 
     def create(
         self,
@@ -140,6 +146,14 @@ class AgentRepo:
                     ts,
                 ),
             )
+            self._acl.set_visibility(
+                "agent",
+                agent_id,
+                VISIBILITY_PRIVATE,
+                owner_user_id=user_id,
+                unit_key=None if user_id is None else owner_unit_key(conn, user_id),
+                conn=conn,
+            )
         return agent_id
 
     def get(self, agent_id: str) -> AgentRow | None:
@@ -173,15 +187,52 @@ class AgentRepo:
             )
 
     def set_shared(self, agent_id: str, shared: bool) -> None:
+        """Publish or unpublish an agent to every logged-in user.
+
+        Visibility lives in ``resource_acl`` alone: schema v21 dropped the
+        legacy ``is_shared`` column, so there is nothing left to mirror.
+        """
         with self._db.transaction() as conn:
-            conn.execute(
-                "UPDATE agents SET is_shared = ?, updated_at = ? WHERE agent_id = ?",
-                (bool_int(shared), now_ts(), agent_id),
+            row = conn.execute(
+                "SELECT user_id FROM agents WHERE agent_id = ?", (agent_id,)
+            ).fetchone()
+            if row is None:
+                return
+            self._acl.set_visibility(
+                "agent",
+                agent_id,
+                VISIBILITY_PUBLIC if shared else VISIBILITY_PRIVATE,
+                owner_user_id=row["user_id"],
+                unit_key=None,
+                conn=conn,
             )
 
+    def public_agent_ids(self, agent_ids: Collection[str] | None = None) -> set[str]:
+        """Ids of agents published to everyone, per ``resource_acl``.
+
+        The display counterpart of ``list_shared``: rows are not needed to say
+        whether an agent is shared.
+        """
+        return self._acl.public_resource_ids("agent", resource_ids=agent_ids)
+
     def list_shared(self, *, exclude_user_id: int | None = None) -> list[AgentRow]:
-        sql = "SELECT * FROM agents WHERE is_shared = 1 AND enabled = 1"
-        params: list[object] = []
+        """Agents published to everyone — the dashboard's shared list.
+
+        This answers "which agents are published", not "which may this user
+        use", so it is deliberately not ``sharing.allowed_resource_ids``: that
+        rule would widen the list with unit and grant shares, which this
+        endpoint does not show, and it cannot express the listing-only
+        ``enabled`` filter. The published predicate itself is not restated here
+        either — it comes from :meth:`ResourceAclRepo.public_resource_ids`.
+        """
+        public_ids = self._acl.public_resource_ids("agent")
+        if not public_ids:
+            return []
+        sql = (
+            "SELECT * FROM agents WHERE enabled = 1 "
+            f"AND agent_id IN ({sql_in_placeholders(len(public_ids))})"
+        )
+        params: list[object] = [*sorted(public_ids)]
         if exclude_user_id is not None:
             sql += " AND user_id != ?"
             params.append(exclude_user_id)
@@ -250,3 +301,4 @@ class AgentRepo:
     def delete(self, agent_id: str) -> None:
         with self._db.transaction() as conn:
             conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
+            self._acl.delete("agent", agent_id, conn=conn)

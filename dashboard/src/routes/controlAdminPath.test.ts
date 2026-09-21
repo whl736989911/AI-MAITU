@@ -113,6 +113,30 @@ describe("pathPermissionKeys", () => {
       ),
     ).toBe(false);
   });
+
+  it("does not give unit_admin a full bypass", () => {
+    const bare = { role: "unit_admin", permissions: [] };
+    expect(canAccessPath(bare, "/admin/users")).toBe(false);
+    expect(canAccessPath(bare, "/acp")).toBe(false);
+    expect(
+      canAccessPath(
+        { role: "unit_admin", permissions: ["users"] },
+        "/admin/users",
+      ),
+    ).toBe(true);
+    expect(
+      canAccessPath(
+        { role: "unit_admin", permissions: ["browser"] },
+        "/workbench/browser",
+      ),
+    ).toBe(true);
+  });
+
+  it("treats an explicit wildcard grant as full access", () => {
+    const wildcard = { role: "user", permissions: ["*"] };
+    expect(canAccessPath(wildcard, "/admin/users")).toBe(true);
+    expect(canAccessPath(wildcard, "/acp")).toBe(true);
+  });
 });
 
 describe("unknown dashboard paths", () => {

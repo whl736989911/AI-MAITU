@@ -54,7 +54,6 @@ def test_retrieve_context_filters_unreadable_knowledge_base(tmp_path, monkeypatc
         retrieve_module.retrieve_context(
             services,
             user_id=reader,
-            is_admin=False,
             query="What facts are available?",
             knowledge_base_ids=[allowed.id, hidden.id],
         )
@@ -72,7 +71,6 @@ def test_retrieve_context_skips_empty_non_text_turn() -> None:
         retrieve_module.retrieve_context(
             SimpleNamespace(),
             user_id=1,
-            is_admin=False,
             query=None,  # type: ignore[arg-type]
             knowledge_base_ids=["kb-1"],
         )

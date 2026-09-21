@@ -31,6 +31,7 @@ import {
   Spin,
   Tag,
   Segmented,
+  Select,
   Checkbox,
   InputNumber,
 } from "antd";
@@ -39,6 +40,7 @@ import { ResizableTable } from "@/components/ResizableTable";
 
 import {
   Bot,
+  Building2,
   Check,
   ChevronRight,
   CircleHelp,
@@ -61,8 +63,14 @@ import {
   Mail,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import type { LucideIcon } from "lucide-react";
 import { request } from "../../../api/request";
 import { authApi } from "../../../api/modules/auth";
+import type { OctopRole } from "../../../api/modules/auth";
+import { normalizeUiLocale } from "../../../utils/localePrefs";
+import { pickLocale } from "../../../utils/localizedText";
+import { isSystemAdmin } from "../../../utils/permissions";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useCardTableView } from "../../../hooks/useCardTableView";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
@@ -82,7 +90,7 @@ const { Text } = Typography;
 interface UserRow {
   id: number;
   username: string;
-  role: "admin" | "user";
+  role: OctopRole;
   display_name: string | null;
   email?: string | null;
   has_password?: boolean;
@@ -94,9 +102,42 @@ interface UserRow {
   login_retry_after_seconds?: number;
   created_at?: number;
   permissions?: string[];
+  /** Org unit key — non-admin accounts can carry the unit scope. */
+  org_unit?: string | null;
   workspace_root_dir?: string | null;
   token_quota?: number | null;
 }
+
+/** Org unit catalog row (``GET /api/org-units``). */
+interface OrgUnit {
+  key: string;
+  label: { zh?: string; en?: string };
+  parent_key: string | null;
+}
+
+/**
+ * Org units for the role picker. Admin-only endpoint; a failure just leaves
+ * the selector empty, so a stale/absent backend never blocks the page.
+ */
+function fetchOrgUnits(): Promise<OrgUnit[]> {
+  return request<{ units: OrgUnit[] }>("/org-units").then(
+    (res) => res.units ?? [],
+  );
+}
+
+/** Role → i18n label key. Exhaustive so a new role fails the build here. */
+const ROLE_LABEL_KEYS: Record<OctopRole, string> = {
+  admin: "adminUsers.roleAdmin",
+  unit_admin: "adminUsers.roleUnitAdmin",
+  user: "adminUsers.roleUser",
+};
+
+/** Role → picker icon, same exhaustive mapping. */
+const ROLE_ICONS: Record<OctopRole, LucideIcon> = {
+  admin: ShieldCheck,
+  unit_admin: Building2,
+  user: UserRound,
+};
 
 interface PermissionCatalogItem {
   key: string;
@@ -124,14 +165,16 @@ interface CreateValues extends PolicyFormValues {
   email?: string;
   password: string;
   confirm: string;
-  role: "admin" | "user";
+  role: OctopRole;
+  org_unit?: string;
   permissions?: string[];
 }
 
 interface EditValues extends PolicyFormValues {
   display_name?: string;
   email?: string;
-  role: "admin" | "user";
+  role: OctopRole;
+  org_unit?: string;
   permissions?: string[];
 }
 
@@ -140,8 +183,10 @@ interface ResetValues {
   confirm: string;
 }
 
-function roleToneClass(role: "admin" | "user"): string {
-  return role === "admin" ? styles.roleToneAdmin : styles.roleToneUser;
+function roleToneClass(role: OctopRole): string {
+  if (role === "admin") return styles.roleToneAdmin;
+  if (role === "unit_admin") return styles.roleToneUnitAdmin;
+  return styles.roleToneUser;
 }
 
 function useNowSeconds(active: boolean): number {
@@ -174,6 +219,7 @@ interface UserCardGridProps {
   agentsLoading: boolean;
   currentUserId: number | null;
   permLabelByKey: Map<string, string>;
+  orgUnitLabelByKey: Map<string, string>;
   onTogglePatch: (
     row: UserRow,
     patch: Partial<Pick<UserRow, "role" | "disabled" | "permissions">>,
@@ -303,11 +349,11 @@ function ResourcePolicyFields({
 }
 
 interface RolePickerProps {
-  value?: "admin" | "user";
-  onChange?: (value: "admin" | "user") => void;
+  value?: OctopRole;
+  onChange?: (value: OctopRole) => void;
   disabled?: boolean;
   options: {
-    value: "admin" | "user";
+    value: OctopRole;
     label: string;
     hint: string;
   }[];
@@ -318,7 +364,7 @@ function RolePicker({ value, onChange, options, disabled }: RolePickerProps) {
     <div className={styles.rolePicker} role="radiogroup">
       {options.map((opt) => {
         const selected = value === opt.value;
-        const Icon = opt.value === "admin" ? ShieldCheck : UserRound;
+        const Icon = ROLE_ICONS[opt.value];
         return (
           <button
             key={opt.value}
@@ -344,6 +390,39 @@ function RolePicker({ value, onChange, options, disabled }: RolePickerProps) {
         );
       })}
     </div>
+  );
+}
+
+/**
+ * Org-unit scope picker for non-admin roles. The unit drives the resource
+ * boundary (and its module grants); leaving it empty means no unit scope.
+ */
+function OrgUnitField({
+  options,
+}: {
+  options: { value: string; label: string }[];
+}) {
+  const { t } = useTranslation();
+  return (
+    <Form.Item
+      label={
+        <span className={styles.orgUnitLabel}>
+          <Building2 size={14} strokeWidth={2} aria-hidden />
+          {t("adminUsers.orgUnit")}
+        </span>
+      }
+      name="org_unit"
+      extra={t("adminUsers.orgUnitHint")}
+    >
+      <Select
+        allowClear
+        showSearch
+        optionFilterProp="label"
+        placeholder={t("adminUsers.orgUnitPlaceholder")}
+        notFoundContent={t("adminUsers.orgUnitEmpty")}
+        options={options}
+      />
+    </Form.Item>
   );
 }
 
@@ -581,6 +660,7 @@ function UserCardGrid({
   agentsLoading,
   currentUserId,
   permLabelByKey,
+  orgUnitLabelByKey,
   onTogglePatch,
   onEdit,
   onShowAgents,
@@ -674,10 +754,13 @@ function UserCardGrid({
                     row.role,
                   )}`}
                 >
-                  {row.role === "admin"
-                    ? t("adminUsers.roleAdmin")
-                    : t("adminUsers.roleUser")}
+                  {t(ROLE_LABEL_KEYS[row.role])}
                 </span>
+                {row.org_unit && (
+                  <span className={styles.userCardPill}>
+                    {orgUnitLabelByKey.get(row.org_unit) ?? row.org_unit}
+                  </span>
+                )}
                 <span
                   className={styles.userCardPill}
                   style={{ color: statusColor, background: statusBg }}
@@ -880,9 +963,11 @@ function UserLoginLock({
 }
 
 export default function UsersListPanel() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const timeZone = useServerTimezone();
   const isMobile = useIsMobile();
+  const currentUser = useCurrentUser();
+  const admin = isSystemAdmin(currentUser);
   const [agents, setAgents] = useState<OctopAgent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [rows, setRows] = useState<UserRow[]>([]);
@@ -903,6 +988,7 @@ export default function UsersListPanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const { viewMode, setViewMode, showCardView } = useCardTableView("table");
   const [permCatalog, setPermCatalog] = useState<PermissionCatalogItem[]>([]);
+  const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([]);
   const [fsTreeRoot, setFsTreeRoot] = useState(HOST_FS_ROOT);
   const [workspaceRootAllowed, setWorkspaceRootAllowed] = useState(true);
 
@@ -920,12 +1006,43 @@ export default function UsersListPanel() {
     [permCatalog],
   );
 
+  const lang = normalizeUiLocale(i18n.language);
+
+  const orgUnitLabelByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const unit of orgUnits) {
+      map.set(unit.key, pickLocale(unit.label, lang) || unit.key);
+    }
+    return map;
+  }, [orgUnits, lang]);
+
+  /** Select options; nested units are shown as "Parent / Child". */
+  const orgUnitOptions = useMemo(
+    () =>
+      orgUnits.map((unit) => {
+        const label = orgUnitLabelByKey.get(unit.key) ?? unit.key;
+        const parentLabel = unit.parent_key
+          ? orgUnitLabelByKey.get(unit.parent_key)
+          : undefined;
+        return {
+          value: unit.key,
+          label: parentLabel ? `${parentLabel} / ${label}` : label,
+        };
+      }),
+    [orgUnits, orgUnitLabelByKey],
+  );
+
   const createRoleOptions = useMemo(
     () => [
       {
         value: "user" as const,
         label: t("adminUsers.roleUser"),
         hint: t("adminUsers.roleUserHint"),
+      },
+      {
+        value: "unit_admin" as const,
+        label: t("adminUsers.roleUnitAdmin"),
+        hint: t("adminUsers.roleUnitAdminHint"),
       },
       {
         value: "admin" as const,
@@ -1069,6 +1186,19 @@ export default function UsersListPanel() {
     request<PermissionCatalogItem[]>("/users/permissions")
       .then(setPermCatalog)
       .catch(() => setPermCatalog([]));
+    fetchOrgUnits()
+      .then(setOrgUnits)
+      .catch(() => setOrgUnits([]));
+  }, [refreshAll]);
+
+  // ``/filesystem/defaults`` is admin-only: without it a non-admin operator
+  // keeps the root-dir policy locked instead of firing a 403.
+  useEffect(() => {
+    if (!admin) {
+      setFsTreeRoot(HOST_FS_ROOT);
+      setWorkspaceRootAllowed(false);
+      return;
+    }
     fetchFilesystemDefaults()
       .then((defaults) => {
         setFsTreeRoot(defaults.tree_root);
@@ -1078,7 +1208,7 @@ export default function UsersListPanel() {
         setFsTreeRoot(HOST_FS_ROOT);
         setWorkspaceRootAllowed(true);
       });
-  }, [refreshAll]);
+  }, [admin]);
 
   const onCreate = async (values: CreateValues) => {
     setSubmitting(true);
@@ -1091,6 +1221,7 @@ export default function UsersListPanel() {
           email: values.email?.trim() || null,
           password: values.password,
           role: values.role,
+          org_unit: values.role === "admin" ? null : values.org_unit ?? null,
           permissions: values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
         }),
@@ -1119,6 +1250,7 @@ export default function UsersListPanel() {
       email: undefined,
       password: undefined,
       confirm: undefined,
+      org_unit: undefined,
       limit_workspace_root: false,
       workspace_root_dir: undefined,
       limit_token_quota: false,
@@ -1133,6 +1265,7 @@ export default function UsersListPanel() {
       display_name: row.display_name ?? "",
       email: row.email ?? "",
       role: row.role,
+      org_unit: row.org_unit ?? undefined,
       permissions: [...(row.permissions ?? [])],
       limit_workspace_root: workspaceRootAllowed
         ? Boolean(row.workspace_root_dir)
@@ -1150,7 +1283,8 @@ export default function UsersListPanel() {
     patch: Partial<Pick<UserRow, "role" | "disabled" | "permissions">>,
   ): Promise<boolean> => {
     if (
-      patch.role === "user" &&
+      patch.role !== undefined &&
+      patch.role !== "admin" &&
       row.id === currentUserId &&
       row.role === "admin"
     ) {
@@ -1182,6 +1316,7 @@ export default function UsersListPanel() {
           display_name: values.display_name?.trim() || null,
           email: values.email?.trim() || null,
           role: values.role,
+          org_unit: values.role === "admin" ? null : values.org_unit ?? null,
           permissions: values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
         }),
@@ -1312,6 +1447,7 @@ export default function UsersListPanel() {
           agentsLoading={agentsLoading}
           currentUserId={currentUserId}
           permLabelByKey={permLabelByKey}
+          orgUnitLabelByKey={orgUnitLabelByKey}
           onTogglePatch={togglePatch}
           onEdit={openEdit}
           onShowAgents={setAgentDrawerUser}
@@ -1418,18 +1554,26 @@ export default function UsersListPanel() {
             },
             {
               title: t("adminUsers.colRole"),
-              width: 88,
-              render: (_, row) => (
-                <span
-                  className={`${styles.userCardPill} ${roleToneClass(
-                    row.role,
-                  )}`}
-                >
-                  {row.role === "admin"
-                    ? t("adminUsers.roleAdmin")
-                    : t("adminUsers.roleUser")}
-                </span>
-              ),
+              width: 112,
+              render: (_, row) => {
+                const unitLabel = row.org_unit
+                  ? orgUnitLabelByKey.get(row.org_unit)
+                  : undefined;
+                return (
+                  <div className={styles.userRoleCell}>
+                    <span
+                      className={`${styles.userCardPill} ${roleToneClass(
+                        row.role,
+                      )}`}
+                    >
+                      {t(ROLE_LABEL_KEYS[row.role])}
+                    </span>
+                    {unitLabel && (
+                      <span className={styles.userRoleUnit}>{unitLabel}</span>
+                    )}
+                  </div>
+                );
+              },
             },
             {
               title: t("adminUsers.colPermissions"),
@@ -1747,13 +1891,16 @@ export default function UsersListPanel() {
                   );
                 }
                 return (
-                  <Form.Item
-                    label={t("adminUsers.colPermissions")}
-                    name="permissions"
-                    className={styles.createUserPermItem}
-                  >
-                    <PermissionCheckboxPicker catalog={permCatalog} />
-                  </Form.Item>
+                  <>
+                    <OrgUnitField options={orgUnitOptions} />
+                    <Form.Item
+                      label={t("adminUsers.colPermissions")}
+                      name="permissions"
+                      className={styles.createUserPermItem}
+                    >
+                      <PermissionCheckboxPicker catalog={permCatalog} />
+                    </Form.Item>
+                  </>
                 );
               }}
             </Form.Item>
@@ -1883,13 +2030,16 @@ export default function UsersListPanel() {
                   );
                 }
                 return (
-                  <Form.Item
-                    label={t("adminUsers.colPermissions")}
-                    name="permissions"
-                    className={styles.createUserPermItem}
-                  >
-                    <PermissionCheckboxPicker catalog={permCatalog} />
-                  </Form.Item>
+                  <>
+                    <OrgUnitField options={orgUnitOptions} />
+                    <Form.Item
+                      label={t("adminUsers.colPermissions")}
+                      name="permissions"
+                      className={styles.createUserPermItem}
+                    >
+                      <PermissionCheckboxPicker catalog={permCatalog} />
+                    </Form.Item>
+                  </>
                 );
               }}
             </Form.Item>

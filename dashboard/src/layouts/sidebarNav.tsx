@@ -16,8 +16,11 @@ import {
   Package,
   HardDrive,
   GraduationCap,
+  Network,
   Shield,
   PanelsTopLeft,
+  LayoutGrid,
+  ShieldCheck,
 } from "lucide-react";
 import type { OctopUser } from "../api/modules/auth";
 import { navAllowed, userCan } from "../utils/permissions";
@@ -57,12 +60,14 @@ export const SIDEBAR_GROUPED_NAV_KEYS = [
   "remote-desktop",
   "acp",
   "admin-users",
+  "admin-org-units",
   "models",
   "admin-storage",
   "admin-plugins",
   "admin-security",
   "admin-advanced",
   "agent-config",
+  "sharing",
 ] as const;
 
 const GROUPED_NAV_KEY_SET = new Set<string>(SIDEBAR_GROUPED_NAV_KEYS);
@@ -83,6 +88,12 @@ export function buildNavSections(
           path: "/chat",
           icon: <MessageSquareText size={iconSize} strokeWidth={iconStroke} />,
           labelKey: "nav.chat",
+        },
+        {
+          key: "features",
+          path: "/features",
+          icon: <LayoutGrid size={iconSize} strokeWidth={iconStroke} />,
+          labelKey: "nav.features",
         },
         {
           key: "experts",
@@ -193,6 +204,14 @@ export function buildNavSections(
       labelKey: "nav.adminUsers",
     });
   }
+  if (navAllowed(user, "admin-org-units")) {
+    adminItems.push({
+      key: "admin-org-units",
+      path: "/admin/org-units",
+      icon: <Network size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.adminOrgUnits",
+    });
+  }
   if (navAllowed(user, "models")) {
     adminItems.push({
       key: "models",
@@ -231,6 +250,16 @@ export function buildNavSections(
       path: "/admin/advanced",
       icon: <SlidersHorizontal size={iconSize} strokeWidth={iconStroke} />,
       labelKey: "nav.adminAdvanced",
+    });
+  }
+  // Sharing governance: /api/sharing is gated on the ``users`` module key, so
+  // the entry follows that key rather than a permission of its own.
+  if (userCan(user, "users")) {
+    adminItems.push({
+      key: "sharing",
+      path: "/sharing",
+      icon: <ShieldCheck size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.sharing",
     });
   }
   if (adminItems.length > 0) {

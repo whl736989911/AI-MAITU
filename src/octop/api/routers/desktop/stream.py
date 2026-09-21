@@ -13,7 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from octop.api.deps import resolve_user_from_token
+from octop.api.deps import resolve_user_from_token, unit_grants_for
 from octop.infra.desktop.input import canvas_to_screen, run_desktop_action
 from octop.infra.desktop.session import (
     DesktopSession,
@@ -285,7 +285,7 @@ async def desktop_stream_ws(
             )
             await websocket.close(code=4001, reason=f"auth failed: {exc}")
             return
-        if not user_has_permission(user, "desktop"):
+        if not user_has_permission(user, "desktop", unit_grants=unit_grants_for(server, user)):
             await websocket.close(code=4003, reason="permission required")
             return
 

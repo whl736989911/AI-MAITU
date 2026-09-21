@@ -5,11 +5,6 @@ import enUS from "antd/locale/en_US";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
 import { useEffect } from "react";
-import DesktopWindowControls from "./components/DesktopWindowControls";
-import {
-  DesktopChromeProvider,
-  useDesktopChrome,
-} from "./hooks/useDesktopChrome";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import MainLayout from "./layouts/MainLayout";
@@ -45,7 +40,6 @@ function ThemedApp() {
   const { isDark, palette, customColor } = useTheme();
   const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
-  const desktopChrome = useDesktopChrome();
   const brandTokens = brandTokensFor(palette, isDark, customColor);
   // Make antd built-ins (Popconfirm OK/Cancel, Modal default footer, Empty,
   // Pagination, DatePicker, Table… ) follow the current UI language.
@@ -127,31 +121,26 @@ function ThemedApp() {
       spin={{ indicator: <OctopSpinner /> }}
     >
       <AntdAppProvider>
-        <DesktopChromeProvider value={desktopChrome}>
-          {desktopChrome ? (
-            <DesktopWindowControls chrome={desktopChrome} />
-          ) : null}
-          <Routes>
-            <Route path="/login" element={<LoginPage />} />
-            <Route path="/login/oidc/complete" element={<OidcComplete />} />
-            <Route path="/setup" element={<SetupPage />} />
-            <Route path="/invite" element={<InvitePage />} />
-            <Route
-              path="/*"
-              element={
-                <AuthGuard>
-                  <AgentProvider>
-                    <LayoutModeProvider>
-                      <VoiceOutputProvider>
-                        <MainLayout />
-                      </VoiceOutputProvider>
-                    </LayoutModeProvider>
-                  </AgentProvider>
-                </AuthGuard>
-              }
-            />
-          </Routes>
-        </DesktopChromeProvider>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route path="/login/oidc/complete" element={<OidcComplete />} />
+          <Route path="/setup" element={<SetupPage />} />
+          <Route path="/invite" element={<InvitePage />} />
+          <Route
+            path="/*"
+            element={
+              <AuthGuard>
+                <AgentProvider>
+                  <LayoutModeProvider>
+                    <VoiceOutputProvider>
+                      <MainLayout />
+                    </VoiceOutputProvider>
+                  </LayoutModeProvider>
+                </AgentProvider>
+              </AuthGuard>
+            }
+          />
+        </Routes>
       </AntdAppProvider>
     </ConfigProvider>
   );

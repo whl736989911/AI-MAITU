@@ -330,6 +330,9 @@ class ConnectorService:
         """Built-in rows + expanded custom servers (hide parent custom-mcp row)."""
         out: list[dict[str, Any]] = []
         custom_row = self._repo.get_by_user_kind(user_id, CUSTOM_MCP_KIND)
+        # Visibility lives in ``resource_acl`` (schema v21 dropped the legacy
+        # ``connectors.shared`` column), so the display flag is read from there.
+        public_ids = self._repo.public_instance_ids()
         for inst in self._repo.list_visible(user_id):
             if is_custom_mcp_kind(inst.kind):
                 continue
@@ -344,7 +347,7 @@ class ConnectorService:
                     "mcp_server_name": inst.mcp_server_name,
                     "has_credentials": inst.has_credentials,
                     "default_open": read_default_open(config),
-                    "shared": inst.shared,
+                    "shared": inst.instance_id in public_ids,
                     "owner_user_id": inst.user_id,
                     "created_at": inst.created_at,
                     "updated_at": inst.updated_at,

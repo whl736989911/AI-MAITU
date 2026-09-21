@@ -2,10 +2,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from octop.infra.db.pool import DatabasePool
-from octop.infra.db.repos._base import DbRow, bool_int, map_rows, now_ts, partial_updates
+from octop.infra.db.repos._base import (
+    DbRow,
+    bool_int,
+    map_rows,
+    now_ts,
+    partial_updates,
+    sql_in_placeholders,
+)
+from octop.infra.db.repos.resource_acl import ResourceAclRepo, owner_unit_key
 from octop.infra.knowledge.relpath import (
     ancestor_dirs,
     normalize_kb_path,
@@ -13,6 +22,7 @@ from octop.infra.knowledge.relpath import (
     path_is_direct_child,
     path_parent,
 )
+from octop.infra.sharing import VISIBILITY_PRIVATE, VISIBILITY_PUBLIC, AclEntry
 from octop.infra.utils.ulid import new_short_id, new_ulid
 
 _DIR_CONTENT_TYPE = "application/x-directory"
@@ -26,7 +36,6 @@ class KnowledgeBaseRow:
     name: str
     description: str
     default_open: bool
-    shared: bool
     icon_name: str
     embedding_model: str
     embedding_dim: int
@@ -48,7 +57,6 @@ class KnowledgeBaseRow:
             name=r["name"],
             description=r["description"],
             default_open=bool(r["default_open"]),
-            shared=bool(r["shared"]),
             icon_name=str(r["icon_name"] or ""),
             embedding_model=r["embedding_model"],
             embedding_dim=r["embedding_dim"],
@@ -99,6 +107,7 @@ class KnowledgeDocumentRow:
 class KnowledgeRepo:
     def __init__(self, db: DatabasePool) -> None:
         self._db = db
+        self._acl = ResourceAclRepo(db)
 
     def _allocate_base_id(self) -> str:
         for _ in range(16):
@@ -127,16 +136,15 @@ class KnowledgeRepo:
                 # Rely on the column DEFAULT (100) for max_documents.
                 conn.execute(
                     "INSERT INTO knowledge_bases("
-                    "knowledge_base_id, owner_user_id, name, description, default_open, shared, "
+                    "knowledge_base_id, owner_user_id, name, description, default_open, "
                     "icon_name, embedding_model, embedding_dim, doc_count, created_at, updated_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)",
                     (
                         kb_id,
                         owner_user_id,
                         name,
                         description,
                         bool_int(default_open),
-                        bool_int(shared),
                         icon_name,
                         embedding_model,
                         embedding_dim,
@@ -147,17 +155,16 @@ class KnowledgeRepo:
             else:
                 conn.execute(
                     "INSERT INTO knowledge_bases("
-                    "knowledge_base_id, owner_user_id, name, description, default_open, shared, "
+                    "knowledge_base_id, owner_user_id, name, description, default_open, "
                     "icon_name, embedding_model, embedding_dim, doc_count, max_documents, "
                     "created_at, updated_at"
-                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
                     (
                         kb_id,
                         owner_user_id,
                         name,
                         description,
                         bool_int(default_open),
-                        bool_int(shared),
                         icon_name,
                         embedding_model,
                         embedding_dim,
@@ -166,18 +173,29 @@ class KnowledgeRepo:
                         ts,
                     ),
                 )
+            self._acl.set_visibility(
+                "knowledge_base",
+                kb_id,
+                VISIBILITY_PUBLIC if shared else VISIBILITY_PRIVATE,
+                owner_user_id=owner_user_id,
+                unit_key=owner_unit_key(conn, owner_user_id),
+                conn=conn,
+            )
         row = self.get_base(kb_id)
         if row is None:
             raise RuntimeError(f"knowledge base insert failed: {kb_id}")
         return row
 
     def list_visible(self, user_id: int) -> list[KnowledgeBaseRow]:
+        """Knowledge bases this user may use, per ``resource_acl``."""
+        visible = self._acl.list_visible_resource_ids_for_user("knowledge_base", user_id)
+        if not visible:
+            return []
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT kb.* FROM knowledge_bases kb "
-                "WHERE kb.owner_user_id = ? OR kb.shared = 1 "
-                "ORDER BY kb.name",
-                (user_id,),
+                f"SELECT * FROM knowledge_bases WHERE knowledge_base_id IN "
+                f"({sql_in_placeholders(len(visible))}) ORDER BY name",
+                sorted(visible),
             ).fetchall()
         return map_rows(rows, KnowledgeBaseRow)
 
@@ -185,6 +203,22 @@ class KnowledgeRepo:
         with self._db.connect() as conn:
             rows = conn.execute("SELECT * FROM knowledge_bases ORDER BY name").fetchall()
         return map_rows(rows, KnowledgeBaseRow)
+
+    def acl_entry(self, kb_id: str) -> AclEntry | None:
+        """This base's authoritative access row.
+
+        Visibility lives in ``resource_acl`` alone since schema v21, so this is
+        the only place a share is recorded.
+        """
+        return self._acl.get("knowledge_base", kb_id)
+
+    def public_base_ids(self, kb_ids: Collection[str] | None = None) -> set[str]:
+        """Ids of knowledge bases published to everyone, per ``resource_acl``.
+
+        The display counterpart of ``acl_entry``: the ``shared`` field comes
+        from here rather than from a column on the row.
+        """
+        return self._acl.public_resource_ids("knowledge_base", resource_ids=kb_ids)
 
     def count_bases_for_owner(self, owner_user_id: int) -> int:
         with self._db.connect() as conn:
@@ -216,12 +250,16 @@ class KnowledgeRepo:
         doc_count: int | None = None,
         max_documents: int | None = None,
     ) -> None:
+        """Patch knowledge-base metadata; ``shared`` writes ``resource_acl``.
+
+        Schema v21 dropped the legacy ``knowledge_bases.shared`` column, so the
+        publish flag is a single ACL write in the same transaction.
+        """
         fields, params = partial_updates(
             [
                 ("name", name),
                 ("description", description),
                 ("default_open", bool_int(default_open) if default_open is not None else None),
-                ("shared", bool_int(shared) if shared is not None else None),
                 ("icon_name", icon_name),
                 ("embedding_model", embedding_model),
                 ("embedding_dim", embedding_dim),
@@ -229,20 +267,38 @@ class KnowledgeRepo:
                 ("max_documents", max_documents),
             ]
         )
-        if not fields:
+        if not fields and shared is None:
             return
-        fields.append("updated_at = ?")
-        params.append(now_ts())
-        params.append(kb_id)
         with self._db.transaction() as conn:
-            conn.execute(
-                f"UPDATE knowledge_bases SET {', '.join(fields)} WHERE knowledge_base_id = ?",
-                params,
+            if fields:
+                fields.append("updated_at = ?")
+                params.append(now_ts())
+                params.append(kb_id)
+                conn.execute(
+                    f"UPDATE knowledge_bases SET {', '.join(fields)} WHERE knowledge_base_id = ?",
+                    params,
+                )
+            if shared is None:
+                return
+            row = conn.execute(
+                "SELECT owner_user_id FROM knowledge_bases WHERE knowledge_base_id = ?",
+                (kb_id,),
+            ).fetchone()
+            if row is None:
+                return
+            self._acl.set_visibility(
+                "knowledge_base",
+                kb_id,
+                VISIBILITY_PUBLIC if shared else VISIBILITY_PRIVATE,
+                owner_user_id=row["owner_user_id"],
+                unit_key=None,
+                conn=conn,
             )
 
     def delete_base(self, kb_id: str) -> None:
         with self._db.transaction() as conn:
             conn.execute("DELETE FROM knowledge_bases WHERE knowledge_base_id = ?", (kb_id,))
+            self._acl.delete("knowledge_base", kb_id, conn=conn)
 
     def _get_document_by_path(
         self, conn: object, kb_id: str, path: str

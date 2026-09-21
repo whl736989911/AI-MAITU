@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Collection
 from contextlib import suppress
 from dataclasses import asdict
 from typing import Any
@@ -172,9 +173,27 @@ def _owner_fields(server: OctopServer, owner_user_id: int) -> dict[str, str | No
     }
 
 
-def _base_payload(server: OctopServer, row: Any) -> dict[str, Any]:
+def _public_base_ids(server: OctopServer, kb_ids: Collection[str]) -> set[str]:
+    """Ids in *kb_ids* published to everyone, from ``resource_acl``."""
+    services = getattr(server, "services", None)
+    repo = getattr(services, "knowledge_repo", None) if services is not None else None
+    return repo.public_base_ids(kb_ids) if repo is not None else set()
+
+
+def _base_payload(
+    server: OctopServer, row: Any, *, public_ids: Collection[str] | None = None
+) -> dict[str, Any]:
+    """One knowledge base as the dashboard sees it.
+
+    ``shared`` is the published-to-everyone flag and comes from
+    ``resource_acl`` — schema v21 dropped the column the row used to carry, and
+    the dashboard reads this field to render the share state.
+    """
     payload = asdict(row)
     payload["knowledge_base_id"] = row.id
+    if public_ids is None:
+        public_ids = _public_base_ids(server, [row.id])
+    payload["shared"] = row.id in public_ids
     return {**payload, **_owner_fields(server, row.owner_user_id)}
 
 
@@ -520,12 +539,9 @@ async def list_bases(
     server: OctopServer = Depends(get_server),
     user: User = Depends(current_user),
 ) -> list[dict[str, Any]]:
-    return [
-        _base_payload(server, base)
-        for base in _knowledge_service(server).list_visible_bases(
-            actor_user_id=user.id, is_admin=_is_admin(user)
-        )
-    ]
+    bases = _knowledge_service(server).list_visible_bases(actor_user_id=user.id)
+    public_ids = _public_base_ids(server, [base.id for base in bases])
+    return [_base_payload(server, base, public_ids=public_ids) for base in bases]
 
 
 @router.post("", status_code=status.HTTP_201_CREATED, summary="Create a knowledge base")
@@ -557,9 +573,7 @@ async def default_open_bases(
     server: OctopServer = Depends(get_server),
     user: User = Depends(current_user),
 ) -> dict[str, list[str]]:
-    bases = _knowledge_service(server).list_visible_bases(
-        actor_user_id=user.id, is_admin=_is_admin(user)
-    )
+    bases = _knowledge_service(server).list_visible_bases(actor_user_id=user.id)
     return {
         "knowledge_base_ids": [
             base.id

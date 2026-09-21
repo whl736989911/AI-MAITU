@@ -2,6 +2,8 @@ import { lazy } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
 // Lazy-loaded pages — Common
+const FeaturesPage = lazy(() => import("../pages/Features"));
+const FeatureDetailPage = lazy(() => import("../pages/Features/Detail"));
 const ExpertsPage = lazy(() => import("../pages/Experts"));
 const CronJobsPage = lazy(() => import("../pages/Control/CronJobs"));
 const ConnectorsPage = lazy(() => import("../pages/Agent/Connectors"));
@@ -27,7 +29,9 @@ const AdvancedSettingsPage = lazy(
 );
 const AdminStoragePage = lazy(() => import("../pages/Admin/Storage"));
 const AdminPluginsPage = lazy(() => import("../pages/Admin/Plugins"));
+const AdminOrgUnitsPage = lazy(() => import("../pages/Admin/OrgUnits"));
 const AgentConfigPage = lazy(() => import("../pages/Agent/Config"));
+const SharingPage = lazy(() => import("../pages/Sharing"));
 
 // Misc
 const PwaDebugPage = lazy(() => import("../pages/PwaDebug"));
@@ -48,6 +52,7 @@ export interface RouteConfig {
 export const pathToKey: Record<string, string> = {
   "/chat": "chat",
   // Common
+  "/features": "features",
   "/experts": "experts",
   "/tasks": "tasks",
   "/connectors": "connectors",
@@ -90,6 +95,8 @@ export const pathToKey: Record<string, string> = {
   "/admin/plugins": "admin-plugins",
   "/admin/advanced": "admin-advanced",
   "/admin/security": "admin-security",
+  "/admin/org-units": "admin-org-units",
+  "/sharing": "sharing",
 };
 
 /**
@@ -135,6 +142,7 @@ export function isPersonalizationPath(pathname: string): boolean {
 export function resolveSelectedKey(pathname: string): string {
   if (pathToKey[pathname]) return pathToKey[pathname];
   if (pathname.startsWith("/chat/")) return "chat";
+  if (pathname.startsWith("/features/")) return "features";
   if (pathname.startsWith("/workbench/")) return "workbench";
   if (pathname.startsWith("/remote-desktop/")) return "remote-desktop";
   if (pathname.startsWith("/personalization/")) return "personalization";
@@ -148,6 +156,8 @@ export const routeConfigs: RouteConfig[] = [
   { path: "/chat/:agentId/:threadId", element: null, useWrapper: true },
 
   // Common
+  { path: "/features", element: <FeaturesPage /> },
+  { path: "/features/:id", element: <FeatureDetailPage /> },
   { path: "/experts", element: <ExpertsPage /> },
   { path: "/tasks", element: <CronJobsPage /> },
   { path: "/connectors", element: <ConnectorsPage /> },
@@ -232,6 +242,7 @@ export const routeConfigs: RouteConfig[] = [
   { path: "/admin/plugins", element: <AdminPluginsPage /> },
   { path: "/admin/advanced", element: <AdvancedSettingsPage /> },
   { path: "/admin/security", element: <AdminSecurityPage /> },
+  { path: "/admin/org-units", element: <AdminOrgUnitsPage /> },
   {
     path: "/admin/voice",
     element: <Navigate to="/admin/models?tab=voice" replace />,
@@ -269,6 +280,8 @@ export const routeConfigs: RouteConfig[] = [
   },
   { path: "/environments", element: <Navigate to="/admin/advanced" replace /> },
   { path: "/agent-config", element: <AgentConfigPage /> },
+  // Sharing governance: gated in-page on the ``users`` module permission.
+  { path: "/sharing", element: <SharingPage /> },
   {
     path: "/updates",
     element: <Navigate to="/admin/advanced?tab=updates" replace />,

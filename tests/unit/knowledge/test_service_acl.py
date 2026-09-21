@@ -10,10 +10,14 @@ import pytest
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.org_units import OrgUnitRepo
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.knowledge import service as service_module
 from octop.infra.knowledge.service import MAX_DOCS_PER_KB, KnowledgeService
+from octop.infra.sharing import AclEntry, can_access
+from octop.infra.sharing.service import SharingService
 from octop.infra.utils.paths import PathLayout
 
 
@@ -23,6 +27,7 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> KnowledgeService
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
     services = SimpleNamespace(
+        db=pool,
         knowledge_repo=KnowledgeRepo(pool),
         settings_repo=SettingsRepo(pool),
         user_repo=UserRepo(pool),
@@ -42,7 +47,8 @@ def test_create_base_allows_shared_with_default_open(service: KnowledgeService) 
         shared=True,
         default_open=True,
     )
-    assert kb.shared is True
+    entry = service._services.knowledge_repo.acl_entry(kb.id)
+    assert entry is not None and entry.visibility == "public"
     assert kb.default_open is True
 
 
@@ -54,7 +60,8 @@ def test_update_base_allows_enabling_both_shared_and_default_open(
     kb = service.create_base(owner_user_id=owner, name="Docs", shared=False, default_open=True)
 
     updated = service.update_base(kb.id, actor_user_id=owner, shared=True)
-    assert updated.shared is True
+    entry = service._services.knowledge_repo.acl_entry(kb.id)
+    assert entry is not None and entry.visibility == "public"
     assert updated.default_open is True
 
 
@@ -277,3 +284,105 @@ def test_update_base_validates_max_documents_range(service: KnowledgeService) ->
     # Omit keeps value
     service.update_base(kb.id, actor_user_id=owner, description="keep")
     assert service.get_readable_base(kb.id, actor_user_id=owner).max_documents == 10_000
+
+
+def test_list_visible_bases_is_the_rule_for_every_viewer(service: KnowledgeService) -> None:
+    """No ``is_admin`` fork: rule 1 of the rule set *is* the admin bypass.
+
+    The fork this pins away answered the admin case with ``list_all()`` instead
+    of going through ``sharing.can_access``. Both agreed on the bases that
+    exist, so the guard is the agreement itself: list == rule, for admins too.
+    """
+    db = service._services.db
+    units = OrgUnitRepo(db)
+    units.create(key="sales", label_zh="销售", label_en="Sales")
+    units.create(key="eng", label_zh="研发", label_en="Engineering")
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user", org_unit="sales")
+    peer = users.create(username="peer", password_hash="h", role="user", org_unit="sales")
+    outsider = users.create(username="outsider", password_hash="h", role="user", org_unit="eng")
+    admin = users.create(username="admin", password_hash="h", role="admin")
+
+    repo = service._services.knowledge_repo
+    sharing = SharingService(db)
+    private = service.create_base(owner_user_id=owner, name="Private")
+    published = service.create_base(owner_user_id=owner, name="Published", shared=True)
+    unit = repo.create_base(owner_user_id=owner, name="Unit", shared=False)
+    granted = repo.create_base(owner_user_id=owner, name="Granted", shared=False)
+    for kb, entry in (
+        (unit, AclEntry("knowledge_base", unit.id, owner, "unit", "sales", 0)),
+        (
+            granted,
+            AclEntry(
+                "knowledge_base",
+                granted.id,
+                owner,
+                "private",
+                None,
+                0,
+                (("user", str(outsider)),),
+            ),
+        ),
+    ):
+        assert sharing.apply_change(owner, "knowledge_base", kb.id, entry).applied is True
+
+    acl = ResourceAclRepo(db)
+    entries = {row.resource_id: row for row in acl.list_for_type("knowledge_base")}
+    assert set(entries) == {private.id, published.id, unit.id, granted.id}
+    viewers = {"owner": owner, "peer_sales": peer, "outsider_eng": outsider, "admin": admin}
+    for name, user_id in viewers.items():
+        role, unit_key = acl.scope_for_user(user_id)
+        allowed = {
+            resource_id
+            for resource_id, entry_row in entries.items()
+            if can_access(entry_row, user_id=user_id, role=role, unit_key=unit_key)
+        }
+        assert {
+            base.id for base in service.list_visible_bases(actor_user_id=user_id)
+        } == allowed, f"list/{name}"
+
+    # The property the deleted ``list_all()`` branch provided, kept explicit.
+    assert {base.id for base in service.list_visible_bases(actor_user_id=admin)} == set(entries)
+    assert private.id in {base.id for base in service.list_visible_bases(actor_user_id=admin)}
+
+
+def test_read_access_follows_the_acl_not_the_legacy_shared_column(
+    service: KnowledgeService,
+) -> None:
+    """A share applied through the sharing pipeline never touches ``shared``.
+
+    Before the read path moved to ``resource_acl`` this raised ``PermissionError``
+    for a base the ACL had already shared — the "visible in the list, 403 on
+    open" mismatch.
+    """
+    users = service._services.user_repo
+    repo = service._services.knowledge_repo
+    units = OrgUnitRepo(service._services.db)
+    units.create(key="sales", label_zh="销售", label_en="Sales")
+    units.create(key="eng", label_zh="研发", label_en="Engineering")
+    owner = users.create(username="owner", password_hash="h", role="user", org_unit="sales")
+    viewer = users.create(username="viewer", password_hash="h", role="user", org_unit="sales")
+    kb = repo.create_base(owner_user_id=owner, name="Docs", shared=False)
+
+    with pytest.raises(PermissionError):
+        service.get_readable_base(kb.id, actor_user_id=viewer)
+
+    result = SharingService(service._services.db).apply_change(
+        owner,
+        "knowledge_base",
+        kb.id,
+        AclEntry(
+            resource_type="knowledge_base",
+            resource_id=kb.id,
+            owner_user_id=owner,
+            visibility="unit",
+            unit_key="sales",
+            version=0,
+        ),
+    )
+
+    assert result.applied is True
+    assert service.get_readable_base(kb.id, actor_user_id=viewer).id == kb.id
+    other_unit = users.create(username="other", password_hash="h", role="user", org_unit="eng")
+    with pytest.raises(PermissionError):
+        service.get_readable_base(kb.id, actor_user_id=other_unit)

@@ -12,12 +12,12 @@ def test_skill_display_name_known_zh():
     assert skill_display_name("pdf", "zh") == "PDF 处理"
 
 
-def test_skill_display_name_octop_assistant_slug_zh():
-    assert skill_display_name("octop-assistant", "zh") == "Octop 配置助手"
-
-
-def test_skill_display_name_octop_assistant_name_zh():
-    assert skill_display_name("octop_assistant", "zh") == "Octop 配置助手"
+def test_skill_display_name_octop_assistant_slug_and_name_agree():
+    """Both spellings name the same skill; the label text itself is brand-owned."""
+    by_slug = skill_display_name("octop-assistant", "zh")
+    by_name = skill_display_name("octop_assistant", "zh")
+    assert by_slug == by_name
+    assert by_slug
 
 
 def test_skill_display_name_unknown_passthrough():
@@ -31,7 +31,8 @@ def test_skill_display_name_empty_passthrough():
 def test_all_skill_labels_includes_pdf():
     labels = all_skill_labels("en")
     assert labels["docx"] == "Word"
-    assert labels["octop-assistant"] == "Octop Assistant"
+    # The label text is brand-owned (brand.config.json); only presence is contractual.
+    assert labels["octop-assistant"]
 
 
 def test_dashboard_skill_labels_match_backend():

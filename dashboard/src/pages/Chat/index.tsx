@@ -1149,7 +1149,6 @@ function ChatPageInner() {
                   welcomeSuffix={welcomeSuffix}
                   quickCards={expertQuickCards}
                   onPromptClick={handlePromptClick}
-                  hideMascot={isStreaming}
                 />
               ) : (
                 <ChatAgentProfileProvider

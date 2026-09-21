@@ -117,7 +117,7 @@ def _x_ff_ctx() -> str:
         },
         "fingerprint": {
             "language": "zh",
-            "platform": "Octop",
+            "platform": "MAITU Smart Manufacturing",
             "userAgent": _USER_AGENT,
             "hardwareConcurrency": 4,
             "deviceMemory": 8,

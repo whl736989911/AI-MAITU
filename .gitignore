@@ -104,3 +104,6 @@ scripts/dev-local-link.sh
 docs/superpowers/
 scripts/lh_image_install_octop_tencentos.sh
 .worktrees/
+
+# Local dev runtime home (OCTOP_HOME) — never commit
+.runtime/

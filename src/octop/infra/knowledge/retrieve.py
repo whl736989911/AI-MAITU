@@ -23,7 +23,6 @@ async def retrieve_context(
     services: Any,
     *,
     user_id: int,
-    is_admin: bool,
     query: str | None,
     knowledge_base_ids: Sequence[str],
     k: int = DEFAULT_RETRIEVAL_K,
@@ -41,7 +40,6 @@ async def retrieve_context(
             lambda: _retrieve_context_sync(
                 services,
                 user_id=user_id,
-                is_admin=is_admin,
                 query=query,
                 knowledge_base_ids=knowledge_base_ids,
                 k=k,
@@ -59,7 +57,6 @@ def _retrieve_context_sync(
     services: Any,
     *,
     user_id: int,
-    is_admin: bool,
     query: str | None,
     knowledge_base_ids: Sequence[str],
     k: int,
@@ -74,11 +71,10 @@ def _retrieve_context_sync(
 
     visible = visible_bases
     if visible is None:
-        visible = (
-            services.knowledge_repo.list_all()
-            if is_admin
-            else services.knowledge_repo.list_visible(user_id)
-        )
+        # One scope rule (``sharing.can_access``): ``list_visible`` resolves the
+        # actor's role and unit and applies the admin bypass itself, so the old
+        # ``list_all() if is_admin`` fork was a second answer to that question.
+        visible = services.knowledge_repo.list_visible(user_id)
     visible_by_id = {base.id: base for base in visible}
     selected_ids = _unique_ids(knowledge_base_ids)
 

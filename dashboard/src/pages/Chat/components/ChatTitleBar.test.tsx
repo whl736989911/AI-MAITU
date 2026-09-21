@@ -33,19 +33,4 @@ describe("ChatTitleBar", () => {
     expect(heading.parentElement).toContainElement(edit);
     expect(heading.parentElement).toContainElement(more);
   });
-
-  it("marks the title bar as a Wails drag region", () => {
-    const { container } = render(
-      <ChatTitleBar
-        session={session}
-        title="Weekly recap"
-        onRename={noop}
-        onPin={noop}
-        onFork={noop}
-        onDelete={noop}
-      />,
-    );
-
-    expect(container.querySelector(".octop-desktop-drag")).not.toBeNull();
-  });
 });

@@ -4,11 +4,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.errors import ErrorCode, OctopError
-
-
-def agent_is_shared(row: Any) -> bool:
-    return int(getattr(row, "is_shared", 0) or 0) == 1
+from octop.infra.sharing import can_access, user_scope
 
 
 def user_owns_agent(row: Any, user: Any) -> bool:
@@ -23,16 +21,23 @@ def assert_agent_owner(row: Any, user: Any) -> None:
         raise OctopError(ErrorCode.FORBIDDEN, "agent not owned by user")
 
 
-def _user_may_access(row: Any, user: Any) -> bool:
-    if user.is_admin:
-        return True
-    if row.user_id is not None and row.user_id == user.id:
-        return True
-    return bool(agent_is_shared(row))
+def _user_may_access(row: Any, user: Any, *, acl: ResourceAclRepo) -> bool:
+    """Whether *user* may use this agent, decided by ``resource_acl`` alone.
+
+    The legacy share boolean on the ``agents`` row is a write-only mirror of the
+    ACL entry: a share applied through ``SharingService`` never touches it, so
+    reading the column would deny someone the ACL already published (visible in
+    a list, 403 on open).
+    """
+    entry = acl.get("agent", row.agent_id)
+    role, unit_key = user_scope(user)
+    return entry is not None and can_access(
+        entry, user_id=int(user.id), role=role, unit_key=unit_key
+    )
 
 
-def assert_agent_access_row(row: Any, user: Any) -> None:
-    if not _user_may_access(row, user):
+def assert_agent_access_row(row: Any, user: Any, *, acl: ResourceAclRepo) -> None:
+    if not _user_may_access(row, user, acl=acl):
         raise OctopError(ErrorCode.FORBIDDEN, "agent not accessible to user")
 
 
@@ -43,7 +48,7 @@ def require_agent_row(
     as_user: int | None,
     server: Any,
 ) -> Any:
-    """Load an agent row after owner / shared-agent / admin ``as_user`` checks."""
+    """Load an agent row after the ACL / admin ``as_user`` checks."""
     assert server.app_runtime is not None
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
@@ -57,7 +62,7 @@ def require_agent_row(
         if row.user_id is not None and row.user_id != as_user:
             raise OctopError(ErrorCode.FORBIDDEN, "agent not owned by as_user")
     else:
-        assert_agent_access_row(row, user)
+        assert_agent_access_row(row, user, acl=server.services.repos.resource_acl_repo)
     return row
 
 

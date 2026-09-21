@@ -173,6 +173,39 @@ def maybe_sliding_renew_token(server: OctopServer, token: str, user: User) -> st
     )
 
 
+# Per-request cache slot for org-unit grants (see ``request_unit_grants``).
+_UNIT_GRANTS_ATTR = "octop_unit_grants"
+
+
+def unit_grants_for(server: OctopServer, user: User) -> set[str]:
+    """Module keys granted by ``user.org_unit``.
+
+    A user with no org unit gets the empty set and costs no query. A user that
+    *does* belong to a unit is resolved through the control-plane repo: an
+    unresolvable unit raises instead of silently dropping the grants, which would
+    look like permissions mysteriously disappearing.
+    """
+    unit = getattr(user, "org_unit", None)
+    if not unit:
+        return set()
+    assert server.services is not None
+    return server.services.repos.org_unit_repo.grants_for_units([unit])
+
+
+def request_unit_grants(request: Request, server: OctopServer, user: User) -> set[str]:
+    """Unit grants of the request's user, resolved at most once per request.
+
+    The slot is keyed by user id: a check for a *different* user object on the
+    same request must never reuse the cached grants.
+    """
+    cached = getattr(request.state, _UNIT_GRANTS_ATTR, None)
+    if cached is not None and cached[0] == user.id:
+        return cast("set[str]", cached[1])
+    grants = unit_grants_for(server, user)
+    setattr(request.state, _UNIT_GRANTS_ATTR, (user.id, grants))
+    return grants
+
+
 def authenticate_request(request: Request, server: OctopServer) -> User:
     raw = extract_raw_token(
         authorization=request.headers.get("authorization"),
@@ -191,11 +224,16 @@ async def current_user(
 ) -> User:
     cached = getattr(request.state, "octop_user", None)
     if cached is not None:
-        return cast("User", cached)
-    raw = extract_raw_token(authorization=authorization, access_token=access_token)
-    if not raw:
-        raise OctopError(ErrorCode.AUTH_FAILED, "missing credentials")
-    return resolve_user_from_token(server, raw)
+        user = cast("User", cached)
+    else:
+        raw = extract_raw_token(authorization=authorization, access_token=access_token)
+        if not raw:
+            raise OctopError(ErrorCode.AUTH_FAILED, "missing credentials")
+        user = resolve_user_from_token(server, raw)
+    # Warm the per-request cache so every permission check on this request reuses
+    # one org-unit lookup instead of querying per dependency.
+    request_unit_grants(request, server, user)
+    return user
 
 
 def require_permission(key: str) -> Callable[..., Awaitable[User]]:
@@ -207,8 +245,16 @@ def require_permission(key: str) -> Callable[..., Awaitable[User]]:
     if key not in PERMISSIONS:
         raise RuntimeError(f"unknown permission key: {key}")
 
-    async def _dep(user: User = Depends(current_user)) -> User:
-        if not user_has_permission(user, key):
+    async def _dep(
+        request: Request,
+        user: User = Depends(current_user),
+        server: Any = Depends(get_server),
+    ) -> User:
+        # ``get_server`` must arrive through DI, not be called directly: calling it
+        # would bypass ``app.dependency_overrides``, which the existing test suite
+        # relies on to stub the server.
+        grants = request_unit_grants(request, server, user)
+        if not user_has_permission(user, key, unit_grants=grants):
             raise OctopError(
                 ErrorCode.FORBIDDEN,
                 "permission required",

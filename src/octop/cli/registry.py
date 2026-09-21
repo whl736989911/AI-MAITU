@@ -4,7 +4,7 @@ from __future__ import annotations
 
 # command name -> (relative module path, attribute name, short help)
 COMMANDS: dict[str, tuple[str, str, str]] = {
-    "init": (".commands.init", "init", "Bootstrap an Octop server install."),
+    "init": (".commands.init", "init", "Bootstrap an MAITU Smart Manufacturing server install."),
     "run": (".commands.run", "run", "Run octop-server in the foreground."),
     "service": (
         ".commands.service",
@@ -28,9 +28,9 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     ),
     "version": (".commands.version", "version", "Show the installed octop version."),
     "completion": (".commands.completion", "completion", "Shell completion utilities."),
-    "update": (".commands.update", "update", "Check for and install a newer Octop release."),
+    "update": (".commands.update", "update", "Check for and install a newer MAITU Smart Manufacturing release."),
     "clean": (".commands.clean", "clean", "Remove CLI state or wipe all of ~/.octop."),
-    "backup": (".commands.backup", "backup", "Export and restore Octop backups."),
-    "acp": (".commands.acp", "acp_cmd", "Run Octop agent as ACP server (stdio)."),
+    "backup": (".commands.backup", "backup", "Export and restore MAITU Smart Manufacturing backups."),
+    "acp": (".commands.acp", "acp_cmd", "Run MAITU Smart Manufacturing agent as ACP server (stdio)."),
     "plugin": (".commands.plugin", "plugin", "Install and manage plugins."),
 }

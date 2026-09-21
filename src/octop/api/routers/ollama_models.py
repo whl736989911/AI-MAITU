@@ -237,7 +237,7 @@ _SETTINGS_KEY_OLLAMA_SERVICE = "ollama_service_enabled"
 
 
 class OllamaServiceBody(BaseModel):
-    enabled: bool = Field(..., description="Whether Octop should keep the Ollama service running")
+    enabled: bool = Field(..., description="Whether MAITU Smart Manufacturing should keep the Ollama service running")
 
 
 class OllamaServiceStatus(BaseModel):

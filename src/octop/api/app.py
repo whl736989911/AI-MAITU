@@ -107,7 +107,7 @@ def build_app(server: OctopServer) -> FastAPI:
     )
 
     app = FastAPI(
-        title="Octop API",
+        title="MAITU Smart Manufacturing API",
         version="0.1.0",
         description=API_DESCRIPTION,
         openapi_url="/api/openapi.json" if enable_api_docs else None,
@@ -156,9 +156,11 @@ def build_app(server: OctopServer) -> FastAPI:
         chat,
         connectors,
         cron,
+        data_sources,
         desktop,
         envs,
         experts,
+        features,
         health,
         i18n,
         internal_mcp,
@@ -171,6 +173,7 @@ def build_app(server: OctopServer) -> FastAPI:
         mobile,
         ollama_models,
         onnx_models,
+        org_units,
         plugins,
         preferences,
         proactive_care,
@@ -178,6 +181,7 @@ def build_app(server: OctopServer) -> FastAPI:
         search,
         settings,
         setup,
+        sharing,
         skill_packages,
         skills,
         slash,
@@ -212,6 +216,8 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(health.router, "/api/health", ["health"]),
             _RouterMount(invites.admin_router, "/api/users/invites", ["users"]),
             _RouterMount(users.router, "/api/users", ["users"]),
+            _RouterMount(org_units.router, "/api/org-units", ["users"]),
+            _RouterMount(sharing.router, "/api/sharing", ["sharing"]),
             _RouterMount(agents.router, "/api/agents", ["agents"]),
             _RouterMount(agent_tools.router, "/api", ["agents"]),
             _RouterMount(acp.router, "/api", ["agents"]),
@@ -219,6 +225,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(slash.router, "/api", ["slash"]),
             _RouterMount(connectors.router, "/api", ["connectors"]),
             _RouterMount(knowledge_bases.router, "/api", ["knowledge"]),
+            _RouterMount(data_sources.router, "/api", ["knowledge"]),
             _RouterMount(internal_mcp.router, "/api", ["internal-mcp"]),
             _RouterMount(channels.router, "/api", ["channels"]),
             _RouterMount(cron.router, "/api", ["cron"]),
@@ -246,6 +253,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(filesystem_router, "/api/filesystem", ["filesystem"]),
             _RouterMount(mbti.router, "/api", ["mbti"]),
             _RouterMount(experts.router, "/api", ["experts"]),
+            _RouterMount(features.router, "/api/features", ["features"]),
             _RouterMount(workspace.router, "/api", ["workspace"]),
             _RouterMount(agent_files.router, "/api", ["agent_files"]),
             _RouterMount(memory.router, "/api", ["memory"]),
@@ -281,7 +289,7 @@ def build_app(server: OctopServer) -> FastAPI:
         async def api_docs() -> HTMLResponse:
             return get_scalar_api_reference(
                 openapi_url=app.openapi_url,
-                title="Octop API",
+                title="MAITU Smart Manufacturing API",
             )
 
     if enable_dashboard:

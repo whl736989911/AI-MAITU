@@ -58,7 +58,6 @@ async def test_search_knowledge_returns_retrieved_context() -> None:
     with (
         _configurable(
             user="7",
-            user_is_admin=False,
             knowledge_base_ids=["kb-1"],
             locale="zh",
         ),
@@ -70,7 +69,6 @@ async def test_search_knowledge_returns_retrieved_context() -> None:
     retrieved.assert_awaited_once()
     kwargs = retrieved.await_args.kwargs
     assert kwargs["user_id"] == 7
-    assert kwargs["is_admin"] is False
     assert kwargs["query"] == "refund rules"
     assert kwargs["knowledge_base_ids"] == ["kb-1"]
     assert kwargs["k"] == 3

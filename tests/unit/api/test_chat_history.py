@@ -26,6 +26,23 @@ from octop.infra.db.repos.thread_messages import (
 )
 from octop.infra.db.repos.threads import ThreadRow
 from octop.infra.gateway.threads import thread_row_has_messages
+from octop.infra.sharing import AclEntry
+
+
+def _acl_owner(server: MagicMock, owner_user_id: int) -> None:
+    """Authorize the mocked caller through ``resource_acl``.
+
+    ``require_agent_row`` decides access from the ACL entry now; a bare
+    ``MagicMock`` would deny every caller.
+    """
+    server.services.repos.resource_acl_repo.get.return_value = AclEntry(
+        resource_type="agent",
+        resource_id="agt_1",
+        owner_user_id=owner_user_id,
+        visibility="private",
+        unit_key=None,
+        version=1,
+    )
 
 
 def test_clamp_history_limit() -> None:
@@ -209,6 +226,7 @@ async def test_list_threads_derives_has_messages_from_db() -> None:
     thread_registry.get_bound_thread_id.return_value = None
 
     server = MagicMock()
+    _acl_owner(server, 1)
     agent_row = MagicMock(user_id=1)
     server.app_runtime.agent_registry.get_row.return_value = agent_row
     server.app_runtime.agent_registry.get_agent.side_effect = AssertionError(
@@ -228,6 +246,7 @@ async def test_list_threads_derives_has_messages_from_db() -> None:
 @pytest.mark.asyncio
 async def test_get_thread_history_returns_has_more(monkeypatch: pytest.MonkeyPatch) -> None:
     server = MagicMock()
+    _acl_owner(server, 1)
     row = MagicMock(agent_id="agt_1", user_id=1, artifacts=())
     server.app_runtime.gateway.thread_registry.get_thread.return_value = row
 
@@ -258,6 +277,7 @@ async def test_get_legacy_history_enqueues_without_reading_checkpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     server = MagicMock()
+    _acl_owner(server, 1)
     row = MagicMock(agent_id="agt_1", user_id=1, artifacts=())
     server.app_runtime.gateway.thread_registry.get_thread.return_value = row
     server.services.thread_message_repo.projection_status.return_value = "pending"
@@ -282,6 +302,7 @@ async def test_get_legacy_history_enqueues_without_reading_checkpoint(
 @pytest.mark.asyncio
 async def test_history_migration_status_is_scoped_to_effective_user() -> None:
     server = MagicMock()
+    _acl_owner(server, 7)
     server.services.thread_message_repo.migration_summary.return_value = ThreadProjectionSummary(
         pending=2, queued=1, running=1, failed=3
     )
@@ -316,6 +337,7 @@ async def test_history_migration_status_is_scoped_to_effective_user() -> None:
 @pytest.mark.asyncio
 async def test_start_history_migration_queues_bounded_candidates() -> None:
     server = MagicMock()
+    _acl_owner(server, 7)
     queue = server.app_runtime.gateway.history_backfill
     queue.available_slots = 2
     queue.active_jobs = 0
@@ -349,6 +371,7 @@ async def test_start_history_migration_queues_bounded_candidates() -> None:
 @pytest.mark.asyncio
 async def test_history_migration_waits_while_agent_is_active() -> None:
     server = MagicMock()
+    _acl_owner(server, 7)
     server.app_runtime.agent_registry.is_agent_active.return_value = True
     server.services.thread_message_repo.migration_summary.return_value = ThreadProjectionSummary(
         pending=1

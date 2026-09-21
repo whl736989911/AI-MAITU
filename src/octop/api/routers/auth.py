@@ -7,7 +7,13 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel, Field
 
-from octop.api.deps import current_user, get_server, sign_token
+from octop.api.deps import (
+    current_user,
+    get_server,
+    request_unit_grants,
+    sign_token,
+    unit_grants_for,
+)
 from octop.infra.auth.captcha import current_env, ensure_captcha, load_effective, public_config
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import effective_permissions
@@ -16,21 +22,28 @@ from octop.infra.utils.locale import normalize_locale
 router = APIRouter()
 
 
-def _user_json(user: Any, *, locale: str | None = None) -> dict[str, Any]:
+def _user_json(
+    user: Any,
+    *,
+    server: Any,
+    locale: str | None = None,
+    unit_grants: set[str] | None = None,
+) -> dict[str, Any]:
     loc = normalize_locale(locale)
+    grants = unit_grants_for(server, user) if unit_grants is None else unit_grants
     return {
         "id": user.id,
         "username": user.username,
         "role": user.role.value,
         "display_name": user.display_name,
         "locale": loc,
-        "permissions": effective_permissions(user),
+        "permissions": effective_permissions(user, unit_grants=grants),
     }
 
 
-def me_payload(user: Any, server: Any) -> dict[str, Any]:
+def me_payload(user: Any, server: Any, *, unit_grants: set[str] | None = None) -> dict[str, Any]:
     """Profile JSON for ``/auth/me`` and OAuth bind/unbind responses."""
-    payload = _user_json(user, locale=user.locale)
+    payload = _user_json(user, server=server, locale=user.locale, unit_grants=unit_grants)
     row = server.user_manager.get_row(user.id)
     if row is None:
         payload["sso_linked"] = False
@@ -115,7 +128,7 @@ async def login(
         "access_token": token,
         "token_type": "Bearer",
         "expires_in": ttl,
-        "user": _user_json(user, locale=user.locale),
+        "user": _user_json(user, server=server, locale=user.locale),
     }
 
 
@@ -128,10 +141,12 @@ async def logout(user: Any = Depends(current_user), server: Any = Depends(get_se
 
 @router.get("/me", summary="Current user profile")
 async def me(
-    user: Any = Depends(current_user), server: Any = Depends(get_server)
+    request: Request,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return the authenticated user's id, username, role, display name, and locale."""
-    return me_payload(user, server)
+    return me_payload(user, server, unit_grants=request_unit_grants(request, server, user))
 
 
 @router.post("/change-password", status_code=204, summary="Change password")
@@ -169,4 +184,4 @@ async def update_me(
         await server.user_manager.set_locale(user.username, body.locale)
     updated = server.user_manager.get(user.username)
     assert updated is not None
-    return _user_json(updated, locale=updated.locale)
+    return _user_json(updated, server=server, locale=updated.locale)

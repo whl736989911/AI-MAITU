@@ -15,6 +15,8 @@ import {
   isValidCompositePath,
 } from "./agentBackendForm";
 import { HOST_FS_ROOT } from "./rootDirTree";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { isSystemAdmin } from "../../../utils/permissions";
 import styles from "../index.module.less";
 
 interface AgentBackendFieldsProps {
@@ -47,10 +49,18 @@ export default function AgentBackendFields({
 }: AgentBackendFieldsProps) {
   const { t } = useTranslation();
   const form = Form.useFormInstance();
+  const user = useCurrentUser();
   const [fsDefaults, setFsDefaults] = useState<FilesystemDefaults | null>(null);
   const watchedRootDir = Form.useWatch("root_dir", form) as string | undefined;
+  const admin = isSystemAdmin(user);
 
   useEffect(() => {
+    // ``/filesystem/defaults`` requires the admin role — plain users type the
+    // root dir themselves, so skip the request instead of eating a 403.
+    if (!admin) {
+      setFsDefaults(null);
+      return;
+    }
     let cancelled = false;
     fetchFilesystemDefaults()
       .then((defaults) => {
@@ -62,7 +72,7 @@ export default function AgentBackendFields({
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [admin]);
 
   useEffect(() => {
     if (!fsDefaults || rootDirMode !== "create") return;
@@ -188,19 +198,23 @@ export default function AgentBackendFields({
               </p>
             ) : (
               <>
-                <p
-                  style={{
-                    fontSize: 12,
-                    color: "var(--fn-text-tertiary)",
-                    margin: 0,
-                  }}
-                >
-                  {fsDefaults?.in_container
-                    ? t("experts.backendRootDirDescContainer")
-                    : t("experts.backendRootDirDesc", {
-                        home: fsDefaults?.home ?? "~",
-                      })}
-                </p>
+                {/* Browsing is admin-only; without the defaults probe the
+                    "you may browse" promise is false for plain users. */}
+                {admin ? (
+                  <p
+                    style={{
+                      fontSize: 12,
+                      color: "var(--fn-text-tertiary)",
+                      margin: 0,
+                    }}
+                  >
+                    {fsDefaults?.in_container
+                      ? t("experts.backendRootDirDescContainer")
+                      : t("experts.backendRootDirDesc", {
+                          home: fsDefaults?.home ?? "~",
+                        })}
+                  </p>
+                ) : null}
                 <p
                   style={{
                     fontSize: 12,

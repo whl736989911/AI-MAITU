@@ -274,7 +274,13 @@ def _connector_service(server: Any) -> ConnectorService:
     )
 
 
-def _instance_to_dict(inst: Any) -> dict[str, Any]:
+def _instance_to_dict(inst: Any, *, shared: bool) -> dict[str, Any]:
+    """Serialize one connector row; ``shared`` comes from ``resource_acl``.
+
+    Visibility is stored in the ACL alone (schema v21 dropped the legacy
+    ``connectors.shared`` column), so callers resolve the flag with
+    ``ConnectorRepo.public_instance_ids``.
+    """
     config = ConnectorRepo.parse_config_json(inst) if hasattr(inst, "config_json") else {}
     return {
         "instance_id": inst.instance_id,
@@ -285,11 +291,17 @@ def _instance_to_dict(inst: Any) -> dict[str, Any]:
         "mcp_server_name": inst.mcp_server_name,
         "has_credentials": inst.has_credentials,
         "default_open": read_default_open(config),
-        "shared": bool(inst.shared),
+        "shared": shared,
         "owner_user_id": inst.user_id,
         "created_at": inst.created_at,
         "updated_at": inst.updated_at,
     }
+
+
+def _shared(server: Any, instance_id: str) -> bool:
+    """Whether this connector is published to everyone (``resource_acl``)."""
+    repo = server.services.repos.connector_repo
+    return instance_id in repo.public_instance_ids([instance_id])
 
 
 async def _prepare_credentials(
@@ -637,7 +649,7 @@ async def get_instance(
         raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
     _assert_can_manage_connector(inst, user)
 
-    data = _instance_to_dict(inst)
+    data = _instance_to_dict(inst, shared=_shared(server, instance_id))
     config: dict[str, Any] = {}
     if inst.config_json:
         try:
@@ -725,7 +737,7 @@ async def create_instance(
     inst = repo.get(instance_id)
     assert inst is not None
     _schedule_connector_reload(server, user.id, all_users=body.shared)
-    return _instance_to_dict(inst)
+    return _instance_to_dict(inst, shared=_shared(server, instance_id))
 
 
 @router.patch("/connector-instances/{instance_id}", summary="Update connector instance")
@@ -850,9 +862,9 @@ async def patch_instance(
     _schedule_connector_reload(
         server,
         inst.user_id,
-        all_users=inst.shared or body.shared is True or body.shared is False,
+        all_users=_shared(server, instance_id) or body.shared is not None,
     )
-    return _instance_to_dict(inst)
+    return _instance_to_dict(inst, shared=_shared(server, instance_id))
 
 
 @router.delete("/connector-instances/{instance_id}", status_code=204, summary="Delete connector")
@@ -889,6 +901,9 @@ async def delete_instance(
         raise OctopError(ErrorCode.CONNECTOR_NOT_FOUND, f"instance {instance_id!r} not found")
     _assert_can_manage_connector(inst, user)
     user_id = inst.user_id
+    # Read the ACL before ``repo.delete`` removes the row: a connector that was
+    # published to everyone must still trigger the all-user reload below.
+    was_shared = _shared(server, instance_id)
     cli_creds: dict[str, Any] | None = None
     if inst.kind in ("feishu-cli", "wecom-cli") and inst.has_credentials:
         try:
@@ -900,7 +915,7 @@ async def delete_instance(
     repo.delete(instance_id)
     if cli_creds is not None:
         cleanup_creds_cli_dirs(inst.kind, cli_creds)
-    _schedule_connector_reload(server, user_id, all_users=inst.shared)
+    _schedule_connector_reload(server, user_id, all_users=was_shared)
     server.services.audit_repo.write(
         actor=user.username,
         action="connector.instance.delete",

@@ -1,3 +1,4 @@
+import type { OctopRole } from "../api/modules/auth";
 import { useCurrentUser } from "./useCurrentUser";
 
 /**
@@ -5,7 +6,7 @@ import { useCurrentUser } from "./useCurrentUser";
  * Returns null while the request is in-flight or on failure —
  * callers should treat null as "not admin" to avoid info leaks.
  */
-export function useUserRole(): "admin" | "user" | null {
+export function useUserRole(): OctopRole | null {
   const user = useCurrentUser();
   return user?.role ?? null;
 }

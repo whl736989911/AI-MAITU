@@ -83,6 +83,13 @@
   margin-bottom: 12px !important;
 }
 
+/* Form label with the org-unit glyph. */
+.orgUnitLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .createUserPermItem {
   margin-bottom: 0 !important;
 }
@@ -258,13 +265,9 @@
 
 .rolePicker {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: 1fr;
   gap: 10px;
   width: 100%;
-
-  @media (max-width: 480px) {
-    grid-template-columns: 1fr;
-  }
 }
 
 .roleOption {
@@ -335,6 +338,11 @@
 .roleToneAdmin {
   color: var(--fn-color-brand);
   background: var(--fn-color-brand-bg);
+}
+
+.roleToneUnitAdmin {
+  color: var(--fn-color-info);
+  background: color-mix(in srgb, var(--fn-color-info) 12%, transparent);
 }
 
 .roleToneUser {
@@ -468,6 +476,10 @@
 
 .userCardAccentAdmin {
   background: var(--fn-color-brand);
+}
+
+.userCardAccentUnitAdmin {
+  background: var(--fn-color-info);
 }
 
 .userCardAccentUser {
@@ -633,6 +645,20 @@
   height: 6px;
   border-radius: 50%;
   flex-shrink: 0;
+}
+
+/* Role column: role pill plus the org unit it is scoped to. */
+.userRoleCell {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.userRoleUnit {
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--fn-text-tertiary);
 }
 
 .userCardRoleSelect {

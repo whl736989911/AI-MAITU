@@ -16,7 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from octop.api.deps import resolve_user_from_token
+from octop.api.deps import resolve_user_from_token, unit_grants_for
 from octop.infra.mobile.adb import find_adb, list_devices
 from octop.infra.users.identity import User
 from octop.infra.users.permissions import user_has_permission
@@ -75,7 +75,7 @@ async def adb_shell_ws(
         await _send_json(websocket, {"type": "error", "message": f"auth failed: {exc}"})
         await websocket.close(code=4001, reason=f"auth failed: {exc}")
         return
-    if not user_has_permission(user, "mobile"):
+    if not user_has_permission(user, "mobile", unit_grants=unit_grants_for(server, user)):
         await _send_json(websocket, {"type": "error", "message": "permission required"})
         await websocket.close(code=4003, reason="permission required")
         return

@@ -13,11 +13,17 @@ from octop.infra.db.repos.care_push import CarePushRepo
 from octop.infra.db.repos.channels import ChannelRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.cron import CronJobRepo
+from octop.infra.db.repos.data_sources import DataSourceRepo
+from octop.infra.db.repos.feature_cases import FeatureCaseRepo
+from octop.infra.db.repos.feature_rules import FeatureRuleRepo
+from octop.infra.db.repos.feature_tasks import FeatureTaskRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
 from octop.infra.db.repos.providers import ProviderRepo
 from octop.infra.db.repos.published_experts import PublishedExpertRepo
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.sessions import SessionRepo
 from octop.infra.db.repos.settings import SettingsRepo
@@ -38,12 +44,15 @@ class RepoBundle:
     db: DatabasePool
 
     user_repo: UserRepo
+    org_unit_repo: OrgUnitRepo
     user_policy_repo: UserPolicyRepo
     invite_repo: InviteRepo
     agent_repo: AgentRepo
     provider_repo: ProviderRepo
     channel_repo: ChannelRepo
     cron_repo: CronJobRepo
+    feature_tasks_repo: FeatureTaskRepo
+    feature_rules_repo: FeatureRuleRepo
     session_repo: SessionRepo
     thread_repo: ThreadRepo
     thread_message_repo: ThreadMessageRepo
@@ -61,18 +70,24 @@ class RepoBundle:
     care_push_repo: CarePushRepo
     proactive_care_config_repo: ProactiveCareConfigRepo
     sso_repo: SsoRepo
+    resource_acl_repo: ResourceAclRepo
+    feature_cases_repo: FeatureCaseRepo
+    data_sources_repo: DataSourceRepo
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
         return cls(
             db=db,
             user_repo=UserRepo(db),
+            org_unit_repo=OrgUnitRepo(db),
             user_policy_repo=UserPolicyRepo(db),
             invite_repo=InviteRepo(db),
             agent_repo=AgentRepo(db),
             provider_repo=ProviderRepo(db),
             channel_repo=ChannelRepo(db),
             cron_repo=CronJobRepo(db),
+            feature_tasks_repo=FeatureTaskRepo(db),
+            feature_rules_repo=FeatureRuleRepo(db),
             session_repo=SessionRepo(db),
             thread_repo=ThreadRepo(db),
             thread_message_repo=ThreadMessageRepo(db),
@@ -90,6 +105,9 @@ class RepoBundle:
             care_push_repo=CarePushRepo(db),
             proactive_care_config_repo=ProactiveCareConfigRepo(db),
             sso_repo=SsoRepo(db),
+            resource_acl_repo=ResourceAclRepo(db),
+            feature_cases_repo=FeatureCaseRepo(db),
+            data_sources_repo=DataSourceRepo(db),
         )
 
 
@@ -106,6 +124,10 @@ class SharedServices:
     @property
     def user_repo(self) -> UserRepo:
         return self.repos.user_repo
+
+    @property
+    def org_unit_repo(self) -> OrgUnitRepo:
+        return self.repos.org_unit_repo
 
     @property
     def user_policy_repo(self) -> UserPolicyRepo:
@@ -198,6 +220,10 @@ class SharedServices:
     @property
     def sso_repo(self) -> SsoRepo:
         return self.repos.sso_repo
+
+    @property
+    def data_sources_repo(self) -> DataSourceRepo:
+        return self.repos.data_sources_repo
 
 
 def build_shared_services(

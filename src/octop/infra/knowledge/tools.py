@@ -53,19 +53,18 @@ def format_search_knowledge_description(
     return f"{_SEARCH_DESC_BASE}\nAttached this turn:\n{listed}"
 
 
-def _tool_ctx() -> tuple[int, bool, list[str], str]:
+def _tool_ctx() -> tuple[int, list[str], str]:
     cfg = get_config().get("configurable") or {}
     user_raw = cfg.get("user")
     if user_raw is None:
         raise ValueError("missing configurable.user")
     user_id = int(user_raw)
-    is_admin = bool(cfg.get("user_is_admin"))
     raw_ids = cfg.get("knowledge_base_ids")
     ids: list[str] = []
     if isinstance(raw_ids, list):
         ids = [str(item).strip() for item in raw_ids if str(item).strip()]
     locale = str(cfg.get("locale") or "en")
-    return user_id, is_admin, ids, locale
+    return user_id, ids, locale
 
 
 def build_knowledge_tools(services: Any) -> list[StructuredTool]:
@@ -92,13 +91,12 @@ def build_knowledge_tools(services: Any) -> list[StructuredTool]:
         ] = DEFAULT_RETRIEVAL_K,
     ) -> str:
         try:
-            user_id, is_admin, kb_ids, locale = _tool_ctx()
+            user_id, kb_ids, locale = _tool_ctx()
             if not kb_ids:
                 return "No knowledge bases selected for this turn."
             context = await retrieve_context(
                 services,
                 user_id=user_id,
-                is_admin=is_admin,
                 query=query,
                 knowledge_base_ids=kb_ids,
                 k=k,

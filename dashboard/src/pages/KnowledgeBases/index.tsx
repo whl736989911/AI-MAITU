@@ -75,7 +75,7 @@ import {
   type KnowledgeDocument,
   type KnowledgeOnnxModel,
 } from "../../api/modules/knowledgeBases";
-import { OctopEmptyMascot } from "../../components/EmptyState";
+import { EmptyStateIcon } from "../../components/EmptyState";
 import DocumentPreviewCore from "../../components/DocumentPreviewCore";
 import DocumentPreviewLoading from "../../components/DocumentPreviewLoading";
 import Markdown from "../../components/Markdown";
@@ -120,6 +120,7 @@ import {
 import TextDocumentEditorModal, {
   type TextDocumentFormat,
 } from "./TextDocumentEditorModal";
+import DataSourcesPanel from "./components/DataSourcesPanel";
 import styles from "./index.module.less";
 
 type BaseFormValues = {
@@ -1853,9 +1854,7 @@ export default function KnowledgeBasesPage() {
   const emptyLayoutClassName = `${styles.emptyLayout}${
     isMobile ? ` ${styles.emptyLayoutMobile}` : ""
   }`;
-  const setupMascot = (
-    <OctopEmptyMascot size={120} className={styles.setupMascot} />
-  );
+  const setupIcon = <EmptyStateIcon icon={Folder} />;
 
   const onDocsViewChange = (value: string | number) => {
     const mode = value === "table" ? "table" : "card";
@@ -1887,7 +1886,7 @@ export default function KnowledgeBasesPage() {
           <StreamSetupGuide
             className={styles.emptyGuide}
             wide
-            icon={setupMascot}
+            icon={setupIcon}
             title={
               canConfigureKb
                 ? t("knowledgeBases.enableGuideTitle")
@@ -1932,7 +1931,7 @@ export default function KnowledgeBasesPage() {
           <StreamSetupGuide
             className={styles.emptyGuide}
             wide
-            icon={setupMascot}
+            icon={setupIcon}
             title={t("knowledgeBases.emptyGuideTitle")}
             description={t("knowledgeBases.emptyGuideDesc")}
             steps={[
@@ -2129,7 +2128,7 @@ export default function KnowledgeBasesPage() {
               ) : null}
               {!selected && !detailLoading ? (
                 <div className={styles.emptyDetail}>
-                  <OctopEmptyMascot size={180} />
+                  <EmptyStateIcon icon={Folder} />
                   <p className={styles.emptyDetailText}>
                     {t("knowledgeBases.selectBase")}
                   </p>
@@ -2596,6 +2595,15 @@ export default function KnowledgeBasesPage() {
                         ]}
                       />
                     )}
+                    <DataSourcesPanel
+                      key={selected.id}
+                      baseId={selected.id}
+                      canWriteBase={canWriteSelected}
+                      onDocumentsChanged={() => {
+                        void loadDetail(selected.id, { silent: true });
+                        void loadBases();
+                      }}
+                    />
                   </div>
                 </>
               )}

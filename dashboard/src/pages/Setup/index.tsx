@@ -15,6 +15,7 @@ import AdminStep from "./steps/AdminStep";
 import ModelStep from "./steps/ModelStep";
 import FinishStep from "./steps/FinishStep";
 import type { ProviderDraft } from "./wizardClient";
+import { BRAND, wordmark } from "../../brand.generated";
 import {
   wizardApi,
   wizardSession,
@@ -228,8 +229,8 @@ export default function SetupPage() {
           <div className={styles.wizardHeaderTop}>
             <div className={styles.wizardHeaderBrand}>
               <img
-                src={isDark ? "/logo_name_dark.png" : "/logo_name.png"}
-                alt="Octop"
+                src={wordmark(isDark)}
+                alt={BRAND.name.en}
                 className={styles.wizardHeaderLogo}
               />
               <div className={styles.wizardHeaderBrandText}>

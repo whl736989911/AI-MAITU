@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Collection
 from dataclasses import dataclass
 
 from octop.infra.db.pool import DatabasePool
-from octop.infra.db.repos._base import DbRow, bool_int, map_rows, now_ts
+from octop.infra.db.repos._base import DbRow, map_rows, now_ts, sql_in_placeholders
+from octop.infra.db.repos.resource_acl import ResourceAclRepo, owner_unit_key
+from octop.infra.sharing import VISIBILITY_PRIVATE, VISIBILITY_PUBLIC, allowed_resource_ids
 
 
 @dataclass(frozen=True)
@@ -17,7 +20,6 @@ class ConnectorRow:
     kind: str
     display_name: str
     status: str
-    shared: bool
     mcp_server_name: str
     credential_blob: bytes | None
     credential_expires_at: int | None
@@ -36,7 +38,6 @@ class ConnectorRow:
             kind=r["kind"],
             display_name=r["display_name"],
             status=r["status"],
-            shared=bool(r["shared"]),
             mcp_server_name=r["mcp_server_name"],
             credential_blob=bytes(blob) if blob is not None else None,
             credential_expires_at=r["credential_expires_at"],
@@ -79,6 +80,7 @@ class ConnectorOAuthStateRow:
 class ConnectorRepo:
     def __init__(self, db: DatabasePool) -> None:
         self._db = db
+        self._acl = ResourceAclRepo(db)
 
     def create(
         self,
@@ -95,20 +97,27 @@ class ConnectorRepo:
         with self._db.transaction() as conn:
             conn.execute(
                 "INSERT INTO connectors("
-                "instance_id, user_id, kind, display_name, status, shared, mcp_server_name, "
+                "instance_id, user_id, kind, display_name, status, mcp_server_name, "
                 "config_json, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?, ?)",
+                ") VALUES (?, ?, ?, ?, 'active', ?, ?, ?, ?)",
                 (
                     instance_id,
                     user_id,
                     kind,
                     display_name,
-                    bool_int(shared),
                     mcp_server_name,
                     config_json,
                     ts,
                     ts,
                 ),
+            )
+            self._acl.set_visibility(
+                "connector",
+                instance_id,
+                VISIBILITY_PUBLIC if shared else VISIBILITY_PRIVATE,
+                owner_user_id=user_id,
+                unit_key=owner_unit_key(conn, user_id),
+                conn=conn,
             )
         return instance_id
 
@@ -136,14 +145,40 @@ class ConnectorRepo:
         return map_rows(rows, ConnectorRow)
 
     def list_visible(self, user_id: int) -> list[ConnectorRow]:
+        """Connectors this user may use.
+
+        The verdict comes from ``sharing.can_access`` over the ACL entries —
+        the same rule the knowledge-base runtime scope resolves — so a new
+        access rule reaches this list without a second implementation to
+        remember. ``ResourceAclRepo`` mirrors the rules in SQL as well; that
+        statement decides nothing here.
+        """
+        role, unit_key = self._acl.scope_for_user(user_id)
+        allowed = allowed_resource_ids(
+            self._acl.list_for_type("connector"),
+            user_id=user_id,
+            role=role,
+            unit_key=unit_key,
+        )
+        if not allowed:
+            return []
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT * FROM connectors "
-                "WHERE user_id = ? OR shared = 1 "
+                f"SELECT * FROM connectors WHERE instance_id IN "
+                f"({sql_in_placeholders(len(allowed))}) "
                 "ORDER BY display_name, instance_id",
-                (user_id,),
+                sorted(allowed),
             ).fetchall()
         return map_rows(rows, ConnectorRow)
+
+    def public_instance_ids(self, instance_ids: Collection[str] | None = None) -> set[str]:
+        """Ids of connectors published to everyone, per ``resource_acl``.
+
+        Server-side callers (the connectors service, which holds no ACL repo of
+        its own) need this to render the ``shared`` display field: visibility
+        is stored in the ACL alone since schema v21.
+        """
+        return self._acl.public_resource_ids("connector", resource_ids=instance_ids)
 
     def list_by_kind(self, kind: str) -> list[ConnectorRow]:
         with self._db.connect() as conn:
@@ -192,22 +227,41 @@ class ConnectorRepo:
         display_name: str | None = None,
         shared: bool | None = None,
     ) -> None:
+        """Rename a connector and/or publish it, in one transaction.
+
+        Sharing writes ``resource_acl`` alone (schema v21 dropped the legacy
+        ``connectors.shared`` column), so the ACL row cannot disagree with a
+        column that no longer exists.
+        """
         updates: list[str] = []
         params: list[object] = []
         if display_name is not None:
             updates.append("display_name = ?")
             params.append(display_name)
-        if shared is not None:
-            updates.append("shared = ?")
-            params.append(bool_int(shared))
-        if not updates:
+        if not updates and shared is None:
             return
-        updates.append("updated_at = ?")
-        params.extend((now_ts(), instance_id))
         with self._db.transaction() as conn:
-            conn.execute(
-                f"UPDATE connectors SET {', '.join(updates)} WHERE instance_id = ?",
-                tuple(params),
+            if updates:
+                updates.append("updated_at = ?")
+                params.extend((now_ts(), instance_id))
+                conn.execute(
+                    f"UPDATE connectors SET {', '.join(updates)} WHERE instance_id = ?",
+                    tuple(params),
+                )
+            if shared is None:
+                return
+            row = conn.execute(
+                "SELECT user_id FROM connectors WHERE instance_id = ?", (instance_id,)
+            ).fetchone()
+            if row is None:
+                return
+            self._acl.set_visibility(
+                "connector",
+                instance_id,
+                VISIBILITY_PUBLIC if shared else VISIBILITY_PRIVATE,
+                owner_user_id=row["user_id"],
+                unit_key=None,
+                conn=conn,
             )
 
     def upsert_credentials(
@@ -228,6 +282,7 @@ class ConnectorRepo:
     def delete(self, instance_id: str) -> None:
         with self._db.transaction() as conn:
             conn.execute("DELETE FROM connectors WHERE instance_id = ?", (instance_id,))
+            self._acl.delete("connector", instance_id, conn=conn)
 
     def list_active_mcp_server_names_for_user(self, user_id: int) -> list[str]:
         with self._db.connect() as conn:

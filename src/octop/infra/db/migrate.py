@@ -18,12 +18,76 @@ from octop.infra.utils.ulid import new_ulid
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _SQL_STMT_RE = re.compile(r";\s*\n")
+_DOLLAR_QUOTE_RE = re.compile(r"\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$")
+
+
+def _pg_statement_terminator(sql: str, start: int) -> re.Match[str] | None:
+    """The next statement terminator at or after *start*, or ``None``.
+
+    Semicolons inside a ``--``/``/* */`` comment, a ``'...'`` literal (``''``
+    escapes included) or a ``$tag$ ... $tag$`` body do not end a statement.
+    ``_SQL_STMT_RE`` alone cannot tell those apart, so it is applied only
+    outside them -- otherwise a ``DO $$ ... $$`` block would be torn into
+    fragments psycopg cannot parse. Comments must be recognised too: an
+    apostrophe in prose (``SQLite's``) would otherwise open a string that never
+    closes and swallow the rest of the file.
+    """
+    i = start
+    n = len(sql)
+    while i < n:
+        char = sql[i]
+        if char == "-" and sql.startswith("--", i):
+            newline = sql.find("\n", i)
+            if newline < 0:
+                break
+            i = newline + 1
+            continue
+        if char == "/" and sql.startswith("/*", i):
+            close = sql.find("*/", i + 2)
+            if close < 0:
+                break
+            i = close + 2
+            continue
+        if char == "'":
+            i += 1
+            while i < n:
+                if sql[i] == "'":
+                    if i + 1 < n and sql[i + 1] == "'":
+                        i += 2
+                        continue
+                    break
+                i += 1
+            i += 1
+            continue
+        if char == "$":
+            tag = _DOLLAR_QUOTE_RE.match(sql, i)
+            if tag is not None:
+                close = sql.find(tag.group(0), tag.end())
+                if close < 0:
+                    break
+                i = close + len(tag.group(0))
+                continue
+        elif char == ";":
+            terminator = _SQL_STMT_RE.match(sql, i)
+            if terminator is not None:
+                return terminator
+        i += 1
+    return None
 
 
 def _split_pg_sql(sql: str) -> list[str]:
-    parts = [p.strip() for p in _SQL_STMT_RE.split(sql)]
+    parts: list[str] = []
+    start = 0
+    while True:
+        terminator = _pg_statement_terminator(sql, start)
+        if terminator is None:
+            parts.append(sql[start:])
+            break
+        parts.append(sql[start : terminator.start()])
+        start = terminator.end()
     out: list[str] = []
     for part in parts:
+        part = part.strip()
         if not part:
             continue
         # Drop leading full-line comments so header+DDL blocks are kept.
@@ -678,6 +742,10 @@ def _ensure_sso_oidc_schema(db: DatabasePool) -> None:
     """Apply OIDC SSO tables and nullable password_hash (SQLite users rebuild)."""
     if _table_exists(db, "sso_providers"):
         return
+    # The rebuild below copies ``users`` column by column, so the v17 scope
+    # columns must exist on the source table first — fresh databases reach this
+    # helper before migration 017 has been applied.
+    _ensure_org_units_schema(db)
     with db.connect() as conn:
         conn.executescript(
             """
@@ -730,7 +798,9 @@ def _ensure_sso_oidc_schema(db: DatabasePool) -> None:
               email               TEXT,
               sso_provider_id     INTEGER REFERENCES sso_providers(id),
               sso_subject         TEXT,
-              permissions         TEXT NOT NULL DEFAULT '[]'
+              permissions         TEXT NOT NULL DEFAULT '[]',
+              org_unit            TEXT,
+              denied_permissions  TEXT
             );
 
             INSERT INTO users_new (
@@ -745,7 +815,9 @@ def _ensure_sso_oidc_schema(db: DatabasePool) -> None:
               login_failed_count,
               login_locked_until,
               preferences_json,
-              permissions
+              permissions,
+              org_unit,
+              denied_permissions
             )
             SELECT
               id,
@@ -759,7 +831,9 @@ def _ensure_sso_oidc_schema(db: DatabasePool) -> None:
               login_failed_count,
               login_locked_until,
               preferences_json,
-              '[]'
+              '[]',
+              org_unit,
+              denied_permissions
             FROM users;
 
             DROP TABLE users;
@@ -838,6 +912,519 @@ def _ensure_user_sso_identities_schema(db: DatabasePool) -> None:
             WHERE sso_provider_id IS NOT NULL AND sso_subject IS NOT NULL;
             """
         )
+
+
+def _ensure_feature_tasks_schema(db: DatabasePool) -> None:
+    """Create the feature task log (schema v16) when missing (clamp / repair paths)."""
+    if _table_exists(db, "feature_tasks") or not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_tasks (
+              id TEXT PRIMARY KEY,
+              feature_id TEXT NOT NULL,
+              user_id {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              inputs TEXT NOT NULL,
+              draft TEXT,
+              final TEXT,
+              status TEXT NOT NULL,
+              error TEXT,
+              created_at {int_type} NOT NULL,
+              diff_json TEXT,
+              finalized_at {int_type}
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_tasks_user_created "
+            "ON feature_tasks (user_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_tasks_feature_id "
+            "ON feature_tasks (feature_id)"
+        )
+
+
+def _ensure_feature_learning_schema(db: DatabasePool) -> None:
+    """Add the capture columns (schema v19) and create the case/rule tables.
+
+    Runs on every boot, like the v18 helper: databases whose watermark skipped
+    19 — a clamp, or a build that stamped the version without the DDL — still
+    get the columns and tables the self-improvement loop writes to.
+    """
+    if not _table_exists(db, "users"):
+        return
+    # Creates ``feature_tasks`` (already carrying the v19 columns) on the
+    # clamp/repair paths that never ran 016.
+    _ensure_feature_tasks_schema(db)
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    if _table_exists(db, "feature_tasks"):
+        _ensure_column(db, "feature_tasks", "diff_json", "TEXT")
+        _ensure_column(db, "feature_tasks", "finalized_at", int_type)
+    with db.connect() as conn:
+        # A promoted case is a *reference* to the task: inputs/final stay in
+        # feature_tasks so the two copies cannot drift.
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_cases (
+              task_id     TEXT PRIMARY KEY REFERENCES feature_tasks(id) ON DELETE CASCADE,
+              feature_id  TEXT NOT NULL,
+              promoted_by {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              promoted_at {int_type} NOT NULL,
+              note        TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_cases_feature "
+            "ON feature_cases (feature_id, promoted_at)"
+        )
+        # Rules are per-feature: the quote-draft rules must not reach meeting
+        # notes. ``source_task_ids`` is required so every rule can be traced
+        # back to the diffs it was induced from; injection filters on
+        # (feature_id, status).
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_rules (
+              id              TEXT PRIMARY KEY,
+              feature_id      TEXT NOT NULL,
+              rule_text       TEXT NOT NULL,
+              status          TEXT NOT NULL,
+              source_task_ids TEXT NOT NULL,
+              proposed_by     TEXT NOT NULL,
+              approved_by     {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              created_at      {int_type} NOT NULL,
+              reviewed_at     {int_type}
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_rules_feature_status "
+            "ON feature_rules (feature_id, status, created_at)"
+        )
+
+
+def _ensure_data_sources_schema(db: DatabasePool) -> None:
+    """Create the data-source table (schema v20) when missing.
+
+    Runs on every boot, like the v18/v19 helpers: databases whose watermark
+    skipped 20 — a clamp, or a build that stamped the version without the DDL —
+    still get the table the control plane writes to. The FK targets the public
+    ``knowledge_base_id`` exactly like ``knowledge_documents.kb_id``, so the
+    knowledge identity rebuild in ``_repair_legacy_schema`` stays coherent.
+    """
+    if not _table_exists(db, "knowledge_bases") or not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS data_sources (
+              id                TEXT PRIMARY KEY,
+              knowledge_base_id TEXT NOT NULL
+                                REFERENCES knowledge_bases(knowledge_base_id) ON DELETE CASCADE,
+              name              TEXT NOT NULL,
+              kind              TEXT NOT NULL,
+              config_json       TEXT NOT NULL DEFAULT '{{}}',
+              created_by        {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              sync_status       TEXT NOT NULL DEFAULT 'idle',
+              sync_error        TEXT,
+              last_synced_at    {int_type},
+              created_at        {int_type} NOT NULL,
+              updated_at        {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_data_sources_kb "
+            "ON data_sources (knowledge_base_id, name)"
+        )
+
+
+def _ensure_org_units_schema(db: DatabasePool) -> None:
+    """Create org units + unit grants and the user scope columns (schema v17)."""
+    if _table_exists(db, "users"):
+        _ensure_column(db, "users", "org_unit", "TEXT")
+        _ensure_column(
+            db,
+            "users",
+            "denied_permissions",
+            "JSONB" if db.dialect == "postgresql" else "TEXT",
+        )
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS org_units (
+              key        TEXT PRIMARY KEY,
+              label_zh   TEXT NOT NULL,
+              label_en   TEXT NOT NULL,
+              parent_key TEXT REFERENCES org_units(key) ON DELETE SET NULL,
+              sort_order INTEGER NOT NULL DEFAULT 0,
+              created_at {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS org_unit_permissions (
+              unit_key       TEXT NOT NULL,
+              permission_key TEXT NOT NULL,
+              PRIMARY KEY (unit_key, permission_key)
+            )
+            """
+        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_org_units_parent ON org_units (parent_key)")
+
+
+# resource_type, table, public id column, owner column, legacy flag column.
+#
+# The flag column only exists on pre-v21 databases — schema v21 dropped all
+# three — and the guard below skips any table whose flag is already gone, so
+# this backfill stays the v18 mechanism and nothing more.
+_RESOURCE_ACL_BACKFILL_SOURCES = (
+    ("agent", "agents", "agent_id", "user_id", "is_shared"),
+    ("connector", "connectors", "instance_id", "user_id", "shared"),
+    ("knowledge_base", "knowledge_bases", "knowledge_base_id", "owner_user_id", "shared"),
+)
+
+
+def _ensure_resource_acl_schema(db: DatabasePool) -> None:
+    """Create the unified ACL tables (schema v18) and mirror the legacy flags.
+
+    The backfill is ``ON CONFLICT DO NOTHING``: it never clobbers a later ACL
+    edit, and it runs on every boot so databases whose watermark skipped 018
+    still get their rows.
+    """
+    if not _table_exists(db, "users"):
+        return
+    # ``resource_acl.unit_key`` references ``org_units``: create it first, as
+    # PostgreSQL needs the FK target to exist at DDL time.
+    _ensure_org_units_schema(db)
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS resource_acl (
+              resource_type TEXT NOT NULL,
+              resource_id   TEXT NOT NULL,
+              owner_user_id {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              visibility    TEXT NOT NULL,
+              unit_key      TEXT REFERENCES org_units(key) ON DELETE SET NULL,
+              version       INTEGER NOT NULL DEFAULT 1,
+              updated_at    {int_type} NOT NULL,
+              PRIMARY KEY (resource_type, resource_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS resource_acl_grants (
+              resource_type TEXT NOT NULL,
+              resource_id   TEXT NOT NULL,
+              grantee_type  TEXT NOT NULL,
+              grantee_id    TEXT NOT NULL,
+              PRIMARY KEY (resource_type, resource_id, grantee_type, grantee_id)
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS resource_acl_changes (
+              id            TEXT PRIMARY KEY,
+              resource_type TEXT NOT NULL,
+              resource_id   TEXT NOT NULL,
+              actor_user_id {int_type} NOT NULL,
+              from_version  INTEGER NOT NULL,
+              to_version    INTEGER NOT NULL,
+              before_json   TEXT NOT NULL,
+              after_json    TEXT NOT NULL,
+              impact_scope  TEXT NOT NULL,
+              status        TEXT NOT NULL,
+              reason        TEXT,
+              created_at    {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resource_acl_owner ON resource_acl (owner_user_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resource_acl_unit ON resource_acl (unit_key)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resource_acl_grants_grantee "
+            "ON resource_acl_grants (grantee_type, grantee_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resource_acl_changes_resource "
+            "ON resource_acl_changes (resource_type, resource_id, created_at)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_resource_acl_changes_status "
+            "ON resource_acl_changes (status, created_at)"
+        )
+    ts = int(time.time())
+    for (
+        resource_type,
+        table,
+        id_column,
+        owner_column,
+        flag_column,
+    ) in _RESOURCE_ACL_BACKFILL_SOURCES:
+        if not _table_exists(db, table):
+            continue
+        columns = _table_columns(db, table)
+        if not {id_column, owner_column, flag_column}.issubset(columns):
+            continue
+        with db.connect() as conn:
+            # Every legacy row gets an ACL row, ownerless ones included: a NULL
+            # ``owner_user_id`` means "system-owned" and ``can_access`` rule 2
+            # can never match it, so the row stays admin-only unless the legacy
+            # flag publishes it.
+            #
+            # ``WHERE 1 = 1`` is load-bearing: SQLite refuses to parse an upsert
+            # clause directly after ``INSERT ... SELECT`` without a WHERE (the
+            # ON could belong to a join), and the error only shows up at runtime.
+            conn.execute(
+                f"""
+                INSERT INTO resource_acl(
+                  resource_type, resource_id, owner_user_id, visibility, unit_key,
+                  version, updated_at
+                )
+                SELECT ?, {id_column}, {owner_column},
+                  CASE WHEN {flag_column} = 1 THEN 'public' ELSE 'private' END,
+                  NULL, 1, ?
+                FROM {table}
+                WHERE 1 = 1
+                ON CONFLICT (resource_type, resource_id) DO NOTHING
+                """,
+                (resource_type, ts),
+            )
+
+
+# Schema v21 retires the legacy global share booleans. Each entry is
+# (table, legacy column, SQLite rebuild DDL, rebuilt column list, rebuilt
+# indexes).
+#
+# SQLite cannot ``DROP COLUMN`` here: both flag indexes are partial indexes on
+# the flag itself. The tables are rebuilt instead, and the column lists are
+# written out in full — ``knowledge_bases.max_documents`` (v10) and the agent
+# profile columns (v7) were appended by ALTER, so a list copied from an older
+# build silently drops them, which is exactly the failure this shape prevents.
+_LEGACY_SHARE_COLUMNS = (
+    (
+        "agents",
+        "is_shared",
+        """
+        CREATE TABLE agents (
+          id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+          agent_id            TEXT NOT NULL UNIQUE,
+          user_id             INTEGER REFERENCES users(id) ON DELETE CASCADE,
+          name                TEXT NOT NULL,
+          description         TEXT,
+          persona_mbti        TEXT,
+          default_model       TEXT,
+          system_prompt       TEXT,
+          enabled             INTEGER NOT NULL DEFAULT 1,
+          config_json         TEXT,
+          last_state          TEXT,
+          last_error          TEXT,
+          icon                TEXT,
+          template_name       TEXT,
+          created_at          INTEGER NOT NULL,
+          updated_at          INTEGER NOT NULL,
+          color               TEXT,
+          icon_name           TEXT,
+          icon_url            TEXT,
+          skill_package_ids   TEXT,
+          published_expert_id TEXT,
+          welcome_message     TEXT,
+          knowledge_base_ids  TEXT,
+          mcp_servers         TEXT
+        )
+        """,
+        (
+            "id",
+            "agent_id",
+            "user_id",
+            "name",
+            "description",
+            "persona_mbti",
+            "default_model",
+            "system_prompt",
+            "enabled",
+            "config_json",
+            "last_state",
+            "last_error",
+            "icon",
+            "template_name",
+            "created_at",
+            "updated_at",
+            "color",
+            "icon_name",
+            "icon_url",
+            "skill_package_ids",
+            "published_expert_id",
+            "welcome_message",
+            "knowledge_base_ids",
+            "mcp_servers",
+        ),
+        (
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_agents_user_name "
+            "ON agents(user_id, name) WHERE user_id IS NOT NULL",
+        ),
+    ),
+    (
+        "connectors",
+        "shared",
+        """
+        CREATE TABLE connectors (
+          id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+          instance_id           TEXT NOT NULL UNIQUE,
+          user_id               INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          kind                  TEXT NOT NULL,
+          display_name          TEXT NOT NULL,
+          status                TEXT NOT NULL DEFAULT 'active',
+          mcp_server_name       TEXT NOT NULL UNIQUE,
+          credential_blob       BLOB,
+          credential_expires_at INTEGER,
+          credential_rotated_at INTEGER,
+          config_json           TEXT,
+          created_at            INTEGER NOT NULL,
+          updated_at            INTEGER NOT NULL
+        )
+        """,
+        (
+            "id",
+            "instance_id",
+            "user_id",
+            "kind",
+            "display_name",
+            "status",
+            "mcp_server_name",
+            "credential_blob",
+            "credential_expires_at",
+            "credential_rotated_at",
+            "config_json",
+            "created_at",
+            "updated_at",
+        ),
+        (
+            "CREATE INDEX IF NOT EXISTS idx_connectors_user ON connectors(user_id)",
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_connectors_user_display_name "
+            "ON connectors(user_id, display_name) WHERE kind <> 'custom-mcp'",
+        ),
+    ),
+    (
+        "knowledge_bases",
+        "shared",
+        """
+        CREATE TABLE knowledge_bases (
+          id                INTEGER PRIMARY KEY AUTOINCREMENT,
+          knowledge_base_id TEXT NOT NULL UNIQUE,
+          owner_user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          name              TEXT NOT NULL,
+          description       TEXT NOT NULL DEFAULT '',
+          default_open      INTEGER NOT NULL DEFAULT 0,
+          icon_name         TEXT NOT NULL DEFAULT '',
+          embedding_model   TEXT NOT NULL DEFAULT '',
+          embedding_dim     INTEGER NOT NULL DEFAULT 0,
+          doc_count         INTEGER NOT NULL DEFAULT 0,
+          created_at        INTEGER NOT NULL,
+          updated_at        INTEGER NOT NULL,
+          max_documents     INTEGER NOT NULL DEFAULT 100,
+          UNIQUE(owner_user_id, name)
+        )
+        """,
+        (
+            "id",
+            "knowledge_base_id",
+            "owner_user_id",
+            "name",
+            "description",
+            "default_open",
+            "icon_name",
+            "embedding_model",
+            "embedding_dim",
+            "doc_count",
+            "created_at",
+            "updated_at",
+            "max_documents",
+        ),
+        ("CREATE INDEX IF NOT EXISTS idx_knowledge_bases_owner ON knowledge_bases(owner_user_id)",),
+    ),
+)
+
+
+def _drop_legacy_share_columns(db: DatabasePool) -> None:
+    """Drop the legacy global share booleans (schema v21).
+
+    ``resource_acl`` has decided access since v18 and the v18 backfill copied
+    every legacy flag into it, so these columns only ever mirrored the ACL — and
+    a share applied through the sharing pipeline never reached them at all.
+
+    The mirror runs first, per table: while the columns still exist they are the
+    last surviving record of "this was published", and dropping one before
+    copying it would silently turn every published resource private.
+
+    Idempotent: a table whose flag is already gone is skipped, so a boot that
+    lands between the PostgreSQL and SQLite paths converges.
+    """
+    if not _table_exists(db, "users"):
+        return
+    _ensure_resource_acl_schema(db)
+    for table, column, ddl, columns, indexes in _LEGACY_SHARE_COLUMNS:
+        if column not in _table_columns(db, table):
+            continue
+        if db.dialect == "postgresql":
+            # ``DROP COLUMN`` takes the partial flag index with it.
+            _drop_column(db, table, column)
+            continue
+        _rebuild_sqlite_without_legacy_share(db, table, ddl=ddl, columns=columns, indexes=indexes)
+
+
+def _rebuild_sqlite_without_legacy_share(
+    db: DatabasePool,
+    table: str,
+    *,
+    ddl: str,
+    columns: tuple[str, ...],
+    indexes: tuple[str, ...],
+) -> None:
+    """Rebuild *table* from *columns*, leaving the legacy flag behind."""
+    legacy = f"{table}_legacy"
+    column_list = ", ".join(columns)
+    with db.connect() as conn:
+        # Two pragmas, and both are load-bearing:
+        #
+        # * ``foreign_keys = OFF`` stops ``DROP TABLE {table}_legacy`` from
+        #   cascading into the rows that point here (``threads.agent_id``,
+        #   ``knowledge_documents.kb_id``, ...).
+        # * ``legacy_alter_table = ON`` keeps ``ALTER TABLE RENAME`` from
+        #   rewriting those same tables' ``REFERENCES`` clauses to the legacy
+        #   copy — SQLite 3.53 does that even with foreign keys off, and the
+        #   result is a schema pointing at a table the next statement drops.
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute("PRAGMA legacy_alter_table = ON")
+        try:
+            conn.execute("BEGIN")
+            conn.execute(f"ALTER TABLE {table} RENAME TO {legacy}")
+            conn.execute(ddl)
+            conn.execute(f"INSERT INTO {table}({column_list}) SELECT {column_list} FROM {legacy}")
+            conn.execute(f"DROP TABLE {legacy}")
+            for statement in indexes:
+                conn.execute(statement)
+            conn.execute("COMMIT")
+        except Exception:
+            if conn.in_transaction:
+                conn.execute("ROLLBACK")
+            raise
+        finally:
+            conn.execute("PRAGMA legacy_alter_table = OFF")
+            conn.execute("PRAGMA foreign_keys = ON")
 
 
 def _ensure_usage_cache_schema(db: DatabasePool) -> None:
@@ -1121,16 +1708,13 @@ def _ensure_trajectory_events_postgresql(db: DatabasePool) -> None:
 
 
 def _ensure_connectors_v13_schema(db: DatabasePool) -> None:
-    """Ensure connectors supports multiple named instances and sharing."""
+    """Ensure connectors supports multiple named instances."""
     if not _table_exists(db, "connectors"):
         return
     if db.dialect == "postgresql":
         with db.connect() as conn, conn.transaction():
             conn.execute(
                 "ALTER TABLE connectors DROP CONSTRAINT IF EXISTS connectors_user_id_kind_key"
-            )
-            conn.execute(
-                "ALTER TABLE connectors ADD COLUMN IF NOT EXISTS shared INTEGER NOT NULL DEFAULT 0"
             )
             conn.execute(
                 """
@@ -1150,25 +1734,24 @@ def _ensure_connectors_v13_schema(db: DatabasePool) -> None:
                 """
             )
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_connectors_shared "
-                "ON connectors(shared) WHERE shared = 1"
-            )
-            conn.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_connectors_user_display_name "
                 "ON connectors(user_id, display_name) WHERE kind <> 'custom-mcp'"
             )
         return
 
-    if "shared" in _table_columns(db, "connectors"):
-        with db.connect() as conn:
+    with db.connect() as conn:
+        v13_ready = (
             conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_connectors_shared "
-                "ON connectors(shared) WHERE shared = 1"
-            )
-            conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_connectors_user_display_name "
-                "ON connectors(user_id, display_name) WHERE kind <> 'custom-mcp'"
-            )
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+                ("idx_connectors_user_display_name",),
+            ).fetchone()
+            is not None
+        )
+    if v13_ready:
+        # ``idx_connectors_user_display_name`` is created by the v13 rebuild and
+        # by nothing else. The old "already has ``shared``?" guard cannot be
+        # used any more: schema v21 dropped that column, and treating a modern
+        # database as pre-v13 would rebuild it on every boot.
         return
 
     with db.connect() as conn:
@@ -1185,7 +1768,6 @@ def _ensure_connectors_v13_schema(db: DatabasePool) -> None:
                   kind                  TEXT NOT NULL,
                   display_name          TEXT NOT NULL,
                   status                TEXT NOT NULL DEFAULT 'active',
-                  shared                INTEGER NOT NULL DEFAULT 0,
                   mcp_server_name       TEXT NOT NULL UNIQUE,
                   credential_blob       BLOB,
                   credential_expires_at INTEGER,
@@ -1199,7 +1781,7 @@ def _ensure_connectors_v13_schema(db: DatabasePool) -> None:
             conn.execute(
                 """
                 INSERT INTO connectors(
-                  id, instance_id, user_id, kind, display_name, status, shared,
+                  id, instance_id, user_id, kind, display_name, status,
                   mcp_server_name, credential_blob, credential_expires_at,
                   credential_rotated_at, config_json, created_at, updated_at
                 )
@@ -1212,16 +1794,13 @@ def _ensure_connectors_v13_schema(db: DatabasePool) -> None:
                     ) = 1 THEN display_name
                     ELSE display_name || ' (' || substr(instance_id, -6) || ')'
                   END,
-                  status, 0, mcp_server_name, credential_blob, credential_expires_at,
+                  status, mcp_server_name, credential_blob, credential_expires_at,
                   credential_rotated_at, config_json, created_at, updated_at
                 FROM connectors_legacy
                 """
             )
             conn.execute("DROP TABLE connectors_legacy")
             conn.execute("CREATE INDEX idx_connectors_user ON connectors(user_id)")
-            conn.execute(
-                "CREATE INDEX idx_connectors_shared ON connectors(shared) WHERE shared = 1"
-            )
             conn.execute(
                 "CREATE UNIQUE INDEX idx_connectors_user_display_name "
                 "ON connectors(user_id, display_name) WHERE kind <> 'custom-mcp'"
@@ -1428,7 +2007,12 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_column(db, "threads", "reasoning_effort", "TEXT")
         _ensure_column(db, "threads", "artifacts", "TEXT NOT NULL DEFAULT '[]'")
     if _table_exists(db, "agents"):
-        _ensure_column(db, "agents", "is_shared", "INTEGER NOT NULL DEFAULT 0")
+        # Pre-v21 builds recorded "published" here. Schema v21 drops the column,
+        # so only older databases get it backfilled — for them the v18 backfill
+        # still needs it to seed ``resource_acl``, while re-adding it on a v21
+        # database would resurrect the column on every boot.
+        if _current_version(db) < 21:
+            _ensure_column(db, "agents", "is_shared", "INTEGER NOT NULL DEFAULT 0")
         _ensure_agent_profile_columns(db)
         _backfill_agent_profile_from_config(db)
     _ensure_skill_packages_schema(db)
@@ -1439,10 +2023,17 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
     # Require ``users`` first — SSO rebuild and knowledge FKs need it, and a
     # brand-new DB has not applied 001 yet when repair runs.
     if _table_exists(db, "users"):
+        # Before the SSO rebuild below: it copies ``users`` column by column, so
+        # the unit scope columns must already exist on the source table.
+        _ensure_org_units_schema(db)
         _ensure_sso_oidc_schema(db)
         _ensure_knowledge_bases_schema(db)
         # SSO rebuild recreates ``users``; ensure permissions after that path.
         _ensure_column(db, "users", "permissions", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_feature_tasks_schema(db)
+        _ensure_resource_acl_schema(db)
+        _ensure_feature_learning_schema(db)
+        _ensure_data_sources_schema(db)
 
 
 def _max_discovered_version(dialect: str) -> int:
@@ -1563,6 +2154,24 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     Version 14 adds per-user named policy rows.
     Version 15 adds pluggable SSO provider ``kind`` / ``extra`` and
     multi-identity ``user_sso_identities``.
+    Version 16 adds the enterprise feature task log (idempotent ``CREATE TABLE
+    IF NOT EXISTS`` file, so no helper branch is needed).
+    Version 17 adds org units, unit permission grants, and the
+    ``users.org_unit`` / ``users.denied_permissions`` scope columns. SQLite
+    ``ALTER TABLE ADD COLUMN`` is not idempotent and ``_repair_legacy_schema``
+    already added the columns, so this branch calls the ensure helper.
+    Version 18 adds the unified resource ACL tables and mirrors the legacy
+    ``is_shared`` / ``shared`` booleans. The backfill must also reach databases
+    whose watermark already passed 18, so this branch calls the ensure helper.
+    Version 19 adds the feature capture columns (``feature_tasks.diff_json`` /
+    ``finalized_at``) and the ``feature_cases`` / ``feature_rules`` tables.
+    ``ALTER TABLE ADD COLUMN`` is not idempotent, so this branch calls the
+    ensure helper instead of executing the SQL file.
+    Version 20 adds ``data_sources``. The table must also reach databases whose
+    watermark already passed 20, so this branch calls the ensure helper.
+    Version 21 drops the three legacy global share booleans. The drop is a table
+    rebuild on SQLite and runs through the ensure helper so the legacy flags are
+    mirrored into ``resource_acl`` one last time first.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -1668,6 +2277,31 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 17:
+        _ensure_org_units_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 18:
+        _ensure_resource_acl_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 19:
+        _ensure_feature_learning_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 20:
+        _ensure_data_sources_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 21:
+        _drop_legacy_share_columns(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -1711,3 +2345,8 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_user_policy_schema(db)
     _ensure_agent_profile_columns(db)
     _ensure_sso_provider_kind_schema(db)
+    _ensure_org_units_schema(db)
+    _ensure_resource_acl_schema(db)
+    _drop_legacy_share_columns(db)
+    _ensure_feature_learning_schema(db)
+    _ensure_data_sources_schema(db)

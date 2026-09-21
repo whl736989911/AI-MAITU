@@ -41,7 +41,7 @@ import { useTranslation } from "react-i18next";
 
 import StreamEdgeControls from "../../../components/StreamEdgeControls/StreamEdgeControls";
 import StreamSetupGuide from "../../../components/StreamSetupGuide/StreamSetupGuide";
-import { OctopEmptyMascot } from "../../../components/EmptyState";
+import { EmptyStateIcon } from "../../../components/EmptyState";
 import PageShell from "../../../layouts/PageShell";
 import BrowserAiPanel from "../../../components/BrowserAiPanel";
 import SkillRecordGuideModal from "../../../components/SkillRecordGuideModal";
@@ -1466,12 +1466,7 @@ export default function RemoteBrowserPage({
                   renderViewportUninstallProgress()
                 ) : (
                   <StreamSetupGuide
-                    icon={
-                      <OctopEmptyMascot
-                        size={120}
-                        className={styles.setupMascot}
-                      />
-                    }
+                    icon={<EmptyStateIcon icon={Globe} />}
                     title={
                       envReady
                         ? t("remoteBrowser.startBrowserTitle", "启动远程浏览器")

@@ -14,6 +14,7 @@ from octop.infra.gateway.process.message_keys import (
     build_composer_context,
 )
 from octop.infra.gateway.threads import ThreadRegistry
+from octop.infra.sharing import AclEntry
 
 
 def test_cron_composer_context_includes_connectors_and_model() -> None:
@@ -225,8 +226,28 @@ async def test_deliver_agent_attaches_expert_knowledge_bases() -> None:
     agent_manager.get_row = MagicMock(return_value=agent_row)
 
     repos = MagicMock()
-    repos.knowledge_repo.list_visible.return_value = visible
+    repos.knowledge_repo.list_all.return_value = visible
     repos.user_repo.get.return_value = MagicMock(role="user")
+    # The runtime scope is decided by the knowledge bases' ACL entries, not by
+    # a repo list: user 1 owns both, so both are mountable.
+    repos.resource_acl_repo.list_for_type.return_value = [
+        AclEntry(
+            resource_type="knowledge_base",
+            resource_id="owned-default",
+            owner_user_id=1,
+            visibility="private",
+            unit_key=None,
+            version=1,
+        ),
+        AclEntry(
+            resource_type="knowledge_base",
+            resource_id="expert-pick",
+            owner_user_id=1,
+            visibility="private",
+            unit_key=None,
+            version=1,
+        ),
+    ]
 
     gateway = MagicMock()
     gateway.run_in_session = _run_locked

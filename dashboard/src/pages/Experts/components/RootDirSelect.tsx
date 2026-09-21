@@ -13,6 +13,9 @@ import { FolderPlus, Pencil } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { message } from "@/utils/antdMessage";
 import { request } from "../../../api/request";
+import { adminOnlyErrorMessage } from "../../../utils/apiError";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { isSystemAdmin } from "../../../utils/permissions";
 import {
   HOST_FS_ROOT,
   ancestorDirPaths,
@@ -71,7 +74,40 @@ function entriesToNodes(entries: DirEntry[]): DirTreeNode[] {
   }));
 }
 
-export default function RootDirSelect({
+/**
+ * Non-admin fallback: browse-free path entry. The ``/filesystem`` browse
+ * endpoints are admin-only server-side, so plain users get an input instead
+ * of an empty tree plus 403 toasts.
+ */
+function ManualRootDirInput({
+  value,
+  onChange,
+  disabled,
+}: RootDirSelectProps) {
+  const { t } = useTranslation();
+  return (
+    <div className={styles.rootDirManual}>
+      <Input
+        value={value}
+        disabled={disabled}
+        placeholder={t("experts.backendRootDirPlaceholder")}
+        onChange={(e) => onChange?.(e.target.value)}
+      />
+      <p className={styles.rootDirManualHint}>
+        {t("experts.rootDirAdminOnly")}
+      </p>
+    </div>
+  );
+}
+
+/** Public entry: pick the browser for admins, plain input for everyone else. */
+export default function RootDirSelect(props: RootDirSelectProps) {
+  const user = useCurrentUser();
+  if (!isSystemAdmin(user)) return <ManualRootDirInput {...props} />;
+  return <RootDirTreeSelect {...props} />;
+}
+
+function RootDirTreeSelect({
   value,
   onChange,
   treeRoot = HOST_FS_ROOT,
@@ -152,9 +188,11 @@ export default function RootDirSelect({
           ),
         );
         markLoaded([path]);
-      } catch {
+      } catch (err) {
         if (showError) {
-          message.error(t("experts.rootDirListFailed"));
+          message.error(
+            adminOnlyErrorMessage(err, t("experts.rootDirListFailed"), t),
+          );
         }
       } finally {
         loadingPathsRef.current.delete(path);
@@ -233,8 +271,10 @@ export default function RootDirSelect({
         if (value === path) {
           onChange?.(result.path);
         }
-      } catch {
-        message.error(t("experts.rootDirRenameFailed"));
+      } catch (err) {
+        message.error(
+          adminOnlyErrorMessage(err, t("experts.rootDirRenameFailed"), t),
+        );
         beginEditing(path, trimmed);
       } finally {
         setBusy(false);
@@ -272,8 +312,10 @@ export default function RootDirSelect({
           ...new Set([...(prev ?? []), ...ancestors]),
         ]);
         beginEditing(result.path, result.name);
-      } catch {
-        message.error(t("experts.rootDirMkdirFailed"));
+      } catch (err) {
+        message.error(
+          adminOnlyErrorMessage(err, t("experts.rootDirMkdirFailed"), t),
+        );
       } finally {
         setBusy(false);
       }

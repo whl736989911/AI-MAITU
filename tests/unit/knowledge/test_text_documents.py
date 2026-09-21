@@ -34,6 +34,7 @@ def services(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace
     return SimpleNamespace(
         knowledge_repo=KnowledgeRepo(db),
         settings_repo=settings,
+        user_repo=UserRepo(db),
         provider_repo=None,
         owner_id=owner_id,
     )

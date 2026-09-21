@@ -28,6 +28,7 @@ GATED_FILES = [
     "routers/onnx_models.py",
     "routers/connectors.py",
     "routers/knowledge_bases.py",
+    "routers/data_sources.py",
     "routers/browser/uninstall.py",
     "routers/browser/env.py",
     "routers/desktop/install.py",
@@ -40,6 +41,10 @@ GATED_FILES = [
     "routers/skill_packages.py",
     "routers/terminal.py",
     "routers/acp.py",
+    "routers/features.py",
+    "routers/filesystem.py",
+    "routers/org_units.py",
+    "routers/sharing.py",
 ]
 
 

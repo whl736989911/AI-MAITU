@@ -79,6 +79,26 @@ def _is_unique_violation(exc: BaseException) -> bool:
     return pg_errors is not None and isinstance(exc, pg_errors.UniqueViolation)
 
 
+def _user_from_row(row: Any) -> User:
+    """Hydrate a ``User`` from a ``UserRow``.
+
+    Single hydration point so the org-unit scope columns can never be dropped by
+    one of the construction sites: ``org_unit``/``denied_permissions`` feed
+    ``resolve_permissions`` (unit grants, explicit denies) at every permission
+    check, and a missing column here silently disables both.
+    """
+    return User(
+        id=row.id,
+        username=row.username,
+        role=Role(row.role),
+        display_name=row.display_name,
+        locale=normalize_locale(row.locale),
+        permissions=list(row.permissions),
+        org_unit=getattr(row, "org_unit", None),
+        denied_permissions=list(getattr(row, "denied_permissions", None) or []),
+    )
+
+
 class UserManager:
     """Owns the in-memory dict of ``User`` objects.
 
@@ -103,14 +123,7 @@ class UserManager:
     async def boot(self) -> None:
         async with self._lock:
             for row in self._services.user_repo.list(include_disabled=False):
-                user = User(
-                    id=row.id,
-                    username=row.username,
-                    role=Role(row.role),
-                    display_name=row.display_name,
-                    locale=normalize_locale(row.locale),
-                    permissions=list(row.permissions),
-                )
+                user = _user_from_row(row)
                 self._users[row.username] = user
 
     async def shutdown_all(self) -> None:
@@ -303,14 +316,7 @@ class UserManager:
             )
             cached_user = self._users.get(row.username)
             if cached_user is None:
-                user = User(
-                    id=row.id,
-                    username=row.username,
-                    role=Role(row.role),
-                    display_name=row.display_name,
-                    locale=normalize_locale(row.locale),
-                    permissions=list(row.permissions),
-                )
+                user = _user_from_row(row)
                 self._users[row.username] = user
                 return user
             return cached_user
@@ -360,14 +366,7 @@ class UserManager:
             )
             cached = self._users.get(row.username)
             if cached is None:
-                cached = User(
-                    id=row.id,
-                    username=row.username,
-                    role=Role(row.role),
-                    display_name=row.display_name,
-                    locale=normalize_locale(row.locale),
-                    permissions=list(row.permissions),
-                )
+                cached = _user_from_row(row)
                 self._users[row.username] = cached
             return cached
 
@@ -402,14 +401,7 @@ class UserManager:
         cached = self._users.get(row.username)
         if cached is not None:
             return cached
-        user = User(
-            id=row.id,
-            username=row.username,
-            role=Role(row.role),
-            display_name=row.display_name,
-            locale=normalize_locale(row.locale),
-            permissions=list(row.permissions),
-        )
+        user = _user_from_row(row)
         self._users[row.username] = user
         return user
 
@@ -481,14 +473,7 @@ class UserManager:
         self._services.user_repo.clear_login_lockout(row.id)
         user = self._users.get(row.username)
         if user is None:
-            user = User(
-                id=row.id,
-                username=row.username,
-                role=Role(row.role),
-                display_name=row.display_name,
-                locale=normalize_locale(row.locale),
-                permissions=list(row.permissions),
-            )
+            user = _user_from_row(row)
             self._users[row.username] = user
         self._services.audit_repo.write(actor=row.username, action="auth.login")
         return user
@@ -700,14 +685,7 @@ class UserManager:
         if row is None:
             raise OctopError(ErrorCode.NOT_FOUND, "user not found")
         self._services.user_repo.set_disabled(row.id, False)
-        user = User(
-            id=row.id,
-            username=row.username,
-            role=Role(row.role),
-            display_name=row.display_name,
-            locale=normalize_locale(row.locale),
-            permissions=list(row.permissions),
-        )
+        user = _user_from_row(row)
         async with self._lock:
             self._users[username] = user
         self._services.audit_repo.write(actor=ACTOR_ADMIN, action="user.enable", target=username)

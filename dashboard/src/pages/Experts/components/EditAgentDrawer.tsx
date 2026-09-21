@@ -23,7 +23,13 @@ import ExpertColorPicker from "../../../components/ExpertColorPicker";
 import AgentTrajectoryField from "./AgentTrajectoryField";
 import { workspaceApi } from "../../../api/modules/workspace";
 import { skillPackagesApi } from "../../../api/modules/skillPackages";
-import { apiErrorMessage, isNotFoundApiError } from "../../../utils/apiError";
+import {
+  apiErrorMessage,
+  adminOnlyErrorMessage,
+  isNotFoundApiError,
+} from "../../../utils/apiError";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { isSystemAdmin } from "../../../utils/permissions";
 import { isAgentChatReady } from "../../../utils/agentError";
 import { useAgentFormResources } from "../../../hooks/useAgentFormResources";
 import { octopAgentsApi } from "../../../api/modules/octopAgents";
@@ -223,6 +229,9 @@ function EditAgentDrawerBody({
   const { modal, message } = App.useApp();
   const { refresh } = useAgent();
   const skillDisplayName = useSkillDisplayName();
+  const user = useCurrentUser();
+  /** Host filesystem probing / bubblewrap setup are admin-only. */
+  const admin = isSystemAdmin(user);
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
   const [form] = Form.useForm<EditFormValues>();
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
@@ -388,8 +397,16 @@ function EditAgentDrawerBody({
         return;
       }
     }
-    if (shouldProbeRootDir(values.backend_choice, values.root_dir)) {
-      const probe = await probeRootDir(values.root_dir ?? "/");
+    if (admin && shouldProbeRootDir(values.backend_choice, values.root_dir)) {
+      let probe;
+      try {
+        probe = await probeRootDir(values.root_dir ?? "/");
+      } catch (err) {
+        message.error(
+          adminOnlyErrorMessage(err, t("experts.saveFailed"), t),
+        );
+        return;
+      }
       if (!probe.ok) {
         message.error(
           `${rootDirProbeMessage(probe, t)}\n${t(
@@ -402,7 +419,8 @@ function EditAgentDrawerBody({
     setSaving(true);
     let bwrapToast: { kind: "success" | "warning"; text: string } | null = null;
     try {
-      if (shouldProbeRootDir(values.backend_choice, values.root_dir)) {
+      // Host-root probing and bubblewrap setup are admin-only endpoints.
+      if (admin && shouldProbeRootDir(values.backend_choice, values.root_dir)) {
         const bwrap = await ensureBubblewrapAfterProbe();
         const kind = ensureBwrapToastKind(bwrap.status);
         if (kind !== "none") {
@@ -513,6 +531,7 @@ function EditAgentDrawerBody({
     agent.agent_id,
     agent.state,
     agentConfig,
+    admin,
     colorPalette,
     form,
     iconUrl,

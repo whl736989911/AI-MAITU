@@ -6,12 +6,19 @@ Read access and agent use in chat are never gated. ``admin`` bypasses all.
 
 Categories mirror dashboard nav groups: ``settings`` / ``control`` / ``admin``.
 Admin keys may also carry a ``page`` so the picker can group by page / tab.
+
+Effective access is ``role ∪ unit ∪ grant − deny`` (see
+:func:`resolve_permissions`): an explicit deny outranks everything but the
+``admin`` bypass.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Protocol
+from typing import Any, Protocol
+
+from octop.infra.users.identity import Role
 
 
 class PermissionUser(Protocol):
@@ -19,6 +26,12 @@ class PermissionUser(Protocol):
     def is_admin(self) -> bool: ...
 
     permissions: list[str]
+
+
+class UnitPermissionRepo(Protocol):
+    """Minimal repo surface :func:`unit_permissions` needs from the org store."""
+
+    def list_unit_permissions(self, unit_key: str) -> list[str]: ...
 
 
 @dataclass(frozen=True)
@@ -53,6 +66,7 @@ PERMISSIONS: dict[str, PermissionDef] = {
     "connectors": _p("connectors", "settings", "连接器", "Connectors"),
     "skill_packages": _p("skill_packages", "settings", "技能包", "Skill Packages"),
     "knowledge_bases": _p("knowledge_bases", "settings", "知识库", "Knowledge Base"),
+    "features": _p("features", "settings", "功能", "Features"),
     # --- control (nav.control) — page/tab labels ---
     "terminal": _p("terminal", "control", "工作台/终端", "Workbench / Terminal"),
     "browser": _p("browser", "control", "工作台/浏览器", "Workbench / Browser"),
@@ -222,16 +236,70 @@ ALL_PERMISSION_KEYS: set[str] = set(PERMISSIONS)
 BASELINE_PERMISSIONS: set[str] = {key for key, p in PERMISSIONS.items() if p.category == "settings"}
 
 
-def user_has_permission(user: PermissionUser, key: str) -> bool:
+def _role_value(role: object) -> str:
+    """Wire value of a ``Role`` member or of a raw role string from the DB."""
+    return str(role) if role is not None else ""
+
+
+def _as_set(values: Iterable[str] | None) -> set[str]:
+    """Set copy of a possibly-absent key list (rows come back as text columns)."""
+    return {str(v) for v in values} if values else set()
+
+
+def role_default_permissions(role: str) -> set[str]:
+    """Module keys implied by the role alone (admin -> full catalog)."""
+    if _role_value(role) == Role.ADMIN:
+        return set(ALL_PERMISSION_KEYS)
+    return set(BASELINE_PERMISSIONS)
+
+
+def unit_permissions(unit_key: str | None, repo: Any) -> set[str]:
+    """Module keys granted by the org unit. None -> empty."""
+    if not unit_key:
+        return set()
+    return _as_set(repo.list_unit_permissions(unit_key))
+
+
+def resolve_permissions(
+    *,
+    role: str,
+    permissions: list[str] | None,
+    denied: list[str] | None,
+    unit_grants: set[str] | None,
+) -> set[str]:
+    """role ∪ unit ∪ grant − deny, with admin bypassing everything."""
+    if _role_value(role) == Role.ADMIN:
+        return set(ALL_PERMISSION_KEYS)
+    granted = role_default_permissions(role)
+    granted |= _as_set(unit_grants) | _as_set(permissions)
+    granted -= _as_set(denied)
+    return granted
+
+
+def _resolve_user(user: PermissionUser, unit_grants: set[str] | None) -> set[str]:
+    """Resolve a user object, tolerating rows that predate the org-unit columns."""
+    return resolve_permissions(
+        role=Role.ADMIN if getattr(user, "is_admin", False) else getattr(user, "role", None),
+        permissions=list(user.permissions or []),
+        denied=list(getattr(user, "denied_permissions", None) or []),
+        unit_grants=unit_grants,
+    )
+
+
+def user_has_permission(
+    user: PermissionUser,
+    key: str,
+    *,
+    unit_grants: set[str] | None = None,
+) -> bool:
     """Return True if ``user`` may access the module ``key``.
 
-    Unknown keys are denied. ``admin`` bypasses everything.
+    Unknown keys are denied. ``admin`` bypasses everything; an explicit deny
+    in ``user.denied_permissions`` outranks role, unit and granted keys.
     """
     if key not in PERMISSIONS:
         return False
-    if user.is_admin:
-        return True
-    return key in (user.permissions or [])
+    return key in _resolve_user(user, unit_grants)
 
 
 def validate_permission_keys(keys: list[str]) -> list[str]:
@@ -248,8 +316,10 @@ def validate_permission_keys(keys: list[str]) -> list[str]:
     return out
 
 
-def effective_permissions(user: PermissionUser) -> list[str]:
+def effective_permissions(
+    user: PermissionUser,
+    *,
+    unit_grants: set[str] | None = None,
+) -> list[str]:
     """Permissions to expose on ``/auth/me`` / login (admin gets the full catalog)."""
-    if user.is_admin:
-        return sorted(ALL_PERMISSION_KEYS)
-    return list(user.permissions or [])
+    return sorted(_resolve_user(user, unit_grants))

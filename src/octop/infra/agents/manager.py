@@ -64,6 +64,7 @@ from octop.infra.connectors.builder import (
 from octop.infra.connectors.service import ConnectorService
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.sharing import allowed_resource_ids, user_scope
 from octop.infra.skills.presentation import apply_skill_presentation, localize_skill_summary
 from octop.infra.skills.skill_package_store import SkillPackageStore
 from octop.infra.skills.workspace_catalog import (
@@ -1909,7 +1910,15 @@ class AgentManager:
         normalized = skill_package_ids_list({"skill_package_ids": knowledge_base_ids})
         if not normalized:
             return []
-        visible = {base.id for base in self._repos.knowledge_repo.list_visible(user_id)}
+        # Same scope rule as the cron mount path (``infra.knowledge.scope``), so a
+        # base rejected here is exactly one the runtime would refuse to load.
+        role, unit_key = user_scope(self._repos.user_repo.get(user_id))
+        visible = allowed_resource_ids(
+            self._repos.resource_acl_repo.list_for_type("knowledge_base", resource_ids=normalized),
+            user_id=user_id,
+            role=role,
+            unit_key=unit_key,
+        )
         unknown = [kb_id for kb_id in normalized if kb_id not in visible]
         if unknown:
             raise OctopError(
@@ -2281,13 +2290,13 @@ class AgentManager:
 
             synced_skills = await sync_octop_builtin_skills(ws)
             logger.info(
-                "Agent %s: synced Octop built-in skills=%s",
+                "Agent %s: synced MAITU Smart Manufacturing built-in skills=%s",
                 row.agent_id,
                 synced_skills,
             )
         except Exception:
             logger.warning(
-                "Agent %s: failed to sync Octop built-in skills",
+                "Agent %s: failed to sync MAITU Smart Manufacturing built-in skills",
                 row.agent_id,
                 exc_info=True,
             )
@@ -2737,6 +2746,7 @@ class AgentManager:
             mobile_tools = build_mobile_tools(
                 self._config,
                 user_repo=self._repos.user_repo,
+                org_unit_repo=self._repos.org_unit_repo,
                 paths=self.paths,
             )
 

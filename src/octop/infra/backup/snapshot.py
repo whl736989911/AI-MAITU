@@ -75,7 +75,7 @@ def restore_sqlite_into_pool(backup_file: Path, pool: SqlitePool) -> None:
 # User helpers for migration restores
 # ---------------------------------------------------------------------------
 
-# All columns in the users table (must match schema in 001_initial.sql).
+# Every ``users`` column (001_initial plus columns added by later migrations).
 _USER_COLUMNS = (
     "id",
     "username",
@@ -88,6 +88,8 @@ _USER_COLUMNS = (
     "preferences_json",
     "login_failed_count",
     "login_locked_until",
+    "org_unit",
+    "denied_permissions",
 )
 _USER_COLS_SQL = ", ".join(_USER_COLUMNS)
 _USER_PLACEHOLDERS = ", ".join("?" for _ in _USER_COLUMNS)
@@ -98,6 +100,14 @@ def capture_users_from_pool(pool: DatabasePool) -> list[tuple[object, ...]]:
     with pool.connect() as conn:
         rows = conn.execute(f"SELECT {_USER_COLS_SQL} FROM users").fetchall()
     return [tuple(r) for r in rows]
+
+
+def _json_ready(row: tuple[object, ...]) -> tuple[object, ...]:
+    """Serialize JSON columns captured as parsed objects (PostgreSQL ``jsonb``)."""
+    return tuple(
+        json.dumps(value, ensure_ascii=False) if isinstance(value, (list, dict)) else value
+        for value in row
+    )
 
 
 def upsert_users_into_pool(pool: DatabasePool, users: list[tuple[object, ...]]) -> None:
@@ -111,8 +121,9 @@ def upsert_users_into_pool(pool: DatabasePool, users: list[tuple[object, ...]]) 
     dialect = pool.dialect
     with pool.transaction() as conn:
         for row in users:
-            pk = row[0]
-            rest = row[1:]
+            values = _json_ready(row)
+            pk = values[0]
+            rest = values[1:]
             cur = conn.execute(f"UPDATE users SET {set_clause} WHERE id = ?", (*rest, pk))
             if dialect == "sqlite":
                 updated = int(conn.execute("SELECT changes()").fetchone()[0]) > 0
@@ -121,7 +132,7 @@ def upsert_users_into_pool(pool: DatabasePool, users: list[tuple[object, ...]]) 
             if not updated:
                 conn.execute(
                     f"INSERT INTO users({_USER_COLS_SQL}) VALUES ({_USER_PLACEHOLDERS})",
-                    row,
+                    values,
                 )
 
 

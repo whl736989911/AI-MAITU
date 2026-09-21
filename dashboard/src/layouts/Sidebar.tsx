@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import type { OctopRole } from "../api/modules/auth";
 import AvatarDropdown from "../components/AvatarDropdown";
 import AppVersionBadge from "../components/AppVersionBadge";
 import CurrentVersionBadge from "../components/CurrentVersionBadge";
@@ -33,7 +34,7 @@ import {
 } from "./sidebarNav";
 import styles from "./Sidebar.module.less";
 import { typeSize } from "../utils/mobileTypeScale";
-import { DESKTOP_DRAG_REGION_CLASS } from "../utils/desktopChrome";
+import { BRAND, wordmark } from "../brand.generated";
 
 const NAV_GROUPS_STORAGE_KEY = "octop:sidebar-nav-groups";
 /** Minimal settings pane: skip the "设置" group header (duplicates the pane title). */
@@ -127,7 +128,7 @@ function NavItemButton({
   onNavigate: (path: string) => void;
   onExpandChatRail?: () => void;
   showChatRailExpand?: boolean;
-  role: "admin" | "user" | null;
+  role: OctopRole | null;
   hasUpdate: boolean;
   t: TFunction<"translation", undefined>;
 }) {
@@ -395,7 +396,7 @@ export default function Sidebar({
   const showChatRailExpand = !isMinimal && !chatSidebarOpen;
 
   const isRailCollapsed = collapsed && !isMobile;
-  const wordmarkSrc = isDark ? "/logo_name_dark.png" : "/logo_name.png";
+  const wordmarkSrc = wordmark(isDark);
 
   const selectMinimalPane = useCallback(
     (pane: MinimalNavPane, opts?: { expand?: boolean }) => {
@@ -457,8 +458,8 @@ export default function Sidebar({
   const brandInner = (
     <>
       <img
-        src={isRailCollapsed ? "/pwa-192.png" : wordmarkSrc}
-        alt="Octop"
+        src={isRailCollapsed ? BRAND.logo.mark : wordmarkSrc}
+        alt={BRAND.name.en}
         style={{
           height: isRailCollapsed ? 32 : isMobile ? 38 : 36,
           width: isRailCollapsed ? 32 : "auto",
@@ -723,7 +724,7 @@ export default function Sidebar({
       }}
     >
       <div
-        className={`${styles.sidebarBrand} ${DESKTOP_DRAG_REGION_CLASS}`}
+        className={styles.sidebarBrand}
         style={{
           display: "flex",
           alignItems: "center",

@@ -1,5 +1,6 @@
 import type { TFunction } from "i18next";
 import { Tooltip } from "antd";
+import type { OctopRole } from "../api/modules/auth";
 import { prefetchRoute } from "../routes/prefetch";
 import { COLLAPSED_WIDTH, type NavItem } from "./sidebarNav";
 import styles from "./Sidebar.module.less";
@@ -15,7 +16,7 @@ export default function SidebarCollapsedIconNav({
   items: NavItem[];
   selectedKey: string;
   onNavigate: (path: string) => void;
-  role: "admin" | "user" | null;
+  role: OctopRole | null;
   hasUpdate: boolean;
   t: TFunction<"translation", undefined>;
 }) {

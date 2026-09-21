@@ -1315,11 +1315,11 @@ class GlobalProcessor:
         """Expose selected knowledge-base ids for the search_knowledge tool."""
         if self._knowledge_services is None:
             return
-        bases = (
-            self._knowledge_services.knowledge_repo.list_all()
-            if is_admin
-            else self._knowledge_services.knowledge_repo.list_visible(user_id)
-        )
+        # One scope rule (``sharing.can_access``): the visible list carries the
+        # admin bypass as its first rule, so the old ``list_all() if is_admin``
+        # fork only repeated it — and a second admin branch here would read as a
+        # deliberate difference from every other mount point.
+        bases = self._knowledge_services.knowledge_repo.list_visible(user_id)
         extra_ids = self._agent_manager.default_knowledge_base_ids(agent_id) if agent_id else None
         stamp_turn_knowledge_config(
             request,

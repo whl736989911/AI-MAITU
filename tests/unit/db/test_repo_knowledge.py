@@ -9,7 +9,10 @@ import pytest
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.org_units import OrgUnitRepo
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.sharing import AclEntry, can_access
 from octop.infra.utils.paths import PathLayout
 
 
@@ -50,7 +53,7 @@ def test_knowledge_tables_migrated(db: SqlitePool) -> None:
         "knowledge_bases",
         "knowledge_documents",
     }.issubset(names)
-    assert v == 15
+    assert v == 21
     assert "knowledge_base_members" not in names
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
     assert "knowledge_base_id" in cols
@@ -94,7 +97,83 @@ def test_list_visible_owner_and_shared_base(
     assert kb.id in owner_visible
     assert kb.id in member_visible
     assert kb.id in other_visible
-    assert kb.shared is True
+
+
+def test_list_visible_is_what_the_access_rule_permits(repo: KnowledgeRepo, db: SqlitePool) -> None:
+    """Every viewer's base list is the rule's answer, entry by entry.
+
+    ``KnowledgeRepo.list_visible`` is the path the knowledge-base API lists
+    through. A second implementation of the rules — a SQL copy of
+    ``sharing.can_access``, say — shows up here as a disagreement with the rule.
+    """
+    units = OrgUnitRepo(db)
+    units.create(key="sales", label_zh="销售", label_en="Sales")
+    units.create(key="eng", label_zh="研发", label_en="Engineering")
+    users = UserRepo(db)
+    owner = users.create(username="kb_owner", password_hash="h", role="user", org_unit="sales")
+    peer = users.create(username="kb_peer", password_hash="h", role="user", org_unit="sales")
+    outsider = users.create(username="kb_outsider", password_hash="h", role="user", org_unit="eng")
+    auditor = users.create(username="kb_auditor", password_hash="h", role="auditor")
+    admin = users.create(username="kb_admin", password_hash="h", role="admin")
+
+    acl = ResourceAclRepo(db)
+    shapes = {
+        "private": ("private", None, ()),
+        "public": ("public", None, ()),
+        "unit": ("unit", "sales", ()),
+        "unit-grant": ("unit", "sales", (("unit", "eng"),)),
+        "user-grant": ("private", None, (("user", str(outsider)),)),
+        "role-grant": ("private", None, (("role", "auditor"),)),
+    }
+    created: dict[str, str] = {}
+    for name, (visibility, row_unit_key, grants) in shapes.items():
+        base = repo.create_base(owner_user_id=owner, name=f"KB {name}")
+        created[name] = base.id
+        acl.upsert(
+            AclEntry(
+                resource_type="knowledge_base",
+                resource_id=base.id,
+                owner_user_id=owner,
+                visibility=visibility,
+                unit_key=row_unit_key,
+                version=1,
+                grants=grants,
+            )
+        )
+
+    entries = {entry.resource_id: entry for entry in acl.list_for_type("knowledge_base")}
+    assert set(entries) == set(created.values())
+    viewers = {
+        "owner": owner,
+        "peer_sales": peer,
+        "outsider_eng": outsider,
+        "auditor": auditor,
+        "admin": admin,
+        "unknown": 999_999,
+    }
+    for name, user_id in viewers.items():
+        role, unit_key = acl.scope_for_user(user_id)
+        allowed = {
+            resource_id
+            for resource_id, entry in entries.items()
+            if can_access(entry, user_id=user_id, role=role, unit_key=unit_key)
+        }
+        assert {row.id for row in repo.list_visible(user_id)} == allowed, f"list/{name}"
+        assert (
+            acl.list_visible_resource_ids(
+                "knowledge_base", user_id=user_id, role=role, unit_key=unit_key
+            )
+            == allowed
+        ), f"ids/{name}"
+
+    # Named cells, so a rule change has to be a decision here too.
+    assert {row.id for row in repo.list_visible(peer)} == {
+        created["public"],
+        created["unit"],
+        created["unit-grant"],
+    }
+    assert {row.id for row in repo.list_visible(admin)} == set(created.values())
+    assert {row.id for row in repo.list_visible(999_999)} == {created["public"]}
 
 
 def test_knowledge_folders_and_nested_documents(repo: KnowledgeRepo, owner_id: int) -> None:

@@ -54,7 +54,7 @@
 
   .chatTitleBar {
     padding-inline: var(--chat-turn-rail-gutter)
-      max(var(--chat-column-pad-x, 24px), var(--window-controls-inset-end, 0px));
+      var(--chat-column-pad-x, 24px);
     padding-block: 0;
   }
 
@@ -94,11 +94,9 @@
   height: var(--fn-chat-chrome-height, 57px);
   min-height: var(--fn-chat-chrome-height, 57px);
   max-height: var(--fn-chat-chrome-height, 57px);
-  /* Match .chatInput gutters on the left; on desktop grow the right pad so
-     long titles do not sit under the frameless window controls. */
+  /* Match .chatInput gutters on the left; the right pad mirrors the title pad. */
   --chat-title-pad-x: var(--chat-column-pad-x);
-  padding: 0 max(var(--chat-title-pad-x), var(--window-controls-inset-end, 0px))
-    0 var(--chat-title-pad-x);
+  padding: 0 var(--chat-title-pad-x);
   border-bottom: none;
   background: var(--fn-bg-primary);
   color: var(--fn-text-primary);
@@ -351,15 +349,6 @@
 
 .noAgentsEmptyIcon {
   line-height: 1;
-}
-
-.noAgentsEmptyMascot {
-  display: block;
-  width: 160px;
-  height: 160px;
-  object-fit: contain;
-  user-select: none;
-  -webkit-user-drag: none;
 }
 
 .noAgentsEmptyTitle {

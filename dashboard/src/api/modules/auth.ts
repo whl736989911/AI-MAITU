@@ -42,14 +42,22 @@ export interface SsoIdentity {
   kind: string;
 }
 
+/**
+ * Dashboard role. ``admin`` bypasses every gate; ``unit_admin`` keeps the
+ * baseline module set and is scoped by its org unit instead of extra keys.
+ */
+export type OctopRole = "admin" | "unit_admin" | "user";
+
 export interface OctopUser {
   id: number;
   username: string;
-  role: "admin" | "user";
+  role: OctopRole;
   display_name: string | null;
   locale: string;
   /** Module permission keys; admin responses include the full catalog. */
   permissions?: string[];
+  /** Org unit key the account belongs to (``null`` = no unit scope). */
+  org_unit?: string | null;
   sso_linked?: boolean;
   sso_kind?: string | null;
   /** Linked SSO providers (multi-identity). */

@@ -1,0 +1,50 @@
+{
+  "$comment": "品牌配置 —— 唯一来源。改这里 + 跑 `uv run python scripts/apply_brand.py` 即可换品牌。",
+
+  "name": { "zh": "麦途智造", "en": "MAITU Smart Manufacturing" },
+  "full_name": { "zh": "苏州麦途", "en": "Suzhou Maitou" },
+  "short_name": { "zh": "麦途智造", "en": "MAITU" },
+
+  "description": {
+    "zh": "麦途智造 · 面向制造企业的 AI 工作平台",
+    "en": "MAITU Smart Manufacturing · AI workspace for manufacturers"
+  },
+
+  "logo": {
+    "mark": "/brand/mark-512.png",
+    "wordmark_light": "/brand/wordmark-light.png",
+    "wordmark_dark": "/brand/wordmark-dark.png",
+    "favicon": "/brand/favicon.png",
+    "apple_touch_icon": "/brand/apple-touch-icon.png",
+    "pwa_192": "/brand/pwa-192.png",
+    "pwa_512": "/brand/pwa-512.png"
+  },
+
+  "color": {
+    "$comment": "方案 B：brand 只用于标志；accent 是界面配色的默认值（用户仍可在个性化里换成其他预设）",
+    "brand": "#FE0000",
+    "accent": "#E5484D"
+  },
+
+  "pwa": {
+    "theme_color": "#ffffff",
+    "background_color": "#0f1117"
+  },
+
+  "links": {
+    "$comment": "账户菜单里的「项目地址」。留空 = 不显示该项（企业内部部署）。",
+    "project_repo": ""
+  },
+
+  "$tokens": {
+    "$comment": "源文件里用这些占位符，apply_brand.py 负责替换。这样脚本可重复运行、可白标。%BRAND_KEY% 专用于 i18n 的 key：key 是各语言共用的标识符，一律解析为语言无关的 slug（取 short_name.en 的字母数字，如 MAITU），绝不套用按语言分的产品名。",
+    "brand": "%BRAND%",
+    "full_name": "%BRAND_FULL%",
+    "key": "%BRAND_KEY%"
+  },
+
+  "$exceptions": {
+    "$comment": "以下字符串**不参与品牌替换**——它们指的是外部平台或上游项目，改了就是事实错误。",
+    "keep_literal": ["OctopBot"]
+  }
+}

@@ -15,6 +15,11 @@ def mock_server_and_user():
     user = MagicMock()
     user.id = 1
     user.is_admin = True
+    # Access is decided by ``sharing.can_access`` through ``user_scope``, which
+    # reads ``role``/``org_unit`` — the same shape the real ``User`` carries.
+    # ``is_admin`` alone is not enough.
+    user.role = "admin"
+    user.org_unit = None
 
     registry = MagicMock()
     registry.get_row.return_value = MagicMock(id="agent1")

@@ -55,3 +55,17 @@
 .rootDirActionBtn:hover:not(:disabled) {
   color: #262626;
 }
+
+/* Non-admin fallback: plain path entry, no host browsing. */
+.rootDirManual {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rootDirManualHint {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fn-text-tertiary);
+}
