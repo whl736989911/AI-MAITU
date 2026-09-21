@@ -7,12 +7,19 @@
  * page layout). Each row/card shows agent count; click opens a drawer
  * with that user's agents.
  *
- * Endpoints (all require admin role; backend returns 403 otherwise):
- *   GET    /api/users
- *   POST   /api/users
- *   PATCH  /api/users/{id}
- *   POST   /api/users/{id}/reset-password
- *   DELETE /api/users/{id}
+ * Authorization mirrors ``src/octop/api/routers/users.py`` (997fe63): the
+ * ``users`` module key opens the surface, the ``admin`` role owns everything
+ * that moves the boundary. A control the actor may not use is hidden, never
+ * disabled.
+ *   GET    /api/users                        ``users``
+ *   POST   /api/users                        ``users``; org_unit needs admin
+ *   PATCH  /api/users/{id}                   ``users``; role / org_unit /
+ *                                            disabled need admin
+ *                                            (``_assert_admin`` /
+ *                                            ``_assert_can_administer``)
+ *   POST   /api/users/{id}/reset-password    admin
+ *   POST   /api/users/{id}/unlock-login      ``users``
+ *   DELETE /api/users/{id}                   admin (``require_admin``)
  */
 
 import { useEffect, useMemo, useState, useCallback } from "react";
@@ -229,6 +236,8 @@ interface UserCardGridProps {
   onResetPassword: (row: UserRow) => void;
   onDelete: (row: UserRow) => Promise<void>;
   onUnlockLogin: (row: UserRow) => Promise<void>;
+  /** Admin-only affordances (enable toggle, reset, delete) are hidden without it. */
+  admin: boolean;
   nowSec: number;
 }
 
@@ -667,6 +676,7 @@ function UserCardGrid({
   onResetPassword,
   onDelete,
   onUnlockLogin,
+  admin,
   nowSec,
 }: UserCardGridProps) {
   const { t } = useTranslation();
@@ -737,15 +747,17 @@ function UserCardGrid({
                   <div className={styles.userCardHandle}>@{row.username}</div>
                 </div>
 
-                <Switch
-                  size="small"
-                  checked={!row.disabled}
-                  onChange={(checked) =>
-                    void onTogglePatch(row, { disabled: !checked })
-                  }
-                  className={styles.userCardSwitch}
-                  aria-label={t("common.enabled")}
-                />
+                {admin && (
+                  <Switch
+                    size="small"
+                    checked={!row.disabled}
+                    onChange={(checked) =>
+                      void onTogglePatch(row, { disabled: !checked })
+                    }
+                    className={styles.userCardSwitch}
+                    aria-label={t("common.enabled")}
+                  />
+                )}
               </div>
 
               <div className={styles.userCardMeta}>
@@ -853,43 +865,47 @@ function UserCardGrid({
                   </button>
                 </Tooltip>
 
-                <Tooltip
-                  title={t("adminUsers.resetPassword")}
-                  mouseEnterDelay={0.5}
-                >
-                  <button
-                    type="button"
-                    className={styles.userCardIconBtn}
-                    onClick={() => onResetPassword(row)}
-                    aria-label={t("adminUsers.resetPassword")}
-                  >
-                    <KeyRound size={15} />
-                  </button>
-                </Tooltip>
-
-                <Popconfirm
-                  title={t("adminUsers.deleteConfirm", {
-                    username: row.username,
-                  })}
-                  onConfirm={() => void onDelete(row)}
-                  disabled={isSelf}
-                >
+                {admin && (
                   <Tooltip
-                    title={
-                      isSelf ? t("adminUsers.deleteSelf") : t("common.delete")
-                    }
+                    title={t("adminUsers.resetPassword")}
                     mouseEnterDelay={0.5}
                   >
                     <button
                       type="button"
-                      className={`${styles.userCardIconBtn} ${styles.userCardIconBtnDanger}`}
-                      disabled={isSelf}
-                      aria-label={t("common.delete")}
+                      className={styles.userCardIconBtn}
+                      onClick={() => onResetPassword(row)}
+                      aria-label={t("adminUsers.resetPassword")}
                     >
-                      <Trash2 size={15} />
+                      <KeyRound size={15} />
                     </button>
                   </Tooltip>
-                </Popconfirm>
+                )}
+
+                {admin && (
+                  <Popconfirm
+                    title={t("adminUsers.deleteConfirm", {
+                      username: row.username,
+                    })}
+                    onConfirm={() => void onDelete(row)}
+                    disabled={isSelf}
+                  >
+                    <Tooltip
+                      title={
+                        isSelf ? t("adminUsers.deleteSelf") : t("common.delete")
+                      }
+                      mouseEnterDelay={0.5}
+                    >
+                      <button
+                        type="button"
+                        className={`${styles.userCardIconBtn} ${styles.userCardIconBtnDanger}`}
+                        disabled={isSelf}
+                        aria-label={t("common.delete")}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </Tooltip>
+                  </Popconfirm>
+                )}
 
                 <span className={styles.userCardFooterSpacer} />
 
@@ -1000,10 +1016,24 @@ export default function UsersListPanel() {
     return map;
   }, [permCatalog]);
 
+  /**
+   * Module keys this actor may hand out. The backend (``_assert_can_assign``)
+   * compares the whole submitted list against the actor's own keys, so a
+   * non-admin must not even be offered a key it does not hold — picking one
+   * would 403 the request it rides on.
+   */
+  const assignableCatalog = useMemo(() => {
+    if (admin) return permCatalog;
+    const held = new Set(currentUser?.permissions ?? []);
+    return permCatalog.filter((p) => held.has(p.key));
+  }, [admin, permCatalog, currentUser]);
+
   const baselinePermissions = useMemo(
     () =>
-      permCatalog.filter((p) => p.category === "settings").map((p) => p.key),
-    [permCatalog],
+      assignableCatalog
+        .filter((p) => p.category === "settings")
+        .map((p) => p.key),
+    [assignableCatalog],
   );
 
   const lang = normalizeUiLocale(i18n.language);
@@ -1057,6 +1087,21 @@ export default function UsersListPanel() {
     (row: UserRow) => row.id === currentUserId && row.role === "admin",
     [currentUserId],
   );
+
+  /**
+   * Whether the edit drawer may submit ``permissions`` for the target on
+   * screen. Admins grant anything; a non-admin grants only keys it holds, and
+   * ``_assert_can_assign`` rejects the whole list on a single foreign key — so
+   * a target carrying keys the actor lacks is saved without the field
+   * (omitted = untouched on both sides) instead of by a request that would
+   * 403 and take the display-name edit down with it.
+   */
+  const canSubmitPermissions = useMemo(() => {
+    if (admin) return true;
+    if (!editTarget || editTarget.role === "admin") return false;
+    const held = new Set(currentUser?.permissions ?? []);
+    return (editTarget.permissions ?? []).every((key) => held.has(key));
+  }, [admin, editTarget, currentUser]);
 
   const hasLockedUser = useMemo(
     () => rows.some((row) => row.login_locked),
@@ -1309,17 +1354,33 @@ export default function UsersListPanel() {
   const onEditSubmit = async (values: EditValues) => {
     if (!editTarget) return;
     setEditSubmitting(true);
+    // Role, department and module keys carry their own gates on the backend,
+    // and it refuses the *whole* PATCH over one forbidden field — so a field
+    // this actor may not write is left out rather than sent and rejected
+    // (omitted = keep the stored value).
+    const { workspace_root_dir, token_quota } = policyPayload(values, {
+      workspaceRootAllowed,
+    });
+    const body: Record<string, unknown> = {
+      display_name: values.display_name?.trim() || null,
+      email: values.email?.trim() || null,
+      token_quota,
+      // ``/filesystem/defaults`` is admin-only, so a drawer without the
+      // root-dir picker cannot show the value it would clear: keep it.
+      ...(workspaceRootAllowed ? { workspace_root_dir } : {}),
+    };
+    if (admin) {
+      body.role = values.role;
+      body.org_unit = values.role === "admin" ? null : values.org_unit ?? null;
+      body.permissions =
+        values.role === "admin" ? [] : values.permissions ?? [];
+    } else if (canSubmitPermissions) {
+      body.permissions = values.permissions ?? [];
+    }
     try {
       await request(`/users/${editTarget.id}`, {
         method: "PATCH",
-        body: JSON.stringify({
-          display_name: values.display_name?.trim() || null,
-          email: values.email?.trim() || null,
-          role: values.role,
-          org_unit: values.role === "admin" ? null : values.org_unit ?? null,
-          permissions: values.role === "admin" ? [] : values.permissions ?? [],
-          ...policyPayload(values, { workspaceRootAllowed }),
-        }),
+        body: JSON.stringify(body),
       });
       setEditTarget(null);
       editForm.resetFields();
@@ -1457,6 +1518,7 @@ export default function UsersListPanel() {
           }}
           onDelete={onDelete}
           onUnlockLogin={onUnlockLogin}
+          admin={admin}
           nowSec={nowSec}
         />
       ) : (
@@ -1585,15 +1647,23 @@ export default function UsersListPanel() {
             {
               title: t("common.enabled"),
               width: 72,
-              render: (_, row) => (
-                <Switch
-                  size="small"
-                  checked={!row.disabled}
-                  onChange={(checked) =>
-                    togglePatch(row, { disabled: !checked })
-                  }
-                />
-              ),
+              // Admin-only toggle: everyone else reads the state, no control.
+              render: (_, row) =>
+                admin ? (
+                  <Switch
+                    size="small"
+                    checked={!row.disabled}
+                    onChange={(checked) =>
+                      togglePatch(row, { disabled: !checked })
+                    }
+                  />
+                ) : (
+                  <span className={styles.userCellMuted}>
+                    {row.disabled
+                      ? t("adminUsers.statusDisabled")
+                      : t("adminUsers.statusEnabled")}
+                  </span>
+                ),
             },
             {
               title: t("adminUsers.colCreatedAt"),
@@ -1632,43 +1702,47 @@ export default function UsersListPanel() {
                       <Pencil size={14} />
                     </button>
                   </Tooltip>
-                  <Tooltip title={t("adminUsers.resetPassword")}>
-                    <button
-                      type="button"
-                      className={styles.userCardIconBtn}
-                      onClick={() => {
-                        setResetTarget(row);
-                        resetForm.resetFields();
-                      }}
-                      aria-label={t("adminUsers.resetPassword")}
-                    >
-                      <KeyRound size={14} />
-                    </button>
-                  </Tooltip>
-                  <Popconfirm
-                    title={t("adminUsers.deleteConfirm", {
-                      username: row.username,
-                    })}
-                    onConfirm={() => onDelete(row)}
-                    disabled={row.id === currentUserId}
-                  >
-                    <Tooltip
-                      title={
-                        row.id === currentUserId
-                          ? t("adminUsers.deleteSelf")
-                          : t("common.delete")
-                      }
-                    >
+                  {admin && (
+                    <Tooltip title={t("adminUsers.resetPassword")}>
                       <button
                         type="button"
-                        className={`${styles.userCardIconBtn} ${styles.userCardIconBtnDanger}`}
-                        disabled={row.id === currentUserId}
-                        aria-label={t("common.delete")}
+                        className={styles.userCardIconBtn}
+                        onClick={() => {
+                          setResetTarget(row);
+                          resetForm.resetFields();
+                        }}
+                        aria-label={t("adminUsers.resetPassword")}
                       >
-                        <Trash2 size={14} />
+                        <KeyRound size={14} />
                       </button>
                     </Tooltip>
-                  </Popconfirm>
+                  )}
+                  {admin && (
+                    <Popconfirm
+                      title={t("adminUsers.deleteConfirm", {
+                        username: row.username,
+                      })}
+                      onConfirm={() => onDelete(row)}
+                      disabled={row.id === currentUserId}
+                    >
+                      <Tooltip
+                        title={
+                          row.id === currentUserId
+                            ? t("adminUsers.deleteSelf")
+                            : t("common.delete")
+                        }
+                      >
+                        <button
+                          type="button"
+                          className={`${styles.userCardIconBtn} ${styles.userCardIconBtnDanger}`}
+                          disabled={row.id === currentUserId}
+                          aria-label={t("common.delete")}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </Tooltip>
+                    </Popconfirm>
+                  )}
                 </Space>
               ),
             },
@@ -1892,13 +1966,15 @@ export default function UsersListPanel() {
                 }
                 return (
                   <>
-                    <OrgUnitField options={orgUnitOptions} />
+                    {/* Binding a department is a permission grant: admin-only
+                        on create too (``_assert_admin``). */}
+                    {admin && <OrgUnitField options={orgUnitOptions} />}
                     <Form.Item
                       label={t("adminUsers.colPermissions")}
                       name="permissions"
                       className={styles.createUserPermItem}
                     >
-                      <PermissionCheckboxPicker catalog={permCatalog} />
+                      <PermissionCheckboxPicker catalog={assignableCatalog} />
                     </Form.Item>
                   </>
                 );
@@ -1999,22 +2075,25 @@ export default function UsersListPanel() {
               <CircleHelp size={15} strokeWidth={2} />
               <span>{t("adminUsers.permEditHint")}</span>
             </div>
-            <Form.Item
-              label={t("adminUsers.formRole")}
-              name="role"
-              rules={[{ required: true }]}
-              className={styles.createUserRoleItem}
-              extra={
-                editTarget && isSelfAdmin(editTarget)
-                  ? t("adminUsers.demoteSelf")
-                  : undefined
-              }
-            >
-              <RolePicker
-                options={createRoleOptions}
-                disabled={Boolean(editTarget && isSelfAdmin(editTarget))}
-              />
-            </Form.Item>
+            {/* ``_assert_admin``: role and department are admin-only writes. */}
+            {admin && (
+              <Form.Item
+                label={t("adminUsers.formRole")}
+                name="role"
+                rules={[{ required: true }]}
+                className={styles.createUserRoleItem}
+                extra={
+                  editTarget && isSelfAdmin(editTarget)
+                    ? t("adminUsers.demoteSelf")
+                    : undefined
+                }
+              >
+                <RolePicker
+                  options={createRoleOptions}
+                  disabled={Boolean(editTarget && isSelfAdmin(editTarget))}
+                />
+              </Form.Item>
+            )}
             <Form.Item
               noStyle
               shouldUpdate={(prev, cur) => prev.role !== cur.role}
@@ -2029,15 +2108,20 @@ export default function UsersListPanel() {
                     </div>
                   );
                 }
+                if (!admin && !canSubmitPermissions) {
+                  // Target holds module keys this actor may not grant; the
+                  // picker would only produce a 403 on save.
+                  return null;
+                }
                 return (
                   <>
-                    <OrgUnitField options={orgUnitOptions} />
+                    {admin && <OrgUnitField options={orgUnitOptions} />}
                     <Form.Item
                       label={t("adminUsers.colPermissions")}
                       name="permissions"
                       className={styles.createUserPermItem}
                     >
-                      <PermissionCheckboxPicker catalog={permCatalog} />
+                      <PermissionCheckboxPicker catalog={assignableCatalog} />
                     </Form.Item>
                   </>
                 );
