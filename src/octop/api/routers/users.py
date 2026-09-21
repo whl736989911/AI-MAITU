@@ -7,12 +7,15 @@ Two gates, deliberately distinct:
   actor itself holds;
 * the operations that move the authorization boundary itself — a role grant
   (whether the role is set at creation or by a later edit), another account's
-  password / disabled state / deletion, and department assignment — require the
-  ``admin`` role (``_assert_admin`` / ``_assert_can_administer``).
+  password / disabled state / deletion, department assignment, and permission
+  denies — require the ``admin`` role (``_assert_admin`` /
+  ``_assert_can_administer``).
 
 Guarding is on the *target*, not on "is this me": promoting yourself is the same
 escalation as promoting somebody else, and a department carries module grants,
-so binding an account to one is a permission grant by another name.
+so binding an account to one is a permission grant by another name. A deny is
+that same move run backwards: it subtracts, but it subtracts over the department
+too, and it can take the ``users`` key itself away from a colleague.
 """
 
 from __future__ import annotations
@@ -26,7 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from octop.api.deps import current_user, get_server, require_admin, require_permission
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role, User
-from octop.infra.users.permissions import PERMISSIONS
+from octop.infra.users.permissions import PERMISSIONS, validate_permission_keys
 from octop.infra.users.resource_policy import (
     normalize_token_quota,
     normalize_workspace_root_dir,
@@ -52,6 +55,10 @@ class UserCreateBody(BaseModel):
     org_unit: str | None = Field(
         default=None, max_length=64, description="Org unit key, or null for no unit scope."
     )
+    denied_permissions: list[str] | None = Field(
+        default=None,
+        description="Permission keys to deny this account, or null for none.",
+    )
     workspace_root_dir: str | None = None
     token_quota: int | None = Field(default=None, ge=0)
 
@@ -59,9 +66,10 @@ class UserCreateBody(BaseModel):
 class UserPatchBody(BaseModel):
     """Partial update; an omitted field keeps its stored value.
 
-    ``org_unit`` is tri-state: omitted keeps the binding, ``null`` clears it, a
-    key moves the account. It rides ``model_fields_set`` like ``email``, so an
-    omitted field is never confused with an explicit ``null``.
+    ``org_unit`` and ``denied_permissions`` are tri-state: omitted keeps the
+    stored value, ``null`` (or ``[]`` for denies) clears it, a value sets it.
+    They ride ``model_fields_set`` like ``email``, so an omitted field is never
+    confused with an explicit ``null``.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -72,6 +80,7 @@ class UserPatchBody(BaseModel):
     disabled: bool | None = None
     permissions: list[str] | None = None
     org_unit: str | None = Field(default=None, max_length=64)
+    denied_permissions: list[str] | None = None
     workspace_root_dir: str | None = None
     token_quota: int | None = Field(default=None, ge=0)
 
@@ -103,6 +112,9 @@ def _row_to_dict(r: Any, policy: Any | None = None) -> dict[str, Any]:
         # The editor round-trips this field, so a missing key would read as
         # "no unit" and re-open as "不指定（仅基础权限）".
         "org_unit": getattr(r, "org_unit", None),
+        # Same reason: a missing key would read as "no denies" and the next save
+        # would silently hand back every key the operator had taken away.
+        "denied_permissions": list(getattr(r, "denied_permissions", None) or []),
         **public_policy_fields(policy),
     }
 
@@ -160,6 +172,19 @@ def _assert_org_unit_exists(server: Any, unit_key: str) -> None:
             f"org unit {unit_key!r} not found",
             details={"unit_key": unit_key, "reason": f"unknown org unit {unit_key!r}"},
         )
+
+
+def _assert_denied_keys_known(denied: list[str] | None) -> list[str]:
+    """Return the deduped deny list, refusing a key the catalog does not have.
+
+    Same error shape as ``permissions`` (400). An unknown key stored in the
+    column is worse than an error: it reads as a deny but subtracts nothing, so
+    the operator would believe a key was taken away while it still resolves.
+    """
+    try:
+        return validate_permission_keys(denied or [])
+    except ValueError as exc:
+        raise OctopError(ErrorCode.FORBIDDEN, str(exc), status=400) from exc
 
 
 def _assert_can_assign(actor: User, permissions: list[str]) -> None:
@@ -249,6 +274,14 @@ async def create_user(
         # A department carries module grants, so this binds permissions.
         _assert_admin(actor, "bind an account to a department")
         _assert_org_unit_exists(server, body.org_unit)
+    # A deny outranks role, unit and grant, so writing one moves the
+    # authorization boundary — admin-only, exactly like the department binding
+    # above. An empty list is the stored default and moves nothing, so a
+    # ``users``-only operator creating a plain account is not turned away.
+    denied: list[str] = []
+    if body.denied_permissions:
+        _assert_admin(actor, "deny permissions for an account")
+        denied = _assert_denied_keys_known(body.denied_permissions)
     policy_kwargs = _policy_kwargs_from_body(body)
     if "workspace_root_dir" in policy_kwargs:
         normalize_workspace_root_dir(policy_kwargs["workspace_root_dir"])
@@ -271,6 +304,8 @@ async def create_user(
     )
     if body.org_unit is not None:
         await server.user_manager.set_org_unit(user.username, body.org_unit)
+    if denied:
+        await server.user_manager.set_denied_permissions(user.username, denied)
     if policy_kwargs:
         await server.user_manager.set_resource_policy(user.username, **policy_kwargs)
     row = server.user_manager.get_row(user.id)
@@ -332,6 +367,13 @@ async def patch_user(
         await server.user_manager.enable(row.username)
     if body.permissions is not None:
         await server.user_manager.set_permissions(row.username, body.permissions)
+    if "denied_permissions" in body.model_fields_set:
+        # Denies land after every grant above, because that is what they do:
+        # the key is taken away whatever granted it. Both directions are
+        # boundary moves — an explicit ``null``/``[]`` hands back whatever the
+        # deny was holding down — so neither is open to a non-admin.
+        _assert_admin(actor, "deny permissions for an account")
+        await server.user_manager.set_denied_permissions(row.username, body.denied_permissions)
     policy_kwargs = _policy_kwargs_from_body(body)
     if policy_kwargs:
         await server.user_manager.set_resource_policy(row.username, **policy_kwargs)

@@ -433,6 +433,21 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
     assert (
         await c.patch(f"/api/users/{victim_id}", headers=support, json={"org_unit": "ops"})
     ).status_code == 403
+    # A deny subtracts over the department grant, and can take the ``users`` key
+    # itself away from a colleague — same tier as the binding above.
+    assert (
+        await c.patch(
+            f"/api/users/{victim_id}", headers=support, json={"denied_permissions": ["browser"]}
+        )
+    ).status_code == 403
+    assert (
+        await c.patch(
+            f"/api/users/{me['id']}", headers=support, json={"denied_permissions": ["browser"]}
+        )
+    ).status_code == 403
+    assert (
+        await c.patch(f"/api/users/{victim_id}", headers=support, json={"denied_permissions": None})
+    ).status_code == 403
     # A department carries module grants, so binding *yourself* is escalation too.
     assert (
         await c.patch(f"/api/users/{me['id']}", headers=support, json={"org_unit": "ops"})
@@ -474,6 +489,33 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
             },
         )
     ).status_code == 403
+    # A deny planted at creation is the same write as the one refused above.
+    assert (
+        await c.post(
+            "/api/users",
+            headers=support,
+            json={
+                "username": "planted_denied",
+                "password": TEST_PASSWORD,
+                "role": "user",
+                "denied_permissions": ["users"],
+            },
+        )
+    ).status_code == 403
+    # An empty deny list is the stored default: it moves nothing, so a plain
+    # account that happens to carry the field is still creatable.
+    assert (
+        await c.post(
+            "/api/users",
+            headers=support,
+            json={
+                "username": "planted_empty",
+                "password": TEST_PASSWORD,
+                "role": "user",
+                "denied_permissions": [],
+            },
+        )
+    ).status_code == 201
     # Creating a plain account is what the module key is *for*; it stays open.
     created = await c.post(
         "/api/users",
@@ -492,6 +534,7 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
     assert "planted" not in usernames
     assert "planted_admin" not in usernames
     assert "planted_unit" not in usernames
+    assert "planted_denied" not in usernames
     assert (
         await c.post("/api/auth/login", json={"username": "victim", "password": TEST_PASSWORD})
     ).status_code == 200
@@ -535,6 +578,11 @@ async def test_admin_can_still_administer_accounts(env):
     bound = await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "ops"})
     assert bound.status_code == 200 and bound.json()["org_unit"] == "ops"
 
+    # Denies are the admin's write too, at creation and by later edit.
+    assert (
+        await c.patch(f"/api/users/{uid}", headers=auth, json={"denied_permissions": ["browser"]})
+    ).json()["denied_permissions"] == ["browser"]
+
     resident = await c.post(
         "/api/users",
         headers=auth,
@@ -566,3 +614,150 @@ async def test_admin_can_still_administer_accounts(env):
 
     assert (await c.delete(f"/api/users/{uid}", headers=auth)).status_code == 204
     assert (await c.get(f"/api/users/{uid}", headers=auth)).status_code == 404
+
+
+async def test_denied_permissions_roundtrip_and_tristate(env):
+    """Save → store → read back → echo, with omitted / null / list as three states."""
+    from tests.support.auth import TEST_PASSWORD
+
+    c, _srv, auth = env
+    created = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "alice",
+            "password": TEST_PASSWORD,
+            "role": "user",
+            "permissions": ["browser"],
+            "denied_permissions": ["browser"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["denied_permissions"] == ["browser"]
+    uid = created.json()["id"]
+
+    listed = (await c.get("/api/users", headers=auth)).json()
+    assert next(u for u in listed if u["id"] == uid)["denied_permissions"] == ["browser"]
+    assert (await c.get(f"/api/users/{uid}", headers=auth)).json()["denied_permissions"] == [
+        "browser"
+    ]
+
+    # Omitted field: kept (an unrelated edit does not hand the key back).
+    kept = await c.patch(f"/api/users/{uid}", headers=auth, json={"display_name": "Alice"})
+    assert kept.json()["display_name"] == "Alice"
+    assert kept.json()["denied_permissions"] == ["browser"]
+
+    # Explicit ``null`` and an empty list both clear.
+    assert (
+        await c.patch(f"/api/users/{uid}", headers=auth, json={"denied_permissions": None})
+    ).json()["denied_permissions"] == []
+    set_again = await c.patch(
+        f"/api/users/{uid}", headers=auth, json={"denied_permissions": ["channels"]}
+    )
+    assert set_again.json()["denied_permissions"] == ["channels"]
+    assert (
+        await c.patch(f"/api/users/{uid}", headers=auth, json={"denied_permissions": []})
+    ).json()["denied_permissions"] == []
+
+
+async def test_deny_outranks_department_and_grant(env):
+    """The third leg: ``role ∪ department ∪ grant − deny``, with deny last."""
+    from tests.support.auth import create_user, resolve_user_id
+
+    c, _srv, auth = env
+    await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "sales", "label_zh": "销售部", "label_en": "Sales"},
+    )
+    alice = await create_user(c, auth, username="alice", permissions=["browser", "channels"])
+    uid = await resolve_user_id(c, auth, "alice")
+
+    # Department leg: the unit grants ``users``; alice carries two direct grants.
+    assert (
+        await c.put(
+            "/api/org-units/sales/permissions", headers=auth, json={"permissions": ["users"]}
+        )
+    ).status_code == 200
+    assert (
+        await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "sales"})
+    ).status_code == 200
+    before = set((await c.get("/api/auth/me", headers=alice)).json()["permissions"])
+    assert {"browser", "channels", "users"} <= before
+    assert (await c.get("/api/users", headers=alice)).status_code == 200
+
+    denied = await c.patch(
+        f"/api/users/{uid}", headers=auth, json={"denied_permissions": ["users", "browser"]}
+    )
+    assert denied.status_code == 200, denied.text
+
+    after = set((await c.get("/api/auth/me", headers=alice)).json()["permissions"])
+    assert "users" not in after  # outranks the department grant
+    assert "browser" not in after  # outranks the direct grant
+    assert "channels" in after  # a key the deny does not name is untouched
+    # The module really closes, not just the profile payload.
+    assert (await c.get("/api/users", headers=alice)).status_code == 403
+
+    # The deny is what holds the keys down, not a stripped grant: clearing it
+    # hands both back, department grant included.
+    await c.patch(f"/api/users/{uid}", headers=auth, json={"denied_permissions": None})
+    restored = set((await c.get("/api/auth/me", headers=alice)).json()["permissions"])
+    assert {"browser", "channels", "users"} <= restored
+    assert (await c.get("/api/users", headers=alice)).status_code == 200
+
+
+async def test_deny_does_not_hold_down_an_admin(env):
+    """``admin`` bypasses everything — including the deny, which cannot lock it out."""
+    c, _srv, auth = env
+    admin_id = (await c.get("/api/auth/me", headers=auth)).json()["id"]
+
+    r = await c.patch(
+        f"/api/users/{admin_id}", headers=auth, json={"denied_permissions": ["users"]}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["denied_permissions"] == ["users"]
+
+    me = await c.get("/api/auth/me", headers=auth)
+    assert "users" in me.json()["permissions"]
+    assert (await c.get("/api/users", headers=auth)).status_code == 200
+
+
+async def test_deny_rejects_unknown_key_and_stores_nothing(env):
+    from tests.support.auth import TEST_PASSWORD
+
+    c, _srv, auth = env
+    uid = (
+        await c.post(
+            "/api/users",
+            headers=auth,
+            json={
+                "username": "alice",
+                "password": TEST_PASSWORD,
+                "role": "user",
+                "denied_permissions": ["browser"],
+            },
+        )
+    ).json()["id"]
+
+    bad = await c.patch(
+        f"/api/users/{uid}", headers=auth, json={"denied_permissions": ["not_a_key"]}
+    )
+    assert bad.status_code == 400, bad.text
+    # The refused write left the stored denies exactly as they were.
+    assert (await c.get(f"/api/users/{uid}", headers=auth)).json()["denied_permissions"] == [
+        "browser"
+    ]
+
+    refused = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "bob",
+            "password": TEST_PASSWORD,
+            "role": "user",
+            "denied_permissions": ["not_a_key"],
+        },
+    )
+    assert refused.status_code == 400, refused.text
+    usernames = [u["username"] for u in (await c.get("/api/users", headers=auth)).json()]
+    assert "bob" not in usernames
