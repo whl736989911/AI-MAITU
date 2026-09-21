@@ -80,6 +80,43 @@ _ROOT_SCHEMA_KEYS = frozenset({"type", "properties", "required", "title", "descr
 _FIELD_SCHEMA_KEYS = frozenset({"type", "title", "description", "format", "enum", "items"})
 _UI_SCHEMA_KEYS = frozenset({"order", "widgets"})
 
+AGENT_KEYS = frozenset(
+    {
+        "model",
+        "temperature",
+        "top_p",
+        "max_tokens",
+        "max_iters",
+        "max_input_length",
+        "tools_disabled",
+        "skills",
+        "subagents",
+        "mcp_servers",
+        "knowledge_base_ids",
+    }
+)
+"""Capability keys a feature may declare on its own agent (design 5.1/5.2).
+
+``None``/absent means "inherit the caller's agent"; a list is a scope, and an
+empty list is the explicit "none of them" — which is why every one of these is
+optional but null is a real value rather than a missing one.
+"""
+
+_AGENT_ID_LIST_KEYS: tuple[str, ...] = (
+    "skills",
+    "subagents",
+    "mcp_servers",
+    "knowledge_base_ids",
+)
+_AGENT_NUMBER_RANGES: dict[str, tuple[float, float, bool]] = {
+    # key → (minimum, maximum, integer-only)
+    "temperature": (0.0, 2.0, False),
+    "top_p": (0.0, 1.0, False),
+    "max_tokens": (1, float("inf"), True),
+    "max_iters": (1, float("inf"), True),
+    "max_input_length": (1_000, float("inf"), True),
+}
+
 
 def validate_manifest(data: dict[str, Any], dir_name: str | None = None) -> list[str]:
     """Return the problems found in one ``feature.json`` payload (empty = valid).
@@ -142,6 +179,9 @@ def validate_manifest(data: dict[str, Any], dir_name: str | None = None) -> list
 
     if "permissions" in data:
         _check_permissions(data["permissions"], errors)
+
+    if "agent" in data:
+        _check_agent(data["agent"], errors)
 
     return errors
 
@@ -300,6 +340,80 @@ def _check_permissions(node: Any, errors: list[str]) -> None:
             errors.append(f"permissions.{key} must be an array of strings")
 
 
+def _check_agent(node: Any, errors: list[str]) -> None:
+    """Validate the capability layer: what this feature's own agent may use (5.1/5.2).
+
+    Every problem is reported: a capability the run could not honour is exactly
+    the kind of silent hole this format refuses to store. Two checks exist only
+    here — the built-in tool names must be real tools, and the tools the platform
+    keeps available for every run (``CRITICAL_TOOLS``) may not be disabled —
+    because ``normalize_tools_disabled`` drops those names without a word, so a
+    stored entry would look applied while doing nothing.
+    """
+    from octop.infra.agents.tool_catalog import (  # noqa: PLC0415
+        BUILTIN_TOOL_CATALOG,
+        CRITICAL_TOOLS,
+    )
+
+    if not isinstance(node, dict):
+        errors.append("agent must be an object")
+        return
+    unknown = sorted(set(node) - AGENT_KEYS)
+    if unknown:
+        errors.append(f"agent uses unsupported keys: {_quoted(unknown)}")
+
+    model = node.get("model")
+    if model is not None:
+        if not isinstance(model, str) or not model.strip():
+            errors.append("agent.model must be a non-empty 'provider/model' string or null")
+        elif "/" not in model:
+            errors.append("agent.model must name a model as 'provider/model'")
+
+    for key, (low, high, integer_only) in _AGENT_NUMBER_RANGES.items():
+        value = node.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            errors.append(f"agent.{key} must be a number or null")
+            continue
+        if integer_only and not isinstance(value, int):
+            errors.append(f"agent.{key} must be an integer or null")
+        elif not low <= value <= high:
+            errors.append(f"agent.{key} must be between {_number(low)} and {_number(high)}")
+
+    for key in _AGENT_ID_LIST_KEYS:
+        value = node.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, list) or not all(
+            isinstance(entry, str) and entry.strip() for entry in value
+        ):
+            errors.append(f"agent.{key} must be an array of non-empty strings or null")
+            continue
+        if len(set(value)) != len(value):
+            errors.append(f"agent.{key} must not repeat the same entry")
+
+    disabled = node.get("tools_disabled")
+    if isinstance(disabled, list) and all(isinstance(entry, str) for entry in disabled):
+        known = {entry.name for entry in BUILTIN_TOOL_CATALOG}
+        unmountable = sorted({name for name in disabled if name in CRITICAL_TOOLS})
+        if unmountable:
+            errors.append(
+                f"agent.tools_disabled cannot disable tools the platform always keeps: "
+                f"{_quoted(unmountable)}"
+            )
+        unknown_tools = sorted(
+            {name for name in disabled if name not in known and name not in CRITICAL_TOOLS}
+        )
+        if unknown_tools:
+            errors.append(f"agent.tools_disabled names unknown built-in tools: {_quoted(unknown_tools)}")
+
+
+def _number(value: float) -> str:
+    """Render a range bound without a trailing ``.0`` on whole numbers."""
+    return str(int(value)) if float(value).is_integer() else str(value)
+
+
 _FEATURE_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "MAITU Smart Manufacturing feature definition (feature.json)",
@@ -353,6 +467,7 @@ _FEATURE_JSON_SCHEMA: dict[str, Any] = {
         "prompt": {"$ref": "#/$defs/prompt"},
         "output": {"$ref": "#/$defs/output"},
         "permissions": {"$ref": "#/$defs/permissions"},
+        "agent": {"$ref": "#/$defs/agent"},
     },
     "$defs": {
         "localized": {
@@ -462,6 +577,90 @@ _FEATURE_JSON_SCHEMA: dict[str, Any] = {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Roles allowed to run this feature.",
+                },
+            },
+        },
+        "agent": {
+            "type": "object",
+            "additionalProperties": False,
+            "description": (
+                "Capability layer of this feature's own agent: what every caller's run "
+                "of this feature may use. Absent/null keys inherit the caller's agent; "
+                "a list is a scope and [] means none. Knowledge bases and MCP connectors "
+                "are further limited to what the caller may see (design 5.2)."
+            ),
+            "properties": {
+                "model": {
+                    "anyOf": [{"type": "string", "pattern": "^[^/]+/.+$"}, {"type": "null"}],
+                    "description": "Model reference 'provider/model'; null inherits the agent.",
+                },
+                "temperature": {
+                    "anyOf": [
+                        {"type": "number", "minimum": 0, "maximum": 2},
+                        {"type": "null"},
+                    ]
+                },
+                "top_p": {
+                    "anyOf": [
+                        {"type": "number", "minimum": 0, "maximum": 1},
+                        {"type": "null"},
+                    ]
+                },
+                "max_tokens": {
+                    "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
+                    "description": "Maximum output tokens per model call.",
+                },
+                "max_iters": {
+                    "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
+                    "description": "Step budget of one run (LangGraph recursion limit).",
+                },
+                "max_input_length": {
+                    "anyOf": [{"type": "integer", "minimum": 1000}, {"type": "null"}],
+                    "description": "Context-window cap in tokens for this feature's runs.",
+                },
+                "tools_disabled": {
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "null"},
+                    ],
+                    "description": (
+                        "Built-in tools this feature never sees. Names must exist in the "
+                        "built-in catalog, and the platform's always-on tools cannot be listed."
+                    ),
+                },
+                "skills": {
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "null"},
+                    ],
+                    "description": "Skills the feature may use; limited to what the caller has.",
+                },
+                "subagents": {
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "null"},
+                    ],
+                    "description": "Subagents the feature may dispatch; no others are callable.",
+                },
+                "mcp_servers": {
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "null"},
+                    ],
+                    "description": (
+                        "Connectors this feature may use. The caller's own connector "
+                        "credentials are used, and only connectors they can reach."
+                    ),
+                },
+                "knowledge_base_ids": {
+                    "anyOf": [
+                        {"type": "array", "items": {"type": "string"}},
+                        {"type": "null"},
+                    ],
+                    "description": (
+                        "Knowledge bases this feature searches; only ones the caller "
+                        "may read are mounted."
+                    ),
                 },
             },
         },

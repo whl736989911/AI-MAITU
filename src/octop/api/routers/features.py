@@ -19,6 +19,8 @@ from pydantic import BaseModel, ConfigDict, Field
 from octop.api.deps import get_server, require_admin, require_permission
 from octop.api.routers.chat.turn import resolve_thread_id
 from octop.infra.agents.middleware.feature_prompt import stamp_feature_system_prompt
+from octop.infra.agents.providers.store import enabled_model_refs
+from octop.infra.agents.tool_catalog import BUILTIN_TOOL_CATALOG, CRITICAL_TOOLS
 from octop.infra.db.repos.feature_cases import FeatureCaseRow
 from octop.infra.db.repos.feature_rules import (
     SCOPE_PERSONAL,
@@ -28,6 +30,7 @@ from octop.infra.db.repos.feature_rules import (
 from octop.infra.db.repos.feature_tasks import FeatureTaskRow
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.features import (
+    CapabilityUnavailable,
     Feature,
     FeatureAlreadyExists,
     FeatureCatalog,
@@ -35,8 +38,11 @@ from octop.infra.features import (
     FeatureNotFound,
     FeatureReadOnly,
     FeatureStore,
+    ResolvedCapability,
     ScopedRule,
     build_user_prompt,
+    resolve_capability,
+    stamp_capability,
 )
 from octop.infra.features.diff import diff_segments
 from octop.infra.features.rules import (
@@ -55,6 +61,7 @@ from octop.infra.features.rules import (
 )
 from octop.infra.features.schema import ALLOWED_ICONS, ALLOWED_OUTPUT_KINDS
 from octop.infra.gateway.process import build_harness_request
+from octop.infra.knowledge.default_open import stamp_turn_knowledge_config
 from octop.infra.users.identity import Role
 from octop.infra.utils.llm_text import strip_thinking
 
@@ -113,6 +120,7 @@ class FeatureDefinitionBody(BaseModel):
     prompt: dict[str, Any] = Field(default_factory=dict)
     output: dict[str, Any] = Field(default_factory=dict)
     permissions: dict[str, Any] | None = None
+    agent: dict[str, Any] | None = None
     version: int | None = None
 
 
@@ -176,6 +184,10 @@ def _feature_dict(feature: Feature) -> dict[str, Any]:
             "ui_schema": feature.ui_schema,
             "user_template": feature.user_template,
             "system_prompt": feature.system_prompt,
+            # ``None`` (not ``{}``) for a feature that declares no capability
+            # layer: the editor must be able to tell "nothing declared" from
+            # "declared, and everything in it is empty".
+            "agent": feature.agent.as_dict() if feature.agent is not None else None,
         }
     )
     return data
@@ -202,6 +214,103 @@ def _unit_keys(server: Any) -> list[str]:
     return sorted(keys)
 
 
+def _model_choices(server: Any) -> list[dict[str, str]]:
+    """Chat-eligible model refs this instance can actually run."""
+    store = server.app_runtime.agent_registry.providers
+    refs: set[str] = set()
+    for row in store.iter_usable_rows():
+        refs |= enabled_model_refs(row.name, row.get_models(), provider_api_key=row.api_key)
+    return [{"ref": ref, "label": ref.split("/", 1)[-1]} for ref in sorted(refs)]
+
+
+def _tool_choices() -> list[dict[str, str]]:
+    """Built-in tools a feature may switch off — never the always-on ones.
+
+    The always-on names are left out rather than offered and refused: the format
+    rejects them outright, so the editor must not be able to pick one.
+    """
+    return [
+        {"name": entry.name, "category": entry.category}
+        for entry in BUILTIN_TOOL_CATALOG
+        if entry.name not in CRITICAL_TOOLS
+    ]
+
+
+def _connector_service(server: Any) -> Any:
+    from octop.infra.connectors.service import ConnectorService  # noqa: PLC0415
+
+    return ConnectorService(
+        repo=server.services.repos.connector_repo,
+        secret_repo=server.services.secret_repo,
+        settings_repo=server.services.settings_repo,
+        config=server.services.config,
+    )
+
+
+def _connector_choices(server: Any, user: Any) -> list[dict[str, str]]:
+    """Connector names the caller may mount, labelled with their display names."""
+    svc = _connector_service(server)
+    labels: dict[str, str] = {}
+    for instance in svc.list_instances_for_api(int(user.id)):
+        name = str(instance.get("mcp_server_name") or "").strip()
+        if name and name not in labels:
+            labels[name] = str(instance.get("display_name") or name).strip() or name
+    return [
+        {"name": name, "label": labels.get(name, name)}
+        for name in svc.list_active_mcp_server_names(int(user.id))
+    ]
+
+
+def _knowledge_base_choices(server: Any, user: Any) -> list[dict[str, str]]:
+    """Knowledge bases the caller may read (the same scope the runs resolve against)."""
+    bases = server.services.repos.knowledge_repo.list_visible(int(user.id))
+    return [{"id": str(base.id), "name": str(base.name)} for base in bases]
+
+
+async def _agent_scoped_choices(server: Any, user: Any, key: str) -> list[str]:
+    """Skills / subagents of the caller's own agent — what a run could ever use.
+
+    A caller with no agent of their own (an account that never opened the
+    dashboard) gets an empty list rather than an error: the editor simply offers
+    nothing to pick.
+    """
+    try:
+        agent_id = _run_agent_id(server, int(user.id))
+    except OctopError:
+        return []
+    registry = server.app_runtime.agent_registry
+    if key == "skills":
+        summaries = await registry.list_skill_summaries(agent_id)
+        return sorted(
+            {
+                str(summary.get("name") or "")
+                for summary in summaries
+                if summary.get("enabled")
+            }
+            - {""}
+        )
+    summaries = await registry.list_subagent_summaries(agent_id)
+    return sorted({str(row.get("name") or "") for row in summaries} - {""})
+
+
+async def _capability_choices(server: Any, user: Any) -> dict[str, Any]:
+    """Everything the capability layer of a definition may name, for *user*.
+
+    Every list is resolved through the caller's own visibility (their connectors,
+    their readable knowledge bases, their agent's skills and subagents), so the
+    editor offers exactly what a run started by this caller could really use — the
+    same rule the run path applies (design 5.2).
+    """
+    return {
+        "models": _model_choices(server),
+        "tools": _tool_choices(),
+        "skills": await _agent_scoped_choices(server, user, "skills"),
+        "subagents": await _agent_scoped_choices(server, user, "subagents"),
+        "mcp_servers": _connector_choices(server, user),
+        "knowledge_bases": _knowledge_base_choices(server, user),
+    }
+
+
 def _require_feature(server: Any, feature_id: str) -> Feature:
     catalog: FeatureCatalog | None = server.feature_catalog
     feature = None if catalog is None else catalog.get(feature_id)
@@ -219,9 +328,54 @@ def _run_agent_id(server: Any, user_id: int) -> str:
 
 
 def _failure_reason(exc: Exception) -> str:
-    if isinstance(exc, _FeatureRunFailed):
+    if isinstance(exc, (_FeatureRunFailed, CapabilityUnavailable)):
         return str(exc)
     return f"{type(exc).__name__}: {exc}"
+
+
+async def _stamp_capability(
+    server: Any,
+    request: dict[str, Any],
+    capability: ResolvedCapability,
+    *,
+    agent_id: str,
+    user_id: int,
+    is_admin: bool,
+    locale: str,
+) -> None:
+    """Put a resolved capability onto the run's harness request.
+
+    The two lookups that make design 5.2 real happen here: the connectors are
+    loaded *with the caller's credentials* (``prepare_chat_mcp`` taking
+    ``connector_user_id`` — on an agent that is not theirs the tools ride the
+    per-turn registry instead of the agent), and the knowledge bases are stamped
+    from the caller's visible set, which is also what builds the catalog the
+    ``search_knowledge`` tool description is written from.
+    """
+    stamp_capability(request, capability)
+    if capability.mcp_servers:
+        failed = await server.app_runtime.agent_registry.prepare_chat_mcp(
+            agent_id,
+            list(capability.mcp_servers),
+            connector_user_id=user_id,
+        )
+        if failed:
+            raise _FeatureRunFailed(
+                f"feature connectors could not be loaded for this caller: {', '.join(failed)}"
+            )
+        request["mcp_servers"] = list(capability.mcp_servers)
+    if capability.knowledge_base_ids is not None:
+        # The scope was already intersected with what this caller may read; the
+        # list is re-read here because the catalog the tool is described from is
+        # built from the same visible set.
+        stamp_turn_knowledge_config(
+            request,
+            visible_bases=server.services.repos.knowledge_repo.list_visible(user_id),
+            explicit_ids=list(capability.knowledge_base_ids),
+            owner_user_id=user_id,
+            is_admin=is_admin,
+            locale=locale,
+        )
 
 
 async def _run_agent_turn(
@@ -231,6 +385,9 @@ async def _run_agent_turn(
     user_id: int,
     text: str,
     system_prompt: str | None = None,
+    capability: ResolvedCapability | None = None,
+    is_admin: bool = False,
+    locale: str = "zh",
 ) -> str:
     """Run one non-interactive agent turn and return its visible text.
 
@@ -240,6 +397,14 @@ async def _run_agent_turn(
     never touched, and neither is the thread, because the text is not part of the
     messages the checkpointer stores. ``None`` (the default) leaves the request
     exactly as it was before feature system prompts existed.
+
+    *capability* is the feature's declared capability layer already resolved for
+    this caller (:func:`~octop.infra.features.capability.resolve_capability`). It
+    rides the same request: model, runtime knobs, skills, tools and subagents on
+    ``configurable``, the caller's own connector tools through
+    ``prepare_chat_mcp``, and the knowledge-base scope through
+    ``stamp_turn_knowledge_config`` — every one of them scoped to this run, none of
+    them written to the agent.
     """
     gateway = server.app_runtime.gateway
     _thread_id, session_key = await resolve_thread_id(
@@ -256,6 +421,7 @@ async def _run_agent_turn(
     # router does (``agents.py`` calling ``agent_registry.start``).
     if not _is_agent_running(server, agent_id):
         await server.app_runtime.agent_registry.start(agent_id)
+    model = capability.model if capability is not None else None
     request = build_harness_request(
         thread_id=session.thread_id,
         user_id=session.user_id,
@@ -263,10 +429,20 @@ async def _run_agent_turn(
         session_key=session_key,
         source=session.channel_type,
         text=text,
-        model=None,
+        model=model,
         message_kwargs=None,
     )
     stamp_feature_system_prompt(request, system_prompt)
+    if capability is not None:
+        await _stamp_capability(
+            server,
+            request,
+            capability,
+            agent_id=agent_id,
+            user_id=user_id,
+            is_admin=is_admin,
+            locale=locale,
+        )
     output: str | None = None
 
     async def _stream() -> None:
@@ -305,14 +481,16 @@ async def list_features(
 
 @router.get("/_meta", summary="Choices the feature editor offers")
 async def feature_meta(
-    _user: Any = Depends(require_permission("features")),
+    user: Any = Depends(require_permission("features")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Metadata for authoring a definition: unit keys, icons, output kinds.
+    """Metadata for authoring a definition: units, icons, output kinds, capability.
 
     ``bundled_ids`` is what tells the editor which definitions it must not offer
     to edit — it comes from the store's own writability test, so a greyed-out
-    button and a refused write can never disagree.
+    button and a refused write can never disagree. ``capabilities`` lists what the
+    *caller* may name in a definition's ``agent`` block, resolved through their own
+    visibility exactly like the runs are.
     """
     store = _require_store(server)
     return {
@@ -320,6 +498,7 @@ async def feature_meta(
         "icons": list(ALLOWED_ICONS),
         "output_kinds": list(ALLOWED_OUTPUT_KINDS),
         "bundled_ids": store.read_only_ids(),
+        "capabilities": await _capability_choices(server, user),
     }
 
 
@@ -398,6 +577,12 @@ async def run_feature(
     carries the run's snapshot too (which agent ran it, which approved rules
     went into the prompt): a failed run needs that diagnosis as much as a
     successful one, and nothing else records it.
+
+    The feature's capability layer is resolved against *this* caller first
+    (design 5.2): their connectors, their readable knowledge bases, their agent's
+    skills and subagents. What the caller cannot reach is logged rather than
+    silently dropped, and a model the feature declares that this instance cannot
+    run fails the run outright — a feature never quietly runs on another model.
     """
     assert server.services is not None
     feature = _require_feature(server, feature_id)
@@ -412,6 +597,23 @@ async def run_feature(
     )
     rule_ids = json.dumps([rule.id for rule in rules], ensure_ascii=False)
     try:
+        capability = await resolve_capability(
+            server,
+            feature.agent,
+            agent_id=agent_id,
+            user=user,
+        )
+        logger.info(
+            "feature %s run scope user=%s agent=%s %s",
+            feature.id,
+            user.id,
+            agent_id,
+            json.dumps(
+                capability.audit() if capability is not None else {"declared": False},
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        )
         output = await _run_agent_turn(
             server,
             agent_id=agent_id,
@@ -424,6 +626,9 @@ async def run_feature(
                 rules=[ScopedRule(text=rule.rule_text, scope=rule.scope) for rule in rules],
             ),
             system_prompt=feature.system_prompt,
+            capability=capability,
+            is_admin=bool(getattr(user, "is_admin", False)),
+            locale=str(getattr(user, "locale", None) or "zh"),
         )
     except Exception as exc:
         reason = _failure_reason(exc)

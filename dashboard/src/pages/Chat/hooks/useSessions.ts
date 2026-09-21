@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
+import { apiErrorMessage } from "../../../utils/apiError";
+import { message as antMessage } from "../../../utils/antdMessage";
 import * as chatStore from "./chatStore";
 import { onSessionEvent } from "./chatStore";
 import { formatThreadTitle } from "../utils/threadTitle";
@@ -309,6 +312,7 @@ export function resetSessionStoreForTests() {
 
 export function useSessions(agentId: string | null) {
   syncStoreToAgent(agentId);
+  const { t } = useTranslation();
   const { sessions, loading, hasMore, loadingMore } = useSyncExternalStore(
     subscribeSessionStore,
     getSessionSnapshot,
@@ -509,29 +513,53 @@ export function useSessions(agentId: string | null) {
   );
 
   const pinSession = useCallback(
-    (id: string, pinned: boolean) => {
+    async (id: string, pinned: boolean): Promise<boolean> => {
+      if (!agentId || !id) return false;
+      const previous = _sessions.find((s) => s.id === id)?.pinned;
       setModuleSessions((prev) =>
         sortSessions(prev.map((s) => (s.id === id ? { ...s, pinned } : s))),
       );
-      if (agentId) {
-        void octopThreadsApi.patch(agentId, id, { pinned }).catch(() => {});
+      try {
+        await octopThreadsApi.patch(agentId, id, { pinned });
+        return true;
+      } catch (error) {
+        // A rejected PATCH must not keep rendering as if it had been stored.
+        if (previous !== undefined) {
+          setModuleSessions((prev) =>
+            sortSessions(
+              prev.map((s) => (s.id === id ? { ...s, pinned: previous } : s)),
+            ),
+          );
+        }
+        antMessage.error(apiErrorMessage(error, t("chat.pinFailed"), t));
+        return false;
       }
     },
-    [agentId],
+    [agentId, t],
   );
 
   const renameSession = useCallback(
-    (id: string, name: string) => {
+    async (id: string, name: string): Promise<boolean> => {
       const next = formatThreadTitle(name) || name.trim();
-      if (!next) return;
+      if (!next || !agentId || !id) return false;
+      const previous = _sessions.find((s) => s.id === id)?.name;
       setModuleSessions((prev) =>
         prev.map((s) => (s.id === id ? { ...s, name: next } : s)),
       );
-      if (agentId) {
-        void octopThreadsApi.rename(agentId, id, next).catch(() => {});
+      try {
+        await octopThreadsApi.rename(agentId, id, next);
+        return true;
+      } catch (error) {
+        if (previous !== undefined) {
+          setModuleSessions((prev) =>
+            prev.map((s) => (s.id === id ? { ...s, name: previous } : s)),
+          );
+        }
+        antMessage.error(apiErrorMessage(error, t("chat.renameFailed"), t));
+        return false;
       }
     },
-    [agentId],
+    [agentId, t],
   );
 
   const syncSession = useCallback(

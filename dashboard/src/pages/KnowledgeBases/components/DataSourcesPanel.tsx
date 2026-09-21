@@ -1,19 +1,17 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  Alert,
   App,
   Button,
   Form,
   Input,
   Modal,
   Segmented,
-  Select,
   Spin,
   Tag,
   Tooltip,
   Typography,
 } from "antd";
-import { FileUp, Link2, Plug, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { FileUp, Link2, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { ResizableTable } from "../../../components/ResizableTable";
@@ -53,11 +51,23 @@ type CreateFormValues = {
   name: string;
   kind: DataSourceKind;
   url?: string;
-  connector_id?: string;
 };
 
-/** Kinds whose ingest exists today; the rest are register-only. */
-const SYNCABLE_KIND: DataSourceKind = "upload";
+/**
+ * Kinds whose sync ingests content: ``upload`` replays a document of the base,
+ * ``url`` fetches the page the source points at.
+ *
+ * ``connector`` is deliberately ``false`` — a connector instance carries
+ * credentials for an MCP server, and the product has no way to pull documents
+ * through one. The create form does not offer it either (see ``kindOptions``);
+ * existing connector sources still list, and still report that they cannot sync.
+ */
+const SYNCABLE_KIND: Record<DataSourceKind, boolean> = {
+  upload: true,
+  url: true,
+  connector: false,
+};
+const DEFAULT_KIND: DataSourceKind = "upload";
 
 function syncStatusColor(status: DataSourceSyncStatus) {
   if (status === "ok") return "success";
@@ -89,10 +99,12 @@ export default function DataSourcesPanel({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const requestGate = useRef(createDetailRequestGate());
 
-  const selectedKind = Form.useWatch("kind", form) ?? SYNCABLE_KIND;
+  const selectedKind = Form.useWatch("kind", form) ?? DEFAULT_KIND;
   // Both backend gates for a write: the module key (``require_permission``) and
   // write access to the base itself.
   const canWrite = canWriteBase && userCanKey(user, PERM.knowledgeBases);
+  // Connector instances are only read to label a legacy connector row.
+  const needsConnectorNames = sources.some((source) => source.kind === "connector");
 
   const load = useCallback(
     async (options?: { silent?: boolean }) => {
@@ -144,23 +156,26 @@ export default function DataSourcesPanel({
     [connectors],
   );
 
+  useEffect(() => {
+    // Only a connector source needs instance names; nothing else pays for it.
+    if (needsConnectorNames && connectors === null) void loadConnectors();
+  }, [connectors, loadConnectors, needsConnectorNames]);
+
   const openCreate = () => {
     form.resetFields();
     setFile(null);
     setCreateOpen(true);
-    // Instance names are only needed to label connector sources; fetch once.
-    if (connectors === null) void loadConnectors();
   };
 
   const create = async () => {
     const values = await form.validateFields();
-    if (values.kind === SYNCABLE_KIND && !file) {
+    if (values.kind === "upload" && !file) {
       message.warning(t("knowledgeBases.dataSources.fileRequired"));
       return;
     }
     setSubmitting(true);
     try {
-      if (values.kind === SYNCABLE_KIND && file) {
+      if (values.kind === "upload" && file) {
         // An upload source ingests a document of this base: put the file there
         // first, then register the source that points at it.
         const document = await knowledgeBasesApi.uploadDocument(
@@ -172,7 +187,7 @@ export default function DataSourcesPanel({
         try {
           await dataSourcesApi.create(baseId, {
             name: values.name.trim(),
-            kind: SYNCABLE_KIND,
+            kind: "upload",
             config: { document_id: document.id },
           });
         } catch (error) {
@@ -189,17 +204,12 @@ export default function DataSourcesPanel({
           await load({ silent: true });
           return;
         }
-      } else if (values.kind === "url") {
+      } else {
+        // A link source has nothing to store here: the sync fetches the URL.
         await dataSourcesApi.create(baseId, {
           name: values.name.trim(),
           kind: "url",
           config: { url: (values.url ?? "").trim() },
-        });
-      } else {
-        await dataSourcesApi.create(baseId, {
-          name: values.name.trim(),
-          kind: "connector",
-          config: { connector_id: values.connector_id },
         });
       }
       setCreateOpen(false);
@@ -285,15 +295,9 @@ export default function DataSourcesPanel({
           </span>
         ),
       },
-      {
-        value: "connector",
-        label: (
-          <span className={styles.kindOption}>
-            <Plug size={13} strokeWidth={1.8} />
-            {t("knowledgeBases.dataSources.kinds.connector")}
-          </span>
-        ),
-      },
+      // No ``connector`` entry: a connector instance holds credentials for an
+      // MCP server and the product cannot pull documents through one, so
+      // offering it here would promise an ingest that cannot run.
     ],
     [t],
   );
@@ -400,7 +404,7 @@ export default function DataSourcesPanel({
               key: "sync_status",
               width: 150,
               render: (_, source) =>
-                source.kind === SYNCABLE_KIND ? (
+                SYNCABLE_KIND[source.kind] ? (
                   <Tooltip title={source.sync_error || undefined}>
                     <Tag color={syncStatusColor(source.sync_status)}>
                       {t(
@@ -409,8 +413,8 @@ export default function DataSourcesPanel({
                     </Tag>
                   </Tooltip>
                 ) : (
-                  // Honest up front: the backend has no ingest for these kinds,
-                  // so the row advertises that instead of a fake status.
+                  // Honest up front: a connector has no ingest path, so the row
+                  // advertises that instead of a fake status.
                   <Tooltip
                     title={t("knowledgeBases.dataSources.syncUnsupportedHint")}
                   >
@@ -439,7 +443,7 @@ export default function DataSourcesPanel({
                     key: "actions",
                     width: 120,
                     render: (_: unknown, source: DataSource) => {
-                      const syncable = source.kind === SYNCABLE_KIND;
+                      const syncable = SYNCABLE_KIND[source.kind];
                       return (
                         <span className={styles.rowActions}>
                           <Tooltip
@@ -499,7 +503,7 @@ export default function DataSourcesPanel({
         <Form
           form={form}
           layout="vertical"
-          initialValues={{ kind: SYNCABLE_KIND }}
+          initialValues={{ kind: DEFAULT_KIND }}
           disabled={submitting}
         >
           <Form.Item
@@ -565,57 +569,17 @@ export default function DataSourcesPanel({
                     required: true,
                     message: t("knowledgeBases.dataSources.urlRequired"),
                   },
+                  {
+                    pattern: /^https:\/\/\S+$/i,
+                    message: t("knowledgeBases.dataSources.urlHttpsOnly"),
+                  },
                 ]}
               >
                 <Input placeholder={t("knowledgeBases.dataSources.urlPlaceholder")} />
               </Form.Item>
-              <Alert
-                type="warning"
-                showIcon
-                message={t("knowledgeBases.dataSources.syncUnsupportedNotice")}
-                description={t("knowledgeBases.dataSources.urlHint")}
-              />
-            </>
-          ) : null}
-
-          {selectedKind === "connector" ? (
-            <>
-              <Form.Item
-                name="connector_id"
-                label={t("knowledgeBases.dataSources.connectorLabel")}
-                rules={[
-                  {
-                    required: true,
-                    message: t("knowledgeBases.dataSources.connectorRequired"),
-                  },
-                ]}
-              >
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder={t(
-                    "knowledgeBases.dataSources.connectorPlaceholder",
-                  )}
-                  loading={connectors === null}
-                  notFoundContent={
-                    connectors === null ? (
-                      <Spin size="small" />
-                    ) : (
-                      t("knowledgeBases.dataSources.connectorEmpty")
-                    )
-                  }
-                  options={(connectors ?? []).map((entry) => ({
-                    value: entry.instance_id,
-                    label: entry.display_name || entry.kind,
-                  }))}
-                />
-              </Form.Item>
-              <Alert
-                type="warning"
-                showIcon
-                message={t("knowledgeBases.dataSources.syncUnsupportedNotice")}
-                description={t("knowledgeBases.dataSources.connectorHint")}
-              />
+              <p className={styles.kindHint}>
+                {t("knowledgeBases.dataSources.urlHint")}
+              </p>
             </>
           ) : null}
         </Form>

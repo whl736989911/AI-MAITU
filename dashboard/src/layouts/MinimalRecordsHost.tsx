@@ -86,25 +86,33 @@ export default function MinimalRecordsHost() {
   );
 
   const handleRenameActive = useCallback(
-    (sessionId: string, name: string) => {
-      if (!resolvedAgentId) return;
+    async (sessionId: string, name: string): Promise<boolean> => {
+      if (!resolvedAgentId || !sessionId) return false;
       const next = formatThreadTitle(name) || name.trim();
-      if (!next) return;
-      void octopThreadsApi
-        .rename(resolvedAgentId, sessionId, next)
-        .catch(() => {});
+      if (!next) return false;
+      try {
+        await octopThreadsApi.rename(resolvedAgentId, sessionId, next);
+        return true;
+      } catch (error) {
+        antMessage.error(apiErrorMessage(error, t("chat.renameFailed"), t));
+        return false;
+      }
     },
-    [resolvedAgentId],
+    [resolvedAgentId, t],
   );
 
   const handlePinActive = useCallback(
-    (sessionId: string, pinned: boolean) => {
-      if (!resolvedAgentId) return;
-      void octopThreadsApi
-        .patch(resolvedAgentId, sessionId, { pinned })
-        .catch(() => {});
+    async (sessionId: string, pinned: boolean): Promise<boolean> => {
+      if (!resolvedAgentId || !sessionId) return false;
+      try {
+        await octopThreadsApi.patch(resolvedAgentId, sessionId, { pinned });
+        return true;
+      } catch (error) {
+        antMessage.error(apiErrorMessage(error, t("chat.pinFailed"), t));
+        return false;
+      }
     },
-    [resolvedAgentId],
+    [resolvedAgentId, t],
   );
 
   const handleFork = useCallback(

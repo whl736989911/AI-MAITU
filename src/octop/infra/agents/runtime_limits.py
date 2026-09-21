@@ -12,6 +12,7 @@ Configurable stream contract (``ChatRequest.configurable``)
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import Any
 
 from harness_agent.middleware.model_settings import (
@@ -26,6 +27,29 @@ AGENT_RUNTIME_CONFIG_KEYS = (
     "top_p",
     "max_tokens",
 )
+
+CONFIGURABLE_AGENT_RUNTIME_OVERRIDES = "octop_agent_runtime_overrides"
+"""``configurable`` entry carrying knobs one *run* outranks the agent's config with.
+
+A feature declares its own sampling and budget knobs (``feature.json``'s
+``agent`` node); they belong to that run, not to the caller's agent, and must win
+over whatever the agent has stored. Stamping them here — instead of writing the
+agent's config — keeps the agent untouched for every other turn it serves.
+"""
+
+
+def runtime_overrides_from_configurable(configurable: Any) -> dict[str, Any]:
+    """Read a run's runtime overrides; ``{}`` when this run carries none."""
+    if not isinstance(configurable, Mapping):
+        return {}
+    raw = configurable.get(CONFIGURABLE_AGENT_RUNTIME_OVERRIDES)
+    if not isinstance(raw, Mapping):
+        return {}
+    return {
+        key: raw[key]
+        for key in AGENT_RUNTIME_CONFIG_KEYS
+        if key in raw and raw[key] is not None
+    }
 
 _DEFAULT_MAX_INPUT_TOKENS = 128_000
 
@@ -170,6 +194,7 @@ def apply_agent_runtime_to_stream_request(
 
 __all__ = [
     "AGENT_RUNTIME_CONFIG_KEYS",
+    "CONFIGURABLE_AGENT_RUNTIME_OVERRIDES",
     "CONFIGURABLE_MAX_INPUT_TOKENS",
     "CONFIGURABLE_MODEL_SETTINGS",
     "agent_max_input_tokens",
@@ -179,4 +204,5 @@ __all__ = [
     "apply_agent_runtime_to_stream_request",
     "merge_agent_runtime_values",
     "resolve_context_max_tokens",
+    "runtime_overrides_from_configurable",
 ]

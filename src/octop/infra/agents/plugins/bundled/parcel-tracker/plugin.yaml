@@ -2,6 +2,8 @@ id: parcel-tracker
 version: 0.2.0
 name: 快递查询
 description: 查询国内快递轨迹，失败时提供快递 100 链接
+name_en: "Parcel Tracker"
+description_en: "Track domestic parcels in chat, with a Kuaidi100 link when lookup fails"
 icon: "📦"
 kind: tool
 entry: main.py

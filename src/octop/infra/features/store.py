@@ -41,6 +41,7 @@ _DEFINITION_KEYS = frozenset(
         "prompt",
         "output",
         "permissions",
+        "agent",
     }
 )
 _PROMPT_KEYS = frozenset({"user_template", "system_prompt"})
@@ -224,10 +225,28 @@ def _manifest(definition: dict[str, Any], feature_id: str) -> tuple[dict[str, An
         if definition.get(key) is not None:
             manifest[key] = definition[key]
 
+    agent_node = _agent_manifest(definition.get("agent"))
+    if agent_node:
+        manifest["agent"] = agent_node
+
     errors.extend(validate_manifest(manifest, feature_id))
     if errors:
         raise FeatureDefinitionInvalid(errors)
     return manifest, prompt_text
+
+
+def _agent_manifest(value: Any) -> dict[str, Any]:
+    """The ``agent`` node to store: declared entries only, nothing implied.
+
+    A submitted node is written as authored minus its nulls — a key the author
+    cleared must disappear from the file rather than sit there as ``null``, since
+    the format reads a missing key and an explicit null the same way. A node that
+    carries no declaration at all is dropped, so writing "no capability layer"
+    produces exactly the file the format started from.
+    """
+    if not isinstance(value, dict):
+        return {}
+    return {key: item for key, item in value.items() if item is not None}
 
 
 def _prompt_text(value: Any, errors: list[str]) -> str | None:

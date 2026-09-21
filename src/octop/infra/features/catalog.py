@@ -22,7 +22,7 @@ import builtins
 import json
 import logging
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -85,6 +85,101 @@ class ScopedRule:
 
 
 @dataclass(frozen=True)
+class FeatureAgent:
+    """Capability layer one feature declares for its own agent (design 5.1/5.2).
+
+    ``None`` on a field means "inherit the caller's agent"; a tuple is a scope,
+    and an empty tuple is the explicit "none of them". ``tools_disabled`` is the
+    one field with no per-caller dimension — it is the same for every run.
+    """
+
+    model: str | None = None
+    temperature: float | None = None
+    top_p: float | None = None
+    max_tokens: int | None = None
+    max_iters: int | None = None
+    max_input_length: int | None = None
+    tools_disabled: tuple[str, ...] | None = None
+    skills: tuple[str, ...] | None = None
+    subagents: tuple[str, ...] | None = None
+    mcp_servers: tuple[str, ...] | None = None
+    knowledge_base_ids: tuple[str, ...] | None = None
+
+    @classmethod
+    def from_dict(cls, node: Mapping[str, Any]) -> FeatureAgent:
+        """Read one validated ``agent`` node (see :func:`validate_manifest`)."""
+        return cls(
+            model=_optional_str(node.get("model")),
+            temperature=_optional_float(node.get("temperature")),
+            top_p=_optional_float(node.get("top_p")),
+            max_tokens=_optional_int(node.get("max_tokens")),
+            max_iters=_optional_int(node.get("max_iters")),
+            max_input_length=_optional_int(node.get("max_input_length")),
+            tools_disabled=_optional_names(node.get("tools_disabled")),
+            skills=_optional_names(node.get("skills")),
+            subagents=_optional_names(node.get("subagents")),
+            mcp_servers=_optional_names(node.get("mcp_servers")),
+            knowledge_base_ids=_optional_names(node.get("knowledge_base_ids")),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        """The node exactly as declared — ``None`` fields omitted, lists as lists.
+
+        This is what the settings UI reads back, so a key the author never set
+        must not appear as ``null`` and read as a deliberate choice.
+        """
+        out: dict[str, Any] = {}
+        for key in (
+            "model",
+            "temperature",
+            "top_p",
+            "max_tokens",
+            "max_iters",
+            "max_input_length",
+        ):
+            value = getattr(self, key)
+            if value is not None:
+                out[key] = value
+        for key in ("tools_disabled", "skills", "subagents", "mcp_servers", "knowledge_base_ids"):
+            value = getattr(self, key)
+            if value is not None:
+                out[key] = list(value)
+        return out
+
+    def runtime_values(self) -> dict[str, Any]:
+        """Sampling / budget knobs, in the shape the agent runtime helpers consume."""
+        out: dict[str, Any] = {}
+        for key in ("temperature", "top_p", "max_tokens", "max_iters", "max_input_length"):
+            value = getattr(self, key)
+            if value is not None:
+                out[key] = value
+        return out
+
+
+def _optional_str(value: Any) -> str | None:
+    return value.strip() if isinstance(value, str) and value.strip() else None
+
+
+def _optional_float(value: Any) -> float | None:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+def _optional_int(value: Any) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return None
+    return value
+
+
+def _optional_names(value: Any) -> tuple[str, ...] | None:
+    """A declared scope: ``None`` inherits, a list is the scope (possibly empty)."""
+    if not isinstance(value, list):
+        return None
+    return tuple(str(item) for item in value)
+
+
+@dataclass(frozen=True)
 class Feature:
     """One enterprise feature definition (immutable, as loaded from disk)."""
 
@@ -101,6 +196,7 @@ class Feature:
     system_prompt: str | None
     output_kind: str
     permissions: dict[str, Any]
+    agent: FeatureAgent | None = None
 
 
 class FeatureCatalog:
@@ -273,6 +369,11 @@ def _load_feature(feature_dir: Path, manifest_path: Path) -> tuple[Feature | Non
             system_prompt=system_prompt,
             output_kind=raw["output"]["kind"],
             permissions=raw.get("permissions") or {},
+            agent=(
+                FeatureAgent.from_dict(raw["agent"])
+                if isinstance(raw.get("agent"), dict)
+                else None
+            ),
         ),
         None,
     )

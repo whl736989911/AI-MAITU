@@ -18,6 +18,11 @@ from octop.infra.agents.plugin_tool_defaults import (
     merge_plugins_enabled_settings,
     merge_plugins_tool_settings,
 )
+from octop.infra.agents.plugins.catalog import (
+    CatalogPlugin,
+    get_catalog_plugin,
+    list_catalog_plugins,
+)
 from octop.infra.agents.plugins.manager import PluginManager
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.server import OctopServer
@@ -197,6 +202,141 @@ async def upload_plugin(
         "name": loaded.manifest.name,
         "kind": loaded.manifest.kind,
     }
+
+
+class LocalizedText(BaseModel):
+    zh: str = ""
+    en: str = ""
+
+
+class MarketPluginItem(BaseModel):
+    """One shipped plugin as the market renders it."""
+
+    id: str
+    version: str
+    name: LocalizedText
+    description: LocalizedText
+    icon: str | None = None
+    kind: str
+    requires: list[str] = Field(default_factory=list)
+    has_ui: bool = False
+    installed: bool = False
+    enabled: bool = False
+
+
+class MarketPluginListResponse(BaseModel):
+    items: list[MarketPluginItem]
+
+
+class MarketPluginDetail(MarketPluginItem):
+    """Market card plus the tools this plugin registers once installed."""
+
+    tools: list[PluginToolMeta] = Field(default_factory=list)
+
+
+def _installed_by_id(server: OctopServer) -> dict[str, dict[str, Any]]:
+    """Installed plugins by id; broken rows are skipped (nothing to enable)."""
+    return {
+        str(row["id"]): row
+        for row in _plugin_manager(server).list_installed()
+        if not row.get("error")
+    }
+
+
+def _market_card(entry: CatalogPlugin, installed: dict[str, Any] | None) -> MarketPluginItem:
+    return MarketPluginItem(
+        id=entry.id,
+        version=entry.version,
+        name=LocalizedText(**entry.label()),
+        description=LocalizedText(**entry.summary()),
+        icon=entry.icon,
+        kind=entry.kind,
+        requires=list(entry.requires),
+        has_ui=entry.has_ui,
+        installed=installed is not None,
+        enabled=bool(installed and installed.get("enabled", True) is not False),
+    )
+
+
+def _market_card_by_id(server: OctopServer, plugin_id: str) -> MarketPluginItem:
+    entry = get_catalog_plugin(plugin_id)
+    return _market_card(entry, _installed_by_id(server).get(entry.id))
+
+
+def _market_matches(card: MarketPluginItem, needle: str) -> bool:
+    haystack = " ".join(
+        (
+            card.id,
+            card.name.zh,
+            card.name.en,
+            card.description.zh,
+            card.description.en,
+        )
+    ).lower()
+    return needle in haystack
+
+
+@router.get(
+    "/market",
+    response_model=MarketPluginListResponse,
+    summary="List shipped plugin market cards (admin)",
+)
+async def list_plugin_market(
+    q: str = "",
+    server: OctopServer = Depends(get_server),
+    _user: Any = Depends(require_permission("plugins")),
+) -> MarketPluginListResponse:
+    """Shipped plugins with their install state, optionally filtered by ``q``."""
+    installed = _installed_by_id(server)
+    needle = q.strip().lower()
+    items = [_market_card(entry, installed.get(entry.id)) for entry in list_catalog_plugins()]
+    if needle:
+        items = [card for card in items if _market_matches(card, needle)]
+    return MarketPluginListResponse(items=items)
+
+
+@router.get(
+    "/market/{plugin_id}",
+    response_model=MarketPluginDetail,
+    summary="Get a shipped plugin market card (admin)",
+)
+async def get_plugin_market_item(
+    plugin_id: str,
+    server: OctopServer = Depends(get_server),
+    _user: Any = Depends(require_permission("plugins")),
+) -> MarketPluginDetail:
+    """Card detail; ``tools`` are filled in once the plugin is installed."""
+    entry = get_catalog_plugin(plugin_id)
+    installed = _installed_by_id(server).get(entry.id)
+    return MarketPluginDetail(
+        **_market_card(entry, installed).model_dump(),
+        tools=[
+            PluginToolMeta.model_validate(tool) for tool in (installed or {}).get("tools") or []
+        ],
+    )
+
+
+@router.post(
+    "/market/{plugin_id}/install",
+    status_code=201,
+    response_model=MarketPluginItem,
+    summary="Install a shipped plugin from the market (admin)",
+)
+async def install_plugin_market_item(
+    plugin_id: str,
+    server: OctopServer = Depends(get_server),
+    _user: Any = Depends(require_permission("plugins")),
+) -> MarketPluginItem:
+    """Install and enable a shipped plugin, then reload agents.
+
+    Idempotent: a plugin already on disk is enabled rather than overwritten.
+    """
+    mgr = _plugin_manager(server)
+    mgr.install_bundled(plugin_id)
+    if server.app_runtime is not None:
+        mgr.load_installed(install_deps=False)
+        await server.app_runtime.agent_registry.reload_all()
+    return _market_card_by_id(server, plugin_id)
 
 
 class PluginPatchBody(BaseModel):

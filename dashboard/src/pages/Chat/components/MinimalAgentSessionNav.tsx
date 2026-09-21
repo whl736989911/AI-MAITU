@@ -16,6 +16,8 @@ import {
 import type { OctopAgent } from "../../../context/AgentContext";
 import { ExpertIcon } from "../../Experts/components/iconForName";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
+import { apiErrorMessage } from "../../../utils/apiError";
+import { message as antMessage } from "../../../utils/antdMessage";
 import { showConfirmModal } from "../../../utils/confirmModal";
 import { isAgentChatReady } from "../../../utils/agentError";
 import { sortSessions, toSession, type Session } from "../hooks/useSessions";
@@ -62,8 +64,10 @@ interface MinimalAgentSessionNavProps {
   /** Start a fresh (unsaved) chat with the given expert. */
   onNewChat: (agentId: string) => void;
   onDeleteActive: (id: string) => void;
-  onRenameActive: (id: string, name: string) => void;
-  onPinActive: (id: string, pinned: boolean) => void;
+  /** Resolves true when the server stored the new title, false when it did not. */
+  onRenameActive: (id: string, name: string) => Promise<boolean>;
+  /** Resolves true when the server stored the new pin state, false when it did not. */
+  onPinActive: (id: string, pinned: boolean) => Promise<boolean>;
   onFork: (id: string, agentId?: string | null) => void;
   activeForkDisabled?: boolean;
   activeForkDisabledHint?: string;
@@ -463,35 +467,49 @@ export default function MinimalAgentSessionNav({
   );
 
   const handleRename = useCallback(
-    (agentId: string, sessionId: string, name: string) => {
+    async (agentId: string, sessionId: string, name: string) => {
       const next = formatThreadTitle(name) || name.trim();
       if (!next) return;
+      let stored = false;
       if (agentId === activeAgentId) {
-        onRenameActive(sessionId, next);
+        stored = await onRenameActive(sessionId, next);
       } else {
-        void octopThreadsApi.rename(agentId, sessionId, next).catch(() => {});
+        try {
+          await octopThreadsApi.rename(agentId, sessionId, next);
+          stored = true;
+        } catch (error) {
+          antMessage.error(apiErrorMessage(error, t("chat.renameFailed"), t));
+        }
       }
+      // Mirror the write into the preview only once the server accepted it —
+      // a rejected rename must never keep rendering the new title.
+      if (!stored) return;
       patchLocal(agentId, (prev) =>
         prev.map((s) => (s.id === sessionId ? { ...s, name: next } : s)),
       );
     },
-    [activeAgentId, onRenameActive, patchLocal],
+    [activeAgentId, onRenameActive, patchLocal, t],
   );
 
   const handlePin = useCallback(
-    (agentId: string, sessionId: string, pinned: boolean) => {
+    async (agentId: string, sessionId: string, pinned: boolean) => {
+      let stored = false;
       if (agentId === activeAgentId) {
-        onPinActive(sessionId, pinned);
+        stored = await onPinActive(sessionId, pinned);
       } else {
-        void octopThreadsApi
-          .patch(agentId, sessionId, { pinned })
-          .catch(() => {});
+        try {
+          await octopThreadsApi.patch(agentId, sessionId, { pinned });
+          stored = true;
+        } catch (error) {
+          antMessage.error(apiErrorMessage(error, t("chat.pinFailed"), t));
+        }
       }
+      if (!stored) return;
       patchLocal(agentId, (prev) =>
         prev.map((s) => (s.id === sessionId ? { ...s, pinned } : s)),
       );
     },
-    [activeAgentId, onPinActive, patchLocal],
+    [activeAgentId, onPinActive, patchLocal, t],
   );
 
   if (agents.length === 0) {
@@ -601,10 +619,10 @@ export default function MinimalAgentSessionNav({
                       onSelect={(id) => onSelect(id, agent.agent_id)}
                       onDelete={(id) => void handleDelete(agent.agent_id, id)}
                       onRename={(id, name) =>
-                        handleRename(agent.agent_id, id, name)
+                        void handleRename(agent.agent_id, id, name)
                       }
                       onPin={(id, pinned) =>
-                        handlePin(agent.agent_id, id, pinned)
+                        void handlePin(agent.agent_id, id, pinned)
                       }
                       onFork={(id) => onFork(id, agent.agent_id)}
                       forkDisabled={

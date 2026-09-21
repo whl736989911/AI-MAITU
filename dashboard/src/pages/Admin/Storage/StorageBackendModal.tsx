@@ -38,6 +38,19 @@ interface StorageBackendDrawerProps {
   presetKind?: string;
 }
 
+/** Parse an advanced-config document; ``null`` when it is not a JSON object. */
+function parseConfigObject(raw: string): Record<string, unknown> | null {
+  if (!raw) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  return { ...(parsed as Record<string, unknown>) };
+}
+
 interface StorageForm {
   name: string;
   kind: string;
@@ -64,6 +77,8 @@ export function StorageBackendDrawer({
   const { t } = useTranslation();
   const [saving, setSaving] = useState(false);
   const [probing, setProbing] = useState(false);
+  // Advanced JSON panel — controlled so a rejected document can be shown.
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [form] = Form.useForm<StorageForm>();
   const isEdit = editing !== undefined;
   const draftScope = editing
@@ -80,6 +95,7 @@ export function StorageBackendDrawer({
 
   useEffect(() => {
     if (open) {
+      setAdvancedOpen(false);
       if (editing) {
         setActiveKind(editing.kind);
         let cfg: Record<string, unknown> = {};
@@ -138,7 +154,6 @@ export function StorageBackendDrawer({
   const handleSubmit = async () => {
     try {
       const values = await form.validateFields();
-      setSaving(true);
 
       const body: Record<string, unknown> = {
         kind: values.kind,
@@ -152,16 +167,30 @@ export function StorageBackendDrawer({
       if (values.secret_key?.trim()) body.secret_key = values.secret_key.trim();
 
       if (values.kind === "docker") {
-        let cfg: Record<string, unknown> = {};
-        try {
-          const parsed = JSON.parse(
-            values.config_json?.trim() || "{}",
-          ) as unknown;
-          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
-            cfg = { ...(parsed as Record<string, unknown>) };
-          }
-        } catch {
-          cfg = {};
+        // The advanced textarea only exists once its panel is expanded, so a
+        // drawer the user never expanded has to build on the *stored* document.
+        // Every key the form does not own (previewable, memory, volumes, …)
+        // survives; only the sandbox keys below are rewritten.
+        const rawConfig = (
+          typeof values.config_json === "string"
+            ? values.config_json
+            : isEdit
+            ? editing!.config_json ?? ""
+            : ""
+        ).trim();
+        const cfg = parseConfigObject(rawConfig);
+        if (cfg === null) {
+          // Unparseable document: say so and keep it, never replace it with {}.
+          setAdvancedOpen(true);
+          form.setFields([
+            {
+              name: "config_json",
+              value: rawConfig,
+              errors: [t("storage.invalidConfigJson")],
+            },
+          ]);
+          message.error(t("storage.invalidConfigJson"));
+          return;
         }
         const scope = (values.sandbox_scope || "agent").trim() || "agent";
         cfg.sandbox_scope = scope;
@@ -179,6 +208,8 @@ export function StorageBackendDrawer({
         }
         body.config_json = JSON.stringify(cfg);
       }
+
+      setSaving(true);
 
       const backendName = isEdit ? editing!.name : values.name.trim();
 
@@ -247,7 +278,11 @@ export function StorageBackendDrawer({
       await onSaved(backendName);
       onClose();
     } catch (err) {
-      if (err && typeof err === "object" && "errorFields" in err) return;
+      if (err && typeof err === "object" && "errorFields" in err) {
+        // A collapsed panel must not swallow its own validation error.
+        if (form.getFieldError("config_json").length > 0) setAdvancedOpen(true);
+        return;
+      }
       const msg = err instanceof Error ? err.message : t("common.saveFailed");
       message.error(msg);
     } finally {
@@ -614,6 +649,12 @@ export function StorageBackendDrawer({
         {/* Advanced JSON */}
         <Collapse
           ghost
+          activeKey={advancedOpen ? ["advanced"] : []}
+          onChange={(key) =>
+            setAdvancedOpen(
+              Array.isArray(key) ? key.includes("advanced") : key === "advanced",
+            )
+          }
           items={[
             {
               key: "advanced",
@@ -621,7 +662,25 @@ export function StorageBackendDrawer({
               children: (
                 <Form.Item
                   name="config_json"
-                  extra={t("storage.advancedConfigExtra")}
+                  extra={
+                    activeKind === "docker"
+                      ? t("storage.advancedConfigExtraDocker")
+                      : t("storage.advancedConfigExtra")
+                  }
+                  rules={
+                    activeKind === "docker"
+                      ? [
+                          {
+                            validator: (_rule, value: string | undefined) =>
+                              parseConfigObject((value ?? "").trim()) !== null
+                                ? Promise.resolve()
+                                : Promise.reject(
+                                    new Error(t("storage.invalidConfigJson")),
+                                  ),
+                          },
+                        ]
+                      : []
+                  }
                 >
                   <Input.TextArea
                     rows={5}

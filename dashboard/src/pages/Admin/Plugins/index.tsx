@@ -22,6 +22,10 @@ export default function AdminPluginsPage() {
   const [activeTab, setActiveTab] = useState<TabKey>(() =>
     parseTab(searchParams.get("tab")),
   );
+  // One token per direction: each tab refetches only when its sibling
+  // changes installed state (market install ↔ installed tab actions).
+  const [installedRefreshToken, setInstalledRefreshToken] = useState(0);
+  const [marketRefreshToken, setMarketRefreshToken] = useState(0);
 
   useEffect(() => {
     setActiveTab(parseTab(searchParams.get("tab")));
@@ -52,12 +56,22 @@ export default function AdminPluginsPage() {
             label: (
               <TabLabel icon={Puzzle}>{t("plugins.tabInstalled")}</TabLabel>
             ),
-            children: <InstalledPluginsPanel />,
+            children: (
+              <InstalledPluginsPanel
+                refreshToken={installedRefreshToken}
+                onChanged={() => setMarketRefreshToken((n) => n + 1)}
+              />
+            ),
           },
           {
             key: "market",
             label: <TabLabel icon={Store}>{t("plugins.tabMarket")}</TabLabel>,
-            children: <PluginMarketPanel />,
+            children: (
+              <PluginMarketPanel
+                refreshToken={marketRefreshToken}
+                onInstalled={() => setInstalledRefreshToken((n) => n + 1)}
+              />
+            ),
           },
         ]}
       />

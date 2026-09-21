@@ -592,3 +592,67 @@
   max-width: 360px;
   line-height: 1.6;
 }
+
+.marketSearch {
+  width: 240px;
+  max-width: 100%;
+
+  @media (max-width: 767px) {
+    width: 100%;
+  }
+}
+
+.marketAlert {
+  margin-bottom: 16px;
+}
+
+.marketInstalledLabel {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: var(--fn-color-success, #12b76a);
+  white-space: nowrap;
+}
+
+.marketDrawerBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.marketDrawerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.marketChips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.marketSectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+  margin-bottom: 8px;
+}
+
+.marketTools {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.marketToolRow {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border-radius: var(--fn-radius-md, 8px);
+  background: var(--fn-bg-secondary, #f2f4f7);
+}

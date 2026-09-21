@@ -2,6 +2,8 @@ id: bilibili-anime
 version: 0.2.0
 name: 哔哩哔哩番剧播放器
 description: 在聊天中搜索哔哩哔哩番剧，并支持分集播放与切换
+name_en: "Bilibili Anime Player"
+description_en: "Search Bilibili anime in chat, with episode playback and switching"
 icon: "📺"
 kind: tool
 entry: main.py

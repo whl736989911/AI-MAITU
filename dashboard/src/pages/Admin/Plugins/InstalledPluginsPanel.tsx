@@ -65,8 +65,18 @@ function statusTag(row: InstalledPlugin, t: (key: string) => string) {
   );
 }
 
+export interface InstalledPluginsPanelProps {
+  /** Changed by the market tab after an install to force a refetch. */
+  refreshToken?: number;
+  /** Notifies the sibling market tab that installed state changed. */
+  onChanged?: () => void;
+}
+
 /** Server-wide plugin install, reload, enable, detail, and uninstall surface. */
-export function InstalledPluginsPanel() {
+export function InstalledPluginsPanel({
+  refreshToken = 0,
+  onChanged,
+}: InstalledPluginsPanelProps) {
   const { t } = useTranslation();
   const [plugins, setPlugins] = useState<InstalledPlugin[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,7 +109,7 @@ export function InstalledPluginsPanel() {
 
   useEffect(() => {
     void fetchPlugins();
-  }, [fetchPlugins]);
+  }, [fetchPlugins, refreshToken]);
 
   const handleInstall = async () => {
     const url = installUrl.trim();
@@ -108,6 +118,7 @@ export function InstalledPluginsPanel() {
     try {
       await pluginsApi.install(url);
       message.success(t("plugins.installSuccess"));
+      onChanged?.();
       setInstallOpen(false);
       setInstallUrl("");
       await fetchPlugins();
@@ -130,6 +141,7 @@ export function InstalledPluginsPanel() {
     try {
       await pluginsApi.upload(next, overwrite);
       message.success(t("plugins.installSuccess"));
+      onChanged?.();
       await fetchPlugins();
     } catch (err) {
       message.error(apiErrorMessage(err, t("plugins.installFailed"), t));
@@ -143,6 +155,7 @@ export function InstalledPluginsPanel() {
     try {
       await pluginsApi.reload();
       message.success(t("plugins.reloadSuccess"));
+      onChanged?.();
       await fetchPlugins();
     } catch (err) {
       message.error(apiErrorMessage(err, t("plugins.reloadFailed"), t));
@@ -155,6 +168,7 @@ export function InstalledPluginsPanel() {
     try {
       await pluginsApi.uninstall(pluginId);
       message.success(t("plugins.uninstallSuccess"));
+      onChanged?.();
       if (detail?.id === pluginId) setDetail(null);
       await fetchPlugins();
     } catch (err) {
@@ -180,6 +194,7 @@ export function InstalledPluginsPanel() {
       message.success(
         enabled ? t("plugins.enabledSuccess") : t("plugins.disabledSuccess"),
       );
+      onChanged?.();
       await fetchPlugins();
     } catch (err) {
       message.error(apiErrorMessage(err, t("plugins.enableFailed"), t));

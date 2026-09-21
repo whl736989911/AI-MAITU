@@ -3,8 +3,12 @@ import { request } from "../request";
 /**
  * Ingest kinds the backend accepts (``octop.infra.db.repos.data_sources.KINDS``).
  *
- * Only ``upload`` can actually be ingested today: ``url`` and ``connector``
- * sources are stored objects whose sync endpoint deliberately refuses with
+ * ``upload`` replays a document already in the base; ``url`` fetches the page
+ * the source points at (SSRF-guarded https, size-capped) and ingests it. Both
+ * sync through the same parse → chunk → embed → index pipeline.
+ *
+ * ``connector`` is stored and listed for compatibility, but nothing in the
+ * product pulls documents through a connector instance, so its sync answers
  * ``DATA_SOURCE_SYNC_UNSUPPORTED`` instead of silently doing nothing.
  */
 export type DataSourceKind = "upload" | "url" | "connector";
@@ -18,7 +22,7 @@ export interface DataSourceConfig {
   document_id?: string;
   /** ``upload``: that document's path inside the knowledge base. */
   path?: string;
-  /** ``url``: the page this source points at. */
+  /** ``url``: the page this source fetches on every sync. */
   url?: string;
   /** ``connector``: the connector instance this source points at. */
   connector_id?: string;

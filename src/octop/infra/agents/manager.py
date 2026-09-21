@@ -42,6 +42,7 @@ from octop.infra.agents.runtime_limits import (
     AGENT_RUNTIME_CONFIG_KEYS,
     apply_agent_runtime_to_stream_request,
     merge_agent_runtime_values,
+    runtime_overrides_from_configurable,
 )
 from octop.infra.agents.runtime_limits import (
     resolve_context_max_tokens as config_context_max_tokens,
@@ -2850,7 +2851,13 @@ class AgentManager:
             configurable = dict(req.get("configurable") or {})
             configurable["plugin_tool_configs"] = tool_configs
             req["configurable"] = configurable
-        return apply_agent_runtime_to_stream_request(req, agent_cfg)
+        # A run may carry its own runtime knobs (a feature's declared model
+        # settings, budget, context cap). They outrank the agent's stored config
+        # for this request only — the agent is never rewritten, so every other
+        # turn it serves keeps the settings its owner chose.
+        overrides = runtime_overrides_from_configurable(req.get("configurable"))
+        runtime_cfg = merge_agent_runtime_values(agent_cfg, overrides) if overrides else agent_cfg
+        return apply_agent_runtime_to_stream_request(req, runtime_cfg)
 
     def _build_harness_config(self, row: AgentRow) -> HarnessAgentConfig:
         """Convert an AgentRow into a HarnessAgentConfig."""
@@ -2972,6 +2979,7 @@ class AgentManager:
         from octop.infra.agents.middleware.feature_prompt import (
             FeatureSystemPromptMiddleware,
         )
+        from octop.infra.agents.middleware.feature_scope import FeatureScopeMiddleware
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
         from octop.infra.agents.middleware.thread_artifacts import ThreadArtifactsMiddleware
         from octop.infra.agents.middleware.token_quota import TokenQuotaMiddleware
@@ -2994,6 +3002,7 @@ class AgentManager:
             ),
             ReasoningRequestMiddleware(),
             FeatureSystemPromptMiddleware(),
+            FeatureScopeMiddleware(),
             TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
             KnowledgeSearchHintMiddleware(),
             BrowserProfileMiddleware(),
