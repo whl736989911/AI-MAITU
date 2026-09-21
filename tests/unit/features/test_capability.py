@@ -17,6 +17,7 @@ import pytest
 from octop.infra.features.capability import (
     CapabilityUnavailable,
     ResolvedCapability,
+    capability_from_audit,
     resolve_capability,
     stamp_capability,
 )
@@ -236,6 +237,7 @@ async def test_audit_reports_the_effective_scope() -> None:
         runtime_overrides={"temperature": 0.3},
         skills=(),
         withheld=("knowledge base 'kb-theirs' is not available to the caller",),
+        max_parallel=6,
     )
 
     assert capability.audit() == {
@@ -247,4 +249,9 @@ async def test_audit_reports_the_effective_scope() -> None:
         "mcp_servers": None,
         "knowledge_base_ids": None,
         "withheld": ["knowledge base 'kb-theirs' is not available to the caller"],
+        "max_parallel": 6,
     }
+    # The audit is what a run resumed at a gate is rebuilt from, so the feature's
+    # dispatch ceiling has to survive the round trip: a continuation must keep the
+    # ceiling its run started under, not fall back to today's definition.
+    assert capability_from_audit(capability.audit()).max_parallel == 6

@@ -14,10 +14,14 @@ Two rules this module enforces on purpose:
   are required; a step that omits one is refused with the field named. A gate read
   as "auto" because the author forgot to say would be a workflow nobody approved.
 * **What the platform cannot do is refused, not degraded.** ``mode:
-  "orchestrate"`` (7.6's model-decomposes-and-schedules mode) and ``agent_role``
-  parse and store — the format keeps its 7.10 shape — but
-  :func:`unsupported_reasons` names them so a run refuses outright instead of
-  quietly running as a single agent.
+  "orchestrate"`` and ``agent_role`` now run as declared: the model owns the
+  decomposition and dispatches its subagents through the harness's own ``task``
+  tool, while the platform only bounds how many run at once (``max_parallel``) and
+  records what was dispatched (7.8's 分解留痕) — it never schedules, and it never
+  quietly runs as a single agent a step the author declared as several.
+  :func:`unsupported_reasons` names the one step this build still cannot run: a
+  step that must dispatch while its own ``tools`` allow-list hides
+  :data:`DISPATCH_TOOL_NAME`.
 """
 
 from __future__ import annotations
@@ -42,12 +46,23 @@ GATE_VALIDATE = "validate"
 GATES: tuple[str, ...] = (GATE_AUTO, GATE_CONFIRM, GATE_VALIDATE)
 
 MODE_AGENT = "agent"
-"""One agent does one thing — the only mode this build runs."""
+"""One agent does one thing: one turn, no subagents of its own."""
 
 MODE_ORCHESTRATE = "orchestrate"
-"""The model decomposes the step and schedules subagents (7.6) — not implemented yet."""
+"""The model decomposes the step and dispatches its subagents (7.6); the platform
+only caps how many run at once and records them (7.8)."""
 
 MODES: tuple[str, ...] = (MODE_AGENT, MODE_ORCHESTRATE)
+
+DISPATCH_TOOL_NAME = "task"
+"""The harness tool a step dispatches a subagent with (deepagents' ``SubAgentMiddleware``).
+
+A step that decomposes (``orchestrate``) or that names an ``agent_role`` can only
+do what it declares through this tool, so it is the one name
+:func:`unsupported_reasons` refuses to see missing from a step's allow-list.
+``octop.infra.agents.middleware.feature_scope.TASK_TOOL_NAME`` names the same tool
+for the model's surface; the two values describe one tool and must stay equal.
+"""
 
 ON_FAILURE_ABORT = "abort"
 """A failed step fails the run."""
@@ -130,6 +145,10 @@ class StepGateFailed(StepError):
 
 class StepUnsupported(StepError):
     """A step declares something this build does not run (never silently skipped)."""
+
+
+class StepAgentRoleUnmet(StepError):
+    """A step declaring ``agent_role`` ran without ever dispatching that subagent."""
 
 
 class StepUnknown(StepError):
@@ -307,26 +326,41 @@ def _step_from_node(
     )
 
 
+def dispatch_required(step: FeatureStep) -> bool:
+    """Whether *step* has to be able to call :data:`DISPATCH_TOOL_NAME`.
+
+    True for a step that declares ``mode: "orchestrate"`` (it decomposes itself,
+    7.6) or an ``agent_role`` (it runs as that named subagent): both reach their
+    subagents through the harness's ``task`` tool and have nothing else to reach
+    them with.
+    """
+    return step.mode == MODE_ORCHESTRATE or step.agent_role is not None
+
+
 def unsupported_reasons(steps: Sequence[FeatureStep]) -> list[str]:
     """What this build cannot run about these steps, in the author's own terms.
 
-    Empty means the plan is runnable. Reported at *run* time rather than at write
-    time on purpose: ``mode``/``agent_role`` are part of the format (7.10), so a
-    definition that uses them is a valid definition this build cannot execute —
-    and a run that executed it anyway would hand back a single-agent result the
-    author believes was decomposed and scheduled in parallel.
+    Empty means the plan is runnable. ``orchestrate`` and ``agent_role`` are
+    runnable: the model decomposes the step and dispatches its own subagents,
+    while the platform only caps how many run at once and records what ran. The
+    one thing refused here is a step that must dispatch while its declared
+    ``tools`` allow-list hides :data:`DISPATCH_TOOL_NAME` — it would run to the
+    end and hand back a result the author believes was decomposed, which is the
+    silent degradation this format exists to prevent. ``tools`` is a scope the run
+    resolves (absent inherits the run's surface, ``[]`` allows none), so the check
+    belongs to the run that knows what the step actually got.
     """
     reasons: list[str] = []
     for step in steps:
-        if step.mode != MODE_AGENT:
+        if (
+            dispatch_required(step)
+            and step.tools is not None
+            and DISPATCH_TOOL_NAME not in step.tools
+        ):
             reasons.append(
-                f"step {step.id!r} declares mode {step.mode!r}; only {MODE_AGENT!r} "
-                "is implemented, and this build never degrades it to a single agent"
-            )
-        if step.agent_role is not None:
-            reasons.append(
-                f"step {step.id!r} declares agent_role {step.agent_role!r}; running a step "
-                "as a named subagent is not implemented"
+                f"step {step.id!r} cannot dispatch: its tool allow-list leaves out the "
+                f"dispatch tool {DISPATCH_TOOL_NAME!r}, so it cannot decompose the step or "
+                "run as the subagent it declares"
             )
     return reasons
 
@@ -568,7 +602,15 @@ def _tools(node: Mapping[str, Any], where: str, errors: list[str]) -> tuple[str,
 
 
 def _max_parallel(value: Any, where: str, errors: list[str]) -> int | None:
-    """The ceiling 7.7 gives the model inside one step — stored, not yet a scheduler."""
+    """The ceiling 7.7 puts on the model's own parallelism inside one step.
+
+    Absent is not a zero and not a guess: it means "inherit" — the feature's
+    ``agent.max_parallel``, else
+    :data:`~octop.infra.features.dispatch.DEFAULT_MAX_PARALLEL`, as
+    :func:`~octop.infra.features.dispatch.resolve_max_parallel` resolves it. The
+    boundary in ``octop.infra.agents.middleware.feature_dispatch`` is what enforces
+    it on the step's dispatches.
+    """
     if value is None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
@@ -638,6 +680,7 @@ def _type_name(value: Any) -> str:
 
 
 __all__ = [
+    "DISPATCH_TOOL_NAME",
     "GATE_AUTO",
     "GATE_CONFIRM",
     "GATE_VALIDATE",
@@ -659,6 +702,7 @@ __all__ = [
     "STEP_VOIDED",
     "Artifact",
     "FeatureStep",
+    "StepAgentRoleUnmet",
     "StepError",
     "StepGateFailed",
     "StepInputMissing",
@@ -666,6 +710,7 @@ __all__ = [
     "StepOutputInvalid",
     "StepUnsupported",
     "StepUnknown",
+    "dispatch_required",
     "extract_json",
     "output_kind_of",
     "parse_artifact",

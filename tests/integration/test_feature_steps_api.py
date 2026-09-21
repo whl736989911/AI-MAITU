@@ -17,15 +17,21 @@ self-check, deliver. What these tests pin down is the engine's own contract:
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 import httpx
 import pytest
+from langchain.agents.middleware import ToolCallRequest
+from langchain_core.messages import ToolMessage
 
+from octop.infra.agents.middleware import feature_dispatch
+from octop.infra.features.dispatch import DEFAULT_MAX_PARALLEL
 from octop.infra.server import OctopServer
 from tests.support.app import octop_client
 from tests.support.auth import (
@@ -159,12 +165,27 @@ class _ScriptedHarness:
 
     A marker with an exhausted script raises: a step running more turns than the
     test scripted is a failure of the test's premise, not a step failure to retry.
+
+    *dispatches* adds the one thing a text-only double cannot do: a step turn that
+    calls the harness ``task`` tool. The double then plays langgraph's ``ToolNode``
+    — it hands every ``task`` call of that turn to the real
+    ``FeatureDispatchMiddleware`` the agent registered, concurrently, which is what
+    the real node does (``asyncio.gather`` over the calls of one assistant
+    message). Only the *harness* is a double here: the ceiling, the record and the
+    ledger are the shipped ones.
     """
 
-    def __init__(self, script: dict[str, list[str]]) -> None:
+    def __init__(
+        self,
+        script: dict[str, list[str]],
+        dispatches: dict[str, list[tuple[str, str]]] | None = None,
+    ) -> None:
         self._fake = FakeHarnessAgent()
         self.script = {marker: list(answers) for marker, answers in script.items()}
+        self.dispatches = dispatches or {}
         self.seen: list[tuple[str, dict[str, Any]]] = []
+        self.dispatched: list[tuple[str, str]] = []
+        """Every ``(role, task)`` a step turn handed to the dispatch boundary."""
 
     def __getattr__(self, name: str) -> Any:
         """Everything else the harness pipeline calls, off the wrapped fake."""
@@ -182,8 +203,41 @@ class _ScriptedHarness:
             raise AssertionError(f"the script for {marker} is exhausted")
         self._fake.last_request = request
         self.seen.append((marker, request))
+        calls = self.dispatches.get(marker, [])
+        if calls:
+            config = {"configurable": dict(request.get("configurable") or {})}
+            with mock.patch.object(feature_dispatch, "get_config", lambda: config):
+                # One assistant message, several ``task`` calls: ``ToolNode`` runs
+                # them concurrently, and that is the only reason a step can
+                # decompose into parallel work at all.
+                await asyncio.gather(*(self._dispatch(role, task) for role, task in calls))
         yield {"type": "token", "node": "agent", "content": answers.pop(0)}
         yield {"type": "state_snapshot", "data": {}}
+
+    async def _dispatch(self, role: str, task: str) -> Any:
+        """One ``task`` tool call, driven exactly as ``ToolNode`` drives it."""
+        self.dispatched.append((role, task))
+        call = ToolCallRequest(
+            tool_call={
+                "name": "task",
+                "args": {"subagent_type": role, "description": task},
+                "id": f"call-{len(self.dispatched)}",
+            },
+            tool=None,
+            state=None,
+            runtime=None,
+        )
+
+        async def _subagent(_request: ToolCallRequest) -> ToolMessage:
+            # Stands in for deepagents' ``task`` body — running the subagent. The
+            # delay is what makes "these two ran at the same time" observable; a
+            # fake that answered instantly could not tell a ceiling from a queue.
+            await asyncio.sleep(DISPATCH_LATENCY)
+            return ToolMessage(
+                content=f"{role} 的产出：{task}", tool_call_id=str(_request.tool_call["id"])
+            )
+
+        return await feature_dispatch.FeatureDispatchMiddleware().awrap_tool_call(call, _subagent)
 
     def prompts(self, marker: str) -> list[str]:
         """Every prompt the run sent for *marker*, oldest first."""
@@ -213,9 +267,10 @@ async def _stepped_env(
     script: dict[str, list[str]],
     *,
     definition: dict[str, Any] | None = None,
+    dispatches: dict[str, list[tuple[str, str]]] | None = None,
 ) -> AsyncIterator[tuple[httpx.AsyncClient, OctopServer, dict[str, str], _ScriptedHarness]]:
     """A real server, an admin session, one stepped feature, one scripted harness."""
-    harness = _ScriptedHarness(script)
+    harness = _ScriptedHarness(script, dispatches)
     async with octop_client(home, fake_agent=harness) as (client, srv):
         await bootstrap_admin(client, home)
         auth = await auth_header(client)
@@ -267,6 +322,16 @@ HAPPY_SCRIPT: dict[str, list[str]] = {
     "STEP-4": [ANSWER_PASSED],
     "STEP-5": [ANSWER_PACKAGE],
 }
+
+DISPATCH_LATENCY = 0.05
+"""How long one faked subagent takes — long enough for a real overlap to show."""
+
+DISPATCH_ROLES = (
+    ("engineering-engineering-code-reviewer", "选刀具"),
+    ("engineering-engineering-backend-architect", "定工时"),
+    ("engineering-engineering-data-engineer", "出 NC"),
+)
+"""The roles the double dispatches — subagent types as the ``task`` tool lists them."""
 
 
 async def test_a_stepped_run_hands_typed_artifacts_between_steps_and_stops_at_the_gate(
@@ -500,28 +565,248 @@ async def test_rewind_voids_the_artifacts_of_every_later_step(
         assert voids[2]["before"] == ANSWER_PACKAGE
 
 
-async def test_orchestrate_mode_is_refused_rather_than_quietly_run_as_one_agent(
+def _orchestrate_steps(
+    *,
+    max_parallel: int | None = 2,
+    role: str | None = None,
+    gate: str = "confirm",
+    validate_step: bool = False,
+) -> list[dict[str, Any]]:
+    """The case's skeleton with its middle step — and optionally its check step —
+    declared as the model's own to decompose (7.6's ``orchestrate``).
+
+    The artifacts keep their names and types: what changes is *who* does the work,
+    and a scenario that renamed its outputs at the same time would prove neither.
+    """
+    steps = _steps()
+    decomposed: dict[str, Any] = {
+        **steps[2],
+        "mode": "orchestrate",
+        "prompt": "STEP-3 把工艺包做出来。",
+        "gate": gate,
+    }
+    decomposed.pop("max_parallel", None)
+    if max_parallel is not None:
+        decomposed["max_parallel"] = max_parallel
+    if role is not None:
+        decomposed["agent_role"] = role
+    steps[2] = decomposed
+    if validate_step:
+        steps[3] = {**steps[3], "mode": "orchestrate", "prompt": "STEP-4 按自检清单验证。"}
+    return steps
+
+
+def _decomposition(state: dict[str, Any], step_id: str) -> dict[str, Any]:
+    record = _step(state, step_id)["decomposition"]
+    assert record is not None, f"step {step_id} recorded no decomposition"
+    return record
+
+
+async def test_a_decomposing_step_dispatches_subagents_in_parallel_under_the_ceiling(
     tmp_octop_home: Path,
 ) -> None:
-    """7.6's second mode is not built yet: the run says so, and runs nothing."""
-    steps = _steps()
-    steps[3] = {**steps[3], "mode": "orchestrate", "max_parallel": 8}
+    """7.6/7.7/7.8: the model decomposes, the platform caps it, the run remembers it.
 
-    async with _stepped_env(tmp_octop_home, HAPPY_SCRIPT, definition=_definition(steps=steps)) as (
-        client,
-        srv,
-        auth,
-        harness,
-    ):
+    Three subagents are dispatched in one turn under a declared ceiling of two, so
+    one of them has to queue for a slot — and the record has to say so. The step
+    also keeps its human gate: decomposing changes who did the work, not whether a
+    person still approves it.
+    """
+    script = {**HAPPY_SCRIPT, "STEP-3": [json.dumps({"plan": ["刀具", "工时", "NC"]})]}
+    async with _stepped_env(
+        tmp_octop_home,
+        script,
+        definition=_definition(steps=_orchestrate_steps(max_parallel=2)),
+        dispatches={"STEP-3": list(DISPATCH_ROLES)},
+    ) as (client, srv, auth, harness):
+        state = await _start(client, auth)
+
+        # The step ran, and its ``confirm`` gate still stopped the run there.
+        assert _step(state, "fill_inferred")["status"] == "succeeded"
+        assert state["status"] == "awaiting_gate"
+        assert state["pending_gate"]["step_id"] == "fill_inferred"
+        assert harness.dispatched == list(DISPATCH_ROLES)
+
+        record = _decomposition(state, "fill_inferred")
+        assert record["mode"] == "orchestrate"
+        assert record["role"] is None
+        assert record["declared"] == 2 and record["ceiling"] == 2
+        # Three subagents, at most two at a time: exactly one waited for a slot.
+        assert record["peak"] == 2
+        assert record["waited"] == 1
+        assert [entry["ordinal"] for entry in record["dispatches"]] == [0, 1, 2]
+        assert all(entry["slots"] <= 2 for entry in record["dispatches"])
+        assert {entry["role"] for entry in record["dispatches"]} == {
+            role for role, _task in DISPATCH_ROLES
+        }
+        assert sum(1 for entry in record["dispatches"] if entry["waited"]) == 1
+        # 「各自产出什么」 — the record answers it with the subagent's own answer.
+        assert [entry["task"] for entry in record["dispatches"]] == [
+            task for _role, task in DISPATCH_ROLES
+        ]
+        assert [entry["result"] for entry in record["dispatches"]] == [
+            f"{role} 的产出：{task}" for role, task in DISPATCH_ROLES
+        ]
+        assert all(entry["status"] == "succeeded" for entry in record["dispatches"])
+        assert all(not entry["truncated"] for entry in record["dispatches"])
+        assert all(
+            entry["ended_at"] is not None and entry["ended_at"] >= entry["started_at"]
+            for entry in record["dispatches"]
+        )
+
+        # The audit reports the same record — one run, one truth, two endpoints.
+        assert (
+            _decomposition(await _audit(client, auth, state["task_id"]), "fill_inferred") == record
+        )
+
+        # And the rows are in the run's own log, not only in this response.
+        assert srv.services is not None
+        rows = srv.services.repos.feature_runs_repo.dispatches(state["task_id"])
+        assert [(row.role, row.task, row.status) for row in rows] == [
+            (role, task, "succeeded") for role, task in DISPATCH_ROLES
+        ]
+
+        # The turn really carried this step's ledger, and its prompt really told
+        # the model that the step is its to split, with what ceiling.
+        request = harness.requests("STEP-3")[0]
+        assert feature_dispatch.dispatch_token(request["configurable"]) is not None
+        prompt = harness.prompts("STEP-3")[0]
+        assert "task" in prompt and "2" in prompt
+
+        # Approving continues the same run, and the record is still there.
+        approved = await client.post(
+            f"/api/features/{FEATURE_ID}/runs/{state['task_id']}/approve",
+            headers=auth,
+            json={},
+        )
+        assert approved.status_code == 200, approved.text
+        resumed = approved.json()
+        assert resumed["status"] == "succeeded"
+        assert resumed["output"] == ANSWER_PACKAGE
+        assert _decomposition(resumed, "fill_inferred") == record
+
+
+async def test_a_step_that_declares_no_ceiling_inherits_the_platform_default(
+    tmp_octop_home: Path,
+) -> None:
+    """7.7's 「可配、可继承默认」: a step with no number still runs under a ceiling."""
+    script = {**HAPPY_SCRIPT, "STEP-3": [json.dumps({"plan": ["刀具"]})]}
+    async with _stepped_env(
+        tmp_octop_home,
+        script,
+        definition=_definition(steps=_orchestrate_steps(max_parallel=None, gate="auto")),
+        dispatches={"STEP-3": [DISPATCH_ROLES[0]]},
+    ) as (client, _srv, auth, _harness):
+        state = await _start(client, auth)
+
+        record = _decomposition(state, "fill_inferred")
+        assert record["declared"] is None
+        assert record["ceiling"] == DEFAULT_MAX_PARALLEL
+        assert record["peak"] == 1 and record["waited"] == 0
+        assert state["status"] == "succeeded"
+
+
+async def test_a_check_gate_still_refuses_delivery_when_the_step_decomposed(
+    tmp_octop_home: Path,
+) -> None:
+    """The skeleton outranks the model: 校验门不过不许交付, decomposed or not."""
+    script = {**HAPPY_SCRIPT, "STEP-4": [ANSWER_FAILED]}
+    async with _stepped_env(
+        tmp_octop_home,
+        script,
+        definition=_definition(steps=_orchestrate_steps(gate="auto", validate_step=True)),
+        dispatches={"STEP-3": list(DISPATCH_ROLES), "STEP-4": [DISPATCH_ROLES[0]]},
+    ) as (client, _srv, auth, _harness):
+        state = await _start(client, auth)
+
+        assert state["status"] == "failed"
+        checked = _step(state, "self_check")
+        assert checked["status"] == "failed"
+        assert "did not pass its check gate" in checked["error"]
+        # The check step dispatched a subagent before it failed its own gate, and
+        # the record kept that: a refused delivery is still an auditable one.
+        assert [entry["role"] for entry in _decomposition(state, "self_check")["dispatches"]] == [
+            DISPATCH_ROLES[0][0]
+        ]
+
+
+async def test_an_agent_role_step_fails_loudly_when_it_never_ran_as_that_subagent(
+    tmp_octop_home: Path,
+) -> None:
+    """``agent_role`` is part of the skeleton: the platform checks it was honoured.
+
+    The turn dispatched a real subagent — just not the declared one. That is not
+    the answer the definition asked for, so the step fails and says why, while the
+    dispatch that *did* happen stays in the record.
+    """
+    role = DISPATCH_ROLES[0][0]
+    other = DISPATCH_ROLES[1][0]
+    script = {**HAPPY_SCRIPT, "STEP-3": [json.dumps({"plan": []})]}
+    async with _stepped_env(
+        tmp_octop_home,
+        script,
+        definition=_definition(steps=_orchestrate_steps(role=role, gate="auto")),
+        dispatches={"STEP-3": [(other, "别的活")]},
+    ) as (client, _srv, auth, _harness):
+        state = await _start(client, auth)
+
+        assert state["status"] == "failed"
+        step = _step(state, "fill_inferred")
+        assert step["status"] == "failed"
+        assert role in step["error"] and other in step["error"]
+        assert [
+            entry["role"] for entry in _decomposition(state, "fill_inferred")["dispatches"]
+        ] == [other]
+
+
+async def test_a_step_that_declares_an_agent_role_runs_as_that_subagent(
+    tmp_octop_home: Path,
+) -> None:
+    """The happy side of the same rule: the declared role is the one that ran."""
+    role = DISPATCH_ROLES[0][0]
+    script = {**HAPPY_SCRIPT, "STEP-3": [json.dumps({"plan": ["复核"]})]}
+    async with _stepped_env(
+        tmp_octop_home,
+        script,
+        definition=_definition(steps=_orchestrate_steps(role=role, gate="auto")),
+        dispatches={"STEP-3": [(role, "复核工艺包")]},
+    ) as (client, _srv, auth, _harness):
+        state = await _start(client, auth)
+
+        assert _step(state, "fill_inferred")["status"] == "succeeded"
+        record = _decomposition(state, "fill_inferred")
+        assert record["role"] == role
+        assert [(entry["role"], entry["task"]) for entry in record["dispatches"]] == [
+            (role, "复核工艺包")
+        ]
+
+
+async def test_a_run_that_could_not_dispatch_anything_is_refused_before_it_starts(
+    tmp_octop_home: Path,
+) -> None:
+    """Without this, a decomposed step would quietly come back as one agent's answer."""
+    definition = {
+        **_definition(steps=_orchestrate_steps()),
+        # The feature declares a subagent the caller's agent does not have, so the
+        # run resolves to none — and step 3 is declared to need some.
+        "agent": {"subagents": ["ghost/nobody"]},
+    }
+    async with _stepped_env(
+        tmp_octop_home,
+        HAPPY_SCRIPT,
+        definition=definition,
+        dispatches={"STEP-3": [DISPATCH_ROLES[0]]},
+    ) as (client, srv, auth, harness):
         response = await client.post(
             f"/api/features/{FEATURE_ID}/run", headers=auth, json={"inputs": INPUTS}
         )
 
-        assert response.status_code == 501
+        assert response.status_code == 501, response.text
         error = response.json()["error"]
         assert error["code"] == "FEATURE_STEP_UNSUPPORTED"
-        assert "orchestrate" in error["message"] and "self_check" in error["message"]
-        # Nothing ran, and no run was logged: an unimplemented mode is not a
+        assert "fill_inferred" in error["message"]
+        assert "ghost/nobody" in error["message"]
+        # Nothing ran and no run was logged: a step that cannot dispatch is not a
         # degraded run, it is no run at all.
         assert harness.seen == []
         assert srv.services is not None

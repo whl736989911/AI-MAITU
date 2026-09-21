@@ -1106,6 +1106,36 @@ def _ensure_feature_step_runs_schema(db: DatabasePool) -> None:
         )
 
 
+def _ensure_feature_step_dispatches_schema(db: DatabasePool) -> None:
+    """Create the dispatch record table (schema v25) when missing.
+
+    Runs on every boot, like the v18-v24 helpers: databases whose watermark
+    skipped 25 — a clamp, or a build that stamped the version without the DDL —
+    still get the table a step turn writes its subagent dispatches to. The rows are
+    written after the turn (7.8's 分解留痕) and read back by the run audit, so a
+    missing table would only surface as a failed run whose decomposition is gone.
+    """
+    if not _table_exists(db, "feature_runs"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS feature_step_dispatches ("
+            "id TEXT PRIMARY KEY, "
+            "task_id TEXT NOT NULL REFERENCES feature_runs(task_id) ON DELETE CASCADE, "
+            "seq INTEGER NOT NULL, step_id TEXT NOT NULL, role TEXT NOT NULL, "
+            "task TEXT NOT NULL, status TEXT NOT NULL, error TEXT, result TEXT, "
+            "truncated INTEGER NOT NULL DEFAULT 0, waited INTEGER NOT NULL DEFAULT 0, "
+            "waited_ms INTEGER NOT NULL DEFAULT 0, slots INTEGER NOT NULL DEFAULT 0, "
+            f"started_at {int_type} NOT NULL, ended_at {int_type}, "
+            f"created_at {int_type} NOT NULL)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_step_dispatches_step "
+            "ON feature_step_dispatches (task_id, seq, started_at)"
+        )
+
+
 def _ensure_data_sources_schema(db: DatabasePool) -> None:
     """Create the data-source table (schema v20) when missing.
 
@@ -2421,6 +2451,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 25:
+        _ensure_feature_step_dispatches_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2472,3 +2507,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_feature_task_snapshot_schema(db)
     _ensure_feature_rule_scope_schema(db)
     _ensure_feature_step_runs_schema(db)
+    _ensure_feature_step_dispatches_schema(db)

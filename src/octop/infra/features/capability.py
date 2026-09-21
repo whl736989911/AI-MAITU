@@ -51,6 +51,12 @@ class ResolvedCapability:
     mcp_servers: tuple[str, ...] | None = None
     knowledge_base_ids: tuple[str, ...] | None = None
     withheld: tuple[str, ...] = ()
+    max_parallel: int | None = None
+    """The feature's default dispatch ceiling (7.7) — ``None`` means a step that
+    declares none falls through to
+    :data:`~octop.infra.features.dispatch.DEFAULT_MAX_PARALLEL`. It rides the
+    capability layer because it is part of what the definition declares, so a run
+    resumed at a gate keeps the ceiling it started under."""
 
     def run_scope(self) -> FeatureRunScope:
         """The part of the layer that rides ``configurable`` (tools, subagents)."""
@@ -76,6 +82,7 @@ class ResolvedCapability:
                 None if self.knowledge_base_ids is None else list(self.knowledge_base_ids)
             ),
             "withheld": list(self.withheld),
+            "max_parallel": self.max_parallel,
         }
 
 
@@ -136,6 +143,7 @@ def capability_from_audit(payload: Mapping[str, Any]) -> ResolvedCapability:
     model = payload.get("model")
     runtime = payload.get("runtime")
     disabled = _audit_names(payload, "tools_disabled")
+    ceiling = payload.get("max_parallel")
     return ResolvedCapability(
         model=model if isinstance(model, str) else None,
         runtime_overrides=dict(runtime) if isinstance(runtime, Mapping) else {},
@@ -144,6 +152,9 @@ def capability_from_audit(payload: Mapping[str, Any]) -> ResolvedCapability:
         subagents=_audit_names(payload, "subagents"),
         mcp_servers=_audit_names(payload, "mcp_servers"),
         knowledge_base_ids=_audit_names(payload, "knowledge_base_ids"),
+        max_parallel=(
+            ceiling if isinstance(ceiling, int) and not isinstance(ceiling, bool) else None
+        ),
     )
 
 
@@ -242,6 +253,7 @@ async def resolve_capability(
         mcp_servers=mcp_servers,
         knowledge_base_ids=knowledge_base_ids,
         withheld=tuple(withheld),
+        max_parallel=declared.max_parallel,
     )
 
 

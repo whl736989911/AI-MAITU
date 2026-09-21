@@ -18,6 +18,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import get_server, require_admin, require_permission
 from octop.api.routers.chat.turn import resolve_thread_id
+from octop.infra.agents.middleware.feature_dispatch import (
+    close_ledger,
+    open_ledger,
+    stamp_dispatch,
+)
 from octop.infra.agents.middleware.feature_prompt import stamp_feature_system_prompt
 from octop.infra.agents.middleware.feature_scope import FeatureRunScope, stamp_feature_scope
 from octop.infra.agents.providers.store import enabled_model_refs
@@ -48,6 +53,15 @@ from octop.infra.features import (
     stamp_capability,
 )
 from octop.infra.features.diff import diff_segments
+from octop.infra.features.dispatch import (
+    DEFAULT_MAX_PARALLEL,
+    MAX_DISPATCH_RESULT_CHARS,
+    DispatchEntry,
+    decomposition_dict,
+    refuse_undispatchable,
+    require_role_dispatch,
+    resolve_max_parallel,
+)
 from octop.infra.features.rules import (
     RuleAlreadyReviewed,
     RuleExtractionFailed,
@@ -426,6 +440,7 @@ async def _run_agent_turn(
     system_prompt: str | None = None,
     capability: ResolvedCapability | None = None,
     scope: FeatureRunScope | None = None,
+    dispatch_token: str | None = None,
     is_admin: bool = False,
     locale: str = "zh",
 ) -> str:
@@ -445,6 +460,11 @@ async def _run_agent_turn(
     ``prepare_chat_mcp``, and the knowledge-base scope through
     ``stamp_turn_knowledge_config`` — every one of them scoped to this run, none of
     them written to the agent.
+
+    *dispatch_token* is the step-turn boundary (design 7.7): the ledger that caps
+    how many subagents this turn may run at once and records the ones it did. The
+    single-shot run passes none — it has no ceiling to enforce and no step to
+    report one for.
     """
     gateway = server.app_runtime.gateway
     _thread_id, session_key = await resolve_thread_id(
@@ -489,6 +509,10 @@ async def _run_agent_turn(
         # declares no capability layer has to honour "this step reads the PDF and
         # nothing else", and dropping it here would hand the step every tool.
         stamp_feature_scope(request, scope)
+    if dispatch_token is not None:
+        # The dispatch boundary for this one step turn: the ceiling and the record
+        # (7.7). A plain turn stamps nothing and stays byte-identical.
+        stamp_dispatch(request, dispatch_token)
     output: str | None = None
 
     async def _stream() -> None:
@@ -546,8 +570,19 @@ def _artifact_dict(artifact: Artifact) -> dict[str, Any]:
     return artifact.as_dict()
 
 
-def _step_dict(state: RunState, step: FeatureStep, seq: int) -> dict[str, Any]:
-    """One step's row of a run — status, artifact, error, timing, attempts."""
+def _step_dict(
+    state: RunState,
+    step: FeatureStep,
+    seq: int,
+    *,
+    dispatch_default: int | None = None,
+) -> dict[str, Any]:
+    """One step's row of a run — status, artifact, error, timing, attempts.
+
+    ``decomposition`` is 7.8's 留痕: which subagents this step dispatched, what each
+    was told, what each answered, and what the ceiling did about it. ``None`` for a
+    step that neither decomposes nor dispatched anything.
+    """
     row = state.row_of(step.id)
     artifact = row.artifact()
     return {
@@ -564,7 +599,24 @@ def _step_dict(state: RunState, step: FeatureStep, seq: int) -> dict[str, Any]:
         "error": row.error,
         "voided": row.status == STEP_VOIDED,
         "artifacts": [] if artifact is None else [_artifact_dict(artifact)],
+        "decomposition": decomposition_dict(
+            step,
+            declared_default=dispatch_default,
+            rows=state.dispatches_of(step.id),
+        ),
     }
+
+
+def _dispatch_default(state: RunState) -> int | None:
+    """The feature-level ceiling this run recorded, or ``None`` when it declared none.
+
+    Read from the run's own snapshot, exactly like every other capability the run
+    resolved: a definition edited after the run started must not change what that
+    run's ceiling was.
+    """
+    capability = state.row.snapshot_payload().get("capability")
+    value = capability.get("max_parallel") if isinstance(capability, Mapping) else None
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _run_state_dict(state: RunState) -> dict[str, Any]:
@@ -595,12 +647,16 @@ def _run_state_dict(state: RunState) -> dict[str, Any]:
             "allow_edit": bool(pending.get("allow_edit")),
             "artifacts": [] if gated is None else [_artifact_dict(gated)],
         }
+    dispatch_default = _dispatch_default(state)
     return {
         "task_id": state.task_id,
         "feature_id": state.row.feature_id,
         "status": state.row.status,
         "current_step": state.row.current_step,
-        "steps": [_step_dict(state, step, seq) for seq, step in enumerate(state.plan)],
+        "steps": [
+            _step_dict(state, step, seq, dispatch_default=dispatch_default)
+            for seq, step in enumerate(state.plan)
+        ],
         "pending_gate": pending_gate,
         "output": output,
         "output_kind": output_kind,
@@ -616,6 +672,7 @@ def _audit_dict(state: RunState) -> dict[str, Any]:
     happened.
     """
     artifacts = state.artifacts()
+    dispatch_default = _dispatch_default(state)
     steps: list[dict[str, Any]] = []
     for seq, step in enumerate(state.plan):
         entries = [
@@ -633,7 +690,7 @@ def _audit_dict(state: RunState) -> dict[str, Any]:
         ]
         steps.append(
             {
-                **_step_dict(state, step, seq),
+                **_step_dict(state, step, seq, dispatch_default=dispatch_default),
                 "inputs": [
                     artifacts[name].as_dict()
                     if name in artifacts
@@ -684,10 +741,88 @@ def _step_scope(step: FeatureStep, capability: ResolvedCapability | None) -> Fea
     )
 
 
+def _record_dispatches(
+    server: Any,
+    task_id: str,
+    step: FeatureStep,
+    entries: Sequence[DispatchEntry],
+) -> None:
+    """Write what one step turn dispatched — 7.8's 留痕, straight after the turn.
+
+    Written whether the turn succeeded or failed: a step that fell over mid-way is
+    exactly when "which subagents ran, and what did each of them say" has to be
+    answerable. The step's row is where the position comes from — a resumed run's
+    plan lives in its own row, not in today's definition.
+    """
+    if not entries:
+        return
+    assert server.services is not None
+    repo = server.services.repos.feature_runs_repo
+    row = next((item for item in repo.steps(task_id) if item.step_id == step.id), None)
+    if row is None:
+        raise StepUnknown(f"step {step.id!r} is not part of run {task_id!r}")
+    repo.record_dispatches(task_id, row.seq, step_id=step.id, entries=entries)
+
+
+async def _run_step_turn(
+    server: Any,
+    feature: Feature,
+    *,
+    task_id: str,
+    step: FeatureStep,
+    artifacts: Mapping[str, Artifact],
+    agent_id: str,
+    user: Any,
+    inputs: dict[str, Any],
+    capability: ResolvedCapability | None,
+) -> str:
+    """Run one step's agent turn inside its dispatch boundary (design 7.7).
+
+    The ceiling is opened before the turn and the record closed after it, so the
+    three facts 7.7 keeps stay facts: the model still decides whether and how to
+    decompose the step (nothing here schedules anything), the platform caps how many
+    subagents run at once, and every one of them is written down.
+
+    A step that declares ``agent_role`` must have run as that subagent; a turn that
+    dispatched something else fails the step loudly here, because an answer produced
+    by the wrong agent is not the answer the definition asked for.
+    """
+    locale = str(getattr(user, "locale", None) or "zh")
+    token, ledger = open_ledger(
+        ceiling=resolve_max_parallel(step, capability.max_parallel if capability else None)
+    )
+    try:
+        answer = await _run_agent_turn(
+            server,
+            agent_id=agent_id,
+            user_id=int(user.id),
+            text=render_step_prompt(
+                step,
+                feature,
+                inputs,
+                artifacts,
+                locale=locale,
+                max_parallel_default=capability.max_parallel if capability else None,
+            ),
+            system_prompt=feature.system_prompt,
+            capability=capability,
+            scope=_step_scope(step, capability),
+            dispatch_token=token,
+            is_admin=bool(getattr(user, "is_admin", False)),
+            locale=locale,
+        )
+    finally:
+        close_ledger(token)
+        _record_dispatches(server, task_id, step, ledger.entries())
+    require_role_dispatch(step, ledger.entries())
+    return answer
+
+
 def _step_turn(
     server: Any,
     feature: Feature,
     *,
+    task_id: str,
     agent_id: str,
     user: Any,
     inputs: dict[str, Any],
@@ -698,22 +833,22 @@ def _step_turn(
     This reuses the single-shot run's own turn (``_run_agent_turn``, which the
     harness ``stream`` already backs) instead of a second executor: a step *is* an
     agent turn, with a narrower tool surface and a prompt built from the artifacts
-    it declared. Nothing here decomposes or schedules — that is 7.6's other mode,
-    and it is not built.
+    it declared. What a step does *inside* that turn — decompose itself into
+    subagents, or do the work in one pass — is the model's call; the platform only
+    bounds and records it (:func:`_run_step_turn`).
     """
-    locale = str(getattr(user, "locale", None) or "zh")
 
     async def turn(step: FeatureStep, artifacts: Mapping[str, Artifact]) -> str:
-        return await _run_agent_turn(
+        return await _run_step_turn(
             server,
+            feature,
+            task_id=task_id,
+            step=step,
+            artifacts=artifacts,
             agent_id=agent_id,
-            user_id=int(user.id),
-            text=render_step_prompt(step, feature, inputs, artifacts, locale=locale),
-            system_prompt=feature.system_prompt,
+            user=user,
+            inputs=inputs,
             capability=capability,
-            scope=_step_scope(step, capability),
-            is_admin=bool(getattr(user, "is_admin", False)),
-            locale=locale,
         )
 
     return turn
@@ -774,6 +909,7 @@ def _resume_turn(server: Any, feature: Feature, state: RunState, user: Any) -> S
     return _step_turn(
         server,
         feature,
+        task_id=state.task_id,
         agent_id=str(task.agent_id),
         user=user,
         inputs=inputs if isinstance(inputs, dict) else {},
@@ -791,9 +927,10 @@ async def _run_steps(
 
     The run is logged *before* it runs and updated as it goes: a run that stopped
     at a human gate is a run still in progress, so its ``feature_tasks`` row says
-    ``running`` until the run actually ends. A plan this build cannot run is
-    refused before anything is written — the unimplemented ``orchestrate`` mode
-    must leave no half-run that later reads as if it had executed.
+    ``running`` until the run actually ends. A plan this build cannot run — or a
+    plan whose decomposing steps this *run* could not dispatch — is refused before
+    anything is written: an unimplemented or unsatisfiable mode must leave no
+    half-run that later reads as if it had executed.
     """
     assert server.services is not None
     agent_id = _run_agent_id(server, user.id)
@@ -808,6 +945,7 @@ async def _run_steps(
     with _run_errors():
         refuse_unsupported(feature.id, feature.steps)
         capability = await resolve_capability(server, feature.agent, agent_id=agent_id, user=user)
+        refuse_undispatchable(feature.id, feature.steps, capability)
         logger.info(
             "feature %s stepped run scope user=%s agent=%s %s",
             feature.id,
@@ -843,6 +981,7 @@ async def _run_steps(
             run_turn=_step_turn(
                 server,
                 feature,
+                task_id=row.id,
                 agent_id=agent_id,
                 user=user,
                 inputs=inputs,
@@ -985,6 +1124,13 @@ async def feature_meta(
         "icons": list(ALLOWED_ICONS),
         "output_kinds": list(ALLOWED_OUTPUT_KINDS),
         "bundled_ids": store.read_only_ids(),
+        # The ceiling a step that declares none inherits (design 7.7). Reported so
+        # the editor can show what "inherit" actually resolves to instead of
+        # leaving the author to guess a number this build already fixed.
+        "max_parallel_default": DEFAULT_MAX_PARALLEL,
+        # The cap on one recorded subagent answer — the editor says so where it
+        # shows a dispatch's result, so a cut answer is never mistaken for a short one.
+        "dispatch_result_max_chars": MAX_DISPATCH_RESULT_CHARS,
     }
 
 

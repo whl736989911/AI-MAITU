@@ -421,7 +421,7 @@
     "FEATURE_RUN_NOT_FOUND": "That feature run does not exist.",
     "FEATURE_RUN_NOT_AT_GATE": "This run is not waiting at a gate, so this action cannot be applied to it.",
     "FEATURE_RUN_REQUEST_INVALID": "The run request is invalid: {reason}.",
-    "FEATURE_STEP_UNSUPPORTED": "The feature's steps declare something this build does not implement yet: {reason}. The run was refused and no step was executed.",
+    "FEATURE_STEP_UNSUPPORTED": "A step of this feature cannot be executed: {reason}. The run was refused and no step was executed.",
     "ORG_UNIT_HAS_CHILDREN": "This department still has sub-departments; move or delete them first.",
     "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first."
   },

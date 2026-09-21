@@ -1,9 +1,10 @@
-"""Unit tests for FeatureRunRepo and migration 024.
+"""Unit tests for FeatureRunRepo and migrations 024–025.
 
 The repo is where a run's state has to survive a gate, so what these tests pin
 down is exactly that: the row keeps which step it stopped at, the artifacts it
 holds, and — for the audit — the value of every artifact a human changed, both
-before and after.
+before and after. Migration 025 adds what a step turn dispatched to its subagents
+(7.8's 分解留痕), which is written once and read back as it was observed.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.feature_runs import FeatureRunRepo
 from octop.infra.db.repos.feature_tasks import FeatureTaskRepo
+from octop.infra.features.dispatch import DispatchEntry
 from octop.infra.features.steps import STEP_SUCCEEDED, STEP_VOIDED, Artifact
 
 _PLAN = [
@@ -81,6 +83,36 @@ def _started(db: SqlitePool, user_id: int) -> tuple[FeatureRunRepo, str]:
 
 def _rows(repo: FeatureRunRepo, task_id: str) -> list[tuple[str, str, int]]:
     return [(row.step_id, row.status, row.attempts) for row in repo.steps(task_id)]
+
+
+def _dispatch(
+    role: str,
+    task: str,
+    *,
+    status: str = "succeeded",
+    error: str | None = None,
+    result: str | None = "rows=4",
+    truncated: bool = False,
+    waited: bool = False,
+    waited_ms: int = 0,
+    slots: int = 1,
+    started_at: int = 1_700_000_000,
+    ended_at: int | None = 1_700_000_002,
+) -> DispatchEntry:
+    """One dispatch as the boundary records it; a test names only the fields it pins."""
+    return DispatchEntry(
+        role=role,
+        task=task,
+        status=status,
+        error=error,
+        result=result,
+        truncated=truncated,
+        waited=waited,
+        waited_ms=waited_ms,
+        slots=slots,
+        started_at=started_at,
+        ended_at=ended_at,
+    )
 
 
 def test_a_run_starts_with_every_step_pending(db: SqlitePool) -> None:
@@ -226,6 +258,70 @@ def test_a_void_is_recorded_with_what_it_threw_away(db: SqlitePool) -> None:
     assert edit.before() == {"l1_count": 2}
 
 
+def test_a_step_turn_records_the_subagents_it_dispatched(db: SqlitePool) -> None:
+    """7.8's 分解留痕: what a step split itself into, in the order it dispatched.
+
+    The rows are read back and never rewritten, so the round-trip has to be exact:
+    the flags come back as booleans, each row still says which step turn it belongs
+    to, and a dispatch with no end keeps its NULL rather than a time nobody saw.
+    """
+    user_id = _user_id(db)
+    repo, task_id = _started(db, user_id)
+
+    repo.record_dispatches(
+        task_id,
+        0,
+        step_id="extract_l1",
+        entries=[
+            # Written first, dispatched second: the read order is when each subagent
+            # went out, not the order the rows landed in.
+            _dispatch(
+                "extractor",
+                "读 BOM 前 100 行",
+                truncated=True,
+                slots=1,
+                started_at=1_700_000_001,
+                ended_at=1_700_000_004,
+            ),
+            _dispatch(
+                "verifier",
+                "复核数量",
+                status="failed",
+                error="RuntimeError: 子 agent 超时",
+                result=None,
+                waited=True,
+                waited_ms=812,
+                slots=2,
+                started_at=1_700_000_000,
+                ended_at=None,
+            ),
+        ],
+    )
+
+    rows = repo.dispatches(task_id)
+    assert [row.role for row in rows] == ["verifier", "extractor"]
+    first, second = rows
+    assert (first.task_id, first.seq, first.step_id) == (task_id, 0, "extract_l1")
+    assert (first.task, first.status, first.error, first.result) == (
+        "复核数量",
+        "failed",
+        "RuntimeError: 子 agent 超时",
+        None,
+    )
+    assert (first.truncated, first.waited) == (False, True)
+    assert (first.waited_ms, first.slots) == (812, 2)
+    assert first.started_at == 1_700_000_000
+    assert first.ended_at is None, "a dispatch that never came back has no end time"
+    assert first.created_at > 0
+    assert (second.status, second.truncated, second.waited) == ("succeeded", True, False)
+    assert second.result == "rows=4"
+    assert (second.started_at, second.ended_at) == (1_700_000_001, 1_700_000_004)
+
+    # A turn that dispatched nothing writes nothing: the absence is the record.
+    repo.record_dispatches(task_id, 1, step_id="report", entries=[])
+    assert [row.role for row in repo.dispatches(task_id)] == ["verifier", "extractor"]
+
+
 def test_the_run_state_only_moves_where_it_is_told(db: SqlitePool) -> None:
     """UNSET means "leave it": current_step and the gate are not one value."""
     user_id = _user_id(db)
@@ -281,8 +377,12 @@ def test_deleting_the_task_takes_the_run_with_it(db: SqlitePool) -> None:
     """A run is part of the task log: the two cannot drift apart."""
     user_id = _user_id(db)
     repo, task_id = _started(db, user_id)
+    repo.record_dispatches(
+        task_id, 0, step_id="extract_l1", entries=[_dispatch("extractor", "读 BOM 前 100 行")]
+    )
     with db.transaction() as conn:
         conn.execute("DELETE FROM feature_tasks WHERE id = ?", (task_id,))
 
     assert repo.get(task_id) is None
     assert repo.steps(task_id) == []
+    assert repo.dispatches(task_id) == []

@@ -2976,6 +2976,9 @@ class AgentManager:
 
         from octop.infra.agents.middleware.binary_read_guard import BinaryReadGuardMiddleware
         from octop.infra.agents.middleware.browser_profile import BrowserProfileMiddleware
+        from octop.infra.agents.middleware.feature_dispatch import (
+            FeatureDispatchMiddleware,
+        )
         from octop.infra.agents.middleware.feature_prompt import (
             FeatureSystemPromptMiddleware,
         )
@@ -3003,6 +3006,7 @@ class AgentManager:
             ReasoningRequestMiddleware(),
             FeatureSystemPromptMiddleware(),
             FeatureScopeMiddleware(),
+            FeatureDispatchMiddleware(),
             TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
             KnowledgeSearchHintMiddleware(),
             BrowserProfileMiddleware(),

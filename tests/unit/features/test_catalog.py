@@ -5,13 +5,18 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from octop.infra.features.catalog import (
     Feature,
     FeatureCatalog,
     build_user_prompt,
     default_library_root,
+    render_step_prompt,
 )
+from octop.infra.features.dispatch import DEFAULT_MAX_PARALLEL
 from octop.infra.features.schema import validate_manifest
+from octop.infra.features.steps import Artifact
 
 
 def _manifest(feature_id: str, **overrides: object) -> dict:
@@ -41,6 +46,21 @@ def _manifest(feature_id: str, **overrides: object) -> dict:
     }
     payload.update(overrides)
     return payload
+
+
+def _step_node(**overrides: object) -> dict:
+    """One valid step declaration, as the editor writes it (see library/README.md)."""
+    node: dict = {
+        "id": "extract_l1",
+        "name": "提取 L1 项",
+        "mode": "agent",
+        "output": {"name": "bom_rows", "schema": "text"},
+        "prompt": "读 BOM PDF，过滤 L1。",
+        "gate": "auto",
+        "on_failure": "abort",
+    }
+    node.update(overrides)
+    return node
 
 
 def _write_feature(
@@ -200,6 +220,7 @@ def test_validate_manifest_accepts_a_capability_layer() -> None:
                 "max_tokens": 2048,
                 "max_iters": 40,
                 "max_input_length": 64_000,
+                "max_parallel": 6,
                 "tools_disabled": ["browser_use"],
                 "skills": [],
                 "subagents": ["researcher"],
@@ -221,6 +242,7 @@ def test_validate_manifest_reports_every_capability_problem() -> None:
                 "model": "gpt-4o",
                 "temperature": 3,
                 "max_tokens": 0,
+                "max_parallel": 0,
                 "skills": "meeting-notes",
                 "subagents": ["writer", "writer"],
                 "tools_disabled": ["no-such-tool", "task"],
@@ -232,6 +254,7 @@ def test_validate_manifest_reports_every_capability_problem() -> None:
     assert "agent.model must name a model as 'provider/model'" in errors
     assert "agent.temperature must be between 0 and 2" in errors
     assert "agent.max_tokens must be between 1 and inf" in errors
+    assert "agent.max_parallel must be between 1 and inf" in errors
     assert "agent.skills must be an array of non-empty strings or null" in errors
     assert "agent.subagents must not repeat the same entry" in errors
     assert "agent uses unsupported keys: 'unknown_key'" in errors
@@ -245,6 +268,47 @@ def test_validate_manifest_refuses_a_capability_layer_that_is_not_an_object() ->
     assert validate_manifest(_manifest("quote-draft", agent=["model"])) == [
         "agent must be an object"
     ]
+
+
+def test_the_capability_layer_carries_the_feature_level_ceiling(tmp_path: Path) -> None:
+    """``agent.max_parallel`` is the default a step's own ceiling overrides (7.7)."""
+    feature = _load_feature(tmp_path, agent={"subagents": ["researcher"], "max_parallel": 6})
+
+    assert feature.agent is not None
+    assert feature.agent.max_parallel == 6
+
+
+def test_validate_manifest_refuses_a_dispatching_step_under_an_empty_subagent_scope() -> None:
+    """``subagents: []`` is the explicit "none of them": every run would refuse."""
+    errors = validate_manifest(
+        _manifest(
+            "quote-draft",
+            agent={"subagents": []},
+            steps=[
+                _step_node(mode="orchestrate"),
+                _step_node(
+                    id="second",
+                    agent_role="tooling",
+                    output={"name": "summary", "schema": "text"},
+                ),
+            ],
+        )
+    )
+
+    assert [error for error in errors if error.startswith("agent.subagents")] == [
+        "agent.subagents allows no subagent, but step 'extract_l1' must dispatch one "
+        "(its mode or agent_role asks for a named subagent)",
+        "agent.subagents allows no subagent, but step 'second' must dispatch one "
+        "(its mode or agent_role asks for a named subagent)",
+    ]
+
+
+def test_a_step_that_dispatches_nothing_runs_under_an_empty_subagent_scope() -> None:
+    """The cross-check is about *declared* dispatch: a plain agent step is fine."""
+    assert (
+        validate_manifest(_manifest("quote-draft", agent={"subagents": []}, steps=[_step_node()]))
+        == []
+    )
 
 
 def test_build_user_prompt_substitutes_known_placeholders_only(tmp_path: Path) -> None:
@@ -343,3 +407,93 @@ def test_missing_overlay_root_is_not_a_warning(tmp_path: Path) -> None:
     assert catalog.warnings() == []
     assert [feature.id for feature in catalog.list()] == ["meeting-notes"]
     assert catalog.roots == (library, tmp_path / "features")
+
+
+# --- step prompts -----------------------------------------------------------
+
+
+def _render_step(tmp_path: Path, locale: str = "zh", **overrides: object) -> str:
+    """The prompt one declared step renders to (the step is the feature's first)."""
+    feature = _load_feature(tmp_path, steps=[_step_node(**overrides)])
+    return render_step_prompt(feature.steps[0], feature, {}, {}, locale=locale)
+
+
+def test_a_decomposing_step_is_told_the_dispatch_tool_and_its_ceiling(tmp_path: Path) -> None:
+    """7.6/7.7 stated to the model: it decomposes, the platform caps and records."""
+    prompt = _render_step(tmp_path, mode="orchestrate", max_parallel=3)
+
+    assert "本步骤的拆解（由你决定）" in prompt
+    assert "`task`" in prompt
+    assert "`subagent_type`" in prompt and "`description`" in prompt
+    assert "同一个回复里派出的多块会并行跑" in prompt
+    assert "最多 3 个子 agent 在跑" in prompt, "the ceiling the platform enforces"
+    assert "拆解不改变交付" in prompt, "the contract block above still holds"
+
+
+@pytest.mark.parametrize(
+    ("declared", "default", "expected"),
+    [(None, 6, 6), (2, 6, 2), (None, None, DEFAULT_MAX_PARALLEL)],
+)
+def test_the_prompt_quotes_the_ceiling_the_step_actually_runs_under(
+    tmp_path: Path, declared: int | None, default: int | None, expected: int
+) -> None:
+    """Own declaration wins, then the feature's, then the platform's default."""
+    feature = _load_feature(tmp_path, steps=[_step_node(mode="orchestrate", max_parallel=declared)])
+    step = feature.steps[0]
+
+    prompt = render_step_prompt(step, feature, {}, {}, locale="en", max_parallel_default=default)
+
+    assert f"At most {expected} subagents run at once" in prompt
+
+
+def test_a_role_pinned_step_is_told_which_subagent_it_runs_as(tmp_path: Path) -> None:
+    prompt = _render_step(tmp_path, locale="en", agent_role="tooling")
+
+    assert "runs as the subagent `tooling`" in prompt
+    assert "`subagent_type` = `tooling`" in prompt
+    assert "never dispatches that role fails the step" in prompt
+
+
+def test_the_decomposition_block_follows_the_callers_language(tmp_path: Path) -> None:
+    prompt = _render_step(tmp_path, locale="en", mode="orchestrate")
+
+    assert "This step's decomposition (yours to decide)" in prompt
+    assert "拆解" not in prompt
+
+
+def test_a_plain_step_prompt_is_unchanged(tmp_path: Path) -> None:
+    """The regression guard: only a step that dispatches gets anything new.
+
+    The expected text is written out here on purpose — comparing it against the
+    renderer's own output would pass however the block changed.
+    """
+    feature = _load_feature(
+        tmp_path,
+        steps=[
+            _step_node(),
+            _step_node(
+                id="report",
+                name="摘要报告",
+                inputs=["bom_rows"],
+                output={"name": "summary", "schema": "text"},
+                prompt="读 BOM PDF，过滤 L1。",
+            ),
+        ],
+    )
+    artifacts = {
+        "bom_rows": Artifact(
+            name="bom_rows",
+            schema="text",
+            value="已生成 BOM.xlsx",
+            step_id="extract_l1",
+        )
+    }
+
+    prompt = render_step_prompt(feature.steps[1], feature, {}, artifacts, locale="zh")
+
+    assert prompt == (
+        "读 BOM PDF，过滤 L1。\n\n"
+        "本步骤的输入产物（前序步骤已产出的结构化数据，直接使用，不要重新推断）：\n\n"
+        '### bom_rows (text)\n```json\n"已生成 BOM.xlsx"\n```\n\n'
+        "输出契约（必须遵守）: 只输出本步骤的文本产物，不要输出 JSON。"
+    )

@@ -2,9 +2,11 @@
 
 ``feature_runs`` holds the run (status, the gate it waits on, the step plan frozen
 at start, the run snapshot); ``feature_step_runs`` holds one row per step of that
-plan; ``feature_step_edits`` holds the human write log. Nothing here decides
-anything — the transitions live in :mod:`octop.infra.features.runs`, and these
-methods are the only way that module writes state down.
+plan; ``feature_step_edits`` holds the human write log;
+``feature_step_dispatches`` holds what each step turn dispatched to its subagents
+(7.8's 分解留痕). Nothing here decides anything — the transitions live in
+:mod:`octop.infra.features.runs`, and these methods are the only way that module
+writes state down.
 
 Two shapes are stored as JSON text on purpose: the **frozen plan** and the run
 **snapshot**. A run is audited as it ran, so editing the feature definition after
@@ -20,7 +22,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from octop.infra.db.pool import DatabasePool
-from octop.infra.db.repos._base import UNSET, DbRow, map_rows, now_ts, optional_updates
+from octop.infra.db.repos._base import UNSET, DbRow, bool_int, map_rows, now_ts, optional_updates
+from octop.infra.features.dispatch import DispatchEntry
 from octop.infra.features.steps import Artifact
 from octop.infra.utils.ulid import new_ulid
 
@@ -149,8 +152,56 @@ class FeatureStepEditRow:
         return None if self.after_value is None else json.loads(self.after_value)
 
 
+@dataclass(frozen=True)
+class FeatureStepDispatchRow:
+    """One subagent a step turn dispatched, as the boundary recorded it.
+
+    The rows are written after the turn and only ever read: nothing in the engine
+    updates or deletes one, because the record answers "what did this step split
+    itself into" and a later turn rewriting it would answer a different question.
+    """
+
+    id: str
+    task_id: str
+    seq: int
+    step_id: str
+    role: str
+    task: str
+    status: str
+    error: str | None
+    result: str | None
+    truncated: bool
+    waited: bool
+    waited_ms: int
+    slots: int
+    started_at: int
+    ended_at: int | None
+    created_at: int
+
+    @classmethod
+    def from_row(cls, r: DbRow) -> FeatureStepDispatchRow:
+        return cls(
+            id=str(r["id"]),
+            task_id=str(r["task_id"]),
+            seq=int(r["seq"]),
+            step_id=str(r["step_id"]),
+            role=str(r["role"]),
+            task=str(r["task"]),
+            status=str(r["status"]),
+            error=r["error"],
+            result=r["result"],
+            truncated=bool(r["truncated"]),
+            waited=bool(r["waited"]),
+            waited_ms=int(r["waited_ms"]),
+            slots=int(r["slots"]),
+            started_at=int(r["started_at"]),
+            ended_at=None if r["ended_at"] is None else int(r["ended_at"]),
+            created_at=int(r["created_at"]),
+        )
+
+
 class FeatureRunRepo:
-    """Data-access object for ``feature_runs`` and its two child tables."""
+    """Data-access object for ``feature_runs`` and its child tables."""
 
     def __init__(self, db: DatabasePool) -> None:
         self._db = db
@@ -387,5 +438,74 @@ class FeatureRunRepo:
             ).fetchall()
         return map_rows(rows, FeatureStepEditRow)
 
+    # --- what a step dispatched ------------------------------------------
 
-__all__ = ["FeatureRunRepo", "FeatureRunRow", "FeatureStepEditRow", "FeatureStepRunRow"]
+    def record_dispatches(
+        self,
+        task_id: str,
+        seq: int,
+        *,
+        step_id: str,
+        entries: Sequence[DispatchEntry],
+    ) -> None:
+        """The subagents one step turn dispatched, written after the turn — audit rows.
+
+        Written once the turn ended, never while a subagent is still out: the list
+        is the turn's own record, and appending to it mid-flight would make a
+        half-finished step look like a finished one. A turn that dispatched nothing
+        writes nothing — the absence of rows is the honest record, and the step's
+        own declaration is what says whether a decomposition was expected.
+        """
+        if not entries:
+            return
+        timestamp = now_ts()
+        with self._db.transaction() as conn:
+            for entry in entries:
+                conn.execute(
+                    "INSERT INTO feature_step_dispatches("
+                    "id, task_id, seq, step_id, role, task, status, error, result, truncated, "
+                    "waited, waited_ms, slots, started_at, ended_at, created_at"
+                    ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        new_ulid(),
+                        task_id,
+                        seq,
+                        step_id,
+                        entry.role,
+                        entry.task,
+                        entry.status,
+                        entry.error,
+                        entry.result,
+                        bool_int(entry.truncated),
+                        bool_int(entry.waited),
+                        entry.waited_ms,
+                        entry.slots,
+                        entry.started_at,
+                        entry.ended_at,
+                        timestamp,
+                    ),
+                )
+
+    def dispatches(self, task_id: str) -> list[FeatureStepDispatchRow]:
+        """Every dispatch of the run, in dispatch order.
+
+        ``started_at`` is the order a subagent went out in — not the order the rows
+        were written, because concurrent dispatches are written as they return.
+        ``now_ts`` is whole seconds, so it ties; ``id`` (the ULID each row was
+        minted with) breaks the tie, the same shape the edit log uses.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM feature_step_dispatches WHERE task_id = ? ORDER BY started_at, id",
+                (task_id,),
+            ).fetchall()
+        return map_rows(rows, FeatureStepDispatchRow)
+
+
+__all__ = [
+    "FeatureRunRepo",
+    "FeatureRunRow",
+    "FeatureStepDispatchRow",
+    "FeatureStepEditRow",
+    "FeatureStepRunRow",
+]

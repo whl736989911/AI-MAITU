@@ -22,6 +22,12 @@ Four rules the engine never bends:
 * every human write — an edit at a gate, an edit on a rewind, and the void a
   rewind performs — is recorded with its value before and after, before it is
   applied (7.9's audit requirement).
+
+The one thing the engine does *not* do is decide how a step is decomposed: a step
+that dispatches subagents does so inside its own turn (the model's call, bounded
+and recorded by
+:mod:`octop.infra.agents.middleware.feature_dispatch`), and the engine only reads
+those rows back into the run's state so the audit can report them.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ from typing import Any
 from octop.infra.db.repos.feature_runs import (
     FeatureRunRepo,
     FeatureRunRow,
+    FeatureStepDispatchRow,
     FeatureStepEditRow,
     FeatureStepRunRow,
 )
@@ -150,10 +157,20 @@ class RunState:
     plan: tuple[FeatureStep, ...]
     steps: tuple[FeatureStepRunRow, ...]
     edits: tuple[FeatureStepEditRow, ...]
+    dispatches: tuple[FeatureStepDispatchRow, ...] = ()
 
     @property
     def task_id(self) -> str:
         return self.row.task_id
+
+    def dispatches_of(self, step_id: str) -> tuple[FeatureStepDispatchRow, ...]:
+        """The subagents one step dispatched, in the order they were dispatched.
+
+        Rows, not a count: 7.8's 留痕 has to answer "哪个子 agent、拿到了什么、产出
+        什么", and only the rows can. A step that ran twice (a rewind, a retry) keeps
+        both runs' dispatches — what the model did is history, not state.
+        """
+        return tuple(row for row in self.dispatches if row.step_id == step_id)
 
     def row_of(self, step_id: str) -> FeatureStepRunRow:
         for row in self.steps:
@@ -225,6 +242,7 @@ class FeatureRunEngine:
             plan=plan_from_row(row),
             steps=tuple(self._runs.steps(task_id)),
             edits=tuple(self._runs.edits(task_id)),
+            dispatches=tuple(self._runs.dispatches(task_id)),
         )
 
     # --- the three entry points ------------------------------------------

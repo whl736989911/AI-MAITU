@@ -14,11 +14,13 @@ from typing import Any
 import pytest
 
 from octop.infra.features.steps import (
+    DISPATCH_TOOL_NAME,
     ON_FAILURE_ABORT,
     STEP_VOIDED,
     FeatureStep,
     StepOutput,
     StepOutputInvalid,
+    dispatch_required,
     parse_artifact,
     parse_steps,
     render_value,
@@ -248,7 +250,8 @@ def test_a_verdict_that_cannot_be_read_is_a_failure_not_a_pass(verdict: Any) -> 
         verdict_of(StepOutput(name="verdict", schema="object"), verdict)
 
 
-def test_the_unimplemented_mode_is_named_rather_than_downgraded() -> None:
+def test_a_step_that_decomposes_or_runs_as_a_role_is_runnable() -> None:
+    """The two modes parse *and* run: the model decomposes, the platform bounds."""
     steps, errors = parse_steps(
         [
             _step(mode="orchestrate", max_parallel=8),
@@ -264,12 +267,56 @@ def test_the_unimplemented_mode_is_named_rather_than_downgraded() -> None:
     assert not errors, "the format accepts both: they are part of 7.10"
     assert steps[0].max_parallel == 8, "stored, so the definition keeps what it declared"
 
-    reasons = unsupported_reasons(steps)
+    assert unsupported_reasons(steps) == []
+    assert dispatch_required(steps[0]) is True, "an orchestrate step dispatches by definition"
+    assert dispatch_required(steps[1]) is True, "so does a step pinned to a subagent"
 
-    assert len(reasons) == 2
-    assert "mode 'orchestrate'" in reasons[0]
-    assert "never degrades it to a single agent" in reasons[0]
-    assert "agent_role 'tooling'" in reasons[1]
+
+def test_dispatch_required_is_false_for_a_step_that_only_runs_an_agent() -> None:
+    assert dispatch_required(_parsed()) is False
+    assert dispatch_required(_parsed(tools=["read_file"])) is False
+
+
+@pytest.mark.parametrize(
+    ("overrides", "reason"),
+    [
+        ({"mode": "orchestrate"}, "cannot dispatch"),
+        ({"agent_role": "tooling"}, "cannot dispatch"),
+        ({"mode": "orchestrate", "tools": ["task"]}, None),
+        ({"agent_role": "tooling", "tools": ["task", "read_file"]}, None),
+    ],
+)
+def test_a_step_that_cannot_reach_the_dispatch_tool_is_refused(
+    overrides: dict[str, Any], reason: str | None
+) -> None:
+    """An allow-list without ``task`` would decompose nothing and say nothing."""
+    declared = dict(overrides)
+    tools = declared.pop("tools", ["read_file"])
+    step = _parsed(tools=tools, **declared)
+
+    reasons = unsupported_reasons([step])
+
+    if reason is None:
+        assert reasons == [], "the dispatch tool is in the allow-list"
+    else:
+        assert len(reasons) == 1
+        assert reason in reasons[0]
+        assert f"step {step.id!r}" in reasons[0]
+        assert DISPATCH_TOOL_NAME in reasons[0]
+
+
+def test_a_dispatch_requiring_step_that_leaves_tools_out_inherits_them() -> None:
+    """Absent is not empty: a step that declares no allow-list keeps every tool."""
+    step = _parsed(mode="orchestrate")
+
+    assert step.tools is None
+    assert unsupported_reasons([step]) == []
+
+
+def test_the_dispatch_tool_is_the_harness_subagent_tool() -> None:
+    """The allow-lists authors write name the tool the harness actually mounts."""
+    assert DISPATCH_TOOL_NAME == "task"
+    assert parse_steps([_step(tools=["task"])])[1] == [], "so it is a known built-in tool"
 
 
 def test_a_plan_of_agent_steps_is_runnable() -> None:

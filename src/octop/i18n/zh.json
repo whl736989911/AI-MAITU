@@ -421,7 +421,7 @@
     "FEATURE_RUN_NOT_FOUND": "未找到这次功能运行。",
     "FEATURE_RUN_NOT_AT_GATE": "这次运行当前不在等待人工批准的状态，无法执行该操作。",
     "FEATURE_RUN_REQUEST_INVALID": "运行请求不合法：{reason}。",
-    "FEATURE_STEP_UNSUPPORTED": "该功能定义的步骤包含本版本尚未实现的能力：{reason}。已拒绝执行，未运行任何步骤。",
+    "FEATURE_STEP_UNSUPPORTED": "该功能有步骤无法执行：{reason}。已拒绝执行，未运行任何步骤。",
     "ORG_UNIT_HAS_CHILDREN": "该部门下还有下级部门，请先处理。",
     "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。"
   },

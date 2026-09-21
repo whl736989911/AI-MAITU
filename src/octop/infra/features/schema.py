@@ -11,7 +11,7 @@ for editors and offline tooling.
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from copy import deepcopy
 from typing import Any
 
@@ -20,6 +20,8 @@ from octop.infra.features.steps import (
     MODES,
     ON_FAILURES,
     SCHEMA_FORMS,
+    FeatureStep,
+    dispatch_required,
     parse_steps,
 )
 
@@ -96,6 +98,7 @@ AGENT_KEYS = frozenset(
         "max_tokens",
         "max_iters",
         "max_input_length",
+        "max_parallel",
         "tools_disabled",
         "skills",
         "subagents",
@@ -123,6 +126,7 @@ _AGENT_NUMBER_RANGES: dict[str, tuple[float, float, bool]] = {
     "max_tokens": (1, float("inf"), True),
     "max_iters": (1, float("inf"), True),
     "max_input_length": (1_000, float("inf"), True),
+    "max_parallel": (1, float("inf"), True),
 }
 
 
@@ -192,7 +196,9 @@ def validate_manifest(data: dict[str, Any], dir_name: str | None = None) -> list
         _check_agent(data["agent"], errors)
 
     if "steps" in data:
-        errors.extend(parse_steps(data["steps"])[1])
+        steps, step_errors = parse_steps(data["steps"])
+        errors.extend(step_errors)
+        _check_dispatchable_steps(steps, data.get("agent"), errors)
 
     return errors
 
@@ -427,6 +433,25 @@ def _number(value: float) -> str:
     return str(int(value)) if float(value).is_integer() else str(value)
 
 
+def _check_dispatchable_steps(steps: Sequence[FeatureStep], agent: Any, errors: list[str]) -> None:
+    """Refuse a step that must dispatch under an agent that allows no subagent.
+
+    ``agent.subagents: []`` is the explicit "none of them" scope (5.2), so every
+    run of such a definition would refuse the dispatch the step exists to make.
+    Caught here, at write time, where the author can see which step it is: the
+    resolved-empty case (a caller whose own scope ships no subagent) is the run's
+    to refuse, because only the run knows what the caller had.
+    """
+    if not isinstance(agent, dict) or agent.get("subagents") != []:
+        return
+    for step in steps:
+        if dispatch_required(step):
+            errors.append(
+                f"agent.subagents allows no subagent, but step {step.id!r} must dispatch one "
+                "(its mode or agent_role asks for a named subagent)"
+            )
+
+
 _FEATURE_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "title": "MAITU Smart Manufacturing feature definition (feature.json)",
@@ -632,6 +657,14 @@ _FEATURE_JSON_SCHEMA: dict[str, Any] = {
                     "anyOf": [{"type": "integer", "minimum": 1000}, {"type": "null"}],
                     "description": "Context-window cap in tokens for this feature's runs.",
                 },
+                "max_parallel": {
+                    "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
+                    "description": (
+                        "Default ceiling for this feature's steps (design 7.7): how many of "
+                        "one step's subagents may run at once. Absent/null falls through to "
+                        "the platform default; a step's own max_parallel overrides it."
+                    ),
+                },
                 "tools_disabled": {
                     "anyOf": [
                         {"type": "array", "items": {"type": "string"}},
@@ -702,10 +735,10 @@ _FEATURE_JSON_SCHEMA: dict[str, Any] = {
                 "mode": {
                     "enum": list(MODES),
                     "description": (
-                        "'agent' runs the step as one agent turn. 'orchestrate' (the model "
-                        "decomposes the step and schedules subagents, design 7.6) is part of "
-                        "the format but not implemented: a run declaring it is refused "
-                        "outright and never degraded to 'agent'."
+                        "'agent' runs the step as one agent turn. 'orchestrate' lets the "
+                        "model decompose the step itself and dispatch one subagent per "
+                        "piece (design 7.6); the platform caps how many run at once "
+                        "('max_parallel') and records every dispatch."
                     ),
                 },
                 "inputs": {
@@ -729,9 +762,11 @@ _FEATURE_JSON_SCHEMA: dict[str, Any] = {
                 "max_parallel": {
                     "anyOf": [{"type": "integer", "minimum": 1}, {"type": "null"}],
                     "description": (
-                        "Ceiling for the model's own parallelism inside this step (design "
-                        "7.7). Validated and recorded; this build does not schedule in "
-                        "parallel yet, and never claims it does."
+                        "How many subagents of this step may run at once (design 7.7). The "
+                        "platform enforces it: a dispatch made while that many are running "
+                        "waits for a free slot, and the model may still dispatch more than "
+                        "this in total. Absent/null inherits agent.max_parallel, else the "
+                        "platform default."
                     ),
                 },
                 "output": {"$ref": "#/$defs/stepOutput"},
@@ -767,8 +802,10 @@ _FEATURE_JSON_SCHEMA: dict[str, Any] = {
                 "agent_role": {
                     "anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}],
                     "description": (
-                        "Named subagent this step should run as. Not implemented: a run "
-                        "declaring it is refused outright."
+                        "Subagent this step runs as: the step's turn must dispatch this role "
+                        "through the harness's 'task' tool, and a turn that never dispatches "
+                        "it fails the step. A step that dispatches cannot run without that "
+                        "tool, so a 'tools' allow-list leaving 'task' out is refused."
                     ),
                 },
             },

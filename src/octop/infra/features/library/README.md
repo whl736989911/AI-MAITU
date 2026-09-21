@@ -54,7 +54,7 @@ library/
 | `prompt` | 是 | object | `user_template`（必填）、`system_file`（可选，相对本目录） |
 | `output` | 是 | object | `kind`：`markdown` / `json` / `text` |
 | `permissions` | 否 | object | `allow_units` / `allow_roles` 字符串数组；M1 只存不判 |
-| `agent` | 否 | object | 功能自有 agent 的能力层：`model`/温度/token 上限/`tools_disabled`/`skills`/`subagents`/`mcp_servers`/`knowledge_base_ids`。缺省（或 `null`）继承调用者的 agent，空数组表示"一个都不要"；知识库与连接器再按调用者可见范围收窄 |
+| `agent` | 否 | 功能自有 agent 的能力层：`model`/温度/token 上限/`tools_disabled`/`skills`/`subagents`/`mcp_servers`/`knowledge_base_ids`/`max_parallel`。缺省（或 `null`）继承调用者的 agent，空数组表示"一个都不要"；知识库与连接器再按调用者可见范围收窄。`max_parallel` 是本功能各步骤的**默认并发上限**（7.7）：步骤自己声明了 `max_parallel` 就用步骤的，否则用它，都没有时用平台默认值（当前 4）。注意 `subagents: []`（显式"一个子 agent 都不要"）与必须派发的步骤不能共存，保存时会被拒 |
 | `steps` | 否 | array | 任务步骤，见下文。缺省或空数组 = 单次运行（只用 `prompt.user_template` 跑一轮） |
 
 ## input_schema 允许的子集
@@ -109,7 +109,7 @@ library/
     "mode": "agent",                          // 只支持 agent
     "inputs": [],                             // 前序步骤产出的 artifact 名
     "tools": ["read_file"],                   // 本步工具白名单；缺省=继承，[]=一个工具都不给
-    "max_parallel": 4,                        // 7.7 的并发上限；只做校验与记录，本轮不并发
+    "max_parallel": 4,                        // 7.7 的并发上限：同一时刻最多几个子 agent 在跑
     "output": { "name": "bom_rows", "schema": "table:4cols" },
     "prompt": "读 BOM PDF，识别层级列，过滤 L1。",  // 同样支持 {{inputs}} / {{inputs_json}}
     "gate": "auto",                           // auto | confirm | validate
@@ -133,16 +133,16 @@ library/
 |---|---|---|
 | `id` | 是 | 步骤 id：小写标识符（`^[a-z][a-z0-9_]{0,63}$`），功能内唯一 |
 | `name` | 是 | 步骤名，展示用 |
-| `mode` | 是 | `agent`（一步一个 agent）。`orchestrate`（模型自主拆解并行调度子 agent）**尚未实现**：定义可以存，但**运行会被明确拒绝**（`FEATURE_STEP_UNSUPPORTED`），不会降级成 `agent` |
+| `mode` | 是 | `agent` = 这一步由一次 agent 回合完成（一步一个 agent）；`orchestrate` = 拆解由模型自己决定（7.6）：要不要拆、拆几块、先跑哪块都归模型，每一块用 `task` 工具派给一个子 agent。平台只做两件事——用 `max_parallel` 限制**同时**在跑的子 agent 数，并把派出去了什么记进审计（7.8 分解留痕） |
 | `inputs` | 否 | 要读的 artifact 名。必须是**更早的步骤**产出的名字（写错会在保存时被拒），它们以 JSON 形式进入本步提示词 |
-| `tools` | 否 | 本步工具白名单。缺省 = 继承运行的工具面；`[]` = 本步一个工具都不用。名字必须是真实的内置工具名 |
-| `max_parallel` | 否 | 正整数。**只做校验与记录**：本轮不实现步骤内并行，也不声称会并发 |
+| `tools` | 否 | 本步工具白名单。缺省 = 继承运行的工具面；`[]` = 本步一个工具都不用。名字必须是真实的内置工具名。声明了 `orchestrate` / `agent_role` 的步骤必须把派发工具 `task` 留在白名单里，否则运行会被明确拒绝（`FEATURE_STEP_UNSUPPORTED`） |
+| `max_parallel` | 否 | 正整数，7.7 的并发上限：**同一时刻**最多几个子 agent 在跑。超过上限的 `task` 调用会等一个空位，总共派出的数量不受这个数限制。缺省继承 `agent.max_parallel`，两者都没有时用平台默认值（当前 4） |
 | `output` | 是 | `{"name": …, "schema": …}`，见下 |
 | `prompt` | 是 | 本步提示词；`{{inputs}}` / `{{inputs_json}}` 渲染运行表单的值（与 `prompt.user_template` 同一套占位符） |
 | `gate` | 是 | `auto`（跑完继续）/ `confirm`（停下来等人批准）/ `validate`（读产物里的布尔 `passed`，不为真就不许交付） |
 | `allow_edit` | 否 | 人工能否改这一步的产物（默认否）。在 gate 上批准时可以改；回退重跑时也可以把它当输入改掉——**两种改法都进审计** |
 | `on_failure` | 是 | `abort`（这次运行算失败）/ `escalate`（**停给人工决定，平台不擅自决定**）/ `retry`（再试一次，仍失败则按 abort） |
-| `agent_role` | 否 | 指定用哪个子 agent 跑这一步。**尚未实现**：与 `orchestrate` 一样，运行会被明确拒绝 |
+| `agent_role` | 否 | 这一步以哪个子 agent 的身份运行：本步回合必须用 `task` 工具把这个角色派出去（`subagent_type` = 这个名字），**一回合下来没派出这个角色就算这一步失败**。拆解式步骤里它只是其中一块，其它块照常派 |
 
 ### `output.schema` 允许的产物类型
 

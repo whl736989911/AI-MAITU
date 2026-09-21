@@ -27,8 +27,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from octop.infra.features.dispatch import resolve_max_parallel
 from octop.infra.features.schema import validate_manifest
 from octop.infra.features.steps import (
+    DISPATCH_TOOL_NAME,
     GATE_VALIDATE,
     SCHEMA_LIST,
     SCHEMA_OBJECT,
@@ -38,6 +40,7 @@ from octop.infra.features.steps import (
     Artifact,
     FeatureStep,
     StepInputMissing,
+    dispatch_required,
     parse_steps,
 )
 
@@ -81,6 +84,71 @@ _CONTRACT_HEADINGS: dict[str, str] = {
     "en": "Output contract (mandatory)",
 }
 """Heading of the engine-written block that states the shape it accepts back."""
+
+_DECOMPOSITION_HEADINGS: dict[str, str] = {
+    "zh": "本步骤的拆解（由你决定）",
+    "en": "This step's decomposition (yours to decide)",
+}
+"""Heading of the engine-written block a step that dispatches subagents gets."""
+
+_DECOMPOSITION_LINES: dict[str, dict[str, str]] = {
+    "zh": {
+        "dispatch": (
+            "拆不拆、拆成几块、先跑哪块由你决定：每一块用一次 `{tool}` 调用派给一个子 agent"
+            "（`subagent_type` 写子 agent 名，`description` 写要它做什么）。"
+        ),
+        "parallel": (
+            "同一个回复里派出的多块会并行跑；某一块要用另一块的结果时，就等那个结果到手后再派它"
+            "——依赖顺序和结果合并都由你自己安排。"
+        ),
+        "ceiling": (
+            "同一时刻最多 {ceiling} 个子 agent 在跑，这是平台强制的：超过这个数的调用会等一个"
+            "空位；总共派出的数量可以多于 {ceiling}。"
+        ),
+        "role": (
+            "本步骤以子 agent `{role}` 的身份运行：用 `{tool}` 把它派出去（`subagent_type` = "
+            "`{role}`）；这一条没有派出去，本步骤就算失败。拆解式步骤里它只是其中一块，其它块"
+            "照常派。"
+        ),
+        "artifact": "拆解不改变交付：本步骤仍要交出上面契约要求的那个产物。",
+    },
+    "en": {
+        "dispatch": (
+            "Whether to split this step, into how many pieces and in what order is yours to "
+            "decide: dispatch each piece with one `{tool}` call (`subagent_type` names the "
+            "subagent, `description` states what it is asked to do)."
+        ),
+        "parallel": (
+            "Pieces dispatched in the same reply run in parallel; a piece that needs another "
+            "one's result is dispatched only once that result is in hand — ordering the "
+            "dependencies and merging the results stays yours."
+        ),
+        "ceiling": (
+            "At most {ceiling} subagents run at once, and the platform enforces it: a call "
+            "made while that many are already running waits for a free slot. You may "
+            "dispatch more than {ceiling} in total."
+        ),
+        "role": (
+            "This step runs as the subagent `{role}`: dispatch it with `{tool}` "
+            "(`subagent_type` = `{role}`); a turn that never dispatches that role fails the "
+            "step. In a decomposing step it is one piece among others you may dispatch."
+        ),
+        "artifact": (
+            "Decomposing does not change delivery: this step still owes the artifact the "
+            "contract above asks for."
+        ),
+    },
+}
+"""The dispatch boundary stated to a step that decomposes or runs as a role (7.6/7.7).
+
+The engine writes it for the same reason it writes the contract block: the model
+owns the split, so the only parts worth stating are the ones the platform bounds —
+the tool that reaches the subagents, the ceiling it enforces on them, and the role
+this step is pinned to. The dependency sentence exists because the harness's
+``task`` tool carries no ``depends_on`` field: a piece that consumes another's
+result can only be sequenced by the model itself, and saying so beats leaving the
+model to assume the platform does it.
+"""
 
 _CONTRACT_LINES: dict[str, dict[str, str]] = {
     "zh": {
@@ -154,6 +222,11 @@ class FeatureAgent:
     max_tokens: int | None = None
     max_iters: int | None = None
     max_input_length: int | None = None
+    max_parallel: int | None = None
+    """Default dispatch ceiling for this feature's steps: how many subagents of one
+    step may run at once (7.7). ``None`` falls through to the platform default, and
+    a step's own ``max_parallel`` wins over this one."""
+
     tools_disabled: tuple[str, ...] | None = None
     skills: tuple[str, ...] | None = None
     subagents: tuple[str, ...] | None = None
@@ -170,6 +243,7 @@ class FeatureAgent:
             max_tokens=_optional_int(node.get("max_tokens")),
             max_iters=_optional_int(node.get("max_iters")),
             max_input_length=_optional_int(node.get("max_input_length")),
+            max_parallel=_optional_int(node.get("max_parallel")),
             tools_disabled=_optional_names(node.get("tools_disabled")),
             skills=_optional_names(node.get("skills")),
             subagents=_optional_names(node.get("subagents")),
@@ -191,6 +265,7 @@ class FeatureAgent:
             "max_tokens",
             "max_iters",
             "max_input_length",
+            "max_parallel",
         ):
             value = getattr(self, key)
             if value is not None:
@@ -501,6 +576,7 @@ def render_step_prompt(
     artifacts: Mapping[str, Artifact],
     *,
     locale: str = "zh",
+    max_parallel_default: int | None = None,
 ) -> str:
     """One step's turn: its own prompt, its inputs as data, its output contract.
 
@@ -512,6 +588,13 @@ def render_step_prompt(
     The contract is written by the engine, not by the author: the engine is what
     parses the answer back, so it is what states the exact shape it will accept.
     Prompts stay in the author's language; the contract follows the caller's.
+
+    A step that dispatches subagents (:func:`dispatch_required`) gets one more
+    engine-written block after the contract, stating the dispatch boundary the
+    platform actually enforces. *max_parallel_default* is the feature-level ceiling
+    that block quotes — ``agent.max_parallel`` as the run resolved it, ``None`` when
+    the definition declares none — and the step's own ``max_parallel`` wins over it.
+    Every other step's prompt is unchanged, byte for byte.
     """
     chinese = str(locale).lower().startswith("zh")
     blocks = [render_template(step.prompt, feature, inputs)]
@@ -530,7 +613,24 @@ def render_step_prompt(
         heading = _STEP_INPUTS_HEADING_ZH if chinese else _STEP_INPUTS_HEADING_EN
         blocks.append("\n\n".join([heading, *sections]))
     blocks.append(_contract_block(step, chinese=chinese))
+    if dispatch_required(step):
+        blocks.append(_decomposition_block(step, chinese=chinese, default=max_parallel_default))
     return "\n\n".join(blocks)
+
+
+def _decomposition_block(step: FeatureStep, *, chinese: bool, default: int | None) -> str:
+    """What this step may dispatch, and the one ceiling the platform puts on it."""
+    language = "zh" if chinese else "en"
+    lines = _DECOMPOSITION_LINES[language]
+    parts = [
+        f"- {lines['dispatch'].format(tool=DISPATCH_TOOL_NAME)}",
+        f"- {lines['parallel']}",
+        f"- {lines['ceiling'].format(ceiling=resolve_max_parallel(step, default))}",
+    ]
+    if step.agent_role is not None:
+        parts.append(f"- {lines['role'].format(tool=DISPATCH_TOOL_NAME, role=step.agent_role)}")
+    parts.append(f"- {lines['artifact']}")
+    return "\n".join([_DECOMPOSITION_HEADINGS[language], *parts])
 
 
 def _contract_block(step: FeatureStep, *, chinese: bool) -> str:
