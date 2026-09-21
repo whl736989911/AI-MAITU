@@ -1265,9 +1265,13 @@ export default function UsersListPanel() {
           display_name: values.display_name?.trim() || null,
           email: values.email?.trim() || null,
           password: values.password,
-          role: values.role,
-          org_unit: values.role === "admin" ? null : values.org_unit ?? null,
-          permissions: values.role === "admin" ? [] : values.permissions ?? [],
+          // The create picker is admin-only (``_assert_admin(actor, "create a
+          // non-user account")``), so a non-admin mints plain accounts: the
+          // field is not registered for them and the role is pinned here.
+          role: admin ? values.role : "user",
+          org_unit: !admin || values.role === "admin" ? null : values.org_unit ?? null,
+          permissions:
+            admin && values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
         }),
       });
@@ -1942,14 +1946,20 @@ export default function UsersListPanel() {
               <CircleHelp size={15} strokeWidth={2} />
               <span>{t("adminUsers.permEditHint")}</span>
             </div>
-            <Form.Item
-              label={t("adminUsers.formRole")}
-              name="role"
-              rules={[{ required: true }]}
-              className={styles.createUserRoleItem}
-            >
-              <RolePicker options={createRoleOptions} />
-            </Form.Item>
+            {/* ``_assert_admin(actor, "create a non-user account")``: every role
+                but ``user`` is refused for a ``users`` holder, so the picker is
+                admin-only. The form still carries the ``user`` default
+                (``openCreate``), which keeps the plain path working. */}
+            {admin && (
+              <Form.Item
+                label={t("adminUsers.formRole")}
+                name="role"
+                rules={[{ required: true }]}
+                className={styles.createUserRoleItem}
+              >
+                <RolePicker options={createRoleOptions} />
+              </Form.Item>
+            )}
             <Form.Item
               noStyle
               shouldUpdate={(prev, cur) => prev.role !== cur.role}
