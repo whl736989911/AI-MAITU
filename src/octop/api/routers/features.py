@@ -49,6 +49,7 @@ from octop.infra.features.rules import (
     extract_rules,
     injectable_rule_rows,
     may_review_rule,
+    reported_scope,
     review_rule,
     submit_rule,
 )
@@ -461,7 +462,15 @@ def _unit_labels(server: Any) -> dict[str, str]:
 
 
 def _rule_dict(row: FeatureRuleRow, unit_labels: Mapping[str, str]) -> dict[str, Any]:
-    """Rule payload for the review UI — provenance, scope, and layer included."""
+    """Rule payload for the review UI — provenance, scope, and layer included.
+
+    ``scope`` is always present and never ``null``: an unnameable layer reports
+    ``"unknown"`` rather than vanishing, and a layer this build does not know is
+    passed through under its own name (:func:`reported_scope`), never folded into
+    one of the three. The panel renders every rule it is handed and groups the
+    ones it cannot place under its unfiled heading, so a stored layer nobody
+    recognises stays visible instead of dropping the rule off the screen.
+    """
     return {
         "id": row.id,
         "feature_id": row.feature_id,
@@ -472,7 +481,7 @@ def _rule_dict(row: FeatureRuleRow, unit_labels: Mapping[str, str]) -> dict[str,
         "approved_by": row.approved_by,
         "created_at": row.created_at,
         "reviewed_at": row.reviewed_at,
-        "scope": row.scope,
+        "scope": reported_scope(row),
         "owner_user_id": row.owner_user_id,
         "unit_key": row.unit_key,
         # The department name, so a unit rule reads as one without the UI having

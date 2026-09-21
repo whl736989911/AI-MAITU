@@ -68,6 +68,15 @@ extraction still fits one prompt.
 PROPOSED_BY_AI = "ai"
 """``proposed_by`` value for rules the extractor wrote (humans use ``user:<id>``)."""
 
+SCOPE_UNKNOWN = "unknown"
+"""Layer reported for a rule whose stored layer cannot be named.
+
+Not a fourth layer: :data:`~octop.infra.db.repos.feature_rules.SCOPES` stays the
+three real ones and no write path ever stores this value. It exists so that a row
+whose layer column is unusable still reaches the review UI as a rule the panel
+files under its unfiled group, instead of reaching it as ``null`` — or not at all.
+"""
+
 ExtractionRunner = Callable[[str], Awaitable[str]]
 """Runs one non-interactive agent turn and returns its visible text."""
 
@@ -282,6 +291,21 @@ def review_rule(
     if updated is None:
         raise RuleAlreadyReviewed(f"rule {rule_id!r} was already reviewed")
     return updated
+
+
+def reported_scope(row: FeatureRuleRow) -> str:
+    """The layer one rule reports to the review UI — always a non-empty string.
+
+    A layer this build knows is passed through — trimmed of surrounding
+    whitespace — and so is one it does not: a stored ``team`` is reported as
+    ``team``. Folding it into ``personal``, ``unit``, or ``global`` would show the
+    rule in a group it does not belong to, under a reviewer who never held it —
+    worse than the panel's unfiled group, which says out loud that the layer is not
+    recognised. Only a row with no usable layer at all reports
+    :data:`SCOPE_UNKNOWN`, so the field a client reads is never missing and never
+    ``null``.
+    """
+    return str(row.scope or "").strip() or SCOPE_UNKNOWN
 
 
 def may_review_rule(

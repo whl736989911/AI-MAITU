@@ -26,12 +26,14 @@ from octop.infra.db.repos.feature_rules import (
     SCOPE_PERSONAL,
     SCOPE_UNIT,
     FeatureRuleRepo,
+    FeatureRuleRow,
 )
 from octop.infra.db.repos.feature_tasks import FeatureTaskRepo, FeatureTaskRow
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.features import Feature, ScopedRule, build_user_prompt
 from octop.infra.features.rules import (
+    SCOPE_UNKNOWN,
     RuleScopeForbidden,
     RuleScopeInvalid,
     extract_rules,
@@ -653,6 +655,59 @@ async def test_an_admin_sees_every_departments_queue_but_no_ones_personal_rules(
     )
 
     assert {rule["rule_text"] for rule in visible["rules"]} == {"销售部要求", "客服部要求"}
+
+
+# ---------------------------------------------------------------------------
+# Payload: the layer reaches the panel even when this build cannot name it
+# ---------------------------------------------------------------------------
+
+
+def _stored_row(scope: str) -> FeatureRuleRow:
+    """One stored rule, with only the layer differing between cases.
+
+    No write path stores a layer this build cannot name (both callers validate
+    it), so the row is built here: what is pinned is the payload's answer for the
+    row a future or older build could still have left behind.
+    """
+    return FeatureRuleRow(
+        id="01JRULE",
+        feature_id="quote-draft",
+        rule_text="客户名写全称",
+        status=APPROVED,
+        source_task_ids="[]",
+        proposed_by="ai",
+        approved_by=ADMIN_ID,
+        created_at=1_700_000_000,
+        reviewed_at=1_700_000_100,
+        scope=scope,
+        owner_user_id=None,
+        unit_key=None,
+    )
+
+
+def test_a_rule_with_no_usable_layer_still_reports_one() -> None:
+    """``scope`` is never empty and never ``null`` — the panel has to be able to decide.
+
+    A rule whose layer cannot be read is exactly the rule a review UI must not
+    swallow, so it reports the one name that says so: the panel then files it under
+    its unfiled heading, in the open, instead of losing it off the screen.
+    """
+    payload = features_router._rule_dict(_stored_row(scope=""), {})
+
+    assert payload["scope"] == SCOPE_UNKNOWN
+
+
+def test_a_layer_this_build_does_not_know_keeps_its_own_name() -> None:
+    """An unknown layer travels as it is, never folded into one of the three.
+
+    Folding ``team`` into ``global`` — or into whichever real layer looks closest —
+    would put the rule in front of a reviewer who never held it. The panel's
+    unfiled heading is the honest answer, and it can only give it for the name the
+    payload actually carries.
+    """
+    payload = features_router._rule_dict(_stored_row(scope="team"), {})
+
+    assert payload["scope"] == "team"
 
 
 # ---------------------------------------------------------------------------
