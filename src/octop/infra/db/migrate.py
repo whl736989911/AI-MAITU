@@ -933,7 +933,9 @@ def _ensure_feature_tasks_schema(db: DatabasePool) -> None:
               error TEXT,
               created_at {int_type} NOT NULL,
               diff_json TEXT,
-              finalized_at {int_type}
+              finalized_at {int_type},
+              agent_id TEXT,
+              injected_rule_ids TEXT
             )
             """
         )
@@ -956,8 +958,8 @@ def _ensure_feature_learning_schema(db: DatabasePool) -> None:
     """
     if not _table_exists(db, "users"):
         return
-    # Creates ``feature_tasks`` (already carrying the v19 columns) on the
-    # clamp/repair paths that never ran 016.
+    # Creates ``feature_tasks`` (already carrying the v19 capture and v22
+    # run-snapshot columns) on the clamp/repair paths that never ran 016.
     _ensure_feature_tasks_schema(db)
     int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
     if _table_exists(db, "feature_tasks"):
@@ -1004,6 +1006,19 @@ def _ensure_feature_learning_schema(db: DatabasePool) -> None:
             "CREATE INDEX IF NOT EXISTS idx_feature_rules_feature_status "
             "ON feature_rules (feature_id, status, created_at)"
         )
+
+
+def _ensure_feature_task_snapshot_schema(db: DatabasePool) -> None:
+    """Add the run-snapshot columns (schema v22) to ``feature_tasks``.
+
+    Runs on every boot, like the v18/v19/v20 helpers: databases whose watermark
+    skipped 22 — a clamp, or a build that stamped the version without the DDL —
+    still get the columns the run log writes on both outcomes.
+    """
+    if not _table_exists(db, "feature_tasks"):
+        return
+    _ensure_column(db, "feature_tasks", "agent_id", "TEXT")
+    _ensure_column(db, "feature_tasks", "injected_rule_ids", "TEXT")
 
 
 def _ensure_data_sources_schema(db: DatabasePool) -> None:
@@ -2034,6 +2049,7 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_resource_acl_schema(db)
         _ensure_feature_learning_schema(db)
         _ensure_data_sources_schema(db)
+        _ensure_feature_task_snapshot_schema(db)
 
 
 def _max_discovered_version(dialect: str) -> int:
@@ -2172,6 +2188,9 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     Version 21 drops the three legacy global share booleans. The drop is a table
     rebuild on SQLite and runs through the ensure helper so the legacy flags are
     mirrored into ``resource_acl`` one last time first.
+    Version 22 adds the feature run snapshot (``feature_tasks.agent_id`` /
+    ``injected_rule_ids``). ``ALTER TABLE ADD COLUMN`` is not idempotent, so this
+    branch calls the ensure helper instead of executing the SQL file.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -2302,6 +2321,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 22:
+        _ensure_feature_task_snapshot_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2350,3 +2374,4 @@ def run_migrations(db: DatabasePool) -> None:
     _drop_legacy_share_columns(db)
     _ensure_feature_learning_schema(db)
     _ensure_data_sources_schema(db)
+    _ensure_feature_task_snapshot_schema(db)

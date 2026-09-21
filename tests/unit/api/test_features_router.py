@@ -9,8 +9,9 @@ from typing import Any
 import pytest
 
 from octop.api.routers import features as features_router
+from octop.infra.agents.middleware.feature_prompt import CONFIG_KEY
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.features import Feature
+from octop.infra.features import Feature, build_user_prompt
 from octop.infra.users.identity import Role, User
 
 USER_ID = 7
@@ -39,7 +40,13 @@ def _request() -> SimpleNamespace:
     )
 
 
-def _feature(feature_id: str, *, unit: str = "general", output_kind: str = "markdown") -> Feature:
+def _feature(
+    feature_id: str,
+    *,
+    unit: str = "general",
+    output_kind: str = "markdown",
+    system_prompt: str | None = "Be concise.",
+) -> Feature:
     return Feature(
         id=feature_id,
         version=1,
@@ -55,7 +62,7 @@ def _feature(feature_id: str, *, unit: str = "general", output_kind: str = "mark
         },
         ui_schema={"order": ["topic"], "widgets": {"topic": "textarea"}},
         user_template="Draft about {{inputs}}",
-        system_prompt="Be concise.",
+        system_prompt=system_prompt,
         output_kind=output_kind,
         permissions={"allow_units": ["*"]},
     )
@@ -73,13 +80,19 @@ class _FakeTaskRepo:
 
 
 class _FakeRuleRepo:
-    """Only the read ``run_feature`` needs: approved rules for one feature."""
+    """Only the read ``run_feature`` needs: approved rules for one feature.
 
-    def __init__(self, approved: list[str] | None = None) -> None:
+    ``(rule_id, rule_text)`` pairs, newest-approved first, exactly as
+    ``FeatureRuleRepo.list_approved`` returns them.
+    """
+
+    def __init__(self, approved: list[tuple[str, str]] | None = None) -> None:
         self._approved = approved or []
 
     def list_approved(self, feature_id: str, limit: int) -> list[Any]:
-        return [SimpleNamespace(rule_text=text) for text in self._approved[:limit]]
+        return [
+            SimpleNamespace(id=rule_id, rule_text=text) for rule_id, text in self._approved[:limit]
+        ]
 
 
 class _FakeGateway:
@@ -135,6 +148,7 @@ def _server(
     features: list[Feature],
     agents: list[Any] | None = None,
     chunks: list[dict[str, Any]] | None = None,
+    rules: list[tuple[str, str]] | None = None,
 ) -> tuple[Any, _FakeTaskRepo, _FakeAgentRegistry, _FakeGateway]:
     repo = _FakeTaskRepo()
     gateway = _FakeGateway()
@@ -144,7 +158,10 @@ def _server(
         feature_catalog=SimpleNamespace(list=lambda: list(features), get=by_id.get),
         app_runtime=SimpleNamespace(gateway=gateway, agent_registry=registry),
         services=SimpleNamespace(
-            repos=SimpleNamespace(feature_tasks_repo=repo, feature_rules_repo=_FakeRuleRepo()),
+            repos=SimpleNamespace(
+                feature_tasks_repo=repo,
+                feature_rules_repo=_FakeRuleRepo(rules),
+            ),
         ),
     )
     return server, repo, registry, gateway
@@ -254,6 +271,8 @@ async def test_run_feature_returns_draft_and_logs_succeeded_row() -> None:
             "inputs": json.dumps({"topic": "增长"}, ensure_ascii=False),
             "status": "succeeded",
             "draft": "## Draft\ndone",
+            "agent_id": "agent-1",
+            "injected_rule_ids": "[]",
         }
     ]
 
@@ -284,6 +303,95 @@ async def test_run_feature_sends_the_rendered_prompt_through_the_dashboard_sessi
     assert "增长" in prompt
 
 
+async def test_run_feature_carries_the_feature_system_prompt_on_the_request() -> None:
+    """The run's ``prompt.system_file`` reaches the model through this request.
+
+    Regression: the catalog loaded ``system_prompt`` and ``GET /api/features/{id}``
+    returned it, but the run never injected it — a "meeting notes" draft came back
+    as free-form model chatter. It rides on ``configurable`` (applied at model-call
+    time, see ``FeatureSystemPromptMiddleware``) rather than on the message list,
+    which is what the checkpointer persists, or on the agent's own configuration.
+    """
+    feature = _feature("meeting-notes")
+    server, _, registry, _ = _server(
+        features=[feature],
+        agents=[SimpleNamespace(agent_id="agent-1")],
+        chunks=[{"type": "token", "content": "ok"}],
+    )
+
+    await features_router.run_feature(
+        "meeting-notes",
+        features_router.FeatureRunBody(inputs={"topic": "增长"}),
+        _user(),
+        server,
+    )
+
+    request = registry.requests[0]
+    assert request["configurable"][CONFIG_KEY] == feature.system_prompt
+    # The prompt itself is still the only message: nothing feature-specific is
+    # written into the thread the user chats in.
+    assert request["messages"] == [
+        {"role": "user", "content": build_user_prompt(feature, {"topic": "增长"})}
+    ]
+
+
+async def test_run_feature_without_a_system_prompt_sends_the_unchanged_request() -> None:
+    """A feature that declares no ``system_file`` runs exactly as it did before."""
+    feature = _feature("meeting-notes", system_prompt=None)
+    server, _, registry, _ = _server(
+        features=[feature],
+        agents=[SimpleNamespace(agent_id="agent-1")],
+        chunks=[{"type": "token", "content": "ok"}],
+    )
+
+    await features_router.run_feature(
+        "meeting-notes",
+        features_router.FeatureRunBody(inputs={"topic": "增长"}),
+        _user(),
+        server,
+    )
+
+    assert registry.requests[0] == {
+        "messages": [{"role": "user", "content": build_user_prompt(feature, {"topic": "增长"})}],
+        "thread_id": "thread-1",
+        "user": str(USER_ID),
+        "source": "dashboard",
+        "agent_id": "agent-1",
+        "configurable": {"session_key": "dashboard:agent-1:7"},
+    }
+
+
+async def test_run_feature_records_the_agent_and_the_injected_rules() -> None:
+    """``feature_tasks`` answers "what produced this draft" — agent plus rules.
+
+    The recorded ids are the rules that actually reached the prompt: a blank
+    approved rule is dropped once, where the injection drops it.
+    """
+    feature = _feature("meeting-notes")
+    server, repo, registry, _ = _server(
+        features=[feature],
+        agents=[SimpleNamespace(agent_id="agent-1")],
+        chunks=[{"type": "token", "content": "ok"}],
+        rules=[("rule-2", "Prefer bullet points"), ("rule-1", "   ")],
+    )
+
+    await features_router.run_feature(
+        "meeting-notes",
+        features_router.FeatureRunBody(inputs={"topic": "增长"}),
+        _user(),
+        server,
+    )
+
+    created = repo.created[0]
+    assert created["agent_id"] == "agent-1"
+    assert json.loads(created["injected_rule_ids"]) == ["rule-2"]
+    assert registry.requests[0]["messages"][0]["content"] == build_user_prompt(
+        feature,
+        {"topic": "增长"},
+        rules=["Prefer bullet points"],
+    )
+
+
 async def test_run_feature_logs_failed_row_when_output_is_empty() -> None:
     server, repo, _, _ = _server(
         features=[_feature("meeting-notes")],
@@ -307,6 +415,8 @@ async def test_run_feature_logs_failed_row_when_output_is_empty() -> None:
             "inputs": json.dumps({"topic": "增长"}, ensure_ascii=False),
             "status": "failed",
             "error": "feature run produced no visible output",
+            "agent_id": "agent-1",
+            "injected_rule_ids": "[]",
         }
     ]
 
@@ -398,6 +508,7 @@ async def test_run_feature_logs_failed_row_when_the_agent_errors() -> None:
 
     assert repo.created[0]["status"] == "failed"
     assert repo.created[0]["error"] == "RuntimeError: harness offline"
+    assert repo.created[0]["agent_id"] == "agent-1"
 
 
 async def test_run_feature_unknown_id_logs_nothing() -> None:

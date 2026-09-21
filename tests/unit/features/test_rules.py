@@ -19,6 +19,7 @@ from octop.infra.db.repos.feature_rules import (
     FeatureRuleRepo,
 )
 from octop.infra.db.repos.feature_tasks import FeatureTaskRepo, FeatureTaskRow
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.features import catalog as catalog_module
 from octop.infra.features.catalog import (
     MAX_INJECTED_RULES,
@@ -35,7 +36,7 @@ from octop.infra.features.rules import (
     build_extraction_prompt,
     extract_rules,
     finalized_samples,
-    injectable_rules,
+    injectable_rule_rows,
     parse_rule_reply,
     review_rule,
 )
@@ -121,6 +122,8 @@ def _task(
         created_at=finalized_at or 1,
         diff_json=diff_json,
         finalized_at=finalized_at,
+        agent_id="agent-1",
+        injected_rule_ids="[]",
     )
 
 
@@ -455,10 +458,11 @@ def test_review_unknown_rule_is_not_found(rules: FeatureRuleRepo) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_injectable_rules_are_approved_newest_first_and_capped(
+def test_injectable_rule_rows_are_approved_newest_first_and_capped(
     rules: FeatureRuleRepo,
     user_id: int,
 ) -> None:
+    approved_ids: list[str] = []
     for index in range(12):
         rule_id = _draft(rules, text=f"规则 {index}", task_id=f"task-{index}")
         rules.mark_reviewed(
@@ -467,6 +471,7 @@ def test_injectable_rules_are_approved_newest_first_and_capped(
             approved_by=user_id,
             reviewed_at=1_000 + index,
         )
+        approved_ids.append(rule_id)
     pending = _draft(rules, text="待审规则")
     rejected = _draft(rules, text="被否规则")
     rules.mark_reviewed(rejected, status=REJECTED, approved_by=user_id, reviewed_at=1_100)
@@ -483,13 +488,17 @@ def test_injectable_rules_are_approved_newest_first_and_capped(
         reviewed_at=1_200,
     )
 
-    injectable = injectable_rules(rules, "quote-draft")
+    injectable = injectable_rule_rows(rules, "quote-draft")
 
     assert len(injectable) == MAX_INJECTED_RULES
-    assert injectable == [f"规则 {index}" for index in range(11, 1, -1)]
-    assert "待审规则" not in injectable
-    assert "被否规则" not in injectable
-    assert "别的功能的规则" not in injectable
+    assert [row.rule_text for row in injectable] == [f"规则 {index}" for index in range(11, 1, -1)]
+    # Rows, not just texts: the run records these ids as what it injected, so the
+    # order and the cap have to be the same thing the prompt saw.
+    assert [row.id for row in injectable] == approved_ids[11:1:-1]
+    texts = [row.rule_text for row in injectable]
+    assert "待审规则" not in texts
+    assert "被否规则" not in texts
+    assert "别的功能的规则" not in texts
     pending_row = rules.get(pending)
     assert pending_row is not None and pending_row.status == DRAFT
 

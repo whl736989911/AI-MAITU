@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 
 from octop.api.deps import get_server, require_permission
 from octop.api.routers.chat.turn import resolve_thread_id
+from octop.infra.agents.middleware.feature_prompt import stamp_feature_system_prompt
 from octop.infra.db.repos.feature_cases import FeatureCaseRow
 from octop.infra.db.repos.feature_rules import FeatureRuleRow
 from octop.infra.db.repos.feature_tasks import FeatureTaskRow
@@ -28,7 +29,7 @@ from octop.infra.features.rules import (
     RuleNoSamples,
     RuleNotFound,
     extract_rules,
-    injectable_rules,
+    injectable_rule_rows,
     review_rule,
 )
 from octop.infra.gateway.process import build_harness_request
@@ -130,8 +131,23 @@ def _failure_reason(exc: Exception) -> str:
     return f"{type(exc).__name__}: {exc}"
 
 
-async def _run_agent_turn(server: Any, *, agent_id: str, user_id: int, text: str) -> str:
-    """Run one non-interactive agent turn and return its visible text."""
+async def _run_agent_turn(
+    server: Any,
+    *,
+    agent_id: str,
+    user_id: int,
+    text: str,
+    system_prompt: str | None = None,
+) -> str:
+    """Run one non-interactive agent turn and return its visible text.
+
+    *system_prompt* is the feature's own ``prompt.system_file`` text. It rides on
+    this request only (see :mod:`octop.infra.agents.middleware.feature_prompt`):
+    the agent's persisted ``system_prompt`` — the user's own configuration — is
+    never touched, and neither is the thread, because the text is not part of the
+    messages the checkpointer stores. ``None`` (the default) leaves the request
+    exactly as it was before feature system prompts existed.
+    """
     gateway = server.app_runtime.gateway
     _thread_id, session_key = await resolve_thread_id(
         agent_id=agent_id,
@@ -157,6 +173,7 @@ async def _run_agent_turn(server: Any, *, agent_id: str, user_id: int, text: str
         model=None,
         message_kwargs=None,
     )
+    stamp_feature_system_prompt(request, system_prompt)
     output: str | None = None
 
     async def _stream() -> None:
@@ -213,13 +230,18 @@ async def run_feature(
     """Run the feature with the user's own agent and log the outcome.
 
     Both outcomes land in ``feature_tasks`` — a failed run is the training
-    signal M4 needs, so the row is written before the error is raised.
+    signal M4 needs, so the row is written before the error is raised. The row
+    carries the run's snapshot too (which agent ran it, which approved rules
+    went into the prompt): a failed run needs that diagnosis as much as a
+    successful one, and nothing else records it.
     """
     assert server.services is not None
     feature = _require_feature(server, feature_id)
     agent_id = _run_agent_id(server, user.id)
     repo = server.services.repos.feature_tasks_repo
     inputs = json.dumps(body.inputs, ensure_ascii=False)
+    rules = injectable_rule_rows(server.services.repos.feature_rules_repo, feature.id)
+    rule_ids = json.dumps([rule.id for rule in rules], ensure_ascii=False)
     try:
         output = await _run_agent_turn(
             server,
@@ -228,8 +250,9 @@ async def run_feature(
             text=build_user_prompt(
                 feature,
                 body.inputs,
-                rules=injectable_rules(server.services.repos.feature_rules_repo, feature.id),
+                rules=[rule.rule_text for rule in rules],
             ),
+            system_prompt=feature.system_prompt,
         )
     except Exception as exc:
         reason = _failure_reason(exc)
@@ -239,6 +262,8 @@ async def run_feature(
             inputs=inputs,
             status="failed",
             error=reason,
+            agent_id=agent_id,
+            injected_rule_ids=rule_ids,
         )
         logger.warning("feature %s run failed for user %s: %s", feature.id, user.id, reason)
         raise OctopError(
@@ -251,6 +276,8 @@ async def run_feature(
         inputs=inputs,
         status="succeeded",
         draft=output,
+        agent_id=agent_id,
+        injected_rule_ids=rule_ids,
     )
     return {"task_id": row.id, "output": output, "output_kind": feature.output_kind}
 

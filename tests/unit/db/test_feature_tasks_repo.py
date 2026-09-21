@@ -62,6 +62,38 @@ def test_feature_task_create_and_get_roundtrip(db: SqlitePool) -> None:
     assert repo.get("missing-task") is None
 
 
+def test_create_stores_the_run_snapshot(db: SqlitePool) -> None:
+    """A row answers "what produced this draft": agent plus injected rule ids."""
+    repo = FeatureTaskRepo(db)
+    user_id = _create_user(db, "owner")
+
+    row = repo.create(
+        feature_id="meeting-notes",
+        user_id=user_id,
+        inputs="{}",
+        status="failed",
+        error="feature run requires user interaction",
+        agent_id="agent-7",
+        injected_rule_ids='["rule-a", "rule-b"]',
+    )
+
+    assert row.agent_id == "agent-7"
+    assert row.injected_rule_ids == '["rule-a", "rule-b"]'
+    stored = repo.get(row.id)
+    assert stored is not None
+    assert (stored.agent_id, stored.injected_rule_ids) == ("agent-7", '["rule-a", "rule-b"]')
+
+
+def test_create_without_a_run_snapshot_leaves_it_empty(db: SqlitePool) -> None:
+    repo = FeatureTaskRepo(db)
+    user_id = _create_user(db, "owner")
+
+    row = repo.create(feature_id="quote-draft", user_id=user_id, inputs="{}", status="succeeded")
+
+    assert row.agent_id is None
+    assert row.injected_rule_ids is None
+
+
 def test_list_for_user_orders_newest_first_and_ignores_other_users(db: SqlitePool) -> None:
     repo = FeatureTaskRepo(db)
     owner_id = _create_user(db, "owner")

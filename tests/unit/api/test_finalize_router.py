@@ -72,6 +72,8 @@ def _task(
         created_at=1,
         diff_json=diff_json,
         finalized_at=finalized_at,
+        agent_id="agent-1",
+        injected_rule_ids="[]",
     )
 
 

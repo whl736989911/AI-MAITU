@@ -6,8 +6,13 @@
 
 ## [Unreleased]
 
+### 新增
+
+- 企业功能运行记录新增运行快照：`feature_tasks.agent_id`（本次实际使用的 agent）与 `feature_tasks.injected_rule_ids`（本次注入的已审核规则 id），成功与失败都会写入，用于事后回答「这份草稿是按什么产出的」
+
 ### 修复
 
+- 企业功能目录的系统提示词（`feature.json` 的 `prompt.system_file`）现在会真正生效：此前它只被加载并通过 `GET /api/features/{id}` 返回，运行功能时没有注入，导致输出变成模型的自由发挥。注入走本轮请求的 `configurable`（仅在模型调用时追加到 system message），不会写进用户 agent 的持久配置，也不会进入会话检查点；未声明系统提示词的功能行为与之前逐字一致
 - PostgreSQL 库回滚后再升级不再导致服务无法启动：021 / 018 迁移中把旧共享标记镜像进 `resource_acl` 的语句，改为先判断列是否仍存在（已被删除则跳过）。此前把版本回滚到不含 021 的构建、再升级回来，会因 `is_shared` 已被删除而报 `UndefinedColumn`，`octop-server` 起不来；SQLite 走等价 helper 不受影响
 
 ## [1.0.1] - 2026-09-18

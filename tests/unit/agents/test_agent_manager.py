@@ -250,6 +250,22 @@ def test_build_harness_config_includes_search_knowledge_without_cron(
     assert any(isinstance(item, KnowledgeSearchHintMiddleware) for item in (cfg.middleware or []))
 
 
+def test_build_harness_config_mounts_the_feature_prompt_middleware(
+    manager: AgentManager,
+) -> None:
+    """A feature run's system prompt needs this hook on every agent.
+
+    The router stamps the prompt onto the request; without the middleware in the
+    built config nothing reads it, and every feature run silently falls back to
+    the agent's own prompt — the exact bug the stamp exists to fix.
+    """
+    from octop.infra.agents.middleware.feature_prompt import FeatureSystemPromptMiddleware
+
+    cfg = manager._build_harness_config(_row(agent_id="AGT001"))
+
+    assert any(isinstance(item, FeatureSystemPromptMiddleware) for item in (cfg.middleware or []))
+
+
 def test_build_harness_config_defaults_local_shell_backend(manager: AgentManager) -> None:
     cfg = manager._build_harness_config(_row(agent_id="AGT001"))
     assert cfg.backend == _expected_default_backend(manager, "AGT001")

@@ -229,15 +229,17 @@ def review_rule(
     return updated
 
 
-def injectable_rules(repo: FeatureRuleRepo, feature_id: str) -> list[str]:
-    """Approved rule texts for one feature — the only rules a prompt may carry.
+def injectable_rule_rows(repo: FeatureRuleRepo, feature_id: str) -> list[FeatureRuleRow]:
+    """Approved rules for one feature — the only rules a prompt may carry.
 
     Newest-reviewed first, capped at
     :data:`~octop.infra.features.catalog.MAX_INJECTED_RULES` so the prompt block
-    cannot grow without bound as the rule set ages.
+    cannot grow without bound as the rule set ages. Rows rather than texts: the
+    caller records *which* rules a run injected (``feature_tasks.injected_rule_ids``),
+    and a prompt that drops blank text would otherwise disagree with the record.
     """
     rows = repo.list_approved(feature_id, limit=MAX_INJECTED_RULES)
-    return [row.rule_text for row in rows]
+    return [row for row in rows if str(row.rule_text).strip()]
 
 
 def _parse_diff(task: FeatureTaskRow) -> list[dict[str, str]] | None:

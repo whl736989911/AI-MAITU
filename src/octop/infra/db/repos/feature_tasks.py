@@ -25,6 +25,8 @@ class FeatureTaskRow:
     created_at: int
     diff_json: str | None
     finalized_at: int | None
+    agent_id: str | None
+    injected_rule_ids: str | None
 
     @classmethod
     def from_row(cls, r: DbRow) -> FeatureTaskRow:
@@ -40,6 +42,8 @@ class FeatureTaskRow:
             created_at=int(r["created_at"]),
             diff_json=r["diff_json"],
             finalized_at=None if r["finalized_at"] is None else int(r["finalized_at"]),
+            agent_id=r["agent_id"],
+            injected_rule_ids=r["injected_rule_ids"],
         )
 
 
@@ -61,14 +65,16 @@ class FeatureTaskRepo:
         error: str | None = None,
         diff_json: str | None = None,
         finalized_at: int | None = None,
+        agent_id: str | None = None,
+        injected_rule_ids: str | None = None,
     ) -> FeatureTaskRow:
         task_id = str(uuid.uuid4())
         with self._db.transaction() as conn:
             conn.execute(
                 "INSERT INTO feature_tasks("
                 "id, feature_id, user_id, inputs, draft, final, status, error, created_at, "
-                "diff_json, finalized_at"
-                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "diff_json, finalized_at, agent_id, injected_rule_ids"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     task_id,
                     feature_id,
@@ -81,6 +87,8 @@ class FeatureTaskRepo:
                     now_ts(),
                     diff_json,
                     finalized_at,
+                    agent_id,
+                    injected_rule_ids,
                 ),
             )
         row = self.get(task_id)
