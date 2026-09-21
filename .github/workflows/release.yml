@@ -153,18 +153,3 @@ jobs:
             --ref main \
             -f version="${{ github.ref_name }}"
 
-  # FnOS FPK：复用本 Release 的 wheel + docker-publish 的 GHCR 镜像。
-  # 与 sync-develop 并行。Dispatch 失败必须让本 workflow 变红（PyPI 已发布仍如此）。
-  trigger-fnos:
-    name: Trigger FnOS FPK build
-    needs: github-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch Build Octop FPK
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # --ref 用版本 tag，保证 FPK 打在与 PyPI / 镜像相同的 commit 上
-          gh workflow run fnos-build-fpk.yml \
-            --repo "${{ github.repository }}" \
-            --ref "${{ github.ref_name }}"
