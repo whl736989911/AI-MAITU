@@ -13,6 +13,7 @@
  * Contract under test:
  *   - re-saving an untouched docker backend keeps the keys the form does not own
  *   - the sandbox keys the form owns still win, stale scope keys are still pruned
+ *   - an edited advanced document is the base the sandbox keys are written onto
  *   - an unparseable advanced document is refused with an inline field error
  *     and nothing is sent
  */
@@ -101,6 +102,25 @@ describe("<StorageBackendDrawer /> docker config", () => {
       sandbox_scope: "agent",
       sandbox_prefix: "octop_sandbox",
       // … and a sandbox_id left over from another scope is still pruned.
+    });
+  });
+
+  it("takes an edited advanced document as the document, not just a hint", async () => {
+    renderDrawer();
+    await userEvent.click(await screen.findByText("storage.advancedConfig"));
+
+    const textarea = await screen.findByPlaceholderText('{"path_style": true}');
+    await userEvent.clear(textarea);
+    await userEvent.type(textarea, '{{"cpus":"2"}');
+    await save();
+
+    await waitFor(() => expect(patchedConfig()).toBeTruthy());
+    expect(patchedConfig()).toEqual({
+      // the user's own document is the base …
+      cpus: "2",
+      // … and the sandbox keys are still written on top of it.
+      sandbox_scope: "agent",
+      sandbox_prefix: "octop_sandbox",
     });
   });
 
