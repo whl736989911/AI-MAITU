@@ -71,6 +71,56 @@ export interface FeatureUnit {
   count: number;
 }
 
+/** Definition-format metadata behind ``GET /api/features/_meta`` — the settings editor's choices. */
+export interface FeatureMeta {
+  /** Org-unit keys a feature may be filed under. */
+  units: string[];
+  /** Selectable ``icon_name`` values (kebab-case lucide names). */
+  icons: string[];
+  /** Allowed ``output.kind`` values. */
+  output_kinds: FeatureOutputKind[];
+  /** Features shipped with the app: readable everywhere, never editable. */
+  bundled_ids: string[];
+}
+
+/**
+ * ``prompt`` as the write endpoints take it. The system prompt travels as its
+ * *content*: the file name is the server's business (it fixes ``PROMPT.md`` and
+ * writes ``prompt.system_file`` itself).
+ */
+export interface FeaturePromptBody {
+  user_template: string;
+  /** Body of the feature's ``PROMPT.md``; ``null`` when it has none. */
+  system_prompt: string | null;
+}
+
+/** Access rules as written. An omitted list declares no restriction at all. */
+export interface FeaturePermissionsBody {
+  allow_units?: string[];
+  allow_roles?: string[];
+}
+
+/** Request body of ``POST /features`` and ``PUT /features/{id}``. */
+export interface FeatureDefinitionBody {
+  id: string;
+  label: LocalizedText;
+  description: LocalizedText;
+  icon_name: string;
+  /** ``null`` falls back to the brand accent. */
+  color: string | null;
+  unit: string;
+  input_schema: FeatureInputSchema;
+  ui_schema: FeatureUiSchema;
+  prompt: FeaturePromptBody;
+  output: { kind: FeatureOutputKind };
+  permissions: FeaturePermissionsBody;
+}
+
+/** Both write endpoints answer with the id they wrote. */
+export interface FeatureWriteResponse {
+  feature_id: string;
+}
+
 export interface FeatureListResponse {
   features: FeatureSummary[];
   units: FeatureUnit[];
@@ -158,8 +208,25 @@ export interface FeaturePromoteResponse {
 
 export const featuresApi = {
   listFeatures: () => request<FeatureListResponse>("/features"),
+  /** Definition-format metadata for the settings editor. */
+  getFeatureMeta: () => request<FeatureMeta>("/features/_meta"),
   getFeature: (id: string) =>
     request<Feature>(`/features/${encodeURIComponent(id)}`),
+  /** Create one feature; the id is the caller's (409 when it is already taken). */
+  createFeature: (body: FeatureDefinitionBody) =>
+    request<FeatureWriteResponse>("/features", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+  /** Overwrite one definition; the body's id must match the path. */
+  updateFeature: (id: string, body: FeatureDefinitionBody) =>
+    request<FeatureWriteResponse>(`/features/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+  /** Delete a user feature — bundled ones are refused (403). */
+  deleteFeature: (id: string) =>
+    request<void>(`/features/${encodeURIComponent(id)}`, { method: "DELETE" }),
   runFeature: (id: string, inputs: FeatureInputs) =>
     request<FeatureRunResponse>(`/features/${encodeURIComponent(id)}/run`, {
       method: "POST",

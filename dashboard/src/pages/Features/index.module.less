@@ -676,3 +676,231 @@
   max-height: 320px;
   overflow: auto;
 }
+
+// ── Settings drawer: definition editor ──────────────────────────────────────
+
+/*
+ * Same split as the skill drawer: the form scrolls, the footer holds the one
+ * commit action, so a long definition (many fields) never pushes Save away.
+ */
+.shell {
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  height: 100%;
+  min-height: 0;
+}
+
+.settingsBody {
+  min-height: 0;
+  padding: 20px 24px 24px;
+  overflow-y: auto;
+}
+
+.settingsForm {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* Fixed commit row: a long definition never pushes Save out of reach. */
+.footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 24px;
+  border-top: 1px solid var(--fn-border-secondary);
+  background: var(--fn-bg-primary);
+}
+
+.settingsBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 16px;
+  background: var(--fn-bg-primary);
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+
+  /* Blocks already space themselves; the items inside only need a line gap. */
+  :global(.ant-form-item) {
+    margin-bottom: 14px;
+  }
+}
+
+.blockHead {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.blockTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.blockHint {
+  max-width: 620px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fn-text-tertiary);
+}
+
+/* Metadata pairs read best side by side; anything marked wide spans both. */
+.blockGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 12px;
+
+  @media (max-width: 767px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.blockWide {
+  grid-column: 1 / -1;
+}
+
+.colorField {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.colorValue {
+  font-family: var(--fn-font-mono);
+  font-size: 12px;
+  color: var(--fn-text-secondary);
+}
+
+// ── Field editor ────────────────────────────────────────────────────────────
+
+.fieldList {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.fieldEmpty {
+  padding: 12px;
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+  text-align: center;
+  background: var(--fn-bg-secondary);
+  border-radius: var(--fn-radius-sm);
+}
+
+.fieldCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--fn-bg-secondary);
+  border: 1px solid var(--fn-border-secondary);
+  border-left: 3px solid var(--fn-color-brand);
+  border-radius: var(--fn-radius-md);
+
+  :global(.ant-form-item) {
+    margin-bottom: 0;
+  }
+}
+
+.fieldCardHead {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fieldNameItem {
+  flex: 1;
+  min-width: 0;
+
+  input {
+    font-family: var(--fn-font-mono);
+    font-size: 12px;
+  }
+}
+
+.fieldRequiredItem {
+  flex-shrink: 0;
+}
+
+.fieldCardTools {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.addFieldButton {
+  align-self: flex-start;
+}
+
+/* One schema node: the property's own controls, or an element's / cell's. */
+.schemaNode {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.schemaLevel {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--fn-text-quaternary);
+}
+
+.schemaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 12px;
+
+  @media (max-width: 767px) {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.schemaControl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.schemaControlWide {
+  grid-column: 1 / -1;
+}
+
+// ── Prompt editors ──────────────────────────────────────────────────────────
+
+.promptEditor {
+  font-family: var(--fn-font-mono);
+  font-size: 12px;
+  line-height: 1.65;
+}
+
+/*
+ * Placeholder names are shown as literal code rather than interpolated copy —
+ * i18next would otherwise eat the braces the user has to type.
+ */
+.templatePlaceholders {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fn-text-tertiary);
+
+  code {
+    padding: 0 4px;
+    font-family: var(--fn-font-mono);
+    font-size: 11px;
+    color: var(--fn-text-secondary);
+    background: var(--fn-bg-tertiary);
+    border-radius: var(--fn-radius-sm);
+  }
+}

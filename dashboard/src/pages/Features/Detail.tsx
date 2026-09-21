@@ -20,6 +20,7 @@ import {
   Eye,
   Pencil,
   Play,
+  Settings2,
   Sparkles,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -38,8 +39,11 @@ import { message } from "@/utils/antdMessage";
 import { apiErrorMessage } from "../../utils/apiError";
 import { formatServerDateTime } from "../../utils/formatMessageTime";
 import { normalizeUiLocale } from "../../utils/localePrefs";
+import { isSystemAdmin } from "../../utils/permissions";
+import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useServerTimezone } from "../../hooks/useServerTimezone";
 import CasesPanel from "./components/CasesPanel";
+import FeatureSettingsDrawer from "./components/FeatureSettingsDrawer";
 import RulesPanel from "./components/RulesPanel";
 import SchemaForm, {
   fieldLabel,
@@ -51,6 +55,7 @@ import {
   useFeatureLearning,
   type FeatureLearning,
 } from "./components/useFeatureLearning";
+import { useFeatureMeta } from "./components/useFeatureMeta";
 import styles from "./index.module.less";
 
 /** The agent's text, rendered the way its ``output.kind`` promises. */
@@ -238,6 +243,11 @@ export default function FeatureDetailPage() {
   const { t, i18n } = useTranslation();
   const navigate = useNavigate();
   const lang = normalizeUiLocale(i18n.language);
+  // Writing a definition is an administrator's job; a bundled feature belongs to
+  // the app, so neither surface offers the settings entry point.
+  const canManage = isSystemAdmin(useCurrentUser());
+  const { meta, ready: metaReady } = useFeatureMeta(canManage);
+
   const learning = useFeatureLearning(id);
   const { resetRun } = learning;
 
@@ -249,6 +259,7 @@ export default function FeatureDetailPage() {
   const [result, setResult] = useState<FeatureRunResponse | null>(null);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -337,6 +348,8 @@ export default function FeatureDetailPage() {
     result && learning.finalized?.task_id === result.task_id
       ? learning.finalized
       : null;
+  const editable =
+    canManage && metaReady && !meta.bundled_ids.includes(feature.id);
 
   return (
     <PageShell
@@ -350,6 +363,14 @@ export default function FeatureDetailPage() {
           >
             {t("features.backToList")}
           </Button>
+          {editable && (
+            <Button
+              icon={<Settings2 size={14} />}
+              onClick={() => setSettingsOpen(true)}
+            >
+              {t("features.settingsEdit")}
+            </Button>
+          )}
           <Button
             type="primary"
             icon={<Play size={14} />}
@@ -440,6 +461,19 @@ export default function FeatureDetailPage() {
             ),
           },
         ]}
+      />
+
+      <FeatureSettingsDrawer
+        open={settingsOpen}
+        feature={feature}
+        meta={meta}
+        onClose={() => setSettingsOpen(false)}
+        // The header, the form and the cards all read the definition: reload it.
+        onSaved={() => {
+          setSettingsOpen(false);
+          void load();
+        }}
+        onDeleted={() => navigate("/features")}
       />
     </PageShell>
   );
