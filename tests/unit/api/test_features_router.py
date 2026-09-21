@@ -566,6 +566,7 @@ async def test_every_route_requires_the_features_permission() -> None:
     routes = {route.path: route for route in features_router.router.routes}
     assert set(routes) == {
         "",
+        "/_capabilities",
         "/_meta",
         "/{feature_id}",
         "/{feature_id}/cases",
