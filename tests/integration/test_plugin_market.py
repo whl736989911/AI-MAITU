@@ -73,9 +73,11 @@ async def test_market_rejects_unknown_plugin(env: Any) -> None:
     client, _srv, auth = env
     r = await client.post("/api/plugins/market/not-a-shipped-plugin/install", headers=auth)
     assert r.status_code == 404, r.text
-    assert (
-        await client.get("/api/plugins/market/not-a-shipped-plugin", headers=auth)
-    ).status_code == 404
+    # The catalog, not the router, is what refuses: an unknown id is NOT_FOUND.
+    assert r.json()["error"]["code"] == "NOT_FOUND", r.text
+    detail = await client.get("/api/plugins/market/not-a-shipped-plugin", headers=auth)
+    assert detail.status_code == 404, detail.text
+    assert detail.json()["error"]["code"] == "NOT_FOUND", detail.text
 
 
 async def test_market_requires_plugins_permission(env_admin_alice: Any) -> None:

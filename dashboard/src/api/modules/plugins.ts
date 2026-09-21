@@ -84,7 +84,6 @@ export interface MarketPlugin {
   icon?: string | null;
   kind: string;
   requires: string[];
-  has_ui: boolean;
   installed: boolean;
   enabled: boolean;
 }

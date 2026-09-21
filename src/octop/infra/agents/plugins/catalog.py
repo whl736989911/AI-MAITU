@@ -23,7 +23,6 @@ from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
 from octop.infra.agents.plugins.manager import (
     parse_plugin_icon,
     parse_plugin_requires,
-    parse_plugin_ui_meta,
 )
 from octop.infra.errors import ErrorCode, OctopError
 
@@ -47,7 +46,6 @@ class CatalogPlugin:
     description_en: str
     icon: str | None
     requires: tuple[str, ...]
-    has_ui: bool
     source_dir: Path
 
     def label(self) -> dict[str, str]:
@@ -98,7 +96,6 @@ def _entry_for(plugin_dir: Path) -> CatalogPlugin | None:
         description_en=description_en,
         icon=parse_plugin_icon(plugin_dir),
         requires=tuple(parse_plugin_requires(plugin_dir)),
-        has_ui=parse_plugin_ui_meta(plugin_dir) is not None,
         source_dir=plugin_dir,
     )
 

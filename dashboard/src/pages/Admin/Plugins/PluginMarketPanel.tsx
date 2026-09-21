@@ -40,6 +40,7 @@ export function PluginMarketPanel({
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [selected, setSelected] = useState<MarketPluginDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [installError, setInstallError] = useState<string | null>(null);
 
@@ -72,11 +73,16 @@ export function PluginMarketPanel({
     async (plugin: MarketPlugin) => {
       setSelected({ ...plugin, tools: [] });
       setInstallError(null);
+      setDetailError(null);
       setDetailLoading(true);
       try {
         setSelected(await pluginsApi.marketGet(plugin.id));
       } catch (err) {
-        message.error(apiErrorMessage(err, t("plugins.marketDetailFailed"), t));
+        // The card data is already on screen; only ``tools`` is missing. Say so
+        // instead of leaving the section looking like a plugin that has none.
+        const msg = apiErrorMessage(err, t("plugins.marketDetailFailed"), t);
+        setDetailError(msg);
+        message.error(msg);
       } finally {
         setDetailLoading(false);
       }
@@ -92,16 +98,24 @@ export function PluginMarketPanel({
         await pluginsApi.marketInstall(plugin.id);
         message.success(t("plugins.marketInstallSuccess", { name: nameOf(plugin, lang) }));
         await fetchMarket(keyword);
-        if (selected?.id === plugin.id) {
-          setSelected(await pluginsApi.marketGet(plugin.id));
-        }
         onInstalled?.();
       } catch (err) {
         const msg = apiErrorMessage(err, t("plugins.marketInstallFailed"), t);
         setInstallError(msg);
         message.error(msg);
+        return;
       } finally {
         setInstallingId(null);
+      }
+      // The install landed. Re-reading the open drawer is a separate concern:
+      // a failure here must not be reported as a failed install.
+      if (selected?.id === plugin.id) {
+        try {
+          setSelected(await pluginsApi.marketGet(plugin.id));
+          setDetailError(null);
+        } catch (err) {
+          setDetailError(apiErrorMessage(err, t("plugins.marketDetailFailed"), t));
+        }
       }
     },
     [fetchMarket, keyword, lang, onInstalled, selected?.id, t],
@@ -307,6 +321,20 @@ export function PluginMarketPanel({
               </div>
               {detailLoading ? (
                 <Spin size="small" />
+              ) : detailError ? (
+                <Alert
+                  type="error"
+                  showIcon
+                  message={detailError}
+                  action={
+                    <Button
+                      size="small"
+                      onClick={() => void openDetail(selected)}
+                    >
+                      {t("common.refresh")}
+                    </Button>
+                  }
+                />
               ) : selected.tools && selected.tools.length > 0 ? (
                 <div className={styles.marketTools}>
                   {selected.tools.map((tool) => (
@@ -320,7 +348,9 @@ export function PluginMarketPanel({
                 </div>
               ) : (
                 <div className={styles.toolsHint}>
-                  {t("plugins.marketToolsPending")}
+                  {selected.installed
+                    ? t("plugins.noToolsListed")
+                    : t("plugins.marketToolsPending")}
                 </div>
               )}
             </div>

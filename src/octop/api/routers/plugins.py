@@ -219,7 +219,6 @@ class MarketPluginItem(BaseModel):
     icon: str | None = None
     kind: str
     requires: list[str] = Field(default_factory=list)
-    has_ui: bool = False
     installed: bool = False
     enabled: bool = False
 
@@ -252,7 +251,6 @@ def _market_card(entry: CatalogPlugin, installed: dict[str, Any] | None) -> Mark
         icon=entry.icon,
         kind=entry.kind,
         requires=list(entry.requires),
-        has_ui=entry.has_ui,
         installed=installed is not None,
         enabled=bool(installed and installed.get("enabled", True) is not False),
     )
@@ -332,7 +330,16 @@ async def install_plugin_market_item(
     Idempotent: a plugin already on disk is enabled rather than overwritten.
     """
     mgr = _plugin_manager(server)
-    mgr.install_bundled(plugin_id)
+    try:
+        mgr.install_bundled(plugin_id)
+    except OctopError:
+        raise
+    except Exception as exc:
+        raise OctopError(
+            ErrorCode.PLUGIN_INSTALL_FAILED,
+            f"plugin install failed: {exc}",
+            details={"reason": str(exc)},
+        ) from exc
     if server.app_runtime is not None:
         mgr.load_installed(install_deps=False)
         await server.app_runtime.agent_registry.reload_all()
