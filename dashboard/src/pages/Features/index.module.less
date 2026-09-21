@@ -47,6 +47,13 @@
   border-radius: 999px;
 }
 
+/* Who the layer's rules actually reach, spelled out beside the count. */
+.groupHint {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fn-text-quaternary);
+}
+
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -446,6 +453,32 @@
     color: var(--fn-color-brand-hover);
     border-color: var(--fn-color-brand);
   }
+}
+
+/*
+ * Choosing *whose* corrections to read sits next to the button: the layer is
+ * part of the action, not a setting on another screen. The hint spells out
+ * what the selected layer will read before the click, not after.
+ */
+.extractControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.extractScope {
+  min-width: 96px;
+}
+
+.extractHint {
+  max-width: 300px;
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: right;
+  color: var(--fn-text-quaternary);
 }
 
 .ruleList,

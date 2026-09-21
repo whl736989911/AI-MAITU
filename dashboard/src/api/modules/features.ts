@@ -102,12 +102,26 @@ export interface FeatureDiffSegment {
 /** Rule lifecycle. Both review decisions are final — a rule is reviewed once. */
 export type FeatureRuleStatus = "draft" | "approved" | "rejected";
 
+/**
+ * Which layer a rule lives in. Injection reads all three at once, narrowest
+ * first: ``personal`` → ``unit`` → ``global``, so the closer rule wins.
+ */
+export type FeatureRuleScope = "personal" | "unit" | "global";
+
 /** One induced rule plus the provenance the review UI has to show. */
 export interface FeatureRule {
   id: string;
   feature_id: string;
   rule_text: string;
   status: FeatureRuleStatus;
+  /** The layer this rule belongs to; decide who may review it, never trust it to. */
+  scope: FeatureRuleScope;
+  /** Owner of a personal rule; ``null`` for unit and global rules. */
+  owner_user_id: number | null;
+  /** Org unit a unit rule speaks for; ``null`` for personal and global rules. */
+  unit_key: string | null;
+  /** Display name of ``unit_key`` when the server could resolve it. */
+  unit_label?: string | null;
   /** Run ids the rule was induced from; empty when the column is unreadable. */
   source_task_ids: string[];
   /** ``"ai"`` for the extractor, ``"user:<id>"`` for a human proposal. */
@@ -121,6 +135,11 @@ export interface FeatureRule {
 export interface FeatureRuleListResponse {
   feature_id: string;
   rules: FeatureRule[];
+}
+
+/** ``POST /features/rules/{id}/submit`` — the draft opened in the target scope. */
+export interface FeatureRuleSubmitResponse {
+  rule: FeatureRule;
 }
 
 /** ``POST /features/tasks/{id}/finalize`` — the human-approved text and its diff. */
@@ -184,11 +203,34 @@ export const featuresApi = {
     request<FeatureRuleListResponse>(
       `/features/${encodeURIComponent(featureId)}/rules`,
     ),
-  /** Induce draft rules from finalized runs. 409 when there is nothing to learn from. */
-  extractRules: (featureId: string) =>
+  /**
+   * Induce draft rules from finalized runs, reading only the requested layer's
+   * evidence: ``personal`` your own runs, ``unit`` your unit's members,
+   * ``global`` every run. 409 when there is nothing to learn from.
+   */
+  extractRules: (featureId: string, scope: FeatureRuleScope) =>
     request<FeatureRuleListResponse>(
-      `/features/${encodeURIComponent(featureId)}/rules/extract`,
+      `/features/${encodeURIComponent(featureId)}/rules/extract?scope=${scope}`,
       { method: "POST" },
+    ),
+  /**
+   * Ask to lift a personal rule into ``target_scope``. The personal rule stays
+   * as it is — a copy waits for review in the wider layer.
+   */
+  submitRule: (
+    ruleId: string,
+    targetScope: Exclude<FeatureRuleScope, "personal">,
+    reason?: string,
+  ) =>
+    request<FeatureRuleSubmitResponse>(
+      `/features/rules/${encodeURIComponent(ruleId)}/submit`,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          target_scope: targetScope,
+          reason: reason?.trim() ? reason.trim() : null,
+        }),
+      },
     ),
   approveRule: (ruleId: string) =>
     request<FeatureRule>(
