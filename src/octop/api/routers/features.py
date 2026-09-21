@@ -303,8 +303,7 @@ def _unit_labels(server: Any) -> dict[str, str]:
     """``{unit_key: label_zh}`` — resolved once per response, not once per rule."""
     assert server.services is not None
     return {
-        row.key: (row.label_zh or row.key)
-        for row in server.services.repos.org_unit_repo.list_all()
+        row.key: (row.label_zh or row.key) for row in server.services.repos.org_unit_repo.list_all()
     }
 
 
@@ -360,7 +359,9 @@ def _review_one(server: Any, rule_id: str, *, approve: bool, user: Any) -> dict[
     return _rule_dict(row, _unit_labels(server))
 
 
-def _extraction_scope(server: Any, user: Any, scope: str) -> tuple[int | None, str | None, list[int] | None]:
+def _extraction_scope(
+    server: Any, user: Any, scope: str
+) -> tuple[int | None, str | None, list[int] | None]:
     """Resolve one extraction request into ``(owner, unit, evidence users)``.
 
     Personal reads the caller's own runs, unit reads the caller's own department
@@ -400,9 +401,7 @@ def _unit_member_ids(server: Any, unit_key: str) -> list[int]:
     """User ids of one department — the runs a department extraction may read."""
     assert server.services is not None
     return [
-        int(row.id)
-        for row in server.services.repos.user_repo.list()
-        if row.org_unit == unit_key
+        int(row.id) for row in server.services.repos.user_repo.list() if row.org_unit == unit_key
     ]
 
 

@@ -626,7 +626,11 @@ async def test_the_review_list_hides_other_peoples_personal_rules(
         "销售部要求",
         "公司要求",
     }
-    assert {rule["scope"] for rule in visible["rules"]} == {SCOPE_PERSONAL, SCOPE_UNIT, SCOPE_GLOBAL}
+    assert {rule["scope"] for rule in visible["rules"]} == {
+        SCOPE_PERSONAL,
+        SCOPE_UNIT,
+        SCOPE_GLOBAL,
+    }
 
 
 async def test_an_admin_sees_every_departments_queue_but_no_ones_personal_rules(
@@ -684,9 +688,7 @@ async def test_submit_endpoint_records_the_reason_and_returns_the_new_rule(
 
     payload = await features_router.submit_feature_rule(
         rule_id,
-        features_router.FeatureRuleSubmitBody(
-            target_scope="unit", reason="整个部门都在用这条"
-        ),
+        features_router.FeatureRuleSubmitBody(target_scope="unit", reason="整个部门都在用这条"),
         _user(OWNER_ID, Role.USER, SALES),
         server,
     )
