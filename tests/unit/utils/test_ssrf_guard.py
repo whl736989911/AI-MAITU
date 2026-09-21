@@ -118,7 +118,10 @@ class _ScriptedTransport(httpx.BaseTransport):
 
 
 def _safe_get_with(
-    monkeypatch: pytest.MonkeyPatch, responses: dict[str, httpx.Response], url: str, **kwargs: object
+    monkeypatch: pytest.MonkeyPatch,
+    responses: dict[str, httpx.Response],
+    url: str,
+    **kwargs: object,
 ) -> tuple[object, _ScriptedTransport]:
     transport = _ScriptedTransport(responses)
     monkeypatch.setattr(ssrf_guard, "PinnedIPSyncTransport", lambda *_a, **_k: transport)
