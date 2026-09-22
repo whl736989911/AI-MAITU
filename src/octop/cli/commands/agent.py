@@ -107,12 +107,20 @@ def from_expert(expert_id: str, name: str | None, as_user: str | None) -> None:
 @agent.command("list")
 @click.option("--user", "as_user", default=None)
 def list_agents(as_user: str | None) -> None:
-    """List agents from local DB."""
+    """List agents from local DB.
+
+    A feature is an agent (``octop.infra.agents.kinds``), so a feature's own agent is
+    listed here like any other — its author owns it, it starts and stops, it can be
+    deleted. What tells it apart is the row's ``kind``, which ``--json`` always
+    carries; the human table grows a ``kind`` column only when the listing actually
+    holds a feature, so a home with nothing but experts prints what it always did.
+    """
     from rich.console import Console
     from rich.table import Table
 
     from octop.cli.support.ctx import json_output_enabled
     from octop.cli.support.db import list_agents_offline
+    from octop.infra.agents.kinds import KIND_FEATURE
 
     try:
         rows = list_agents_offline(as_user=as_user)
@@ -121,18 +129,31 @@ def list_agents(as_user: str | None) -> None:
     if json_output_enabled():
         click.echo(_json.dumps(rows, indent=2))
         return
+    labelled = any(a.get("kind") == KIND_FEATURE for a in rows)
     table = Table(title="Agents")
-    for col in ("id", "name", "template", "model", "state"):
+    columns = [
+        "id",
+        "name",
+        *(["kind"] if labelled else []),
+        "template",
+        "model",
+        "state",
+    ]
+    for col in columns:
         table.add_column(col)
     for a in rows:
         aid = a.get("agent_id") or a.get("id", "")
-        table.add_row(
-            str(aid),
-            a.get("name", ""),
-            a.get("template_name", "") or "",
-            a.get("default_model", "") or "",
-            a.get("state", "") or a.get("last_state", "") or "",
+        cells = [str(aid), a.get("name", "")]
+        if labelled:
+            cells.append(a.get("kind") or "")
+        cells.extend(
+            (
+                a.get("template_name", "") or "",
+                a.get("default_model", "") or "",
+                a.get("state", "") or a.get("last_state", "") or "",
+            )
         )
+        table.add_row(*cells)
     Console(file=sys.stdout).print(table)
 
 
