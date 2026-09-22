@@ -29,7 +29,12 @@ interface PageShellProps {
    * desktop → title-row actions; mobile → full-width bar above content.
    */
   pathTabs?: PathTabsConfig;
-  /** Render agent picker below the title row, outside the scrollable content card. */
+  /**
+   * Render agent picker below the title row, outside the scrollable content card.
+   * The row is drawn only when the slot holds something: a bar whose control has
+   * no agent to offer renders nothing, and an empty frame is not left behind
+   * (``PageShell.module.less``).
+   */
   agentScoped?: boolean;
   /**
    * What the agent bar holds. Defaults to the ``AgentSelector``; a page whose

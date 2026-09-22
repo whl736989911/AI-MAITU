@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from octop.infra.agents.kinds import KIND_FEATURE
+from octop.infra.agents.kinds import KIND_AGENT, KIND_FEATURE
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import (
     DbRow,
@@ -340,12 +340,17 @@ class UsageRepo:
                     }
                     for r in bucket_rows
                 ]
-            elif granularity == "by_feature":
-                # A feature is reached through its own agent, so its usage is the
-                # usage logged under that agent_id. The kind is what says which
-                # rows those are — the same vocabulary (`agents.kind`) every other
-                # surface asks, never an id prefix. The subquery keeps the outer
-                # ``agent_id`` unambiguous against the join's own column.
+            elif granularity in ("by_expert", "by_feature"):
+                # One kind's rows. ``by_expert`` is ``by_agent`` narrowed to the
+                # ordinary agents and ``by_feature`` the same narrowed to the
+                # agents a feature runs on, so the two views a caller picks
+                # between are told apart by the one column that says what a row
+                # is (``agents.kind``, ``infra/agents/kinds.py``) — never by an
+                # id prefix. ``by_agent`` itself stays the whole list, because
+                # the Excel export's summary sheet is about every agent. The
+                # subquery keeps the outer ``agent_id`` unambiguous against the
+                # join's own column.
+                kind = KIND_FEATURE if granularity == "by_feature" else KIND_AGENT
                 bucket_rows = conn.execute(
                     f"""
                     SELECT
@@ -367,7 +372,7 @@ class UsageRepo:
                     ORDER BY total_tokens DESC
                     LIMIT 100
                     """,
-                    [*params, KIND_FEATURE],
+                    [*params, kind],
                 ).fetchall()
                 buckets = [
                     {

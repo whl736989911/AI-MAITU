@@ -20,7 +20,26 @@ interface AgentSelectorProps {
    * ``utils/agentKind`` — so a surface that needs both puts two of these side by
    * side rather than teaching one bar to sort them.
    */
-  scope?: "experts" | "features";
+  scope?: AgentScope;
+}
+
+/** Which half of the caller's agents a bar is about. */
+export type AgentScope = "experts" | "features";
+
+/**
+ * The agents one bar offers — the caller's own, of one kind.
+ *
+ * Exported because a surface that draws its *own* label beside a bar has to ask
+ * the bar's own question rather than guess from the list: the remote assistants'
+ * context rows name the control 「专家」 next to it, and a row whose control has no
+ * agent to offer would be a label over nothing. A bar with no options is not a
+ * bar, and neither is the row around it.
+ */
+export function selectableAgents(
+  agents: OctopAgent[],
+  scope: AgentScope,
+): OctopAgent[] {
+  return scope === "features" ? ownedFeatures(agents) : ownedExperts(agents);
 }
 
 function agentAccent(agent: OctopAgent): string {
@@ -70,8 +89,8 @@ export default function AgentSelector({
   const { agents, activeAgentId, setActiveAgent, loading } = useAgent();
   const featuresBar = scope === "features";
   const selectable = useMemo(
-    () => (featuresBar ? ownedFeatures(agents) : ownedExperts(agents)),
-    [agents, featuresBar],
+    () => selectableAgents(agents, scope),
+    [agents, scope],
   );
 
   useEffect(() => {

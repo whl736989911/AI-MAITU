@@ -128,6 +128,40 @@ async def test_repo_summary_by_feature_reports_only_feature_agents(env: Any) -> 
     assert [b["key"] for b in r.json()["buckets"]] == ["agt-feature"]
 
 
+async def test_repo_summary_by_expert_reports_only_ordinary_agents(env: Any) -> None:
+    """``by_expert`` is the other half: the same rows, the other kind."""
+    c, srv, _admin_auth, alice_auth, ctx = env
+    _seed_usage_agents(srv, ["agt-feature"], user_id=ctx["alice_id"], kind="feature")
+    _seed_usage_agents(srv, ["agt-expert"], user_id=ctx["alice_id"])
+    repo = srv.services.usage_repo
+    repo.record(
+        agent_id="agt-feature",
+        user_id=ctx["alice_id"],
+        input_tokens=10,
+        output_tokens=5,
+    )
+    repo.record(
+        agent_id="agt-expert",
+        user_id=ctx["alice_id"],
+        input_tokens=20,
+        output_tokens=10,
+    )
+
+    by_expert = repo.summary(user_id=ctx["alice_id"], window="last_30d", granularity="by_expert")
+    assert [b["key"] for b in by_expert["buckets"]] == ["agt-expert"]
+    assert by_expert["buckets"][0]["total_tokens"] == 30
+    # The roll-up is the whole scope either way: the view picks what is listed,
+    # not what is counted.
+    assert by_expert["total_tokens"] == 45
+
+    r = await c.get(
+        "/api/usage/summary?granularity=by_expert&window=last_30d",
+        headers=alice_auth,
+    )
+    assert r.status_code == 200
+    assert [b["key"] for b in r.json()["buckets"]] == ["agt-expert"]
+
+
 async def test_repo_summary_by_model(env: Any) -> None:
     _c, srv, _admin_auth, _alice_auth, ctx = env
     repo = srv.services.usage_repo

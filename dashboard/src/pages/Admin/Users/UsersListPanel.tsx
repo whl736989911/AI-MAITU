@@ -101,7 +101,7 @@ import {
   NO_AGENT_KIND_COUNTS,
   indexAgentsByKind,
   type AgentKindIndex,
-} from "./agentKindCounts";
+} from "../../../utils/agentKindCounts";
 import { AgentCard } from "../../Experts/components/AgentCard";
 import EditAgentDrawer from "../../Experts/components/EditAgentDrawer";
 import InviteDrawer from "./InviteDrawer";

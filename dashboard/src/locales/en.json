@@ -2545,6 +2545,8 @@
     "byFeature": "By feature",
     "byModel": "By model",
     "allExperts": "All experts",
+    "allFeatures": "All features",
+    "allAgents": "All experts and features",
     "allUsers": "All users",
     "ioBreakdown": "Input / Output",
     "expertBreakdown": "By expert",

@@ -1,17 +1,20 @@
 /**
- * The Admin → Users agent counts are read off one flat ``/agents?scope=all``
- * list and have to answer two different questions from it: what each owner
+ * A flat agent list has to answer two different questions: what each owner
  * holds, and whether a kind exists in this deployment at all (which is what
- * decides whether its column is drawn).
+ * decides whether a kind's branch is drawn anywhere).
  *
  * What a row *is* comes from its ``kind``, never from its id — the id pairs
  * below say why: an expert may be named ``feat-…`` and a feature's agent need
  * not be. A row with no ``kind`` at all is an expert, which is what every agent
  * was before the field existed.
+ *
+ * The lists below are the deployment's own (``/agents?scope=all``, as Admin →
+ * Users reads it) because that is what the ``held`` half is about; the tallies
+ * are the same two counts whatever list they are read from.
  */
 
 import { describe, expect, it } from "vitest";
-import type { OctopAgent } from "../../../context/AgentContext";
+import type { OctopAgent } from "../context/AgentContext";
 import { indexAgentsByKind } from "./agentKindCounts";
 
 function agent(
@@ -88,7 +91,7 @@ describe("indexAgentsByKind", () => {
   it("counts a kind that exists without an owner as existing", () => {
     const { countsByUserId, held } = indexAgentsByKind([
       // Author deleted: the row has no owner left to hang a tally on, but the
-      // deployment still runs features, and a column is about the deployment.
+      // deployment still runs features, and a branch is about the deployment.
       agent("orphan", "feature", null),
     ]);
 
