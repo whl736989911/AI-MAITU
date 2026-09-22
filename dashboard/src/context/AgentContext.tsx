@@ -145,6 +145,7 @@ export function projectChatAgentOption(agent: OctopAgent): {
   is_shared: boolean;
   is_owner: boolean;
   owner_username: string | null;
+  kind: string | null;
 } {
   return {
     agent_id: agent.agent_id,
@@ -155,6 +156,10 @@ export function projectChatAgentOption(agent: OctopAgent): {
     is_shared: Boolean(agent.is_shared),
     is_owner: Boolean(agent.is_owner),
     owner_username: agent.owner_username ?? null,
+    // Kept, not dropped: the pickers are handed projections, and a picker that
+    // has to tell the two kinds apart groups by what the row says it is
+    // (``utils/agentKind``) rather than by looking the row up again.
+    kind: agent.kind ?? null,
   };
 }
 

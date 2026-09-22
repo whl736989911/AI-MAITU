@@ -16,11 +16,19 @@
  * caller's, and offering the writing panels over one would be offering controls
  * whose only outcome is a refusal — the bar's own selector, which offers the
  * caller's experts and no one else, already answers the question this page asks.
+ *
+ * A caller who owns no expert at all is therefore a state the page has to name,
+ * not one it can leave to the bar (a bar with nothing to offer is not drawn):
+ * the body says what it is waiting for and offers the two ways to get it —
+ * create an expert of one's own, or open a feature.
  */
 
 import { useCallback, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
+import { GraduationCap } from "lucide-react";
 import PageShell from "../../../layouts/PageShell";
+import { EmptyStateIcon } from "../../../components/EmptyState";
 import { useAgent } from "../../../context/AgentContext";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { usePathTabs } from "../../../hooks/usePathTabs";
@@ -32,9 +40,14 @@ import PersonalizationPanels, {
   TAB_ICONS,
   type PersonalizationTab,
 } from "./components/PersonalizationPanels";
+// The experts' own "no expert of mine" placeholder and its styles: a caller
+// without one is in the state the Experts page already describes, so it is that
+// placeholder rather than a look-alike of it.
+import emptyStyles from "../../Experts/index.module.less";
 
 export default function PersonalizationPage() {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const isMobile = useIsMobile();
   const user = useCurrentUser();
   const { activeAgentId, agents } = useAgent();
@@ -44,6 +57,12 @@ export default function PersonalizationPage() {
       ownExperts.find((a) => a.agent_id === activeAgentId) ?? ownExperts[0] ?? null,
     [ownExperts, activeAgentId],
   );
+  // No expert of the caller's to configure. Every panel below is built from one
+  // agent id, so with none the page is not "waiting for a choice" — it is
+  // waiting for an expert to exist, and it says so with the two ways to get one:
+  // create an expert of one's own, or open a feature (whose own agent is set up
+  // by its author, not here).
+  const hasOwnExpert = ownExperts.length > 0;
 
   const isAllowed = useCallback(
     (tab: PersonalizationTab) =>
@@ -90,16 +109,44 @@ export default function PersonalizationPage() {
       fill={!isMobile}
       pathTabs={pathTabs}
     >
-      <PersonalizationPanels
-        agentId={activeAgent?.agent_id ?? null}
-        agentState={activeAgent?.state ?? "stopped"}
-        tabs={PERSONALIZATION_TABS}
-        activeTab={activeTab}
-        isMounted={isMounted}
-        scope="expert"
-        // The caller's own expert: every panel is theirs to write.
-        canWrite={activeAgent?.is_owner !== false}
-      />
+      {hasOwnExpert ? (
+        <PersonalizationPanels
+          agentId={activeAgent?.agent_id ?? null}
+          agentState={activeAgent?.state ?? "stopped"}
+          tabs={PERSONALIZATION_TABS}
+          activeTab={activeTab}
+          isMounted={isMounted}
+          scope="expert"
+          // The caller's own expert: every panel is theirs to write.
+          canWrite={activeAgent?.is_owner !== false}
+        />
+      ) : (
+        <div className={emptyStyles.emptyState}>
+          <EmptyStateIcon icon={GraduationCap} />
+          <div className={emptyStyles.emptyTitle}>
+            {t("personalization.noExpertTitle")}
+          </div>
+          <div className={emptyStyles.emptyHint}>
+            {t("personalization.noExpertHint")}
+          </div>
+          <div className={emptyStyles.emptyActions}>
+            <button
+              type="button"
+              className={emptyStyles.emptyAction}
+              onClick={() => navigate("/experts")}
+            >
+              {t("personalization.createExpert")}
+            </button>
+            <button
+              type="button"
+              className={emptyStyles.emptyAction}
+              onClick={() => navigate("/features")}
+            >
+              {t("personalization.pickFeature")}
+            </button>
+          </div>
+        </div>
+      )}
     </PageShell>
   );
 }

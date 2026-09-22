@@ -1431,6 +1431,8 @@
     "expertPickerSearch": "Search experts",
     "expertPickerEmpty": "No other experts available",
     "expertPickerManage": "Manage experts",
+    "agentPickerSearch": "Search experts and features",
+    "agentPickerEmpty": "No experts or features available",
     "subagentPicker": "Select subagents",
     "subagentPickerSearch": "Search subagents",
     "subagentPickerEmpty": "No installed subagents",
@@ -3538,6 +3540,7 @@
     "empty": "No matches",
     "connectors": "Connectors",
     "experts": "Experts",
+    "features": "Features",
     "subagents": "Subagents",
     "files": "Workspace files",
     "typeToSearch": "Type a file name to search",
@@ -4071,6 +4074,10 @@
   "personalization": {
     "title": "Personalization",
     "description": "Configure this agent's skills, tools, plugins, subagents, channels, personality, and memory.",
+    "noExpertTitle": "No expert of yours to configure yet",
+    "noExpertHint": "These panels configure your own experts. A feature's panels configure the feature's own agent — and for anyone but its author they are read-only.",
+    "createExpert": "Create an expert",
+    "pickFeature": "Pick a feature",
     "tabs": {
       "skills": "Skills",
       "tools": "Tools",

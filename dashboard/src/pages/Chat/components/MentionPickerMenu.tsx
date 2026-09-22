@@ -1,8 +1,11 @@
+import { useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { FileText, Plug } from "lucide-react";
 import type { ChatConnectorOption } from "./ConnectorPickerPopover";
 import type { ChatAgentOption } from "./ExpertAgentAvatar";
 import type { AgentSubagentSummary } from "../../../api/modules/subagents";
+import { isFeatureAgent } from "../../../utils/agentKind";
+import { indexAgentsByKind } from "../../../utils/agentKindCounts";
 import {
   isPathLikeMentionQuery,
   workspaceMentionHintState,
@@ -127,15 +130,26 @@ export default function MentionPickerMenu({
   const { t } = useTranslation();
 
   const connSection = t("mention.connectors", "Connectors");
-  const agentSection = t("mention.experts", "Experts");
+  const expertSection = t("mention.experts", "Experts");
+  const featureSection = t("mention.features", "Features");
   const subagentSection = t("mention.subagents", "Subagents");
   const fileSection = t("mention.files", "Workspace files");
 
+  // The pickable agents are two kinds, so an agent pick's section is whichever
+  // kind that option says it is (``utils/agentKind``) — and the features'
+  // section is drawn only when this picker's own options hold one: a caller
+  // whose pickable agents are all experts gets the one agent section this menu
+  // has always drawn. The answer is the whole option list's, never the current
+  // query's, so typing does not make a kind's heading come and go.
+  const held = useMemo(() => indexAgentsByKind(agents).held, [agents]);
   const sectionFor = (item: MentionPick) => {
     if (item.kind === "connector") return connSection;
     if (item.kind === "subagent") return subagentSection;
     if (item.kind === "file") return fileSection;
-    return agentSection;
+    const option = agents.find((a) => a.agent_id === item.agent_id);
+    return held.features && option !== undefined && isFeatureAgent(option)
+      ? featureSection
+      : expertSection;
   };
 
   const fileCount = items.filter((item) => item.kind === "file").length;

@@ -63,6 +63,7 @@ import {
   selectEnabledExperts,
   projectChatAgentOption,
 } from "../../context/AgentContext";
+import { isFeatureAgent } from "../../utils/agentKind";
 import { useLayoutMode } from "../../context/LayoutModeContext";
 import { useBrowserSessionState } from "../../hooks/useBrowserSessionState";
 import { prefetchVoiceConfig } from "../../hooks/useVoiceConfig";
@@ -524,13 +525,20 @@ function ChatPageInner() {
   // Subset for the chat-side *pickers* (`@` button popover, `@` mention menu).
   // Only running experts — picking a stopped one would dispatch into an
   // unloaded harness and silently fail.
-  const chatAgentOptionsPickable = useMemo(
-    () =>
-      selectEnabledExperts(agents, null, { pinActive: false }).map(
-        projectChatAgentOption,
-      ),
-    [agents],
-  );
+  //
+  // Both kinds arrive here, and each picker draws them as two sections, so the
+  // list is handed over with each kind's rows contiguous (experts first, the
+  // order the sidebar and the features' own list use): a kind's picks are then
+  // one run under one heading rather than alternating. The experts keep the
+  // order they have always had — a caller with no feature gets this list
+  // unchanged.
+  const chatAgentOptionsPickable = useMemo(() => {
+    const pickable = selectEnabledExperts(agents, null, { pinActive: false });
+    return [
+      ...pickable.filter((agent) => !isFeatureAgent(agent)),
+      ...pickable.filter(isFeatureAgent),
+    ].map(projectChatAgentOption);
+  }, [agents]);
 
   const composerLookups = useMemo(
     () => ({

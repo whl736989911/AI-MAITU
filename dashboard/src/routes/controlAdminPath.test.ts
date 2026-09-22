@@ -154,3 +154,14 @@ describe("unknown dashboard paths", () => {
     expect(routeConfigs.some((rc) => rc.path === "*")).toBe(true);
   });
 });
+
+describe("personalization nav key", () => {
+  it("comes from the section prefix, tabs listed in the map or not", () => {
+    // ``/personalization/files`` is a feature's tab; the experts' page has no
+    // such tab, and the path still highlights the section it is under.
+    expect(resolveSelectedKey("/personalization/files")).toBe("personalization");
+    expect(resolveSelectedKey("/personalization/skills")).toBe(
+      "personalization",
+    );
+  });
+});

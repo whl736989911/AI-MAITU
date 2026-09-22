@@ -22,8 +22,7 @@
  * features.
  */
 
-import type { OctopAgent } from "../context/AgentContext";
-import { isFeatureAgent } from "./agentKind";
+import { isFeatureAgent, type AgentKindCarrier } from "./agentKind";
 
 /** One owner's agents, split by kind. */
 export interface AgentKindCounts {
@@ -50,6 +49,12 @@ export interface AgentKindIndex {
   held: AgentKindPresence;
 }
 
+/** What the tally reads off a row: what it is, and whose it is. */
+export interface AgentKindRow extends AgentKindCarrier {
+  /** Owning user id; a row without one still counts as "a kind exists". */
+  user_id?: number | null;
+}
+
 /**
  * Index an agent list by owner and by kind.
  *
@@ -58,9 +63,13 @@ export interface AgentKindIndex {
  * the surface offers the caller a choice. Either way the answer is one value for
  * a whole list, never one per page or per row — see
  * ``hooks/useAgentKindPresence.ts`` for the deployment's.
+ *
+ * A caller that holds its rows in a lighter shape — the chat pickers hold the
+ * agent projections — passes that list: the tally is read from the row's kind
+ * and owner, so nothing else about the row is asked for.
  */
 export function indexAgentsByKind(
-  agents: readonly OctopAgent[],
+  agents: readonly AgentKindRow[],
 ): AgentKindIndex {
   const countsByUserId = new Map<number, AgentKindCounts>();
   const held = { experts: false, features: false };

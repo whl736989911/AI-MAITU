@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { OctopAgent } from "./AgentContext";
 import { projectChatAgentOption, selectEnabledExperts } from "./AgentContext";
+import { isFeatureAgent, KIND_FEATURE } from "../utils/agentKind";
 
 function agent(
   agent_id: string,
@@ -118,6 +119,7 @@ describe("projectChatAgentOption", () => {
       is_shared: true,
       is_owner: false,
       owner_username: "alice",
+      kind: null,
     });
   });
 
@@ -126,5 +128,17 @@ describe("projectChatAgentOption", () => {
     expect(projected.owner_username).toBeNull();
     expect(projected.is_shared).toBe(false);
     expect(projected.is_owner).toBe(false);
+  });
+
+  it("keeps the kind, so a projected row is still told apart as a feature", () => {
+    const feature = projectChatAgentOption(
+      agent("feat-weekly", "running", { kind: KIND_FEATURE }),
+    );
+    expect(isFeatureAgent(feature)).toBe(true);
+    // A row that says nothing is an expert — the same answer the row itself
+    // gives (``utils/agentKind``).
+    expect(isFeatureAgent(projectChatAgentOption(agent("S2", "running")))).toBe(
+      false,
+    );
   });
 });

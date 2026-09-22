@@ -20,6 +20,8 @@ import { apiErrorMessage } from "../../../utils/apiError";
 import { message as antMessage } from "../../../utils/antdMessage";
 import { showConfirmModal } from "../../../utils/confirmModal";
 import { isAgentChatReady } from "../../../utils/agentError";
+import { isFeatureAgent } from "../../../utils/agentKind";
+import { indexAgentsByKind } from "../../../utils/agentKindCounts";
 import { sortSessions, toSession, type Session } from "../hooks/useSessions";
 import { formatThreadTitle } from "../utils/threadTitle";
 import { onSessionEvent, onStreamEvent } from "../hooks/chatStore";
@@ -529,118 +531,144 @@ export default function MinimalAgentSessionNav({
     );
   }
 
+  // Both kinds arrive in one list (``selectEnabledExperts`` filters by state,
+  // not by kind), so they are told apart here, the way the chat sidebar tells
+  // them apart: the experts are the group this nav has always listed, and the
+  // features are drawn under a heading of their own — but only when this nav's
+  // own list holds one, so a caller with no feature gets the one group they
+  // have always had. The answer is the whole list's, once.
+  const held = useMemo(() => indexAgentsByKind(agents).held, [agents]);
+  const expertAgents = useMemo(
+    () => sortedAgents.filter((agent) => !isFeatureAgent(agent)),
+    [sortedAgents],
+  );
+  const featureAgents = useMemo(
+    () => sortedAgents.filter(isFeatureAgent),
+    [sortedAgents],
+  );
+
+  const renderAgentSection = (agent: OctopAgent) => {
+    const list = byAgent[agent.agent_id] ?? [];
+    const ready = isAgentChatReady(agent.state);
+    const expanded = !collapsedFolders.has(agent.agent_id);
+
+    return (
+      <section key={agent.agent_id} className={styles.minimalAgentSection}>
+        <div className={styles.minimalAgentHeader}>
+          <span className={styles.minimalAgentIconSlot}>
+            <span
+              className={styles.minimalAgentAvatar}
+              style={{
+                color: agent.color || "var(--fn-text-tertiary)",
+                background: `${agent.color || "#6366f1"}14`,
+              }}
+              aria-hidden
+            >
+              <ExpertIcon
+                iconUrl={agent.icon_url}
+                iconName={agent.icon_name}
+                size={14}
+              />
+            </span>
+            <button
+              type="button"
+              className={styles.minimalAgentChevronBtn}
+              aria-expanded={expanded}
+              aria-label={
+                expanded ? t("nav.collapseSidebar") : t("nav.expandSidebar")
+              }
+              onClick={() => toggleFolder(agent.agent_id)}
+            >
+              <ChevronRight
+                size={14}
+                strokeWidth={2}
+                className={`${styles.minimalAgentChevron} ${
+                  expanded ? styles.minimalAgentChevronOpen : ""
+                }`}
+                aria-hidden
+              />
+            </button>
+          </span>
+          <button
+            type="button"
+            className={styles.minimalAgentFolderBtn}
+            onClick={() => openFolderAndSelect(agent.agent_id)}
+          >
+            <span className={styles.agentNameCluster}>
+              <span className={styles.minimalAgentName}>{agent.name}</span>
+              <SharedExpertHint agent={agent} />
+            </span>
+            <AgentUnreadBadge count={agent.unread_count ?? 0} />
+          </button>
+          <button
+            type="button"
+            className={styles.minimalAgentNewChatBtn}
+            aria-label={t("chatWelcome.newChat")}
+            title={t("chatWelcome.newChat")}
+            onClick={() => onNewChat(agent.agent_id)}
+          >
+            <Plus size={14} strokeWidth={2} aria-hidden />
+          </button>
+        </div>
+
+        {expanded ? (
+          <div className={styles.minimalAgentSessions}>
+            {!ready ? (
+              <div className={styles.minimalAgentEmpty}>
+                {t("chat.agentNotRunningHint")}
+              </div>
+            ) : loading && list.length === 0 ? (
+              <div className={styles.minimalAgentEmpty}>
+                {t("common.loading")}
+              </div>
+            ) : list.length === 0 ? (
+              <div className={styles.minimalAgentEmpty}>
+                {t("chat.noSessionsYet", "直接发消息即可开始对话")}
+              </div>
+            ) : (
+              list.map((session) => (
+                <PreviewSessionRow
+                  key={session.id}
+                  session={session}
+                  isActive={session.id === activeId}
+                  working={workingIds.has(session.id)}
+                  onSelect={(id) => onSelect(id, agent.agent_id)}
+                  onDelete={(id) => void handleDelete(agent.agent_id, id)}
+                  onRename={(id, name) =>
+                    void handleRename(agent.agent_id, id, name)
+                  }
+                  onPin={(id, pinned) =>
+                    void handlePin(agent.agent_id, id, pinned)
+                  }
+                  onFork={(id) => onFork(id, agent.agent_id)}
+                  forkDisabled={
+                    session.id === activeId ? activeForkDisabled : undefined
+                  }
+                  forkDisabledHint={
+                    session.id === activeId
+                      ? activeForkDisabledHint
+                      : undefined
+                  }
+                />
+              ))
+            )}
+          </div>
+        ) : null}
+      </section>
+    );
+  };
+
   return (
     <div className={`${styles.sessionList} ${styles.minimalAgentNav}`}>
-      {sortedAgents.map((agent) => {
-        const list = byAgent[agent.agent_id] ?? [];
-        const ready = isAgentChatReady(agent.state);
-        const expanded = !collapsedFolders.has(agent.agent_id);
-
-        return (
-          <section key={agent.agent_id} className={styles.minimalAgentSection}>
-            <div className={styles.minimalAgentHeader}>
-              <span className={styles.minimalAgentIconSlot}>
-                <span
-                  className={styles.minimalAgentAvatar}
-                  style={{
-                    color: agent.color || "var(--fn-text-tertiary)",
-                    background: `${agent.color || "#6366f1"}14`,
-                  }}
-                  aria-hidden
-                >
-                  <ExpertIcon
-                    iconUrl={agent.icon_url}
-                    iconName={agent.icon_name}
-                    size={14}
-                  />
-                </span>
-                <button
-                  type="button"
-                  className={styles.minimalAgentChevronBtn}
-                  aria-expanded={expanded}
-                  aria-label={
-                    expanded ? t("nav.collapseSidebar") : t("nav.expandSidebar")
-                  }
-                  onClick={() => toggleFolder(agent.agent_id)}
-                >
-                  <ChevronRight
-                    size={14}
-                    strokeWidth={2}
-                    className={`${styles.minimalAgentChevron} ${
-                      expanded ? styles.minimalAgentChevronOpen : ""
-                    }`}
-                    aria-hidden
-                  />
-                </button>
-              </span>
-              <button
-                type="button"
-                className={styles.minimalAgentFolderBtn}
-                onClick={() => openFolderAndSelect(agent.agent_id)}
-              >
-                <span className={styles.agentNameCluster}>
-                  <span className={styles.minimalAgentName}>{agent.name}</span>
-                  <SharedExpertHint agent={agent} />
-                </span>
-                <AgentUnreadBadge count={agent.unread_count ?? 0} />
-              </button>
-              <button
-                type="button"
-                className={styles.minimalAgentNewChatBtn}
-                aria-label={t("chatWelcome.newChat")}
-                title={t("chatWelcome.newChat")}
-                onClick={() => onNewChat(agent.agent_id)}
-              >
-                <Plus size={14} strokeWidth={2} aria-hidden />
-              </button>
-            </div>
-
-            {expanded ? (
-              <div className={styles.minimalAgentSessions}>
-                {!ready ? (
-                  <div className={styles.minimalAgentEmpty}>
-                    {t("chat.agentNotRunningHint")}
-                  </div>
-                ) : loading && list.length === 0 ? (
-                  <div className={styles.minimalAgentEmpty}>
-                    {t("common.loading")}
-                  </div>
-                ) : list.length === 0 ? (
-                  <div className={styles.minimalAgentEmpty}>
-                    {t("chat.noSessionsYet", "直接发消息即可开始对话")}
-                  </div>
-                ) : (
-                  list.map((session) => (
-                    <PreviewSessionRow
-                      key={session.id}
-                      session={session}
-                      isActive={session.id === activeId}
-                      working={workingIds.has(session.id)}
-                      onSelect={(id) => onSelect(id, agent.agent_id)}
-                      onDelete={(id) => void handleDelete(agent.agent_id, id)}
-                      onRename={(id, name) =>
-                        void handleRename(agent.agent_id, id, name)
-                      }
-                      onPin={(id, pinned) =>
-                        void handlePin(agent.agent_id, id, pinned)
-                      }
-                      onFork={(id) => onFork(id, agent.agent_id)}
-                      forkDisabled={
-                        session.id === activeId ? activeForkDisabled : undefined
-                      }
-                      forkDisabledHint={
-                        session.id === activeId
-                          ? activeForkDisabledHint
-                          : undefined
-                      }
-                    />
-                  ))
-                )}
-              </div>
-            ) : null}
-          </section>
-        );
-      })}
+      {expertAgents.map(renderAgentSection)}
+      {held.features ? (
+        <>
+          <div className={styles.sessionGroupLabel}>
+            {t("chat.featuresGroup", "功能")}
+          </div>
+          {featureAgents.map(renderAgentSection)}
+        </>
+      ) : null}
     </div>
   );
 }

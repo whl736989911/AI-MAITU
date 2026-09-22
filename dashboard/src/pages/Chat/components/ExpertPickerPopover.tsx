@@ -1,10 +1,12 @@
-import { useCallback } from "react";
+import { useCallback, useMemo } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { GraduationCap } from "lucide-react";
 import SearchablePickerPanel, {
   pickerStyles,
 } from "../../../components/ChatPicker/SearchablePickerPanel";
+import { isFeatureAgent } from "../../../utils/agentKind";
+import { indexAgentsByKind } from "../../../utils/agentKindCounts";
 import ExpertAgentAvatar, { type ChatAgentOption } from "./ExpertAgentAvatar";
 import styles from "../index.module.less";
 
@@ -33,12 +35,37 @@ export default function ExpertPickerPopover({
     [],
   );
 
+  // Both kinds are offered here, and the picker says so: the features are the
+  // labelled group, the experts are the group this picker has always listed and
+  // keep its own words. Whether that second group exists at all is this
+  // picker's own option list's answer (``utils/agentKindCounts``) — a caller
+  // whose pickable agents are all experts gets the picker unchanged, words
+  // included. The list arrives with each kind's rows contiguous
+  // (``pages/Chat/index.tsx``), so the features are one group under one heading.
+  const held = useMemo(() => indexAgentsByKind(agents).held, [agents]);
+  const groupLabelFor = useCallback(
+    (agent: ChatAgentOption) =>
+      held.features && isFeatureAgent(agent)
+        ? t("chat.featuresGroup", "功能")
+        : null,
+    [held.features, t],
+  );
+
   return (
     <SearchablePickerPanel
       items={agents}
       filterFn={filterFn}
-      searchPlaceholder={t("chat.expertPickerSearch")}
-      emptyMessage={t("chat.expertPickerEmpty")}
+      searchPlaceholder={
+        held.features
+          ? t("chat.agentPickerSearch", "搜索专家与功能")
+          : t("chat.expertPickerSearch")
+      }
+      emptyMessage={
+        held.features
+          ? t("chat.agentPickerEmpty", "没有可选的专家或功能")
+          : t("chat.expertPickerEmpty")
+      }
+      groupLabelFor={groupLabelFor}
       width="compact"
       footerIcon={<GraduationCap size={15} aria-hidden />}
       footerLabel={t("chat.expertPickerManage")}

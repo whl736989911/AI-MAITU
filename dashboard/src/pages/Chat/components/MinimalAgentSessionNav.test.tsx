@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import MinimalAgentSessionNav from "./MinimalAgentSessionNav";
 import type { OctopAgent } from "../../../context/AgentContext";
+import { KIND_FEATURE } from "../../../utils/agentKind";
 
 const listMock = vi.fn();
 const patchMock = vi.fn();
@@ -30,10 +31,16 @@ vi.mock("../../../utils/antdMessage", () => ({
 const ACTIVE_AGENT = "A_ACTIVE";
 const OTHER_AGENT = "A_OTHER";
 
-function agent(agentId: string, id: number, name: string): OctopAgent {
+function agent(
+  agentId: string,
+  id: number,
+  name: string,
+  kind?: string,
+): OctopAgent {
   return {
     id,
     agent_id: agentId,
+    kind,
     name,
     description: null,
     persona_mbti: null,
@@ -189,5 +196,81 @@ describe("MinimalAgentSessionNav rename / pin against a rejected server write", 
     // The row's pin badge is title={t("chat.unpin")}; the i18n test mock
     // resolves that key to itself, so match on the key.
     expect(document.querySelector('span[title="chat.unpin"]')).toBeNull();
+  });
+});
+
+describe("MinimalAgentSessionNav kind groups", () => {
+  beforeEach(() => {
+    localStorage.clear();
+    listMock.mockReset();
+    listMock.mockResolvedValue([]);
+  });
+
+  function renderNav(agents: OctopAgent[]) {
+    return render(
+      <MemoryRouter>
+        <MinimalAgentSessionNav
+          agents={agents}
+          activeId={null}
+          activeAgentId={agents[0]?.agent_id ?? null}
+          activeSessions={[]}
+          onSelect={vi.fn()}
+          onAgentSelect={vi.fn()}
+          onNewChat={vi.fn()}
+          onDeleteActive={vi.fn()}
+          onRenameActive={vi.fn().mockResolvedValue(true)}
+          onPinActive={vi.fn().mockResolvedValue(true)}
+          onFork={vi.fn()}
+        />
+      </MemoryRouter>,
+    );
+  }
+
+  /** Settle the per-agent preview fetch the nav starts for every folder. */
+  const settle = () => screen.findAllByText("直接发消息即可开始对话");
+
+  it("draws an expert-only nav as the one group it has always been", async () => {
+    renderNav([agent("A1", 1, "Expert One"), agent("A2", 2, "Expert Two")]);
+    await settle();
+
+    expect(screen.getByText("Expert One")).toBeInTheDocument();
+    expect(screen.getByText("Expert Two")).toBeInTheDocument();
+    // ``t("chat.featuresGroup", "功能")`` — the i18n test mock resolves to the
+    // fallback.
+    expect(screen.queryByText("功能")).toBeNull();
+  });
+
+  it("puts the features under their own heading, below the experts", async () => {
+    renderNav([
+      agent("A1", 1, "Expert One"),
+      agent("F1", 2, "Weekly digest", KIND_FEATURE),
+    ]);
+    await settle();
+
+    const heading = screen.getByText("功能");
+    const feature = screen.getByText("Weekly digest");
+    const expert = screen.getByText("Expert One");
+    // ``compareDocumentPosition`` answers with a bitmask; the FOLLOWING bit is
+    // the one that says the first node is drawn above the second.
+    expect(
+      expert.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      heading.compareDocumentPosition(feature) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // Both halves are still folders with their own rows.
+    expect(
+      document.querySelectorAll('section[class*="minimalAgentSection"]'),
+    ).toHaveLength(2);
+  });
+
+  it("draws a feature-only nav as the one group it has", async () => {
+    renderNav([agent("F1", 1, "Weekly digest", KIND_FEATURE)]);
+    await settle();
+
+    expect(screen.getByText("功能")).toBeInTheDocument();
+    expect(screen.getByText("Weekly digest")).toBeInTheDocument();
+    expect(screen.queryByText("Expert One")).toBeNull();
   });
 });

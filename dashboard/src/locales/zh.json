@@ -1431,6 +1431,8 @@
     "expertPickerSearch": "搜索专家",
     "expertPickerEmpty": "暂无其他专家",
     "expertPickerManage": "管理专家",
+    "agentPickerSearch": "搜索专家与功能",
+    "agentPickerEmpty": "没有可选的专家或功能",
     "subagentPicker": "选择子智能体",
     "subagentPickerSearch": "搜索子智能体",
     "subagentPickerEmpty": "暂无已安装的子智能体",
@@ -3538,6 +3540,7 @@
     "empty": "没有匹配项",
     "connectors": "连接器",
     "experts": "专家",
+    "features": "功能",
     "subagents": "子智能体",
     "files": "工作区文件",
     "typeToSearch": "输入文件名搜索",
@@ -4071,6 +4074,10 @@
   "personalization": {
     "title": "个性化",
     "description": "配置当前智能体的技能、工具、插件、子智能体、通道、人格与记忆。",
+    "noExpertTitle": "还没有你自己的专家可配置",
+    "noExpertHint": "这些面板配置的是你自己的专家。功能的面板配置功能自己的 agent，且对作者以外的人只读。",
+    "createExpert": "去创建专家",
+    "pickFeature": "去选一个功能",
     "tabs": {
       "skills": "技能",
       "tools": "工具",

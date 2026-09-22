@@ -12,6 +12,14 @@ interface SearchablePickerPanelProps<T> {
   emptyMessage: string;
   width?: PickerPanelWidth;
   renderItem: (item: T) => ReactNode;
+  /**
+   * Heading to draw above an item, or ``null`` for the default group. A panel
+   * that lists one group passes nothing and renders exactly as before; a panel
+   * whose list holds a second group labels that group, and the heading is drawn
+   * where the group starts so it stays above the rows it names however the
+   * search narrows them.
+   */
+  groupLabelFor?: (item: T) => string | null;
   footerIcon: ReactNode;
   footerLabel: string;
   onFooterClick: () => void;
@@ -24,6 +32,7 @@ export default function SearchablePickerPanel<T>({
   emptyMessage,
   width = "wide",
   renderItem,
+  groupLabelFor,
   footerIcon,
   footerLabel,
   onFooterClick,
@@ -53,7 +62,18 @@ export default function SearchablePickerPanel<T>({
         {filtered.length === 0 ? (
           <div className={styles.empty}>{emptyMessage}</div>
         ) : (
-          filtered.map((item) => renderItem(item))
+          filtered.map((item, index) => {
+            const label = groupLabelFor?.(item) ?? null;
+            const previous =
+              index > 0 ? groupLabelFor?.(filtered[index - 1]) ?? null : null;
+            if (label === null || label === previous) return renderItem(item);
+            return [
+              <div key={`group:${index}`} className={styles.groupLabel}>
+                {label}
+              </div>,
+              renderItem(item),
+            ];
+          })
         )}
       </div>
 
