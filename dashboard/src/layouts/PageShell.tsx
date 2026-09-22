@@ -41,7 +41,12 @@ interface PageShellProps {
   children: React.ReactNode;
 }
 
-function PathTabsSegmented({
+/**
+ * The path-tab bar itself. Exported because a page whose tab row is already in
+ * the title row (a feature's own page) still has one level left to show, and it
+ * has to be the same control rather than a look-alike.
+ */
+export function PathTabsSegmented({
   pathTabs,
   isMobile,
 }: {

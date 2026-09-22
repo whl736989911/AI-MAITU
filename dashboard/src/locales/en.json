@@ -438,6 +438,9 @@
     "settingsEditTitle": "Feature settings",
     "settingsTabDefinition": "Definition",
     "settingsTabSteps": "Steps",
+    "tabRun": "Run",
+    "tabPersonalization": "Personalization",
+    "bundledNotice": "This feature ships with the platform: its definition is versioned with the release and it has no agent of its own, so there is nothing here to edit or personalize. Define a feature of your own to configure one.",
     "personalizationMbtiNote": "Applying an MBTI type rewrites this agent's system prompt — the workspace persona files (SOUL.md among them) are left as they are, so a soul you wrote by hand is not overwritten. The type is stored on this shared agent, so it shapes every caller's runs.",
     "settingsCreated": "Feature created",
     "settingsSaved": "Feature saved",
@@ -601,7 +604,9 @@
     "scopeFeaturePlaceholder": "None — configure my own expert",
     "scopeFeatureAgent": "This feature's agent:",
     "scopeFeatureAgentLoading": "Opening the feature's own agent…",
-    "scopeFeatureAgentFailed": "Could not open the feature's own agent"
+    "scopeFeatureAgentFailed": "Could not open the feature's own agent",
+    "scopeNoFeatures": "Every feature on this instance is built in. Built-in features ship with the platform and cannot be personalized, so there is nothing to pick here yet — define a feature of your own and it appears here, with an agent to configure.",
+    "scopeCreateFeature": "New feature"
   },
   "skillPackages": {
     "title": "Skill Packages",

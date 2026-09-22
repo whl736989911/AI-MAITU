@@ -8,7 +8,7 @@
  * agent start — which is also why the block is absent here rather than merely
  * collapsed.
  *
- * The full editor lives at ``/features/:id/settings``.
+ * The full editor is one of the new feature's own tabs (``/features/:id``).
  */
 
 import { Drawer, Form } from "antd";

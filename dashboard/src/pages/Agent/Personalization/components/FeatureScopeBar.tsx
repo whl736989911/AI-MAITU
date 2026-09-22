@@ -20,7 +20,7 @@
  */
 
 import { Alert, Button, Select, Spin } from "antd";
-import { RefreshCw, UserCog } from "lucide-react";
+import { Plus, RefreshCw, UserCog } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import AgentSelector from "../../../../components/AgentSelector";
 import styles from "../index.module.less";
@@ -43,6 +43,7 @@ export default function FeatureScopeBar({
   failure,
   onRetry,
   retryLabel,
+  onCreateFeature,
 }: {
   /** Features this caller may configure. Empty hides the row — no permission,
    *  no control that could only be refused. */
@@ -60,9 +61,18 @@ export default function FeatureScopeBar({
   onRetry: () => void;
   /** The page's retry wording, so this bar and the panels read alike. */
   retryLabel: string;
+  /** Where the "define one of your own" entry point goes — the catalog. */
+  onCreateFeature: () => void;
 }) {
   const { t } = useTranslation();
   const showPicker = featuresLoading || features.length > 0 || selected !== null;
+  /**
+   * Nothing to offer, and not because a call failed: every definition this
+   * instance holds is one it ships. The row is not hidden for that — a page that
+   * silently drops its scope control leaves the reader with no way to learn that
+   * a feature *can* be configured, and none to go and make one.
+   */
+  const showNothingToConfigure = !featuresLoading && features.length === 0;
 
   return (
     <div className={styles.scope}>
@@ -86,6 +96,19 @@ export default function FeatureScopeBar({
               label: feature.label,
             }))}
           />
+        </div>
+      )}
+
+      {showNothingToConfigure && (
+        <div className={styles.scopeEmpty}>
+          <span>{t("features.scopeNoFeatures")}</span>
+          <Button
+            size="small"
+            icon={<Plus size={13} />}
+            onClick={onCreateFeature}
+          >
+            {t("features.scopeCreateFeature")}
+          </Button>
         </div>
       )}
 

@@ -30,20 +30,10 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { useSearchParams } from "react-router-dom";
-import { Alert, Button, Empty, Spin } from "antd";
-import {
-  Bot,
-  Brain,
-  FileText,
-  Notebook,
-  Puzzle,
-  RefreshCw,
-  Sparkles,
-  Waypoints,
-  Wrench,
-} from "lucide-react";
-import PageShell, { pageShellStyles } from "../../../layouts/PageShell";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Alert, Button, Spin } from "antd";
+import { RefreshCw } from "lucide-react";
+import PageShell from "../../../layouts/PageShell";
 import { useAgent } from "../../../context/AgentContext";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { usePathTabs } from "../../../hooks/usePathTabs";
@@ -54,57 +44,17 @@ import {
   featuresApi,
   type FeatureSummary,
 } from "../../../api/modules/features";
-import { octopAgentsApi } from "../../../api/modules/octopAgents";
 import { pickLocale } from "../../../utils/localizedText";
 import { normalizeUiLocale } from "../../../utils/localePrefs";
-import SkillsTabs from "../Skills/components/SkillsTabs";
-import ToolsTabs from "../Tools/ToolsTabs";
-import SubagentManager from "../../Experts/components/SubagentManager";
-import MBTISelector from "./components/MBTISelector";
-import AgentPluginsPanel from "./components/AgentPluginsPanel";
-import AgentPersonaFiles from "./components/AgentPersonaFiles";
+import { useFeatureAgent } from "../../../hooks/useFeatureAgent";
 import FeatureScopeBar from "./components/FeatureScopeBar";
-import MemoryPanel from "../Memory/MemoryPanel";
-import ChannelsPanel from "../Channels/ChannelsPanel";
+import PersonalizationPanels, {
+  FEATURE_ONLY_TAB,
+  PERSONALIZATION_TABS,
+  TAB_ICONS,
+  type PersonalizationTab,
+} from "./components/PersonalizationPanels";
 import styles from "./index.module.less";
-
-export type PersonalizationTab =
-  | "skills"
-  | "subagents"
-  | "tools"
-  | "plugins"
-  | "mbti"
-  | "memory"
-  | "channels"
-  | "files";
-
-const PERSONALIZATION_TABS = [
-  "skills",
-  "subagents",
-  "tools",
-  "plugins",
-  "mbti",
-  "memory",
-  "channels",
-] as const satisfies readonly PersonalizationTab[];
-
-/**
- * The persona files belong to the feature's own agent: an expert's are edited in
- * their own profile (``EditAgentDrawer``'s 配置文件), while a feature's agent is
- * in nobody's expert list, so this page is the only place they can be reached.
- */
-const FEATURE_ONLY_TAB: PersonalizationTab = "files";
-
-const TAB_ICONS = {
-  skills: Sparkles,
-  subagents: Bot,
-  tools: Wrench,
-  plugins: Puzzle,
-  mbti: Brain,
-  memory: Notebook,
-  channels: Waypoints,
-  files: FileText,
-} as const;
 
 /** The query parameter that names the feature this page is scoped to. */
 const FEATURE_PARAM = "feature";
@@ -116,6 +66,7 @@ export default function PersonalizationPage() {
   const { activeAgentId, agents } = useAgent();
   const activeAgent = agents.find((a) => a.agent_id === activeAgentId);
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const lang = normalizeUiLocale(i18n.language);
 
   const featureId = searchParams.get(FEATURE_PARAM);
@@ -140,13 +91,6 @@ export default function PersonalizationPage() {
    * a control whose only outcome is a refusal is a dead end, not a choice.
    */
   const [offered, setOffered] = useState<FeatureSummary[] | null>(null);
-  /** The selected feature's own agent, as the server answered for it. */
-  const [featureAgent, setFeatureAgent] = useState<{
-    agent_id: string;
-    state: string;
-  } | null>(null);
-  const [agentLoading, setAgentLoading] = useState(false);
-  const [agentFailure, setAgentFailure] = useState<unknown>(null);
 
   const setFeatureId = useCallback(
     (next: string | null) => {
@@ -196,35 +140,12 @@ export default function PersonalizationPage() {
   );
 
   /**
-   * Materialize (or re-open) the selected feature's agent, and read the state the
-   * server records for it. Both are needed before a panel may mount: a panel that
-   * renders without a live agent answers "nothing installed, nothing configured".
+   * The selected feature's own agent: materialized (or re-opened) and read from
+   * the server, both before any panel may mount. The feature's own page opens it
+   * through the same hook, so the two surfaces cannot disagree about how a
+   * feature's agent is reached.
    */
-  const openFeatureAgent = useCallback(async (id: string) => {
-    setAgentLoading(true);
-    try {
-      const personalization = await featuresApi.personalizeFeature(id);
-      const { state } = await octopAgentsApi.getAgentStatus(
-        personalization.agent_id,
-      );
-      setFeatureAgent({ agent_id: personalization.agent_id, state });
-      setAgentFailure(null);
-    } catch (err) {
-      setFeatureAgent(null);
-      setAgentFailure(err);
-    } finally {
-      setAgentLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (scopedFeatureId === null) {
-      setFeatureAgent(null);
-      setAgentFailure(null);
-      return;
-    }
-    void openFeatureAgent(scopedFeatureId);
-  }, [scopedFeatureId, openFeatureAgent]);
+  const featureAgent = useFeatureAgent(scopedFeatureId);
 
   // A definition the answer did not name is not a scope this page can honour — it
   // is dropped rather than shown as a selected feature the panels cannot use.
@@ -294,9 +215,10 @@ export default function PersonalizationPage() {
    * that feature's agent and *only* that — falling back to the caller's agent
    * while the feature's is being opened would configure the wrong agent.
    */
-  const scopeAgentId = featureId === null ? activeAgentId : featureAgent?.agent_id ?? null;
+  const scopeAgentId =
+    featureId === null ? activeAgentId : featureAgent.agentId;
   const scopeAgentState =
-    featureId === null ? activeAgent?.state ?? "stopped" : featureAgent?.state ?? "";
+    featureId === null ? activeAgent?.state ?? "stopped" : featureAgent.state;
 
   const pageTitle = `${t("personalization.title")} / ${t(
     `personalization.tabs.${activeTab}`,
@@ -316,32 +238,31 @@ export default function PersonalizationPage() {
           featuresLoading={offered === null}
           selected={scopedFeatureId}
           onSelect={setFeatureId}
-          agentId={featureAgent?.agent_id ?? null}
-          agentState={featureAgent?.state ?? null}
-          loading={agentLoading}
+          agentId={featureAgent.agentId}
+          agentState={featureAgent.agentId === null ? null : featureAgent.state}
+          loading={featureAgent.loading}
           failure={
-            agentFailure === null
+            featureAgent.failure === null
               ? null
               : apiErrorMessage(
-                  agentFailure,
+                  featureAgent.failure,
                   t("features.scopeFeatureAgentFailed"),
                   t,
                 )
           }
-          onRetry={() =>
-            scopedFeatureId !== null && void openFeatureAgent(scopedFeatureId)
-          }
+          onRetry={featureAgent.retry}
           retryLabel={t("features.settingsCapabilityRetry")}
+          // The catalog is where a definition is created, which is the only way
+          // to get one this page can offer.
+          onCreateFeature={() => navigate("/features")}
         />
       ) : null,
     [
-      agentFailure,
-      agentLoading,
       canPersonalizeFeature,
       featureAgent,
       lang,
+      navigate,
       offered,
-      openFeatureAgent,
       scopedFeatureId,
       setFeatureId,
       t,
@@ -355,7 +276,7 @@ export default function PersonalizationPage() {
     // No scope to open is not a failure to report: the answer has not arrived
     // yet, or it arrived and did not name this definition — which the effect
     // above turns into a URL without it. Both are the same waiting screen.
-    const settling = scopedFeatureId === null || agentLoading;
+    const settling = scopedFeatureId === null || featureAgent.loading;
     return (
       <PageShell
         title={pageTitle}
@@ -377,7 +298,7 @@ export default function PersonalizationPage() {
               showIcon
               message={t("features.scopeFeatureAgentFailed")}
               description={apiErrorMessage(
-                agentFailure,
+                featureAgent.failure,
                 t("features.scopeFeatureAgentFailed"),
                 t,
               )}
@@ -385,7 +306,7 @@ export default function PersonalizationPage() {
                 <Button
                   size="small"
                   icon={<RefreshCw size={13} />}
-                  onClick={() => void openFeatureAgent(scopedFeatureId)}
+                  onClick={featureAgent.retry}
                 >
                   {t("features.settingsCapabilityRetry")}
                 </Button>
@@ -406,152 +327,19 @@ export default function PersonalizationPage() {
       fill={!isMobile}
       pathTabs={pathTabs}
     >
-      <div className={styles.panels}>
-        {isMounted("skills") && (
-          <div
-            className={styles.panel}
-            style={{ display: activeTab === "skills" ? "flex" : "none" }}
-            aria-hidden={activeTab !== "skills"}
-          >
-            <div className={pageShellStyles.fillChild}>
-              <SkillsTabs agentId={scopeAgentId} />
-            </div>
-          </div>
-        )}
-
-        {isMounted("tools") && (
-          <div
-            className={styles.panel}
-            style={{ display: activeTab === "tools" ? "flex" : "none" }}
-            aria-hidden={activeTab !== "tools"}
-          >
-            <div className={pageShellStyles.fillChild}>
-              <ToolsTabs agentId={scopeAgentId} />
-            </div>
-          </div>
-        )}
-
-        {isMounted("plugins") && (
-          <div
-            className={styles.panel}
-            style={{ display: activeTab === "plugins" ? "flex" : "none" }}
-            aria-hidden={activeTab !== "plugins"}
-          >
-            <div className={pageShellStyles.fillChild}>
-              <AgentPluginsPanel agentId={scopeAgentId} />
-            </div>
-          </div>
-        )}
-
-        {isMounted("subagents") && (
-          <div
-            className={styles.panel}
-            style={{ display: activeTab === "subagents" ? "flex" : "none" }}
-            aria-hidden={activeTab !== "subagents"}
-          >
-            {!scopeAgentId ? (
-              <Empty
-                style={{ marginTop: isMobile ? 48 : 24 }}
-                description={t("subagents.pickAgent")}
-              />
-            ) : (
-              <SubagentManager
-                key={scopeAgentId}
-                agentId={scopeAgentId}
-                agentState={scopeAgentState}
-                fillHeight={isMobile}
-              />
-            )}
-          </div>
-        )}
-
-        {isMounted("mbti") && (
-          <div
-            className={styles.panel}
-            style={{ display: activeTab === "mbti" ? "flex" : "none" }}
-            aria-hidden={activeTab !== "mbti"}
-          >
-            {!scopeAgentId ? (
-              <Empty
-                style={{ marginTop: 24 }}
-                description={t("mbtiPage.pickAgent")}
-              />
-            ) : (
-              <div className={pageShellStyles.fillChild}>
-                {featureId !== null && (
-                  // Applying a type writes this agent's system prompt and nothing
-                  // in the workspace: the persona files edited on this same page
-                  // (SOUL.md among them) are left alone. What *is* shared is the
-                  // agent itself, so it is said where that is true.
-                  <Alert
-                    type="info"
-                    showIcon
-                    style={{ marginBottom: 12 }}
-                    message={t("features.personalizationMbtiNote")}
-                  />
-                )}
-                <MBTISelector
-                  key={scopeAgentId}
-                  agentId={scopeAgentId}
-                  showHeader={false}
-                  showTestAction
-                />
-              </div>
-            )}
-          </div>
-        )}
-
-        {isMounted("memory") && (
-          <div
-            className={styles.panel}
-            style={{ display: activeTab === "memory" ? "flex" : "none" }}
-            aria-hidden={activeTab !== "memory"}
-          >
-            {featureId !== null && (
-              // One agent means one MEMORY.md, and this agent serves every
-              // caller: the file is shared, not scoped. The panel is still
-              // usable — what it must not do is read as "my own memory".
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 12 }}
-                message={t("personalization.memorySharedNote")}
-              />
-            )}
-            {isMobile ? (
-              <MemoryPanel agentId={scopeAgentId} fill={false} />
-            ) : (
-              <div className={pageShellStyles.fillChild}>
-                <MemoryPanel agentId={scopeAgentId} fill />
-              </div>
-            )}
-          </div>
-        )}
-
-        {isMounted("channels") && (
-          <div
-            className={styles.panel}
-            style={{ display: activeTab === "channels" ? "flex" : "none" }}
-            aria-hidden={activeTab !== "channels"}
-          >
-            <div className={pageShellStyles.fillChild}>
-              <ChannelsPanel agentId={scopeAgentId} />
-            </div>
-          </div>
-        )}
-
-        {isMounted(FEATURE_ONLY_TAB) && scopeAgentId !== null && (
-          <div
-            className={styles.panel}
-            style={{
-              display: activeTab === FEATURE_ONLY_TAB ? "flex" : "none",
-            }}
-            aria-hidden={activeTab !== FEATURE_ONLY_TAB}
-          >
-            <AgentPersonaFiles agentId={scopeAgentId} />
-          </div>
-        )}
-      </div>
+      <PersonalizationPanels
+        agentId={scopeAgentId}
+        agentState={scopeAgentState}
+        tabs={tabs}
+        activeTab={activeTab}
+        isMounted={isMounted}
+        scope={featureId === null ? "expert" : "feature"}
+        // A feature's agent is instance configuration, so this page only ever
+        // reaches one as an administrator — which is the same person the
+        // definition's own write endpoints accept, and the writer the policy
+        // table asks about.
+        canWrite={featureId === null || canPersonalizeFeature}
+      />
     </PageShell>
   );
 }

@@ -4,7 +4,6 @@ import { Navigate, useLocation } from "react-router-dom";
 // Lazy-loaded pages — Common
 const FeaturesPage = lazy(() => import("../pages/Features"));
 const FeatureDetailPage = lazy(() => import("../pages/Features/Detail"));
-const FeatureSettingsPage = lazy(() => import("../pages/Features/Settings"));
 const ExpertsPage = lazy(() => import("../pages/Experts"));
 const CronJobsPage = lazy(() => import("../pages/Control/CronJobs"));
 const ConnectorsPage = lazy(() => import("../pages/Agent/Connectors"));
@@ -161,11 +160,11 @@ export const routeConfigs: RouteConfig[] = [
 
   // Common
   { path: "/features", element: <FeaturesPage /> },
-  { path: "/features/:id", element: <FeatureDetailPage /> },
-  // One route for the bare path and every tab under it (the same shape
+  // One route for a feature and every tab of it — running it, the expert panels
+  // pointed at its own agent, and the definition itself (the same shape
   // ``/personalization/*`` uses): ``usePathTabs`` canonicalizes the bare path
-  // onto a tab, and a second route would remount the page it just moved.
-  { path: "/features/:id/settings/*", element: <FeatureSettingsPage /> },
+  // onto a tab, and second routes would remount the page they just moved off.
+  { path: "/features/:id/*", element: <FeatureDetailPage /> },
   { path: "/experts", element: <ExpertsPage /> },
   { path: "/tasks", element: <CronJobsPage /> },
   { path: "/connectors", element: <ConnectorsPage /> },

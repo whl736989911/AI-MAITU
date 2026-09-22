@@ -173,11 +173,11 @@ export default function FeaturesPage() {
         open={settingsOpen}
         meta={meta}
         onClose={() => setSettingsOpen(false)}
-        // The drawer holds the essentials; everything else about the definition
-        // is on the settings page, which is where a new author goes next.
+        // The drawer holds the essentials; the rest of the definition is one of
+        // the new feature's own tabs, which is where a new author goes next.
         onCreated={(featureId) => {
           setSettingsOpen(false);
-          navigate(`/features/${featureId}/settings`);
+          navigate(`/features/${featureId}/definition`);
         }}
       />
     </PageShell>

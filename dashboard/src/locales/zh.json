@@ -438,6 +438,9 @@
     "settingsEditTitle": "功能设置",
     "settingsTabDefinition": "定义",
     "settingsTabSteps": "步骤",
+    "tabRun": "运行",
+    "tabPersonalization": "个性化",
+    "bundledNotice": "这是平台内置的功能：定义随版本发布，也没有属于它自己的 agent，因此这里没有可编辑或可个性化的内容。要配置就新建一个自己的功能。",
     "personalizationMbtiNote": "应用 MBTI 人格重写的是这个 agent 的系统提示词——工作区里的人设文件（SOUL.md 等）原样保留，手写的灵魂设定不会被覆盖。人格记在这个共用 agent 上，对所有调用者生效。",
     "settingsCreated": "功能已创建",
     "settingsSaved": "功能已保存",
@@ -601,7 +604,9 @@
     "scopeFeaturePlaceholder": "不选功能：配置我自己的专家",
     "scopeFeatureAgent": "该功能的 agent：",
     "scopeFeatureAgentLoading": "正在启用该功能自己的 agent…",
-    "scopeFeatureAgentFailed": "无法启用该功能自己的 agent"
+    "scopeFeatureAgentFailed": "无法启用该功能自己的 agent",
+    "scopeNoFeatures": "这个实例里的功能都是内置的。内置功能随平台发布、不能个性化配置，所以这里暂时没有可选项——新建一个自己的功能后，它会出现在这里，并有一个可以配置的 agent。",
+    "scopeCreateFeature": "新建功能"
   },
   "skillPackages": {
     "title": "技能包",

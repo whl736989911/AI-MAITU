@@ -5,7 +5,7 @@
  * Two surfaces write a definition and both are assembled from these blocks:
  *   - the create drawer, which holds the definition essentials only (a new
  *     definition must not cost an agent start), and
- *   - the settings page at ``/features/:id/settings``, which holds every block.
+ *   - a feature's own page, whose definition tabs hold every block.
  *
  * Nothing here owns the form or the write: the caller supplies the antd form
  * instance, the save/delete handlers and the order the blocks appear in, so a

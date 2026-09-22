@@ -80,6 +80,52 @@
   gap: 8px;
 }
 
+/*
+ * A feature's own page: one panel per URL tab, and only the tab on screen is
+ * laid out — the rest stay mounted (and hidden) so switching back to one keeps
+ * what was typed in it. The stack is the shell's fill child, so every panel
+ * scrolls inside itself and the chrome above never moves.
+ */
+.featurePanels {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.featurePanel {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+/* The run surface scrolls whole: its two panes are read side by side. */
+.featureScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* The personalization tab holds a tab row of its own above the shared panels. */
+.featurePanelStack {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 0;
+}
+
+/* One line: the second-level tabs, and whose agent they are pointed at. */
+.panelTabs {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 12px;
+  flex-wrap: wrap;
+}
+
 .detail {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);

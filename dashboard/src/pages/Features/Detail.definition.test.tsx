@@ -11,14 +11,15 @@ import type {
 } from "../../api/modules/features";
 
 /**
- * The settings page is the only writer of ``feature.json``, so what the author
- * does to the blocks has to land in the request body: these cases drive the real
- * antd form through the real URL tabs and read the payload the API mock
- * received. The pure mapping is covered in ``featureSettings.test.ts``.
+ * The definition tabs of a feature's own page are the only writer of
+ * ``feature.json``, so what the author does to the blocks has to land in the
+ * request body: these cases drive the real antd form through the real URL tabs
+ * and read the payload the API mock received. The pure mapping is covered in
+ * ``featureSettings.test.ts``.
  *
- * Two properties of the page are pinned here because nothing else can pin them:
- * a block that is never opened still travels with the save (the panels and the
- * disclosures are mounted lazily), and the capability choices — the ones that
+ * Two properties of the surface are pinned here because nothing else can pin
+ * them: a block that is never opened still travels with the save (the panels and
+ * the disclosures are mounted lazily), and the capability choices — the ones that
  * cost an agent start — are asked for only once somebody looks at them.
  */
 
@@ -29,6 +30,8 @@ const {
   updateFeature,
   deleteFeature,
   getFeatureCapabilities,
+  listRules,
+  listCases,
 } = vi.hoisted(() => ({
   getFeature: vi.fn(),
   getFeatureMeta: vi.fn(),
@@ -36,6 +39,8 @@ const {
   updateFeature: vi.fn(),
   deleteFeature: vi.fn(),
   getFeatureCapabilities: vi.fn(),
+  listRules: vi.fn(),
+  listCases: vi.fn(),
 }));
 
 vi.mock("../../api/modules/features", () => ({
@@ -47,6 +52,8 @@ vi.mock("../../api/modules/features", () => ({
     createFeature,
     updateFeature,
     deleteFeature,
+    listRules,
+    listCases,
     runFeature: vi.fn(),
   },
 }));
@@ -56,7 +63,7 @@ vi.mock("@/utils/antdMessage", () => ({
 }));
 
 import { CurrentUserProvider } from "../../hooks/useCurrentUser";
-import FeatureSettingsPage from "./Settings";
+import FeatureDetailPage from "./Detail";
 
 // Every case here drives a real antd form; the 5s default is a coin flip once
 // the suite runs its files in parallel.
@@ -137,19 +144,18 @@ function lastUpdate(): [string, FeatureDefinitionBody] {
   return call as [string, FeatureDefinitionBody];
 }
 
-/** The settings route, with the run page mounted as the guard's landing site. */
+/**
+ * The feature's own page, opened on one of its definition tabs, with the catalog
+ * mounted as the guard's landing site.
+ */
 function renderSettings(user: OctopUser = ADMIN) {
   return render(
-    <MemoryRouter initialEntries={["/features/quote-draft/settings"]}>
+    <MemoryRouter initialEntries={["/features/quote-draft/definition"]}>
       <CurrentUserProvider user={user} setUser={vi.fn()}>
         <Routes>
           <Route path="/features" element={<div>feature-catalog</div>} />
-          <Route path="/features/:id" element={<div>feature-run-page</div>} />
           {/* The app registers one route for the bare path and every tab. */}
-          <Route
-            path="/features/:id/settings/*"
-            element={<FeatureSettingsPage />}
-          />
+          <Route path="/features/:id/*" element={<FeatureDetailPage />} />
         </Routes>
       </CurrentUserProvider>
     </MemoryRouter>,
@@ -167,7 +173,7 @@ async function waitForEditor() {
   });
 }
 
-describe("<FeatureSettingsPage />", () => {
+describe("<FeatureDetailPage />", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // A tab the previous case opened must not decide where this one starts.
@@ -178,6 +184,8 @@ describe("<FeatureSettingsPage />", () => {
     createFeature.mockResolvedValue({ feature_id: "quote-draft" });
     deleteFeature.mockResolvedValue(undefined);
     getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
+    listRules.mockResolvedValue({ feature_id: "quote-draft", rules: [] });
+    listCases.mockResolvedValue({ feature_id: "quote-draft", cases: [] });
   });
 
   it("seeds from the definition and writes the edited document back", async () => {
@@ -436,7 +444,7 @@ describe("<FeatureSettingsPage />", () => {
   });
 });
 
-describe("<FeatureSettingsPage /> step skeleton", () => {
+describe("<FeatureDetailPage /> step skeleton", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -446,6 +454,8 @@ describe("<FeatureSettingsPage /> step skeleton", () => {
     createFeature.mockResolvedValue({ feature_id: "quote-draft" });
     deleteFeature.mockResolvedValue(undefined);
     getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
+    listRules.mockResolvedValue({ feature_id: "quote-draft", rules: [] });
+    listCases.mockResolvedValue({ feature_id: "quote-draft", cases: [] });
   });
 
   /** The step tab, mounted and scrolled past its own disclosure. */
@@ -654,7 +664,7 @@ describe("<FeatureSettingsPage /> step skeleton", () => {
   });
 });
 
-describe("<FeatureSettingsPage /> scope placeholders", () => {
+describe("<FeatureDetailPage /> scope placeholders", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -664,6 +674,8 @@ describe("<FeatureSettingsPage /> scope placeholders", () => {
     createFeature.mockResolvedValue({ feature_id: "quote-draft" });
     deleteFeature.mockResolvedValue(undefined);
     getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
+    listRules.mockResolvedValue({ feature_id: "quote-draft", rules: [] });
+    listCases.mockResolvedValue({ feature_id: "quote-draft", cases: [] });
   });
 
   /** The placeholder the user sees on one scope select, found by its label. */
@@ -708,7 +720,7 @@ describe("<FeatureSettingsPage /> scope placeholders", () => {
   });
 });
 
-describe("<FeatureSettingsPage /> entry gates", () => {
+describe("<FeatureDetailPage /> entry gates", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     localStorage.clear();
@@ -718,22 +730,32 @@ describe("<FeatureSettingsPage /> entry gates", () => {
     createFeature.mockResolvedValue({ feature_id: "quote-draft" });
     deleteFeature.mockResolvedValue(undefined);
     getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
+    listRules.mockResolvedValue({ feature_id: "quote-draft", rules: [] });
+    listCases.mockResolvedValue({ feature_id: "quote-draft", cases: [] });
   });
 
-  it("sends a member who reaches the URL straight back to the run page", async () => {
+  it("sends a member who reaches the URL to the run surface", async () => {
     renderSettings(MEMBER);
 
-    expect(await screen.findByText("feature-run-page")).toBeInTheDocument();
+    expect(
+      await screen.findByText("features.formTitle", undefined, {
+        timeout: 15_000,
+      }),
+    ).toBeInTheDocument();
     // The definition-format choices are a writer's call only.
     expect(getFeatureMeta).not.toHaveBeenCalled();
     expect(screen.queryByDisplayValue("quote-draft")).toBeNull();
   });
 
-  it("sends an administrator to the run page for a bundled definition", async () => {
+  it("sends an administrator to the run surface for a bundled definition", async () => {
     getFeatureMeta.mockResolvedValue({ ...META, bundled_ids: ["quote-draft"] });
     renderSettings();
 
-    expect(await screen.findByText("feature-run-page")).toBeInTheDocument();
+    expect(
+      await screen.findByText("features.formTitle", undefined, {
+        timeout: 15_000,
+      }),
+    ).toBeInTheDocument();
     await waitFor(() => expect(getFeatureMeta).toHaveBeenCalledOnce());
     expect(screen.queryByDisplayValue("quote-draft")).toBeNull();
     expect(
