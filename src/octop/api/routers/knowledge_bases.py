@@ -55,6 +55,7 @@ from octop.infra.knowledge.ocr import (
     validate_ocr_settings,
 )
 from octop.infra.knowledge.parse import PasswordRequiredError
+from octop.infra.knowledge.search import DEFAULT_SEARCH_K
 from octop.infra.knowledge.service import (
     MAX_DOCS_PER_KB,
     MAX_DOCUMENT_BYTES,
@@ -786,6 +787,42 @@ async def upload_document(
         return _row_payload(document)
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
+
+
+@router.get(
+    "/{kb_id}/search",
+    summary="Search this knowledge base's indexed content",
+)
+async def search_documents(
+    kb_id: str,
+    request: Request,
+    q: str = Query(min_length=1, max_length=200, description="What to look for."),
+    limit: int = Query(
+        default=DEFAULT_SEARCH_K, ge=1, le=100, description="Maximum results to return."
+    ),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> list[dict[str, Any]]:
+    """Keyword and full-text search (design §9), scoped to what the caller may read.
+
+    Only ``ready`` documents are searched, so a file that is still indexing, one
+    that failed, and one the caller may not open cannot come back as a result.
+    Each hit carries the document's path and the chunk's position, which is what
+    a citation points at.
+    """
+    try:
+        hits = _knowledge_service(server).search(
+            kb_id=kb_id,
+            actor_user_id=user.id,
+            query=q,
+            limit=limit,
+            is_admin=_is_admin(user),
+        )
+        return [asdict(hit) for hit in hits]
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
 
 
 @router.get(

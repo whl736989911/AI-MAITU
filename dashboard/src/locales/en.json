@@ -459,6 +459,10 @@
       "unsupported": "Unsupported",
       "password_required": "Needs password"
     },
+    "searchPlaceholder": "Search inside the documents",
+    "searchEmpty": "Nothing matches that in the indexed documents.",
+    "searchCount": "{{count}} match(es)",
+    "searchFailed": "Search failed",
     "deleteConfirm": "Delete this knowledge base and all of its documents?",
     "deleteDocumentConfirm": "Delete this document?",
     "loadFailed": "Failed to load knowledge bases",

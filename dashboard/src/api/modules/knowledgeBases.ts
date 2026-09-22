@@ -132,6 +132,23 @@ export const DEFAULT_KNOWLEDGE_LIMITS: KnowledgeLimits = {
   max_document_bytes: 100 * 1024 * 1024,
 };
 
+export interface KnowledgeSearchHit {
+  kb_id: string;
+  base_name: string;
+  document_id: string;
+  filename: string;
+  /** The document's path in the base — what a citation points at. */
+  path: string;
+  /** Where the file sits inside its source, when it came from one. */
+  source_path: string;
+  /** What the document calls itself (design §6.2), else its file name. */
+  title: string;
+  /** Which chunk of the document matched; the position half of a citation. */
+  ordinal: number;
+  snippet: string;
+  score: number;
+}
+
 export const knowledgeBasesApi = {
   getCapability: () =>
     request<KnowledgeCapability>("/knowledge-bases/capability"),
@@ -296,6 +313,15 @@ export const knowledgeBasesApi = {
     request<KnowledgeDocument>(
       `/knowledge-bases/${id}/documents/${documentId}/reindex`,
       { method: "POST" },
+    ),
+
+  /** Keyword and full-text search over what this base may show (design §9). */
+  searchDocuments: (id: string, query: string, limit = 20) =>
+    request<KnowledgeSearchHit[]>(
+      `/knowledge-bases/${id}/search?${new URLSearchParams({
+        q: query,
+        limit: String(limit),
+      }).toString()}`,
     ),
 
   previewDocument: (id: string, documentId: string) =>

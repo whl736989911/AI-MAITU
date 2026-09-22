@@ -27,6 +27,13 @@ from octop.infra.knowledge.ocr import (
 from octop.infra.knowledge.parse import parse_document
 from octop.infra.knowledge.relpath import normalize_kb_path, path_basename, path_parent
 from octop.infra.knowledge.scope import may_read_knowledge_base
+from octop.infra.knowledge.search import (
+    DEFAULT_SEARCH_K,
+    SearchHit,
+    query_terms,
+    search_base,
+    snippet,
+)
 from octop.infra.sharing import user_scope
 
 MAX_DOCS_PER_KB = 100
@@ -229,6 +236,61 @@ class KnowledgeService:
             "sections": list(parsed.sections),
             "text": text,
         }
+
+    def search(
+        self,
+        *,
+        actor_user_id: int,
+        query: str,
+        kb_id: str | None = None,
+        limit: int = DEFAULT_SEARCH_K,
+        is_admin: bool = False,
+    ) -> list[SearchHit]:
+        """Keyword and full-text search over the knowledge an actor may read.
+
+        The scope is the same one chat retrieval applies — the bases the actor
+        can read (``list_visible`` resolves the ACL, admin bypass included) and
+        only their ``ready`` documents — so search cannot surface what a citation
+        or a download would refuse (design §14), and the two paths cannot drift
+        apart. An indexing, failed, or deleted-pending file is not searchable.
+
+        Passing *kb_id* narrows the search to one base and checks read access to
+        it; leaving it out searches every base the actor can read.
+        """
+        cleaned = (query or "").strip()
+        if not cleaned or limit <= 0:
+            return []
+        if kb_id is not None:
+            bases = [self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)]
+        else:
+            bases = self.list_visible_bases(actor_user_id=actor_user_id)
+        terms = query_terms(cleaned)
+        hits: list[SearchHit] = []
+        for base in bases:
+            ready = {
+                document.id: document
+                for document in self._repo.list_documents(base.id)
+                if document.status == "ready" and not document.is_dir
+            }
+            for hit, document in search_base(
+                base.id, query=cleaned, ready_documents=ready, limit=limit
+            ):
+                hits.append(
+                    SearchHit(
+                        kb_id=base.id,
+                        base_name=base.name,
+                        document_id=document.id,
+                        filename=document.filename,
+                        path=document.path,
+                        source_path=document.source_path,
+                        title=document.title,
+                        ordinal=hit.ordinal,
+                        snippet=snippet(hit.text, terms),
+                        score=hit.score,
+                    )
+                )
+        hits.sort(key=lambda row: (-row.score, row.base_name, row.path, row.ordinal))
+        return hits[:limit]
 
     def resolve_document_file(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False

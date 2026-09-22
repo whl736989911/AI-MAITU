@@ -73,6 +73,7 @@ import {
   type KnowledgeCapability,
   type KnowledgeDocument,
   type KnowledgeOnnxModel,
+  type KnowledgeSearchHit,
 } from "../../api/modules/knowledgeBases";
 import { EmptyStateIcon } from "../../components/EmptyState";
 import DocumentPreviewCore from "../../components/DocumentPreviewCore";
@@ -141,6 +142,18 @@ function loadDocsViewMode(): DocsViewMode {
   const stored = localStorage.getItem(DOCS_VIEW_STORAGE_KEY);
   return stored === "table" ? "table" : "card";
 }
+
+/**
+ * What opening a preview needs. A document row satisfies it, and so does a
+ * search hit: a result knows which file it came from, not everything about it.
+ */
+type PreviewTarget = Pick<KnowledgeDocument, "id" | "filename"> &
+  Partial<
+    Pick<
+      KnowledgeDocument,
+      "path" | "is_dir" | "content_type" | "has_original" | "title"
+    >
+  >;
 
 function documentStatusColor(status: KnowledgeDocument["status"]) {
   if (status === "ready") return "success";
@@ -369,6 +382,9 @@ export default function KnowledgeBasesPage() {
    * Kept apart from the file name: the download still needs the real one.
    */
   const [previewTitle, setPreviewTitle] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<KnowledgeSearchHit[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [previewText, setPreviewText] = useState("");
   const [previewKind, setPreviewKind] = useState<DocKind | null>(null);
   const [previewDocId, setPreviewDocId] = useState<string | null>(null);
@@ -1465,69 +1481,114 @@ export default function KnowledgeBasesPage() {
     }
   };
 
-  const openDocumentPreview = async (document: KnowledgeDocument) => {
-    if (!selected || document.is_dir) return;
-    if (!canPreviewKnowledgeDocument(document)) return;
-    const rich = canRichPreviewKnowledgeDocument(document);
-    const kind = rich ? getDocKind(document.filename) : null;
-    const asMarkdown = isKnowledgeMarkdownDocument(document);
-    previewTextAbortRef.current?.abort();
-    const abort = new AbortController();
-    previewTextAbortRef.current = abort;
-    setPreviewOpen(true);
-    setPreviewFilename(document.filename);
-    setPreviewTitle(document.title || "");
-    setPreviewKind(kind);
-    setPreviewDocId(document.id);
-    setPreviewHasOriginal(canDownloadKnowledgeOriginal(document));
-    setPreviewAsMarkdown(asMarkdown);
-    setPreviewText("");
-    setMdOutlineOpen(true);
-    setMdActiveOutlineIndex(0);
-    setMdFindOpen(false);
-    setMdFindQuery("");
-    setMdFindIndex(0);
-    setMdFindHitCount(0);
-    if (kind) {
-      setPreviewLoading(false);
-      return;
-    }
-    setPreviewLoading(true);
-    try {
-      // Prefer raw UTF-8 for editable text so markdown preview matches the file.
-      if (asMarkdown || isEditableKnowledgeDocument(document)) {
-        const payload = await knowledgeBasesApi.getTextDocument(
-          selected.id,
-          document.id,
-        );
-        if (abort.signal.aborted) return;
-        setPreviewFilename(payload.filename);
-        setPreviewTitle(payload.title || document.title || "");
-        setPreviewText(
-          payload.text.trim() ? payload.text : t("knowledgeBases.previewEmpty"),
-        );
-      } else {
-        const preview = await knowledgeBasesApi.previewDocument(
-          selected.id,
-          document.id,
-        );
-        if (abort.signal.aborted) return;
-        setPreviewFilename(preview.filename);
-        setPreviewTitle(preview.title || document.title || "");
-        setPreviewText(
-          preview.text.trim() ? preview.text : t("knowledgeBases.previewEmpty"),
-        );
+  const openDocumentPreview = useCallback(
+    async (document: PreviewTarget) => {
+      if (!selected || document.is_dir) return;
+      if (!canPreviewKnowledgeDocument(document)) return;
+      const rich = canRichPreviewKnowledgeDocument(document);
+      const kind = rich ? getDocKind(document.filename) : null;
+      const asMarkdown = isKnowledgeMarkdownDocument(document);
+      previewTextAbortRef.current?.abort();
+      const abort = new AbortController();
+      previewTextAbortRef.current = abort;
+      setPreviewOpen(true);
+      setPreviewFilename(document.filename);
+      setPreviewTitle(document.title || "");
+      setPreviewKind(kind);
+      setPreviewDocId(document.id);
+      setPreviewHasOriginal(canDownloadKnowledgeOriginal(document));
+      setPreviewAsMarkdown(asMarkdown);
+      setPreviewText("");
+      setMdOutlineOpen(true);
+      setMdActiveOutlineIndex(0);
+      setMdFindOpen(false);
+      setMdFindQuery("");
+      setMdFindIndex(0);
+      setMdFindHitCount(0);
+      if (kind) {
+        setPreviewLoading(false);
+        return;
       }
-    } catch (error) {
-      if (abort.signal.aborted) return;
-      setPreviewOpen(false);
-      message.error(
-        apiErrorMessage(error, t("knowledgeBases.previewFailed"), t),
-      );
-    } finally {
-      if (!abort.signal.aborted) setPreviewLoading(false);
-    }
-  };
+      setPreviewLoading(true);
+      try {
+        // Prefer raw UTF-8 for editable text so markdown preview matches the file.
+        if (asMarkdown || isEditableKnowledgeDocument(document)) {
+          const payload = await knowledgeBasesApi.getTextDocument(
+            selected.id,
+            document.id,
+          );
+          if (abort.signal.aborted) return;
+          setPreviewFilename(payload.filename);
+          setPreviewTitle(payload.title || document.title || "");
+          setPreviewText(
+            payload.text.trim()
+              ? payload.text
+              : t("knowledgeBases.previewEmpty"),
+          );
+        } else {
+          const preview = await knowledgeBasesApi.previewDocument(
+            selected.id,
+            document.id,
+          );
+          if (abort.signal.aborted) return;
+          setPreviewFilename(preview.filename);
+          setPreviewTitle(preview.title || document.title || "");
+          setPreviewText(
+            preview.text.trim()
+              ? preview.text
+              : t("knowledgeBases.previewEmpty"),
+          );
+        }
+      } catch (error) {
+        if (abort.signal.aborted) return;
+        setPreviewOpen(false);
+        message.error(
+          apiErrorMessage(error, t("knowledgeBases.previewFailed"), t),
+        );
+      } finally {
+        if (!abort.signal.aborted) setPreviewLoading(false);
+      }
+    },
+    [message, selected, t],
+  );
+
+  const runSearch = useCallback(
+    async (raw: string) => {
+      const query = raw.trim();
+      if (!selected || !query) {
+        setSearchHits([]);
+        return;
+      }
+      setSearchLoading(true);
+      try {
+        setSearchHits(
+          await knowledgeBasesApi.searchDocuments(selected.id, query),
+        );
+      } catch (error) {
+        setSearchHits([]);
+        message.error(
+          apiErrorMessage(error, t("knowledgeBases.searchFailed"), t),
+        );
+      } finally {
+        setSearchLoading(false);
+      }
+    },
+    [message, selected, t],
+  );
+
+  const openSearchHit = useCallback(
+    (hit: KnowledgeSearchHit) => {
+      // A hit carries the file it came from, which is all the preview reads.
+      void openDocumentPreview({
+        id: hit.document_id,
+        filename: hit.filename,
+        path: hit.path,
+        is_dir: false,
+        title: hit.title,
+      });
+    },
+    [openDocumentPreview],
+  );
 
   const downloadDocumentOriginal = async (
     documentId: string,
@@ -2181,6 +2242,25 @@ export default function KnowledgeBasesPage() {
                         })}
                       </span>
                       <div className={skillStyles.gridToolbarRight}>
+                        <Input
+                          allowClear
+                          value={searchQuery}
+                          placeholder={t("knowledgeBases.searchPlaceholder")}
+                          prefix={<Search size={14} />}
+                          className={styles.searchInput}
+                          onChange={(event) =>
+                            setSearchQuery(event.target.value)
+                          }
+                          onPressEnter={() => void runSearch(searchQuery)}
+                          onBlur={() => {
+                            if (searchQuery.trim()) void runSearch(searchQuery);
+                          }}
+                          onClear={() => {
+                            setSearchQuery("");
+                            setSearchHits([]);
+                          }}
+                          disabled={!selected}
+                        />
                         <Segmented
                           size="small"
                           value={viewMode}
@@ -2342,7 +2422,56 @@ export default function KnowledgeBasesPage() {
                         })}
                       />
                     ) : null}
-                    {folderEntries.length === 0 ? (
+                    {searchQuery.trim() ? (
+                      <div className={styles.searchResults} aria-live="polite">
+                        {searchLoading ? (
+                          <div className={styles.searchLoading}>
+                            <Spin size="small" />
+                          </div>
+                        ) : searchHits.length === 0 ? (
+                          <Typography.Text type="secondary">
+                            {t("knowledgeBases.searchEmpty")}
+                          </Typography.Text>
+                        ) : (
+                          <>
+                            <Typography.Text
+                              type="secondary"
+                              className={styles.searchCount}
+                            >
+                              {t("knowledgeBases.searchCount", {
+                                count: searchHits.length,
+                              })}
+                            </Typography.Text>
+                            <ul className={styles.searchList}>
+                              {searchHits.map((hit) => (
+                                <li
+                                  key={`${hit.document_id}:${hit.ordinal}`}
+                                  className={styles.searchItem}
+                                >
+                                  <button
+                                    type="button"
+                                    className={styles.searchHit}
+                                    onClick={() => openSearchHit(hit)}
+                                  >
+                                    <span className={styles.searchHitHead}>
+                                      <span className={styles.searchHitTitle}>
+                                        {hit.title || hit.filename}
+                                      </span>
+                                      <span className={styles.searchHitPath}>
+                                        {hit.source_path || hit.path}
+                                      </span>
+                                    </span>
+                                    <span className={styles.searchHitSnippet}>
+                                      {hit.snippet}
+                                    </span>
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </>
+                        )}
+                      </div>
+                    ) : folderEntries.length === 0 ? (
                       <Empty
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                         description={

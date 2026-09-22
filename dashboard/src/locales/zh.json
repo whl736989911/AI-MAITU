@@ -459,6 +459,10 @@
       "unsupported": "不支持",
       "password_required": "需要密码"
     },
+    "searchPlaceholder": "在文档内容中搜索",
+    "searchEmpty": "已索引的文档里没有匹配内容。",
+    "searchCount": "{{count}} 条结果",
+    "searchFailed": "搜索失败",
     "deleteConfirm": "删除此知识库及其所有文档？",
     "deleteDocumentConfirm": "删除此文档？",
     "loadFailed": "加载知识库失败",
