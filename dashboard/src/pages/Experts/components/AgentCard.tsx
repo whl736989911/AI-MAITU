@@ -60,6 +60,24 @@ function getStateMeta(state: string) {
 
 const TRANSIENT = new Set(["starting", "stopping"]);
 
+/**
+ * The card's own words about the row it is showing, keyed by kind.
+ *
+ * A feature's agent is not an expert (``utils/agentKind``), and a card that names it
+ * one is making a claim the model does not: its "shared expert · from …" tag and its
+ * "click to copy expert ID" tooltip are wrong for a feature's agent in *both*
+ * languages. The set is closed and lives here so "which of this card's words depend
+ * on what the row is" is one place to read, not something to re-derive per fragment.
+ *
+ * A row that does not say it is a feature keeps the experts' own key, so nothing an
+ * expert's card shows changes — these are the only two words that differ, and both
+ * are answered from the row's kind.
+ */
+const FEATURE_WORDS: Record<string, string> = {
+  "experts.share.fromOwner": "features.share.fromOwner",
+  "experts.copyAgentId": "features.copyAgentId",
+};
+
 export interface AgentCardProps {
   agent: OctopAgent;
   iconName?: string | null;
@@ -97,6 +115,10 @@ export const AgentCard = memo(function AgentCard({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { setActiveAgent, refresh: refreshAgents } = useAgent();
+
+  /** The key one of this card's own words about the row is read from — see FEATURE_WORDS. */
+  const rowKey = (expertKey: string): string =>
+    isFeatureAgent(agent) ? (FEATURE_WORDS[expertKey] ?? expertKey) : expertKey;
 
   const [localState, setLocalState] = useState(agent.state);
   const [localError, setLocalError] = useState(agent.last_error);
@@ -315,7 +337,7 @@ export const AgentCard = memo(function AgentCard({
               {agent.is_shared && (
                 <Tag color="blue">
                   {sharedViewer
-                    ? t("experts.share.fromOwner", {
+                    ? t(rowKey("experts.share.fromOwner"), {
                         name: agent.owner_username,
                       })
                     : t("experts.share.badge")}
@@ -323,7 +345,7 @@ export const AgentCard = memo(function AgentCard({
               )}
             </div>
             <div className={styles.agentCardIdRow}>
-              <Tooltip title={t("experts.copyAgentId")}>
+              <Tooltip title={t(rowKey("experts.copyAgentId"))}>
                 <button
                   type="button"
                   className={styles.agentCardId}

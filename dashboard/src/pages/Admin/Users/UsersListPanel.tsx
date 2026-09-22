@@ -93,6 +93,7 @@ import { useIsMobile } from "../../../hooks/useIsMobile";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import { formatServerDateTime } from "../../../utils/formatMessageTime";
 import type { OctopAgent } from "../../../context/AgentContext";
+import { isFeatureAgent } from "../../../utils/agentKind";
 import { AgentCard } from "../../Experts/components/AgentCard";
 import EditAgentDrawer from "../../Experts/components/EditAgentDrawer";
 import InviteDrawer from "./InviteDrawer";
@@ -2091,6 +2092,14 @@ export default function UsersListPanel() {
                   iconName={agent.icon_name}
                   iconUrl={agent.icon_url}
                   accentColor={agent.color}
+                  // This drawer is every agent the user holds, so it holds features
+                  // too — and the row's kind is what names it: a feature's agent is
+                  // not an expert, so its id row does not say "Expert ID".
+                  idLabelKey={
+                    isFeatureAgent(agent)
+                      ? "features.agentId"
+                      : "experts.agentId"
+                  }
                   onEdit={(id) =>
                     setEditAgent(
                       drawerAgents.find((a) => a.agent_id === id) ?? null,
