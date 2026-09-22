@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 
+from octop.infra.agents.kinds import KIND_AGENT
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import (
     UNSET,
@@ -56,6 +57,8 @@ class AgentRow:
     welcome_message: str | None = None
     knowledge_base_ids: str | None = None
     mcp_servers: str | None = None
+    kind: str = KIND_AGENT
+    """What this row is — see :mod:`octop.infra.agents.kinds`. Never empty."""
 
     @classmethod
     def from_row(cls, r: DbRow) -> AgentRow:
@@ -84,6 +87,7 @@ class AgentRow:
             welcome_message=_opt_str(r, "welcome_message"),
             knowledge_base_ids=_opt_str(r, "knowledge_base_ids"),
             mcp_servers=_opt_str(r, "mcp_servers"),
+            kind=str(r["kind"]),
         )
 
 
@@ -113,6 +117,7 @@ class AgentRepo:
         welcome_message: str | None = None,
         knowledge_base_ids: str | None = None,
         mcp_servers: str | None = None,
+        kind: str = KIND_AGENT,
     ) -> str:
         ts = now_ts()
         with self._db.transaction() as conn:
@@ -121,8 +126,8 @@ class AgentRepo:
                 "persona_mbti, default_model, system_prompt, enabled, config_json, icon, "
                 "template_name, color, icon_name, icon_url, skill_package_ids, "
                 "published_expert_id, welcome_message, knowledge_base_ids, mcp_servers, "
-                "created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "created_at, updated_at, kind) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     agent_id,
                     user_id,
@@ -144,6 +149,7 @@ class AgentRepo:
                     mcp_servers,
                     ts,
                     ts,
+                    kind,
                 ),
             )
             self._acl.set_visibility(

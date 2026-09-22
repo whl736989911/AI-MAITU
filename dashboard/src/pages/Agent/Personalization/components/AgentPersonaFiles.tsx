@@ -156,7 +156,7 @@ export default function AgentPersonaFiles({ agentId }: { agentId: string }) {
             icon={<RefreshCw size={13} />}
             onClick={() => void load()}
           >
-            {t("features.settingsCapabilityRetry")}
+            {t("errors.retry")}
           </Button>
         }
       />

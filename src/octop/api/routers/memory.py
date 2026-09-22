@@ -41,7 +41,11 @@ from typing import Any, cast
 from fastapi import APIRouter, Body, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from octop.api.common.agent import assert_agent_owner, require_agent_owner_row
+from octop.api.common.agent import (
+    AgentCapability,
+    assert_agent_capability_write,
+    require_agent_owner_row,
+)
 from octop.api.common.memory_client import call_memory_rpc
 from octop.api.deps import current_user, get_server
 from octop.infra.errors import ErrorCode, OctopError
@@ -582,6 +586,7 @@ async def promote_candidate(
         call_memory_rpc(
             agent_id=agent_id,
             method="promote_candidate",
+            capability=AgentCapability.MEMORY,
             params={"candidate_id": candidate_id},
             user=user,
             as_user=as_user,
@@ -605,6 +610,7 @@ async def reject_candidate(
         call_memory_rpc(
             agent_id=agent_id,
             method="reject_candidate",
+            capability=AgentCapability.MEMORY,
             params=params,
             user=user,
             as_user=as_user,
@@ -628,6 +634,7 @@ async def deprecate_atom(
         call_memory_rpc(
             agent_id=agent_id,
             method="deprecate_atom",
+            capability=AgentCapability.MEMORY,
             params=params,
             user=user,
             as_user=as_user,
@@ -656,6 +663,7 @@ async def create_atom(
         call_memory_rpc(
             agent_id=agent_id,
             method="create_atom",
+            capability=AgentCapability.MEMORY,
             params=_strip_none(body.model_dump()),
             user=user,
             as_user=as_user,
@@ -686,6 +694,7 @@ async def replace_atom(
         call_memory_rpc(
             agent_id=agent_id,
             method="replace_atom",
+            capability=AgentCapability.MEMORY,
             params=params,
             user=user,
             as_user=as_user,
@@ -826,7 +835,9 @@ async def put_extract_config(
     row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    assert_agent_owner(row, user)
+    # How memory is extracted is configuration, not memory: a feature agent's
+    # memory is never *written*, but who may configure it is the author.
+    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION)
 
     merged = _read_extract_config(row)
     patch = body.model_dump(exclude_none=True)

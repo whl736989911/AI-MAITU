@@ -15,6 +15,7 @@ import pytest
 from octop.config import OctopConfig
 from octop.i18n.domains.agents import NO_MODELS_CONFIGURED, format_agent_start_error
 from octop.infra.agents.experts.catalog import default_library_root
+from octop.infra.agents.kinds import KIND_AGENT, KIND_FEATURE
 from octop.infra.agents.manager import AgentManager, _memory_extract_settings
 from octop.infra.backend.resolver import default_agent_backend_spec
 from octop.infra.db.migrate import run_migrations
@@ -75,11 +76,13 @@ def _row(
     config_json: str | None = None,
     default_model: str | None = None,
     user_id: int | None = 1,
+    kind: str = KIND_AGENT,
 ) -> AgentRow:
     return AgentRow(
         id=1,
         agent_id=agent_id,
         user_id=user_id,
+        kind=kind,
         name="bot",
         description=None,
         persona_mbti=None,
@@ -251,36 +254,23 @@ def test_build_harness_config_includes_search_knowledge_without_cron(
     assert any(isinstance(item, KnowledgeSearchHintMiddleware) for item in (cfg.middleware or []))
 
 
-def test_build_harness_config_mounts_the_feature_prompt_middleware(
+def test_build_harness_config_freezes_a_feature_agents_memory(
     manager: AgentManager,
 ) -> None:
-    """A feature run's system prompt needs this hook on every agent.
-
-    The router stamps the prompt onto the request; without the middleware in the
-    built config nothing reads it, and every feature run silently falls back to
-    the agent's own prompt — the exact bug the stamp exists to fix.
-    """
-    from octop.infra.agents.middleware.feature_prompt import FeatureSystemPromptMiddleware
-
-    cfg = manager._build_harness_config(_row(agent_id="AGT001"))
-
-    assert any(isinstance(item, FeatureSystemPromptMiddleware) for item in (cfg.middleware or []))
-
-
-def test_build_harness_config_freezes_a_shared_agents_memory(
-    manager: AgentManager,
-) -> None:
-    """An app-owned agent's workspace MEMORY.md is read by every caller.
+    """A feature's agent hands one workspace MEMORY.md to every caller of it.
 
     Nothing else refuses the write: without the middleware in the built config the
     agent stores whatever one caller told it, and the next caller's run reads it
-    back — cross-caller pollution, the thing the freeze exists to prevent.
+    back — cross-caller pollution, the thing the freeze exists to prevent. The
+    row's ``kind`` is the whole decision, so the author owning it changes nothing.
     """
     from octop.infra.agents.middleware.shared_memory_freeze import (
         SharedMemoryFreezeMiddleware,
     )
 
-    cfg = manager._build_harness_config(_row(agent_id="feat-quote-draft", user_id=None))
+    cfg = manager._build_harness_config(
+        _row(agent_id="feat-quote-draft", user_id=7, kind=KIND_FEATURE)
+    )
 
     assert any(isinstance(item, SharedMemoryFreezeMiddleware) for item in (cfg.middleware or []))
 

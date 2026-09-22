@@ -22,6 +22,7 @@ from harness_agent.security.models import SecurityPolicy
 
 from octop.i18n.domains.agents import NO_MODELS_CONFIGURED, format_agent_start_error
 from octop.infra.agents.acp_settings import ACPSettingsStore
+from octop.infra.agents.kinds import KIND_AGENT, KINDS
 from octop.infra.agents.langfuse import LangfuseSettings, LangfuseSettingsStore
 from octop.infra.agents.media_generation import (
     MediaGenerationSettings,
@@ -304,6 +305,9 @@ class AgentCreateSpec:
     welcome_message: str | None = None
     knowledge_base_ids: list[str] | None = None
     mcp_servers: list[str] | None = None
+    kind: str = KIND_AGENT
+    """What the new row is — :data:`~octop.infra.agents.kinds.KIND_AGENT` unless the
+    caller is creating a feature's own agent. Fixed at creation; never updated."""
     runtime_config: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
 
@@ -526,6 +530,10 @@ class AgentManager:
     ) -> AgentRow:
         """Create a new agent, persist to DB, and register with harness."""
         async with self._lock:
+            if spec.kind not in KINDS:
+                # A spec is built in-process, so an unknown kind is a bug: name the
+                # value that is not part of the row's vocabulary instead of storing it.
+                raise ValueError(f"unknown agent kind {spec.kind!r}; expected one of {KINDS}")
             self._assert_agent_name_available(spec.user_id, spec.name)
             if spec.agent_id:
                 validate_custom_agent_id(spec.agent_id)
@@ -608,6 +616,7 @@ class AgentManager:
                 ),
                 knowledge_base_ids=knowledge_ids_json,
                 mcp_servers=mcp_servers_json,
+                kind=spec.kind,
             )
             row = self._repos.agent_repo.get(agent_id)
             assert row is not None
@@ -3009,13 +3018,6 @@ class AgentManager:
 
         from octop.infra.agents.middleware.binary_read_guard import BinaryReadGuardMiddleware
         from octop.infra.agents.middleware.browser_profile import BrowserProfileMiddleware
-        from octop.infra.agents.middleware.feature_dispatch import (
-            FeatureDispatchMiddleware,
-        )
-        from octop.infra.agents.middleware.feature_prompt import (
-            FeatureSystemPromptMiddleware,
-        )
-        from octop.infra.agents.middleware.feature_scope import FeatureScopeMiddleware
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
         from octop.infra.agents.middleware.shared_memory_freeze import (
             shared_memory_freeze_chain,
@@ -3043,15 +3045,11 @@ class AgentManager:
                 usage_repo=self._repos.usage_repo,
             ),
             ReasoningRequestMiddleware(),
-            FeatureSystemPromptMiddleware(),
-            FeatureScopeMiddleware(),
-            FeatureDispatchMiddleware(),
-            # An app-owned agent (``user_id IS NULL`` — the shared ones, a
-            # feature's own agent among them) has no owner whose memory its
-            # workspace MEMORY.md could be, and every caller reads the same file:
-            # its writes are refused. For every owned agent this is ``[]`` and the
-            # chain is exactly what it was — see the module's docstring.
-            *shared_memory_freeze_chain(agent_id=row.agent_id, user_id=row.user_id),
+            # A feature's own agent has no owner whose memory its workspace
+            # MEMORY.md could be, and every caller reads the same file: its writes
+            # are refused. For every other agent this is ``[]`` and the chain is
+            # exactly what it was — see the module's docstring.
+            *shared_memory_freeze_chain(agent_id=row.agent_id, kind=row.kind),
             TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
             KnowledgeSearchHintMiddleware(),
             BrowserProfileMiddleware(),

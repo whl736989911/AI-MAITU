@@ -1,15 +1,15 @@
-"""A shared agent's memory is frozen: no run writes the ``MEMORY.md`` it hands to all.
+"""A feature agent's memory is frozen: no run writes the ``MEMORY.md`` it hands to all.
 
-An agent nobody owns — ``user_id IS NULL``, the app-owned "shared" agents, a
-feature's own agent among them — serves *every* caller of the product and has no
-person whose memory it could be. Its workspace ``MEMORY.md`` is one file for all of
-them: whatever one caller prompts the agent into storing, the next caller's run
+A feature's own agent (:data:`~octop.infra.agents.kinds.KIND_FEATURE`) serves *every*
+caller of its feature and has no person whose memory it could be — its author owns
+its configuration, not its context. Its workspace ``MEMORY.md`` is one file for all
+of them: whatever one caller prompts the agent into storing, the next caller's run
 reads back and writes over. That is cross-caller context pollution rather than
 personalization, so the file is frozen for such an agent. Memory keeps being
 *read* — the harness still injects the file into every prompt — and a write is
 refused with a message the model can act on instead of a silent no-op.
 
-Every owned agent is untouched: the freeze is mounted on an app-owned agent only
+Every other agent is untouched: the freeze is mounted on a feature's agent only
 (:func:`shared_memory_freeze_chain` answers ``[]`` for every other agent), so an
 expert's own memory keeps updating exactly as before.
 
@@ -29,10 +29,12 @@ from langchain_core.messages import ToolMessage
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from octop.infra.agents.kinds import is_feature_agent
+
 logger = logging.getLogger(__name__)
 
 MEMORY_FILE_NAME = "MEMORY.md"
-"""The workspace memory file an app-owned agent hands to every caller."""
+"""The workspace memory file a feature's agent hands to every caller."""
 
 _WRITE_TOOLS = frozenset({"append_file", "delete", "edit_file", "write_file"})
 """File tools that change a file's bytes. Read tools are never touched."""
@@ -41,16 +43,18 @@ _PATH_ARG_KEYS = ("file_path", "path")
 """Argument names deepagents' file tools carry their target in."""
 
 
-def memory_is_shared(*, user_id: int | None) -> bool:
+def memory_is_shared(*, kind: str) -> bool:
     """True when the agent row's memory is shared with every caller.
 
-    *user_id* is the agent row's owner column: ``None`` means the agent is
-    app-owned — no person owns it, so nobody's memory it could be. This is the one
-    predicate the freeze is decided by, and the agent row is the only thing it
-    reads: no id convention, no definition lookup, nothing that can drift from
-    what the row says.
+    *kind* is the agent row's ``kind`` column: a feature's own agent serves every
+    caller of that feature, and its author owns the configuration, not the
+    context — nobody whose memory that file could be. This is the one predicate
+    the freeze is decided by, and the agent row is the only thing it reads: no id
+    convention, no ownership guess, nothing that can drift from what the row says.
+    The question itself is asked in one place
+    (:func:`~octop.infra.agents.kinds.is_feature_agent`).
     """
-    return user_id is None
+    return is_feature_agent(kind)
 
 
 def _tool_base_name(tool_name: str) -> str:
@@ -144,15 +148,15 @@ class SharedMemoryFreezeMiddleware(AgentMiddleware[Any, Any]):
         return handler(request)
 
 
-def shared_memory_freeze_chain(*, agent_id: str, user_id: int | None) -> list[Any]:
-    """The freeze for an app-owned agent's chain, or ``[]`` for any other agent.
+def shared_memory_freeze_chain(*, agent_id: str, kind: str) -> list[Any]:
+    """The freeze for a feature agent's chain, or ``[]`` for any other agent.
 
-    *agent_id* names the agent in the refusal's log line; *user_id* is the agent
-    row's owner, which is what the decision is made on. ``[]`` means the chain is
-    what it is without this module — every owned agent, experts included, keeps
-    writing its own memory.
+    *agent_id* names the agent in the refusal's log line; *kind* is the agent row's
+    ``kind``, which is what the decision is made on. ``[]`` means the chain is what
+    it is without this module — every other agent, experts included, keeps writing
+    its own memory.
     """
-    if not memory_is_shared(user_id=user_id):
+    if not memory_is_shared(kind=kind):
         return []
     return [SharedMemoryFreezeMiddleware(agent_id=agent_id)]
 

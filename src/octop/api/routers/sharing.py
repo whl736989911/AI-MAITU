@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from octop.api.deps import get_server, require_admin, require_permission
@@ -32,7 +32,6 @@ from octop.infra.db.repos.resource_acl import (
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.sharing import RESOURCE_TYPES, VISIBILITY_UNIT, AclEntry
 from octop.infra.sharing.service import ChangeResult, SharingService
-from octop.infra.utils.locale import resolve_request_locale
 
 router = APIRouter()
 
@@ -172,14 +171,14 @@ def _outcome(server: Any, change_id: str) -> dict[str, Any]:
     )
 
 
-def _resource_name(
-    repos: Any, server: Any, resource_type: str, resource_id: str, *, locale: str
-) -> str | None:
+def _resource_name(repos: Any, resource_type: str, resource_id: str) -> str | None:
     """Best-effort display name; ``None`` when the resource is gone or unnamed.
 
     The queue is read by a human, so a row must not be a bare UUID — but a name
     is decoration, and a resource deleted since the request must not break the
-    listing.
+    listing. A stored change of a type this build has no lookup for (an ACL entry
+    for the deleted feature subsystem, say) is such a row: it answers ``None``
+    instead of failing the whole listing over a label.
     """
     if resource_type == "agent":
         row = repos.agent_repo.get(resource_id)
@@ -190,16 +189,11 @@ def _resource_name(
     if resource_type == "knowledge_base":
         row = repos.knowledge_repo.get_base(resource_id)
         return None if row is None else row.name
-    catalog = server.feature_catalog
-    feature = None if catalog is None else catalog.get(resource_id)
-    if feature is None:
-        return None
-    label = dict(feature.label)
-    return str(label.get(locale) or label.get("en") or resource_id)
+    return None
 
 
 def _names_by_resource(
-    server: Any, changes: Sequence[AclChangeRow], *, locale: str
+    server: Any, changes: Sequence[AclChangeRow]
 ) -> dict[tuple[str, str], str | None]:
     """Names for the whole window, one lookup per distinct resource."""
     repos = _services(server).repos
@@ -207,9 +201,7 @@ def _names_by_resource(
     for change in changes:
         key = (change.resource_type, change.resource_id)
         if key not in names:
-            names[key] = _resource_name(
-                repos, server, change.resource_type, change.resource_id, locale=locale
-            )
+            names[key] = _resource_name(repos, change.resource_type, change.resource_id)
     return names
 
 
@@ -312,7 +304,6 @@ async def change_resource_acl(
 
 @router.get("/changes", summary="List access changes")
 async def list_sharing_changes(
-    request: Request,
     status: str = Query(
         CHANGE_PENDING,
         description=f"One of {list(CHANGE_STATUSES)}; defaults to the approval queue.",
@@ -335,7 +326,7 @@ async def list_sharing_changes(
     rows = _services(server).repos.resource_acl_repo.list_pending_changes(
         status=status, limit=limit
     )
-    names = _names_by_resource(server, rows, locale=resolve_request_locale(request))
+    names = _names_by_resource(server, rows)
     return {
         "status": status,
         "limit": limit,

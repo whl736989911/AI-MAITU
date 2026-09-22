@@ -14,10 +14,6 @@ from octop.infra.db.repos.channels import ChannelRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
-from octop.infra.db.repos.feature_cases import FeatureCaseRepo
-from octop.infra.db.repos.feature_rules import FeatureRuleRepo
-from octop.infra.db.repos.feature_runs import FeatureRunRepo
-from octop.infra.db.repos.feature_tasks import FeatureTaskRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
@@ -52,9 +48,6 @@ class RepoBundle:
     provider_repo: ProviderRepo
     channel_repo: ChannelRepo
     cron_repo: CronJobRepo
-    feature_tasks_repo: FeatureTaskRepo
-    feature_runs_repo: FeatureRunRepo
-    feature_rules_repo: FeatureRuleRepo
     session_repo: SessionRepo
     thread_repo: ThreadRepo
     thread_message_repo: ThreadMessageRepo
@@ -73,7 +66,6 @@ class RepoBundle:
     proactive_care_config_repo: ProactiveCareConfigRepo
     sso_repo: SsoRepo
     resource_acl_repo: ResourceAclRepo
-    feature_cases_repo: FeatureCaseRepo
     data_sources_repo: DataSourceRepo
 
     @classmethod
@@ -88,9 +80,6 @@ class RepoBundle:
             provider_repo=ProviderRepo(db),
             channel_repo=ChannelRepo(db),
             cron_repo=CronJobRepo(db),
-            feature_tasks_repo=FeatureTaskRepo(db),
-            feature_runs_repo=FeatureRunRepo(db),
-            feature_rules_repo=FeatureRuleRepo(db),
             session_repo=SessionRepo(db),
             thread_repo=ThreadRepo(db),
             thread_message_repo=ThreadMessageRepo(db),
@@ -109,7 +98,6 @@ class RepoBundle:
             proactive_care_config_repo=ProactiveCareConfigRepo(db),
             sso_repo=SsoRepo(db),
             resource_acl_repo=ResourceAclRepo(db),
-            feature_cases_repo=FeatureCaseRepo(db),
             data_sources_repo=DataSourceRepo(db),
         )
 

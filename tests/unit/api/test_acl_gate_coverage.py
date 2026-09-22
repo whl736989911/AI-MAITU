@@ -41,7 +41,6 @@ GATED_FILES = [
     "routers/skill_packages.py",
     "routers/terminal.py",
     "routers/acp.py",
-    "routers/features.py",
     "routers/filesystem.py",
     "routers/org_units.py",
     "routers/sharing.py",

@@ -26,7 +26,11 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 
-from octop.api.common.agent import require_agent_owner_row
+from octop.api.common.agent import (
+    AgentCapability,
+    require_agent_capability_row,
+    require_agent_owner_row,
+)
 from octop.api.common.workspace import require_running_workspace
 from octop.api.deps import current_user, get_server
 from octop.infra.agents.subagents.catalog import SubagentDefinition
@@ -190,7 +194,13 @@ async def install_subagent(
             detail="slug is required and must not contain / or start with .",
         )
 
-    require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    require_agent_capability_row(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.CONFIGURATION,
+    )
     catalog = _require_catalog(server)
     item = catalog.get(slug)
     if item is None:
@@ -226,7 +236,7 @@ async def install_subagent(
         user=user,
         as_user=as_user,
         server=server,
-        owner_only=True,
+        capability=AgentCapability.CONFIGURATION,
     )
     dest = f"agents/{slug}.md"
     await workspace.aupload_bytes(dest, content.encode("utf-8"))

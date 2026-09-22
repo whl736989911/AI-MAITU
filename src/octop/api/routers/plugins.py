@@ -11,6 +11,10 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from octop.api.common.agent import (
+    AgentCapability,
+    assert_agent_capability_write,
+)
 from octop.api.common.agent import assert_agent_owner as _assert_agent_owner
 from octop.api.deps import current_user, get_server, require_permission
 from octop.infra.agents.plugin_tool_defaults import (
@@ -569,7 +573,7 @@ async def patch_agent_plugin_tools(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION)
     registry = server.app_runtime.agent_registry
     cfg = registry.get_config(agent_id)
     merged = merge_plugins_tool_settings(cfg.get("plugins"), body.plugins)

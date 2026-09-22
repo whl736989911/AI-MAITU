@@ -1,9 +1,10 @@
-"""The freeze that keeps a shared agent's ``MEMORY.md`` from being written by a run.
+"""The freeze that keeps a feature agent's ``MEMORY.md`` from being written by a run.
 
-An app-owned agent (``user_id IS NULL``) serves every caller and has no owner whose
-memory its workspace MEMORY.md could be: whatever one caller's run stores is read —
-and written over — by the next. The freeze is mounted on such an agent only, so an
-expert's own memory keeps updating exactly as before.
+A feature's own agent (``kind = 'feature'``) serves every caller of that feature and
+has no person whose memory its workspace MEMORY.md could be: whatever one caller's
+run stores is read — and written over — by the next. The freeze is mounted on such an
+agent only, so an expert's own memory keeps updating exactly as before — the two
+directions are both asserted below.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from langchain_core.messages import ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.prebuilt.tool_node import ToolCallRequest
 
+from octop.infra.agents.kinds import KIND_AGENT, KIND_FEATURE
 from octop.infra.agents.middleware.shared_memory_freeze import (
     SharedMemoryFreezeMiddleware,
     frozen_memory_refusal,
@@ -23,10 +25,13 @@ from octop.infra.agents.middleware.shared_memory_freeze import (
 )
 
 SHARED_AGENT = "feat-quote-draft"
-"""An app-owned agent — the shape a feature's own agent has (``user_id IS NULL``)."""
+"""A feature's own agent, by the id rule a feature's agent is created with."""
 
-OWNER_ID = 1
-"""The owner every agent a *person* owns carries."""
+FEATURE_KIND = KIND_FEATURE
+"""What such a row's ``kind`` says — the one thing the freeze reads."""
+
+EXPERT_KIND = KIND_AGENT
+"""And what every other agent's says: the user's own expert, feature or not."""
 
 
 def _tool(name: str) -> Any:
@@ -60,7 +65,7 @@ def _call(
 
 
 def _shared_middleware() -> SharedMemoryFreezeMiddleware:
-    chain = shared_memory_freeze_chain(agent_id=SHARED_AGENT, user_id=None)
+    chain = shared_memory_freeze_chain(agent_id=SHARED_AGENT, kind=FEATURE_KIND)
     assert len(chain) == 1
     return chain[0]
 
@@ -130,23 +135,27 @@ def test_reading_the_memory_file_is_untouched() -> None:
 
 
 @pytest.mark.parametrize(
-    ("user_id", "shared"),
+    ("kind", "shared"),
     [
-        # App-owned: the agent row says nobody owns it.
-        (None, True),
-        # An expert, and every other agent a person owns.
-        (OWNER_ID, False),
-        (2, False),
+        # A feature's agent, whichever author owns it: the row's kind is the answer.
+        (FEATURE_KIND, True),
+        # The user's own agents — an expert, an app-owned row of any other shape.
+        (EXPERT_KIND, False),
     ],
 )
-def test_only_an_app_owned_agent_is_frozen(user_id: int | None, shared: bool) -> None:
-    assert memory_is_shared(user_id=user_id) is shared
-    assert bool(shared_memory_freeze_chain(agent_id=SHARED_AGENT, user_id=user_id)) is shared
+def test_only_a_features_agent_is_frozen(kind: str, shared: bool) -> None:
+    assert memory_is_shared(kind=kind) is shared
+    assert bool(shared_memory_freeze_chain(agent_id=SHARED_AGENT, kind=kind)) is shared
+
+
+def test_an_owned_agent_that_is_not_a_feature_keeps_writing_its_own_memory() -> None:
+    """The expert side is untouched: nothing is mounted, so the write goes through."""
+    assert shared_memory_freeze_chain(agent_id="expert-1", kind=EXPERT_KIND) == []
 
 
 def test_the_shipped_chain_refuses_the_write_it_declares() -> None:
     """The chain the manager mounts is the one that refuses: decision and effect agree."""
-    (middleware,) = shared_memory_freeze_chain(agent_id=SHARED_AGENT, user_id=None)
+    (middleware,) = shared_memory_freeze_chain(agent_id=SHARED_AGENT, kind=FEATURE_KIND)
 
     result, reached = _call(middleware, "edit_file", {"file_path": "MEMORY.md"})
 

@@ -11,6 +11,7 @@ from fastapi.responses import Response, StreamingResponse
 from harness_agent.backends.utils import BackendOperationNotSupportedError
 from pydantic import BaseModel
 
+from octop.api.common.agent import AgentCapability
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.common.content_disposition import content_disposition
 from octop.api.common.workspace import (
@@ -180,7 +181,11 @@ async def write_file(
 ) -> dict[str, Any]:
     """Overwrite ``path`` with ``body.content`` (text)."""
     ws = await require_running_workspace(
-        agent_id, user=user, as_user=as_user, server=server, owner_only=True
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.PERSONA_FILES,
     )
     converter = get_doc_converter(path)
     if converter is not None:
@@ -229,7 +234,11 @@ async def mkdir_workspace_dir(
     _ = from_workspace  # API surface; mutations always use workspace-relative paths.
     rel = _assert_workspace_mutable(path)
     ws = await require_running_workspace(
-        agent_id, user=user, as_user=as_user, server=server, owner_only=True
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.PERSONA_FILES,
     )
     try:
         await ws.amkdir(rel)
@@ -259,7 +268,11 @@ async def delete_workspace_file(
     _ = from_workspace
     rel = _assert_workspace_mutable(path)
     ws = await require_running_workspace(
-        agent_id, user=user, as_user=as_user, server=server, owner_only=True
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.PERSONA_FILES,
     )
     try:
         await ws.adelete(rel)
@@ -289,7 +302,11 @@ async def move_workspace_file(
     src = _assert_workspace_mutable(path)
     dest = _assert_workspace_mutable(body.destination)
     ws = await require_running_workspace(
-        agent_id, user=user, as_user=as_user, server=server, owner_only=True
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.PERSONA_FILES,
     )
     try:
         await ws.amove(src, dest)
@@ -311,7 +328,11 @@ async def upload_file(
 ) -> dict[str, Any]:
     """Upload a binary file via multipart ``file=@...``."""
     ws = await require_running_workspace(
-        agent_id, user=user, as_user=as_user, server=server, owner_only=True
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.PERSONA_FILES,
     )
     target = path or f"/{file.filename or 'upload.bin'}"
     data = await file.read()
@@ -557,7 +578,11 @@ async def import_workspace_archive(
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, "empty archive")
 
     ws = await require_running_workspace(
-        agent_id, user=user, as_user=as_user, server=server, owner_only=True
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.PERSONA_FILES,
     )
     local_ws = resolve_agent_workspace_dir(server, agent_id)
     result = await import_workspace_zip(

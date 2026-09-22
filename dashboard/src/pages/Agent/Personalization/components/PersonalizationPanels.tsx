@@ -136,7 +136,7 @@ export const CAPABILITY_POLICY: Record<
       // Applying a type writes this agent's system prompt and nothing in the
       // workspace, and the agent is shared by every caller, so it is said where
       // that is true.
-      note: { tone: "info", message: "features.personalizationMbtiNote" },
+      note: { tone: "info", message: "personalization.personalizationMbtiNote" },
     },
     memory: {
       // Nobody writes it. One agent means one MEMORY.md and every caller runs

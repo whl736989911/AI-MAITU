@@ -19,7 +19,6 @@ import {
   Network,
   Shield,
   PanelsTopLeft,
-  LayoutGrid,
   ShieldCheck,
 } from "lucide-react";
 import type { OctopUser } from "../api/modules/auth";
@@ -88,12 +87,6 @@ export function buildNavSections(
           path: "/chat",
           icon: <MessageSquareText size={iconSize} strokeWidth={iconStroke} />,
           labelKey: "nav.chat",
-        },
-        {
-          key: "features",
-          path: "/features",
-          icon: <LayoutGrid size={iconSize} strokeWidth={iconStroke} />,
-          labelKey: "nav.features",
         },
         {
           key: "experts",

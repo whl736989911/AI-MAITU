@@ -13,7 +13,11 @@ from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
-from octop.api.common.agent import require_agent_owner_row
+from octop.api.common.agent import (
+    AgentCapability,
+    require_agent_capability_row,
+    require_agent_owner_row,
+)
 from octop.infra.agents.memory_backend import open_memory_kwargs
 from octop.infra.agents.workspace_dir import host_system_dir
 from octop.infra.errors import ErrorCode, OctopError
@@ -151,8 +155,26 @@ def call_memory_rpc(
     user: Any,
     as_user: int | None,
     server: Any,
+    capability: AgentCapability | None = None,
 ) -> Any:
-    require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    """Forward one RPC to the agent's memory bridge, after the access check.
+
+    *capability* names the group for a **writing** method (:data:`AgentCapability`),
+    so the capability matrix decides it; the read methods pass ``None`` and keep
+    the owner-level check they have always had.
+    """
+    if capability is None:
+        require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    else:
+        # A writing method names its capability (memory writes are the ones the
+        # matrix calls out), so the rule lives in ``agent_capability_refusal``.
+        require_agent_capability_row(
+            agent_id,
+            user=user,
+            as_user=as_user,
+            server=server,
+            capability=capability,
+        )
     _memory, bridge = _open_memory_for_agent(server, agent_id)
     payload = {
         "jsonrpc": "2.0",

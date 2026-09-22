@@ -14,7 +14,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from octop.api.common.agent import assert_agent_owner
+from octop.api.common.agent import (
+    AgentCapability,
+    assert_agent_capability_write,
+    assert_agent_owner,
+)
 from octop.api.deps import current_user, get_server
 from octop.infra.agents.mbti_profiles import (
     MBTIProfile,
@@ -33,13 +37,27 @@ router = APIRouter(prefix="/mbti", tags=["mbti"])
 # ---------------------------------------------------------------------------
 
 
-def _resolve_agent_row(server: Any, user: Any, agent_id: str) -> Any:
-    """Look up the agent row by id via AgentManager."""
+def _resolve_agent_row(
+    server: Any,
+    user: Any,
+    agent_id: str,
+    *,
+    capability: AgentCapability | None = None,
+) -> Any:
+    """Look up the agent row by id via AgentManager.
+
+    *capability* names the group an endpoint is about to **write** (applying a
+    type rewrites the agent's persona), so the row carries the capability
+    matrix's own rule for it; ``None`` is the read path, which stays owner-level.
+    """
     assert server.app_runtime is not None
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id} not found")
-    assert_agent_owner(row, user)
+    if capability is None:
+        assert_agent_owner(row, user)
+    else:
+        assert_agent_capability_write(row, user, capability)
     return row
 
 
@@ -700,7 +718,9 @@ async def submit_test(
                 status_code=400,
                 detail="X-Octop-Agent-Id header required when auto_apply is true",
             )
-        row = _resolve_agent_row(server, user, x_octop_agent_id)
+        row = _resolve_agent_row(
+            server, user, x_octop_agent_id, capability=AgentCapability.CONFIGURATION
+        )
         try:
             await _persist_persona(server, x_octop_agent_id, row, code)
             applied = True
@@ -752,7 +772,9 @@ async def apply_type(
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Unknown MBTI type: {code}")
 
-    row = _resolve_agent_row(server, user, x_octop_agent_id)
+    row = _resolve_agent_row(
+        server, user, x_octop_agent_id, capability=AgentCapability.CONFIGURATION
+    )
     try:
         await _persist_persona(server, x_octop_agent_id, row, code)
     except Exception as exc:

@@ -13,6 +13,7 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from octop.infra.agents.kinds import KIND_FEATURE
 from octop.infra.db.pool import DatabasePool
 from octop.infra.utils.ulid import new_ulid
 
@@ -914,226 +915,59 @@ def _ensure_user_sso_identities_schema(db: DatabasePool) -> None:
         )
 
 
-def _ensure_feature_tasks_schema(db: DatabasePool) -> None:
-    """Create the feature task log (schema v16) when missing (clamp / repair paths)."""
-    if _table_exists(db, "feature_tasks") or not _table_exists(db, "users"):
-        return
-    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
-    with db.connect() as conn:
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS feature_tasks (
-              id TEXT PRIMARY KEY,
-              feature_id TEXT NOT NULL,
-              user_id {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              inputs TEXT NOT NULL,
-              draft TEXT,
-              final TEXT,
-              status TEXT NOT NULL,
-              error TEXT,
-              created_at {int_type} NOT NULL,
-              diff_json TEXT,
-              finalized_at {int_type},
-              agent_id TEXT,
-              injected_rule_ids TEXT
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_tasks_user_created "
-            "ON feature_tasks (user_id, created_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_tasks_feature_id ON feature_tasks (feature_id)"
-        )
+_DROPPED_FEATURE_TABLES = (
+    "feature_step_dispatches",
+    "feature_step_edits",
+    "feature_step_runs",
+    "feature_runs",
+    "feature_cases",
+    "feature_rules",
+    "feature_tasks",
+)
+"""The deleted feature subsystem's tables (schema v16-v25), children first.
+
+Schema v26 drops them: nothing reads them any more — ``src/octop/infra/features``
+and its router are gone — and they are not a shape the rebuilt model keeps, where
+a feature *is* an agent.
+"""
+
+_DROPPED_FEATURE_TABLE_VERSIONS = frozenset({16, 19, 22, 23, 24, 25})
+"""Versions whose only DDL built those tables (see ``_apply_sqlite_migration``)."""
+
+_DEFAULT_AGENT_KIND = "agent"
+"""What ``agents.kind`` reads as on a row that is nobody's feature."""
 
 
-def _ensure_feature_learning_schema(db: DatabasePool) -> None:
-    """Add the capture columns (schema v19) and create the case/rule tables.
+def _ensure_agent_kind_column(db: DatabasePool) -> None:
+    """Add ``agents.kind`` (schema v26) and mark the rows it was introduced for.
 
-    Runs on every boot, like the v18 helper: databases whose watermark skipped
-    19 — a clamp, or a build that stamped the version without the DDL — still
-    get the columns and tables the self-improvement loop writes to.
+    The backfill runs in the one moment the column is added, which is what makes
+    it a historical fact rather than a rule. Before v26 an app-owned agent
+    (``user_id IS NULL``) could only ever be a feature's own — the feature
+    subsystem was the only creation path that left the owner NULL — and its
+    memory was frozen on exactly that ownership. Marking those rows keeps every
+    one of them behaving as it did; re-running the UPDATE on a later boot would
+    relabel an app-owned row created afterwards.
     """
-    if not _table_exists(db, "users"):
+    if not _table_exists(db, "agents") or "kind" in _table_columns(db, "agents"):
         return
-    # Creates ``feature_tasks`` (already carrying the v19 capture and v22
-    # run-snapshot columns) on the clamp/repair paths that never ran 016.
-    _ensure_feature_tasks_schema(db)
-    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
-    if _table_exists(db, "feature_tasks"):
-        _ensure_column(db, "feature_tasks", "diff_json", "TEXT")
-        _ensure_column(db, "feature_tasks", "finalized_at", int_type)
+    _ensure_column(db, "agents", "kind", f"TEXT NOT NULL DEFAULT '{_DEFAULT_AGENT_KIND}'")
     with db.connect() as conn:
-        # A promoted case is a *reference* to the task: inputs/final stay in
-        # feature_tasks so the two copies cannot drift.
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS feature_cases (
-              task_id     TEXT PRIMARY KEY REFERENCES feature_tasks(id) ON DELETE CASCADE,
-              feature_id  TEXT NOT NULL,
-              promoted_by {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              promoted_at {int_type} NOT NULL,
-              note        TEXT
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_cases_feature "
-            "ON feature_cases (feature_id, promoted_at)"
-        )
-        # Rules are per-feature: the quote-draft rules must not reach meeting
-        # notes. ``source_task_ids`` is required so every rule can be traced
-        # back to the diffs it was induced from; injection filters on
-        # (feature_id, status) and ranks by ``scope`` (v23: personal | unit |
-        # global, with ``owner_user_id`` / ``unit_key`` naming the layer).
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS feature_rules (
-              id              TEXT PRIMARY KEY,
-              feature_id      TEXT NOT NULL,
-              rule_text       TEXT NOT NULL,
-              status          TEXT NOT NULL,
-              source_task_ids TEXT NOT NULL,
-              proposed_by     TEXT NOT NULL,
-              approved_by     {int_type} REFERENCES users(id) ON DELETE SET NULL,
-              created_at      {int_type} NOT NULL,
-              reviewed_at     {int_type},
-              scope           TEXT NOT NULL DEFAULT 'global',
-              owner_user_id   {int_type} REFERENCES users(id) ON DELETE CASCADE,
-              unit_key        TEXT
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_rules_feature_status "
-            "ON feature_rules (feature_id, status, created_at)"
-        )
+        conn.execute(f"UPDATE agents SET kind = '{KIND_FEATURE}' WHERE user_id IS NULL")
 
 
-def _ensure_feature_task_snapshot_schema(db: DatabasePool) -> None:
-    """Add the run-snapshot columns (schema v22) to ``feature_tasks``.
+def _drop_feature_tables(db: DatabasePool) -> None:
+    """Drop the deleted feature subsystem's tables (schema v26).
 
-    Runs on every boot, like the v18/v19/v20 helpers: databases whose watermark
-    skipped 22 — a clamp, or a build that stamped the version without the DDL —
-    still get the columns the run log writes on both outcomes.
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers: a
+    database whose watermark skipped 26 must not keep tables nothing reads.
+    Children first, so no dialect needs ``CASCADE`` to resolve the references.
     """
-    if not _table_exists(db, "feature_tasks"):
-        return
-    _ensure_column(db, "feature_tasks", "agent_id", "TEXT")
-    _ensure_column(db, "feature_tasks", "injected_rule_ids", "TEXT")
-
-
-def _ensure_feature_rule_scope_schema(db: DatabasePool) -> None:
-    """Add the scope columns (schema v23) to ``feature_rules``.
-
-    Runs on every boot, like the v18/v19/v20/v22 helpers: databases whose
-    watermark skipped 23 — a clamp, or a build that stamped the version without
-    the DDL — still get the columns the three rule layers are read and written
-    through. ``scope`` defaults to ``global``, which is the layer every pre-v23
-    rule was in fact already read from.
-    """
-    if not _table_exists(db, "feature_rules"):
-        return
-    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
-    _ensure_column(db, "feature_rules", "scope", "TEXT NOT NULL DEFAULT 'global'")
-    _ensure_column(
-        db,
-        "feature_rules",
-        "owner_user_id",
-        f"{int_type} REFERENCES users(id) ON DELETE CASCADE",
-    )
-    _ensure_column(db, "feature_rules", "unit_key", "TEXT")
-    with db.connect() as conn:
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_rules_feature_scope "
-            "ON feature_rules (feature_id, scope, status)"
-        )
-
-
-def _ensure_feature_step_runs_schema(db: DatabasePool) -> None:
-    """Create the step-run tables (schema v24) when missing.
-
-    Runs on every boot, like the v18-v23 helpers: databases whose watermark
-    skipped 24 — a clamp, or a build that stamped the version without the DDL —
-    still get the tables a stepped run writes its state to. A missing one would
-    only surface as a failed run at runtime, because the run row is written
-    before the first step runs.
-    """
-    if not _table_exists(db, "feature_tasks") or not _table_exists(db, "users"):
-        return
-    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
-    with db.connect() as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS feature_runs ("
-            "task_id TEXT PRIMARY KEY REFERENCES feature_tasks(id) ON DELETE CASCADE, "
-            "feature_id TEXT NOT NULL, "
-            "user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
-            "status TEXT NOT NULL, current_step TEXT, current_seq INTEGER, pending_gate TEXT, "
-            "plan TEXT NOT NULL, snapshot TEXT, error TEXT, "
-            "created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_runs_feature "
-            "ON feature_runs (feature_id, created_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_runs_user ON feature_runs (user_id, created_at)"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS feature_step_runs ("
-            "task_id TEXT NOT NULL REFERENCES feature_runs(task_id) ON DELETE CASCADE, "
-            "seq INTEGER NOT NULL, step_id TEXT NOT NULL, status TEXT NOT NULL, "
-            "artifact_name TEXT, artifact_schema TEXT, artifact_value TEXT, "
-            "attempts INTEGER NOT NULL DEFAULT 0, error TEXT, "
-            f"started_at {int_type}, ended_at {int_type}, PRIMARY KEY (task_id, seq))"
-        )
-        conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_feature_step_runs_step "
-            "ON feature_step_runs (task_id, step_id)"
-        )
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS feature_step_edits ("
-            "id TEXT PRIMARY KEY, "
-            "task_id TEXT NOT NULL REFERENCES feature_runs(task_id) ON DELETE CASCADE, "
-            "step_id TEXT NOT NULL, artifact TEXT NOT NULL, before_value TEXT, after_value TEXT, "
-            "by_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE, "
-            "kind TEXT NOT NULL, source TEXT NOT NULL, created_at INTEGER NOT NULL)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_step_edits_task "
-            "ON feature_step_edits (task_id, created_at)"
-        )
-
-
-def _ensure_feature_step_dispatches_schema(db: DatabasePool) -> None:
-    """Create the dispatch record table (schema v25) when missing.
-
-    Runs on every boot, like the v18-v24 helpers: databases whose watermark
-    skipped 25 — a clamp, or a build that stamped the version without the DDL —
-    still get the table a step turn writes its subagent dispatches to. The rows are
-    written after the turn (7.8's 分解留痕) and read back by the run audit, so a
-    missing table would only surface as a failed run whose decomposition is gone.
-    """
-    if not _table_exists(db, "feature_runs"):
-        return
-    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
-    with db.connect() as conn:
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS feature_step_dispatches ("
-            "id TEXT PRIMARY KEY, "
-            "task_id TEXT NOT NULL REFERENCES feature_runs(task_id) ON DELETE CASCADE, "
-            "seq INTEGER NOT NULL, step_id TEXT NOT NULL, role TEXT NOT NULL, "
-            "task TEXT NOT NULL, status TEXT NOT NULL, error TEXT, result TEXT, "
-            "truncated INTEGER NOT NULL DEFAULT 0, waited INTEGER NOT NULL DEFAULT 0, "
-            "waited_ms INTEGER NOT NULL DEFAULT 0, slots INTEGER NOT NULL DEFAULT 0, "
-            f"started_at {int_type} NOT NULL, ended_at {int_type}, "
-            f"created_at {int_type} NOT NULL)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_step_dispatches_step "
-            "ON feature_step_dispatches (task_id, seq, started_at)"
-        )
+    for table in _DROPPED_FEATURE_TABLES:
+        if not _table_exists(db, table):
+            continue
+        with db.connect() as conn:
+            conn.execute(f"DROP TABLE {table}")
 
 
 def _ensure_data_sources_schema(db: DatabasePool) -> None:
@@ -2158,13 +1992,8 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_knowledge_bases_schema(db)
         # SSO rebuild recreates ``users``; ensure permissions after that path.
         _ensure_column(db, "users", "permissions", "TEXT NOT NULL DEFAULT '[]'")
-        _ensure_feature_tasks_schema(db)
         _ensure_resource_acl_schema(db)
-        _ensure_feature_learning_schema(db)
         _ensure_data_sources_schema(db)
-        _ensure_feature_task_snapshot_schema(db)
-        _ensure_feature_rule_scope_schema(db)
-        _ensure_feature_step_runs_schema(db)
 
 
 def _max_discovered_version(dialect: str) -> int:
@@ -2285,8 +2114,6 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     Version 14 adds per-user named policy rows.
     Version 15 adds pluggable SSO provider ``kind`` / ``extra`` and
     multi-identity ``user_sso_identities``.
-    Version 16 adds the enterprise feature task log (idempotent ``CREATE TABLE
-    IF NOT EXISTS`` file, so no helper branch is needed).
     Version 17 adds org units, unit permission grants, and the
     ``users.org_unit`` / ``users.denied_permissions`` scope columns. SQLite
     ``ALTER TABLE ADD COLUMN`` is not idempotent and ``_repair_legacy_schema``
@@ -2294,18 +2121,16 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     Version 18 adds the unified resource ACL tables and mirrors the legacy
     ``is_shared`` / ``shared`` booleans. The backfill must also reach databases
     whose watermark already passed 18, so this branch calls the ensure helper.
-    Version 19 adds the feature capture columns (``feature_tasks.diff_json`` /
-    ``finalized_at``) and the ``feature_cases`` / ``feature_rules`` tables.
-    ``ALTER TABLE ADD COLUMN`` is not idempotent, so this branch calls the
-    ensure helper instead of executing the SQL file.
     Version 20 adds ``data_sources``. The table must also reach databases whose
     watermark already passed 20, so this branch calls the ensure helper.
     Version 21 drops the three legacy global share booleans. The drop is a table
     rebuild on SQLite and runs through the ensure helper so the legacy flags are
     mirrored into ``resource_acl`` one last time first.
-    Version 22 adds the feature run snapshot (``feature_tasks.agent_id`` /
-    ``injected_rule_ids``). ``ALTER TABLE ADD COLUMN`` is not idempotent, so this
-    branch calls the ensure helper instead of executing the SQL file.
+    Versions 16-25 built the deleted feature subsystem's tables
+    (``_DROPPED_FEATURE_TABLE_VERSIONS``). They only move the watermark: v26
+    drops what they would create, and their DDL is not re-runnable.
+    Version 26 adds ``agents.kind`` — marking the app-owned rows the old model
+    froze as the feature agents they were — and drops those tables.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -2421,8 +2246,14 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
-    if version == 19:
-        _ensure_feature_learning_schema(db)
+    if version in _DROPPED_FEATURE_TABLE_VERSIONS:
+        # 16-25 built the feature tables that v26 drops again, and nothing else.
+        # Their DDL is not re-runnable here — ``ALTER TABLE ADD COLUMN`` refuses
+        # a column that is already there, which is why these versions called
+        # ensure helpers until v26 — and running it would only build tables this
+        # same boot deletes again. The watermark is the whole of what they still
+        # owe a database. PostgreSQL runs their ``.pg.sql`` files (idempotent
+        # throughout) and drops them in 026.
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
@@ -2436,23 +2267,9 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
-    if version == 22:
-        _ensure_feature_task_snapshot_schema(db)
-        with db.connect() as conn:
-            conn.execute("UPDATE _schema_version SET version = ?", (version,))
-        return
-    if version == 23:
-        _ensure_feature_rule_scope_schema(db)
-        with db.connect() as conn:
-            conn.execute("UPDATE _schema_version SET version = ?", (version,))
-        return
-    if version == 24:
-        _ensure_feature_step_runs_schema(db)
-        with db.connect() as conn:
-            conn.execute("UPDATE _schema_version SET version = ?", (version,))
-        return
-    if version == 25:
-        _ensure_feature_step_dispatches_schema(db)
+    if version == 26:
+        _ensure_agent_kind_column(db)
+        _drop_feature_tables(db)
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
@@ -2502,9 +2319,6 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_org_units_schema(db)
     _ensure_resource_acl_schema(db)
     _drop_legacy_share_columns(db)
-    _ensure_feature_learning_schema(db)
     _ensure_data_sources_schema(db)
-    _ensure_feature_task_snapshot_schema(db)
-    _ensure_feature_rule_scope_schema(db)
-    _ensure_feature_step_runs_schema(db)
-    _ensure_feature_step_dispatches_schema(db)
+    _ensure_agent_kind_column(db)
+    _drop_feature_tables(db)

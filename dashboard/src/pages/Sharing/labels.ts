@@ -11,14 +11,19 @@ import type {
  * place so the queue, the drawer, and the tags can never drift apart.
  */
 
-/** Resource-type picker order; knowledge bases first — they are the entry point. */
+/**
+ * Resource-type picker order; knowledge bases first — they are the entry point.
+ *
+ * Only the types this page can list are here; a stored change of another type
+ * still renders its label below.
+ */
 export const SHARING_RESOURCE_TYPE_ORDER: readonly SharingResourceType[] = [
   "knowledge_base",
   "agent",
   "connector",
-  "feature",
 ];
 
+/** Every type the ACL table holds — the picker's subset plus any it no longer offers. */
 export const RESOURCE_TYPE_LABEL_KEYS: Record<SharingResourceType, string> = {
   agent: "sharing.resourceType.agent",
   connector: "sharing.resourceType.connector",

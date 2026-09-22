@@ -44,7 +44,12 @@ import yaml
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from octop.api.common.agent import require_agent_owner_row, require_agent_row
+from octop.api.common.agent import (
+    AgentCapability,
+    require_agent_capability_row,
+    require_agent_owner_row,
+    require_agent_row,
+)
 from octop.api.deps import current_user, get_server, require_permission
 from octop.infra.agents.manager import (
     skill_package_ids_list,
@@ -95,12 +100,26 @@ async def _ctx(
     user: Any,
     as_user: int | None,
     server: Any,
-    owner_only: bool = True,
+    capability: AgentCapability | None = AgentCapability.CONFIGURATION,
 ) -> _AgentCtx:
+    """The caller's context on *agent_id*, checked for *capability*.
+
+    Skills and subagents are one capability group, so the write handlers need not
+    each name it — this is the default — and the read handlers pass ``None``,
+    which asks only that the caller may *use* the agent.
+    """
     assert server.app_runtime is not None
     registry = server.app_runtime.agent_registry
-    require = require_agent_owner_row if owner_only else require_agent_row
-    row = require(agent_id, user=user, as_user=as_user, server=server)
+    if capability is None:
+        row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    else:
+        row = require_agent_capability_row(
+            agent_id,
+            user=user,
+            as_user=as_user,
+            server=server,
+            capability=capability,
+        )
     cfg = registry.get_config(agent_id)
     agent = registry.get_agent(agent_id)
     return _AgentCtx(runtime=row, workspace=agent.workspace, config=cfg)
@@ -423,7 +442,7 @@ async def _enabled_skill_names(
     user: Any,
 ) -> set[str]:
     """Return installed, non-disabled skill names for an agent."""
-    await _ctx(agent_id, user=user, as_user=None, server=server, owner_only=False)
+    await _ctx(agent_id, user=user, as_user=None, server=server, capability=None)
     assert server.app_runtime is not None
     names: set[str] = set()
     for summary in await server.app_runtime.agent_registry.list_skill_summaries(agent_id):
@@ -458,7 +477,7 @@ async def list_skills(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    await _ctx(agent_id, user=user, as_user=as_user, server=server, owner_only=False)
+    await _ctx(agent_id, user=user, as_user=as_user, server=server, capability=None)
     assert server.app_runtime is not None
     return cast(
         list[dict[str, Any]],
@@ -530,7 +549,13 @@ async def replace_skill_package_mounts(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, list[str]]:
-    require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    require_agent_capability_row(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.CONFIGURATION,
+    )
     assert server.app_runtime is not None
     package_ids = skill_package_ids_list({"skill_package_ids": body.package_ids})
     await server.app_runtime.agent_registry.persist_skill_package_ids(agent_id, package_ids)
@@ -665,7 +690,7 @@ async def get_skill(
         user=user,
         as_user=as_user,
         server=server,
-        owner_only=False,
+        capability=None,
     )
     resolved = await _resolve_skill(ctx.workspace, name)
     if resolved is None:
@@ -1305,7 +1330,13 @@ async def hub_rankings(
     """
     from fastapi import HTTPException  # noqa: PLC0415
 
-    require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    require_agent_capability_row(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.CONFIGURATION,
+    )
 
     rtype = type if type in _RANKING_TYPES else "all"
     from octop.infra.skills.skillhub_market import (  # noqa: PLC0415

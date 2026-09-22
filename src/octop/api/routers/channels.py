@@ -19,7 +19,7 @@ from typing import Any, Literal, cast
 from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
-from octop.api.common.agent import require_agent_owner_row
+from octop.api.common.agent import AgentCapability, require_agent_capability_row
 from octop.api.deps import get_server, require_permission
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.bot_creators.feishu_runner import extract_feishu_credentials
@@ -108,7 +108,19 @@ def _require_agent_access(
     as_user: int | None,
     server: Any,
 ) -> Any:
-    return require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    """The agent row, checked for the channels capability.
+
+    Every endpoint in this module is about the channels bound to one agent, so the
+    capability is named here once: an owner configures their own agent's channels
+    as before, and a feature's channels belong to that feature's author.
+    """
+    return require_agent_capability_row(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.CHANNELS,
+    )
 
 
 def _acting_user_id(user: Any, as_user: int | None) -> int:

@@ -60,7 +60,6 @@ def test_categories_match_nav_groups() -> None:
         "connectors",
         "skill_packages",
         "knowledge_bases",
-        "features",
     }
     assert {k for k, p in PERMISSIONS.items() if p.category == "control"} == {
         "terminal",
