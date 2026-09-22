@@ -4,8 +4,10 @@
  * List all users with role/disabled toggles, password reset, delete.
  * Card and table views (default table). The view switcher + refresh +
  * new-user buttons live in a content-area toolbar (mirrors the Experts
- * page layout). Each row/card shows agent count; click opens a drawer
- * with that user's agents.
+ * page layout). Each row/card counts the user's agents by kind — one column,
+ * or one card tally, per kind this deployment actually holds (the experts and
+ * the agents their features run on) — and either one opens a drawer with that
+ * user's agents.
  *
  * Authorization mirrors ``src/octop/api/routers/users.py`` (997fe63): the
  * ``users`` module key opens the surface, the ``admin`` role owns everything
@@ -51,6 +53,7 @@ import {
 } from "antd";
 import { message } from "@/utils/antdMessage";
 import { ResizableTable } from "@/components/ResizableTable";
+import type { ColumnsType } from "antd/es/table";
 
 import {
   Ban,
@@ -94,6 +97,11 @@ import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import { formatServerDateTime } from "../../../utils/formatMessageTime";
 import type { OctopAgent } from "../../../context/AgentContext";
 import { isFeatureAgent } from "../../../utils/agentKind";
+import {
+  NO_AGENT_KIND_COUNTS,
+  indexAgentsByKind,
+  type AgentKindIndex,
+} from "./agentKindCounts";
 import { AgentCard } from "../../Experts/components/AgentCard";
 import EditAgentDrawer from "../../Experts/components/EditAgentDrawer";
 import InviteDrawer from "./InviteDrawer";
@@ -241,7 +249,7 @@ function formatUserTs(ts: number | undefined, timeZone: string): string {
 interface UserCardGridProps {
   rows: UserRow[];
   loading: boolean;
-  agentsByUserId: Map<number, OctopAgent[]>;
+  agentKindIndex: AgentKindIndex;
   agentsLoading: boolean;
   currentUserId: number | null;
   permLabelByKey: Map<string, string>;
@@ -910,10 +918,66 @@ function RoleLegend() {
   );
 }
 
+/**
+ * One kind's tally on a user card — the card view's half of the table's agent
+ * columns. Drawn once per kind the deployment holds; the button is the way
+ * into the drawer listing that user's agents, both kinds of them.
+ */
+function AgentStatButton({
+  label,
+  count,
+  loading,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" className={styles.userCardStatBtn} onClick={onClick}>
+      <Bot size={15} />
+      <span>{label}</span>
+      <span className={styles.userCardStatCount}>{loading ? "…" : count}</span>
+      <ChevronRight size={14} />
+    </button>
+  );
+}
+
+/**
+ * One kind's tally in the table: the number, and the same way into the drawer
+ * the card's button is. The cell is the only thing a sighted reader has to go
+ * on between the header and the number, so the kind is named for assistive
+ * tech as well — a bare count is not a name.
+ */
+function AgentCountCell({
+  label,
+  count,
+  loading,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={styles.userCellLink}
+      aria-label={loading ? label : `${label} ${count}`}
+      onClick={onClick}
+    >
+      <Bot size={13} />
+      {loading ? "…" : count}
+    </button>
+  );
+}
+
 function UserCardGrid({
   rows,
   loading,
-  agentsByUserId,
+  agentKindIndex,
   agentsLoading,
   currentUserId,
   permLabelByKey,
@@ -942,7 +1006,8 @@ function UserCardGrid({
   return (
     <div className={styles.userCardGrid}>
       {rows.map((row) => {
-        const agentCount = agentsByUserId.get(row.id)?.length ?? 0;
+        const counts =
+          agentKindIndex.countsByUserId.get(row.id) ?? NO_AGENT_KIND_COUNTS;
         const isSelf = row.id === currentUserId;
         const displayName = row.display_name?.trim() || row.username;
         const remaining = lockRemainingSeconds(row, nowSec);
@@ -1062,18 +1127,22 @@ function UserCardGrid({
               </div>
 
               <div className={styles.userCardStats}>
-                <button
-                  type="button"
-                  className={styles.userCardStatBtn}
-                  onClick={() => onShowAgents(row)}
-                >
-                  <Bot size={15} />
-                  <span>{t("adminUsers.colAgents")}</span>
-                  <span className={styles.userCardStatCount}>
-                    {agentsLoading ? "…" : agentCount}
-                  </span>
-                  <ChevronRight size={14} />
-                </button>
+                {agentKindIndex.held.experts && (
+                  <AgentStatButton
+                    label={t("adminUsers.colAgents")}
+                    count={counts.experts}
+                    loading={agentsLoading}
+                    onClick={() => onShowAgents(row)}
+                  />
+                )}
+                {agentKindIndex.held.features && (
+                  <AgentStatButton
+                    label={t("adminUsers.colFeatures")}
+                    count={counts.features}
+                    loading={agentsLoading}
+                    onClick={() => onShowAgents(row)}
+                  />
+                )}
               </div>
 
               {isLocked && (
@@ -1380,6 +1449,7 @@ export default function UsersListPanel() {
   );
   const nowSec = useNowSeconds(hasLockedUser);
 
+  /** The drawer's rows — every agent the drawer's user holds, both kinds. */
   const agentsByUserId = useMemo(() => {
     const map = new Map<number, OctopAgent[]>();
     for (const agent of agents) {
@@ -1390,6 +1460,13 @@ export default function UsersListPanel() {
     }
     return map;
   }, [agents]);
+
+  /**
+   * The same list, counted: a row's experts and features apart, and which of
+   * the two kinds exist anywhere (the columns are drawn from that, so a page
+   * of rows never decides it and paging cannot make a column appear).
+   */
+  const agentKindIndex = useMemo(() => indexAgentsByKind(agents), [agents]);
 
   const drawerAgents = agentDrawerUser
     ? agentsByUserId.get(agentDrawerUser.id) ?? []
@@ -1749,6 +1826,49 @@ export default function UsersListPanel() {
     }
   };
 
+  /**
+   * The agent columns, one per kind this deployment holds. A kind nobody holds
+   * anywhere draws no column: its header would name agents that do not exist
+   * over a column of zeroes. Whether a kind is held is read off the instance
+   * (``agentKindIndex``), never off the rows on screen — paging must not make
+   * a column come and go.
+   */
+  const agentColumns: ColumnsType<UserRow> = [];
+  if (agentKindIndex.held.experts) {
+    agentColumns.push({
+      title: t("adminUsers.colAgents"),
+      width: 80,
+      render: (_, row) => (
+        <AgentCountCell
+          label={t("adminUsers.colAgents")}
+          count={
+            (agentKindIndex.countsByUserId.get(row.id) ?? NO_AGENT_KIND_COUNTS)
+              .experts
+          }
+          loading={agentsLoading}
+          onClick={() => setAgentDrawerUser(row)}
+        />
+      ),
+    });
+  }
+  if (agentKindIndex.held.features) {
+    agentColumns.push({
+      title: t("adminUsers.colFeatures"),
+      width: 80,
+      render: (_, row) => (
+        <AgentCountCell
+          label={t("adminUsers.colFeatures")}
+          count={
+            (agentKindIndex.countsByUserId.get(row.id) ?? NO_AGENT_KIND_COUNTS)
+              .features
+          }
+          loading={agentsLoading}
+          onClick={() => setAgentDrawerUser(row)}
+        />
+      ),
+    });
+  }
+
   return (
     <>
       <div className={styles.pageTop}>
@@ -1815,7 +1935,7 @@ export default function UsersListPanel() {
         <UserCardGrid
           rows={filteredRows}
           loading={loading}
-          agentsByUserId={agentsByUserId}
+          agentKindIndex={agentKindIndex}
           agentsLoading={agentsLoading}
           currentUserId={currentUserId}
           permLabelByKey={permLabelByKey}
@@ -1908,23 +2028,7 @@ export default function UsersListPanel() {
                 );
               },
             },
-            {
-              title: t("adminUsers.colAgents"),
-              width: 80,
-              render: (_, row) => {
-                const count = agentsByUserId.get(row.id)?.length ?? 0;
-                return (
-                  <button
-                    type="button"
-                    className={styles.userCellLink}
-                    onClick={() => setAgentDrawerUser(row)}
-                  >
-                    <Bot size={13} />
-                    {agentsLoading ? "…" : count}
-                  </button>
-                );
-              },
-            },
+            ...agentColumns,
             {
               title: t("adminUsers.colRole"),
               width: 112,
