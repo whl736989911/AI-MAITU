@@ -39,11 +39,21 @@
 | **知识库 / 数据源** | `knowledge*` · `sources*` · `dataSource*` · `extractTemplate*` |
 | **权限 / 组织** | `perms*` · `org*` · `roles*` · `orgUnits*` |
 
+**后端 i18n 同样是共享文件**（容易被忘掉）：`src/octop/i18n/en.json` + `src/octop/i18n/zh.json`
+（用户可见的服务端文案、错误消息、工具名都走这里 ✓ 见 `AGENTS.md` 的 i18n 章节）。
+
+| 工作流 | 自己的后端命名空间 |
+|---|---|
+| **知识库 / 数据源** | `knowledge.*` · `sources.*` · `dataSource.*` · `extractTemplate.*` |
+| **权限 / 组织** | `perms.*` · `org.*` · `roles.*` · `orgUnits.*`（以及既有的 `channel.*` 若要改） |
+
 规矩：
 
+- **两个文件集都要遵守**：`dashboard/src/locales/{en,zh}.json` **和** `src/octop/i18n/{en,zh}.json`。
 - **只 append 自己的 key，不重排、不改动别人的区域**（避免污染式 diff）。
 - **en 与 zh 两边都要加，且自己核对。**
 - 改完**立刻提交**，不要长期占着工作区。
+- 后端 i18n 有 key 一致性测试（`uv run pytest tests/unit/i18n -q` ✓）—— **两边都缺时它也会通过，别指望它兜底** ⚠️
 
 ## 3. 权限 key：**知识库侧"声明"，权限侧"实现"**
 
