@@ -153,7 +153,9 @@ function FeatureSettingsEditor({
             <FeatureBasicsSection creating={false} meta={meta} />
             <FeatureInputFieldsSection />
             <FeaturePromptSection />
-            <FeatureCapabilitySection />
+            {/* The scopes below are intersected with the agent a *run* uses, so
+                the choices have to be that agent's — see the hook. */}
+            <FeatureCapabilitySection featureId={feature.id} />
             <FeatureOutputSection meta={meta} />
             <FeatureUnitSection meta={meta} />
             <FeaturePermissionsSection meta={meta} />

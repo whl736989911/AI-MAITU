@@ -438,12 +438,6 @@
     "settingsEditTitle": "Feature settings",
     "settingsTabDefinition": "Definition",
     "settingsTabSteps": "Steps",
-    "settingsTabPersonalization": "Personalization",
-    "personalizationTabFiles": "Persona files",
-    "personalizationLoading": "Opening the feature's own agent…",
-    "personalizationFailed": "Could not open the feature's own agent",
-    "personalizationFilesFailed": "Could not list the persona files",
-    "personalizationFileMissing": "Not created yet — saving creates it",
     "personalizationMbtiNote": "Applying an MBTI type regenerates SOUL.md, overwriting any soul you wrote by hand.",
     "settingsCreated": "Feature created",
     "settingsSaved": "Feature saved",
@@ -602,7 +596,12 @@
     "settingsDelete": "Delete feature",
     "settingsDeleteHint": "Deleting removes the definition together with its PROMPT.md.",
     "settingsDeleteConfirmTitle": "Delete this feature?",
-    "settingsDeleteConfirmDesc": "{{id}} and its prompt file are removed. Runs already recorded are kept."
+    "settingsDeleteConfirmDesc": "{{id}} and its prompt file are removed. Runs already recorded are kept.",
+    "scopeCurrentFeature": "Current feature",
+    "scopeFeaturePlaceholder": "None — configure my own expert",
+    "scopeFeatureAgent": "This feature's agent:",
+    "scopeFeatureAgentLoading": "Opening the feature's own agent…",
+    "scopeFeatureAgentFailed": "Could not open the feature's own agent"
   },
   "skillPackages": {
     "title": "Skill Packages",
@@ -4387,7 +4386,8 @@
       "subagents": "Subagents",
       "channels": "Channels",
       "mbti": "MBTI",
-      "memory": "Memory"
+      "memory": "Memory",
+      "files": "Persona files"
     },
     "cards": {
       "identity": "Identity",
@@ -4444,7 +4444,9 @@
         "sentinels": "🛡️ Sentinels — Order & Duty",
         "explorers": "🧭 Explorers — Freedom & Action"
       }
-    }
+    },
+    "filesFailed": "Could not list the persona files",
+    "filesMissing": "Not created yet — saving creates it"
   },
   "consoleBubble": {
     "title": "New Message"

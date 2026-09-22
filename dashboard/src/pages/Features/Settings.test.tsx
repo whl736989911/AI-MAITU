@@ -313,6 +313,10 @@ describe("<FeatureSettingsPage />", () => {
     await user.click(screen.getByText("features.settingsSectionCapability"));
 
     await waitFor(() => expect(getFeatureCapabilities).toHaveBeenCalledOnce());
+    // For the definition's own agent, not the caller's: a declared scope is
+    // intersected with the run agent, so the choices have to be the ones a run
+    // of *this* feature would really have (S1's run-agent switch).
+    expect(getFeatureCapabilities).toHaveBeenCalledWith("quote-draft");
     // The fields the choices feed only exist once they arrived.
     expect(
       await screen.findByText("features.settingsCapabilitySkills"),

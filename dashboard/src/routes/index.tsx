@@ -67,6 +67,9 @@ export const pathToKey: Record<string, string> = {
   "/personalization/channels": "channels",
   "/personalization/mbti": "personalization",
   "/personalization/memory": "personalization",
+  // Only reachable with a feature selected (its agent is the only place these
+  // files can be edited from); the nav key is the section either way.
+  "/personalization/files": "personalization",
   "/skills": "personalization",
   "/token-usage": "token-usage",
   "/agent-config": "agent-config",

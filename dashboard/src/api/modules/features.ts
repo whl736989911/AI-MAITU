@@ -577,16 +577,50 @@ export interface FeaturePromoteResponse {
   case: FeatureCase;
 }
 
+/**
+ * The definition's own agent, as ``POST /features/{id}/agent`` answers.
+ *
+ * ``created`` is ``false`` for a definition that already had one — the call is
+ * idempotent, so the personalization surface can make it every time it opens.
+ * The answer is only returned once the harness holds a live handle for the
+ * agent: a start that did not take is an error, never a success the next call
+ * would fail on.
+ */
+export interface FeaturePersonalization {
+  feature_id: string;
+  agent_id: string;
+  created: boolean;
+}
+
 export const featuresApi = {
   listFeatures: () => request<FeatureListResponse>("/features"),
   /** Definition-format metadata for the settings editor. */
   getFeatureMeta: () => request<FeatureMeta>("/features/_meta"),
   /**
-   * The capability choices that need the caller's own agent. Costs an agent
-   * start, so the editor asks for it only once its capability block is opened.
+   * The capability choices that need a live agent. Costs an agent start, so the
+   * editor asks for it only once its capability block is opened.
+   *
+   * ``featureId`` makes the answer describe the agent a *run* of that definition
+   * would use — its own agent once it has one (design 5.1), the caller's agent
+   * otherwise. Without it the server answers for the caller's agent, which is
+   * only the run agent for a definition nobody has personalized.
    */
-  getFeatureCapabilities: () =>
-    request<FeatureCapabilities>("/features/_capabilities"),
+  getFeatureCapabilities: (featureId?: string) =>
+    request<FeatureCapabilities>(
+      featureId
+        ? `/features/_capabilities?feature_id=${encodeURIComponent(featureId)}`
+        : "/features/_capabilities",
+    ),
+  /**
+   * The feature's own agent, created on the first call and returned on every one
+   * after (idempotent — this is the "open the personalization surface" call).
+   * Admin-gated and refused for a bundled definition, exactly like writing it.
+   */
+  personalizeFeature: (id: string) =>
+    request<FeaturePersonalization>(
+      `/features/${encodeURIComponent(id)}/agent`,
+      { method: "POST" },
+    ),
   getFeature: (id: string) =>
     request<Feature>(`/features/${encodeURIComponent(id)}`),
   /** Create one feature; the id is the caller's (409 when it is already taken). */

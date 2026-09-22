@@ -31,8 +31,18 @@ export interface FeatureChoicesState {
 /**
  * ``open`` is what triggers the first fetch: put it on the disclosure that owns
  * the fields, so the choices cost an agent start only once somebody looks.
+ *
+ * ``featureId`` is the definition the block belongs to, and it is what makes the
+ * lists describe the agent a *run* of it would use: ``resolve_capability``
+ * intersects a declared scope with the run agent's own skills and subagents, so
+ * an editor that read them off the caller's agent would offer entries the run
+ * withholds. Omitted (a definition that does not exist yet) the server answers
+ * for the caller's agent, which is exactly what such a run uses.
  */
-export function useFeatureCapabilities(open: boolean): FeatureChoicesState {
+export function useFeatureCapabilities(
+  open: boolean,
+  featureId?: string,
+): FeatureChoicesState {
   const { t } = useTranslation();
   const [choices, setChoices] = useState<FeatureCapabilities | null>(null);
   const [loading, setLoading] = useState(false);
@@ -42,7 +52,7 @@ export function useFeatureCapabilities(open: boolean): FeatureChoicesState {
     setLoading(true);
     setError(null);
     try {
-      setChoices(await featuresApi.getFeatureCapabilities());
+      setChoices(await featuresApi.getFeatureCapabilities(featureId));
     } catch (err) {
       setChoices(null);
       setError(
@@ -51,7 +61,7 @@ export function useFeatureCapabilities(open: boolean): FeatureChoicesState {
     } finally {
       setLoading(false);
     }
-  }, [t]);
+  }, [featureId, t]);
 
   useEffect(() => {
     if (open && choices === null && !loading && error === null) {

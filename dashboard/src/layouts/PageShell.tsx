@@ -31,6 +31,11 @@ interface PageShellProps {
   pathTabs?: PathTabsConfig;
   /** Render agent picker below the title row, outside the scrollable content card. */
   agentScoped?: boolean;
+  /**
+   * What the agent bar holds. Defaults to the ``AgentSelector``; a page whose
+   * scope is not always "one of my own experts" supplies its own bar instead.
+   */
+  agentBar?: React.ReactNode;
   /** When true, the content area does not scroll; children fill remaining height. */
   fill?: boolean;
   children: React.ReactNode;
@@ -87,6 +92,7 @@ function PageShell({
   actions,
   pathTabs,
   agentScoped,
+  agentBar,
   fill,
   children,
 }: PageShellProps) {
@@ -156,9 +162,7 @@ function PageShell({
       </div>
 
       {agentScoped && (
-        <div className={styles.agentBar}>
-          <AgentSelector />
-        </div>
+        <div className={styles.agentBar}>{agentBar ?? <AgentSelector />}</div>
       )}
 
       {/* Content — scrolls internally. Tighter side padding on mobile so

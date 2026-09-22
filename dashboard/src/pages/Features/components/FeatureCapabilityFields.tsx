@@ -10,10 +10,14 @@
  *
  * Two rules shape the surface:
  *   - The choices that need an agent (skills, subagents) are fetched only once
- *     this block is opened. Loading them means starting the caller's agent, and
- *     that must not be a precondition for opening the settings drawer — so
- *     ``_meta`` stays agent-free and this block carries its own loading state,
- *     its own refusal and its own retry.
+ *     this block is opened. Loading them means starting an agent, and that must
+ *     not be a precondition for opening the settings surface — so ``_meta`` stays
+ *     agent-free and this block carries its own loading state, its own refusal
+ *     and its own retry. The id the request carries is the definition's, because
+ *     the answer has to be the agent a *run* of it would use: once the definition
+ *     has an agent of its own (design 5.1) that is the one whose skills and
+ *     subagents a declared scope is intersected with, and reading them off the
+ *     caller's agent would offer entries the run withholds.
  *   - A field left as inherited is *omitted* from ``feature.json``; a field
  *     declared as none is written as an empty list. The two are different
  *     scopes, and the inherit switch is what keeps them apart.
@@ -113,13 +117,19 @@ export function DeclaredListField({
 export interface FeatureCapabilityFieldsProps {
   /** The capability block is only fetched once this is true (block expanded). */
   open: boolean;
+  /** The definition these scopes belong to — see ``useFeatureCapabilities``. */
+  featureId?: string;
 }
 
 export default function FeatureCapabilityFields({
   open,
+  featureId,
 }: FeatureCapabilityFieldsProps) {
   const { t } = useTranslation();
-  const { choices, loading, error, load } = useFeatureCapabilities(open);
+  const { choices, loading, error, load } = useFeatureCapabilities(
+    open,
+    featureId,
+  );
 
   if (loading) {
     return (
@@ -240,7 +250,12 @@ export default function FeatureCapabilityFields({
  * expand: the choices that need an agent cost an agent start, and opening the
  * drawer to rename a feature must not pay that.
  */
-export function FeatureCapabilitySection() {
+export function FeatureCapabilitySection({
+  featureId,
+}: {
+  /** The definition these scopes belong to — see ``useFeatureCapabilities``. */
+  featureId?: string;
+}) {
   const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
@@ -261,7 +276,7 @@ export function FeatureCapabilitySection() {
                 <div className={styles.blockHint}>
                   {t("features.settingsSectionCapabilityHint")}
                 </div>
-                <FeatureCapabilityFields open={open} />
+                <FeatureCapabilityFields open={open} featureId={featureId} />
               </>
             ),
           },

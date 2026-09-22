@@ -438,12 +438,6 @@
     "settingsEditTitle": "功能设置",
     "settingsTabDefinition": "定义",
     "settingsTabSteps": "步骤",
-    "settingsTabPersonalization": "个性化",
-    "personalizationTabFiles": "人设文件",
-    "personalizationLoading": "正在启用该功能自己的 agent…",
-    "personalizationFailed": "无法启用该功能自己的 agent",
-    "personalizationFilesFailed": "读取人设文件列表失败",
-    "personalizationFileMissing": "尚未创建，保存时会新建",
     "personalizationMbtiNote": "应用 MBTI 人格会重写 SOUL.md；手改过的灵魂设定会被覆盖。",
     "settingsCreated": "功能已创建",
     "settingsSaved": "功能已保存",
@@ -602,7 +596,12 @@
     "settingsDelete": "删除功能",
     "settingsDeleteHint": "删除后定义与其 PROMPT.md 一并移除。",
     "settingsDeleteConfirmTitle": "确认删除该功能？",
-    "settingsDeleteConfirmDesc": "将移除 {{id}} 及其提示词文件；已记录的历史运行不受影响。"
+    "settingsDeleteConfirmDesc": "将移除 {{id}} 及其提示词文件；已记录的历史运行不受影响。",
+    "scopeCurrentFeature": "当前功能",
+    "scopeFeaturePlaceholder": "不选功能：配置我自己的专家",
+    "scopeFeatureAgent": "该功能的 agent：",
+    "scopeFeatureAgentLoading": "正在启用该功能自己的 agent…",
+    "scopeFeatureAgentFailed": "无法启用该功能自己的 agent"
   },
   "skillPackages": {
     "title": "技能包",
@@ -4387,7 +4386,8 @@
       "subagents": "子智能体",
       "channels": "通道",
       "mbti": "MBTI",
-      "memory": "记忆"
+      "memory": "记忆",
+      "files": "人设文件"
     },
     "cards": {
       "identity": "身份认同",
@@ -4444,7 +4444,9 @@
         "sentinels": "🛡️ 守护者 — 秩序与责任",
         "explorers": "🧭 探险家 — 自由与行动"
       }
-    }
+    },
+    "filesFailed": "读取人设文件列表失败",
+    "filesMissing": "尚未创建，保存时会新建"
   },
   "consoleBubble": {
     "title": "消息来了"
