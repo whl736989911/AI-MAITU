@@ -116,6 +116,18 @@ beforeEach(() => {
   requestMock.mockReset();
   requestMock.mockImplementation(async (url: string): Promise<unknown> => {
     if (url === "/agents?scope=all") return deployment;
+    // The deployment's kinds, as ``/agents/kinds`` answers them — the whole
+    // table, enabled rows, no ``users`` permission to hold. The presence hook is
+    // moving to this reading; both are answered so this test holds on either
+    // side of that move, and either way the kinds are drawn from the deployment
+    // rather than from anything the page's filters are showing.
+    if (url === "/agents/kinds") {
+      return {
+        kinds: ["agent", "feature"].filter((kind) =>
+          deployment.some((a) => a.kind === kind),
+        ),
+      };
+    }
     if (url.startsWith("/usage/summary")) {
       const params = new URLSearchParams(url.slice(url.indexOf("?") + 1));
       return emptySummary(params.get("granularity") ?? "");
