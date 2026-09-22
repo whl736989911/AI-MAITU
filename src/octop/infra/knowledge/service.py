@@ -14,6 +14,7 @@ from octop.infra.db.repos.knowledge import KnowledgeBaseRow, KnowledgeDocumentRo
 from octop.infra.knowledge.files import (
     delete_document_file,
     delete_knowledge_base_files,
+    document_digest,
     document_path,
     write_document,
 )
@@ -492,6 +493,7 @@ class KnowledgeService:
             path=rel,
             content_type=resolved_type,
             byte_size=len(content),
+            content_hash=document_digest(content),
             max_documents=base.max_documents,
         )
         try:
@@ -552,6 +554,7 @@ class KnowledgeService:
             path=rel,
             content_type=resolved_type,
             byte_size=len(content),
+            content_hash=document_digest(content),
             status="pending",
             error_message="",
             chunk_count=0,
@@ -579,6 +582,7 @@ class KnowledgeService:
             path=rel,
             content_type=resolved_type,
             byte_size=len(content),
+            content_hash=document_digest(content),
             max_documents=base.max_documents,
         )
         try:

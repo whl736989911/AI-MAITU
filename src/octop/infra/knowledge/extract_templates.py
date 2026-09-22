@@ -380,6 +380,10 @@ class ExtractTemplateService:
                 and existing is not None
                 and existing.status == STATUS_SUCCEEDED
                 and existing.template_version == version.version
+                # And the file is the one this was produced from: a result whose
+                # content hash no longer matches describes bytes that are gone
+                # (design §7.3 records the hash for exactly this question).
+                and existing.content_hash == document.content_hash
             ):
                 counts["skipped"] += 1
                 continue

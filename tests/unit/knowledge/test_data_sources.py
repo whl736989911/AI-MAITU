@@ -1102,3 +1102,31 @@ def test_deleting_a_folder_source_leaves_uploaded_documents_alone(
 
     assert env.services.knowledge_repo.get_document(uploaded.id) is not None
     assert env.services.knowledge_repo.count_documents(base.id) == 1
+
+
+def test_a_changed_file_is_reindexed(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """The other half: different bytes must be processed again."""
+    root = _local_root(tmp_path)
+    _source_file(root, "policy.md", _DOC_BODY)
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    first = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert first is not None
+    assert first.content_hash
+
+    _source_file(root, "policy.md", _DOC_BODY + "\nRefunds are also available in cash.\n")
+    # The new identity is first *observed*, then processed once it has settled —
+    # the debounce is what makes this two scans rather than one.
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    refreshed = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert refreshed is not None
+    assert refreshed.content_hash != first.content_hash
+    assert refreshed.status == "ready"
+    assert "cash" in _indexed_text(base.id)

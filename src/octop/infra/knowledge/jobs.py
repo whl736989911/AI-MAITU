@@ -12,7 +12,7 @@ from typing import Any
 
 from octop.infra.knowledge.chunk import chunk_text
 from octop.infra.knowledge.embed import embed_knowledge_texts
-from octop.infra.knowledge.files import document_path
+from octop.infra.knowledge.files import document_path, file_digest
 from octop.infra.knowledge.gate import assert_knowledge_usable
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.ocr import optional_ocr_extractor
@@ -157,6 +157,7 @@ def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -
     repo.update_document(doc_id, status="processing", error_message="")
     try:
         with parse_path(document) as path:
+            digest = file_digest(path)
             parsed = parse_document(
                 path,
                 ocr=optional_ocr_extractor(services),
@@ -173,7 +174,13 @@ def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -
         embeddings = embed_knowledge_texts(services, chunks)
         KnowledgeIndex(kb_id).replace_doc_chunks(doc_id, chunks, embeddings)
         dimension = len(embeddings[0]) if embeddings else 0
-        repo.update_document(doc_id, status="ready", error_message="", chunk_count=len(chunks))
+        repo.update_document(
+            doc_id,
+            status="ready",
+            error_message="",
+            chunk_count=len(chunks),
+            content_hash=digest,
+        )
         # design §3.4: the structure is derived content, stored once the file it
         # describes has parsed — the text itself lives in the chunks above.
         repo.set_derived(doc_id, parsed.derived())

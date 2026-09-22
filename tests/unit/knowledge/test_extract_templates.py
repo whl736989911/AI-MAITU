@@ -342,3 +342,26 @@ async def test_only_stale_skips_what_already_ran(env, owner, monkeypatch) -> Non
     )
 
     assert again == {"matched": 1, "succeeded": 0, "failed": 0, "skipped": 1}
+
+
+async def test_only_stale_reruns_when_the_file_changed(env, owner, monkeypatch) -> None:
+    """design §7.3: a result describes the bytes it was produced from."""
+    template, _ = _template(env, owner)
+    document = _document(env, owner)
+    source = _local_source(env, owner)
+    env.templates.bind(template.id, actor_user_id=owner, data_source_id=source.id)
+    _stub_model(env, monkeypatch, '{"summary": "s", "keywords": ["k"]}')
+    await env.templates.extract_document(
+        actor_user_id=owner, document_id=document.id, template_id=template.id
+    )
+    # The same version, but the file's bytes are not the ones that produced it.
+    env.services.knowledge_repo.update_document(document.id, content_hash="changed")
+
+    again = await env.templates.extract_scope(
+        actor_user_id=owner,
+        kb_id=document.kb_id,
+        template_id=template.id,
+        only_stale=True,
+    )
+
+    assert again == {"matched": 1, "succeeded": 1, "failed": 0, "skipped": 0}
