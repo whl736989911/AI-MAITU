@@ -808,6 +808,10 @@ class _RecordingRegistry:
     def list_agents(self, user_id: int) -> list[Any]:
         return [SimpleNamespace(agent_id="agent-1")]
 
+    def get_row(self, agent_id: str) -> Any:
+        """Only ``agent-1`` exists here — a feature's own agent never does."""
+        return next((row for row in self.list_agents(0) if row.agent_id == agent_id), None)
+
     def get_agent(self, agent_id: str) -> Any:
         return object()
 

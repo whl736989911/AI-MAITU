@@ -144,6 +144,10 @@ class _FakeAgentRegistry:
     def list_agents(self, user_id: int) -> list[Any]:
         return list(self._agents)
 
+    def get_row(self, agent_id: str) -> Any:
+        """The rows this double was built with — a feature's own agent is never one."""
+        return next((row for row in self._agents if row.agent_id == agent_id), None)
+
     def get_agent(self, agent_id: str) -> Any:
         """Live-registry lookup; raises when the agent is not loaded."""
         if not self._running:
@@ -569,6 +573,7 @@ async def test_every_route_requires_the_features_permission() -> None:
         "/_capabilities",
         "/_meta",
         "/{feature_id}",
+        "/{feature_id}/agent",
         "/{feature_id}/cases",
         "/{feature_id}/rules",
         "/{feature_id}/rules/extract",

@@ -62,6 +62,10 @@ from octop.infra.features.dispatch import (
     require_role_dispatch,
     resolve_max_parallel,
 )
+from octop.infra.features.personalization import (
+    ensure_feature_agent,
+    materialized_feature_agent_id,
+)
 from octop.infra.features.rules import (
     RuleAlreadyReviewed,
     RuleExtractionFailed,
@@ -367,12 +371,48 @@ def _require_feature(server: Any, feature_id: str) -> Feature:
     return feature
 
 
+def _require_personalizable(server: Any, feature: Feature) -> None:
+    """Refuse personalization for a definition this instance must not write.
+
+    A bundled definition is read-only, so nothing about it can be edited — and its
+    personalization would be a live agent reachable only through a definition whose
+    own editor refuses every write (design 7.1, where the user's ruling is pending
+    and "not supported" is the recommendation). Refusing here keeps the answer
+    single: fork the definition into one of your own, then personalize that.
+    """
+    store = _require_store(server)
+    if not store.is_writable(feature.id):
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            f"feature {feature.id!r} is bundled with the application and cannot be "
+            "personalized: author a definition of your own for the same job instead",
+            details={"feature_id": feature.id, "reason": "bundled"},
+        )
+
+
 def _run_agent_id(server: Any, user_id: int) -> str:
     """The user's own primary (oldest enabled) agent; runs never create one."""
     rows = server.app_runtime.agent_registry.list_agents(user_id)
     if not rows:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"no runnable agent for user {user_id}")
     return str(rows[0].agent_id)
+
+
+def _feature_run_agent_id(server: Any, feature: Feature, user_id: int) -> str:
+    """The agent one run of *feature* uses: the feature's own once it has one.
+
+    Design 5.1: a personalized definition runs on ``feat-<feature_id>`` — the agent
+    its author configured — and the definition's declared capability layer is then
+    intersected with *that* agent's skills and subagents ("inherit" means the
+    feature's agent decides, which is what 5.1 is for). A definition nobody has
+    personalized has no such agent and takes the other branch verbatim: the caller's
+    own agent, exactly as every run did before features could have agents at all.
+
+    Who pays stays the caller either way — connectors, knowledge bases, turn-scoped
+    tools and the session are all resolved per caller (:func:`_stamp_capability`,
+    :func:`_run_agent_turn`) — so this switch changes *configuration*, never data.
+    """
+    return materialized_feature_agent_id(server, feature) or _run_agent_id(server, user_id)
 
 
 def _failure_reason(exc: Exception) -> str:
@@ -933,7 +973,7 @@ async def _run_steps(
     half-run that later reads as if it had executed.
     """
     assert server.services is not None
-    agent_id = _run_agent_id(server, user.id)
+    agent_id = _feature_run_agent_id(server, feature, user.id)
     repo = server.services.repos.feature_tasks_repo
     rules = injectable_rule_rows(
         server.services.repos.feature_rules_repo,
@@ -1214,6 +1254,36 @@ async def delete_feature(
         store.delete(feature_id)
 
 
+@router.post("/{feature_id}/agent", summary="Give one feature its own agent")
+async def personalize_feature(
+    feature_id: str,
+    _user: Any = Depends(require_permission("features")),
+    _admin: Any = Depends(require_admin()),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """Personalization's entry point: this feature's own agent, created on the first call.
+
+    Design 5.1 — every feature may have an agent of its own for the panels that only
+    work against a live agent. This is the *only* way one is born: not at definition
+    creation, not on a run (``_run_agent_id`` still never creates anything). It is
+    idempotent because it is the editor's "open the personalization surface" call, so
+    the second call answers ``created: false`` for the same agent instead of a
+    conflict. Creating the row and leaving the harness with a live handle are one
+    answer: a panel reads skills, subagents and workspace files off that handle.
+
+    Admin-gated exactly like the definition write endpoints — the feature's agent is
+    instance configuration, not the caller's property: it is app-owned
+    (``user_id IS NULL``), so ``assert_agent_owner`` lets administrators edit it and
+    refuses everyone else through the agent endpoints, while runs stay governed by
+    ``require_permission("features")`` alone. A bundled definition is refused, the
+    same line as editing it.
+    """
+    feature = _require_feature(server, feature_id)
+    _require_personalizable(server, feature)
+    row, created = await ensure_feature_agent(server, feature)
+    return {"feature_id": feature.id, "agent_id": row.agent_id, "created": created}
+
+
 @router.post("/{feature_id}/run", summary="Run a feature once")
 async def run_feature(
     feature_id: str,
@@ -1221,7 +1291,12 @@ async def run_feature(
     user: Any = Depends(require_permission("features")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Run the feature with the user's own agent and log the outcome.
+    """Run the feature with its own agent — or the caller's, when it has none.
+
+    Which agent runs it is the *only* thing personalization changes here: a
+    definition whose author configured one runs on ``feat-<feature_id>``, and every
+    other definition keeps running on the caller's own agent exactly as before
+    (:func:`_feature_run_agent_id`).
 
     Both outcomes land in ``feature_tasks`` — a failed run is the training
     signal M4 needs, so the row is written before the error is raised. The row
@@ -1230,8 +1305,9 @@ async def run_feature(
     successful one, and nothing else records it.
 
     The feature's capability layer is resolved against *this* caller first
-    (design 5.2): their connectors, their readable knowledge bases, their agent's
-    skills and subagents. What the caller cannot reach is logged rather than
+    (design 5.2): their connectors, their readable knowledge bases, and the run
+    agent's skills and subagents — the feature's own agent once it has one, the
+    caller's otherwise. What the caller cannot reach is logged rather than
     silently dropped, and a model the feature declares that this instance cannot
     run fails the run outright — a feature never quietly runs on another model.
     """
@@ -1242,7 +1318,7 @@ async def run_feature(
         # because it is the same act from the caller's side. Its own gates decide
         # where it stops, and the row it logs says so.
         return await _run_steps(server, feature, body.inputs, user)
-    agent_id = _run_agent_id(server, user.id)
+    agent_id = _feature_run_agent_id(server, feature, user.id)
     repo = server.services.repos.feature_tasks_repo
     inputs = json.dumps(body.inputs, ensure_ascii=False)
     rules = injectable_rule_rows(
