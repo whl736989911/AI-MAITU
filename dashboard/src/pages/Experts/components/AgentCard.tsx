@@ -117,8 +117,10 @@ export const AgentCard = memo(function AgentCard({
   const { setActiveAgent, refresh: refreshAgents } = useAgent();
 
   /** The key one of this card's own words about the row is read from — see FEATURE_WORDS. */
-  const rowKey = (expertKey: string): string =>
-    isFeatureAgent(agent) ? (FEATURE_WORDS[expertKey] ?? expertKey) : expertKey;
+  const rowKey = (expertKey: string): string => {
+    if (!isFeatureAgent(agent)) return expertKey;
+    return FEATURE_WORDS[expertKey] ?? expertKey;
+  };
 
   const [localState, setLocalState] = useState(agent.state);
   const [localError, setLocalError] = useState(agent.last_error);
