@@ -86,7 +86,7 @@ interface UsageSummary {
   buckets: UsageBucket[];
 }
 
-type ViewMode = "summary" | "by_day" | "by_agent" | "by_model";
+type ViewMode = "summary" | "by_day" | "by_agent" | "by_model" | "by_feature";
 type DimGranularity = Exclude<ViewMode, "summary">;
 
 const CHART_COLORS = [
@@ -282,6 +282,7 @@ function bucketColumnTitle(
 ): string {
   if (granularity === "by_day") return t("tokenUsage.date");
   if (granularity === "by_agent") return t("tokenUsage.expert");
+  if (granularity === "by_feature") return t("tokenUsage.feature");
   return t("tokenUsage.model");
 }
 
@@ -696,6 +697,8 @@ function DimensionView({
             title={
               granularity === "by_agent"
                 ? t("tokenUsage.expertBreakdown")
+                : granularity === "by_feature"
+                ? t("tokenUsage.featureBreakdown")
                 : t("tokenUsage.modelBreakdown")
             }
             data={pieData}
@@ -929,6 +932,7 @@ export default function TokenUsagePage() {
       { value: "summary", label: t("tokenUsage.summary") },
       { value: "by_day", label: t("tokenUsage.byDay") },
       { value: "by_agent", label: t("tokenUsage.byExpert") },
+      { value: "by_feature", label: t("tokenUsage.byFeature") },
       { value: "by_model", label: t("tokenUsage.byModel") },
     ],
     [t],
@@ -978,8 +982,10 @@ export default function TokenUsagePage() {
           adminUserFilter,
         );
         setTotals(res);
+        // Both per-agent views bucket by ``agent_id``; only ``by_feature`` has
+        // already been narrowed to features by the server.
         const buckets =
-          view === "by_agent"
+          view === "by_agent" || view === "by_feature"
             ? resolveAgentLabels(res.buckets, agentNameById)
             : res.buckets;
         setDimBuckets(buckets);

@@ -1406,6 +1406,7 @@
     "bootstrapKickoff": "Hi — let's get started",
     "createSessionFailed": "Failed to create a session — please try again",
     "searchSessions": "Search conversations",
+    "featuresGroup": "Features",
     "noSearchResults": "No matching conversations",
     "expandMore": "Show more",
     "pin": "Pin",
@@ -2541,11 +2542,13 @@
     "summary": "Summary",
     "byDay": "By day",
     "byExpert": "By expert",
+    "byFeature": "By feature",
     "byModel": "By model",
     "allExperts": "All experts",
     "allUsers": "All users",
     "ioBreakdown": "Input / Output",
     "expertBreakdown": "By expert",
+    "featureBreakdown": "By feature",
     "modelBreakdown": "By model",
     "ioBarChart": "Input vs output",
     "totalTokens": "Total tokens",
@@ -2578,6 +2581,7 @@
     "total": "Total",
     "date": "Date",
     "expert": "Expert",
+    "feature": "Feature",
     "model": "Model",
     "channel": "Channel",
     "sessions": "Sessions",
@@ -4886,7 +4890,9 @@
     }
   },
   "agentSelector": {
-    "label": "Active Expert"
+    "label": "Active Expert",
+    "featureLabel": "Active feature",
+    "featurePlaceholder": "Select a feature"
   },
   "login": {
     "title": "Sign in",

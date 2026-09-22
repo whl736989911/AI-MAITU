@@ -15,6 +15,7 @@ import {
 import type { Session } from "../hooks/useSessions";
 import type { OctopAgent } from "../../../context/AgentContext";
 import { isAgentChatReady } from "../../../utils/agentError";
+import { isFeatureAgent } from "../../../utils/agentKind";
 import { showConfirmModal } from "../../../utils/confirmModal";
 import { ExpertIcon } from "../../Experts/components/iconForName";
 import SessionChannelIcon from "./SessionChannelIcon";
@@ -448,6 +449,42 @@ export default function SessionList({
   );
   const showSessions = isAgentChatReady(activeAgent?.state);
 
+  // The sidebar lists the caller's agents, and an agent says which half of them
+  // it belongs to (``utils/agentKind``). Both halves are the same rows in the
+  // same order; the features get a heading so a feature is readable as a feature
+  // rather than as another expert. A caller with no feature renders the one
+  // group this list has always rendered.
+  const expertRows = sortedAgents.filter((agent) => !isFeatureAgent(agent));
+  const featureRows = sortedAgents.filter(isFeatureAgent);
+
+  const renderAgentRow = (agent: OctopAgent) =>
+    agent.agent_id === expandedAgentId ? (
+      <ActiveAgentCard
+        key={agent.agent_id}
+        agent={agent}
+        sessions={sessions}
+        activeId={activeId}
+        searchQuery={searchQuery}
+        hasMore={hasMore}
+        loadingMore={loadingMore}
+        onLoadMore={onLoadMore}
+        onFetchAllSessions={onFetchAllSessions}
+        onSelect={onSelect}
+        onDelete={onDelete}
+        onRename={onRename}
+        onPin={onPin}
+        onFork={onFork}
+        activeForkDisabled={activeForkDisabled}
+        activeForkDisabledHint={activeForkDisabledHint}
+      />
+    ) : (
+      <InactiveAgentRow
+        key={agent.agent_id}
+        agent={agent}
+        onSelect={() => onAgentSelect(agent.agent_id)}
+      />
+    );
+
   return (
     <div className={styles.sessionList}>
       {showSessions ? (
@@ -483,38 +520,15 @@ export default function SessionList({
         </div>
       ) : (
         <div className={styles.sessionItems}>
-          {sortedAgents.map((agent) => {
-            const expanded = agent.agent_id === expandedAgentId;
-            if (expanded) {
-              return (
-                <ActiveAgentCard
-                  key={agent.agent_id}
-                  agent={agent}
-                  sessions={sessions}
-                  activeId={activeId}
-                  searchQuery={searchQuery}
-                  hasMore={hasMore}
-                  loadingMore={loadingMore}
-                  onLoadMore={onLoadMore}
-                  onFetchAllSessions={onFetchAllSessions}
-                  onSelect={onSelect}
-                  onDelete={onDelete}
-                  onRename={onRename}
-                  onPin={onPin}
-                  onFork={onFork}
-                  activeForkDisabled={activeForkDisabled}
-                  activeForkDisabledHint={activeForkDisabledHint}
-                />
-              );
-            }
-            return (
-              <InactiveAgentRow
-                key={agent.agent_id}
-                agent={agent}
-                onSelect={() => onAgentSelect(agent.agent_id)}
-              />
-            );
-          })}
+          {expertRows.map(renderAgentRow)}
+          {featureRows.length > 0 ? (
+            <>
+              <div className={styles.sessionGroupLabel}>
+                {t("chat.featuresGroup", "功能")}
+              </div>
+              {featureRows.map(renderAgentRow)}
+            </>
+          ) : null}
         </div>
       )}
     </div>

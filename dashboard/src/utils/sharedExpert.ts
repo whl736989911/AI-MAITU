@@ -47,3 +47,16 @@ export function ownedExperts<T extends SharedExpertAccess>(agents: T[]): T[] {
     (agent) => isOwnedExpert(agent) && !isFeatureAgent(agent),
   );
 }
+
+/**
+ * The caller's own features — :func:`ownedExperts`'s mirror for the other kind.
+ *
+ * A surface that manages the things a feature owns (an automation schedule, say)
+ * asks for these; a surface that picks an expert asks for the experts. Same
+ * ownership rule on both sides: a share-only viewer gets neither.
+ */
+export function ownedFeatures<T extends SharedExpertAccess>(agents: T[]): T[] {
+  return agents.filter(
+    (agent) => isOwnedExpert(agent) && isFeatureAgent(agent),
+  );
+}

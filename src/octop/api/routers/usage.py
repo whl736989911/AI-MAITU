@@ -11,7 +11,11 @@ Query params:
   window      = today | yesterday | last_7d | last_30d | all
                 | day:YYYY-MM-DD | month:YYYY-MM
                 | range:YYYY-MM-DD:YYYY-MM-DD   (default last_30d)
-  granularity = total | by_day | by_agent | by_model            (default by_day)
+  granularity = total | by_day | by_agent | by_model | by_feature   (default by_day)
+
+``by_feature`` groups the same rows as ``by_agent`` but keeps only the agents that
+are a feature's own (``agents.kind = 'feature'``), so a feature's tokens are
+reported as that feature rather than as another agent.
 """
 
 from __future__ import annotations

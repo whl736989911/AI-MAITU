@@ -29,14 +29,17 @@ async def env(env_usage):
     yield env_usage
 
 
-def _seed_usage_agents(srv: Any, agent_ids: list[str], *, user_id: int) -> None:
+def _seed_usage_agents(
+    srv: Any, agent_ids: list[str], *, user_id: int, kind: str = "agent"
+) -> None:
     with srv.services.db.connect() as conn:
         now = int(time.time())
         for aid in agent_ids:
             conn.execute(
-                "INSERT OR IGNORE INTO agents (agent_id, user_id, name, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (aid, user_id, aid, now, now),
+                "INSERT OR IGNORE INTO agents "
+                "(agent_id, user_id, name, kind, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (aid, user_id, aid, kind, now, now),
             )
 
 
@@ -85,6 +88,44 @@ async def test_repo_summary_by_agent(env: Any) -> None:
     by_id = {b["key"]: b for b in result["buckets"]}
     assert by_id["agt-a"]["total_tokens"] == 45
     assert by_id["agt-b"]["total_tokens"] == 7
+
+
+async def test_repo_summary_by_feature_reports_only_feature_agents(env: Any) -> None:
+    """``by_feature`` is the feature half of ``by_agent`` — the kind says which."""
+    c, srv, _admin_auth, alice_auth, ctx = env
+    _seed_usage_agents(srv, ["agt-feature"], user_id=ctx["alice_id"], kind="feature")
+    _seed_usage_agents(srv, ["agt-expert"], user_id=ctx["alice_id"])
+    repo = srv.services.usage_repo
+    repo.record(
+        agent_id="agt-feature",
+        user_id=ctx["alice_id"],
+        input_tokens=10,
+        output_tokens=5,
+    )
+    repo.record(
+        agent_id="agt-expert",
+        user_id=ctx["alice_id"],
+        input_tokens=20,
+        output_tokens=10,
+    )
+
+    by_feature = repo.summary(user_id=ctx["alice_id"], window="last_30d", granularity="by_feature")
+    assert [b["key"] for b in by_feature["buckets"]] == ["agt-feature"]
+    assert by_feature["buckets"][0]["total_tokens"] == 15
+    # The roll-up is the whole scope either way: the view picks what is listed,
+    # not what is counted.
+    assert by_feature["total_tokens"] == 45
+
+    # The experts' own view is untouched by the new one.
+    by_agent = repo.summary(user_id=ctx["alice_id"], window="last_30d", granularity="by_agent")
+    assert {b["key"] for b in by_agent["buckets"]} == {"agt-feature", "agt-expert"}
+
+    r = await c.get(
+        "/api/usage/summary?granularity=by_feature&window=last_30d",
+        headers=alice_auth,
+    )
+    assert r.status_code == 200
+    assert [b["key"] for b in r.json()["buckets"]] == ["agt-feature"]
 
 
 async def test_repo_summary_by_model(env: Any) -> None:

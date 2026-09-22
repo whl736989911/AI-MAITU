@@ -1406,6 +1406,7 @@
     "bootstrapKickoff": "你好，我们开始吧",
     "createSessionFailed": "创建会话失败，请重试",
     "searchSessions": "搜索会话",
+    "featuresGroup": "功能",
     "noSearchResults": "没有匹配的会话",
     "expandMore": "展开更多",
     "pin": "置顶",
@@ -2541,11 +2542,13 @@
     "summary": "汇总",
     "byDay": "按天",
     "byExpert": "按专家",
+    "byFeature": "按功能",
     "byModel": "按模型",
     "allExperts": "全部专家",
     "allUsers": "全部用户",
     "ioBreakdown": "输入 / 输出",
     "expertBreakdown": "专家分布",
+    "featureBreakdown": "功能分布",
     "modelBreakdown": "模型分布",
     "ioBarChart": "输入输出对比",
     "totalTokens": "总 tokens",
@@ -2578,6 +2581,7 @@
     "total": "总计",
     "date": "日期",
     "expert": "专家",
+    "feature": "功能",
     "model": "模型",
     "channel": "通道",
     "sessions": "会话数",
@@ -4886,7 +4890,9 @@
     }
   },
   "agentSelector": {
-    "label": "当前专家"
+    "label": "当前专家",
+    "featureLabel": "当前功能",
+    "featurePlaceholder": "选择功能"
   },
   "login": {
     "title": "登录",

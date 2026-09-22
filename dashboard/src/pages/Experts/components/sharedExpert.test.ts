@@ -4,6 +4,7 @@ import {
   isOwnedExpert,
   isSharedExpertViewer,
   ownedExperts,
+  ownedFeatures,
 } from "../../../utils/sharedExpert";
 
 describe("isSharedExpertViewer", () => {
@@ -65,6 +66,30 @@ describe("ownedExperts", () => {
       { agent_id: "feat-weekly", is_owner: true, kind: "feature" },
       { agent_id: "feat-shared", is_owner: false, kind: "feature" },
     ];
+    expect(ownedExperts(agents).map((a) => a.agent_id)).toEqual(["my-expert"]);
+  });
+});
+
+describe("ownedFeatures", () => {
+  it("is the experts' list with the kinds swapped", () => {
+    const agents = [
+      { agent_id: "my-expert", is_shared: false, is_owner: true },
+      {
+        agent_id: "feat-mine",
+        is_shared: false,
+        is_owner: true,
+        kind: "feature",
+      },
+      {
+        agent_id: "feat-shared",
+        is_shared: true,
+        is_owner: false,
+        kind: "feature",
+      },
+    ];
+    expect(ownedFeatures(agents).map((a) => a.agent_id)).toEqual(["feat-mine"]);
+    // A shared feature is still somebody else's to manage, exactly as a shared
+    // expert is — one ownership rule, both kinds.
     expect(ownedExperts(agents).map((a) => a.agent_id)).toEqual(["my-expert"]);
   });
 });
