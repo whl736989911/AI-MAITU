@@ -136,6 +136,23 @@ if (typeof window !== "undefined") {
   };
   domGlobals.DOMMatrix ??= _DOMMatrix;
 
+  // jsdom has no pseudo-element styles: ``getComputedStyle(el, '::-webkit-
+  // scrollbar')`` raises a "Not implemented" jsdomError — which vitest prints
+  // with a full stack trace, synchronously, for every worker — and *then*
+  // computes the element's own declaration anyway. antd's scroll locker
+  // measures exactly that pseudo-element on every Modal/Drawer open
+  // (rc-util's ``measureScrollbarSize``), so the noise lands on every dialog
+  // test. The width/height antd reads are empty strings either way, so hand
+  // back an empty declaration and skip both the error and the cascade.
+  const _origGetComputedStyle = window.getComputedStyle.bind(window);
+  window.getComputedStyle = ((
+    elt: Element,
+    pseudoElt?: string | null,
+  ): CSSStyleDeclaration =>
+    pseudoElt === undefined || pseudoElt === null || pseudoElt === ""
+      ? _origGetComputedStyle(elt)
+      : document.createElement("div").style) as typeof window.getComputedStyle;
+
   // jsdom doesn't implement ``getComputedStyle().transition`` properly,
   // so antd's wave / motion can throw — silence that one noisy console
   // warning without hiding real errors.

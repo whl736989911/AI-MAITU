@@ -14,7 +14,26 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, {
+  PointerEventsCheckLevel,
+  type UserEvent,
+} from "@testing-library/user-event";
+
+/**
+ * Interaction options for jsdom. Same measurement as the other dialog
+ * suites: user-event's default ``pointerEventsCheck`` re-walks the target's
+ * ancestors through ``getComputedStyle`` for every dispatched event, and
+ * jsdom prices each call at ~2 ms against antd's ~1.3k runtime-injected CSS
+ * rules — 20-30 ms once the whole suite is competing for the CPU. The direct
+ * ``userEvent.click``/``type`` API also builds a fresh instance per call, so
+ * nothing is ever cached. ``EachTarget`` keeps the pointer-events guard but
+ * caches it per element, and ``delay: null`` drops the real ``setTimeout``
+ * between events.
+ */
+const userOptions = {
+  pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+  delay: null,
+};
 
 vi.mock("../../../api/request", () => ({
   request: vi.fn(),
@@ -37,10 +56,10 @@ beforeEach(() => {
 });
 
 describe("<ChannelsPanel /> create-flow default", () => {
-  async function openTelegramCreateDrawer() {
+  async function openTelegramCreateDrawer(user: UserEvent) {
     render(<ChannelsPanel agentId="ag1" />);
     // Telegram is collapsed behind "更多通道" until expanded.
-    await userEvent.click(
+    await user.click(
       await screen.findByRole("button", {
         name: /channels\.showMoreChannels/,
       }),
@@ -48,11 +67,12 @@ describe("<ChannelsPanel /> create-flow default", () => {
     // telegram has no quick-config path -> clicking its card opens the
     // manual create drawer directly.
     const card = (await screen.findAllByText("channels.label_telegram"))[0];
-    await userEvent.click(card);
+    await user.click(card);
   }
 
   it("opens the create drawer with the enable switch ON", async () => {
-    await openTelegramCreateDrawer();
+    const user = userEvent.setup(userOptions);
+    await openTelegramCreateDrawer(user);
 
     // the drawer's "Enable channel" switch (Form.Item wires label<->control)
     const sw = await screen.findByLabelText("channels.enableChannel");
@@ -60,13 +80,14 @@ describe("<ChannelsPanel /> create-flow default", () => {
   });
 
   it("saves a new channel with a single POST and no follow-up PATCH", async () => {
-    await openTelegramCreateDrawer();
+    const user = userEvent.setup(userOptions);
+    await openTelegramCreateDrawer(user);
 
-    await userEvent.type(
+    await user.type(
       await screen.findByLabelText(/Bot Token/i),
       "123456:ABC-token",
     );
-    await userEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await user.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => {
       const post = api.mock.calls.find(
@@ -93,15 +114,16 @@ describe("<ChannelsPanel /> create-flow default", () => {
   });
 
   it("still honors a deliberate opt-out: unchecking fires the alignment PATCH", async () => {
-    await openTelegramCreateDrawer();
+    const user = userEvent.setup(userOptions);
+    await openTelegramCreateDrawer(user);
 
-    await userEvent.type(
+    await user.type(
       await screen.findByLabelText(/Bot Token/i),
       "123456:ABC-token",
     );
     // user explicitly turns the switch off before saving
-    await userEvent.click(screen.getByLabelText("channels.enableChannel"));
-    await userEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await user.click(screen.getByLabelText("channels.enableChannel"));
+    await user.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => {
       const patch = api.mock.calls.find(

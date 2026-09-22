@@ -11,7 +11,28 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, {
+  PointerEventsCheckLevel,
+} from "@testing-library/user-event";
+
+/**
+ * Interaction options for jsdom.
+ *
+ * user-event's default ``pointerEventsCheck`` re-walks the target's ancestors
+ * through ``getComputedStyle`` for every dispatched event of a gesture, and
+ * jsdom prices each call at ~2 ms against antd's ~1.3k runtime-injected CSS
+ * rules (0.25 ms with no rules present) — 20-30 ms once the whole suite is
+ * competing for the CPU. ``EachTarget`` keeps the guard (an element declaring
+ * ``pointer-events: none`` still fails) but caches the verdict per element
+ * instead of re-checking it per event, and ``delay: null`` drops the real
+ * ``setTimeout`` user-event inserts between events — the part that stretches
+ * arbitrarily on a loaded box. Measured on a CPU-saturated worker: the
+ * confirm click 233 -> 123 ms, the second row click 414 -> 281 ms.
+ */
+const userOptions = {
+  pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+  delay: null,
+};
 
 import { makeAtom, listAtomsResp } from "../../../test/memoryFixtures";
 
@@ -74,7 +95,7 @@ describe("<AtomsList />", () => {
       ]),
     );
 
-    const user = userEvent.setup();
+    const user = userEvent.setup(userOptions);
     render(<AtomsList agentId="ZYWZTD" />);
 
     await waitFor(() => {
