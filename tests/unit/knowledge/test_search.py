@@ -7,6 +7,7 @@ import pytest
 from octop.infra.knowledge.index import Hit
 from octop.infra.knowledge.search import (
     MAX_TERMS,
+    fuse_rankings,
     normalize_query,
     query_terms,
     rank_hits,
@@ -95,6 +96,58 @@ def test_snippet_centres_on_the_match() -> None:
     assert out.startswith("…")
     assert out.endswith("…")
     assert len(out) <= 82  # the window plus its two ellipses
+
+
+def _hit(chunk_id: str, text: str) -> Hit:
+    return Hit(
+        chunk_id=chunk_id,
+        doc_id=chunk_id.split(":")[0],
+        ordinal=int(chunk_id.split(":")[1]),
+        text=text,
+        score=0.0,
+        metadata={},
+    )
+
+
+def test_fusion_prefers_what_both_halves_found() -> None:
+    """design §9: a chunk the vectors *and* the words found comes first."""
+    both = _hit("c:0", "found by both")
+    meaning_only = _hit("a:0", "found by meaning")
+    third = _hit("b:0", "third by meaning")
+
+    # ``c:0`` is the only chunk both lists contain, so it carries two
+    # contributions and outranks the top of either list on its own.
+    fused = fuse_rankings([[both, meaning_only, third], [both]])
+
+    assert [hit.chunk_id for hit in fused] == ["c:0", "a:0", "b:0"]
+    assert fused[0].score > fused[1].score
+
+
+def test_fusion_keeps_one_entry_per_chunk() -> None:
+    """The same chunk found twice is one result, not two."""
+    fused = fuse_rankings([[_hit("a:0", "text")], [_hit("a:0", "text")]])
+
+    assert len(fused) == 1
+    assert fused[0].chunk_id == "a:0"
+
+
+def test_fusion_without_a_second_ranking_keeps_the_first() -> None:
+    vectors = [_hit("a:0", "first"), _hit("b:0", "second")]
+
+    assert [hit.chunk_id for hit in fuse_rankings([vectors, []])] == ["a:0", "b:0"]
+    assert fuse_rankings([]) == []
+    assert fuse_rankings([[], []]) == []
+
+
+def test_fusion_is_stable_for_equal_ranks() -> None:
+    """Two chunks ranked equally still come back in one fixed order."""
+    first = _hit("b:0", "x")
+    second = _hit("a:0", "y")
+
+    fused = fuse_rankings([[first], [second]])
+
+    assert [hit.chunk_id for hit in fused] == ["a:0", "b:0"]
+    assert [hit.chunk_id for hit in fuse_rankings([[first], [second]])] == ["a:0", "b:0"]
 
 
 def test_rank_hits_scores_and_orders_stably() -> None:

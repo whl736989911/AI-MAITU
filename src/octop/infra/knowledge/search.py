@@ -1,10 +1,12 @@
-"""Lexical search over a knowledge base's chunks (design §9, §12.9).
+"""Lexical search over a knowledge base's chunks, and fusing it with vectors.
 
 The design asks for keyword and full-text search *independently of* the vector
 index, and says why: an identifier, a name, or an exact phrase is what a user
 types when they already know what they are looking for, and embeddings are bad
 at exactly that. :meth:`KnowledgeIndex.search` answers the other half — similar
-meaning, different words — and this module answers this one.
+meaning, different words — and this module answers this one. It also holds the
+step that puts the two answers together (:func:`fuse_rankings`), because that
+step is about ranking and nothing else.
 
 Two halves, deliberately apart:
 
@@ -159,6 +161,51 @@ def rank_hits(hits: Sequence[Hit], terms: Sequence[str], phrase: str = "") -> li
     ]
     scored.sort(key=lambda hit: (-hit.score, hit.doc_id, hit.ordinal))
     return scored
+
+
+RRF_K = 60
+"""The constant in ``1 / (RRF_K + rank)``.
+
+60 is the value from the original reciprocal-rank-fusion paper, and every
+implementation since has kept it. Choosing another would need a reason, and
+there is none to hand.
+"""
+
+
+def fuse_rankings(rankings: Sequence[Sequence[Hit]]) -> list[Hit]:
+    """Merge ranked lists into one, by reciprocal rank (design §9).
+
+    The two halves of retrieval do not produce comparable numbers — a cosine
+    similarity and a term-overlap count share no scale, so averaging or
+    weighting them would be arithmetic on units that do not exist. Ranks are
+    fused instead: every list contributes ``1 / (RRF_K + rank)`` for each chunk
+    it found, so a chunk **both** halves found carries two contributions and
+    comes first. That is the property hybrid retrieval is for, and it needs no
+    weight to tune.
+
+    The returned hits carry the fused value in ``score``, which is also what
+    makes results from different knowledge bases comparable when they are merged
+    into one context. Ties break by chunk id, so the same inputs always answer
+    in the same order.
+    """
+    scores: dict[str, float] = {}
+    seen: dict[str, Hit] = {}
+    for ranking in rankings:
+        for rank, hit in enumerate(ranking):
+            scores[hit.chunk_id] = scores.get(hit.chunk_id, 0.0) + 1.0 / (RRF_K + rank + 1)
+            seen.setdefault(hit.chunk_id, hit)
+    ordered = sorted(scores.items(), key=lambda item: (-item[1], item[0]))
+    return [
+        Hit(
+            chunk_id=hit.chunk_id,
+            doc_id=hit.doc_id,
+            ordinal=hit.ordinal,
+            text=hit.text,
+            score=scores[chunk_id],
+            metadata=hit.metadata,
+        )
+        for chunk_id, hit in ((key, seen[key]) for key, _ in ordered)
+    ]
 
 
 def search_base(
