@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import shutil
 from pathlib import Path
 
@@ -35,3 +36,25 @@ def delete_document_file(kb_id: str, doc_id: str, filename: str) -> None:
 
 def delete_knowledge_base_files(kb_id: str) -> None:
     shutil.rmtree(knowledge_base_dir(kb_id), ignore_errors=True)
+
+
+_BLOCK = 1 << 20
+
+
+def document_digest(content: bytes) -> str:
+    """The content hash a document is identified by (design §7.3, §8.1).
+
+    It is what tells a file that was *touched* apart from one that *changed*,
+    which size and modification time cannot: re-saving a spreadsheet usually
+    moves its timestamp and leaves its bytes alone.
+    """
+    return hashlib.sha256(content).hexdigest()
+
+
+def file_digest(path: Path) -> str:
+    """The same digest for a file, read in blocks so a large one is not loaded."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(_BLOCK), b""):
+            digest.update(block)
+    return digest.hexdigest()

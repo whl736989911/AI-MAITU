@@ -97,12 +97,28 @@ class ErrorCode(StrEnum):
     KNOWLEDGE_UNSUPPORTED_TYPE = "KNOWLEDGE_UNSUPPORTED_TYPE"
     KNOWLEDGE_NAME_TAKEN = "KNOWLEDGE_NAME_TAKEN"
     KNOWLEDGE_NAME_INVALID = "KNOWLEDGE_NAME_INVALID"
+    # Reading a file the document pipeline found in a source: one that is
+    # encrypted (design §6.1), and one this host cannot convert for reading
+    # (``.doc``/``.ppt`` with no LibreOffice, or a file the converter refused).
+    # Both are states of the file rather than failures of the platform, so
+    # neither may answer with INTERNAL_ERROR.
+    KNOWLEDGE_PASSWORD_REQUIRED = "KNOWLEDGE_PASSWORD_REQUIRED"
+    KNOWLEDGE_CONVERSION_FAILED = "KNOWLEDGE_CONVERSION_FAILED"
+    # Extraction templates (design §7): a template that cannot be carried out is
+    # refused when it is written, and one that is still bound is refused deletion
+    # with the reason, because "in use" is something an administrator can undo.
+    EXTRACT_TEMPLATE_INVALID = "EXTRACT_TEMPLATE_INVALID"
+    EXTRACT_TEMPLATE_IN_USE = "EXTRACT_TEMPLATE_IN_USE"
     # Data sources: a kind whose ingest is not implemented must refuse instead
     # of reporting a success it never performed.
     DATA_SOURCE_INVALID = "DATA_SOURCE_INVALID"
     DATA_SOURCE_SYNC_UNSUPPORTED = "DATA_SOURCE_SYNC_UNSUPPORTED"
     # A url source that was allowed to sync but whose fetch/response failed.
     DATA_SOURCE_FETCH_FAILED = "DATA_SOURCE_FETCH_FAILED"
+    # A folder source the platform could not reach or list. Distinct from
+    # DATA_SOURCE_INVALID: the configuration may be fine and the share simply
+    # be down, which is a different thing to tell an administrator.
+    DATA_SOURCE_UNREACHABLE = "DATA_SOURCE_UNREACHABLE"
     AVATAR_INVALID = "AVATAR_INVALID"
     AVATAR_TOO_LARGE = "AVATAR_TOO_LARGE"
     INVITE_INVALID = "INVITE_INVALID"
@@ -239,9 +255,14 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_UNSUPPORTED_TYPE: 400,
     ErrorCode.KNOWLEDGE_NAME_TAKEN: 409,
     ErrorCode.KNOWLEDGE_NAME_INVALID: 400,
+    ErrorCode.KNOWLEDGE_PASSWORD_REQUIRED: 409,
+    ErrorCode.KNOWLEDGE_CONVERSION_FAILED: 409,
+    ErrorCode.EXTRACT_TEMPLATE_INVALID: 400,
+    ErrorCode.EXTRACT_TEMPLATE_IN_USE: 409,
     ErrorCode.DATA_SOURCE_INVALID: 400,
     ErrorCode.DATA_SOURCE_SYNC_UNSUPPORTED: 400,
     ErrorCode.DATA_SOURCE_FETCH_FAILED: 502,
+    ErrorCode.DATA_SOURCE_UNREACHABLE: 502,
     ErrorCode.AVATAR_INVALID: 400,
     ErrorCode.AVATAR_TOO_LARGE: 413,
     ErrorCode.INVITE_INVALID: 400,

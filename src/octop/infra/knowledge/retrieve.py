@@ -12,6 +12,13 @@ from octop.infra.knowledge.citations import append_citations_marker, citations_f
 from octop.infra.knowledge.embed import embed_knowledge_texts
 from octop.infra.knowledge.gate import assert_knowledge_usable
 from octop.infra.knowledge.index import Hit, KnowledgeIndex
+from octop.infra.knowledge.scope import readable_documents
+from octop.infra.knowledge.search import (
+    fuse_rankings,
+    normalize_query,
+    query_terms,
+    rank_hits,
+)
 
 DEFAULT_RETRIEVAL_K = 8
 DEFAULT_CONTEXT_CHAR_BUDGET = 6000
@@ -65,9 +72,10 @@ def _retrieve_context_sync(
     visible_bases: Sequence[Any] | None,
 ) -> str:
     assert_knowledge_usable(services.settings_repo.get, getattr(services, "provider_repo", None))
-    query_vectors = embed_knowledge_texts(services, [(query or "").strip()])
-    if not query_vectors:
-        return ""
+    query_text = (query or "").strip()
+    query_vectors = _embed_query(services, query_text)
+    terms = query_terms(query_text)
+    phrase = normalize_query(query_text)
 
     visible = visible_bases
     if visible is None:
@@ -77,6 +85,10 @@ def _retrieve_context_sync(
         visible = services.knowledge_repo.list_visible(user_id)
     visible_by_id = {base.id: base for base in visible}
     selected_ids = _unique_ids(knowledge_base_ids)
+    # design §14: a citation is a read, so it answers to the same file-level
+    # entries the preview and the download do.
+    restricted = set(services.knowledge_repo.document_acl_entries())
+    readable = services.knowledge_repo.readable_document_ids(user_id=user_id)
 
     ranked: list[tuple[Any, Hit, Any]] = []
     for kb_id in selected_ids:
@@ -85,16 +97,43 @@ def _retrieve_context_sync(
             continue
         ready_documents = {
             document.id: document
-            for document in services.knowledge_repo.list_documents(kb_id)
+            for document in readable_documents(
+                services.knowledge_repo.list_documents(kb_id),
+                restricted=restricted,
+                readable=readable,
+            )
             if document.status == "ready" and not document.is_dir
         }
-        for hit in KnowledgeIndex(kb_id).search(query_vectors[0], k=k):
+        index = KnowledgeIndex(kb_id)
+        # design §9's hybrid retrieval: the semantic half and the lexical half,
+        # fused by rank because their scores share no scale. Either may be
+        # empty — a query with nothing searchable in it, or a deployment whose
+        # embedding backend is down — and the other one still answers.
+        vectors = index.search(query_vectors[0], k=k) if query_vectors else []
+        lexical = rank_hits(index.search_text(terms), terms, phrase) if terms else []
+        for hit in fuse_rankings([vectors, lexical]):
             document = ready_documents.get(hit.doc_id)
             if document is not None:
                 ranked.append((base, hit, document))
 
     ranked.sort(key=lambda item: item[1].score, reverse=True)
     return _format_context(ranked[:k], char_budget=char_budget, locale=locale)
+
+
+def _embed_query(services: Any, query: str) -> list[list[float]]:
+    """The query's vector, or ``[]`` when the embedding backend cannot answer.
+
+    design §1 is explicit that the vector model is an optional semantic layer
+    rather than the thing that makes a knowledge base work, so a backend that is
+    unavailable leaves the lexical half to answer the turn instead of leaving the
+    turn with no knowledge at all. It is logged, because a deployment that has
+    silently lost its embeddings should be findable in the logs.
+    """
+    try:
+        return embed_knowledge_texts(services, [query])
+    except Exception:
+        logger.warning("knowledge query embedding failed; searching lexically only", exc_info=True)
+        return []
 
 
 def _unique_ids(ids: Sequence[str]) -> list[str]:

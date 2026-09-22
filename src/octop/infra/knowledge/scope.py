@@ -16,9 +16,12 @@ entries and resolves the actor's scope with ``sharing.user_scope``.
 
 from __future__ import annotations
 
+from collections.abc import Collection, Iterable
+from typing import Any
+
 from octop.infra.sharing import AclEntry, can_access
 
-__all__ = ["may_read_knowledge_base"]
+__all__ = ["may_read_document", "may_read_knowledge_base", "readable_documents"]
 
 
 def may_read_knowledge_base(
@@ -33,3 +36,34 @@ def may_read_knowledge_base(
     ``None`` denies: access is granted by a row, never by its absence.
     """
     return entry is not None and can_access(entry, user_id=user_id, role=role, unit_key=unit_key)
+
+
+def may_read_document(
+    document_id: str,
+    *,
+    restricted: Collection[str],
+    readable: Collection[str],
+) -> bool:
+    """Read check for one document, given the file-level entries.
+
+    ``restricted`` is every document that carries an entry of its own and
+    ``readable`` the subset ``sharing.can_access`` allows this actor. A document
+    outside ``restricted`` wears no file-level rule, so the base's entry — which
+    the caller has already checked — is the whole answer.
+    """
+    return document_id not in restricted or document_id in readable
+
+
+def readable_documents(
+    documents: Iterable[Any], *, restricted: Collection[str], readable: Collection[str]
+) -> list[Any]:
+    """The documents of *documents* this actor may read (design §14).
+
+    The list form of :func:`may_read_document`, so a listing, a search result,
+    and a chat citation cannot answer differently about the same file.
+    """
+    return [
+        document
+        for document in documents
+        if may_read_document(document.id, restricted=restricted, readable=readable)
+    ]

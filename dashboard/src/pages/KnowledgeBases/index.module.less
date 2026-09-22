@@ -538,6 +538,11 @@
   background: #e6fffb;
 }
 
+.listBadgeEnterprise {
+  color: #531dab;
+  background: #f9f0ff;
+}
+
 .splitDivider {
   position: relative;
   flex-shrink: 0;
@@ -1566,5 +1571,91 @@
 
   .textEditorWorkspace {
     margin: 0 12px 12px;
+  }
+}
+
+/* Search results replace the document listing while a query is active. */
+.searchInput {
+  width: 220px;
+}
+
+.searchResults {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.searchLoading {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0;
+}
+
+.searchCount {
+  font-size: 12px;
+}
+
+.searchList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.searchItem {
+  display: flex;
+}
+
+.searchHit {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--fn-bg-container);
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: 8px;
+  cursor: pointer;
+}
+
+.searchHit:hover {
+  border-color: var(--fn-color-primary);
+}
+
+.searchHitHead {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+
+.searchHitTitle {
+  font-weight: 600;
+  color: var(--fn-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.searchHitPath {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+.searchHitSnippet {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--fn-text-secondary);
+}
+
+@media (max-width: 768px) {
+  .searchInput {
+    width: 100%;
   }
 }

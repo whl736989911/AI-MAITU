@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import current_user, get_server, require_permission
@@ -23,12 +23,15 @@ from octop.api.deps import current_user, get_server, require_permission
 # describing the same statuses and messages twice.
 from octop.api.routers.knowledge_bases import _map_knowledge_error
 from octop.infra.db.repos.data_sources import KINDS, DataSourceRow
+from octop.infra.db.repos.knowledge_sync_runs import SyncRunRow
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.data_sources import (
     DataSourceService,
     DataSourceSyncFailed,
     DataSourceSyncUnsupported,
+    FolderSettings,
 )
+from octop.infra.knowledge.sources import SourceError
 from octop.infra.knowledge.url_fetch import UrlFetchError
 from octop.infra.server import OctopServer
 from octop.infra.users.identity import User
@@ -37,6 +40,50 @@ from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+class FolderBody(BaseModel):
+    """Where a folder source is and how to reach it (design §4).
+
+    ``extra="forbid"`` for the same reason the create body has it: a field this
+    API does not write must fail loudly rather than look configured.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    root_path: str = Field(
+        default="",
+        max_length=1000,
+        description=(
+            "Folder to index. local: an absolute path on the server. smb: a path inside the share."
+        ),
+    )
+    server: str = Field(default="", max_length=255, description="SMB server host.")
+    share: str = Field(default="", max_length=255, description="SMB share name.")
+    username: str = Field(
+        default="",
+        max_length=255,
+        description="Connecting account. Include the domain as 'DOMAIN\\\\user' for SMB.",
+    )
+    password: str | None = Field(
+        default=None,
+        description=(
+            "Connecting secret. Write-only: stored encrypted and never returned. "
+            "Omit to leave an existing secret unchanged; send an empty string to clear it."
+        ),
+    )
+    read_only: bool = Field(default=True, description="Read-only data source.")
+    include_globs: str = Field(
+        default="",
+        max_length=4000,
+        description="Newline-separated globs to include. Empty includes everything.",
+    )
+    exclude_globs: str = Field(
+        default="", max_length=4000, description="Newline-separated globs to exclude."
+    )
+    scan_interval_seconds: int = Field(
+        default=0, ge=0, le=604800, description="Scan interval in seconds. 0 scans only on request."
+    )
 
 
 class CreateDataSourceBody(BaseModel):
@@ -50,9 +97,22 @@ class CreateDataSourceBody(BaseModel):
         default_factory=dict,
         description=(
             "Kind-specific settings. upload: document_id or path of a document in the base; "
-            "url: url of the page to fetch; connector: connector_id."
+            "url: url of the page to fetch; connector: connector_id. "
+            "Folder kinds (local / smb / nfs) take no config: use folder instead."
         ),
     )
+    folder: FolderBody | None = Field(
+        default=None, description="Connection settings. Required for local / smb / nfs."
+    )
+
+
+class UpdateDataSourceBody(BaseModel):
+    """Patch a source. Every field is optional; omitted ones stay as they are."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    folder: FolderBody | None = Field(default=None, description="Replacement connection settings.")
 
 
 def _service(server: OctopServer) -> DataSourceService:
@@ -65,6 +125,12 @@ def _payload(row: DataSourceRow) -> dict[str, Any]:
     payload = asdict(row)
     payload["data_source_id"] = row.id
     payload["config"] = row.config
+    return payload
+
+
+def _run_payload(row: SyncRunRow) -> dict[str, Any]:
+    payload = asdict(row)
+    payload["run_id"] = row.id
     return payload
 
 
@@ -98,6 +164,10 @@ def _map_data_source_error(
         return _map_knowledge_error(cause, locale=locale, server=server)
     if isinstance(exc, UnsafeOutboundUrl):
         return OctopError(ErrorCode.DATA_SOURCE_INVALID, str(exc), details={"reason": str(exc)})
+    if isinstance(exc, SourceError):
+        # A folder the platform could not reach or list. The message is built by
+        # the connector and carries no secret (design §4).
+        return OctopError(ErrorCode.DATA_SOURCE_UNREACHABLE, str(exc), details={"reason": str(exc)})
     if isinstance(exc, PermissionError):
         return OctopError.localized(ErrorCode.KNOWLEDGE_FORBIDDEN, locale)
     if isinstance(exc, LookupError):
@@ -110,6 +180,13 @@ def _map_data_source_error(
 
 def _is_admin(user: User) -> bool:
     return bool(user.is_admin)
+
+
+def _folder_settings(body: FolderBody | None) -> FolderSettings | None:
+    """The domain settings a request body describes, or ``None`` when it has none."""
+    if body is None:
+        return None
+    return FolderSettings(**body.model_dump())
 
 
 @router.get(
@@ -152,6 +229,7 @@ async def create_data_source(
             name=body.name,
             kind=body.kind,
             config=body.config,
+            folder=_folder_settings(body.folder),
             is_admin=_is_admin(user),
         )
         return _payload(row)
@@ -192,6 +270,80 @@ async def sync_data_source(
             _service(server).sync, ds_id, actor_user_id=user.id, is_admin=_is_admin(user)
         )
         return _payload(row)
+    except Exception as exc:
+        raise _map_data_source_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.patch("/data-sources/{ds_id}", summary="Update a data source")
+async def update_data_source(
+    ds_id: str,
+    body: UpdateDataSourceBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    try:
+        row = _service(server).update_source(
+            ds_id,
+            actor_user_id=user.id,
+            name=body.name,
+            folder=_folder_settings(body.folder),
+            is_admin=_is_admin(user),
+        )
+        return _payload(row)
+    except Exception as exc:
+        raise _map_data_source_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.post("/data-sources/{ds_id}/test", summary="Test a data source connection")
+async def test_data_source(
+    ds_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    """Reach the source and report what it saw, indexing nothing.
+
+    Separate from sync on purpose: an administrator wants to know whether a
+    share is reachable before committing a scan of it, and the answer is stored
+    on the source either way.
+    """
+    try:
+        detail = await asyncio.to_thread(
+            _service(server).test_connection,
+            ds_id,
+            actor_user_id=user.id,
+            is_admin=_is_admin(user),
+        )
+    except Exception as exc:
+        raise _map_data_source_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+    return {"ok": True, "detail": detail}
+
+
+@router.get("/data-sources/{ds_id}/runs", summary="List a data source's scans")
+async def list_data_source_runs(
+    ds_id: str,
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100, description="Maximum runs to return."),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(current_user),
+) -> list[dict[str, Any]]:
+    """The source's scan history, newest first (design §8.4).
+
+    A run is a summary; the per-file outcome — including a failure's reason —
+    stays on the document row, which ``GET .../documents`` lists.
+    """
+    try:
+        rows = _service(server).list_runs(
+            ds_id, actor_user_id=user.id, is_admin=_is_admin(user), limit=limit
+        )
+        return [_run_payload(row) for row in rows]
     except Exception as exc:
         raise _map_data_source_error(
             exc, locale=resolve_request_locale(request), server=server

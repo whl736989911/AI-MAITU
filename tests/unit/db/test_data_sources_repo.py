@@ -40,7 +40,7 @@ def test_data_sources_table_migrated(db: SqlitePool) -> None:
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(data_sources)").fetchall()}
         target = conn.execute("PRAGMA foreign_key_list(data_sources)").fetchall()
-    assert version == 30
+    assert version == 35
     assert cols == {
         "id",
         "knowledge_base_id",
@@ -53,6 +53,19 @@ def test_data_sources_table_migrated(db: SqlitePool) -> None:
         "last_synced_at",
         "created_at",
         "updated_at",
+        "server",
+        "share",
+        "root_path",
+        "username",
+        "credentials_enc",
+        "read_only",
+        "include_globs",
+        "exclude_globs",
+        "scan_interval_seconds",
+        "connection_status",
+        "connection_error",
+        "last_scan_at",
+        "last_scan_ok_at",
     }
     assert ("knowledge_base_id", "knowledge_bases", "CASCADE") in {
         (r["from"], r["table"], r["on_delete"]) for r in target

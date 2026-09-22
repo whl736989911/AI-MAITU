@@ -91,9 +91,62 @@ class KnowledgeIndex:
                 rows,
             )
 
+    def doc_chunks(self, doc_id: str) -> list[tuple[str, list[float], dict[str, object]]]:
+        """One document's chunks in order: text, vector, metadata.
+
+        The reader that matches :meth:`replace_doc_chunks`. It exists because a
+        document can move between knowledge bases (design §13 folds a whole
+        library into the space), and it has to take its chunks with it — the
+        sidecar layout is this class's business, not the caller's.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT text, embedding, meta_json FROM chunks WHERE doc_id = ? ORDER BY ordinal",
+                (doc_id,),
+            ).fetchall()
+        chunks: list[tuple[str, list[float], dict[str, object]]] = []
+        for text, blob, meta_json in rows:
+            vector = list(struct.unpack(f"<{len(blob) // 4}f", blob))
+            chunks.append((str(text), vector, json.loads(meta_json or "{}")))
+        return chunks
+
     def delete_doc(self, doc_id: str) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+
+    def search_text(self, terms: Sequence[str]) -> list[Hit]:
+        """Chunks whose text contains any of *terms*, in no particular order.
+
+        Candidates only. The ranking lives in ``knowledge.search``, which is
+        where a score a person can argue with belongs; this method's job is the
+        substring test, and running that in SQL is what the engine is for.
+
+        *terms* are expected already normalized (``search.query_terms``
+        lower-cases them), because SQLite's ``lower()`` only folds ASCII.
+        """
+        cleaned = [term for term in terms if term]
+        if not cleaned:
+            return []
+        clause = " OR ".join("instr(lower(text), ?) > 0" for _ in cleaned)
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT chunk_id, doc_id, ordinal, text, meta_json FROM chunks WHERE {clause}",
+                cleaned,
+            ).fetchall()
+        hits: list[Hit] = []
+        for chunk_id, doc_id, ordinal, text, meta_json in rows:
+            decoded = json.loads(meta_json)
+            hits.append(
+                Hit(
+                    chunk_id=chunk_id,
+                    doc_id=doc_id,
+                    ordinal=ordinal,
+                    text=text,
+                    score=0.0,
+                    metadata=decoded if isinstance(decoded, dict) else {},
+                )
+            )
+        return hits
 
     def search(self, query_vec: Sequence[float], k: int) -> list[Hit]:
         """Return the ``k`` best chunk hits using in-process cosine similarity."""

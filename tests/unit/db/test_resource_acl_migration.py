@@ -42,6 +42,26 @@ def _acl_rows(pool: SqlitePool) -> list[tuple]:
     return [tuple(r) for r in rows]
 
 
+def _space_id(pool: SqlitePool) -> str:
+    """The v27 enterprise space's id."""
+    with pool.connect() as conn:
+        row = conn.execute(
+            "SELECT knowledge_base_id FROM knowledge_bases WHERE is_enterprise = 1"
+        ).fetchone()
+    return str(row["knowledge_base_id"])
+
+
+def _legacy_acl_rows(pool: SqlitePool) -> list[tuple]:
+    """``_acl_rows`` without the enterprise space.
+
+    The space is seeded by a later migration than the one under test, and it
+    has no legacy flag to mirror, so it is not part of what these assertions
+    are about. Its own row is pinned in ``test_enterprise_space_acl_is_public``.
+    """
+    space = _space_id(pool)
+    return [row for row in _acl_rows(pool) if row[1] != space]
+
+
 def _legacy_v17_db(tmp_path: Path) -> SqlitePool:
     """A v17-shaped database: no ACL tables, legacy boolean flags populated."""
     pool = SqlitePool(tmp_path / "octop.db")
@@ -86,7 +106,7 @@ def test_run_migrations_creates_acl_tables(tmp_path: Path) -> None:
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
 
-    assert _version(pool) == 30
+    assert _version(pool) == 35
     assert set(_ACL_TABLES).issubset(_table_names(pool))
     assert _columns(pool, "resource_acl") == {
         "resource_type",
@@ -147,13 +167,25 @@ def test_acl_tables_reject_duplicate_rows(tmp_path: Path) -> None:
             )
 
 
-def test_upgrade_from_v17_backfills_legacy_shared_flags(tmp_path: Path) -> None:
-    pool = _legacy_v17_db(tmp_path)
+def test_enterprise_space_acl_is_public(tmp_path: Path) -> None:
+    """The space is seeded with the row that makes it readable.
 
+    Access is granted by an ACL row and never by its absence, so a seeded space
+    without this row would be an enterprise knowledge base nobody could read.
+    """
+    pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
 
-    assert _version(pool) == 30
-    assert _acl_rows(pool) == [
+    assert _acl_rows(pool) == [("knowledge_base", _space_id(pool), None, "public", None, 1)]
+
+
+def test_upgrade_from_v17_backfills_legacy_shared_flags(tmp_path: Path, upgrade_through) -> None:
+    pool = _legacy_v17_db(tmp_path)
+
+    upgrade_through(pool, 18)
+
+    assert _version(pool) == 18
+    assert _legacy_acl_rows(pool) == [
         ("agent", "ag_private", 1, "private", None, 1),
         ("agent", "ag_shared", 1, "public", None, 1),
         ("connector", "cn_shared", 2, "public", None, 1),
@@ -161,19 +193,19 @@ def test_upgrade_from_v17_backfills_legacy_shared_flags(tmp_path: Path) -> None:
     ]
 
 
-def test_backfill_runs_when_watermark_skipped_018(tmp_path: Path) -> None:
+def test_backfill_runs_when_watermark_skipped_018(tmp_path: Path, upgrade_through) -> None:
     """A database already stamped 18 (clamp / parallel build) still gets the rows."""
     pool = _legacy_v17_db(tmp_path)
     with pool.connect() as conn:
         conn.execute("UPDATE _schema_version SET version = 18")
 
-    run_migrations(pool)
+    upgrade_through(pool, 18)
 
     assert set(_ACL_TABLES).issubset(_table_names(pool))
-    assert len(_acl_rows(pool)) == 4
+    assert len(_legacy_acl_rows(pool)) == 4
 
 
-def test_backfill_covers_ownerless_agents_as_system_owned(tmp_path: Path) -> None:
+def test_backfill_covers_ownerless_agents_as_system_owned(tmp_path: Path, upgrade_through) -> None:
     """``owner_user_id`` is nullable: shared system agents must not vanish."""
     pool = _legacy_v17_db(tmp_path)
     with pool.connect() as conn:
@@ -186,9 +218,9 @@ def test_backfill_covers_ownerless_agents_as_system_owned(tmp_path: Path) -> Non
             "VALUES ('ag_orphan_private', NULL, 'Orphan2', 1, 0, 15, 15)"
         )
 
-    run_migrations(pool)
+    upgrade_through(pool, 18)
 
-    assert _acl_rows(pool) == [
+    assert _legacy_acl_rows(pool) == [
         ("agent", "ag_orphan_private", None, "private", None, 1),
         ("agent", "ag_orphan_shared", None, "public", None, 1),
         ("agent", "ag_private", 1, "private", None, 1),
@@ -198,9 +230,9 @@ def test_backfill_covers_ownerless_agents_as_system_owned(tmp_path: Path) -> Non
     ]
 
 
-def test_backfill_never_overwrites_a_later_acl_edit(tmp_path: Path) -> None:
+def test_backfill_never_overwrites_a_later_acl_edit(tmp_path: Path, upgrade_through) -> None:
     pool = _legacy_v17_db(tmp_path)
-    run_migrations(pool)
+    upgrade_through(pool, 18)
     with pool.connect() as conn:
         conn.execute(
             "INSERT INTO org_units(key, label_zh, label_en, created_at) "
@@ -211,7 +243,7 @@ def test_backfill_never_overwrites_a_later_acl_edit(tmp_path: Path) -> None:
             "WHERE resource_type = 'agent' AND resource_id = 'ag_shared'"
         )
 
-    run_migrations(pool)
+    upgrade_through(pool, 18)
 
     with pool.connect() as conn:
         row = conn.execute(
@@ -219,7 +251,7 @@ def test_backfill_never_overwrites_a_later_acl_edit(tmp_path: Path) -> None:
             "WHERE resource_type = 'agent' AND resource_id = 'ag_shared'"
         ).fetchone()
     assert tuple(row) == ("unit", "sales", 4)
-    assert len(_acl_rows(pool)) == 4
+    assert len(_legacy_acl_rows(pool)) == 4
 
 
 # ----------------------------------------------------------------------
@@ -294,7 +326,7 @@ def test_v21_drops_the_share_columns_and_no_other_column(tmp_path: Path) -> None
 
     run_migrations(pool)
 
-    assert _version(pool) == 30
+    assert _version(pool) == 35
     for table, column in _SHARE_COLUMNS:
         assert column in before[table]
         assert _columns(pool, table) == before[table] - {column}
@@ -305,12 +337,12 @@ def test_v21_drops_the_share_columns_and_no_other_column(tmp_path: Path) -> None
     assert {"credential_expires_at", "config_json"} <= _columns(pool, "connectors")
 
 
-def test_v21_keeps_the_row_data_it_rebuilt(tmp_path: Path) -> None:
+def test_v21_keeps_the_row_data_it_rebuilt(tmp_path: Path, upgrade_through) -> None:
     pool = _legacy_v20_db(tmp_path)
     with pool.connect() as conn:
         agent_pk = conn.execute("SELECT id FROM agents WHERE agent_id = 'ag_shared'").fetchone()[0]
 
-    run_migrations(pool)
+    upgrade_through(pool, 21)
 
     with pool.connect() as conn:
         base = conn.execute(
@@ -332,13 +364,13 @@ def test_v21_keeps_the_row_data_it_rebuilt(tmp_path: Path) -> None:
     assert doc_count == 1
 
 
-def test_v21_mirrors_the_flags_before_dropping_them(tmp_path: Path) -> None:
+def test_v21_mirrors_the_flags_before_dropping_them(tmp_path: Path, upgrade_through) -> None:
     """Published stays published: the last copy of the flag lands in the ACL."""
     pool = _legacy_v20_db(tmp_path)
 
-    run_migrations(pool)
+    upgrade_through(pool, 21)
 
-    assert _acl_rows(pool) == [
+    assert _legacy_acl_rows(pool) == [
         ("agent", "ag_private", 1, "private", None, 1),
         ("agent", "ag_shared", 1, "public", None, 1),
         ("connector", "cn_shared", 2, "public", None, 1),
@@ -348,7 +380,7 @@ def test_v21_mirrors_the_flags_before_dropping_them(tmp_path: Path) -> None:
     assert ConnectorRepo(pool).public_instance_ids() == {"cn_shared"}
 
 
-def test_v21_leaves_acl_visibility_alone(tmp_path: Path) -> None:
+def test_v21_leaves_acl_visibility_alone(tmp_path: Path, upgrade_through) -> None:
     """A unit share is not clobbered by the mirror, and stays visible after it."""
     pool = _legacy_v20_db(tmp_path)
     with pool.connect() as conn:
@@ -367,7 +399,7 @@ def test_v21_leaves_acl_visibility_alone(tmp_path: Path) -> None:
         )
     before = {row.id for row in KnowledgeRepo(pool).list_visible(3)}
 
-    run_migrations(pool)
+    upgrade_through(pool, 21)
 
     assert before == {"kb_shared"}
     assert {row.id for row in KnowledgeRepo(pool).list_visible(3)} == before
@@ -379,11 +411,13 @@ def test_v21_leaves_acl_visibility_alone(tmp_path: Path) -> None:
     assert tuple(row) == ("unit", "sales", 4)
 
 
-def test_v21_rebuild_keeps_the_tables_pointing_at_the_rebuilt_ones(tmp_path: Path) -> None:
+def test_v21_rebuild_keeps_the_tables_pointing_at_the_rebuilt_ones(
+    tmp_path: Path, upgrade_through
+) -> None:
     """``threads`` / ``knowledge_documents`` must not end up on the legacy copy."""
     pool = _legacy_v20_db(tmp_path)
 
-    run_migrations(pool)
+    upgrade_through(pool, 21)
 
     with pool.connect() as conn:
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
