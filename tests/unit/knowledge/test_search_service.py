@@ -15,12 +15,14 @@ import pytest
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.knowledge import jobs as jobs_module
 from octop.infra.knowledge import service as service_module
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.sharing import AclEntry
 
 _POLICY = (
     "# Refunds\n\nRefunds take five business days.\nRefunds are issued to the original card.\n"
@@ -128,6 +130,30 @@ def test_search_never_returns_what_the_actor_cannot_read(
     # The owner and an admin still find it: the rule is the actor, not the file.
     assert env.knowledge.search(actor_user_id=people.owner, query="refunds")
     assert env.knowledge.search(actor_user_id=people.admin, query="refunds")
+
+
+def test_search_never_returns_a_file_the_actor_may_not_read(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+    """design §14 one level down: the base is readable, the file is not."""
+    base, document = _indexed(env, people.owner, filename="minutes.md", body=_POLICY)
+    assert env.knowledge.search(actor_user_id=people.other, query="refunds")
+
+    ResourceAclRepo(env.services.db).upsert(
+        AclEntry(
+            resource_type="knowledge_document",
+            resource_id=document.id,
+            owner_user_id=None,
+            visibility="private",
+            unit_key=None,
+            version=1,
+            grants=(),
+        )
+    )
+
+    assert env.knowledge.search(actor_user_id=people.other, query="refunds") == []
+    assert env.knowledge.search(actor_user_id=people.owner, query="refunds") == []
+    assert env.knowledge.search(actor_user_id=people.admin, is_admin=True, query="refunds")
 
 
 def test_search_skips_a_document_that_is_not_ready(

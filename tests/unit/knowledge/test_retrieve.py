@@ -8,11 +8,13 @@ from types import SimpleNamespace
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.knowledge import retrieve as retrieve_module
 from octop.infra.knowledge.citations import CITATIONS_MARKER_PREFIX
 from octop.infra.knowledge.index import KnowledgeIndex
+from octop.infra.sharing import AclEntry
 
 
 def test_retrieve_context_filters_unreadable_knowledge_base(tmp_path, monkeypatch) -> None:
@@ -20,6 +22,7 @@ def test_retrieve_context_filters_unreadable_knowledge_base(tmp_path, monkeypatc
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
     services = SimpleNamespace(
+        db=pool,
         knowledge_repo=KnowledgeRepo(pool),
         settings_repo=SettingsRepo(pool),
         user_repo=UserRepo(pool),
@@ -72,6 +75,7 @@ def _harness(tmp_path, monkeypatch):
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
     services = SimpleNamespace(
+        db=pool,
         knowledge_repo=KnowledgeRepo(pool),
         settings_repo=SettingsRepo(pool),
         user_repo=UserRepo(pool),
@@ -195,3 +199,42 @@ def test_retrieve_context_skips_empty_non_text_turn() -> None:
     )
 
     assert context == ""
+
+
+def test_retrieve_context_filters_a_file_the_actor_may_not_read(tmp_path, monkeypatch) -> None:
+    """design §14: a citation is a read, so the file's own entry decides it."""
+    services = _harness(tmp_path, monkeypatch)
+    reader = services.user_repo.create(username="reader", password_hash="h", role="user")
+    owner = services.user_repo.create(username="owner", password_hash="h", role="user")
+    base = services.knowledge_repo.create_base(owner_user_id=owner, name="Docs", shared=True)
+    _ready_doc(services, base.id, filename="open.md", chunk="public fact", embedding=[1.0, 0.0])
+    sealed = _ready_doc(
+        services, base.id, filename="sealed.md", chunk="secret fact", embedding=[1.0, 0.0]
+    )
+    ResourceAclRepo(services.db).upsert(
+        AclEntry(
+            resource_type="knowledge_document",
+            resource_id=sealed.id,
+            owner_user_id=None,
+            visibility="private",
+            unit_key=None,
+            version=1,
+            grants=(),
+        )
+    )
+    monkeypatch.setattr(
+        retrieve_module, "embed_knowledge_texts", lambda _services, _texts: [[1.0, 0.0]]
+    )
+
+    context = asyncio.run(
+        retrieve_module.retrieve_context(
+            services,
+            user_id=reader,
+            query="What facts are available?",
+            knowledge_base_ids=[base.id],
+        )
+    )
+
+    assert "public fact" in context
+    assert "secret fact" not in context
+    assert "sealed.md" not in context

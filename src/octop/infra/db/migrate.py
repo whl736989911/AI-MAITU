@@ -8,12 +8,14 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 from octop.infra.agents.kinds import KIND_FEATURE
+from octop.infra.agents.profile import dump_id_list, parse_id_list_json
 from octop.infra.db.pool import DatabasePool
 from octop.infra.utils.ulid import new_short_id, new_ulid
 
@@ -1139,6 +1141,255 @@ def _seed_enterprise_knowledge_space(db: DatabasePool) -> None:
             ") VALUES ('knowledge_base', ?, NULL, 'public', NULL, 1, ?) "
             "ON CONFLICT (resource_type, resource_id) DO NOTHING",
             (kb_id, ts),
+        )
+
+
+def _merge_legacy_knowledge_bases(db: DatabasePool) -> None:
+    """Fold every legacy user knowledge base into the enterprise space (v35).
+
+    design §13: the deployment has one logical knowledge base, so a base that
+    predates the space does not survive as a second one. Its documents move into
+    the space, their files move with them, its data sources come along, and the
+    base's own audience is written onto each document as a file-level entry
+    *before* the base stops being the answer.
+
+    That order is the whole point. The space is readable by everyone — v27 seeds
+    it ``public`` — so a document that only some people could read has to carry
+    the narrower rule itself; skipping this step would hand out access rather
+    than migrate it, which is what design §14 forbids. A base with no ACL row is
+    the same problem in its sharpest form ("no row" means administrators only),
+    so its documents get an explicit system-owned private entry instead of
+    silently inheriting the space.
+
+    Bindings move too: an agent that named a legacy base names the space
+    afterwards, because that is where the documents it was reading went. Leaving
+    the old id behind would answer a live reference with a dead one.
+
+    Idempotent — each step is guarded on the state it creates, so reaching 35
+    twice moves nothing twice — but deliberately *not* in the every-boot repair
+    list the schema helpers live in: this one deletes rows, and that belongs to
+    the single boot that crosses this version rather than to every boot after it.
+    """
+    if not _table_exists(db, "knowledge_bases"):
+        return
+    with db.connect() as conn:
+        space = conn.execute(
+            "SELECT knowledge_base_id FROM knowledge_bases WHERE is_enterprise = 1"
+        ).fetchone()
+        legacy = [
+            str(row["knowledge_base_id"])
+            for row in conn.execute(
+                "SELECT knowledge_base_id FROM knowledge_bases WHERE is_enterprise = 0"
+            ).fetchall()
+        ]
+    if space is None or not legacy:
+        return
+    space_id = str(space["knowledge_base_id"])
+    ts = int(time.time())
+    for kb_id in legacy:
+        _carry_base_audience_onto_its_documents(db, kb_id, ts)
+        _move_base_contents(db, kb_id, space_id, ts)
+    _repoint_agent_knowledge_bindings(db, legacy, space_id)
+    _drop_emptied_legacy_bases(db, legacy)
+
+
+def _carry_base_audience_onto_its_documents(db: DatabasePool, kb_id: str, ts: int) -> None:
+    """Write *kb_id*'s audience onto every document it still holds.
+
+    A document that already wears an entry of its own keeps it: whoever wrote
+    that rule meant it, and this migration is not the place to overrule them.
+    """
+    with db.connect() as conn:
+        entry = conn.execute(
+            "SELECT owner_user_id, visibility, unit_key, version FROM resource_acl "
+            "WHERE resource_type = 'knowledge_base' AND resource_id = ?",
+            (kb_id,),
+        ).fetchone()
+        grants = conn.execute(
+            "SELECT grantee_type, grantee_id FROM resource_acl_grants "
+            "WHERE resource_type = 'knowledge_base' AND resource_id = ?",
+            (kb_id,),
+        ).fetchall()
+        documents = [
+            str(row["document_id"])
+            for row in conn.execute(
+                # ``document_id`` is the public identifier the ACL rows are
+                # keyed by; ``id`` is this table's integer primary key.
+                "SELECT document_id FROM knowledge_documents WHERE kb_id = ?",
+                (kb_id,),
+            ).fetchall()
+        ]
+        for document_id in documents:
+            present = conn.execute(
+                "SELECT 1 FROM resource_acl WHERE resource_type = 'knowledge_document' "
+                "AND resource_id = ?",
+                (document_id,),
+            ).fetchone()
+            if present is not None:
+                continue
+            if entry is None:
+                # "No row" is administrators only, and the space says otherwise:
+                # the narrower rule has to be written down, not inherited.
+                conn.execute(
+                    "INSERT INTO resource_acl("
+                    "resource_type, resource_id, owner_user_id, visibility, unit_key, "
+                    "version, updated_at"
+                    ") VALUES ('knowledge_document', ?, NULL, 'private', NULL, 1, ?) "
+                    "ON CONFLICT (resource_type, resource_id) DO NOTHING",
+                    (document_id, ts),
+                )
+                continue
+            conn.execute(
+                "INSERT INTO resource_acl("
+                "resource_type, resource_id, owner_user_id, visibility, unit_key, "
+                "version, updated_at"
+                ") VALUES ('knowledge_document', ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (resource_type, resource_id) DO NOTHING",
+                (
+                    document_id,
+                    entry["owner_user_id"],
+                    entry["visibility"],
+                    entry["unit_key"],
+                    int(entry["version"]),
+                    ts,
+                ),
+            )
+            for grant in grants:
+                conn.execute(
+                    "INSERT INTO resource_acl_grants("
+                    "resource_type, resource_id, grantee_type, grantee_id"
+                    ") VALUES ('knowledge_document', ?, ?, ?) ON CONFLICT DO NOTHING",
+                    (document_id, grant["grantee_type"], grant["grantee_id"]),
+                )
+
+
+def _move_base_contents(db: DatabasePool, kb_id: str, space_id: str, ts: int) -> None:
+    """Move *kb_id*'s documents, their files, and its data sources into the space.
+
+    The stored path is derived from the base a document belongs to, so the bytes
+    have to follow the row: a row that moved without its file would be a document
+    the space lists and cannot open.
+    """
+    from octop.infra.knowledge.files import (
+        delete_knowledge_base_files,
+        document_path,
+        documents_dir,
+    )
+    from octop.infra.knowledge.index import KnowledgeIndex
+
+    with db.connect() as conn:
+        documents = conn.execute(
+            # ``document_id``, not ``id``: the stored file is named after the
+            # public identifier (:func:`document_path`).
+            "SELECT document_id, filename FROM knowledge_documents WHERE kb_id = ?",
+            (kb_id,),
+        ).fetchall()
+        conn.execute(
+            "UPDATE knowledge_documents SET kb_id = ?, updated_at = ? WHERE kb_id = ?",
+            (space_id, ts, kb_id),
+        )
+        conn.execute(
+            "UPDATE data_sources SET knowledge_base_id = ? WHERE knowledge_base_id = ?",
+            (space_id, kb_id),
+        )
+    # The chunks live in a per-base sidecar file (``<base>/index.sqlite``), so
+    # they have to move too: a document whose row moved but whose chunks did not
+    # is a document the space lists and cannot find.
+    source_index = KnowledgeIndex(kb_id)
+    target_index = KnowledgeIndex(space_id)
+    for row in documents:
+        document_id = str(row["document_id"])
+        chunks = source_index.doc_chunks(document_id)
+        if chunks:
+            target_index.replace_doc_chunks(
+                document_id,
+                [text for text, _vector, _meta in chunks],
+                [vector for _text, vector, _meta in chunks],
+                metadata=[meta for _text, _vector, meta in chunks],
+            )
+    documents_dir(space_id).mkdir(parents=True, exist_ok=True)
+    for row in documents:
+        document_id = str(row["document_id"])
+        filename = str(row["filename"])
+        source = document_path(kb_id, document_id, filename)
+        if not source.is_file():
+            # Folders keep no bytes, and a file that is already gone was moved
+            # by an earlier run of this same step.
+            continue
+        target = document_path(space_id, document_id, filename)
+        if target.exists():
+            source.unlink()
+            continue
+        shutil.move(str(source), str(target))
+    delete_knowledge_base_files(kb_id)
+
+
+def _repoint_agent_knowledge_bindings(db: DatabasePool, legacy: list[str], space_id: str) -> None:
+    """Every agent that named a legacy base names the space afterwards."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, knowledge_base_ids FROM agents WHERE knowledge_base_ids IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            repointed = repointed_knowledge_ids(str(row["knowledge_base_ids"]), legacy, space_id)
+            if repointed is None:
+                continue
+            conn.execute(
+                "UPDATE agents SET knowledge_base_ids = ? WHERE id = ?",
+                (repointed, row["id"]),
+            )
+
+
+def repointed_knowledge_ids(value: str, legacy: list[str], space_id: str) -> str | None:
+    """*value* with legacy base ids replaced by *space_id*, or ``None``.
+
+    ``None`` means "leave it alone": either the stored value is not the JSON
+    array this column holds everywhere else, or it names none of the legacy
+    bases. Both are complete answers — a value that names no base has nothing to
+    repoint — so neither is an error to report. Reading and writing go through
+    the same two helpers the composer uses, so a repointed list is byte-for-byte
+    what :meth:`persist_knowledge_base_ids` would have written.
+    """
+    ids = parse_id_list_json(value)
+    if ids is None:
+        return None
+    mapped = [space_id if item in legacy else item for item in ids]
+    deduped = list(dict.fromkeys(mapped))
+    if deduped == ids:
+        return None
+    return dump_id_list(deduped)
+
+
+def _drop_emptied_legacy_bases(db: DatabasePool, legacy: list[str]) -> None:
+    """Delete the bases whose contents have moved, and recount the space.
+
+    design §1 is one logical knowledge base per enterprise, and an emptied base
+    is not a second library — it is a name, a description and an ACL row for
+    documents that now live in the space. Its audience moved with them
+    (:func:`_carry_base_audience_onto_its_documents`), so the row is dropped and
+    the space's ``doc_count`` is recomputed from what it actually holds.
+    """
+    with db.connect() as conn:
+        for kb_id in legacy:
+            conn.execute(
+                "DELETE FROM resource_acl_grants "
+                "WHERE resource_type = 'knowledge_base' AND resource_id = ?",
+                (kb_id,),
+            )
+            conn.execute(
+                "DELETE FROM resource_acl "
+                "WHERE resource_type = 'knowledge_base' AND resource_id = ?",
+                (kb_id,),
+            )
+            conn.execute(
+                "DELETE FROM knowledge_bases WHERE knowledge_base_id = ? AND is_enterprise = 0",
+                (kb_id,),
+            )
+        conn.execute(
+            "UPDATE knowledge_bases SET doc_count = ("
+            "SELECT COUNT(*) FROM knowledge_documents d "
+            "WHERE d.kb_id = knowledge_bases.knowledge_base_id AND d.is_dir = 0"
+            ") WHERE is_enterprise = 1"
         )
 
 
@@ -2544,6 +2795,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     Version 28 gives ``knowledge_documents`` the columns a file scan needs and
     creates ``knowledge_sync_runs``. Same reason: the ensure helpers must also
     reach databases whose watermark already passed 28.
+    Version 35 folds the legacy user knowledge bases into the enterprise space.
+    It is a *data* migration — documents, their files, their audience and the
+    agent bindings that named them — so it runs through the helper in both
+    dialects; see ``_merge_legacy_knowledge_bases`` for why the files make SQL
+    alone impossible and why running it twice changes nothing.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -2713,6 +2969,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 35:
+        _merge_legacy_knowledge_bases(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2753,6 +3014,8 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_extract_templates_schema(db)
             if version == 34:
                 _ensure_extract_results_schema(db)
+            if version == 35:
+                _merge_legacy_knowledge_bases(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)

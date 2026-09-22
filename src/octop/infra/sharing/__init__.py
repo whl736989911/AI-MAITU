@@ -15,7 +15,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
-RESOURCE_TYPES = ("agent", "connector", "knowledge_base", "feature")
+RESOURCE_TYPES = ("agent", "connector", "knowledge_base", "feature", "knowledge_document")
 
 VISIBILITY_PRIVATE = "private"
 VISIBILITY_UNIT = "unit"

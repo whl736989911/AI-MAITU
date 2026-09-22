@@ -16,7 +16,8 @@
 
 ## 1. 迁移编号：**预分配，不许越界**
 
-当前最大编号是 **`026_agent_kind`**。两条线各占一段，**在自己的区间内递增**：
+当前最大编号是 **`035_merge_legacy_knowledge_bases`**（知识库线）。
+两条线各占一段，**在自己的区间内递增**：
 
 | 工作流 | 可用编号 |
 |---|---|
@@ -33,8 +34,20 @@
 规矩：
 
 - **迁移必须成对**：`00N_description.sql`（SQLite）**和** `00N_description.pg.sql`（PostgreSQL）。
-- **每加一个迁移，都要把 `tests/unit/db/test_db_pool.py` 里的版本断言改到自己的 N。**
-  - ⚠️ **这一行是两条线【唯一】必然撞的地方** ⇒ **合并时取较大值**（一行的事）。
+- **每加一个迁移，都要把下面这些文件里的版本断言改到自己的 N** ——
+  版本断言不止一处，`grep -rn "== <当前最大编号>" tests/` 是唯一的可靠做法：
+  - `tests/unit/db/test_db_pool.py`
+  - `tests/unit/db/test_resource_acl_migration.py`
+  - `tests/unit/db/test_agent_profile_columns.py`、`test_clip_thread_title.py`、
+    `test_data_sources_repo.py`、`test_published_experts_repo.py`、
+    `test_repo_knowledge.py`、`test_skill_packages_repo.py`、`test_skill_package_icons.py`
+  - `tests/unit/backup/test_system_archive.py`（`runtime_schema_version`）
+  - `tests/integration/test_postgresql_control_plane.py`
+  - ⚠️ **这里是两条线【必然】撞的地方** ⇒ **合并时取较大值**（都是同一行的数字）。
+- **数据库升级路径上的数据迁移**：`035` 把旧的用户知识库并进企业空间（design §13），
+  它同时搬磁盘文件、也改 `agents.knowledge_base_ids` 的指向。权限线若要跑
+  旧库数据，注意该迁移**会删掉 `is_enterprise = 0` 的知识库行**
+  （文档、文件、可见范围、绑定都已先转到企业空间）。
 - 区间用尽 → **先在约定文档里申请新区间，再写迁移**（不要自己接着往后占）。
 
 ## 2. i18n：**按命名空间分**
@@ -94,6 +107,17 @@
 | `dashboard/src/api/modules/*` | **各建自己的模块文件**（不要共用一个） |
 
 **追加式 = 冲突可机械解决** ✓；**改写式（重排/抽取/重命名）才会产生真冲突** —— 想重构共享文件，**先在这里记一笔，并在群里说**。
+
+## 4.1 共享文件的追加式改动记录（知识库线）
+
+按 §4 的约定，这些是**追加**而不是改写，但列在这里以便权限线核对：
+
+| 文件 | 追加了什么 |
+|---|---|
+| `src/octop/infra/sharing/__init__.py` | `RESOURCE_TYPES` 增加 **`knowledge_document`** —— 知识空间里的"单个文件"这一级授权主体（design §5 的文件/目录权限）。这是一个**新的资源类型**：任何按类型白名单校验的调用方（sharing service、ACL 列表、权限相关 UI）都需要知道它存在，否则文件级授权会被判为未知类型。 |
+| `src/octop/infra/knowledge/scope.py` | 新增 `may_read_document` / `readable_documents`（纯规则，基于 `sharing.can_access`，不复制规则）。 |
+| `src/octop/infra/knowledge/retrieve.py` | 检索候选集多了一层文件级过滤（引用与预览/下载同源）。 |
+| `dashboard/src/pages/Sharing/labels.ts` | **未改动**，但需要权限线知道：`RESOURCE_TYPE_LABEL_KEYS` 目前没有 `knowledge_document` 的映射，i18n 里也没有 `sharing.resourceType.knowledge_document`。今天不会露出问题——知识库这条线写文件级授权走的是直接写 ACL 行，不产生 `resource_acl_changes` 记录，前端的选择器也是固定列表；但**如果权限线把「按文件共享」加进共享界面**，这两处（映射 + en/zh 键）要一起补，否则队列行会显示成原始键。
 
 ## 5. 合并规则
 

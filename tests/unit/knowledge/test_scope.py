@@ -9,7 +9,7 @@ access, not open access.
 
 from __future__ import annotations
 
-from octop.infra.knowledge.scope import may_read_knowledge_base
+from octop.infra.knowledge.scope import may_read_document, may_read_knowledge_base
 from octop.infra.sharing import AclEntry
 
 
@@ -48,3 +48,11 @@ def test_may_read_knowledge_base_follows_the_entry() -> None:
     assert may_read_knowledge_base(private, user_id=99, role="user", unit_key=None) is False
     assert may_read_knowledge_base(published, user_id=99, role="user", unit_key=None) is True
     assert may_read_knowledge_base(private, user_id=7, role="user", unit_key=None) is True
+
+
+def test_may_read_document_lets_a_file_entry_narrow_but_never_widen() -> None:
+    """A file with no entry of its own is decided by its base alone."""
+    assert may_read_document("doc-1", restricted=set(), readable=set()) is True
+    assert may_read_document("doc-1", restricted={"doc-1"}, readable={"doc-1"}) is True
+    assert may_read_document("doc-1", restricted={"doc-1"}, readable=set()) is False
+    assert may_read_document("doc-1", restricted={"doc-2"}, readable=set()) is True

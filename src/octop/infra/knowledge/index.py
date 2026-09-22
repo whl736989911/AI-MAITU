@@ -91,6 +91,25 @@ class KnowledgeIndex:
                 rows,
             )
 
+    def doc_chunks(self, doc_id: str) -> list[tuple[str, list[float], dict[str, object]]]:
+        """One document's chunks in order: text, vector, metadata.
+
+        The reader that matches :meth:`replace_doc_chunks`. It exists because a
+        document can move between knowledge bases (design §13 folds a whole
+        library into the space), and it has to take its chunks with it — the
+        sidecar layout is this class's business, not the caller's.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT text, embedding, meta_json FROM chunks WHERE doc_id = ? ORDER BY ordinal",
+                (doc_id,),
+            ).fetchall()
+        chunks: list[tuple[str, list[float], dict[str, object]]] = []
+        for text, blob, meta_json in rows:
+            vector = list(struct.unpack(f"<{len(blob) // 4}f", blob))
+            chunks.append((str(text), vector, json.loads(meta_json or "{}")))
+        return chunks
+
     def delete_doc(self, doc_id: str) -> None:
         with self._connect() as conn:
             conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))

@@ -54,7 +54,7 @@ def test_knowledge_tables_migrated(db: SqlitePool) -> None:
         "knowledge_bases",
         "knowledge_documents",
     }.issubset(names)
-    assert v == 34
+    assert v == 35
     assert "knowledge_base_members" not in names
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
     assert "knowledge_base_id" in cols
@@ -270,7 +270,7 @@ def test_create_document_applies_limit_within_insert_transaction(
     assert repo.count_documents(kb.id) == 1
 
 
-def test_migration_007_rebuilds_text_primary_keys(tmp_path: Path) -> None:
+def test_migration_007_rebuilds_text_primary_keys(tmp_path: Path, upgrade_through) -> None:
     db_path = tmp_path / "octop.db"
     pool = SqlitePool(db_path)
     with pool.connect() as conn:
@@ -329,7 +329,9 @@ def test_migration_007_rebuilds_text_primary_keys(tmp_path: Path) -> None:
             ) VALUES ('doc1', 'kbabcd', 'a.md', 'text/markdown', 1, '', 'ready', '', 1, 1, 1);
             """
         )
-    run_migrations(pool)
+    # Up to v7: a later version folds a legacy knowledge base into the
+    # enterprise space (v35), and this test is about the v7 rebuild itself.
+    upgrade_through(pool, 7)
     repo = KnowledgeRepo(pool)
     base = repo.get_base("kbabcd")
     assert base is not None

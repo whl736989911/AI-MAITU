@@ -27,7 +27,11 @@ from octop.infra.knowledge.ocr import (
 )
 from octop.infra.knowledge.parse import parse_document
 from octop.infra.knowledge.relpath import normalize_kb_path, path_basename, path_parent
-from octop.infra.knowledge.scope import may_read_knowledge_base
+from octop.infra.knowledge.scope import (
+    may_read_document,
+    may_read_knowledge_base,
+    readable_documents,
+)
 from octop.infra.knowledge.search import (
     DEFAULT_SEARCH_K,
     SearchHit,
@@ -191,9 +195,18 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False, prefix: str | None = None
     ) -> list[KnowledgeDocumentRow]:
         self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
-        if prefix is None:
-            return cast(list[KnowledgeDocumentRow], self._repo.list_documents(kb_id))
-        return cast(list[KnowledgeDocumentRow], self._repo.list_children(kb_id, prefix))
+        documents = (
+            self._repo.list_documents(kb_id)
+            if prefix is None
+            else self._repo.list_children(kb_id, prefix)
+        )
+        # design §14: a file the actor may not read is absent from the listing
+        # and from search — one filter, so the two cannot disagree.
+        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
+        return cast(
+            list[KnowledgeDocumentRow],
+            readable_documents(documents, restricted=restricted, readable=readable),
+        )
 
     def create_folder(
         self, kb_id: str, *, actor_user_id: int, path: str, is_admin: bool = False
@@ -218,6 +231,7 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise LookupError("knowledge document not found")
+        self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
         path = document_path(kb_id, doc_id, document.filename)
         parsed = parse_document(
             path,
@@ -266,11 +280,14 @@ class KnowledgeService:
         else:
             bases = self.list_visible_bases(actor_user_id=actor_user_id)
         terms = query_terms(cleaned)
+        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
         hits: list[SearchHit] = []
         for base in bases:
             ready = {
                 document.id: document
-                for document in self._repo.list_documents(base.id)
+                for document in readable_documents(
+                    self._repo.list_documents(base.id), restricted=restricted, readable=readable
+                )
                 if document.status == "ready" and not document.is_dir
             }
             for hit, document in search_base(
@@ -307,6 +324,7 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise LookupError("knowledge document not found")
+        self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
         path = document_path(kb_id, doc_id, document.filename)
         if not path.is_file():
             raise FileNotFoundError("knowledge document original file not found")
@@ -328,6 +346,7 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise LookupError("knowledge document not found")
+        self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
         if document.content_type not in _TEXT_CONTENT_TYPES:
             raise ValueError("unsupported knowledge document content type: not editable text")
         raw = document_path(kb_id, doc_id, document.filename).read_bytes()
@@ -422,6 +441,34 @@ class KnowledgeService:
         if refreshed is None:
             raise LookupError("knowledge document not found")
         return cast(KnowledgeDocumentRow, refreshed)
+
+    def document_read_scope(
+        self, actor_user_id: int, *, is_admin: bool = False
+    ) -> tuple[set[str], set[str]]:
+        """``(restricted, readable)`` document ids for this actor.
+
+        ``restricted`` is every document that carries a file-level entry of its
+        own; ``readable`` is the subset the actor may read. Both come from
+        ``resource_acl``'s list entry point, so this cannot answer differently
+        from the single-document check below it.
+        """
+        return (
+            set(self._repo.document_acl_entries()),
+            self._repo.readable_document_ids(user_id=actor_user_id, is_admin=is_admin),
+        )
+
+    def require_document_readable(
+        self, document: KnowledgeDocumentRow, *, actor_user_id: int, is_admin: bool = False
+    ) -> None:
+        """Refuse a document whose own file-level entry excludes the actor.
+
+        The base has already been checked by the caller; this is the second half
+        of design §5.2 — a file rule narrows what the base allows and never
+        widens it.
+        """
+        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
+        if not may_read_document(document.id, restricted=restricted, readable=readable):
+            raise PermissionError("knowledge document read access is required")
 
     def get_readable_base(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False

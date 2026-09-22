@@ -12,6 +12,7 @@ from octop.infra.knowledge.citations import append_citations_marker, citations_f
 from octop.infra.knowledge.embed import embed_knowledge_texts
 from octop.infra.knowledge.gate import assert_knowledge_usable
 from octop.infra.knowledge.index import Hit, KnowledgeIndex
+from octop.infra.knowledge.scope import readable_documents
 from octop.infra.knowledge.search import (
     fuse_rankings,
     normalize_query,
@@ -84,6 +85,10 @@ def _retrieve_context_sync(
         visible = services.knowledge_repo.list_visible(user_id)
     visible_by_id = {base.id: base for base in visible}
     selected_ids = _unique_ids(knowledge_base_ids)
+    # design §14: a citation is a read, so it answers to the same file-level
+    # entries the preview and the download do.
+    restricted = set(services.knowledge_repo.document_acl_entries())
+    readable = services.knowledge_repo.readable_document_ids(user_id=user_id)
 
     ranked: list[tuple[Any, Hit, Any]] = []
     for kb_id in selected_ids:
@@ -92,7 +97,11 @@ def _retrieve_context_sync(
             continue
         ready_documents = {
             document.id: document
-            for document in services.knowledge_repo.list_documents(kb_id)
+            for document in readable_documents(
+                services.knowledge_repo.list_documents(kb_id),
+                restricted=restricted,
+                readable=readable,
+            )
             if document.status == "ready" and not document.is_dir
         }
         index = KnowledgeIndex(kb_id)

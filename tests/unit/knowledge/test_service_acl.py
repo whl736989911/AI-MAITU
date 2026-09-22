@@ -382,3 +382,83 @@ def test_read_access_follows_the_acl_not_the_legacy_shared_column(
     other_unit = users.create(username="other", password_hash="h", role="user", org_unit="eng")
     with pytest.raises(PermissionError):
         service.get_readable_base(kb.id, actor_user_id=other_unit)
+
+
+def _file_entry(service: KnowledgeService, doc_id: str, *, visibility: str = "private") -> None:
+    """Give one document an access row of its own."""
+    ResourceAclRepo(service._services.db).upsert(
+        AclEntry(
+            resource_type="knowledge_document",
+            resource_id=doc_id,
+            owner_user_id=None,
+            visibility=visibility,
+            unit_key=None,
+            version=1,
+            grants=(),
+        )
+    )
+
+
+def test_a_file_level_entry_narrows_what_its_base_allows(service: KnowledgeService) -> None:
+    """design §5.2 and §14: the file rule, the listing and the download agree."""
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    viewer = users.create(username="viewer", password_hash="h", role="user")
+    admin = users.create(username="root", password_hash="h", role="admin")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs", shared=True)
+    doc = service.upload_document(
+        kb.id,
+        actor_user_id=owner,
+        filename="minutes.md",
+        content_type="text/markdown",
+        content=b"# Board minutes\n\nConfidential.",
+    )
+    # Published to the whole organization, so anyone reads it...
+    assert [row.id for row in service.list_documents(kb.id, actor_user_id=viewer)] == [doc.id]
+
+    # ...until the file says otherwise. "System-owned and private" is how this
+    # codebase spells an entry only an administrator reaches.
+    _file_entry(service, doc.id)
+
+    assert service.list_documents(kb.id, actor_user_id=viewer) == []
+    with pytest.raises(PermissionError, match="document read"):
+        service.preview_document(kb.id, doc.id, actor_user_id=viewer)
+    with pytest.raises(PermissionError, match="document read"):
+        service.resolve_document_file(kb.id, doc.id, actor_user_id=viewer)
+    with pytest.raises(PermissionError, match="document read"):
+        service.read_text_document(kb.id, doc.id, actor_user_id=viewer)
+    # The base's owner is not an administrator: the rule is about the file.
+    with pytest.raises(PermissionError, match="document read"):
+        service.preview_document(kb.id, doc.id, actor_user_id=owner)
+    # An administrator still reaches it — rule 1 of ``can_access``, not a branch.
+    assert (
+        service.preview_document(kb.id, doc.id, actor_user_id=admin, is_admin=True)["id"] == doc.id
+    )
+    assert [
+        row.id for row in service.list_documents(kb.id, actor_user_id=admin, is_admin=True)
+    ] == [doc.id]
+
+
+def test_a_file_level_entry_that_reaches_the_actor_keeps_it_readable(
+    service: KnowledgeService,
+) -> None:
+    """The other half: an entry permits as well as narrows."""
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    viewer = users.create(username="viewer", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs", shared=True)
+    doc = service.upload_document(
+        kb.id,
+        actor_user_id=owner,
+        filename="notes.md",
+        content_type="text/markdown",
+        content=b"# Notes\n\nShared with everyone.",
+    )
+
+    _file_entry(service, doc.id, visibility="public")
+
+    assert [row.id for row in service.list_documents(kb.id, actor_user_id=viewer)] == [doc.id]
+    assert (
+        "Shared with everyone."
+        in service.preview_document(kb.id, doc.id, actor_user_id=viewer)["text"]
+    )
