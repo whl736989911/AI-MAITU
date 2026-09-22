@@ -93,6 +93,48 @@ export interface ExtractMatch {
   content_type: string;
 }
 
+/** One stored extraction: what a template produced for a document (design §7.3). */
+export interface ExtractResult {
+  id: string;
+  result_id: string;
+  document_id: string;
+  template_id: string;
+  /** The template version that produced this, which never changes under it. */
+  template_version: number;
+  status: "pending" | "processing" | "succeeded" | "failed";
+  fields: Record<string, unknown>;
+  error: string | null;
+  model: string;
+  parser_version: string;
+  content_hash: string;
+  created_at: number;
+  updated_at: number;
+  /** The file it came from, or null when that document is gone. */
+  document: {
+    filename: string;
+    path: string;
+    source_path: string;
+  } | null;
+}
+
+export interface RunScopeBody {
+  kb_id: string;
+  /** Folder to limit the run to; empty means the whole knowledge base. */
+  path?: string;
+  /** Retry only what failed. */
+  only_failed?: boolean;
+  /** Skip documents whose result already succeeded at the current version. */
+  only_stale?: boolean;
+  limit?: number;
+}
+
+export interface RunScopeCounts {
+  matched: number;
+  succeeded: number;
+  failed: number;
+  skipped: number;
+}
+
 export interface TemplateBody {
   name: string;
   description?: string;
@@ -171,6 +213,17 @@ export const extractTemplatesApi = {
     request<void>(`/extract-templates/bindings/${bindingId}`, {
       method: "DELETE",
     }),
+
+  /** Run a template over a scope of documents (design §8.4). */
+  run: (templateId: string, body: RunScopeBody) =>
+    request<RunScopeCounts>(`/extract-templates/${templateId}/run`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  /** What a template has produced, with the file each result came from. */
+  listResults: (templateId: string) =>
+    request<ExtractResult[]>(`/extract-templates/${templateId}/results`),
 
   /** Which template reads this path — the conflict check of design §7.4. */
   resolve: (dataSourceId: string, path: string) =>

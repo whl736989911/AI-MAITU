@@ -658,7 +658,25 @@
       "checkNone": "没有模板适用于此路径",
       "level_file": "文件级",
       "level_folder": "目录级",
-      "level_source": "数据源级"
+      "level_source": "数据源级",
+      "run": "运行",
+      "runTitle": "运行「{{name}}」",
+      "runHint": "用版本 v{{version}} 抽取。已由该版本产出的结果会被覆盖；旧版本的结果在这次运行之前不会被改动。",
+      "runPath": "限定目录",
+      "runPathHint": "留空表示对知识库内全部文档运行。",
+      "runOnlyFailed": "只重试失败的",
+      "runOnlyStale": "只跑已过期的",
+      "runCounts": "命中 {{matched}} · 成功 {{succeeded}} · 失败 {{failed}} · 跳过 {{skipped}}",
+      "runDone": "提取完成：成功 {{succeeded}}、失败 {{failed}}、跳过 {{skipped}}",
+      "runFailed": "提取未能启动",
+      "results": "结果",
+      "resultsTitle": "「{{name}}」的提取结果",
+      "resultsEmpty": "这个模板还没有产出任何结果",
+      "resultVersion": "v{{version}} · {{model}}",
+      "result_pending": "待处理",
+      "result_processing": "处理中",
+      "result_succeeded": "已提取",
+      "result_failed": "失败"
     }
   },
   "setupWizard": {

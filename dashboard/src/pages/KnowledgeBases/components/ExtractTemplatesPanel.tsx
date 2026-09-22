@@ -17,7 +17,9 @@ import {
   CircleCheck,
   CircleSlash,
   Link2,
+  List as ListIcon,
   Pencil,
+  Play,
   Plus,
   Search,
   Trash2,
@@ -36,7 +38,9 @@ import {
   type ExtractBinding,
   type ExtractField,
   type ExtractMatch,
+  type ExtractResult,
   type ExtractTemplate,
+  type RunScopeCounts,
 } from "../../../api/modules/extractTemplates";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { apiErrorMessage } from "../../../utils/apiError";
@@ -149,6 +153,21 @@ export default function ExtractTemplatesPanel({
   const [checkPath, setCheckPath] = useState("");
   const [checkResult, setCheckResult] = useState<ExtractMatch | null>(null);
   const [checking, setChecking] = useState(false);
+  const [runOpen, setRunOpen] = useState(false);
+  const [runTarget, setRunTarget] = useState<ExtractTemplate | null>(null);
+  const [runForm] = Form.useForm<{
+    path?: string;
+    only_failed?: boolean;
+    only_stale?: boolean;
+  }>();
+  const [running, setRunning] = useState(false);
+  const [runCounts, setRunCounts] = useState<RunScopeCounts | null>(null);
+  const [resultsOpen, setResultsOpen] = useState(false);
+  const [resultsTarget, setResultsTarget] = useState<ExtractTemplate | null>(
+    null,
+  );
+  const [results, setResults] = useState<ExtractResult[]>([]);
+  const [resultsLoading, setResultsLoading] = useState(false);
 
   const sourceNames = useMemo(() => {
     const byId = new Map<string, string>();
@@ -391,6 +410,75 @@ export default function ExtractTemplatesPanel({
     [bindingTarget, load, message, t],
   );
 
+  const openRun = useCallback(
+    (template: ExtractTemplate) => {
+      setRunTarget(template);
+      setRunCounts(null);
+      runForm.setFieldsValue({
+        path: "",
+        only_failed: false,
+        only_stale: false,
+      });
+      setRunOpen(true);
+    },
+    [runForm],
+  );
+
+  const submitRun = useCallback(async () => {
+    if (!runTarget) return;
+    const values = runForm.getFieldsValue();
+    setRunning(true);
+    try {
+      const counts = await extractTemplatesApi.run(runTarget.template_id, {
+        kb_id: baseId,
+        path: values.path || "",
+        only_failed: Boolean(values.only_failed),
+        only_stale: Boolean(values.only_stale),
+      });
+      setRunCounts(counts);
+      message.success(
+        t("knowledgeBases.extractTemplates.runDone", {
+          succeeded: counts.succeeded,
+          failed: counts.failed,
+          skipped: counts.skipped,
+        }),
+      );
+    } catch (error) {
+      message.error(
+        apiErrorMessage(
+          error,
+          t("knowledgeBases.extractTemplates.runFailed"),
+          t,
+        ),
+      );
+    } finally {
+      setRunning(false);
+    }
+  }, [baseId, message, runForm, runTarget, t]);
+
+  const openResults = useCallback(
+    async (template: ExtractTemplate) => {
+      setResultsTarget(template);
+      setResultsOpen(true);
+      setResultsLoading(true);
+      try {
+        setResults(await extractTemplatesApi.listResults(template.template_id));
+      } catch (error) {
+        setResults([]);
+        message.error(
+          apiErrorMessage(
+            error,
+            t("knowledgeBases.extractTemplates.loadFailed"),
+            t,
+          ),
+        );
+      } finally {
+        setResultsLoading(false);
+      }
+    },
+    [message, t],
+  );
+
   const runCheck = useCallback(async () => {
     const path = checkPath.trim();
     const sourceId = bindingForm.getFieldValue("data_source_id") as
@@ -606,6 +694,38 @@ export default function ExtractTemplatesPanel({
                             icon={<Trash2 size={14} />}
                             aria-label={t("common.delete")}
                             onClick={() => removeTemplate(template)}
+                          />
+                        </span>
+                      </Tooltip>
+                    </>
+                  ) : null}
+                  {canManage ? (
+                    <>
+                      <Tooltip title={t("knowledgeBases.extractTemplates.run")}>
+                        <span className={styles.actionSlot}>
+                          <Button
+                            size="small"
+                            type="text"
+                            icon={<Play size={14} />}
+                            aria-label={t(
+                              "knowledgeBases.extractTemplates.run",
+                            )}
+                            onClick={() => openRun(template)}
+                          />
+                        </span>
+                      </Tooltip>
+                      <Tooltip
+                        title={t("knowledgeBases.extractTemplates.results")}
+                      >
+                        <span className={styles.actionSlot}>
+                          <Button
+                            size="small"
+                            type="text"
+                            icon={<ListIcon size={14} />}
+                            aria-label={t(
+                              "knowledgeBases.extractTemplates.results",
+                            )}
+                            onClick={() => void openResults(template)}
                           />
                         </span>
                       </Tooltip>
@@ -917,6 +1037,119 @@ export default function ExtractTemplatesPanel({
             ) : null}
           </Form>
         ) : null}
+      </Modal>
+
+      <Modal
+        open={runOpen}
+        title={t("knowledgeBases.extractTemplates.runTitle", {
+          name: runTarget?.name || "",
+        })}
+        onCancel={() => setRunOpen(false)}
+        onOk={() => void submitRun()}
+        confirmLoading={running}
+        okText={t("knowledgeBases.extractTemplates.run")}
+        cancelText={t("common.cancel")}
+        destroyOnHidden
+      >
+        <Typography.Text type="secondary" className={styles.hint}>
+          {t("knowledgeBases.extractTemplates.runHint", {
+            version: runTarget?.current_version ?? 0,
+          })}
+        </Typography.Text>
+        <Form form={runForm} layout="vertical">
+          <Form.Item
+            name="path"
+            label={t("knowledgeBases.extractTemplates.runPath")}
+            extra={t("knowledgeBases.extractTemplates.runPathHint")}
+          >
+            <Input placeholder="legal/2026" maxLength={1000} />
+          </Form.Item>
+          <Space size="large">
+            <Form.Item
+              name="only_failed"
+              valuePropName="checked"
+              label={t("knowledgeBases.extractTemplates.runOnlyFailed")}
+            >
+              <Switch />
+            </Form.Item>
+            <Form.Item
+              name="only_stale"
+              valuePropName="checked"
+              label={t("knowledgeBases.extractTemplates.runOnlyStale")}
+            >
+              <Switch />
+            </Form.Item>
+          </Space>
+        </Form>
+        {runCounts ? (
+          <Typography.Text className={styles.verdict}>
+            {t("knowledgeBases.extractTemplates.runCounts", {
+              matched: runCounts.matched,
+              succeeded: runCounts.succeeded,
+              failed: runCounts.failed,
+              skipped: runCounts.skipped,
+            })}
+          </Typography.Text>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={resultsOpen}
+        title={t("knowledgeBases.extractTemplates.resultsTitle", {
+          name: resultsTarget?.name || "",
+        })}
+        onCancel={() => setResultsOpen(false)}
+        footer={null}
+        width={760}
+        destroyOnHidden
+      >
+        {resultsLoading ? (
+          <div className={styles.loading}>
+            <Spin size="small" />
+          </div>
+        ) : results.length === 0 ? (
+          <Typography.Text type="secondary">
+            {t("knowledgeBases.extractTemplates.resultsEmpty")}
+          </Typography.Text>
+        ) : (
+          <ul className={styles.bindingList}>
+            {results.map((result) => (
+              <li className={styles.bindingItem} key={result.result_id}>
+                <span className={styles.bindingName}>
+                  {result.document?.filename || result.document_id}
+                </span>
+                <Tag color={result.status === "succeeded" ? "green" : "red"}>
+                  {t(`knowledgeBases.extractTemplates.result_${result.status}`)}
+                </Tag>
+                <span className={styles.bindingDetail}>
+                  {t("knowledgeBases.extractTemplates.resultVersion", {
+                    version: result.template_version,
+                    model: result.model,
+                  })}
+                </span>
+                {result.error ? (
+                  <span className={styles.bindingDetail} title={result.error}>
+                    {result.error}
+                  </span>
+                ) : null}
+                {Object.keys(result.fields).length > 0 ? (
+                  <span className={styles.bindingDetail}>
+                    {Object.entries(result.fields)
+                      .map(
+                        ([key, value]) =>
+                          `${key}: ${
+                            Array.isArray(value)
+                              ? value.join("、")
+                              : String(value)
+                          }`,
+                      )
+                      .join(" | ")}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        )}
       </Modal>
     </section>
   );

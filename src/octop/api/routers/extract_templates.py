@@ -145,11 +145,22 @@ def _template_payload(
     return payload
 
 
-def _result_payload(row: ExtractResultRow) -> dict[str, Any]:
+def _result_payload(row: ExtractResultRow, document: Any = None) -> dict[str, Any]:
     payload = asdict(row)
     payload["result_id"] = row.id
     payload["fields"] = row.fields
     payload.pop("fields_json", None)
+    payload["document"] = (
+        {
+            "filename": str(getattr(document, "filename", "") or ""),
+            "path": str(getattr(document, "path", "") or ""),
+            "source_path": str(getattr(document, "source_path", "") or ""),
+        }
+        if document is not None
+        # The document is gone (deleted, or a source that no longer exists); the
+        # result row survives as a record of what was extracted from it.
+        else None
+    )
     return payload
 
 
@@ -475,12 +486,13 @@ async def extract_document_route(
 ) -> dict[str, Any]:
     """Run one extraction and return what it produced (design §12.6)."""
     try:
-        row = await _service(server).extract_document(
+        service = _service(server)
+        row = await service.extract_document(
             actor_user_id=user.id,
             document_id=document_id,
             template_id=template_id,
         )
-        return _result_payload(row)
+        return _result_payload(row, service.document(document_id))
     except Exception as exc:
         raise _map_template_error(
             exc, locale=resolve_request_locale(request), server=server
@@ -509,6 +521,28 @@ async def run_extraction_route(
             only_stale=body.only_stale,
             limit=body.limit,
         )
+    except Exception as exc:
+        raise _map_template_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.get(
+    "/extract-templates/{template_id}/results",
+    summary="List what a template produced",
+)
+async def list_results_route(
+    template_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    _user: User = Depends(require_permission("knowledge_bases")),
+) -> list[dict[str, Any]]:
+    """Every stored result for one template, with the file it came from (§7.3)."""
+    try:
+        return [
+            _result_payload(row, document)
+            for row, document in _service(server).results_for_template(template_id)
+        ]
     except Exception as exc:
         raise _map_template_error(
             exc, locale=resolve_request_locale(request), server=server

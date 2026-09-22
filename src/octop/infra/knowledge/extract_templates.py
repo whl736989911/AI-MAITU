@@ -275,6 +275,24 @@ class ExtractTemplateService:
         """Every template's result for one document, newest first."""
         return self._results.list_for_document(document_id)
 
+    def results_for_template(self, template_id: str) -> list[tuple[ExtractResultRow, Any]]:
+        """This template's results, each with the document it describes.
+
+        The row knows a document id; a reader needs to know which file that is,
+        and asking per row would be one query per result for a list that is read
+        whenever somebody opens it.
+        """
+        self.get(template_id)
+        documents: dict[str, Any] = {}
+        out: list[tuple[ExtractResultRow, Any]] = []
+        for row in self._results.list_for_template(template_id):
+            if row.document_id not in documents:
+                documents[row.document_id] = self._services.knowledge_repo.get_document(
+                    row.document_id
+                )
+            out.append((row, documents[row.document_id]))
+        return out
+
     def count_results(self, template_id: str) -> dict[str, int]:
         self.get(template_id)
         return self._results.counts_for_template(template_id)
@@ -295,7 +313,7 @@ class ExtractTemplateService:
         A failure is recorded before it is raised, so the row says what went
         wrong instead of looking like a run that never happened.
         """
-        document = self._document(document_id)
+        document = self.document(document_id)
         template = self.get(template_id) if template_id else self._template_for(document)
         if template is None:
             raise LookupError("no extraction template applies to this document")
@@ -377,7 +395,8 @@ class ExtractTemplateService:
             counts["succeeded"] += 1
         return counts
 
-    def _document(self, document_id: str) -> Any:
+    def document(self, document_id: str) -> Any:
+        """One document, refusing a folder or a missing row."""
         document = self._services.knowledge_repo.get_document(document_id)
         if document is None or document.is_dir:
             raise LookupError("knowledge document not found")
@@ -407,10 +426,10 @@ class ExtractTemplateService:
         """
         name, model_id = self._services.settings_repo.get_active_model()
         if not name or not model_id:
-            raise RuntimeError("no active model is configured; extraction needs one to run")
+            raise ValueError("no active model is configured; extraction needs one to run")
         provider = self._services.provider_repo.get_by_name(name)
         if provider is None:
-            raise RuntimeError(f"the active model's provider {name!r} no longer exists")
+            raise ValueError(f"the active model's provider {name!r} no longer exists")
         return build_probe_chat_model(provider, model_id=model_id), model_id
 
     def _write(

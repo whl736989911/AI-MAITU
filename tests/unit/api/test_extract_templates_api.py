@@ -43,6 +43,8 @@ async def api(tmp_path: Path) -> AsyncIterator[dict[str, Any]]:
         assert created.status_code == 201, created.text
         yield {
             "client": client,
+            "services": srv.services,
+            "kb": kb,
             "admin": admin_auth,
             "member": member_auth,
             "source": created.json()["data_source_id"],
@@ -260,3 +262,78 @@ async def test_resolve_reports_two_templates_claiming_one_file(api: dict[str, An
     body = resolved.json()
     assert body["template_id"] is None
     assert sorted(body["conflicts"]) == sorted([first["template_id"], second["template_id"]])
+
+
+async def test_running_a_template_extracts_and_records(
+    api: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The §12.6 surface: a run, and the row it leaves with its provenance."""
+    from octop.infra.knowledge import extract as extract_module
+    from octop.infra.knowledge import extract_templates as templates_module
+    from octop.infra.knowledge.extract_templates import ExtractTemplateService
+
+    client: httpx.AsyncClient = api["client"]
+    created = await _create_template(client, api["admin"])
+    document = api["services"].knowledge_repo.create_document(
+        kb_id=api["kb"],
+        filename="发票.md",
+        content_type="text/markdown",
+        byte_size=3,
+        status="ready",
+        content_hash="hash-9",
+    )
+
+    # A unit test cannot reach a model: the reply is stubbed, everything else
+    # (validation, provenance, storage) is real.
+    async def _run(**_kwargs):
+        return extract_module.parse_reply(
+            '{"summary": "一份采购合同", "keywords": ["采购", "付款"]}',
+            _kwargs["fields"],
+        )
+
+    monkeypatch.setattr(templates_module, "run_extraction", _run)
+    monkeypatch.setattr(templates_module, "document_text", lambda *_a, **_k: "正文")
+    monkeypatch.setattr(ExtractTemplateService, "_chat_model", lambda self: (None, "test-model"))
+
+    run = await client.post(
+        f"/api/extract-templates/{created['template_id']}/documents/{document.id}",
+        headers=api["admin"],
+    )
+
+    assert run.status_code == 200, run.text
+    body = run.json()
+    assert body["status"] == "succeeded"
+    assert body["template_version"] == 1
+    assert body["model"] == "test-model"
+    assert body["content_hash"] == "hash-9"
+    assert body["fields"]["summary"] == "一份采购合同"
+    assert body["document"]["filename"] == "发票.md"
+
+    listed = await client.get(
+        f"/api/extract-templates/{created['template_id']}/results", headers=api["admin"]
+    )
+    assert listed.status_code == 200, listed.text
+    assert [row["result_id"] for row in listed.json()] == [body["result_id"]]
+
+
+async def test_running_a_missing_provider_is_refused(
+    api: dict[str, Any],
+) -> None:
+    """No active model configured: the run fails with a reason, not a blank row."""
+    client: httpx.AsyncClient = api["client"]
+    created = await _create_template(client, api["admin"])
+    document = api["services"].knowledge_repo.create_document(
+        kb_id=api["kb"],
+        filename="合同.md",
+        content_type="text/markdown",
+        byte_size=3,
+        status="ready",
+    )
+
+    run = await client.post(
+        f"/api/extract-templates/{created['template_id']}/documents/{document.id}",
+        headers=api["admin"],
+    )
+
+    assert run.status_code == 400, run.text
+    assert "active model" in run.json()["error"]["details"]["reason"]

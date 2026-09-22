@@ -658,7 +658,25 @@
       "checkNone": "No template applies to this path",
       "level_file": "file level",
       "level_folder": "folder level",
-      "level_source": "source level"
+      "level_source": "source level",
+      "run": "Run",
+      "runTitle": "Run \"{{name}}\"",
+      "runHint": "Extracts with version {{version}}. Results already produced by this version are replaced, and results built by an older one are not touched until this runs.",
+      "runPath": "Folder to run on",
+      "runPathHint": "Empty runs every document in the knowledge base.",
+      "runOnlyFailed": "Only retry failures",
+      "runOnlyStale": "Only what is out of date",
+      "runCounts": "Matched {{matched}} · succeeded {{succeeded}} · failed {{failed}} · skipped {{skipped}}",
+      "runDone": "Extraction finished: {{succeeded}} succeeded, {{failed}} failed, {{skipped}} skipped",
+      "runFailed": "Extraction failed to start",
+      "results": "Results",
+      "resultsTitle": "What \"{{name}}\" produced",
+      "resultsEmpty": "Nothing has been extracted with this template yet",
+      "resultVersion": "v{{version}} · {{model}}",
+      "result_pending": "Queued",
+      "result_processing": "Running",
+      "result_succeeded": "Extracted",
+      "result_failed": "Failed"
     }
   },
   "setupWizard": {
