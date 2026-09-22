@@ -19,16 +19,32 @@ Four decisions shape this module:
   product can pull documents through one, so its sync raises
   :class:`DataSourceSyncUnsupported` instead of reporting a success it never
   performed. The dashboard does not offer creating one either.
+- **A folder source is validated by building it.** ``local`` / ``smb`` / ``nfs``
+  name a folder the platform connects to itself (design §4). Create and update
+  run the same connector construction a scan runs, so a path the denylist
+  refuses, a missing share name, or a kind with no connector in this build is
+  refused while the administrator is still looking at the form — not on the
+  first scan, when it reads as a sync bug.
+- **Secrets are write-only.** A source's connection secret goes straight into
+  an encrypted blob; the row carries only whether one exists, so no payload
+  builder can leak it (design §4).
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from octop.infra.db.repos._base import now_ts
 from octop.infra.db.repos.data_sources import (
+    CONNECTION_FAILED,
+    CONNECTION_OK,
+    CONNECTION_UNKNOWN,
     KIND_CONNECTOR,
+    KIND_LOCAL,
+    KIND_NFS,
+    KIND_SMB,
     KIND_UPLOAD,
     KIND_URL,
     KINDS,
@@ -42,6 +58,8 @@ from octop.infra.db.repos.knowledge import KnowledgeBaseRow, KnowledgeDocumentRo
 from octop.infra.knowledge.jobs import process_document
 from octop.infra.knowledge.relpath import path_parent
 from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.knowledge.source_crypto import decrypt_source_secret, encrypt_source_secret
+from octop.infra.knowledge.sources import SourceConnector, SourceError, build_connector
 from octop.infra.knowledge.url_fetch import FetchedDocument, UrlFetchError, fetch_document
 from octop.infra.utils.ssrf_guard import OutboundFetchError, validate_https_url
 
@@ -50,11 +68,40 @@ _DOCUMENT_ID_KEY = "document_id"
 _CONNECTOR_ID_KEY = "connector_id"
 # What each kind may carry in ``config``. A key a kind cannot honour is an
 # error: silently storing it is how a source ends up configured but inert.
+# A folder source allows nothing here: its connection lives in dedicated
+# columns, so a stray config key would be a setting nothing reads.
 _KIND_CONFIG_KEYS = {
     KIND_UPLOAD: frozenset({_DOCUMENT_ID_KEY, "path"}),
     KIND_URL: frozenset({_URL_KEY, _DOCUMENT_ID_KEY}),
     KIND_CONNECTOR: frozenset({_CONNECTOR_ID_KEY}),
+    KIND_LOCAL: frozenset(),
+    KIND_SMB: frozenset(),
+    KIND_NFS: frozenset(),
 }
+
+
+@dataclass(frozen=True)
+class FolderSettings:
+    """Where a folder source is and how to reach it.
+
+    One type rather than nine more keyword arguments, because the same shape is
+    validated on create, read back for a connection test, and patched on update.
+
+    ``password`` is tri-state on purpose: ``None`` means "leave the stored
+    secret alone", ``""`` means "clear it", and any other value replaces it. A
+    plain ``str`` could not tell an untouched secret from an emptied one, and
+    collapsing those two is how an update silently drops a credential.
+    """
+
+    server: str = ""
+    share: str = ""
+    root_path: str = ""
+    username: str = ""
+    password: str | None = None
+    read_only: bool = True
+    include_globs: str = ""
+    exclude_globs: str = ""
+    scan_interval_seconds: int = 0
 
 
 class DataSourceSyncUnsupported(RuntimeError):
@@ -117,6 +164,7 @@ class DataSourceService:
         name: str,
         kind: str,
         config: dict[str, Any] | None = None,
+        folder: FolderSettings | None = None,
         is_admin: bool = False,
     ) -> DataSourceRow:
         base = self._knowledge.get_writable_base(
@@ -127,13 +175,93 @@ class DataSourceService:
             raise ValueError("a data source needs a name")
         if kind not in KINDS:
             raise ValueError(f"unknown data source kind {kind!r}; expected one of {KINDS}")
+        settings = folder or FolderSettings()
+        if kind in (KIND_LOCAL, KIND_SMB, KIND_NFS):
+            self._validated_folder(kind=kind, folder=settings)
         return self._repo.create(
             knowledge_base_id=base.id,
             name=cleaned,
             kind=kind,
             config=self._validated_config(base, kind=kind, config=config or {}),
             created_by=actor_user_id,
+            server=settings.server.strip(),
+            share=settings.share.strip(),
+            root_path=settings.root_path.strip(),
+            username=settings.username.strip(),
+            credentials_enc=self._encrypted_secret(settings),
+            read_only=settings.read_only,
+            include_globs=settings.include_globs.strip(),
+            exclude_globs=settings.exclude_globs.strip(),
+            scan_interval_seconds=max(0, settings.scan_interval_seconds),
         )
+
+    def update_source(
+        self,
+        ds_id: str,
+        *,
+        actor_user_id: int,
+        is_admin: bool = False,
+        name: str | None = None,
+        folder: FolderSettings | None = None,
+    ) -> DataSourceRow:
+        """Patch a source's name and connection settings.
+
+        The candidate settings are validated by building the connector first, so
+        an edit that would break the source is refused instead of stored; then
+        the row is written and the secret replaced only when the caller supplied
+        one (:attr:`FolderSettings.password` carries that distinction).
+        """
+        data_source = self._require(ds_id)
+        self._knowledge.get_writable_base(
+            data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
+        )
+        cleaned = name.strip() if name is not None else None
+        if cleaned is not None and not cleaned:
+            raise ValueError("a data source needs a name")
+        settings = folder
+        if settings is not None and data_source.kind in (KIND_LOCAL, KIND_SMB, KIND_NFS):
+            self._validated_folder(kind=data_source.kind, folder=settings)
+        self._repo.update_source_fields(
+            ds_id,
+            name=cleaned,
+            server=settings.server.strip() if settings else None,
+            share=settings.share.strip() if settings else None,
+            root_path=settings.root_path.strip() if settings else None,
+            username=settings.username.strip() if settings else None,
+            read_only=settings.read_only if settings else None,
+            include_globs=settings.include_globs.strip() if settings else None,
+            exclude_globs=settings.exclude_globs.strip() if settings else None,
+            scan_interval_seconds=(
+                max(0, settings.scan_interval_seconds) if settings is not None else None
+            ),
+        )
+        if settings is not None and settings.password is not None:
+            self._repo.set_credentials(ds_id, self._encrypted_secret(settings))
+            # A new credential makes the last test's verdict stale: the source
+            # may now be reachable, or no longer be.
+            self._repo.set_connection(ds_id, status=CONNECTION_UNKNOWN, error=None)
+        return self._require(ds_id)
+
+    def test_connection(self, ds_id: str, *, actor_user_id: int, is_admin: bool = False) -> str:
+        """Prove a source can be reached, and record the verdict on the row.
+
+        Audited: this is the moment the platform spends the stored credential
+        against another system (design §4). The returned text is shown to the
+        administrator and carries no secret.
+        """
+        data_source = self._require(ds_id)
+        self._knowledge.get_writable_base(
+            data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
+        )
+        try:
+            detail = self._connector(data_source).test()
+        except SourceError as exc:
+            self._repo.set_connection(ds_id, status=CONNECTION_FAILED, error=str(exc))
+            self._audit(actor_user_id, "knowledge.source.test.failed", ds_id, str(exc))
+            raise
+        self._repo.set_connection(ds_id, status=CONNECTION_OK, error=None)
+        self._audit(actor_user_id, "knowledge.source.test", ds_id, detail)
+        return detail
 
     def delete(self, ds_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:
         data_source = self._require(ds_id)
@@ -316,12 +444,16 @@ class DataSourceService:
                     "this knowledge base"
                 )
             return {**config, _URL_KEY: url}
-        # connector: the credentials and settings live on the connector instance,
-        # so only its id is persisted here.
-        connector_id = str(config.get(_CONNECTOR_ID_KEY) or "").strip()
-        if not connector_id:
-            raise ValueError("a connector data source requires config.connector_id")
-        return {**config, _CONNECTOR_ID_KEY: connector_id}
+        if kind == KIND_CONNECTOR:
+            # The credentials and settings live on the connector instance, so
+            # only its id is persisted here.
+            connector_id = str(config.get(_CONNECTOR_ID_KEY) or "").strip()
+            if not connector_id:
+                raise ValueError("a connector data source requires config.connector_id")
+            return {**config, _CONNECTOR_ID_KEY: connector_id}
+        # Folder kinds: every setting lives in its own column, so nothing is
+        # stored here — and the key check above already refused a stray one.
+        return {}
 
     def _upload_target(self, kb_id: str, config: dict[str, Any]) -> KnowledgeDocumentRow:
         """The knowledge document an ``upload`` source ingests, or ``ValueError``."""
@@ -344,3 +476,50 @@ class DataSourceService:
         if data_source is None:
             raise LookupError(f"data source {ds_id!r} not found")
         return data_source
+
+    # ------------------------------------------------------------------
+    # Folder sources
+    # ------------------------------------------------------------------
+
+    def _connector(self, data_source: DataSourceRow) -> SourceConnector:
+        """The live connector for a stored source, secret decrypted for it only."""
+        secret = decrypt_source_secret(
+            self._services.secret_repo, self._repo.get_credentials(data_source.id)
+        )
+        return build_connector(
+            kind=data_source.kind,
+            root_path=data_source.root_path,
+            server=data_source.server,
+            share=data_source.share,
+            username=data_source.username,
+            password=str(secret.get("password") or ""),
+        )
+
+    def _validated_folder(self, *, kind: str, folder: FolderSettings) -> None:
+        """Refuse a folder source that could not work, by building it.
+
+        The connector is the check. It applies the same path guard and field
+        rules a scan would, and it is where a kind this build has no connector
+        for (NFS) says so — an administrator learns that from the form rather
+        than from a sync that silently indexes nothing.
+        """
+        build_connector(
+            kind=kind,
+            root_path=folder.root_path.strip(),
+            server=folder.server.strip(),
+            share=folder.share.strip(),
+            username=folder.username.strip(),
+            password=folder.password or "",
+        )
+
+    def _encrypted_secret(self, folder: FolderSettings) -> bytes | None:
+        """The blob to store for a source, or ``None`` when it has no secret."""
+        if not folder.password:
+            return None
+        return encrypt_source_secret(self._services.secret_repo, {"password": folder.password})
+
+    def _audit(self, actor_user_id: int, action: str, target: str, payload: str) -> None:
+        """Record a source operation against the acting user (design §4)."""
+        user = self._services.user_repo.get(actor_user_id)
+        actor = user.username if user is not None else str(actor_user_id)
+        self._services.audit_repo.user_event(actor, action, target=target, payload=payload)

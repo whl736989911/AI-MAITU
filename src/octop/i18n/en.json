@@ -396,6 +396,7 @@
     "DATA_SOURCE_INVALID": "The data source is invalid: check its kind and configuration.",
     "DATA_SOURCE_SYNC_UNSUPPORTED": "This data source kind cannot be synced yet. Nothing was imported.",
     "DATA_SOURCE_FETCH_FAILED": "Could not fetch the URL: {reason}",
+    "DATA_SOURCE_UNREACHABLE": "Could not reach the data source: {reason}",
     "AVATAR_INVALID": "Avatar must be a PNG, JPEG, WebP, or GIF image.",
     "AVATAR_TOO_LARGE": "Avatar exceeds the 5 MB size limit.",
     "INVITE_INVALID": "This invite code is invalid.",

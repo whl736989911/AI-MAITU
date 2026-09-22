@@ -8,8 +8,9 @@ document status — is produced and asserted for real.
 
 from __future__ import annotations
 
+import shutil
 import sqlite3
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -17,9 +18,11 @@ import pytest
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos.audit import AuditRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
+from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.knowledge import data_sources as data_sources_module
@@ -29,10 +32,12 @@ from octop.infra.knowledge.data_sources import (
     DataSourceService,
     DataSourceSyncFailed,
     DataSourceSyncUnsupported,
+    FolderSettings,
 )
 from octop.infra.knowledge.files import document_path
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.knowledge.sources import SourceError, SourceUnsupported
 from octop.infra.knowledge.url_fetch import FetchedDocument
 from octop.infra.utils.paths import PathLayout
 from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
@@ -57,6 +62,8 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         data_sources_repo=DataSourceRepo(pool),
         settings_repo=SettingsRepo(pool),
         user_repo=UserRepo(pool),
+        secret_repo=SecretRepo(pool),
+        audit_repo=AuditRepo(pool),
         provider_repo=None,
     )
     monkeypatch.setattr(service_module, "assert_knowledge_usable", lambda *_a, **_k: None)
@@ -488,3 +495,236 @@ def test_sync_after_the_document_is_deleted_reports_failure(
     row = env.services.data_sources_repo.get(source.id)
     assert row.sync_status == "failed"
     assert row.last_synced_at is None
+
+
+# ---------------------------------------------------------------------------
+# folder sources — local / smb / nfs (design §4)
+# ---------------------------------------------------------------------------
+
+_SHARE_PASSWORD = "s3cret-share-password"
+
+
+def _local_root(tmp_path: Path) -> Path:
+    root = tmp_path / "folder"
+    root.mkdir(parents=True)
+    (root / "policy.md").write_text("refunds take five days", encoding="utf-8")
+    return root
+
+
+def _base(env: SimpleNamespace, owner_id: int):
+    return env.services.knowledge_repo.create_base(owner_user_id=owner_id, name="Docs")
+
+
+def _local_source(env: SimpleNamespace, owner_id: int, root: Path, *, name: str = "Policies"):
+    base = _base(env, owner_id)
+    source = env.sources.create(
+        base.id,
+        actor_user_id=owner_id,
+        name=name,
+        kind="local",
+        folder=FolderSettings(root_path=str(root)),
+    )
+    return base, source
+
+
+def test_local_source_records_its_connection_and_carries_no_secret(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    root = _local_root(tmp_path)
+
+    _base_row, source = _local_source(env, people.owner, root)
+
+    assert source.kind == "local"
+    assert source.root_path == str(root)
+    # design §4: read-only unless an administrator says otherwise.
+    assert source.read_only is True
+    assert source.has_credentials is False
+    assert source.connection_status == "unknown"
+    # The row has no field a secret could sit in, so no payload can leak one.
+    assert not hasattr(source, "credentials_enc")
+    assert "password" not in asdict(source)
+
+
+def test_a_source_that_could_not_work_is_refused_at_create(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The connector is the check, so the form fails rather than the first scan."""
+    home = tmp_path / "octop-home"
+    home.mkdir()
+    monkeypatch.setenv("OCTOP_HOME", str(home))
+    base = _base(env, people.owner)
+
+    with pytest.raises(SourceError, match="platform's own data directory"):
+        env.sources.create(
+            base.id,
+            actor_user_id=people.owner,
+            name="Bad",
+            kind="local",
+            folder=FolderSettings(root_path=str(home)),
+        )
+
+    assert env.services.data_sources_repo.list_for_base(base.id) == []
+
+
+def test_nfs_source_is_refused_with_a_reason(env: SimpleNamespace, people: SimpleNamespace) -> None:
+    """NFS has no connector in this build, so a source that names one is refused."""
+    base = _base(env, people.owner)
+
+    with pytest.raises(SourceUnsupported, match="libnfs"):
+        env.sources.create(
+            base.id,
+            actor_user_id=people.owner,
+            name="NAS",
+            kind="nfs",
+            folder=FolderSettings(server="nas", share="export"),
+        )
+
+    assert env.services.data_sources_repo.list_for_base(base.id) == []
+
+
+def test_folder_source_rejects_config_keys(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """A folder source keeps its settings in columns; a config key reads nothing."""
+    base = _base(env, people.owner)
+
+    with pytest.raises(ValueError, match="does not accept config"):
+        env.sources.create(
+            base.id,
+            actor_user_id=people.owner,
+            name="X",
+            kind="local",
+            config={"server": "somewhere"},
+            folder=FolderSettings(root_path=str(_local_root(tmp_path))),
+        )
+
+
+def test_test_connection_reports_the_source_and_audits_it(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    _base_row, source = _local_source(env, people.owner, _local_root(tmp_path))
+
+    detail = env.sources.test_connection(source.id, actor_user_id=people.owner)
+
+    assert "1 item(s)" in detail
+    row = env.services.data_sources_repo.get(source.id)
+    assert row.connection_status == "ok"
+    assert row.connection_error is None
+    audits = env.services.audit_repo.query(action="knowledge.source.test")
+    assert [entry.target for entry in audits] == [source.id]
+    assert audits[0].actor == "owner"
+
+
+def test_test_connection_records_a_failure(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """A share that went away is recorded, so the failure outlives the request."""
+    root = _local_root(tmp_path)
+    _base_row, source = _local_source(env, people.owner, root)
+    shutil.rmtree(root)
+
+    with pytest.raises(SourceError):
+        env.sources.test_connection(source.id, actor_user_id=people.owner)
+
+    row = env.services.data_sources_repo.get(source.id)
+    assert row.connection_status == "failed"
+    assert "does not exist" in (row.connection_error or "")
+    assert env.services.audit_repo.query(action="knowledge.source.test.failed")
+
+
+def test_a_viewer_cannot_test_a_source(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """A test spends the stored credential, so seeing the base is not enough."""
+    base, _source = _local_source(env, people.owner, _local_root(tmp_path))
+    env.services.knowledge_repo.update_base(base.id, shared=True)
+
+    with pytest.raises(PermissionError):
+        env.sources.test_connection(_source.id, actor_user_id=people.viewer)
+
+
+def test_smb_source_keeps_its_secret_encrypted(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+    """The blob is stored, the plaintext is not, and the row only says one exists."""
+    base = _base(env, people.owner)
+
+    source = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Share",
+        kind="smb",
+        folder=FolderSettings(
+            server="fileserver",
+            share="company",
+            root_path="policies",
+            username="DOMAIN\\svc",
+            password=_SHARE_PASSWORD,
+        ),
+    )
+
+    assert source.server == "fileserver"
+    assert source.share == "company"
+    assert source.root_path == "policies"
+    assert source.username == "DOMAIN\\svc"
+    assert source.has_credentials is True
+    blob = env.services.data_sources_repo.get_credentials(source.id)
+    assert blob is not None
+    assert _SHARE_PASSWORD.encode("utf-8") not in blob
+
+
+def test_update_replaces_clears_or_keeps_the_secret(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+    """``password=None`` keeps, ``\"\"`` clears, anything else replaces."""
+    base = _base(env, people.owner)
+    source = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Share",
+        kind="smb",
+        folder=FolderSettings(server="fileserver", share="company", password="first"),
+    )
+    first = env.services.data_sources_repo.get_credentials(source.id)
+
+    kept = env.sources.update_source(
+        source.id,
+        actor_user_id=people.owner,
+        name="Renamed",
+        folder=FolderSettings(server="fileserver", share="company"),
+    )
+    assert kept.name == "Renamed"
+    assert env.services.data_sources_repo.get_credentials(source.id) == first
+
+    replaced = env.sources.update_source(
+        source.id,
+        actor_user_id=people.owner,
+        folder=FolderSettings(server="fileserver", share="company", password="second"),
+    )
+    assert replaced.has_credentials is True
+    assert env.services.data_sources_repo.get_credentials(source.id) != first
+    # A new credential makes the previous verdict stale.
+    assert replaced.connection_status == "unknown"
+
+    cleared = env.sources.update_source(
+        source.id,
+        actor_user_id=people.owner,
+        folder=FolderSettings(server="fileserver", share="company", password=""),
+    )
+    assert cleared.has_credentials is False
+    assert env.services.data_sources_repo.get_credentials(source.id) is None
+
+
+def test_update_validates_before_it_writes(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    _base_row, source = _local_source(env, people.owner, _local_root(tmp_path))
+
+    with pytest.raises(SourceError):
+        env.sources.update_source(
+            source.id,
+            actor_user_id=people.owner,
+            folder=FolderSettings(root_path="relative/path"),
+        )
+
+    assert env.services.data_sources_repo.get(source.id).root_path == source.root_path

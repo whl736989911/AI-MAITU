@@ -28,7 +28,9 @@ from octop.infra.knowledge.data_sources import (
     DataSourceService,
     DataSourceSyncFailed,
     DataSourceSyncUnsupported,
+    FolderSettings,
 )
+from octop.infra.knowledge.sources import SourceError
 from octop.infra.knowledge.url_fetch import UrlFetchError
 from octop.infra.server import OctopServer
 from octop.infra.users.identity import User
@@ -37,6 +39,50 @@ from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+class FolderBody(BaseModel):
+    """Where a folder source is and how to reach it (design §4).
+
+    ``extra="forbid"`` for the same reason the create body has it: a field this
+    API does not write must fail loudly rather than look configured.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    root_path: str = Field(
+        default="",
+        max_length=1000,
+        description=(
+            "Folder to index. local: an absolute path on the server. smb: a path inside the share."
+        ),
+    )
+    server: str = Field(default="", max_length=255, description="SMB server host.")
+    share: str = Field(default="", max_length=255, description="SMB share name.")
+    username: str = Field(
+        default="",
+        max_length=255,
+        description="Connecting account. Include the domain as 'DOMAIN\\\\user' for SMB.",
+    )
+    password: str | None = Field(
+        default=None,
+        description=(
+            "Connecting secret. Write-only: stored encrypted and never returned. "
+            "Omit to leave an existing secret unchanged; send an empty string to clear it."
+        ),
+    )
+    read_only: bool = Field(default=True, description="Read-only data source.")
+    include_globs: str = Field(
+        default="",
+        max_length=4000,
+        description="Newline-separated globs to include. Empty includes everything.",
+    )
+    exclude_globs: str = Field(
+        default="", max_length=4000, description="Newline-separated globs to exclude."
+    )
+    scan_interval_seconds: int = Field(
+        default=0, ge=0, le=604800, description="Scan interval in seconds. 0 scans only on request."
+    )
 
 
 class CreateDataSourceBody(BaseModel):
@@ -50,9 +96,22 @@ class CreateDataSourceBody(BaseModel):
         default_factory=dict,
         description=(
             "Kind-specific settings. upload: document_id or path of a document in the base; "
-            "url: url of the page to fetch; connector: connector_id."
+            "url: url of the page to fetch; connector: connector_id. "
+            "Folder kinds (local / smb / nfs) take no config: use folder instead."
         ),
     )
+    folder: FolderBody | None = Field(
+        default=None, description="Connection settings. Required for local / smb / nfs."
+    )
+
+
+class UpdateDataSourceBody(BaseModel):
+    """Patch a source. Every field is optional; omitted ones stay as they are."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    folder: FolderBody | None = Field(default=None, description="Replacement connection settings.")
 
 
 def _service(server: OctopServer) -> DataSourceService:
@@ -98,6 +157,10 @@ def _map_data_source_error(
         return _map_knowledge_error(cause, locale=locale, server=server)
     if isinstance(exc, UnsafeOutboundUrl):
         return OctopError(ErrorCode.DATA_SOURCE_INVALID, str(exc), details={"reason": str(exc)})
+    if isinstance(exc, SourceError):
+        # A folder the platform could not reach or list. The message is built by
+        # the connector and carries no secret (design §4).
+        return OctopError(ErrorCode.DATA_SOURCE_UNREACHABLE, str(exc), details={"reason": str(exc)})
     if isinstance(exc, PermissionError):
         return OctopError.localized(ErrorCode.KNOWLEDGE_FORBIDDEN, locale)
     if isinstance(exc, LookupError):
@@ -110,6 +173,13 @@ def _map_data_source_error(
 
 def _is_admin(user: User) -> bool:
     return bool(user.is_admin)
+
+
+def _folder_settings(body: FolderBody | None) -> FolderSettings | None:
+    """The domain settings a request body describes, or ``None`` when it has none."""
+    if body is None:
+        return None
+    return FolderSettings(**body.model_dump())
 
 
 @router.get(
@@ -152,6 +222,7 @@ async def create_data_source(
             name=body.name,
             kind=body.kind,
             config=body.config,
+            folder=_folder_settings(body.folder),
             is_admin=_is_admin(user),
         )
         return _payload(row)
@@ -196,6 +267,56 @@ async def sync_data_source(
         raise _map_data_source_error(
             exc, locale=resolve_request_locale(request), server=server
         ) from exc
+
+
+@router.patch("/data-sources/{ds_id}", summary="Update a data source")
+async def update_data_source(
+    ds_id: str,
+    body: UpdateDataSourceBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    try:
+        row = _service(server).update_source(
+            ds_id,
+            actor_user_id=user.id,
+            name=body.name,
+            folder=_folder_settings(body.folder),
+            is_admin=_is_admin(user),
+        )
+        return _payload(row)
+    except Exception as exc:
+        raise _map_data_source_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.post("/data-sources/{ds_id}/test", summary="Test a data source connection")
+async def test_data_source(
+    ds_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    """Reach the source and report what it saw, indexing nothing.
+
+    Separate from sync on purpose: an administrator wants to know whether a
+    share is reachable before committing a scan of it, and the answer is stored
+    on the source either way.
+    """
+    try:
+        detail = await asyncio.to_thread(
+            _service(server).test_connection,
+            ds_id,
+            actor_user_id=user.id,
+            is_admin=_is_admin(user),
+        )
+    except Exception as exc:
+        raise _map_data_source_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+    return {"ok": True, "detail": detail}
 
 
 @router.delete(

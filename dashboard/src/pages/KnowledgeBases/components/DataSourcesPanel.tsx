@@ -66,6 +66,11 @@ const SYNCABLE_KIND: Record<DataSourceKind, boolean> = {
   upload: true,
   url: true,
   connector: false,
+  // Folder kinds are configurable and testable; scanning their contents is the
+  // next slice, so their sync still answers unsupported rather than pretending.
+  local: false,
+  smb: false,
+  nfs: false,
 };
 const DEFAULT_KIND: DataSourceKind = "upload";
 
