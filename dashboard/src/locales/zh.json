@@ -1092,7 +1092,7 @@
     "tabQueue": "审批队列",
     "tabSettings": "共享设置",
     "resourceType": {
-      "agent": "专家",
+      "agent": "智能体",
       "connector": "连接器",
       "knowledge_base": "知识库",
       "feature": "功能"

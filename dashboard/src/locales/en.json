@@ -1092,7 +1092,7 @@
     "tabQueue": "Approval queue",
     "tabSettings": "Sharing settings",
     "resourceType": {
-      "agent": "Expert",
+      "agent": "Agent",
       "connector": "Connector",
       "knowledge_base": "Knowledge base",
       "feature": "Feature"
