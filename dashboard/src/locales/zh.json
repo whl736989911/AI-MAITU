@@ -1433,6 +1433,8 @@
     "expertPickerManage": "管理专家",
     "agentPickerSearch": "搜索专家与功能",
     "agentPickerEmpty": "没有可选的专家或功能",
+    "featurePickerSearch": "搜索功能",
+    "featurePickerEmpty": "没有可选的功能",
     "subagentPicker": "选择子智能体",
     "subagentPickerSearch": "搜索子智能体",
     "subagentPickerEmpty": "暂无已安装的子智能体",

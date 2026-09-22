@@ -71,5 +71,8 @@ describe("ExpertPickerPopover kind groups", () => {
     expect(screen.getByText("功能")).toBeInTheDocument();
     expect(screen.getByText("Weekly digest")).toBeInTheDocument();
     expect(screen.queryByText("Expert One")).toBeNull();
+    // A list that offers only features names features, not experts it does not
+    // offer: ``t("chat.featurePickerSearch", "搜索功能")``.
+    expect(screen.getByPlaceholderText("搜索功能")).toBeInTheDocument();
   });
 });

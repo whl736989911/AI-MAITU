@@ -1433,6 +1433,8 @@
     "expertPickerManage": "Manage experts",
     "agentPickerSearch": "Search experts and features",
     "agentPickerEmpty": "No experts or features available",
+    "featurePickerSearch": "Search features",
+    "featurePickerEmpty": "No features available",
     "subagentPicker": "Select subagents",
     "subagentPickerSearch": "Search subagents",
     "subagentPickerEmpty": "No installed subagents",
