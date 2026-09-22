@@ -16,6 +16,7 @@ import pytest
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.data_sources import DataSourceRepo
+from octop.infra.db.repos.extract_results import ExtractResultRepo
 from octop.infra.db.repos.extract_templates import STATUS_DISABLED, ExtractTemplateRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.users import UserRepo
@@ -40,7 +41,9 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     services = SimpleNamespace(
         db=pool,
         extract_templates_repo=ExtractTemplateRepo(pool),
+        extract_results_repo=ExtractResultRepo(pool),
         data_sources_repo=DataSourceRepo(pool),
+        knowledge_repo=KnowledgeRepo(pool),
         user_repo=UserRepo(pool),
     )
     return SimpleNamespace(services=services, templates=ExtractTemplateService(services))
@@ -253,3 +256,89 @@ def test_an_unknown_template_is_not_found(env: SimpleNamespace, owner: int) -> N
         env.templates.bind("nosuchtemplate", actor_user_id=owner, data_source_id="whatever")
     with pytest.raises(LookupError, match="not found"):
         env.templates.unbind("nosuchbinding")
+
+
+def _document(env: SimpleNamespace, owner_id: int, *, filename: str = "发票.md"):
+    base = KnowledgeRepo(env.services.db).create_base(owner_user_id=owner_id, name="Docs Kb")
+    return env.services.knowledge_repo.create_document(
+        kb_id=base.id,
+        filename=filename,
+        content_type="text/markdown",
+        byte_size=3,
+        status="ready",
+        content_hash="hash-1",
+    )
+
+
+def _stub_model(env, monkeypatch, reply: str) -> None:
+    """Stand in for the model call: a unit test cannot reach an LLM."""
+    from octop.infra.knowledge import extract as extract_module
+    from octop.infra.knowledge import extract_templates as module
+
+    async def _run(**_kwargs):
+        return extract_module.parse_reply(reply, _kwargs["fields"])
+
+    monkeypatch.setattr(module, "run_extraction", _run)
+    monkeypatch.setattr(module, "document_text", lambda *_a, **_k: "发票号 INV-2026-0042")
+    monkeypatch.setattr(ExtractTemplateService, "_chat_model", lambda self: (None, "test-model"))
+
+
+async def test_extraction_records_what_produced_it(env, owner, monkeypatch) -> None:
+    """design §7.3: a result keeps its template version, model, and file hash."""
+    template, version = _template(env, owner)
+    document = _document(env, owner)
+    _stub_model(
+        env,
+        monkeypatch,
+        '{"summary": "一份采购合同", "keywords": ["采购", "付款"]}',
+    )
+
+    row = await env.templates.extract_document(
+        actor_user_id=owner, document_id=document.id, template_id=template.id
+    )
+
+    assert row.status == "succeeded"
+    assert row.template_version == version.version == 1
+    assert row.model == "test-model"
+    assert row.content_hash == "hash-1"
+    assert row.fields["summary"] == "一份采购合同"
+    assert row.fields["keywords"] == ["采购", "付款"]
+    assert env.templates.results_for_document(document.id)[0].id == row.id
+
+
+async def test_a_bad_reply_is_recorded_as_a_failure(env, owner, monkeypatch) -> None:
+    """A required field the model left empty is a failed run, not a hole in one."""
+    template, _ = _template(env, owner)
+    document = _document(env, owner)
+    _stub_model(env, monkeypatch, '{"keywords": ["采购"]}')
+
+    with pytest.raises(ValueError, match="summary"):
+        await env.templates.extract_document(
+            actor_user_id=owner, document_id=document.id, template_id=template.id
+        )
+
+    stored = env.services.extract_results_repo.get(document.id, template.id)
+    assert stored is not None
+    assert stored.status == "failed"
+    assert "summary" in (stored.error or "")
+
+
+async def test_only_stale_skips_what_already_ran(env, owner, monkeypatch) -> None:
+    """design §7.3: after an edit, re-running is one call — and it is cheap."""
+    template, _ = _template(env, owner)
+    document = _document(env, owner)
+    source = _local_source(env, owner)
+    env.templates.bind(template.id, actor_user_id=owner, data_source_id=source.id)
+    _stub_model(env, monkeypatch, '{"summary": "s", "keywords": ["k"]}')
+    await env.templates.extract_document(
+        actor_user_id=owner, document_id=document.id, template_id=template.id
+    )
+
+    again = await env.templates.extract_scope(
+        actor_user_id=owner,
+        kb_id=document.kb_id,
+        template_id=template.id,
+        only_stale=True,
+    )
+
+    assert again == {"matched": 1, "succeeded": 0, "failed": 0, "skipped": 1}

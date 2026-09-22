@@ -18,7 +18,15 @@ import json
 import re
 from typing import Any, cast
 
+from octop.infra.agents.providers.probe import build_probe_chat_model
 from octop.infra.db.repos.data_sources import DataSourceRow
+from octop.infra.db.repos.extract_results import (
+    STATUS_FAILED,
+    STATUS_PROCESSING,
+    STATUS_SUCCEEDED,
+    ExtractResultRepo,
+    ExtractResultRow,
+)
 from octop.infra.db.repos.extract_templates import (
     STATUS_DISABLED,
     STATUSES,
@@ -27,6 +35,8 @@ from octop.infra.db.repos.extract_templates import (
     ExtractTemplateRow,
     TemplateVersionRow,
 )
+from octop.infra.knowledge.extract import run_extraction
+from octop.infra.knowledge.jobs import document_text
 from octop.infra.knowledge.service import knowledge_content_type
 from octop.infra.knowledge.sources import is_folder_kind
 from octop.infra.knowledge.template_match import (
@@ -55,6 +65,7 @@ class ExtractTemplateService:
     def __init__(self, services: Any) -> None:
         self._services = services
         self._repo: ExtractTemplateRepo = services.extract_templates_repo
+        self._results: ExtractResultRepo = services.extract_results_repo
 
     # ------------------------------------------------------------------
     # Templates
@@ -255,6 +266,177 @@ class ExtractTemplateService:
             content_type=resolved_type,
         )
         return match, resolved_type
+
+    # ------------------------------------------------------------------
+    # Extraction (design §12.6)
+    # ------------------------------------------------------------------
+
+    def results_for_document(self, document_id: str) -> list[ExtractResultRow]:
+        """Every template's result for one document, newest first."""
+        return self._results.list_for_document(document_id)
+
+    def count_results(self, template_id: str) -> dict[str, int]:
+        self.get(template_id)
+        return self._results.counts_for_template(template_id)
+
+    async def extract_document(
+        self,
+        *,
+        actor_user_id: int,
+        document_id: str,
+        template_id: str | None = None,
+    ) -> ExtractResultRow:
+        """Extract one document's fields with a template (design §12.6).
+
+        The template is the one named, or — when none is — the one the binding
+        rules resolve for this file (§7.4). That is what makes a manual run and
+        a scan's result agree: both ask the same question of the same rules.
+
+        A failure is recorded before it is raised, so the row says what went
+        wrong instead of looking like a run that never happened.
+        """
+        document = self._document(document_id)
+        template = self.get(template_id) if template_id else self._template_for(document)
+        if template is None:
+            raise LookupError("no extraction template applies to this document")
+        version = self.current_version(template.id)
+        fields = parse_fields(version.fields)
+        if not fields:
+            raise ValueError("this template has no fields to extract")
+        llm, model_name = self._chat_model()
+        self._write(document, template, version.version, model_name, STATUS_PROCESSING)
+        try:
+            values = await run_extraction(
+                llm=llm,
+                fields=fields,
+                instruction=version.instruction,
+                title=document.title or document.filename,
+                text=document_text(self._services, document),
+            )
+        except Exception as exc:
+            self._write(
+                document, template, version.version, model_name, STATUS_FAILED, error=str(exc)
+            )
+            raise
+        return self._write(
+            document, template, version.version, model_name, STATUS_SUCCEEDED, values=values
+        )
+
+    async def extract_scope(
+        self,
+        *,
+        actor_user_id: int,
+        kb_id: str,
+        template_id: str,
+        path: str = "",
+        only_failed: bool = False,
+        only_stale: bool = False,
+        limit: int = 200,
+    ) -> dict[str, int]:
+        """Extract a scope of documents with one template (design §8.4).
+
+        ``only_failed`` retries what failed; ``only_stale`` skips documents whose
+        stored result already came from the template's current version and
+        succeeded — which is what makes "the template changed, re-run the files
+        it affects" one call instead of a guess about which files those are.
+        """
+        template = self.get(template_id)
+        version = self.current_version(template.id)
+        prefix = _binding_path(path)
+        counts = {"matched": 0, "succeeded": 0, "failed": 0, "skipped": 0}
+        documents = [
+            document
+            for document in self._services.knowledge_repo.list_documents(kb_id)
+            if not document.is_dir and (not prefix or document.path.startswith(f"{prefix}/"))
+        ]
+        for document in documents:
+            if counts["matched"] >= limit:
+                break
+            counts["matched"] += 1
+            existing = self._results.get(document.id, template.id)
+            if only_failed and (existing is None or existing.status != STATUS_FAILED):
+                counts["skipped"] += 1
+                continue
+            if (
+                only_stale
+                and existing is not None
+                and existing.status == STATUS_SUCCEEDED
+                and existing.template_version == version.version
+            ):
+                counts["skipped"] += 1
+                continue
+            try:
+                await self.extract_document(
+                    actor_user_id=actor_user_id,
+                    document_id=document.id,
+                    template_id=template.id,
+                )
+            except Exception:
+                counts["failed"] += 1
+                continue
+            counts["succeeded"] += 1
+        return counts
+
+    def _document(self, document_id: str) -> Any:
+        document = self._services.knowledge_repo.get_document(document_id)
+        if document is None or document.is_dir:
+            raise LookupError("knowledge document not found")
+        return document
+
+    def _template_for(self, document: Any) -> ExtractTemplateRow | None:
+        """The template the binding rules give this document, if any (§7.4)."""
+        if not document.data_source_id:
+            return None
+        match = resolve_template(
+            self._repo.candidates_for_matching(),
+            data_source_id=document.data_source_id,
+            path=document.source_path,
+            content_type=document.content_type,
+        )
+        if match.template_id is None:
+            return None
+        return self._repo.get(match.template_id)
+
+    def _chat_model(self) -> tuple[Any, str]:
+        """The chat model extraction runs on, and the name stored with a result.
+
+        The deployment's active model: a knowledge base's fields are read by the
+        same assistant the deployment already runs, and a second model setting
+        for this would be a knob nobody asked for. The name travels into the
+        result so a later reader knows what answered (design §7.3).
+        """
+        name, model_id = self._services.settings_repo.get_active_model()
+        if not name or not model_id:
+            raise RuntimeError("no active model is configured; extraction needs one to run")
+        provider = self._services.provider_repo.get_by_name(name)
+        if provider is None:
+            raise RuntimeError(f"the active model's provider {name!r} no longer exists")
+        return build_probe_chat_model(provider, model_id=model_id), model_id
+
+    def _write(
+        self,
+        document: Any,
+        template: ExtractTemplateRow,
+        version: int,
+        model: str,
+        status: str,
+        *,
+        values: dict[str, Any] | None = None,
+        error: str | None = None,
+    ) -> ExtractResultRow:
+        return self._results.upsert(
+            document_id=document.id,
+            template_id=template.id,
+            template_version=version,
+            status=status,
+            fields_json=json.dumps(values or {}, ensure_ascii=False),
+            error=error,
+            model=model,
+            # The parser version that produced the text this answer came from:
+            # the structure phase stores it, and this is its first reader.
+            parser_version=str(document.derived.get("parser_version") or ""),
+            content_hash=document.content_hash,
+        )
 
 
 def _suffix(path: str) -> str:

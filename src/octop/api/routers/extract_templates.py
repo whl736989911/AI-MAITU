@@ -25,6 +25,7 @@ from octop.api.deps import get_server, require_permission
 # mapping answers for the cases it already knows (not found, forbidden) instead
 # of describing the same statuses twice.
 from octop.api.routers.knowledge_bases import _map_knowledge_error
+from octop.infra.db.repos.extract_results import ExtractResultRow
 from octop.infra.db.repos.extract_templates import (
     ExtractBindingRow,
     ExtractTemplateRow,
@@ -141,6 +142,14 @@ def _template_payload(
     payload["fields"] = version.fields if version else []
     payload["instruction"] = version.instruction if version else ""
     payload["applies_to"] = version.applies_to if version else ""
+    return payload
+
+
+def _result_payload(row: ExtractResultRow) -> dict[str, Any]:
+    payload = asdict(row)
+    payload["result_id"] = row.id
+    payload["fields"] = row.fields
+    payload.pop("fields_json", None)
     return payload
 
 
@@ -429,6 +438,77 @@ async def unbind_template(
 ) -> None:
     try:
         _service(server).unbind(binding_id)
+    except Exception as exc:
+        raise _map_template_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+class RunExtractionBody(BaseModel):
+    """A scope to extract, and which of its documents to skip (design §8.4)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kb_id: str = Field(min_length=1, description="Knowledge base to extract from.")
+    path: str = Field(default="", max_length=1000, description="Folder to limit it to.")
+    only_failed: bool = Field(default=False, description="Retry only what failed.")
+    only_stale: bool = Field(
+        default=False,
+        description=(
+            "Skip documents whose stored result already succeeded at the template's "
+            "current version — what makes a re-run after an edit cheap."
+        ),
+    )
+    limit: int = Field(default=200, ge=1, le=1000, description="Maximum documents to run.")
+
+
+@router.post(
+    "/extract-templates/{template_id}/documents/{document_id}",
+    summary="Extract one document with a template",
+)
+async def extract_document_route(
+    template_id: str,
+    document_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_settings")),
+) -> dict[str, Any]:
+    """Run one extraction and return what it produced (design §12.6)."""
+    try:
+        row = await _service(server).extract_document(
+            actor_user_id=user.id,
+            document_id=document_id,
+            template_id=template_id,
+        )
+        return _result_payload(row)
+    except Exception as exc:
+        raise _map_template_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.post(
+    "/extract-templates/{template_id}/run",
+    summary="Extract a scope of documents",
+)
+async def run_extraction_route(
+    template_id: str,
+    body: RunExtractionBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_settings")),
+) -> dict[str, int]:
+    """Extract many documents, reporting what it did to each (design §8.4)."""
+    try:
+        return await _service(server).extract_scope(
+            actor_user_id=user.id,
+            kb_id=body.kb_id,
+            template_id=template_id,
+            path=body.path,
+            only_failed=body.only_failed,
+            only_stale=body.only_stale,
+            limit=body.limit,
+        )
     except Exception as exc:
         raise _map_template_error(
             exc, locale=resolve_request_locale(request), server=server

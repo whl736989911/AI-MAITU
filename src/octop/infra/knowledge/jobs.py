@@ -110,6 +110,40 @@ def process_source_file(
     )
 
 
+def document_text(services: Any, document: Any) -> str:
+    """The document's text, re-parsed (design §12.6).
+
+    Re-parsed rather than rebuilt from the stored chunks: chunks overlap by
+    design, so joining them would repeat a slice of the document at every
+    boundary. A source file is staged in a temporary copy exactly as indexing
+    stages it, and a ``.doc`` is converted again — the cost is why the derived
+    *structure* is stored, but the text itself is kept nowhere else.
+
+    The import is local because ``data_sources`` imports this module, and the
+    connector it provides is the whole point: extraction must reach a source's
+    file the same way a scan did.
+    """
+    from octop.infra.knowledge.data_sources import DataSourceService
+
+    source = (
+        services.data_sources_repo.get(document.data_source_id) if document.data_source_id else None
+    )
+    if document.data_source_id and source is None:
+        raise ValueError("the data source this file came from no longer exists")
+    if source is None:
+        with _platform_file(document.kb_id, document.id, document.filename) as path:
+            return _parse_document_text(services, path, document)
+    connector = DataSourceService(services).connector(source)
+    with _source_path(connector, document.source_path, document.filename) as path:
+        return _parse_document_text(services, path, document)
+
+
+def _parse_document_text(services: Any, path: Path, document: Any) -> str:
+    return parse_document(
+        path, ocr=optional_ocr_extractor(services), source_path=document.display_path
+    ).text
+
+
 def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> None:
     """Parse, chunk, embed, and atomically replace one document's chunks."""
     repo = services.knowledge_repo

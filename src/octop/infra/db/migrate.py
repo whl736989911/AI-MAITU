@@ -1335,6 +1335,50 @@ def _ensure_extract_templates_schema(db: DatabasePool) -> None:
         )
 
 
+def _ensure_extract_results_schema(db: DatabasePool) -> None:
+    """Create the table that records what a template produced (schema v34).
+
+    One row per document and template, replaced on a re-run. The unique index is
+    the point: a template applied twice to one file is not two answers, and the
+    design's "新结果成功后原子替换" (§8.3) needs one row to replace.
+    """
+    if not _table_exists(db, "knowledge_extract_templates") or not _table_exists(
+        db, "knowledge_documents"
+    ):
+        # Both are foreign keys of this table.
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_extract_results (
+              id               TEXT PRIMARY KEY,
+              document_id      TEXT NOT NULL
+                               REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
+              template_id      TEXT NOT NULL
+                               REFERENCES knowledge_extract_templates(id) ON DELETE CASCADE,
+              template_version {int_type} NOT NULL,
+              status           TEXT NOT NULL DEFAULT 'pending',
+              fields_json      TEXT NOT NULL DEFAULT '{{}}',
+              error            TEXT,
+              model            TEXT NOT NULL DEFAULT '',
+              parser_version   TEXT NOT NULL DEFAULT '',
+              content_hash     TEXT NOT NULL DEFAULT '',
+              created_at       {int_type} NOT NULL,
+              updated_at       {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_extract_results_document_template "
+            "ON knowledge_extract_results (document_id, template_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_extract_results_template "
+            "ON knowledge_extract_results (template_id, status)"
+        )
+
+
 def _ensure_org_units_schema(db: DatabasePool) -> None:
     """Create org units + unit grants and the user scope columns (schema v17)."""
     if _table_exists(db, "users"):
@@ -2664,6 +2708,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 34:
+        _ensure_extract_results_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2702,6 +2751,8 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_knowledge_derived_schema(db)
             if version == 33:
                 _ensure_extract_templates_schema(db)
+            if version == 34:
+                _ensure_extract_results_schema(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -2729,3 +2780,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_sync_runs_schema(db)
     _ensure_knowledge_derived_schema(db)
     _ensure_extract_templates_schema(db)
+    _ensure_extract_results_schema(db)

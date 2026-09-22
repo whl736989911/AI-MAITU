@@ -296,7 +296,7 @@ class DataSourceService:
             data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
         )
         try:
-            detail = self._connector(data_source).test()
+            detail = self.connector(data_source).test()
         except SourceError as exc:
             self._repo.set_connection(ds_id, status=CONNECTION_FAILED, error=str(exc))
             self._audit(actor_user_id, "knowledge.source.test.failed", ds_id, str(exc))
@@ -555,8 +555,13 @@ class DataSourceService:
     # Folder sources
     # ------------------------------------------------------------------
 
-    def _connector(self, data_source: DataSourceRow) -> SourceConnector:
-        """The live connector for a stored source, secret decrypted for it only."""
+    def connector(self, data_source: DataSourceRow) -> SourceConnector:
+        """The live connector for a stored source, secret decrypted for it only.
+
+        Public because reading a file is not the sync's business alone:
+        extraction re-reads a document through the same connector the scan
+        used, so both reach the source the same way.
+        """
         secret = decrypt_source_secret(
             self._services.secret_repo, self._repo.get_credentials(data_source.id)
         )
@@ -583,7 +588,7 @@ class DataSourceService:
         run = self._runs.start(data_source_id=data_source.id, trigger=TRIGGER_MANUAL)
         self._repo.mark_sync(data_source.id, status=SYNC_RUNNING)
         try:
-            connector = self._connector(data_source)
+            connector = self.connector(data_source)
             # The source's own include/exclude rules, applied here so a setting
             # an administrator typed always does something (design §3.2).
             entries = filter_entries(
