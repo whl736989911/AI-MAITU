@@ -13,12 +13,17 @@
 - 数据源新增**连接测试**（`POST /api/data-sources/{id}/test`）与**编辑**（`PATCH /api/data-sources/{id}`）：测试结果与失败原因记在数据源行上，配置、测试、扫描都会写入审计日志
 - 文件夹数据源新增**扫描、变更检测与任务记录**：同步即扫描目录，按路径/大小/修改时间比对，只有内容稳定后（默认 30 秒内大小与修改时间不再变化）才解析入库；消失的文件先进 `deleted_pending`、超过确认期（默认 300 秒）才真正移除；**扫描失败（共享断连等）不会删除任何已索引文件**。每次扫描记一条 `knowledge_sync_runs`（新增/更新/删除/仍在复制/失败计数与停止原因），可用 `GET /api/data-sources/{id}/runs` 查看。原文件保留在外部文件夹，平台只保存索引与派生的分片
 - 外部文件中本构建无法解析的类型（如 exe）会保留元数据并标记 `unsupported`，不会反复重试；单个文件失败不影响同一数据源的其它文件
+- 解析矩阵补齐（设计 §6）：新增 **`.xml`**（保留字段路径与值，如 `/order/item@sku = A-1`，无法解析时回退原文）、**`.doc` 与 `.ppt`**（经 LibreOffice headless 转换后解析；转换在临时目录进行、**绝不修改原文件**，LibreOffice 的用户配置也落在该临时目录，避免争用真实 profile；可用 `OCTOP_LIBREOFFICE_PATH` 指定二进制，未安装时给出可操作的原因而不是静默跳过）。`.docx` 现在也提取**批注**，`.pptx` 提取**演讲者备注与表格单元格**（不改变文件中没有备注的演示文稿）
+- 密码保护的文件成为**独立状态 `password_required`**（设计 §6.1 / §14）：加密的 OOXML（实为 OLE 容器而非 ZIP）、加密 PDF、加密 xls 会被识别并标记，而不是笼统记为失败；文件行保留原因，界面不把它显示成错误（中英文案已补）
 
 ### 修复
 
 - 迁移 021 的 SQLite 重建表语句此前写死了 v20 的形状：在版本水位被跳过 / clamp 过的库上启动，会把 `knowledge_bases.owner_user_id` 的 `NOT NULL` 加回去、并丢掉后来的列，导致 `octop-server` 直接起不来。现在重建跟随表的当前形状，并只拷贝实际存在的列
 - 删除文件夹数据源会连同它索引出来的文档一起清理（行、`doc_count` 与分片索引一致），而上传到知识库的文档不受影响；此前只靠外键级联删行，会留下虚高的 `doc_count` 与孤儿分片
 - `v21` 之后的库回滚再升级不再因 `knowledge_bases` 缺列而启动失败
+- 预览加密文件或本机无法转换的 `.doc` 此前会返回 `500 internal error`，现在返回 `KNOWLEDGE_PASSWORD_REQUIRED` / `KNOWLEDGE_CONVERSION_FAILED`（409，后者带上转换器自己的原因）；两者都补了中英接口文案
+- 界面把 `.doc` 当作可富预览的格式，但浏览器端的 docx 渲染器读不了旧版二进制 Word，点开只会报「无法加载预览」。现在 `.doc` 与服务端提取文本一致（与 `.ppt` 同样处理），并补上 `.xml` 的文本预览；预览用的扩展名表同时由 `Set` 改为 `Record` + `Object.hasOwn`，`report.constructor` 这类文件名不再命中原型成员
+- 知识库文档状态的三处界面文案此前缺 `discovered` / `unsupported` / `password_required`，界面上会直接显示成 i18n key 原文，现已补齐（中英各两处）
 
 - 企业功能运行记录新增运行快照：`feature_tasks.agent_id`（本次实际使用的 agent）与 `feature_tasks.injected_rule_ids`（本次注入的已审核规则 id），成功与失败都会写入，用于事后回答「这份草稿是按什么产出的」
 

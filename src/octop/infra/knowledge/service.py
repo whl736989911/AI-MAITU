@@ -43,12 +43,18 @@ _EXT_TO_CONTENT_TYPE = {
     ".htm": "text/html",
     ".json": "application/json",
     ".jsonl": "application/jsonl",
+    ".xml": "application/xml",
     ".yaml": "application/yaml",
     ".yml": "application/yaml",
     ".csv": "text/csv",
     ".tsv": "text/tab-separated-values",
     ".pdf": "application/pdf",
+    # design §6.1: the binary Office formats are converted by LibreOffice before
+    # parsing (``octop.infra.knowledge.legacy_office``), so the platform accepts
+    # and indexes them like any other document.
+    ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

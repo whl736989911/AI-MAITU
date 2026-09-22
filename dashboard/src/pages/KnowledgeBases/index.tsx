@@ -133,7 +133,7 @@ type DocsViewMode = "card" | "table";
 const DOCS_VIEW_STORAGE_KEY = "octop:knowledge-bases-docs-view";
 
 const BASE_DOCUMENT_TYPES =
-  ".md,.markdown,.txt,.rst,.html,.htm,.json,.jsonl,.yaml,.yml,.csv,.tsv,.pdf,.docx,.pptx,.xls,.xlsx,.xlsm";
+  ".md,.markdown,.txt,.rst,.html,.htm,.json,.jsonl,.xml,.yaml,.yml,.csv,.tsv,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm";
 const OCR_DOCUMENT_TYPES = ".png,.jpg,.jpeg,.webp";
 
 function loadDocsViewMode(): DocsViewMode {
@@ -144,6 +144,9 @@ function loadDocsViewMode(): DocsViewMode {
 function documentStatusColor(status: KnowledgeDocument["status"]) {
   if (status === "ready") return "success";
   if (status === "failed") return "error";
+  // Locked is neither broken nor fine: the file is readable once someone
+  // supplies the password (design §6.1), so it warns rather than errors.
+  if (status === "password_required") return "warning";
   if (status === "processing") return "processing";
   return "default";
 }

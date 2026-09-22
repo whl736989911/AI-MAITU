@@ -391,6 +391,8 @@
     "KNOWLEDGE_DOC_TOO_LARGE": "This document exceeds the {max_mb} MB size limit.",
     "KNOWLEDGE_BASE_LIMIT": "You can create at most 20 knowledge bases.",
     "KNOWLEDGE_UNSUPPORTED_TYPE": "This document type is not supported for knowledge bases.",
+    "KNOWLEDGE_PASSWORD_REQUIRED": "This document is password-protected and cannot be read.",
+    "KNOWLEDGE_CONVERSION_FAILED": "This document could not be converted for reading: {reason}",
     "KNOWLEDGE_NAME_TAKEN": "You already have a knowledge base with this name.",
     "KNOWLEDGE_NAME_INVALID": "Invalid name.",
     "DATA_SOURCE_INVALID": "The data source is invalid: check its kind and configuration.",

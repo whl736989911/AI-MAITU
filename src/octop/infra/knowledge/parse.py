@@ -10,6 +10,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from octop.infra.knowledge.legacy_office import LEGACY_OFFICE_SUFFIXES, converted_copy
 from octop.infra.knowledge.ocr import OCR_IMAGE_SUFFIXES
 
 if TYPE_CHECKING:
@@ -24,14 +25,47 @@ _PLAIN_TEXT_SUFFIXES = {
     ".yml",
     ".jsonl",
 }
+_OOXML_SUFFIXES = frozenset({".docx", ".xlsx", ".xlsm", ".pptx"})
+_CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _DOCX_FALLBACK_TAG = "{http://schemas.openxmlformats.org/markup-compatibility/2006}Fallback"
 _DOCX_HTML_TYPES = {"application/xhtml+xml", "text/html"}
 _DOCX_MAIN_TYPE = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+_DOCX_COMMENTS_PART = "word/comments.xml"
+
+
+class PasswordRequiredError(ValueError):
+    """The document is encrypted and cannot be read without a password."""
+
+
+def failure_status(exc: BaseException) -> str:
+    """The document status a failed parse earns (design §6.1, §8.2).
+
+    One mapping for both index paths — an uploaded file and a file found in a
+    source — so a locked document reads the same whichever way it arrived, and
+    ``password_required`` exists as a state instead of being flattened into
+    ``failed`` (which §14 asks to keep distinguishable).
+    """
+    return "password_required" if isinstance(exc, PasswordRequiredError) else "failed"
 
 
 def parse_document(path: Path, *, ocr: OcrExtractor | None = None) -> str:
-    """Extract searchable text from a supported local document."""
+    """Extract searchable text from a supported local document.
+
+    A password-protected document raises :class:`PasswordRequiredError`: that is
+    a state of the file rather than a failure of the platform, and an
+    administrator can act on it once it is named.
+    """
     suffix = path.suffix.lower()
+    if _needs_password(path, suffix):
+        # Deliberately no file name in the message: a source's file is parsed
+        # from a staged copy, so ``path.name`` is a temporary name, and the row
+        # this reason lands on already shows which file it is.
+        raise PasswordRequiredError("the file is password-protected")
+    if suffix in LEGACY_OFFICE_SUFFIXES:
+        # design §6.1: convert to the XML format first, in a temporary directory,
+        # and parse that. The original file is never modified.
+        with converted_copy(path) as converted:
+            return parse_document(converted, ocr=ocr)
     if suffix in OCR_IMAGE_SUFFIXES:
         if ocr is None:
             raise RuntimeError("knowledge OCR is not enabled")
@@ -40,6 +74,8 @@ def parse_document(path: Path, *, ocr: OcrExtractor | None = None) -> str:
         return _read_text(path)
     if suffix == ".json":
         return _parse_json(path)
+    if suffix == ".xml":
+        return _parse_xml(path)
     if suffix in {".html", ".htm"}:
         return _parse_html(path)
     if suffix == ".csv":
@@ -56,19 +92,42 @@ def parse_document(path: Path, *, ocr: OcrExtractor | None = None) -> str:
     if suffix == ".docx":
         return _parse_docx(path)
     if suffix == ".pptx":
-        from pptx import Presentation
-
-        return "\n".join(
-            shape.text
-            for slide in Presentation(str(path)).slides
-            for shape in slide.shapes
-            if hasattr(shape, "text") and shape.text
-        )
+        return _parse_pptx(path)
     if suffix in {".xlsx", ".xlsm"}:
         return _parse_xlsx(path)
     if suffix == ".xls":
         return _parse_xls(path)
     raise ValueError(f"unsupported knowledge document extension: {suffix or '(none)'}")
+
+
+def _needs_password(path: Path, suffix: str) -> bool:
+    """Whether a file is encrypted, read from the format's own marker.
+
+    An encrypted OOXML document is not a ZIP at all — the container is an OLE
+    compound file — so the magic bytes answer exactly. A PDF states it in its
+    trailer, which ``pypdf`` reads.
+
+    The binary formats (``.doc``/``.ppt``) are OLE compound files whether or not
+    they are encrypted, so their magic says nothing here; there the conversion
+    fails and LibreOffice's own reason is what an administrator reads. Reaching
+    for a heuristic that guesses would put a wrong state on the row, which is
+    worse than the honest failure.
+    """
+    if suffix in _OOXML_SUFFIXES:
+        try:
+            with path.open("rb") as handle:
+                return handle.read(len(_CFB_MAGIC)) == _CFB_MAGIC
+        except OSError:
+            return False
+    if suffix == ".pdf":
+        from pypdf import PdfReader
+
+        try:
+            return bool(PdfReader(path).is_encrypted)
+        except Exception:
+            # A damaged PDF is not a locked one: let the parser report that.
+            return False
+    return False
 
 
 def _read_text(path: Path) -> str:
@@ -84,11 +143,127 @@ def _parse_json(path: Path) -> str:
     return json.dumps(parsed, ensure_ascii=False, indent=2)
 
 
+def _xml_root(source: Path | bytes) -> Any | None:
+    """The parsed root element, or ``None`` when the XML cannot be read."""
+    import xml.etree.ElementTree as ElementTree
+
+    try:
+        if isinstance(source, Path):
+            return ElementTree.parse(source).getroot()
+        return ElementTree.fromstring(source)
+    except ElementTree.ParseError:
+        return None
+
+
+def _parse_xml(path: Path) -> str:
+    """XML keeps its field paths (design §6): ``/order/item@sku = A-1``.
+
+    The design asks for "field paths and values" rather than the markup itself,
+    so a search for a field name and a search for its value both land while the
+    tags and namespace prefixes a raw dump would match on do not. Markup this
+    cannot parse falls back to the raw text, because a file that is XML-shaped
+    but not well-formed is still worth indexing.
+    """
+    root = _xml_root(path)
+    if root is None:
+        return _read_text(path)
+    lines: list[str] = []
+    _walk_xml(root, f"/{_local_name(root.tag)}", lines)
+    return "\n".join(lines)
+
+
+def _walk_xml(element: Any, path: str, lines: list[str]) -> None:
+    for key, value in element.attrib.items():
+        lines.append(f"{path}@{_local_name(key)} = {value.strip()}")
+    text = " ".join((element.text or "").split())
+    if text:
+        lines.append(f"{path} = {text}")
+    for child in element:
+        _walk_xml(child, f"{path}/{_local_name(child.tag)}", lines)
+
+
+def _local_name(tag: object) -> str:
+    """A tag's local name, dropping the ``{namespace}`` ElementTree keeps."""
+    name = str(tag)
+    if name.startswith("{"):
+        return name.partition("}")[2]
+    return name
+
+
 def _parse_docx(path: Path) -> str:
     from docx import Document
 
     document = Document(str(path))
-    return _docx_body_text(document.element.body, document.part)
+    body = _docx_body_text(document.element.body, document.part)
+    comments = _docx_comment_text(path)
+    return body if not comments else f"{body}\n# Comments\n{comments}"
+
+
+def _docx_comment_text(path: Path) -> str:
+    """The text of every ``w:comment``, which ``python-docx`` does not expose.
+
+    design §6 lists a DOCX's comments ("备注") as part of what it yields. They
+    live in their own package part, so they are read from the archive rather
+    than through the object model.
+    """
+    import zipfile
+
+    try:
+        with zipfile.ZipFile(path) as archive:
+            raw = archive.read(_DOCX_COMMENTS_PART)
+    except (KeyError, OSError, zipfile.BadZipFile):
+        return ""
+    root = _xml_root(raw)
+    if root is None:
+        return ""
+    from docx.oxml.ns import qn
+
+    lines: list[str] = []
+    for comment in root.iter(qn("w:comment")):
+        text = "".join(node.text or "" for node in comment.iter(qn("w:t"))).strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)
+
+
+def _parse_pptx(path: Path) -> str:
+    """Slide text, table cells and speaker notes (design §6), one block per slide.
+
+    ``slide.notes_slide`` *creates* a notes part when the file has none, which
+    would edit the presentation being read; ``has_notes_slide`` answers without
+    that side effect, so a deck without notes is left exactly as it was.
+    """
+    from pptx import Presentation
+
+    parts: list[str] = []
+    for index, slide in enumerate(Presentation(str(path)).slides, start=1):
+        lines: list[str] = []
+        for shape in slide.shapes:
+            if getattr(shape, "has_table", False):
+                rows = _pptx_table_text(shape.table)
+                if rows:
+                    lines.append(rows)
+            elif getattr(shape, "has_text_frame", False):
+                text = shape.text_frame.text.strip()
+                if text:
+                    lines.append(text)
+        notes = _pptx_notes(slide)
+        if notes:
+            lines.append(f"# Notes\n{notes}")
+        if lines:
+            parts.append(f"# Slide {index}\n" + "\n".join(lines))
+    return "\n\n".join(parts)
+
+
+def _pptx_table_text(table: Any) -> str:
+    rows = [[_stringify_cell(cell.text) for cell in row.cells] for row in table.rows]
+    return "\n".join("\t".join(cells) for cells in map(_trim_row, rows) if cells)
+
+
+def _pptx_notes(slide: Any) -> str:
+    if not slide.has_notes_slide:
+        return ""
+    return str(slide.notes_slide.notes_text_frame.text).strip()
 
 
 def _docx_body_text(body: Any, part: Any) -> str:
@@ -258,7 +433,12 @@ def _parse_xlsx(path: Path) -> str:
 def _parse_xls(path: Path) -> str:
     import xlrd
 
-    book = xlrd.open_workbook(str(path), formatting_info=False)
+    try:
+        book = xlrd.open_workbook(str(path), formatting_info=False)
+    except Exception as exc:
+        if _mentions_password(exc):
+            raise PasswordRequiredError("the file is password-protected") from exc
+        raise
     parts: list[str] = []
     for sheet in book.sheets():
         rows: list[list[object]] = []
@@ -273,6 +453,18 @@ def _parse_xls(path: Path) -> str:
         if text:
             parts.append(text)
     return "\n\n".join(parts)
+
+
+def _mentions_password(exc: BaseException) -> bool:
+    """Whether a reader's complaint is about encryption rather than damage.
+
+    ``xlrd`` is the one reader that reports an encrypted legacy workbook at all
+    (``Workbook is encrypted``), and for that format its message is the only
+    signal there is, so the text is what decides. Wrapping the exception rather
+    than swallowing it keeps the reader's own words as the cause.
+    """
+    text = str(exc).lower()
+    return "password" in text or "encrypt" in text
 
 
 def _xlrd_cell_value(book: object, cell: object) -> object:

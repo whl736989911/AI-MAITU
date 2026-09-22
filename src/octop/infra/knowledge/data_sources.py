@@ -65,6 +65,7 @@ from octop.infra.db.repos.knowledge_sync_runs import (
 )
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.jobs import process_document, process_source_file
+from octop.infra.knowledge.parse import failure_status
 from octop.infra.knowledge.relpath import path_basename, path_parent
 from octop.infra.knowledge.service import KnowledgeService, knowledge_content_type
 from octop.infra.knowledge.source_crypto import decrypt_source_secret, encrypt_source_secret
@@ -771,9 +772,14 @@ class DataSourceService:
             # show: ``process_source_file`` records what failed *inside* the
             # pipeline, but a failure before it starts — the knowledge feature
             # being off, embedding prerequisites unmet — would otherwise leave
-            # the row looking merely discovered. Writing it again is idempotent.
+            # the row looking merely discovered. Writing it again is idempotent,
+            # and ``failure_status`` keeps a locked file's ``password_required``
+            # state instead of flattening it into a plain failure (§6.1).
             self._knowledge_repo.update_document(
-                document.id, status="failed", error_message=str(exc), chunk_count=0
+                document.id,
+                status=failure_status(exc),
+                error_message=str(exc),
+                chunk_count=0,
             )
             logger.warning(
                 "knowledge source %s: indexing %s failed: %s",

@@ -17,7 +17,7 @@ from octop.infra.knowledge.gate import assert_knowledge_usable
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.ocr import optional_ocr_extractor
 from octop.infra.knowledge.params import get_advanced_settings
-from octop.infra.knowledge.parse import parse_document
+from octop.infra.knowledge.parse import failure_status, parse_document
 from octop.infra.knowledge.sources import SourceConnector
 
 INDEX_CONCURRENCY = 2
@@ -135,7 +135,9 @@ def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -
         if dimension and base.embedding_dim != dimension:
             repo.update_base(kb_id, embedding_dim=dimension)
     except Exception as exc:
-        repo.update_document(doc_id, status="failed", error_message=str(exc), chunk_count=0)
+        repo.update_document(
+            doc_id, status=failure_status(exc), error_message=str(exc), chunk_count=0
+        )
         raise
 
 

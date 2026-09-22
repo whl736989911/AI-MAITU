@@ -152,6 +152,8 @@
     "KNOWLEDGE_DOC_TOO_LARGE": "文档超过 {{max_mb}} MB 大小限制。",
     "KNOWLEDGE_BASE_LIMIT": "每个用户最多可创建 20 个知识库。",
     "KNOWLEDGE_UNSUPPORTED_TYPE": "知识库不支持此文档类型。",
+    "KNOWLEDGE_PASSWORD_REQUIRED": "此文档已加密，需要密码才能读取。",
+    "KNOWLEDGE_CONVERSION_FAILED": "无法转换此文档以供读取:{{reason}}",
     "KNOWLEDGE_NAME_TAKEN": "您已有同名知识库。",
     "KNOWLEDGE_NAME_INVALID": "名称无效。",
     "DATA_SOURCE_INVALID": "数据源无效：请检查其类型与配置。",
@@ -441,13 +443,19 @@
       "pending": "待处理",
       "processing": "处理中",
       "ready": "已就绪",
-      "failed": "失败"
+      "failed": "失败",
+      "discovered": "扫描中",
+      "unsupported": "不支持",
+      "password_required": "需要密码"
     },
     "statusesShort": {
       "pending": "待索引",
       "processing": "索引中",
       "ready": "就绪",
-      "failed": "失败"
+      "failed": "失败",
+      "discovered": "扫描中",
+      "unsupported": "不支持",
+      "password_required": "需要密码"
     },
     "deleteConfirm": "删除此知识库及其所有文档？",
     "deleteDocumentConfirm": "删除此文档？",

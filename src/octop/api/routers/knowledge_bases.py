@@ -44,12 +44,17 @@ from octop.infra.knowledge.gate import (
     set_feature_enabled,
 )
 from octop.infra.knowledge.jobs import enqueue_index_document, reindex_all_documents
+from octop.infra.knowledge.legacy_office import (
+    LegacyConversionFailed,
+    LegacyConversionUnavailable,
+)
 from octop.infra.knowledge.ocr import (
     ensure_ocr_deps_async,
     get_ocr_capability,
     set_ocr_settings,
     validate_ocr_settings,
 )
+from octop.infra.knowledge.parse import PasswordRequiredError
 from octop.infra.knowledge.service import (
     MAX_DOCS_PER_KB,
     MAX_DOCUMENT_BYTES,
@@ -218,6 +223,17 @@ def _map_knowledge_error(
         return OctopError.localized(ErrorCode.KNOWLEDGE_NOT_FOUND, locale)
     if isinstance(exc, PermissionError):
         return OctopError.localized(ErrorCode.KNOWLEDGE_FORBIDDEN, locale)
+    # Checked before the RuntimeError text heuristics below: the conversion
+    # messages say "install", which would otherwise be read as an embedding
+    # prerequisite and tell an administrator to configure the wrong thing.
+    if isinstance(exc, PasswordRequiredError):
+        return OctopError.localized(ErrorCode.KNOWLEDGE_PASSWORD_REQUIRED, locale)
+    if isinstance(exc, (LegacyConversionUnavailable, LegacyConversionFailed)):
+        return OctopError.localized(
+            ErrorCode.KNOWLEDGE_CONVERSION_FAILED,
+            locale,
+            details={"reason": str(exc)},
+        )
     text = str(exc).lower()
     if isinstance(exc, RuntimeError):
         if "disabled" in text:
@@ -728,7 +744,14 @@ async def create_text_document(
 async def upload_document(
     kb_id: str,
     request: Request,
-    upload: UploadFile = File(..., description="A supported text, PDF, DOCX, or PPTX document."),
+    upload: UploadFile = File(
+        ...,
+        description=(
+            "A document this build can read: text and markup (TXT, MD, RST, HTML, JSON, "
+            "XML, YAML, CSV, TSV), Office (DOC, DOCX, PPT, PPTX, XLS, XLSX), PDF, or an "
+            "image when OCR is enabled. Legacy DOC/PPT are converted by LibreOffice."
+        ),
+    ),
     path: str | None = Form(
         default=None,
         description="Optional relative path including filename (for nested folders).",

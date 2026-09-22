@@ -66,7 +66,20 @@ export interface KnowledgeDocument {
   content_type: string;
   byte_size: number;
   content_hash: string;
-  status: "pending" | "processing" | "ready" | "failed";
+  /**
+   * Lifecycle of a knowledge document. The last three are the scan's own
+   * states and appear on files inside a data source (design §8.2): a file the
+   * scan has seen but not yet settled, a type this build cannot read, and one
+   * that is locked (design §6.1).
+   */
+  status:
+    | "pending"
+    | "processing"
+    | "ready"
+    | "failed"
+    | "discovered"
+    | "unsupported"
+    | "password_required";
   error_message: string;
   chunk_count: number;
   created_at: number;
