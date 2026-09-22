@@ -16,7 +16,7 @@ from octop.api.common.agent import (
     assert_agent_capability_write,
 )
 from octop.api.common.agent import assert_agent_owner as _assert_agent_owner
-from octop.api.deps import current_user, get_server, require_permission
+from octop.api.deps import get_server, require_permission
 from octop.infra.agents.plugin_tool_defaults import (
     agent_plugin_enabled,
     merge_plugins_enabled_settings,
@@ -106,12 +106,12 @@ def _plugin_manager(server: OctopServer) -> PluginManager:
 @router.get("", summary="List installed plugins")
 async def list_plugins(
     server: OctopServer = Depends(get_server),
-    _user: Any = Depends(current_user),
+    _user: Any = Depends(require_permission("plugins")),
 ) -> list[dict[str, Any]]:
     return _plugin_manager(server).list_installed()
 
 
-@router.post("/reload", summary="Reload plugins from disk (admin)")
+@router.post("/reload", summary="Reload plugins from disk")
 async def reload_plugins(
     server: OctopServer = Depends(get_server),
     _user: Any = Depends(require_permission("plugins")),
@@ -138,7 +138,7 @@ async def reload_plugins(
     }
 
 
-@router.post("/install", summary="Install plugin from URL (admin)")
+@router.post("/install", summary="Install plugin from URL")
 async def install_plugin(
     body: PluginInstallBody,
     server: OctopServer = Depends(get_server),
@@ -166,7 +166,7 @@ async def install_plugin(
     }
 
 
-@router.post("/upload", summary="Install plugin from an uploaded ZIP (admin)")
+@router.post("/upload", summary="Install plugin from an uploaded ZIP")
 async def upload_plugin(
     file: UploadFile = File(...),
     force: bool = Form(default=False),
@@ -281,7 +281,7 @@ def _market_matches(card: MarketPluginItem, needle: str) -> bool:
 @router.get(
     "/market",
     response_model=MarketPluginListResponse,
-    summary="List shipped plugin market cards (admin)",
+    summary="List shipped plugin market cards",
 )
 async def list_plugin_market(
     q: str = "",
@@ -300,7 +300,7 @@ async def list_plugin_market(
 @router.get(
     "/market/{plugin_id}",
     response_model=MarketPluginDetail,
-    summary="Get a shipped plugin market card (admin)",
+    summary="Get a shipped plugin market card",
 )
 async def get_plugin_market_item(
     plugin_id: str,
@@ -322,7 +322,7 @@ async def get_plugin_market_item(
     "/market/{plugin_id}/install",
     status_code=201,
     response_model=MarketPluginItem,
-    summary="Install a shipped plugin from the market (admin)",
+    summary="Install a shipped plugin from the market",
 )
 async def install_plugin_market_item(
     plugin_id: str,
@@ -354,7 +354,7 @@ class PluginPatchBody(BaseModel):
     enabled: bool = Field(..., description="Global enable switch for this plugin")
 
 
-@router.patch("/{plugin_id}", summary="Update plugin settings (admin)")
+@router.patch("/{plugin_id}", summary="Update plugin settings")
 async def patch_plugin(
     plugin_id: str,
     body: PluginPatchBody,
@@ -373,7 +373,7 @@ async def patch_plugin(
     return item
 
 
-@router.delete("/{plugin_id}", summary="Uninstall plugin (admin)")
+@router.delete("/{plugin_id}", summary="Uninstall plugin")
 async def uninstall_plugin(
     plugin_id: str,
     server: OctopServer = Depends(get_server),
@@ -394,11 +394,13 @@ async def get_plugin_ui_asset(
     plugin_id: str,
     file_path: str,
     server: OctopServer = Depends(get_server),
-    _user: Any = Depends(current_user),
+    _user: Any = Depends(require_permission("plugins")),
 ) -> Response:
     """Read-only static files from ``~/.octop/plugins/<id>/`` (typically ``ui/dist/``).
 
-    Authenticated users only. Paths are traversal-checked in ``PluginManager``.
+    The ``plugins`` key, like every other route here: the bundle is the plugin's
+    own payload, and a caller the key refuses does not run its UI either
+    (design §2.2, §2.4). Paths are traversal-checked in ``PluginManager``.
     """
     target = _plugin_manager(server).resolve_ui_file(plugin_id, file_path)
     suffix = target.suffix.lower()
@@ -465,7 +467,7 @@ def _agent_plugins_response(
 async def list_agent_plugins(
     agent_id: str,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("plugins")),
 ) -> AgentPluginsResponse:
     """List global and per-agent plugin state. Missing agent switches default on."""
     _, cfg = _agent_row_and_config(server, agent_id, user)
@@ -481,7 +483,7 @@ async def patch_agent_plugins(
     agent_id: str,
     body: AgentPluginsPatch,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("plugins")),
 ) -> AgentPluginsResponse:
     """Merge plugin switches, preserve tool settings, and reload only this agent."""
     _, cfg = _agent_row_and_config(server, agent_id, user)
@@ -510,7 +512,7 @@ async def patch_agent_plugins(
 async def list_agent_plugin_tools(
     agent_id: str,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("plugins")),
 ) -> dict[str, Any]:
     assert server.app_runtime is not None
     row = server.app_runtime.agent_registry.get_row(agent_id)
@@ -562,7 +564,7 @@ async def patch_agent_plugin_tools(
     agent_id: str,
     body: AgentPluginToolsPatch,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("plugins")),
 ) -> dict[str, str]:
     """Persist per-agent plugin tool enable flags and hot-sync the denylist.
 

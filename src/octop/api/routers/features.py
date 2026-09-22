@@ -28,6 +28,16 @@ Refusals are the manager's own: an id another agent already holds
 (``AGENT_ID_TAKEN``) is never adopted, a name the author already used is never
 silently renamed (``AGENT_NAME_TAKEN``), and a feature id that cannot be carried
 into an agent id is refused with the agent id rule's own words.
+
+**The module key is ``features``.** Whether a caller may reach the feature
+surfaces at all is the ``features`` permission (design §2.2, §4.4), which is
+*baseline*: every account that could reach them before the catalog existed still
+can, and revoking it is an ordinary edit in the user editor. It is not the same
+question as *who may configure a given feature* — that is the agent's own
+``kind`` and ownership (:mod:`octop.api.common.agent`), decided per row on
+``/api/agents/{id}/...``. The two are complementary and neither replaces the
+other: this key decides whether the surfaces exist for a caller, the capability
+rule decides what each row lets them do.
 """
 
 from __future__ import annotations
@@ -37,7 +47,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from octop.api.deps import current_user, get_server
+from octop.api.deps import get_server, require_permission
 from octop.infra.agents.feature_agent import create_feature_agent
 
 router = APIRouter()
@@ -70,7 +80,7 @@ class FeatureCreateBody(BaseModel):
 @router.post("", status_code=201, summary="Create feature")
 async def create_feature(
     body: FeatureCreateBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("features")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Create a feature: its agent, owned by the caller, marked as a feature's.

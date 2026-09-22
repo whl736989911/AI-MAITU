@@ -39,6 +39,9 @@ GATED_FILES = [
     "routers/agents.py",
     "routers/channels.py",
     "routers/skill_packages.py",
+    "routers/mbti.py",
+    "routers/experts.py",
+    "routers/features.py",
     "routers/terminal.py",
     "routers/acp.py",
     "routers/filesystem.py",
@@ -85,3 +88,73 @@ def test_as_user_still_requires_admin() -> None:
     usage = (API_ROOT / "routers/usage.py").read_text(encoding="utf-8")
     assert "as_user requires admin" in agent or "is_admin" in agent
     assert "as_user" in usage
+
+
+#: Files whose *every* route names a gate of its own — the module surfaces design
+#: §4.4 lists, each one gated in full. ``test_every_route_on_a_gated_surface_is_gated``
+#: exists because the file-level test above cannot see the gap this list closes:
+#: a router that gates one route and leaves the next one open still contains the
+#: string ``require_permission(``, so before this test the *open* route was the
+#: quiet one (``mbti.py``, ``experts.py``, ``features.py`` and most of
+#: ``connectors.py`` were exactly that until design §4.4 was implemented).
+ROUTE_GATED_FILES = [
+    "routers/mbti.py",
+    "routers/experts.py",
+    "routers/features.py",
+    "routers/plugins.py",
+    "routers/connectors.py",
+    "routers/skill_packages.py",
+]
+
+#: Routes on those surfaces that deliberately carry no gate, and why. An empty
+#: reason is not accepted by the test: a route is either gated or explained.
+UNGATED_ROUTES: dict[str, dict[str, str]] = {
+    "routers/connectors.py": {
+        # The provider redirects the browser here without an Authorization
+        # header (the path is JWT-exempt in ``api/deps.py``), so there is no user
+        # to resolve a key against. It is reachable only with a ``state`` that
+        # ``/connectors/oauth/start`` minted — and that route is gated, so the
+        # entry point is the gate.
+        "oauth_callback": "JWT-exempt provider redirect; gated at oauth/start by its state",
+    },
+}
+
+
+def _route_functions(rel: str) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function in ``rel`` decorated as an HTTP route."""
+    tree = ast.parse((API_ROOT / rel).read_text(encoding="utf-8"), filename=rel)
+    return [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and any(
+            isinstance(dec, ast.Call)
+            and isinstance(dec.func, ast.Attribute)
+            and dec.func.attr in ("get", "post", "put", "patch", "delete")
+            for dec in node.decorator_list
+        )
+    ]
+
+
+def _names_a_gate(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the route's own parameters ask for a gate."""
+    args = node.args
+    defaults = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
+    return any(
+        "require_permission(" in ast.unparse(default) or "require_admin(" in ast.unparse(default)
+        for default in defaults
+    )
+
+
+def test_every_route_on_a_gated_surface_is_gated() -> None:
+    exempt = UNGATED_ROUTES
+    for rel in ROUTE_GATED_FILES:
+        for reason in exempt.get(rel, {}).values():
+            assert reason, f"{rel}: an ungated route must say why"
+        for node in _route_functions(rel):
+            if node.name in exempt.get(rel, {}):
+                continue
+            assert _names_a_gate(node), (
+                f"{rel}: route {node.name!r} names no require_permission/require_admin "
+                "gate — gate it, or list it in UNGATED_ROUTES with the reason it has none"
+            )

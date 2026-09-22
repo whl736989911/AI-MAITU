@@ -13,6 +13,12 @@ export const ALL_PERMISSIONS_KEY = "*";
 export type PermissionKeys = readonly string[] | "admin";
 
 export const PERM = {
+  /** The functional modules of design §2.2. Baseline keys: every signed-in
+   *  account holds them until an administrator edits it, so hiding a nav entry
+   *  or refusing a route here only ever affects an explicit deny. */
+  mbti: ["mbti"],
+  experts: ["experts"],
+  features: ["features"],
   channels: ["channels"],
   connectors: ["connectors"],
   skillPackages: ["skill_packages"],
@@ -36,6 +42,8 @@ export const PERM = {
 
 /** Sidebar item key → permission keys. Shared with path guards. */
 export const NAV_PERMISSIONS = {
+  features: PERM.features,
+  experts: PERM.experts,
   channels: PERM.channels,
   connectors: PERM.connectors,
   "skill-packages": PERM.skillPackages,
@@ -54,6 +62,33 @@ export const NAV_PERMISSIONS = {
 } as const satisfies Record<string, PermissionKeys>;
 
 export type NavPermissionKey = keyof typeof NAV_PERMISSIONS;
+
+/**
+ * The personalization tabs a module key gates (design §2.4: an unauthorized
+ * tab is not shown). A tab absent from this table is gated by nothing here —
+ * the expert/feature capability rule (`agents.kind`) decides who may write it,
+ * which is a different question and stays where it is.
+ *
+ * `channels` was the first of these and used to be filtered inline in the
+ * page; the table is what the users', advanced and security pages already use
+ * for the same job, so it is the one place to read.
+ */
+export const PERSONALIZATION_TAB_PERMISSIONS = {
+  channels: PERM.channels,
+  plugins: PERM.plugins,
+  mbti: PERM.mbti,
+} as const satisfies Record<string, readonly string[]>;
+
+/** True when the module keys attached to personalization tab `tab` allow it. */
+export function personalizationTabAllowed(
+  user: PermissionHolder | null | undefined,
+  tab: string,
+): boolean {
+  const keys = (
+    PERSONALIZATION_TAB_PERMISSIONS as Record<string, readonly string[]>
+  )[tab];
+  return keys === undefined || userCanKey(user, keys);
+}
 
 export const USERS_TAB_PERMISSIONS = {
   local: "users",
@@ -142,6 +177,14 @@ export function userCanKey(
  * ``null`` means no special gate.
  */
 export function pathPermissionKeys(pathname: string): PermissionKeys | null {
+  // The two module surfaces of design §5.2. The nav entry and the route read
+  // the same key, so "hidden" and "refused" cannot disagree.
+  if (pathname === "/features" || pathname.startsWith("/features/")) {
+    return PERM.features;
+  }
+  if (pathname === "/experts" || pathname.startsWith("/experts/")) {
+    return PERM.experts;
+  }
   if (pathname.startsWith("/admin/users") || pathname === "/admin/sso") {
     return PERM.usersPage;
   }

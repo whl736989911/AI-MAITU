@@ -59,10 +59,35 @@ describe("pathPermissionKeys", () => {
 
   it("does not gate common pages", () => {
     expect(pathPermissionKeys("/chat")).toBeNull();
-    expect(pathPermissionKeys("/experts")).toBeNull();
     expect(pathPermissionKeys("/tasks")).toBeNull();
     expect(pathPermissionKeys("/token-usage")).toBeNull();
     expect(pathPermissionKeys("/personalization/skills")).toBeNull();
+  });
+
+  it("gates the two module surfaces independently", () => {
+    // The nav entries and the routes read the same keys (design §5.2).
+    expect(pathPermissionKeys("/features")).toEqual([...PERM.features]);
+    expect(pathPermissionKeys("/experts")).toEqual([...PERM.experts]);
+    expect(
+      canAccessPath({ role: "user", permissions: ["experts"] }, "/experts"),
+    ).toBe(true);
+    expect(
+      canAccessPath({ role: "user", permissions: ["experts"] }, "/features"),
+    ).toBe(false);
+    expect(
+      canAccessPath({ role: "user", permissions: ["features"] }, "/features"),
+    ).toBe(true);
+    expect(
+      canAccessPath({ role: "user", permissions: ["features"] }, "/experts"),
+    ).toBe(false);
+    // A surface's own sub-paths answer to the same key, so a detail URL is
+    // refused wherever its entry point is.
+    expect(
+      canAccessPath({ role: "user", permissions: [] }, "/features/feat-1"),
+    ).toBe(false);
+    expect(
+      canAccessPath({ role: "user", permissions: [] }, "/experts/any-expert"),
+    ).toBe(false);
   });
 
   it("gates settings modules", () => {

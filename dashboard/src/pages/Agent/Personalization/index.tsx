@@ -43,7 +43,7 @@ import { useIsMobile } from "../../../hooks/useIsMobile";
 import { usePathTabs } from "../../../hooks/usePathTabs";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { ownedExperts, ownedFeatures } from "../../../utils/sharedExpert";
-import { userCan } from "../../../utils/permissions";
+import { personalizationTabAllowed } from "../../../utils/permissions";
 import PersonalizationPanels, {
   FEATURE_PERSONALIZATION_TABS,
   PERSONALIZATION_TABS,
@@ -89,14 +89,16 @@ export default function PersonalizationPage() {
   // kind it is.
   const canWrite = activeAgent?.is_owner !== false;
   const scope: PersonalizationScope = pointedFeature ? "feature" : "expert";
-  const channelsAllowed = userCan(user, "channels");
 
   /**
    * The tabs this scope offers this caller, from the panels' own table
    * (``offeredTabs``) — the same answer a feature's own page gets, so what the
-   * row shows and what the stack below may render cannot disagree. Channels
-   * reach the caller's own entry points, so the permission that gates them gates
-   * this tab too.
+   * row shows and what the stack below may render cannot disagree — narrowed
+   * again by the module keys the tabs name (``personalizationTabAllowed``):
+   * a tab whose key is not held is not offered at all (design §2.4).
+   *
+   * ``usePathTabs`` takes this list as the tabs the URL may name, so a refused
+   * tab is not reachable by address either — the same one list answers both.
    */
   const offered = useMemo(() => {
     const tabs = offeredTabs(
@@ -104,8 +106,8 @@ export default function PersonalizationPage() {
       scope === "feature" ? FEATURE_PERSONALIZATION_TABS : PERSONALIZATION_TABS,
       canWrite,
     );
-    return channelsAllowed ? tabs : tabs.filter((tab) => tab !== "channels");
-  }, [scope, canWrite, channelsAllowed]);
+    return tabs.filter((tab) => personalizationTabAllowed(user, tab));
+  }, [scope, canWrite, user]);
 
   const { activeTab, handleTabChange, isMounted } =
     usePathTabs<PersonalizationTab>({

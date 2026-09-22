@@ -19,7 +19,7 @@ from octop.api.common.agent import (
     assert_agent_capability_write,
     assert_agent_owner,
 )
-from octop.api.deps import current_user, get_server
+from octop.api.deps import get_server, require_permission
 from octop.infra.agents.mbti_profiles import (
     MBTIProfile,
     get_all_profiles,
@@ -169,7 +169,7 @@ class CurrentMBTIResponse(BaseModel):
 @router.get("/current", response_model=CurrentMBTIResponse)
 async def get_current_mbti(
     x_octop_agent_id: str = Header(..., alias="X-Octop-Agent-Id"),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
     server: Any = Depends(get_server),
 ) -> CurrentMBTIResponse:
     """Read the current MBTI type from the active agent's persisted config."""
@@ -191,7 +191,7 @@ async def get_current_mbti(
 
 @router.get("/types", response_model=list[MBTITypeResponse])
 async def list_types(
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
 ) -> list[MBTITypeResponse]:
     """List all 16 MBTI types."""
     return [_profile_to_response(p) for p in get_all_profiles()]
@@ -205,7 +205,7 @@ async def list_types(
 @router.get("/types/{code}", response_model=MBTITypeResponse)
 async def get_type(
     code: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
 ) -> MBTITypeResponse:
     """Get details for a single MBTI type."""
     profile = get_profile(code)
@@ -222,7 +222,7 @@ async def get_type(
 @router.get("/preview/{code}")
 async def get_persona_preview(
     code: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
 ) -> dict[str, Any]:
     """Render a persona markdown preview with the current user substituted."""
     from octop.infra.agents.persona import PersonaLoader
@@ -606,7 +606,7 @@ _QUESTIONS: list[TestQuestion] = [
 
 @router.get("/test/questions", response_model=list[TestQuestion])
 async def get_test_questions(
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
 ) -> list[TestQuestion]:
     """Return all 28 test questions."""
     return _QUESTIONS
@@ -695,7 +695,7 @@ def _score_answers(answers: dict[str, str]) -> tuple[str, dict[str, Any]]:
 async def submit_test(
     req: TestSubmitRequest,
     x_octop_agent_id: str | None = Header(None, alias="X-Octop-Agent-Id"),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
     server: Any = Depends(get_server),
 ) -> TestResultResponse:
     """Score test answers and return the MBTI result.
@@ -763,7 +763,7 @@ class ApplyResponse(BaseModel):
 async def apply_type(
     req: ApplyRequest,
     x_octop_agent_id: str = Header(..., alias="X-Octop-Agent-Id"),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
     server: Any = Depends(get_server),
 ) -> ApplyResponse:
     """Apply a specific MBTI type to the active agent's persona."""

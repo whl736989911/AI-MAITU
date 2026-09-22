@@ -14,7 +14,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, model_validator
 
 from octop.api.common.public_base import resolve_public_base
-from octop.api.deps import current_user, get_server, require_permission
+from octop.api.deps import get_server, require_permission
 from octop.i18n import tr
 from octop.infra.connectors.builder import (
     mcp_server_name,
@@ -491,7 +491,7 @@ def _is_public_http_uri(uri: str) -> bool:
 
 @router.get("/connectors/catalog", summary="Connector catalog")
 async def get_catalog(
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     """List supported connector kinds and whether OAuth is configured for each."""
@@ -505,7 +505,7 @@ async def get_catalog(
 
 @router.get("/connectors/weknora/detect-local", summary="Detect local WeKnora")
 async def detect_weknora_on_octop_host(
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Check WeKnora's fixed default loopback health endpoint (no persistence)."""
     del user
@@ -514,7 +514,7 @@ async def detect_weknora_on_octop_host(
 
 @router.get("/connector-instances", summary="List connector instances")
 async def list_instances(
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     """List the current user's connected accounts (custom MCP expanded per server)."""
@@ -532,7 +532,7 @@ async def list_instances(
 
 @router.get("/connectors/custom-mcp", summary="Get custom MCP servers")
 async def get_custom_mcp(
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return the user's custom MCP server map (langchain-mcp-adapters shape)."""
@@ -543,7 +543,7 @@ async def get_custom_mcp(
 @router.put("/connectors/custom-mcp", summary="Save custom MCP servers")
 async def put_custom_mcp(
     body: CustomMcpPutBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Replace the user's custom MCP servers document and reload agents."""
@@ -577,7 +577,7 @@ async def put_custom_mcp(
 async def patch_custom_mcp_server(
     server_name: str,
     body: CustomMcpServerPatchBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Update ``enabled`` and/or ``default_open`` for one custom MCP server."""
@@ -603,7 +603,7 @@ async def patch_custom_mcp_server(
 @router.post("/connectors/custom-mcp/test", summary="Probe a custom MCP server")
 async def test_custom_mcp(
     body: CustomMcpTestBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Probe connectivity for one custom MCP server (saved name or inline spec)."""
@@ -639,7 +639,7 @@ async def test_custom_mcp(
 @router.get("/connector-instances/{instance_id}", summary="Get connector instance")
 async def get_instance(
     instance_id: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return one connector instance with config and a redacted credentials preview."""
@@ -674,7 +674,7 @@ async def get_instance(
 @router.post("/connector-instances", status_code=201, summary="Create connector instance")
 async def create_instance(
     body: CreateInstanceBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Connect a third-party account as a new named instance."""
@@ -744,7 +744,7 @@ async def create_instance(
 async def patch_instance(
     instance_id: str,
     body: PatchInstanceBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Edit a connector instance without replacing its identity."""
@@ -870,7 +870,7 @@ async def patch_instance(
 @router.delete("/connector-instances/{instance_id}", status_code=204, summary="Delete connector")
 async def delete_instance(
     instance_id: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> None:
     """Disconnect and delete stored credentials for a connector instance."""
@@ -926,7 +926,7 @@ async def delete_instance(
 @router.post("/connector-instances/{instance_id}/test", summary="Test connector")
 async def test_instance(
     instance_id: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Probe the connector with stored credentials and return success or error details."""
@@ -970,7 +970,7 @@ async def test_instance(
 @router.post("/connectors/test-credentials", summary="Test credentials")
 async def test_credentials(
     body: TestCredentialsBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Validate credentials before creating an instance (no persistence)."""
@@ -1010,7 +1010,7 @@ async def test_credentials(
 )
 async def connector_cli_status(
     kind: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
 ) -> dict[str, Any]:
     """Report whether the host binary is on PATH (no side effects)."""
     del user
@@ -1027,7 +1027,7 @@ async def connector_cli_status(
 
 @router.post(
     "/connectors/{kind}/install-cli",
-    summary="Install host CLI for Feishu/WeCom connectors (admin)",
+    summary="Install host CLI for Feishu/WeCom connectors",
 )
 async def connector_install_cli(
     kind: str,
@@ -1052,7 +1052,7 @@ async def connector_install_cli(
 )
 async def feishu_cli_user_auth_start(
     body: FeishuUserAuthStartBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Begin OAuth device-code login (no local HTTPS callback required)."""
@@ -1079,7 +1079,7 @@ async def feishu_cli_user_auth_start(
 )
 async def feishu_cli_user_auth_complete(
     body: FeishuUserAuthCompleteBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Finish device-code login and switch default identity to user."""
@@ -1111,7 +1111,7 @@ class FeishuUserAuthInstanceCompleteBody(BaseModel):
 )
 async def feishu_cli_user_auth_start_instance(
     instance_id: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Same as start, but App Secret is read from the stored instance."""
@@ -1133,7 +1133,7 @@ async def feishu_cli_user_auth_start_instance(
 async def feishu_cli_user_auth_complete_instance(
     instance_id: str,
     body: FeishuUserAuthInstanceCompleteBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     svc = _connector_service(server)
@@ -1157,7 +1157,7 @@ async def feishu_cli_user_auth_complete_instance(
 @router.post("/connector-instances/{instance_id}/refresh", summary="Refresh OAuth tokens")
 async def refresh_instance(
     instance_id: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Refresh expiring OAuth tokens for a connector instance."""
@@ -1175,7 +1175,7 @@ async def refresh_instance(
 @router.get("/connectors/auth/{kind}/info", summary="Connector auth info")
 async def auth_info(
     kind: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, str | None]:
     """Return auth flow metadata (OAuth URLs, required fields) for a connector kind."""
@@ -1188,7 +1188,7 @@ async def auth_info(
 @router.get("/connectors/auth/{kind}/authorize-url", summary="OAuth authorize URL")
 async def auth_authorize_url(
     kind: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, str | None]:
     """Build the provider authorization URL for manual or embedded OAuth."""
@@ -1203,7 +1203,7 @@ async def auth_authorize_url(
 async def auth_exchange_code(
     kind: str,
     body: ExchangeAuthCodeBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Exchange a pasted authorization code for connector credentials (device/OOB flow)."""
@@ -1234,7 +1234,7 @@ async def auth_exchange_code(
 async def oauth_start_unified(
     body: OAuthStartBody,
     request: Request,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Begin browser OAuth for a catalog connector or custom MCP server."""
@@ -1254,7 +1254,7 @@ async def oauth_start_legacy(
     kind: str,
     body: OAuthStartLegacyBody,
     request: Request,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Legacy catalog-only alias for :func:`oauth_start_unified`."""
@@ -1275,7 +1275,15 @@ async def oauth_callback(
     error: str | None = Query(None),
     server: Any = Depends(get_server),
 ) -> HTMLResponse:
-    """OAuth redirect target. Exchanges the code and stores credentials. No JWT required."""
+    """OAuth redirect target. Exchanges the code and stores credentials. No JWT required.
+
+    Deliberately the one route here that carries no ``connectors`` gate: the
+    request arrives from the provider's redirect, in the browser, with no
+    Authorization header to resolve a user from (the path is JWT-exempt, see
+    ``api/deps.py``). It is reachable only with a ``state`` that
+    ``/connectors/oauth/start`` minted, and that route is gated — so a caller the
+    key refuses can never produce a valid state, and the entry point is the gate.
+    """
     if error:
         return _oauth_callback_html(
             request,
@@ -1382,7 +1390,7 @@ async def oauth_callback(
 @router.get("/connectors/oauth/pending/{state_id}", summary="Poll OAuth result")
 async def oauth_pending(
     state_id: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Poll after OAuth redirect until credentials are ready for instance creation."""

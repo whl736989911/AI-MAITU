@@ -80,42 +80,51 @@ export function buildNavSections(
   user: OctopUser | null,
   opts?: { mobileEnabled?: boolean },
 ): NavSection[] {
-  const sections: NavSection[] = [
+  const sections: NavSection[] = [];
+
+  const primaryItems: NavItem[] = [
     {
-      items: [
-        {
-          key: "chat",
-          path: "/chat",
-          icon: <MessageSquareText size={iconSize} strokeWidth={iconStroke} />,
-          labelKey: "nav.chat",
-        },
-        {
-          key: "features",
-          path: "/features",
-          icon: <LayoutGrid size={iconSize} strokeWidth={iconStroke} />,
-          labelKey: "nav.features",
-        },
-        {
-          key: "experts",
-          path: "/experts",
-          icon: <GraduationCap size={iconSize} strokeWidth={iconStroke} />,
-          labelKey: "nav.experts",
-        },
-        {
-          key: "tasks",
-          path: "/tasks",
-          icon: <Timer size={iconSize} strokeWidth={iconStroke} />,
-          labelKey: "nav.tasks",
-        },
-        {
-          key: "token-usage",
-          path: "/token-usage",
-          icon: <Activity size={iconSize} strokeWidth={iconStroke} />,
-          labelKey: "nav.tokenUsage",
-        },
-      ],
+      key: "chat",
+      path: "/chat",
+      icon: <MessageSquareText size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.chat",
     },
   ];
+  // The two module surfaces (design §5.2). Both keys are baseline, so this
+  // hides them only from an account an administrator took the key from — which
+  // is the point: the nav entry and the route behind it answer to the same key,
+  // and `pathPermissionKeys` refuses the URL for exactly the same accounts.
+  if (navAllowed(user, "features")) {
+    primaryItems.push({
+      key: "features",
+      path: "/features",
+      icon: <LayoutGrid size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.features",
+    });
+  }
+  if (navAllowed(user, "experts")) {
+    primaryItems.push({
+      key: "experts",
+      path: "/experts",
+      icon: <GraduationCap size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.experts",
+    });
+  }
+  primaryItems.push(
+    {
+      key: "tasks",
+      path: "/tasks",
+      icon: <Timer size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.tasks",
+    },
+    {
+      key: "token-usage",
+      path: "/token-usage",
+      icon: <Activity size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.tokenUsage",
+    },
+  );
+  sections.push({ items: primaryItems });
 
   const settingsItems: NavItem[] = [
     {
