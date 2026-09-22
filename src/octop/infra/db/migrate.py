@@ -1259,6 +1259,82 @@ def _ensure_knowledge_derived_schema(db: DatabasePool) -> None:
     _ensure_column(db, "knowledge_documents", "derived_json", "TEXT NOT NULL DEFAULT ''")
 
 
+def _ensure_extract_templates_schema(db: DatabasePool) -> None:
+    """Create extraction templates, their versions, and their bindings (v33).
+
+    Design §7: a template is an enterprise resource, editing one writes a new
+    version rather than overwriting it, and a binding names where it applies
+    (the whole source, a folder, or one file) through its path alone.
+    """
+    if not _table_exists(db, "users") or not _table_exists(db, "data_sources"):
+        # The three tables reference both; a database old enough to be missing
+        # them has no source to bind a template to.
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_extract_templates (
+              id              TEXT PRIMARY KEY,
+              name            TEXT NOT NULL,
+              description     TEXT NOT NULL DEFAULT '',
+              status          TEXT NOT NULL DEFAULT 'active',
+              current_version INTEGER NOT NULL DEFAULT 0,
+              created_by      {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              created_at      {int_type} NOT NULL,
+              updated_at      {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_extract_template_versions (
+              id            TEXT PRIMARY KEY,
+              template_id   TEXT NOT NULL
+                            REFERENCES knowledge_extract_templates(id) ON DELETE CASCADE,
+              version       INTEGER NOT NULL,
+              fields_json   TEXT NOT NULL DEFAULT '[]',
+              instruction   TEXT NOT NULL DEFAULT '',
+              applies_to    TEXT NOT NULL DEFAULT '',
+              note          TEXT NOT NULL DEFAULT '',
+              created_by    {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              created_at    {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_extract_template_versions_unique "
+            "ON knowledge_extract_template_versions (template_id, version)"
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_extract_bindings (
+              id             TEXT PRIMARY KEY,
+              template_id    TEXT NOT NULL
+                             REFERENCES knowledge_extract_templates(id) ON DELETE CASCADE,
+              data_source_id TEXT NOT NULL
+                             REFERENCES data_sources(id) ON DELETE CASCADE,
+              path           TEXT NOT NULL DEFAULT '',
+              extension      TEXT NOT NULL DEFAULT '',
+              mime_type      TEXT NOT NULL DEFAULT '',
+              name_pattern   TEXT NOT NULL DEFAULT '',
+              match_regex    TEXT NOT NULL DEFAULT '',
+              created_by     {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              created_at     {int_type} NOT NULL,
+              updated_at     {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_extract_bindings_source "
+            "ON knowledge_extract_bindings (data_source_id, path)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_extract_bindings_template "
+            "ON knowledge_extract_bindings (template_id)"
+        )
+
+
 def _ensure_org_units_schema(db: DatabasePool) -> None:
     """Create org units + unit grants and the user scope columns (schema v17)."""
     if _table_exists(db, "users"):
@@ -2583,6 +2659,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 33:
+        _ensure_extract_templates_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2619,6 +2700,8 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_knowledge_sync_runs_schema(db)
             if version == 29:
                 _ensure_knowledge_derived_schema(db)
+            if version == 33:
+                _ensure_extract_templates_schema(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -2645,3 +2728,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_file_index_schema(db)
     _ensure_knowledge_sync_runs_schema(db)
     _ensure_knowledge_derived_schema(db)
+    _ensure_extract_templates_schema(db)

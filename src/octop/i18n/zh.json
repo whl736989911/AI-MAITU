@@ -392,6 +392,8 @@
     "KNOWLEDGE_BASE_LIMIT": "每个用户最多可创建 20 个知识库。",
     "KNOWLEDGE_UNSUPPORTED_TYPE": "知识库不支持此文档类型。",
     "KNOWLEDGE_PASSWORD_REQUIRED": "此文档已加密，需要密码才能读取。",
+    "EXTRACT_TEMPLATE_INVALID": "提取模板无效:{reason}",
+    "EXTRACT_TEMPLATE_IN_USE": "此模板还有 {bindings} 处绑定，请先清除绑定再删除。",
     "KNOWLEDGE_CONVERSION_FAILED": "无法转换此文档以供读取:{reason}",
     "KNOWLEDGE_NAME_TAKEN": "您已有同名知识库。",
     "KNOWLEDGE_NAME_INVALID": "名称无效。",

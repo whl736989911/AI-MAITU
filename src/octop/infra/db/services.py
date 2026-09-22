@@ -14,6 +14,7 @@ from octop.infra.db.repos.channels import ChannelRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
+from octop.infra.db.repos.extract_templates import ExtractTemplateRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
@@ -69,6 +70,7 @@ class RepoBundle:
     resource_acl_repo: ResourceAclRepo
     data_sources_repo: DataSourceRepo
     knowledge_sync_runs_repo: KnowledgeSyncRunRepo
+    extract_templates_repo: ExtractTemplateRepo
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
@@ -102,6 +104,7 @@ class RepoBundle:
             resource_acl_repo=ResourceAclRepo(db),
             data_sources_repo=DataSourceRepo(db),
             knowledge_sync_runs_repo=KnowledgeSyncRunRepo(db),
+            extract_templates_repo=ExtractTemplateRepo(db),
         )
 
 
@@ -222,6 +225,10 @@ class SharedServices:
     @property
     def knowledge_sync_runs_repo(self) -> KnowledgeSyncRunRepo:
         return self.repos.knowledge_sync_runs_repo
+
+    @property
+    def extract_templates_repo(self) -> ExtractTemplateRepo:
+        return self.repos.extract_templates_repo
 
 
 def build_shared_services(

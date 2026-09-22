@@ -392,6 +392,8 @@
     "KNOWLEDGE_BASE_LIMIT": "You can create at most 20 knowledge bases.",
     "KNOWLEDGE_UNSUPPORTED_TYPE": "This document type is not supported for knowledge bases.",
     "KNOWLEDGE_PASSWORD_REQUIRED": "This document is password-protected and cannot be read.",
+    "EXTRACT_TEMPLATE_INVALID": "Invalid extraction template: {reason}",
+    "EXTRACT_TEMPLATE_IN_USE": "This template is bound in {bindings} place(s); clear the bindings before deleting it.",
     "KNOWLEDGE_CONVERSION_FAILED": "This document could not be converted for reading: {reason}",
     "KNOWLEDGE_NAME_TAKEN": "You already have a knowledge base with this name.",
     "KNOWLEDGE_NAME_INVALID": "Invalid name.",

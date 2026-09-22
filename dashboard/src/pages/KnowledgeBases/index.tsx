@@ -120,6 +120,7 @@ import TextDocumentEditorModal, {
   type TextDocumentFormat,
 } from "./TextDocumentEditorModal";
 import DataSourcesPanel from "./components/DataSourcesPanel";
+import ExtractTemplatesPanel from "./components/ExtractTemplatesPanel";
 import styles from "./index.module.less";
 
 type BaseFormValues = {
@@ -2576,6 +2577,11 @@ export default function KnowledgeBasesPage() {
                         void loadDetail(selected.id, { silent: true });
                         void loadBases();
                       }}
+                    />
+                    <ExtractTemplatesPanel
+                      key={`templates-${selected.id}`}
+                      baseId={selected.id}
+                      canWriteBase={canWriteSelected}
                     />
                   </div>
                 </>

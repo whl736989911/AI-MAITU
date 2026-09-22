@@ -104,6 +104,11 @@ class ErrorCode(StrEnum):
     # neither may answer with INTERNAL_ERROR.
     KNOWLEDGE_PASSWORD_REQUIRED = "KNOWLEDGE_PASSWORD_REQUIRED"
     KNOWLEDGE_CONVERSION_FAILED = "KNOWLEDGE_CONVERSION_FAILED"
+    # Extraction templates (design §7): a template that cannot be carried out is
+    # refused when it is written, and one that is still bound is refused deletion
+    # with the reason, because "in use" is something an administrator can undo.
+    EXTRACT_TEMPLATE_INVALID = "EXTRACT_TEMPLATE_INVALID"
+    EXTRACT_TEMPLATE_IN_USE = "EXTRACT_TEMPLATE_IN_USE"
     # Data sources: a kind whose ingest is not implemented must refuse instead
     # of reporting a success it never performed.
     DATA_SOURCE_INVALID = "DATA_SOURCE_INVALID"
@@ -252,6 +257,8 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_NAME_INVALID: 400,
     ErrorCode.KNOWLEDGE_PASSWORD_REQUIRED: 409,
     ErrorCode.KNOWLEDGE_CONVERSION_FAILED: 409,
+    ErrorCode.EXTRACT_TEMPLATE_INVALID: 400,
+    ErrorCode.EXTRACT_TEMPLATE_IN_USE: 409,
     ErrorCode.DATA_SOURCE_INVALID: 400,
     ErrorCode.DATA_SOURCE_SYNC_UNSUPPORTED: 400,
     ErrorCode.DATA_SOURCE_FETCH_FAILED: 502,
