@@ -27,7 +27,7 @@ import { normalizeUiLocale } from "../../utils/localePrefs";
 import { isSystemAdmin } from "../../utils/permissions";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { FeatureIcon } from "./components/FeatureIcon";
-import FeatureSettingsDrawer from "./components/FeatureSettingsDrawer";
+import FeatureCreateDrawer from "./components/FeatureCreateDrawer";
 import { localizedText } from "./components/SchemaForm";
 import { useFeatureMeta } from "./components/useFeatureMeta";
 import styles from "./index.module.less";
@@ -188,15 +188,15 @@ export default function FeaturesPage() {
         </section>
       ))}
 
-      <FeatureSettingsDrawer
+      <FeatureCreateDrawer
         open={settingsOpen}
-        feature={null}
         meta={meta}
         onClose={() => setSettingsOpen(false)}
-        // A new feature belongs in the grid the moment it exists.
-        onSaved={() => {
+        // The drawer holds the essentials; everything else about the definition
+        // is on the settings page, which is where a new author goes next.
+        onCreated={(featureId) => {
           setSettingsOpen(false);
-          void load();
+          navigate(`/features/${featureId}/settings`);
         }}
       />
     </PageShell>

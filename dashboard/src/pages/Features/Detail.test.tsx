@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { OctopUser } from "../../api/modules/auth";
 import type { Feature, FeatureMeta } from "../../api/modules/features";
@@ -96,6 +97,10 @@ function renderDetail(user: OctopUser) {
       <CurrentUserProvider user={user} setUser={vi.fn()}>
         <Routes>
           <Route path="/features/:id" element={<FeatureDetailPage />} />
+          <Route
+            path="/features/:id/settings/*"
+            element={<div>feature-settings-page</div>}
+          />
         </Routes>
       </CurrentUserProvider>
     </MemoryRouter>,
@@ -117,6 +122,19 @@ describe("<FeatureDetailPage /> settings entry", () => {
     expect(
       await screen.findByRole("button", { name: "features.settingsEdit" }),
     ).toBeInTheDocument();
+  });
+
+  it("takes the settings entry to the settings route", async () => {
+    const user = userEvent.setup();
+    getFeatureMeta.mockResolvedValue(metaWith([]));
+    renderDetail(ADMIN);
+
+    await user.click(
+      await screen.findByRole("button", { name: "features.settingsEdit" }),
+    );
+
+    // Settings is a page of its own, not a drawer over the run view.
+    expect(await screen.findByText("feature-settings-page")).toBeInTheDocument();
   });
 
   it("keeps the settings of a bundled feature out of reach", async () => {

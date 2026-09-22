@@ -436,6 +436,8 @@
     "settingsEdit": "Settings",
     "settingsNewTitle": "New feature",
     "settingsEditTitle": "Feature settings",
+    "settingsTabDefinition": "Definition",
+    "settingsTabSteps": "Steps",
     "settingsCreated": "Feature created",
     "settingsSaved": "Feature saved",
     "settingsDeleted": "Feature deleted",

@@ -1,37 +1,52 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent, { type UserEvent } from "@testing-library/user-event";
+import { MemoryRouter, Route, Routes } from "react-router-dom";
+import type { OctopUser } from "../../api/modules/auth";
 import type {
   Feature,
   FeatureCapabilities,
   FeatureDefinitionBody,
   FeatureMeta,
-} from "../../../api/modules/features";
+} from "../../api/modules/features";
 
 /**
- * The settings drawer is the only writer of ``feature.json``, so what the user
- * does to the rows has to land in the request body: these cases drive the real
- * antd form (field list, row tools, footer) and read the payload the API mock
+ * The settings page is the only writer of ``feature.json``, so what the author
+ * does to the blocks has to land in the request body: these cases drive the real
+ * antd form through the real URL tabs and read the payload the API mock
  * received. The pure mapping is covered in ``featureSettings.test.ts``.
+ *
+ * Two properties of the page are pinned here because nothing else can pin them:
+ * a block that is never opened still travels with the save (the panels and the
+ * disclosures are mounted lazily), and the capability choices — the ones that
+ * cost an agent start — are asked for only once somebody looks at them.
  */
 
-const { createFeature, updateFeature, deleteFeature, getFeatureCapabilities } =
-  vi.hoisted(() => ({
-    createFeature: vi.fn(),
-    updateFeature: vi.fn(),
-    deleteFeature: vi.fn(),
-    getFeatureCapabilities: vi.fn(),
-  }));
+const {
+  getFeature,
+  getFeatureMeta,
+  createFeature,
+  updateFeature,
+  deleteFeature,
+  getFeatureCapabilities,
+} = vi.hoisted(() => ({
+  getFeature: vi.fn(),
+  getFeatureMeta: vi.fn(),
+  createFeature: vi.fn(),
+  updateFeature: vi.fn(),
+  deleteFeature: vi.fn(),
+  getFeatureCapabilities: vi.fn(),
+}));
 
-vi.mock("../../../api/modules/features", () => ({
+vi.mock("../../api/modules/features", () => ({
   featuresApi: {
+    listFeatures: vi.fn(),
+    getFeature,
+    getFeatureMeta,
+    getFeatureCapabilities,
     createFeature,
     updateFeature,
     deleteFeature,
-    getFeatureCapabilities,
-    listFeatures: vi.fn(),
-    getFeature: vi.fn(),
-    getFeatureMeta: vi.fn(),
     runFeature: vi.fn(),
   },
 }));
@@ -40,7 +55,8 @@ vi.mock("@/utils/antdMessage", () => ({
   message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() },
 }));
 
-import FeatureSettingsDrawer from "./FeatureSettingsDrawer";
+import { CurrentUserProvider } from "../../hooks/useCurrentUser";
+import FeatureSettingsPage from "./Settings";
 
 // Every case here drives a real antd form; the 5s default is a coin flip once
 // the suite runs its files in parallel.
@@ -51,6 +67,23 @@ const META: FeatureMeta = {
   icons: ["receipt", "file-text"],
   output_kinds: ["markdown", "json", "text"],
   bundled_ids: [],
+};
+
+const ADMIN: OctopUser = {
+  id: 1,
+  username: "root",
+  role: "admin",
+  display_name: null,
+  locale: "zh",
+};
+
+const MEMBER: OctopUser = {
+  id: 2,
+  username: "li",
+  role: "user",
+  display_name: null,
+  locale: "zh",
+  permissions: ["features"],
 };
 
 const FEATURE: Feature = {
@@ -68,12 +101,18 @@ const FEATURE: Feature = {
     title: { zh: "输入", en: "Inputs" },
     properties: {
       customer: { type: "string", title: { zh: "客户", en: "Customer" } },
-      items: { type: "array", items: { type: "array", items: { type: "string" } } },
+      items: {
+        type: "array",
+        items: { type: "array", items: { type: "string" } },
+      },
       deadline: { type: "string", format: "date" },
     },
     required: ["customer"],
   },
-  ui_schema: { order: ["customer", "items", "deadline"], widgets: { customer: "textarea" } },
+  ui_schema: {
+    order: ["customer", "items", "deadline"],
+    widgets: { customer: "textarea" },
+  },
   user_template: "{{inputs}}",
   system_prompt: "You draft quotes.",
   agent: null,
@@ -98,26 +137,43 @@ function lastUpdate(): [string, FeatureDefinitionBody] {
   return call as [string, FeatureDefinitionBody];
 }
 
-/** The drawer in edit mode, with a spy for every exit it can take. */
-function renderDrawer(
-  meta: FeatureMeta = META,
-  callbacks: { onSaved?: (id: string, created: boolean) => void } = {},
-) {
+/** The settings route, with the run page mounted as the guard's landing site. */
+function renderSettings(user: OctopUser = ADMIN) {
   return render(
-    <FeatureSettingsDrawer
-      open
-      feature={FEATURE}
-      meta={meta}
-      onClose={vi.fn()}
-      onSaved={callbacks.onSaved ?? vi.fn()}
-      onDeleted={vi.fn()}
-    />,
+    <MemoryRouter initialEntries={["/features/quote-draft/settings"]}>
+      <CurrentUserProvider user={user} setUser={vi.fn()}>
+        <Routes>
+          <Route path="/features" element={<div>feature-catalog</div>} />
+          <Route path="/features/:id" element={<div>feature-run-page</div>} />
+          {/* The app registers one route for the bare path and every tab. */}
+          <Route
+            path="/features/:id/settings/*"
+            element={<FeatureSettingsPage />}
+          />
+        </Routes>
+      </CurrentUserProvider>
+    </MemoryRouter>,
   );
 }
 
-describe("<FeatureSettingsDrawer />", () => {
+/**
+ * The definition is on screen: the id field only exists once the page has
+ * loaded the definition *and* the format choices, so this waits past the 1s
+ * default — a loaded suite is easily slower than that.
+ */
+async function waitForEditor() {
+  return screen.findByDisplayValue("quote-draft", undefined, {
+    timeout: 15_000,
+  });
+}
+
+describe("<FeatureSettingsPage />", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // A tab the previous case opened must not decide where this one starts.
+    localStorage.clear();
+    getFeature.mockResolvedValue(FEATURE);
+    getFeatureMeta.mockResolvedValue(META);
     updateFeature.mockResolvedValue({ feature_id: "quote-draft" });
     createFeature.mockResolvedValue({ feature_id: "quote-draft" });
     deleteFeature.mockResolvedValue(undefined);
@@ -126,10 +182,9 @@ describe("<FeatureSettingsDrawer />", () => {
 
   it("seeds from the definition and writes the edited document back", async () => {
     const user = userEvent.setup();
-    const onSaved = vi.fn();
-    renderDrawer(META, { onSaved });
+    renderSettings();
 
-    expect(screen.getByDisplayValue("quote-draft")).toBeInTheDocument();
+    await waitForEditor();
     expect(screen.getByDisplayValue("报价单草稿")).toBeInTheDocument();
     expect(screen.getByDisplayValue("You draft quotes.")).toBeInTheDocument();
 
@@ -164,13 +219,16 @@ describe("<FeatureSettingsDrawer />", () => {
       allow_units: ["*"],
       allow_roles: ["member", "admin"],
     });
-    expect(onSaved).toHaveBeenCalledWith("quote-draft", false);
+    // The page re-reads what it wrote, so the header and the form show the
+    // stored definition rather than what was typed.
+    await waitFor(() => expect(getFeature).toHaveBeenCalledTimes(2));
   });
 
   it("keeps ui_schema.order in step when a row is moved", async () => {
     const user = userEvent.setup();
-    renderDrawer();
+    renderSettings();
 
+    await waitForEditor();
     await user.click(
       screen.getAllByRole("button", {
         name: "features.settingsFieldMoveDown",
@@ -190,8 +248,9 @@ describe("<FeatureSettingsDrawer />", () => {
 
   it("refuses to save two fields sharing one name", async () => {
     const user = userEvent.setup();
-    renderDrawer();
+    renderSettings();
 
+    await waitForEditor();
     const nameInputs = screen.getAllByPlaceholderText(
       "features.settingsFieldNamePlaceholder",
     );
@@ -205,24 +264,11 @@ describe("<FeatureSettingsDrawer />", () => {
     expect(updateFeature).not.toHaveBeenCalled();
   });
 
-  it("offers deletion only for a definition the app does not ship", async () => {
+  it("deletes the definition an author asks to delete", async () => {
     const user = userEvent.setup();
-    const { rerender } = renderDrawer({ ...META, bundled_ids: ["quote-draft"] });
+    renderSettings();
 
-    expect(
-      screen.queryByRole("button", { name: "features.settingsDelete" }),
-    ).toBeNull();
-
-    rerender(
-      <FeatureSettingsDrawer
-        open
-        feature={FEATURE}
-        meta={META}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-        onDeleted={vi.fn()}
-      />,
-    );
+    await waitForEditor();
     await user.click(
       screen.getByRole("button", { name: "features.settingsDelete" }),
     );
@@ -230,34 +276,38 @@ describe("<FeatureSettingsDrawer />", () => {
       await screen.findByRole("button", { name: "common.delete" }),
     );
 
-    await waitFor(() => expect(deleteFeature).toHaveBeenCalledWith("quote-draft"));
+    await waitFor(() =>
+      expect(deleteFeature).toHaveBeenCalledWith("quote-draft"),
+    );
   });
 
   it("keeps a refused write on screen with the reason the server gave", async () => {
     const user = userEvent.setup();
-    const onSaved = vi.fn();
     updateFeature.mockRejectedValue(
       new Error(
         'Request failed: 400 Bad Request - {"error":{"code":"FEATURE_INVALID",' +
           '"message":"invalid feature definition: input_schema.properties must be a non-empty object"}}',
       ),
     );
-    renderDrawer(META, { onSaved });
+    renderSettings();
 
+    await waitForEditor();
     await user.click(screen.getByRole("button", { name: "common.save" }));
 
     expect(
-      await screen.findByText(/input_schema\.properties must be a non-empty object/),
+      await screen.findByText(
+        /input_schema\.properties must be a non-empty object/,
+      ),
     ).toBeInTheDocument();
-    expect(onSaved).not.toHaveBeenCalled();
   });
 
   it("asks for the capability choices only once the block is opened", async () => {
     const user = userEvent.setup();
-    renderDrawer();
+    renderSettings();
 
-    // Opening the drawer must not start an agent: the choices that need one are
-    // behind the disclosure.
+    await waitForEditor();
+    // Opening the settings page must not start an agent: the choices that need
+    // one are behind the disclosure.
     expect(getFeatureCapabilities).not.toHaveBeenCalled();
 
     await user.click(screen.getByText("features.settingsSectionCapability"));
@@ -271,17 +321,13 @@ describe("<FeatureSettingsDrawer />", () => {
 
   it("keeps a declared capability layer that was never opened", async () => {
     const user = userEvent.setup();
-    render(
-      <FeatureSettingsDrawer
-        open
-        feature={{ ...FEATURE, agent: { model: "openai/gpt-4o", skills: [] } }}
-        meta={META}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-        onDeleted={vi.fn()}
-      />,
-    );
+    getFeature.mockResolvedValue({
+      ...FEATURE,
+      agent: { model: "openai/gpt-4o", skills: [] },
+    });
+    renderSettings();
 
+    await waitForEditor();
     await user.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
@@ -301,8 +347,9 @@ describe("<FeatureSettingsDrawer />", () => {
           '"message":"Agent 启动失败。"}}',
       ),
     );
-    renderDrawer();
+    renderSettings();
 
+    await waitForEditor();
     await user.click(screen.getByText("features.settingsSectionCapability"));
 
     expect(
@@ -318,24 +365,17 @@ describe("<FeatureSettingsDrawer />", () => {
   it("writes the declared capability layer and drops what was left inherited", async () => {
     const user = userEvent.setup();
     getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
-    render(
-      <FeatureSettingsDrawer
-        open
-        feature={{
-          ...FEATURE,
-          agent: {
-            model: "openai/gpt-4o",
-            tools_disabled: ["browser_use"],
-            skills: [],
-          },
-        }}
-        meta={META}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-        onDeleted={vi.fn()}
-      />,
-    );
+    getFeature.mockResolvedValue({
+      ...FEATURE,
+      agent: {
+        model: "openai/gpt-4o",
+        tools_disabled: ["browser_use"],
+        skills: [],
+      },
+    });
+    renderSettings();
 
+    await waitForEditor();
     await user.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
@@ -347,19 +387,67 @@ describe("<FeatureSettingsDrawer />", () => {
       skills: [],
     });
   });
+
+  it("writes a step the author never opened the step tab to see", async () => {
+    const user = userEvent.setup();
+    getFeature.mockResolvedValue({
+      ...FEATURE,
+      steps: [
+        {
+          id: "op_design",
+          name: "工序设计",
+          mode: "agent",
+          inputs: [],
+          output: { name: "ops", schema: "list" },
+          prompt: "出工艺包",
+          gate: "auto",
+          on_failure: "abort",
+        },
+      ],
+    });
+    renderSettings();
+
+    await waitForEditor();
+    // The step panel has never been mounted — the definition tab is the one on
+    // screen — and the save still has to carry the skeleton with it.
+    expect(
+      screen.queryByText("features.settingsSectionSteps"),
+    ).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(updateFeature).toHaveBeenCalledOnce());
+    expect(lastUpdate()[1].steps).toEqual([
+      {
+        id: "op_design",
+        name: "工序设计",
+        mode: "agent",
+        inputs: [],
+        output: { name: "ops", schema: "list" },
+        prompt: "出工艺包",
+        gate: "auto",
+        on_failure: "abort",
+      },
+    ]);
+  });
 });
 
-describe("<FeatureSettingsDrawer /> step skeleton", () => {
+describe("<FeatureSettingsPage /> step skeleton", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    getFeature.mockResolvedValue(FEATURE);
+    getFeatureMeta.mockResolvedValue(META);
     updateFeature.mockResolvedValue({ feature_id: "quote-draft" });
     createFeature.mockResolvedValue({ feature_id: "quote-draft" });
     deleteFeature.mockResolvedValue(undefined);
     getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
   });
 
-  /** The block's own disclosure, which is what mounts the step rows. */
-  async function openSteps(user: ReturnType<typeof userEvent.setup>) {
+  /** The step tab, mounted and scrolled past its own disclosure. */
+  async function openSteps(user: UserEvent) {
+    await waitForEditor();
+    await user.click(screen.getByText("features.settingsTabSteps"));
     await user.click(screen.getByText("features.settingsSectionSteps"));
     return screen.findByRole("button", { name: "features.settingsStepsAdd" });
   }
@@ -371,13 +459,15 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
    * save.
    */
   async function revealSteps(user: UserEvent) {
+    await waitForEditor();
+    await user.click(screen.getByText("features.settingsTabSteps"));
     await user.click(screen.getByText("features.settingsSectionSteps"));
     await screen.findByRole("button", { name: "features.settingsStepsAdd" });
   }
 
   it("writes the step the author built, with the mode the author chose", async () => {
     const user = userEvent.setup();
-    renderDrawer();
+    renderSettings();
 
     await user.click(await openSteps(user));
     await user.type(screen.getByPlaceholderText("op_design"), "op_design");
@@ -397,9 +487,8 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
 
     // The self-decomposing mode is the author's call: both modes are on offer
     // and picking one is what gets written.
-    const modeInput = document.querySelector<HTMLInputElement>(
-      'input[id$="_mode"]',
-    );
+    const modeInput =
+      document.querySelector<HTMLInputElement>('input[id$="_mode"]');
     expect(modeInput).not.toBeNull();
     await user.click(modeInput as HTMLInputElement);
     const orchestrate = await screen.findByTitle(
@@ -427,31 +516,23 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
 
   it("writes an orchestrate step running as its named subagent, without a refusal", async () => {
     const user = userEvent.setup();
-    render(
-      <FeatureSettingsDrawer
-        open
-        feature={{
-          ...FEATURE,
-          steps: [
-            {
-              id: "op_design",
-              name: "工序设计",
-              mode: "orchestrate",
-              agent_role: "engineering/engineering-code-reviewer",
-              inputs: [],
-              output: { name: "ops", schema: "list" },
-              prompt: "出工艺包",
-              gate: "auto",
-              on_failure: "abort",
-            },
-          ],
-        }}
-        meta={META}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-        onDeleted={vi.fn()}
-      />,
-    );
+    getFeature.mockResolvedValue({
+      ...FEATURE,
+      steps: [
+        {
+          id: "op_design",
+          name: "工序设计",
+          mode: "orchestrate",
+          agent_role: "engineering/engineering-code-reviewer",
+          inputs: [],
+          output: { name: "ops", schema: "list" },
+          prompt: "出工艺包",
+          gate: "auto",
+          on_failure: "abort",
+        },
+      ],
+    });
+    renderSettings();
 
     await revealSteps(user);
     // How a step runs is writable, so nothing here calls the mode or the role
@@ -471,30 +552,22 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
 
   it("lets the author pick the subagent a step runs as", async () => {
     const user = userEvent.setup();
-    render(
-      <FeatureSettingsDrawer
-        open
-        feature={{
-          ...FEATURE,
-          steps: [
-            {
-              id: "op_design",
-              name: "工序设计",
-              mode: "agent",
-              inputs: [],
-              output: { name: "ops", schema: "list" },
-              prompt: "出工艺包",
-              gate: "auto",
-              on_failure: "abort",
-            },
-          ],
-        }}
-        meta={META}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-        onDeleted={vi.fn()}
-      />,
-    );
+    getFeature.mockResolvedValue({
+      ...FEATURE,
+      steps: [
+        {
+          id: "op_design",
+          name: "工序设计",
+          mode: "agent",
+          inputs: [],
+          output: { name: "ops", schema: "list" },
+          prompt: "出工艺包",
+          gate: "auto",
+          on_failure: "abort",
+        },
+      ],
+    });
+    renderSettings();
 
     await revealSteps(user);
     // The roles on offer are the caller's own subagents, so the picker can only
@@ -523,32 +596,27 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
 
   it("refuses a validate gate whose artifact could never pass", async () => {
     const user = userEvent.setup();
-    render(
-      <FeatureSettingsDrawer
-        open
-        feature={{
-          ...FEATURE,
-          steps: [
-            {
-              id: "self_check",
-              name: "自检清单",
-              mode: "agent",
-              inputs: [],
-              output: { name: "check", schema: "table:4cols" },
-              prompt: "逐条核对",
-              gate: "validate",
-              allow_edit: false,
-              on_failure: "abort",
-            },
-          ],
-        }}
-        meta={META}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-        onDeleted={vi.fn()}
-      />,
-    );
+    getFeature.mockResolvedValue({
+      ...FEATURE,
+      steps: [
+        {
+          id: "self_check",
+          name: "自检清单",
+          mode: "agent",
+          inputs: [],
+          output: { name: "check", schema: "table:4cols" },
+          prompt: "逐条核对",
+          gate: "validate",
+          allow_edit: false,
+          on_failure: "abort",
+        },
+      ],
+    });
+    renderSettings();
 
+    await waitForEditor();
+    // Saved from the definition tab: a step the author cannot see is exactly
+    // the one a silent write would drop.
     await user.click(screen.getByRole("button", { name: "common.save" }));
 
     expect(
@@ -565,8 +633,10 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
           '"message":"Agent 启动失败。"}}',
       ),
     );
-    renderDrawer();
+    renderSettings();
 
+    await waitForEditor();
+    await user.click(screen.getByText("features.settingsTabSteps"));
     await user.click(screen.getByText("features.settingsSectionSteps"));
 
     expect(
@@ -580,9 +650,12 @@ describe("<FeatureSettingsDrawer /> step skeleton", () => {
   });
 });
 
-describe("<FeatureSettingsDrawer /> scope placeholders", () => {
+describe("<FeatureSettingsPage /> scope placeholders", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    localStorage.clear();
+    getFeature.mockResolvedValue(FEATURE);
+    getFeatureMeta.mockResolvedValue(META);
     updateFeature.mockResolvedValue({ feature_id: "quote-draft" });
     createFeature.mockResolvedValue({ feature_id: "quote-draft" });
     deleteFeature.mockResolvedValue(undefined);
@@ -600,17 +673,13 @@ describe("<FeatureSettingsDrawer /> scope placeholders", () => {
 
   it("does not tell a declared-empty scope that it inherits", async () => {
     const user = userEvent.setup();
-    render(
-      <FeatureSettingsDrawer
-        open
-        feature={{ ...FEATURE, agent: { skills: [] } }}
-        meta={META}
-        onClose={vi.fn()}
-        onSaved={vi.fn()}
-        onDeleted={vi.fn()}
-      />,
-    );
+    getFeature.mockResolvedValue({
+      ...FEATURE,
+      agent: { skills: [] },
+    });
+    renderSettings();
 
+    await waitForEditor();
     await user.click(screen.getByText("features.settingsSectionCapability"));
     await screen.findByText("features.settingsCapabilitySkills");
 
@@ -623,13 +692,48 @@ describe("<FeatureSettingsDrawer /> scope placeholders", () => {
 
   it("keeps the inherit placeholder where the scope really is inherited", async () => {
     const user = userEvent.setup();
-    renderDrawer();
+    renderSettings();
 
+    await waitForEditor();
     await user.click(screen.getByText("features.settingsSectionCapability"));
     await screen.findByText("features.settingsCapabilitySkills");
 
     expect(scopePlaceholder("features.settingsCapabilitySkills")).toBe(
       "features.settingsCapabilityScopePlaceholder",
     );
+  });
+});
+
+describe("<FeatureSettingsPage /> entry gates", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    localStorage.clear();
+    getFeature.mockResolvedValue(FEATURE);
+    getFeatureMeta.mockResolvedValue(META);
+    updateFeature.mockResolvedValue({ feature_id: "quote-draft" });
+    createFeature.mockResolvedValue({ feature_id: "quote-draft" });
+    deleteFeature.mockResolvedValue(undefined);
+    getFeatureCapabilities.mockResolvedValue(CAPABILITIES);
+  });
+
+  it("sends a member who reaches the URL straight back to the run page", async () => {
+    renderSettings(MEMBER);
+
+    expect(await screen.findByText("feature-run-page")).toBeInTheDocument();
+    // The definition-format choices are a writer's call only.
+    expect(getFeatureMeta).not.toHaveBeenCalled();
+    expect(screen.queryByDisplayValue("quote-draft")).toBeNull();
+  });
+
+  it("sends an administrator to the run page for a bundled definition", async () => {
+    getFeatureMeta.mockResolvedValue({ ...META, bundled_ids: ["quote-draft"] });
+    renderSettings();
+
+    expect(await screen.findByText("feature-run-page")).toBeInTheDocument();
+    await waitFor(() => expect(getFeatureMeta).toHaveBeenCalledOnce());
+    expect(screen.queryByDisplayValue("quote-draft")).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "features.settingsDelete" }),
+    ).toBeNull();
   });
 });

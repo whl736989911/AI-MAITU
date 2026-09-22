@@ -45,7 +45,6 @@ import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useServerTimezone } from "../../hooks/useServerTimezone";
 import CasesPanel from "./components/CasesPanel";
 import FeatureRunSteps from "./components/FeatureRunSteps";
-import FeatureSettingsDrawer from "./components/FeatureSettingsDrawer";
 import RulesPanel from "./components/RulesPanel";
 import SchemaForm, {
   fieldLabel,
@@ -266,7 +265,6 @@ export default function FeatureDetailPage() {
   const [stepRun, setStepRun] = useState<FeatureStepRun | null>(null);
   const [draft, setDraft] = useState("");
   const [editing, setEditing] = useState(false);
-  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -415,7 +413,7 @@ export default function FeatureDetailPage() {
           {editable && (
             <Button
               icon={<Settings2 size={14} />}
-              onClick={() => setSettingsOpen(true)}
+              onClick={() => navigate(`/features/${feature.id}/settings`)}
             >
               {t("features.settingsEdit")}
             </Button>
@@ -526,19 +524,6 @@ export default function FeatureDetailPage() {
             ),
           },
         ]}
-      />
-
-      <FeatureSettingsDrawer
-        open={settingsOpen}
-        feature={feature}
-        meta={meta}
-        onClose={() => setSettingsOpen(false)}
-        // The header, the form and the cards all read the definition: reload it.
-        onSaved={() => {
-          setSettingsOpen(false);
-          void load();
-        }}
-        onDeleted={() => navigate("/features")}
       />
     </PageShell>
   );

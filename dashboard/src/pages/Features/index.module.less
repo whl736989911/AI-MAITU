@@ -718,12 +718,16 @@
   overflow: auto;
 }
 
-// ── Settings drawer: definition editor ──────────────────────────────────────
+// ── Settings surface: the definition editor ─────────────────────────────────
 
 /*
- * Same split as the skill drawer: the form scrolls, the footer holds the one
- * commit action, so a long definition (many fields) never pushes Save away.
+ * The definition editor is written twice over the same blocks: the create
+ * drawer below (definition essentials, scrolls inside a drawer) and the
+ * ``/features/:id/settings`` route (everything, scrolls inside a page). Both
+ * split the same way — the form scrolls, one commit row holds Save — so a long
+ * definition never pushes the commit action away.
  */
+
 .shell {
   display: grid;
   grid-template-rows: minmax(0, 1fr) auto;
@@ -743,6 +747,24 @@
   gap: 16px;
 }
 
+/* Page form: fills the shell's remaining height and scrolls its own blocks. */
+.settingsScroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/*
+ * One URL tab's blocks. Every tab that has been opened stays mounted and is
+ * hidden with ``display`` instead, so switching tabs neither loses what was
+ * typed nor unregisters the fields a save has to carry.
+ */
+.settingsPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
 /* Fixed commit row: a long definition never pushes Save out of reach. */
 .footer {
   display: flex;
@@ -751,6 +773,17 @@
   padding: 12px 24px;
   border-top: 1px solid var(--fn-border-secondary);
   background: var(--fn-bg-primary);
+}
+
+/* The same row on a page: the page shell already supplies the side padding. */
+.settingsFooter {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--fn-border-secondary);
 }
 
 .settingsBlock {
