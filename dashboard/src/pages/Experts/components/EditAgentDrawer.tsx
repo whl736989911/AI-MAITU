@@ -166,6 +166,12 @@ interface EditAgentDrawerProps {
       | "icon_url"
     >,
   ) => void;
+  /**
+   * The i18n key the drawer's title is read from. Defaults to the experts' own
+   * (``experts.editExpert``), which is what every expert surface shows; a page
+   * that opens this editor over an agent that is not an expert names it itself.
+   */
+  titleKey?: string;
 }
 
 interface EditAgentDrawerBodyProps {
@@ -1313,6 +1319,7 @@ export default function EditAgentDrawer({
   agent,
   onClose,
   onSaved,
+  titleKey = "experts.editExpert",
 }: EditAgentDrawerProps) {
   const { t } = useTranslation();
   const saveRef = useRef<(() => Promise<void>) | null>(null);
@@ -1325,7 +1332,7 @@ export default function EditAgentDrawer({
   return (
     <Drawer
       open={open}
-      title={t("experts.editExpert")}
+      title={t(titleKey)}
       width={520}
       onClose={onClose}
       destroyOnHidden

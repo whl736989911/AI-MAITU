@@ -2,6 +2,8 @@ import { lazy } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 
 // Lazy-loaded pages — Common
+const FeaturesPage = lazy(() => import("../pages/Features"));
+const FeatureDetailPage = lazy(() => import("../pages/Features/Detail"));
 const ExpertsPage = lazy(() => import("../pages/Experts"));
 const CronJobsPage = lazy(() => import("../pages/Control/CronJobs"));
 const ConnectorsPage = lazy(() => import("../pages/Agent/Connectors"));
@@ -50,6 +52,7 @@ export interface RouteConfig {
 export const pathToKey: Record<string, string> = {
   "/chat": "chat",
   // Common
+  "/features": "features",
   "/experts": "experts",
   "/tasks": "tasks",
   "/connectors": "connectors",
@@ -142,6 +145,7 @@ export function isPersonalizationPath(pathname: string): boolean {
 export function resolveSelectedKey(pathname: string): string {
   if (pathToKey[pathname]) return pathToKey[pathname];
   if (pathname.startsWith("/chat/")) return "chat";
+  if (pathname.startsWith("/features/")) return "features";
   if (pathname.startsWith("/workbench/")) return "workbench";
   if (pathname.startsWith("/remote-desktop/")) return "remote-desktop";
   if (pathname.startsWith("/personalization/")) return "personalization";
@@ -155,6 +159,12 @@ export const routeConfigs: RouteConfig[] = [
   { path: "/chat/:agentId/:threadId", element: null, useWrapper: true },
 
   // Common
+  { path: "/features", element: <FeaturesPage /> },
+  // One route for a feature and every tab of it — its definition first, then the
+  // expert panels pointed at its own agent (the same shape ``/personalization/*``
+  // uses): ``usePathTabs`` canonicalizes the bare path onto a tab, and second
+  // routes would remount the page they just moved off.
+  { path: "/features/:agentId/*", element: <FeatureDetailPage /> },
   { path: "/experts", element: <ExpertsPage /> },
   { path: "/tasks", element: <CronJobsPage /> },
   { path: "/connectors", element: <ConnectorsPage /> },

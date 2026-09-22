@@ -146,6 +146,7 @@ def _row_dict(
     payload: dict[str, Any] = {
         "id": row.id,
         "agent_id": row.agent_id,
+        "kind": row.kind,
         "user_id": row.user_id,
         "name": row.name,
         "description": row.description,

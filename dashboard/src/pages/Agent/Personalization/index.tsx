@@ -8,7 +8,14 @@
  * keep in step.
  *
  * That id is the active agent as ``AgentContext`` holds it — the same id every
- * other agent-scoped surface acts on, chat included.
+ * other agent-scoped surface acts on, chat included — *resolved among the
+ * experts the caller owns*, which is the only thing this page may configure. The
+ * two are not the same list: an agent is in the caller's list when somebody
+ * shared it, and a feature's agent is in it from the moment the feature is
+ * shared with them (``utils/agentKind``). Neither of those is an expert of the
+ * caller's, and offering the writing panels over one would be offering controls
+ * whose only outcome is a refusal — the bar's own selector, which offers the
+ * caller's experts and no one else, already answers the question this page asks.
  */
 
 import { useCallback, useMemo } from "react";
@@ -18,6 +25,7 @@ import { useAgent } from "../../../context/AgentContext";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { usePathTabs } from "../../../hooks/usePathTabs";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { ownedExperts } from "../../../utils/sharedExpert";
 import { userCan } from "../../../utils/permissions";
 import PersonalizationPanels, {
   PERSONALIZATION_TABS,
@@ -30,7 +38,12 @@ export default function PersonalizationPage() {
   const isMobile = useIsMobile();
   const user = useCurrentUser();
   const { activeAgentId, agents } = useAgent();
-  const activeAgent = agents.find((a) => a.agent_id === activeAgentId);
+  const ownExperts = useMemo(() => ownedExperts(agents), [agents]);
+  const activeAgent = useMemo(
+    () =>
+      ownExperts.find((a) => a.agent_id === activeAgentId) ?? ownExperts[0] ?? null,
+    [ownExperts, activeAgentId],
+  );
 
   const isAllowed = useCallback(
     (tab: PersonalizationTab) =>
@@ -78,14 +91,14 @@ export default function PersonalizationPage() {
       pathTabs={pathTabs}
     >
       <PersonalizationPanels
-        agentId={activeAgentId}
+        agentId={activeAgent?.agent_id ?? null}
         agentState={activeAgent?.state ?? "stopped"}
         tabs={PERSONALIZATION_TABS}
         activeTab={activeTab}
         isMounted={isMounted}
         scope="expert"
         // The caller's own expert: every panel is theirs to write.
-        canWrite
+        canWrite={activeAgent?.is_owner !== false}
       />
     </PageShell>
   );

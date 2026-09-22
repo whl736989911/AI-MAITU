@@ -1,6 +1,10 @@
+import { isFeatureAgent } from "./agentKind";
+
 export interface SharedExpertAccess {
   is_shared?: boolean;
   is_owner?: boolean;
+  /** What the row is — see ``utils/agentKind.ts``. Absent means an expert. */
+  kind?: string | null;
 }
 
 export function isSharedExpertViewer(agent: SharedExpertAccess): boolean {
@@ -28,7 +32,18 @@ export function chatSkillCatalogAgentId(
   return agentId ?? null;
 }
 
-/** Experts the user owns — for Experts / Personalization / agent bars. */
+/**
+ * Experts the user owns — for Experts / Personalization / agent bars.
+ *
+ * A feature's agent is *not* one of them, and the kind is what says so: a
+ * feature's author owns it, so ownership alone would offer it as an expert on
+ * every surface that picks one — beside the feature's own page, and with a write
+ * rule that is not an expert's (``CAPABILITY_POLICY`` in
+ * ``PersonalizationPanels``). A feature is reached from its own list and page;
+ * the experts' pickers are about the experts a person holds.
+ */
 export function ownedExperts<T extends SharedExpertAccess>(agents: T[]): T[] {
-  return agents.filter(isOwnedExpert);
+  return agents.filter(
+    (agent) => isOwnedExpert(agent) && !isFeatureAgent(agent),
+  );
 }

@@ -191,6 +191,7 @@
     "common": "常用",
     "control": "控制",
     "experts": "专家",
+    "features": "功能",
     "tasks": "自动化",
     "connectors": "连接器",
     "acp": "ACP",
@@ -1046,6 +1047,42 @@
     "mbtiBtn": "MBTI",
     "channelsBtn": "通道",
     "memoryBtn": "记忆"
+  },
+  "features": {
+    "create": "新建功能",
+    "created": "功能「{{name}}」已创建",
+    "createFailed": "功能创建失败",
+    "loadFailed": "功能列表加载失败",
+    "id": "功能 ID",
+    "idHint": "用于生成它的 agent ID（feat-<功能 ID>）：3–64 个字母、数字、下划线或连字符。",
+    "idRequired": "请填写功能 ID",
+    "idPlaceholder": "例如 weekly-report",
+    "name": "名称",
+    "nameRequired": "请填写名称",
+    "description": "描述",
+    "editDefinition": "编辑功能",
+    "empty": "还没有功能",
+    "emptyHint": "创建一个功能：它自带一个 agent，和专家同款配置，并可作为对话入口被调用。",
+    "total": "共 {{count}} 个功能",
+    "backToList": "返回功能列表",
+    "notFound": "这个功能不在你可以访问的范围内。",
+    "notFoundHint": "它可能已被删除，也可能从未共享给你。",
+    "scopeLabel": "正在配置",
+    "definedBy": "由 {{name}} 定义",
+    "unknownAuthor": "未知作者",
+    "tabDefinition": "功能定义",
+    "tabPersonalization": "能力配置",
+    "agentId": "Agent ID",
+    "author": "作者",
+    "authorIsYou": "你（本账号）",
+    "state": "状态",
+    "defaultModel": "默认模型",
+    "welcome": "欢迎语",
+    "knowledgeBases": "默认知识库",
+    "connectors": "默认连接器",
+    "notSet": "未设置",
+    "noDescription": "还没有描述",
+    "definitionAuthorOnly": "这个功能由 {{author}} 定义，只有作者能修改它；调用它时，它按作者配置好的样子运行。"
   },
   "sharing": {
     "tabQueue": "审批队列",
@@ -4093,7 +4130,7 @@
     "personalizationMbtiNote": "应用 MBTI 人格重写的是这个 agent 的系统提示词——工作区里的人设文件（SOUL.md 等）原样保留，手写的灵魂设定不会被覆盖。人格记在这个共用 agent 上，对所有调用者生效。",
     "filesFailed": "读取人设文件列表失败",
     "filesMissing": "尚未创建，保存时会新建",
-    "memorySharedNote": "这份记忆属于功能 agent 本身，由全体调用者共享：任何调用者写入的记忆，其他调用者下次运行都会读到，也会写回同一份 MEMORY.md。功能 agent 目前没有按调用者隔离的记忆作用域。"
+    "memorySharedNote": "这份记忆属于功能自己的 agent，全体调用者共用一份，而且不会更新：运行不写入，人也不能写入——每个调用者读到的，始终是同一份 MEMORY.md。"
   },
   "consoleBubble": {
     "title": "消息来了"
@@ -5607,6 +5644,10 @@
     "experts": {
       "title": "专家",
       "subtitle": "创建与管理你的 AI 专家，也可从模板库挑选场景一键新建。"
+    },
+    "features": {
+      "title": "功能",
+      "subtitle": "你的功能：每一个都自带一个 agent，配置方式和专家一样，并且可以被调用。"
     },
     "tasks": {
       "title": "自动化",

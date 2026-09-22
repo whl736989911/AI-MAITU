@@ -56,4 +56,15 @@ describe("ownedExperts", () => {
     expect(isOwnedExpert(agents[1]!)).toBe(false);
     expect(isOwnedExpert(agents[0]!)).toBe(true);
   });
+
+  it("drops a feature's agent even though its author owns it", () => {
+    // A feature's author owns the row, so ownership alone would offer it as an
+    // expert on every picker; the kind is what keeps it out.
+    const agents = [
+      { agent_id: "my-expert", is_owner: true },
+      { agent_id: "feat-weekly", is_owner: true, kind: "feature" },
+      { agent_id: "feat-shared", is_owner: false, kind: "feature" },
+    ];
+    expect(ownedExperts(agents).map((a) => a.agent_id)).toEqual(["my-expert"]);
+  });
 });

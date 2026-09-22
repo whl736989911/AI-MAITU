@@ -16,6 +16,7 @@ import {
   Package,
   HardDrive,
   GraduationCap,
+  LayoutGrid,
   Network,
   Shield,
   PanelsTopLeft,
@@ -87,6 +88,12 @@ export function buildNavSections(
           path: "/chat",
           icon: <MessageSquareText size={iconSize} strokeWidth={iconStroke} />,
           labelKey: "nav.chat",
+        },
+        {
+          key: "features",
+          path: "/features",
+          icon: <LayoutGrid size={iconSize} strokeWidth={iconStroke} />,
+          labelKey: "nav.features",
         },
         {
           key: "experts",

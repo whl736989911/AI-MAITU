@@ -37,6 +37,7 @@ import {
 } from "../../../utils/agentError";
 import styles from "../index.module.less";
 import { isSharedExpertViewer } from "../../../utils/sharedExpert";
+import { isFeatureAgent } from "../../../utils/agentKind";
 import type { PublishedExpert } from "../../../api/modules/publishedExperts";
 import PublishTemplateButton from "./PublishTemplateButton";
 import AgentMoreActions from "./AgentMoreActions";
@@ -71,6 +72,13 @@ export interface AgentCardProps {
   onStateChange: (agentId: string, newState: string) => void;
   /** Called when a start/stop poll settles (e.g. admin views another user's agents). */
   onPollSettled?: () => void;
+  /**
+   * The i18n key the id row's label is read from. Defaults to the experts' own
+   * (``experts.agentId``), which is what every expert surface shows; a caller that
+   * shows the card for an agent that is not an expert names it itself, so the row
+   * does not label a feature's agent as an expert's.
+   */
+  idLabelKey?: string;
 }
 
 export const AgentCard = memo(function AgentCard({
@@ -84,6 +92,7 @@ export const AgentCard = memo(function AgentCard({
   onDeleted,
   onStateChange,
   onPollSettled,
+  idLabelKey = "experts.agentId",
 }: AgentCardProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
@@ -321,7 +330,7 @@ export const AgentCard = memo(function AgentCard({
                   onClick={() => void copyAgentId()}
                 >
                   <span className={styles.agentCardIdLabel}>
-                    {t("experts.agentId")}
+                    {t(idLabelKey)}
                   </span>
                   <span className={styles.agentCardIdValue}>
                     {agent.agent_id}
@@ -551,6 +560,9 @@ export const AgentCard = memo(function AgentCard({
         agentId={agent.agent_id}
         open={memoryCatalogOpen}
         onClose={() => setMemoryCatalogOpen(false)}
+        // A feature's memory is written by nobody, so over one the panel is
+        // shown read-only rather than offered and refused.
+        readOnly={isFeatureAgent(agent)}
       />
       <MbtiCatalogDrawer
         open={mbtiCatalogOpen}

@@ -191,6 +191,7 @@
     "common": "Common",
     "control": "Control",
     "experts": "Experts",
+    "features": "Features",
     "tasks": "Automation",
     "connectors": "Connectors",
     "acp": "ACP",
@@ -1046,6 +1047,42 @@
     "mbtiBtn": "MBTI",
     "channelsBtn": "Channels",
     "memoryBtn": "Memory"
+  },
+  "features": {
+    "create": "New feature",
+    "created": "Feature “{{name}}” created",
+    "createFailed": "Could not create the feature",
+    "loadFailed": "Could not load the features",
+    "id": "Feature ID",
+    "idHint": "Names the agent it creates (feat-<feature ID>): 3–64 letters, digits, underscores or hyphens.",
+    "idRequired": "Enter a feature ID",
+    "idPlaceholder": "e.g. weekly-report",
+    "name": "Name",
+    "nameRequired": "Enter a name",
+    "description": "Description",
+    "editDefinition": "Edit feature",
+    "empty": "No features yet",
+    "emptyHint": "Create a feature: it brings its own agent, is configured exactly the way an expert is, and can be called as a conversation entry point.",
+    "total": "{{count}} features",
+    "backToList": "Back to features",
+    "notFound": "This feature is not one you can reach.",
+    "notFoundHint": "It may have been deleted, or it was never shared with you.",
+    "scopeLabel": "Configuring",
+    "definedBy": "Defined by {{name}}",
+    "unknownAuthor": "Unknown author",
+    "tabDefinition": "Definition",
+    "tabPersonalization": "Capabilities",
+    "agentId": "Agent ID",
+    "author": "Author",
+    "authorIsYou": "You (this account)",
+    "state": "State",
+    "defaultModel": "Default model",
+    "welcome": "Welcome message",
+    "knowledgeBases": "Default knowledge bases",
+    "connectors": "Default connectors",
+    "notSet": "Not set",
+    "noDescription": "No description yet",
+    "definitionAuthorOnly": "This feature is defined by {{author}}; only its author can change it. Calling it runs it as that author configured it."
   },
   "sharing": {
     "tabQueue": "Approval queue",
@@ -4093,7 +4130,7 @@
     "personalizationMbtiNote": "Applying an MBTI type rewrites this agent's system prompt — the workspace persona files (SOUL.md among them) are left as they are, so a soul you wrote by hand is not overwritten. The type is stored on this shared agent, so it shapes every caller's runs.",
     "filesFailed": "Could not list the persona files",
     "filesMissing": "Not created yet — saving creates it",
-    "memorySharedNote": "This memory belongs to the feature's agent, and every caller shares it: what one caller writes is read by the next one and written back to the same MEMORY.md. The feature's agent has no per-caller memory scope yet."
+    "memorySharedNote": "This memory belongs to the feature's own agent: every caller shares one copy, and it never changes — not written by a run, and not written by a person. Every caller reads the same MEMORY.md."
   },
   "consoleBubble": {
     "title": "New Message"
@@ -5607,6 +5644,10 @@
     "experts": {
       "title": "Experts",
       "subtitle": "Create and manage your AI experts, or pick a scenario template to get started quickly."
+    },
+    "features": {
+      "title": "Features",
+      "subtitle": "Your features — each one carries its own agent, is configured the way an expert is, and can be called."
     },
     "tasks": {
       "title": "Automation",

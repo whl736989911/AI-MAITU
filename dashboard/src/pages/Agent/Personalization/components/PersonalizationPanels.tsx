@@ -3,12 +3,11 @@
  * parameterised on a single agent id — and the one place that says what a
  * capability *is* in the scope showing it.
  *
- * One stack, two pages. The Personalization page picks the scope at the top of
- * the page (the caller's own active expert, or a feature's agent); a feature's
- * own page has its scope fixed by the route and shows the same stack. Neither
- * page owns a panel of its own, so what a feature configures cannot drift from
- * what an expert configures: the components, their order, their icons and their
- * keep-alive are all this list.
+ * One stack, two pages. The Personalization page configures the caller's own
+ * active expert; a feature's own page has its scope fixed by the route and shows
+ * the same stack. Neither page owns a panel of its own, so what a feature
+ * configures cannot drift from what an expert configures: the components, their
+ * order, their icons and their keep-alive are all this list.
  *
  * What *does* differ between the two is declared in ``CAPABILITY_POLICY`` below
  * rather than branched into the panels: a capability whose writing rule, or
@@ -23,9 +22,11 @@
  *     experience into the next one's.
  *
  * A page that shows these panels says which of the two it is showing, and hands
- * ``canWrite`` the answer it already had to know: for a feature that is the
- * server's own rule — ``POST /features/{id}/agent`` is administrator-gated, and
- * a caller is not shown the surface at all.
+ * ``canWrite`` the answer it already had to know: a feature is configured by
+ * whoever defined it, which the server decides on the row's own ``kind`` and
+ * ownership (``api/common/agent.py``), and the page reads ``is_owner`` off the
+ * same row. The tabs a caller may not write through are not offered at all — see
+ * :func:`offeredTabs`.
  */
 
 import { Alert, Empty } from "antd";
@@ -144,10 +145,34 @@ export const CAPABILITY_POLICY: Record<
       // and neither may a person, or the file stops meaning what the design
       // says it means. The panel stays: what it holds is what a run reads.
       writer: "nobody",
-      note: { tone: "warning", message: "personalization.memoryFeatureNote" },
+      note: { tone: "warning", message: "personalization.memorySharedNote" },
     },
   },
 };
+
+/**
+ * The tabs a scope actually offers a caller.
+ *
+ * A capability whose ``writer`` is ``author`` is the author's to write and nobody
+ * else's, and a panel is not offered where it could only be refused: the tabs that
+ * write are left out of the row rather than shown dead. ``nobody``'s tab stays —
+ * read-only is what it is for — and so does every tab with nothing to say about the
+ * scope, which is the panels' own default (the viewer writes it).
+ *
+ * One answer per scope, taken from the table above, so what the row offers and what
+ * the stack below it may render cannot disagree.
+ */
+export function offeredTabs(
+  scope: PersonalizationScope,
+  tabs: readonly PersonalizationTab[],
+  canWrite: boolean,
+): PersonalizationTab[] {
+  const policy = CAPABILITY_POLICY[scope];
+  return tabs.filter((tab) => {
+    const writer = policy[tab]?.writer ?? "viewer";
+    return writer !== "author" || canWrite;
+  });
+}
 
 export const TAB_ICONS = {
   skills: Sparkles,

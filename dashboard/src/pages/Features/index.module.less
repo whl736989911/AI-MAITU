@@ -1,0 +1,107 @@
+/**
+ * The feature pages' own chrome — and only that.
+ *
+ * The grid, the toolbar and the cards on the list page are the experts' own
+ * stylesheet (``pages/Experts/index.module.less``), and the scope bar wears the
+ * agents' selector stylesheet, because both are the same things rather than
+ * look-alikes of them. What is left for this file is the feature page's stack: the
+ * first level of tabs' panels, and the second level's row above the shared
+ * personalization panels.
+ */
+
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  min-height: 240px;
+}
+
+/* First level: one panel at a time, filling the content card. */
+.page {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tabPanel {
+  flex: 1;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Second level: the capability row pinned above the panels it selects. */
+.featurePanelStack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.panelTabs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  flex-shrink: 0;
+  padding-bottom: 12px;
+}
+
+/* The definition tab: facts to read, and one way to change them. */
+.definition {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.definitionHeader {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.definitionIcon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 48px;
+  height: 48px;
+  border-radius: 10px;
+  flex-shrink: 0;
+}
+
+.definitionTitleBlock {
+  flex: 1;
+  min-width: 0;
+}
+
+.definitionName {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+  margin-bottom: 4px;
+}
+
+.definitionEdit {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  flex-shrink: 0;
+  padding: 4px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--fn-border-secondary);
+  background: var(--fn-bg-secondary);
+  color: var(--fn-text-primary);
+  font-size: 12px;
+  line-height: 1.6;
+  cursor: pointer;
+
+  &:hover {
+    border-color: var(--fn-border-primary);
+    background: var(--fn-bg-elevated);
+  }
+}
