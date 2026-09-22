@@ -74,11 +74,12 @@ def _row(
     agent_id: str = "01AGENT",
     config_json: str | None = None,
     default_model: str | None = None,
+    user_id: int | None = 1,
 ) -> AgentRow:
     return AgentRow(
         id=1,
         agent_id=agent_id,
-        user_id=1,
+        user_id=user_id,
         name="bot",
         description=None,
         persona_mbti=None,
@@ -264,6 +265,39 @@ def test_build_harness_config_mounts_the_feature_prompt_middleware(
     cfg = manager._build_harness_config(_row(agent_id="AGT001"))
 
     assert any(isinstance(item, FeatureSystemPromptMiddleware) for item in (cfg.middleware or []))
+
+
+def test_build_harness_config_freezes_a_shared_agents_memory(
+    manager: AgentManager,
+) -> None:
+    """An app-owned agent's workspace MEMORY.md is read by every caller.
+
+    Nothing else refuses the write: without the middleware in the built config the
+    agent stores whatever one caller told it, and the next caller's run reads it
+    back — cross-caller pollution, the thing the freeze exists to prevent.
+    """
+    from octop.infra.agents.middleware.shared_memory_freeze import (
+        SharedMemoryFreezeMiddleware,
+    )
+
+    cfg = manager._build_harness_config(_row(agent_id="feat-quote-draft", user_id=None))
+
+    assert any(isinstance(item, SharedMemoryFreezeMiddleware) for item in (cfg.middleware or []))
+
+
+def test_build_harness_config_leaves_an_owned_agents_memory_alone(
+    manager: AgentManager,
+) -> None:
+    """An expert's memory is its owner's: no freeze anywhere in its chain."""
+    from octop.infra.agents.middleware.shared_memory_freeze import (
+        SharedMemoryFreezeMiddleware,
+    )
+
+    cfg = manager._build_harness_config(_row(agent_id="AGT001"))
+
+    assert not any(
+        isinstance(item, SharedMemoryFreezeMiddleware) for item in (cfg.middleware or [])
+    )
 
 
 def test_build_harness_config_defaults_local_shell_backend(manager: AgentManager) -> None:

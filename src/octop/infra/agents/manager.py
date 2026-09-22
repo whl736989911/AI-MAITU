@@ -3017,6 +3017,9 @@ class AgentManager:
         )
         from octop.infra.agents.middleware.feature_scope import FeatureScopeMiddleware
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
+        from octop.infra.agents.middleware.shared_memory_freeze import (
+            shared_memory_freeze_chain,
+        )
         from octop.infra.agents.middleware.skill_catalog import (
             SkillCatalogRefreshMiddleware,
         )
@@ -3043,6 +3046,12 @@ class AgentManager:
             FeatureSystemPromptMiddleware(),
             FeatureScopeMiddleware(),
             FeatureDispatchMiddleware(),
+            # An app-owned agent (``user_id IS NULL`` — the shared ones, a
+            # feature's own agent among them) has no owner whose memory its
+            # workspace MEMORY.md could be, and every caller reads the same file:
+            # its writes are refused. For every owned agent this is ``[]`` and the
+            # chain is exactly what it was — see the module's docstring.
+            *shared_memory_freeze_chain(agent_id=row.agent_id, user_id=row.user_id),
             TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
             KnowledgeSearchHintMiddleware(),
             BrowserProfileMiddleware(),
