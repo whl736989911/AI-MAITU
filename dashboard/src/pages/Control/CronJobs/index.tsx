@@ -19,7 +19,7 @@ import { showConfirmModal } from "../../../utils/confirmModal";
 import { EmptyStateIcon } from "../../../components/EmptyState";
 import { ResizableTable } from "../../../components/ResizableTable";
 import PageShell from "../../../layouts/PageShell";
-import AgentSelector from "../../../components/AgentSelector";
+import AgentScopeBars from "../../../components/AgentScopeBars";
 import { useAgent } from "../../../context/AgentContext";
 import { taskExampleColumns } from "./taskExamples";
 import { useTaskExamples } from "./useTaskExamples";
@@ -236,21 +236,11 @@ function CronJobsPage() {
     stickyColumns: !isMobile,
   });
 
-  // The page's scope controls: the experts' bar every agent-scoped page has,
-  // plus one row for the caller's features — a feature's agent owns an
-  // automation schedule on the same terms an expert's does. The second bar
-  // renders nothing at all when the caller has no feature, so an expert-only
-  // page is the one row it has always been.
-  const agentBar = (
-    <>
-      <AgentSelector />
-      <AgentSelector
-        scope="features"
-        variant="select"
-        style={{ marginTop: 10 }}
-      />
-    </>
-  );
+  // The page's scope controls: one row per kind, the shape every page with
+  // content of both kinds draws (``AgentScopeBars``). A feature's agent owns an
+  // automation schedule on the same terms an expert's does; the features' row
+  // renders nothing at all when the caller has no feature.
+  const agentBar = <AgentScopeBars />;
 
   // Shared experts are not a task scope. Non-owners should see the same
   // "pick an agent" empty as if nothing were selected — no shared-expert copy.

@@ -1,43 +1,55 @@
 /**
- * Personalization — the expert panels, for one agent at a time.
+ * Personalization — the panels, for one agent at a time, of either kind.
  *
- * The page's scope is the caller's own active expert, and nothing else: the
- * agent bar is the shell's ``AgentSelector``. Every panel below is parameterised
- * on one agent id, so the scope is a single value handed to each of them:
- * nothing else about a panel changes, and there is no second set of panels to
- * keep in step.
+ * The page's scope is the caller's own active agent — the id every other
+ * agent-scoped surface acts on, chat included — *resolved among the agents this
+ * page may configure*: the experts the caller owns, and the features they own
+ * (``utils/sharedExpert``). Every panel below is parameterised on one agent id,
+ * so the scope is a single value handed to each of them: nothing else about a
+ * panel changes, and there is no second set of panels to keep in step.
  *
- * That id is the active agent as ``AgentContext`` holds it — the same id every
- * other agent-scoped surface acts on, chat included — *resolved among the
- * experts the caller owns*, which is the only thing this page may configure. The
- * two are not the same list: an agent is in the caller's list when somebody
- * shared it, and a feature's agent is in it from the moment the feature is
- * shared with them (``utils/agentKind``). Neither of those is an expert of the
- * caller's, and offering the writing panels over one would be offering controls
- * whose only outcome is a refusal — the bar's own selector, which offers the
- * caller's experts and no one else, already answers the question this page asks.
+ * Those two are the bars' own lists (``AgentScopeBars`` — the experts' row and
+ * the features' row, over ``activeAgentId``, which is also a feature's to hold):
+ * what the page acts on is therefore always something one of its own rows can
+ * name. An agent of either kind is configured here, and which kind it is decides
+ * the scope — ``PersonalizationPanels``' policy table says the rest, so a
+ * feature's own tab set (its persona files included, since its agent is in
+ * nobody's expert list) comes along with it.
  *
- * A caller who owns no expert at all is therefore a state the page has to name,
- * not one it can leave to the bar (a bar with nothing to offer is not drawn):
- * the body says what it is waiting for and offers the two ways to get it —
- * create an expert of one's own, or open a feature.
+ * An expert still resolves exactly as it always has: the one aimed at, else the
+ * caller's first. A feature the caller owns resolves to itself. The two are not
+ * the same list, and a pointer on neither — an agent somebody shared, which
+ * ``utils/agentKind`` shows to be either kind — falls back where it always did,
+ * to the caller's first own expert: offering the writing panels over an agent
+ * that is not the caller's would be offering controls whose only outcome is a
+ * refusal.
+ *
+ * A caller who owns no expert of their own and has no feature aimed at is
+ * therefore a state the page has to name, not one it can leave to the bar (a bar
+ * with nothing to offer is not drawn): the body says what it is waiting for and
+ * offers the two ways to get it — create an expert of one's own, or open a
+ * feature.
  */
 
-import { useCallback, useMemo } from "react";
+import { useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { GraduationCap } from "lucide-react";
 import PageShell from "../../../layouts/PageShell";
+import AgentScopeBars from "../../../components/AgentScopeBars";
 import { EmptyStateIcon } from "../../../components/EmptyState";
 import { useAgent } from "../../../context/AgentContext";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { usePathTabs } from "../../../hooks/usePathTabs";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { ownedExperts } from "../../../utils/sharedExpert";
+import { ownedExperts, ownedFeatures } from "../../../utils/sharedExpert";
 import { userCan } from "../../../utils/permissions";
 import PersonalizationPanels, {
+  FEATURE_PERSONALIZATION_TABS,
   PERSONALIZATION_TABS,
   TAB_ICONS,
+  offeredTabs,
+  type PersonalizationScope,
   type PersonalizationTab,
 } from "./components/PersonalizationPanels";
 // The experts' own "no expert of mine" placeholder and its styles: a caller
@@ -52,49 +64,76 @@ export default function PersonalizationPage() {
   const user = useCurrentUser();
   const { activeAgentId, agents } = useAgent();
   const ownExperts = useMemo(() => ownedExperts(agents), [agents]);
+  const ownFeatures = useMemo(() => ownedFeatures(agents), [agents]);
+  /** The pointer, when it is on a feature of the caller's — the features' row's own list. */
+  const pointedFeature = useMemo(
+    () => ownFeatures.find((a) => a.agent_id === activeAgentId) ?? null,
+    [ownFeatures, activeAgentId],
+  );
+  /**
+   * What the panels below are about: that feature, else the experts' own
+   * resolution, which is the expression it has always been. The pointer is
+   * resolved against the bars' lists rather than taken as it comes: an agent
+   * somebody shared is not the caller's to configure here, of either kind.
+   */
   const activeAgent = useMemo(
     () =>
-      ownExperts.find((a) => a.agent_id === activeAgentId) ?? ownExperts[0] ?? null,
-    [ownExperts, activeAgentId],
+      pointedFeature ??
+      ownExperts.find((a) => a.agent_id === activeAgentId) ??
+      ownExperts[0] ??
+      null,
+    [pointedFeature, ownExperts, activeAgentId],
   );
-  // No expert of the caller's to configure. Every panel below is built from one
-  // agent id, so with none the page is not "waiting for a choice" — it is
-  // waiting for an expert to exist, and it says so with the two ways to get one:
-  // create an expert of one's own, or open a feature (whose own agent is set up
-  // by its author, not here).
-  const hasOwnExpert = ownExperts.length > 0;
+  // Either way this is an agent of the caller's own — their expert, their
+  // feature — so every panel it offers is theirs to write. The scope says which
+  // kind it is.
+  const canWrite = activeAgent?.is_owner !== false;
+  const scope: PersonalizationScope = pointedFeature ? "feature" : "expert";
+  const channelsAllowed = userCan(user, "channels");
 
-  const isAllowed = useCallback(
-    (tab: PersonalizationTab) =>
-      tab === "channels" ? userCan(user, "channels") : true,
-    [user],
-  );
+  /**
+   * The tabs this scope offers this caller, from the panels' own table
+   * (``offeredTabs``) — the same answer a feature's own page gets, so what the
+   * row shows and what the stack below may render cannot disagree. Channels
+   * reach the caller's own entry points, so the permission that gates them gates
+   * this tab too.
+   */
+  const offered = useMemo(() => {
+    const tabs = offeredTabs(
+      scope,
+      scope === "feature" ? FEATURE_PERSONALIZATION_TABS : PERSONALIZATION_TABS,
+      canWrite,
+    );
+    return channelsAllowed ? tabs : tabs.filter((tab) => tab !== "channels");
+  }, [scope, canWrite, channelsAllowed]);
 
   const { activeTab, handleTabChange, isMounted } =
     usePathTabs<PersonalizationTab>({
       basePath: "/personalization",
-      tabs: PERSONALIZATION_TABS,
+      // The tabs on offer are the tabs the URL may name: what this scope does not
+      // offer is not reachable by address either.
+      tabs: offered,
       storageKey: "octop:personalization:tab",
-      defaultTab: "skills",
-      isAllowed,
+      // The first tab this scope offers: an expert's is its own default, and a
+      // feature's is what is left of them for a caller who may not write
+      // through the rest (``memory``, which the table never drops).
+      defaultTab: offered[0] ?? "skills",
     });
 
   const pathTabs = useMemo(
     () => ({
       value: activeTab,
       onChange: handleTabChange,
-      options: PERSONALIZATION_TABS.filter((value) => isAllowed(value)).map(
-        (value) => {
-          const Icon = TAB_ICONS[value];
-          return {
-            value,
-            label: t(`personalization.tabs.${value}`),
-            icon: <Icon size={14} strokeWidth={2} />,
-          };
-        },
-      ),
+      options: offered.map((value) => {
+        const Icon = TAB_ICONS[value];
+        return {
+          value,
+          label: t(`personalization.tabs.${value}`),
+          icon: <Icon size={14} strokeWidth={2} />,
+        };
+      }),
     }),
-    [activeTab, handleTabChange, isAllowed, t],
+    [activeTab, handleTabChange, offered, t],
   );
 
   const pageTitle = `${t("personalization.title")} / ${t(
@@ -106,21 +145,28 @@ export default function PersonalizationPage() {
       title={pageTitle}
       subtitle={t("personalization.description")}
       agentScoped
+      // Both kinds are a scope of this page's content, so both rows are drawn —
+      // each one by its own option set, so an expert-only caller sees the single
+      // row this page has always had.
+      agentBar={<AgentScopeBars />}
       fill={!isMobile}
       pathTabs={pathTabs}
     >
-      {hasOwnExpert ? (
+      {activeAgent ? (
         <PersonalizationPanels
-          agentId={activeAgent?.agent_id ?? null}
-          agentState={activeAgent?.state ?? "stopped"}
-          tabs={PERSONALIZATION_TABS}
+          agentId={activeAgent.agent_id}
+          agentState={activeAgent.state}
+          tabs={offered}
           activeTab={activeTab}
           isMounted={isMounted}
-          scope="expert"
-          // The caller's own expert: every panel is theirs to write.
-          canWrite={activeAgent?.is_owner !== false}
+          scope={scope}
+          canWrite={canWrite}
         />
       ) : (
+        // No expert of the caller's and no feature of theirs aimed at: every
+        // panel is built from one agent id, so this is not "waiting for a
+        // choice" — it is waiting for an agent of one's own to exist, and it
+        // says so with the two ways to get one.
         <div className={emptyStyles.emptyState}>
           <EmptyStateIcon icon={GraduationCap} />
           <div className={emptyStyles.emptyTitle}>

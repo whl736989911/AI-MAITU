@@ -12,6 +12,7 @@
 
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as PersonalizationPanelsModule from "./components/PersonalizationPanels";
 import type { OctopAgent } from "../../../context/AgentContext";
 import { KIND_FEATURE } from "../../../utils/agentKind";
 import PersonalizationPage from "./index";
@@ -39,14 +40,18 @@ vi.mock("../../../hooks/usePathTabs", () => ({
   }),
 }));
 
-vi.mock("./components/PersonalizationPanels", () => ({
-  default: (props: { agentId: string | null }) => {
-    panelsMock(props);
-    return <div data-testid="panels" />;
-  },
-  PERSONALIZATION_TABS: ["skills"],
-  TAB_ICONS: { skills: () => null },
-}));
+vi.mock("./components/PersonalizationPanels", async (importOriginal) => {
+  // The page's own imports of this module stay the app's — the tabs a scope
+  // offers are asked of the real table; only the panels are replaced.
+  const actual = await importOriginal<typeof PersonalizationPanelsModule>();
+  return {
+    ...actual,
+    default: (props: { agentId: string | null }) => {
+      panelsMock(props);
+      return <div data-testid="panels" />;
+    },
+  };
+});
 
 const held = vi.hoisted(() => ({ agents: [] as OctopAgent[] }));
 vi.mock("../../../context/AgentContext", () => ({

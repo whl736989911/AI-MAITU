@@ -3,6 +3,7 @@ import { App, Button, Empty, Form, Switch } from "antd";
 
 import { useTranslation } from "react-i18next";
 import PageShell from "../../../layouts/PageShell";
+import AgentScopeBars from "../../../components/AgentScopeBars";
 import { CardSkeleton } from "../../../components/Skeleton";
 import { acpApi } from "../../../api/modules/acp";
 import {
@@ -334,6 +335,9 @@ export default function ACPPage() {
       title={t("pageShell.acp.title")}
       subtitle={t("pageShell.acp.subtitle")}
       agentScoped
+      // The tool below is the agent's own, and a feature's agent has one on the
+      // same terms: one row per kind, each drawn by its own option set.
+      agentBar={<AgentScopeBars />}
     >
       <ACPPanel />
     </PageShell>
