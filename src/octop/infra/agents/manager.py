@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from harness_agent import HarnessAgent, HarnessAgentConfig, HarnessAgentManager
 from harness_agent.registry import AgentEntry
@@ -95,6 +96,11 @@ _PROVIDER_RELOAD_CONCURRENCY = 6
 _MEMORY_NS_PREFIX = "agent_"
 
 _AGENT_STATES_NEEDING_MODEL_RELOAD = frozenset({"failed", "created"})
+
+# Skill catalog revisions start from a per-process value: a thread's scanned
+# revision is only meaningful within the process that recorded it, and a fresh
+# process must not mistake yesterday's record for a current one.
+_SKILL_CATALOG_EPOCH = int(uuid4().int % (1 << 31))
 
 _HARNESS_AGENT_CONFIG_FIELDS = frozenset(item.name for item in fields(HarnessAgentConfig))
 
@@ -357,6 +363,9 @@ class AgentManager:
         self._reload_dirty: set[str] = set()
         self._reload_worker_running: dict[str, bool] = {}
         self._bootstrap_graph_refresh_pending: set[str] = set()
+        # Skill catalog revisions — a thread's model-visible skills are scanned once
+        # per thread, so only a moved revision makes the next turn rescan them.
+        self._skill_catalog_revisions: dict[str, int] = {}
         # Chat user id used to resolve connectors when agent.user_id is NULL (shared agents).
         self._connector_user_override: dict[str, int] = {}
         self._langfuse = LangfuseSettingsStore(
@@ -1996,6 +2005,7 @@ class AgentManager:
 
     def sync_skill_package_dirs(self, agent_id: str) -> None:
         """Hot-update ``skills_dir`` on the running harness agent (no rebuild)."""
+        self.note_skill_catalog_changed(agent_id)
         try:
             agent = self.get_agent(agent_id)
         except OctopError:
@@ -2316,6 +2326,29 @@ class AgentManager:
     def sync_skills_disabled(self, agent_id: str, disabled: set[str]) -> None:
         """Push ``skills_disabled`` to the running harness agent (hot update)."""
         self.get_agent(agent_id).set_skills_disabled(disabled)
+
+    def skill_catalog_revision(self, agent_id: str) -> int:
+        """The revision *agent_id*'s model-visible skill catalog stands at.
+
+        A thread records the revision it scanned under, and a later revision makes
+        its next turn rescan (:class:`SkillCatalogRefreshMiddleware`). A process
+        start reseeds the count, so a thread that ran before a restart looks stale
+        once and refreshes — nothing in this process knows what changed while it
+        was down, and a new thread scans anyway.
+        """
+        return self._skill_catalog_revisions.get(agent_id, _SKILL_CATALOG_EPOCH)
+
+    def note_skill_catalog_changed(self, agent_id: str) -> None:
+        """Record that *agent_id*'s skill catalog changed on disk.
+
+        Every Octop write into an agent's skill catalog calls this — the ``/skills``
+        API, skill-package mounts, imports. Without it the harness keeps serving the
+        catalog it scanned the thread's first turn with, while the platform's own
+        listing (``list_skill_summaries``) already reports the new skill: a run
+        whose scope allows that skill would stamp it and the harness would drop it
+        as unknown.
+        """
+        self._skill_catalog_revisions[agent_id] = self.skill_catalog_revision(agent_id) + 1
 
     def sync_tools_disabled(self, agent_id: str, disabled: set[str]) -> None:
         """Push ``tools_disabled`` to the running harness agent (hot update).
@@ -2984,6 +3017,9 @@ class AgentManager:
         )
         from octop.infra.agents.middleware.feature_scope import FeatureScopeMiddleware
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
+        from octop.infra.agents.middleware.skill_catalog import (
+            SkillCatalogRefreshMiddleware,
+        )
         from octop.infra.agents.middleware.thread_artifacts import ThreadArtifactsMiddleware
         from octop.infra.agents.middleware.token_quota import TokenQuotaMiddleware
         from octop.infra.agents.middleware.turn_mcp import TurnMcpToolsMiddleware
@@ -3016,6 +3052,11 @@ class AgentManager:
                 thread_repo=self._repos.thread_repo,
                 workspace_dir=harness_workspace,
             ),
+            # After every other writer: a skill installed (or mounted) after this
+            # agent's thread first scanned its sources is invisible to that thread
+            # until the state is refreshed. Reuses the harness's own scan, and only
+            # when the catalog actually moved — see the middleware's docstring.
+            SkillCatalogRefreshMiddleware(registry=self, agent_id=row.agent_id),
         ]
 
         merged_tools: list[Any] = []

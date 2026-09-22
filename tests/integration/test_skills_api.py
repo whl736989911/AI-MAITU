@@ -89,6 +89,32 @@ async def test_create_then_list(env: Any) -> None:
     assert "file-reader" in names
 
 
+async def test_installing_a_skill_moves_the_agent_catalog_revision(env: Any) -> None:
+    """A live graph only rescans a thread once the catalog revision moves.
+
+    An agent's thread keeps the skills it scanned on its first turn; the workspace
+    write above is invisible to it until this revision moves, so the endpoints that
+    write skills have to move it — otherwise the platform reports the skill while
+    the harness calls it unknown.
+    """
+    c, srv, auth, aid = env
+    registry = srv.app_runtime.agent_registry
+
+    before = registry.skill_catalog_revision(aid)
+    created = await c.post(
+        f"/api/agents/{aid}/skills",
+        headers=auth,
+        json={"name": "file-reader", "content": SAMPLE_SKILL},
+    )
+    assert created.status_code == 201, created.text
+    assert registry.skill_catalog_revision(aid) > before
+
+    installed = registry.skill_catalog_revision(aid)
+    removed = await c.delete(f"/api/agents/{aid}/skills/file-reader", headers=auth)
+    assert removed.status_code == 204, removed.text
+    assert registry.skill_catalog_revision(aid) > installed
+
+
 async def test_list_localizes_octop_presentation_metadata(env: Any) -> None:
     c, _srv, auth, aid = env
     content = """---

@@ -600,6 +600,8 @@ async def copy_skill_package_to_workspace(
 
     for slug in copied:
         copied_identity_keys.update(await _skill_disable_keys(ctx, slug))
+    if copied:
+        _note_catalog_changed(server, agent_id)
     disabled = _disabled_set(ctx.config)
     if disabled.intersection(copied_identity_keys):
         disabled.difference_update(copied_identity_keys)
@@ -782,6 +784,7 @@ async def create_skill(
     with contextlib.suppress(Exception):
         await ctx.workspace.adelete(f"skills/{name}")
     await _write_skill_files(ctx.workspace, f"skills/{name}", package.files)
+    _note_catalog_changed(server, agent_id)
     # Reinstall after disable/delete must clear skills_disabled (ZIP create
     # always installs as enabled, matching URL import with enable=True).
     disabled = _disabled_set(ctx.config)
@@ -844,6 +847,7 @@ async def update_skill(
         with contextlib.suppress(Exception):
             await ctx.workspace.adelete(f"skills/{slug}")
     await _write_skill_files(ctx.workspace, f"skills/{slug}", package.files)
+    _note_catalog_changed(server, agent_id)
     skill_md = next(
         (content for path, content in package.files if path == "SKILL.md"),
         body.content.encode("utf-8"),
@@ -882,6 +886,7 @@ class _AgentWorkspaceInstallTarget:
         with contextlib.suppress(Exception):
             await self._workspace.adelete(skill_root)
         await _write_skill_files(self._workspace, skill_root, files)
+        _note_catalog_changed(self._server, self._agent_id)
 
     async def after_install(self, slug: str, *, enable: bool | None = None) -> None:
         if not enable:
@@ -1009,6 +1014,7 @@ async def delete_skill(
     err = await _aoverwrite_text(ctx.workspace, target, "---\nremoved: true\n---\n")
     if err:
         raise OctopError(ErrorCode.NOT_FOUND, f"cannot remove {target!r}: {err}")
+    _note_catalog_changed(server, agent_id)
 
 
 # --- enable / disable -------------------------------------------------------
@@ -1018,6 +1024,18 @@ async def _persist_disabled(server: Any, agent_id: str, disabled: set[str]) -> N
     """Write back ``skills_disabled`` and hot-sync the running harness agent."""
     assert server.app_runtime is not None
     await server.app_runtime.agent_registry.persist_skills_disabled(agent_id, disabled)
+
+
+def _note_catalog_changed(server: Any, agent_id: str) -> None:
+    """Tell *agent_id*'s harness graph that its skill catalog moved on disk.
+
+    An agent's thread scans its skill sources once and then reuses them, so a skill
+    written here is invisible to the running graph until its next turn is told to
+    rescan (``SkillCatalogRefreshMiddleware``). Without this the dashboard, the run
+    scope and the model disagree about which skills exist.
+    """
+    assert server.app_runtime is not None
+    server.app_runtime.agent_registry.note_skill_catalog_changed(agent_id)
 
 
 async def _skill_disable_keys(ctx: _AgentCtx, name: str) -> set[str]:

@@ -12,6 +12,7 @@
 
 ### 修复
 
+- 给已存在的 agent 装技能现在立刻生效：harness 的技能清单是**按线程只扫描一次**的（`skills_metadata` 写进会话检查点后，后续轮次直接复用），所以装完技能后在同一个会话里继续提问，模型看不到新技能，而平台自己的技能列表（`/skills`、功能 `run scope`）读的是实时文件系统、已经报「可用」——功能运行于是把技能写进本轮 allow-list，harness 却把它当成未知技能丢掉并在日志里报 `unknown skill(s)`。现在 Octop 每次写入 agent 技能目录（`/skills` 接口、技能包挂载、导入）都会推进该 agent 的技能目录修订号，`SkillCatalogRefreshMiddleware` 在下一轮发现线程记录的修订号落后时**复用 harness 自己的扫描**刷新状态；目录没变则完全不扫描（不轮询磁盘、每轮开销为零，未变动的技能段与提示词前缀缓存保持逐字不变）
 - 企业功能目录的系统提示词（`feature.json` 的 `prompt.system_file`）现在会真正生效：此前它只被加载并通过 `GET /api/features/{id}` 返回，运行功能时没有注入，导致输出变成模型的自由发挥。注入走本轮请求的 `configurable`（仅在模型调用时追加到 system message），不会写进用户 agent 的持久配置，也不会进入会话检查点；未声明系统提示词的功能行为与之前逐字一致
 - PostgreSQL 库回滚后再升级不再导致服务无法启动：021 / 018 迁移中把旧共享标记镜像进 `resource_acl` 的语句，改为先判断列是否仍存在（已被删除则跳过）。此前把版本回滚到不含 021 的构建、再升级回来，会因 `is_shared` 已被删除而报 `UndefinedColumn`，`octop-server` 起不来；SQLite 走等价 helper 不受影响
 - 非管理员的模块权限现在严格等于管理员授予的集合：此前的「角色默认权限」会把 `settings` 分组（通道、连接器、技能包、知识库、功能）隐式授予所有非管理员账号，于是管理员在用户编辑界面取消勾选这些模块后对方仍然有权限，被邀请的新用户也会默认持有连接器权限（可调用 connector 的 host CLI 安装等接口）。`BASELINE_PERMISSIONS` 恢复只作为创建用户时界面预勾选的默认值，随创建请求显式写入 `permissions` 列；角色本身只对 `admin` 隐含权限
