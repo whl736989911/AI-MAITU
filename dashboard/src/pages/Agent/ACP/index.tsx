@@ -11,6 +11,8 @@ import {
   type ACPRunnerConfig,
 } from "../../../api/types/acp";
 import { useAgent } from "../../../context/AgentContext";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { isSystemAdmin } from "../../../utils/permissions";
 import { ACPCard } from "./components/ACPCard";
 import {
   ACPDrawer,
@@ -28,6 +30,13 @@ export function ACPPanel() {
   const { t } = useTranslation();
   const { modal, message } = App.useApp();
   const { activeAgentId } = useAgent();
+  /**
+   * Global runner definitions are a system-administrator write (design §4.4):
+   * the backend gates ``PUT /api/acp`` on the admin role *and* the ``acp`` key.
+   * Reading the list and toggling the per-agent tool need only ``acp``, so the
+   * cards below stay visible as information for a non-administrator.
+   */
+  const canEditRunners = isSystemAdmin(useCurrentUser());
   const [runners, setRunners] =
     useState<Record<string, ACPRunnerConfig>>(EMPTY_RUNNERS);
   const [toolEnabled, setToolEnabled] = useState(false);
@@ -266,10 +275,15 @@ export function ACPPanel() {
         <div className={styles.toolbarText}>
           <div className={styles.description}>{t("acp.description")}</div>
           <p className={styles.scopeHint}>{t("acp.globalRunnersHint")}</p>
+          {canEditRunners ? null : (
+            <p className={styles.scopeHint}>{t("common.adminRequired")}</p>
+          )}
         </div>
-        <Button type="primary" onClick={openCreate}>
-          {t("acp.create")}
-        </Button>
+        {canEditRunners ? (
+          <Button type="primary" onClick={openCreate}>
+            {t("acp.create")}
+          </Button>
+        ) : null}
       </div>
 
       {runnersLoading && cards.length === 0 ? (
@@ -283,6 +297,7 @@ export function ACPPanel() {
               config={cfg}
               isHover={hoverKey === key}
               toggleLoading={toggleLoadingKey === key}
+              editable={canEditRunners}
               onClick={() => openEdit(key)}
               onMouseEnter={() => setHoverKey(key)}
               onMouseLeave={() => setHoverKey(null)}

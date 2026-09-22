@@ -16,7 +16,8 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 
-from octop.api.deps import current_user, require_permission
+from octop.api.deps import require_permission
+from octop.infra.users.identity import User
 
 router = APIRouter()
 
@@ -89,7 +90,7 @@ def _probe_env() -> dict[str, Any]:
 
 
 @router.get("/browser/env-status")
-async def env_status(_: Any = Depends(current_user)) -> dict[str, Any]:
+async def env_status(_user: User = Depends(require_permission("browser"))) -> dict[str, Any]:
     return _probe_env()
 
 

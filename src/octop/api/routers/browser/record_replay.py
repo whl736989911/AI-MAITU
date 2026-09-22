@@ -7,8 +7,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from octop.api.deps import current_user
+from octop.api.deps import require_permission
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.identity import User
 from octop.infra.utils.browser_media import user_browser_profile
 
 router = APIRouter()
@@ -176,7 +177,7 @@ async def _record_status_payload() -> dict[str, Any]:
 
 
 @router.get("/browser/record-replay/status")
-async def record_status(user: Any = Depends(current_user)) -> dict[str, Any]:
+async def record_status(user: User = Depends(require_permission("browser"))) -> dict[str, Any]:
     """Report whether the caller has a recording running."""
     profile = user_browser_profile(user.id)
     data = await _record_status_payload()
@@ -188,7 +189,7 @@ async def record_status(user: Any = Depends(current_user)) -> dict[str, Any]:
 @router.post("/browser/record-replay/start")
 async def record_start(
     body: RecordStartBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     daemon = await ensure_record_daemon()
     _raise_if_not_ok(daemon, status=503)
@@ -208,7 +209,7 @@ async def record_start(
 @router.post("/browser/record-replay/stop")
 async def record_stop(
     body: RecordStopBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     profile = user_browser_profile(user.id)
     recording_id = body.recording_id
@@ -233,7 +234,7 @@ async def record_stop(
 @router.post("/browser/record-replay/stop-and-generate-skill")
 async def record_stop_and_generate_skill(
     body: RecordStopAndGenerateSkillBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     """Stop recording, generate steps + skill draft, and return the skill content.
 
@@ -310,7 +311,7 @@ async def record_stop_and_generate_skill(
 @router.post("/browser/record-replay/skill-content")
 async def get_skill_content(
     body: SkillContentBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     """Read the generated skill content (draft.skill.md) for a given recording."""
     skill_content = None
@@ -340,7 +341,7 @@ async def get_skill_content(
 @router.post("/browser/record-replay/replay")
 async def replay_recording(
     body: ReplayBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     profile = user_browser_profile(user.id)
     _require_owned_recording(body.recording_id, profile)

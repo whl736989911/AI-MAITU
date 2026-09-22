@@ -24,6 +24,8 @@ Server → Client::
   {"type": "error", "message": "..."}
 
 Auth: ``?token=<JWT>`` query param (browsers cannot set Authorization on WS).
+Gate: the ``browser`` module permission — a resolved user without the key is
+closed with ``4003`` before any session/frame work starts.
 Listen-only (``?listen_only=1``): still requires ``start``, but never launches
 Chrome — attaches to an existing harness session or pushes idle updates.
 """
@@ -39,13 +41,14 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
-from octop.api.deps import resolve_user_from_token
+from octop.api.deps import resolve_user_from_token, unit_grants_for
 from octop.api.routers.browser.harness import (
     control_owner_for,
     harness_list_tabs,
     harness_page_url,
     resolve_harness_session,
 )
+from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils.browser_media import user_browser_profile
 
 logger = logging.getLogger(__name__)
@@ -339,6 +342,9 @@ async def browser_stream_ws(
         user = resolve_user_from_token(server, token)
     except Exception as exc:
         await websocket.close(code=4001, reason=f"auth failed: {exc}")
+        return
+    if not user_has_permission(user, "browser", unit_grants=unit_grants_for(server, user)):
+        await websocket.close(code=4003, reason="permission required")
         return
 
     await websocket.accept()

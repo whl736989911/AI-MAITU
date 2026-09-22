@@ -101,4 +101,17 @@ describe("sidebarNav", () => {
     expect(featureOnly).toContain("features");
     expect(featureOnly).not.toContain("experts");
   });
+
+  it("shows the ACP entry to the key's holder, not only to an administrator", () => {
+    // The entry answers to the `acp` module key (design §4.4), so its holder
+    // gets it whatever the role; an account without the key gets neither the
+    // entry nor, per the route guard, the page behind it.
+    const keys = (u: OctopUser) =>
+      buildNavSections(u, { mobileEnabled: true }).flatMap((s) =>
+        s.items.map((i) => i.key),
+      );
+    expect(keys({ ...defaultUser, permissions: ["acp"] })).toContain("acp");
+    expect(keys(defaultUser)).not.toContain("acp");
+    expect(keys(adminUser)).toContain("acp");
+  });
 });

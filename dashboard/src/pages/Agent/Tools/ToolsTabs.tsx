@@ -1,7 +1,7 @@
 /**
  * ToolsTabs — three-tab tools surface for Personalization:
  *   1. Built-in tools
- *   2. ACP tools (admin only)
+ *   2. ACP tools (`acp` module key; runner definitions stay admin-only)
  *   3. Plugin tools
  */
 
@@ -9,7 +9,7 @@ import { useMemo, useState } from "react";
 import { Puzzle, Share2, Wrench } from "lucide-react";
 import TabBar, { type TabBarItem } from "../../../components/TabLabel/TabBar";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { canAccessKeys } from "../../../utils/permissions";
+import { canAccessKeys, PERM } from "../../../utils/permissions";
 import { ACPPanel } from "../ACP";
 import ToolsPanel from "./ToolsPanel";
 import styles from "./ToolsTabs.module.less";
@@ -28,7 +28,7 @@ interface ToolsTabsProps {
 
 export default function ToolsTabs({ agentId }: ToolsTabsProps) {
   const user = useCurrentUser();
-  const canAcp = canAccessKeys(user, "admin");
+  const canAcp = canAccessKeys(user, PERM.acp);
   const [activeTab, setActiveTab] = useState<ToolsTab>("builtin");
 
   const tabs = useMemo(

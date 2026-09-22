@@ -191,7 +191,8 @@ export function buildNavSections(
       labelKey: "nav.remoteDesktop",
     });
   }
-  // ACP: no module key this round — admin role only.
+  // ACP: the module key `acp` (PERM.acp) — the same one the route reads. The
+  // global runner definitions inside stay a system-administrator write (§4.4).
   if (navAllowed(user, "acp")) {
     controlItems.push({
       key: "acp",

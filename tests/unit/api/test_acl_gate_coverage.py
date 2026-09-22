@@ -104,6 +104,28 @@ ROUTE_GATED_FILES = [
     "routers/plugins.py",
     "routers/connectors.py",
     "routers/skill_packages.py",
+    # The workbench / remote surfaces and the user-management module (design §4.4
+    # second half: 终端和浏览器分别接入 terminal、browser; 远程桌面接入 desktop;
+    # 用户管理接口接入 users 和组织范围判断). ``browser/env.py``,
+    # ``browser/harness.py`` and ``browser/record_replay.py`` were signed-in-only
+    # until this list was extended — the module key is what a direct API call was
+    # skipping.
+    "routers/terminal.py",
+    "routers/browser/env.py",
+    "routers/browser/harness.py",
+    "routers/browser/record_replay.py",
+    "routers/browser/uninstall.py",
+    "routers/desktop/install.py",
+    "routers/desktop/settings.py",
+    "routers/desktop/status.py",
+    "routers/desktop/uninstall.py",
+    "routers/mobile/install.py",
+    "routers/mobile/status.py",
+    "routers/acp.py",
+    "routers/users.py",
+    "routers/org_units.py",
+    "routers/invites.py",
+    "routers/sharing.py",
 ]
 
 #: Routes on those surfaces that deliberately carry no gate, and why. An empty
@@ -117,11 +139,46 @@ UNGATED_ROUTES: dict[str, dict[str, str]] = {
         # entry point is the gate.
         "oauth_callback": "JWT-exempt provider redirect; gated at oauth/start by its state",
     },
+    "routers/users.py": {
+        # The permission catalog the editor's picker is drawn from: key, category,
+        # label and ``can_grant`` — definitions, never account data, with
+        # ``can_grant`` resolved for whoever asks. The page that renders it is
+        # behind the ``users`` key, and reading what keys exist is not a
+        # capability of its own.
+        "list_permission_catalog": "static permission definitions; the picker's own data",
+    },
+    "routers/invites.py": {
+        # The invitee has no account yet, which is the whole point of an invite:
+        # both paths are JWT-exempt (``_JWT_EXEMPT_EXACT``) and are gated by the
+        # invite's own single-use code, checked in ``infra/users/invites.py``.
+        "validate_invite": "pre-account invite flow, JWT-exempt; the invite code is the gate",
+        "redeem_invite": "pre-account invite flow, JWT-exempt; the invite code is the gate",
+    },
 }
 
+#: Surfaces whose WebSocket routes carry the gate *in their body*, because a
+#: browser cannot set an ``Authorization`` header on a WebSocket upgrade: those
+#: routes take ``?token=<JWT>`` and resolve the user themselves, so no
+#: ``Depends`` sits in the signature for ``_names_a_gate`` to see. The value is
+#: the key the route must check. ``GET /api/browser-stream/ws`` checked nothing
+#: at all until design §4.4 was implemented, which is the bypass this test exists
+#: to keep closed: the socket is a stream of the same capability the HTTP routes
+#: gate, and 未授权功能 must not be reachable through it either (§2.4).
+WS_GATED_FILES: dict[str, str] = {
+    "routers/terminal.py": "terminal",
+    "routers/browser/stream.py": "browser",
+    "routers/desktop/stream.py": "desktop",
+    "routers/mobile/stream.py": "mobile",
+    "routers/mobile/shell_ws.py": "mobile",
+}
 
-def _route_functions(rel: str) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
-    """Every function in ``rel`` decorated as an HTTP route."""
+_HTTP_METHODS = ("get", "post", "put", "patch", "delete")
+
+
+def _route_functions(
+    rel: str, methods: tuple[str, ...] = _HTTP_METHODS
+) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
+    """Every function in ``rel`` decorated as a route of one of ``methods``."""
     tree = ast.parse((API_ROOT / rel).read_text(encoding="utf-8"), filename=rel)
     return [
         node
@@ -130,7 +187,7 @@ def _route_functions(rel: str) -> list[ast.FunctionDef | ast.AsyncFunctionDef]:
         and any(
             isinstance(dec, ast.Call)
             and isinstance(dec.func, ast.Attribute)
-            and dec.func.attr in ("get", "post", "put", "patch", "delete")
+            and dec.func.attr in methods
             for dec in node.decorator_list
         )
     ]
@@ -146,6 +203,22 @@ def _names_a_gate(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     )
 
 
+def _keys_checked_in_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
+    """Module keys the route checks itself, via ``user_has_permission(user, key)``."""
+    keys: set[str] = set()
+    for sub in ast.walk(node):
+        if (
+            isinstance(sub, ast.Call)
+            and isinstance(sub.func, ast.Name)
+            and sub.func.id == "user_has_permission"
+            and len(sub.args) >= 2
+            and isinstance(sub.args[1], ast.Constant)
+            and isinstance(sub.args[1].value, str)
+        ):
+            keys.add(sub.args[1].value)
+    return keys
+
+
 def test_every_route_on_a_gated_surface_is_gated() -> None:
     exempt = UNGATED_ROUTES
     for rel in ROUTE_GATED_FILES:
@@ -157,4 +230,18 @@ def test_every_route_on_a_gated_surface_is_gated() -> None:
             assert _names_a_gate(node), (
                 f"{rel}: route {node.name!r} names no require_permission/require_admin "
                 "gate — gate it, or list it in UNGATED_ROUTES with the reason it has none"
+            )
+
+
+def test_every_websocket_on_a_gated_surface_checks_its_key() -> None:
+    for rel, key in WS_GATED_FILES.items():
+        assert key in ALL_PERMISSION_KEYS, f"{rel}: {key!r} is not a catalog key"
+        nodes = _route_functions(rel, methods=("websocket",))
+        assert nodes, f"{rel}: no websocket route found — the file moved, update this list"
+        for node in nodes:
+            checked = _keys_checked_in_body(node)
+            assert key in checked, (
+                f"{rel}: websocket {node.name!r} does not check {key!r} "
+                f"(checks: {sorted(checked)}) — a socket must run the same module gate "
+                "as the HTTP routes of its surface (design §2.4)"
             )

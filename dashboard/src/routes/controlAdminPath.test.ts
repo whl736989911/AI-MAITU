@@ -32,7 +32,9 @@ describe("pathPermissionKeys", () => {
       ...PERM.mobile,
     ]);
     expect(pathPermissionKeys("/remote-phone")).toEqual([...PERM.mobile]);
-    expect(pathPermissionKeys("/acp")).toBe("admin");
+    // ACP is a module surface: the same key the nav entry reads (design §4.4).
+    expect(pathPermissionKeys("/acp")).toEqual([...PERM.acp]);
+    expect(NAV_PERMISSIONS.acp).toEqual(PERM.acp);
   });
 
   it("keeps sso on users page, not advanced", () => {
@@ -119,6 +121,15 @@ describe("pathPermissionKeys", () => {
     expect(canAccessPath({ role: "admin", permissions: [] }, "/acp")).toBe(
       true,
     );
+    // A non-administrator holding the key passes the same guard. What stays
+    // administrator-only is the runner *definition* write inside the panel —
+    // a role-only gate, so it is not expressed here.
+    expect(
+      canAccessPath({ role: "user", permissions: ["acp"] }, "/acp"),
+    ).toBe(true);
+    expect(
+      canAccessPath({ role: "user", permissions: ["terminal"] }, "/acp"),
+    ).toBe(false);
     expect(
       canAccessPath(
         { role: "user", permissions: ["knowledge_bases"] },
@@ -143,6 +154,13 @@ describe("pathPermissionKeys", () => {
     const bare = { role: "unit_admin", permissions: [] };
     expect(canAccessPath(bare, "/admin/users")).toBe(false);
     expect(canAccessPath(bare, "/acp")).toBe(false);
+    // No bypass, but a granted key is honored — the role is not the gate.
+    expect(
+      canAccessPath(
+        { role: "unit_admin", permissions: ["acp"] },
+        "/acp",
+      ),
+    ).toBe(true);
     expect(
       canAccessPath(
         { role: "unit_admin", permissions: ["users"] },
@@ -159,13 +177,16 @@ describe("pathPermissionKeys", () => {
 
   it("treats an explicit wildcard grant as every module key, not as the admin role", () => {
     const wildcard = { role: "user", permissions: ["*"] };
-    // Module gates: ``*`` stands for the whole catalog.
+    // Module gates: ``*`` stands for the whole catalog — ACP's entry included,
+    // now that it answers to a module key rather than to the role.
     expect(canAccessPath(wildcard, "/admin/users")).toBe(true);
     expect(canAccessPath(wildcard, "/workbench/browser")).toBe(true);
+    expect(canAccessPath(wildcard, "/acp")).toBe(true);
     // Role-only gates: the backend's ``require_admin`` never reads
-    // ``permissions``, so a ``*`` grant must not open admin-only routes.
-    expect(pathPermissionKeys("/acp")).toBe("admin");
-    expect(canAccessPath(wildcard, "/acp")).toBe(false);
+    // ``permissions``, so a ``*`` grant must not open them. The ``/admin/*``
+    // fallback — a path no module key owns — is the one left.
+    expect(pathPermissionKeys("/admin/unmapped-section")).toBe("admin");
+    expect(canAccessPath(wildcard, "/admin/unmapped-section")).toBe(false);
     expect(canAccessPath({ role: "user", permissions: [] }, "/acp")).toBe(false);
   });
 });

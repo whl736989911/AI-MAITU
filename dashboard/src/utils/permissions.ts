@@ -30,6 +30,9 @@ export const PERM = {
   terminal: ["terminal"],
   desktop: ["desktop"],
   mobile: ["mobile"],
+  /** ACP: the key gates the entry, the route and the runner *list*; the global
+   *  runner definitions are a system-administrator write on top of it (§4.4). */
+  acp: ["acp"],
   usersPage: ["users", "sso"],
   /** Org-unit directory: the backend mounts ``/api/org-units`` on ``users``. */
   orgUnits: ["users"],
@@ -51,7 +54,7 @@ export const NAV_PERMISSIONS = {
   workbench: PERM.workbench,
   "remote-desktop": ["desktop", "mobile"],
   "remote-phone": PERM.mobile,
-  acp: "admin",
+  acp: PERM.acp,
   "admin-users": PERM.usersPage,
   "admin-org-units": PERM.orgUnits,
   models: PERM.modelsPage,
@@ -173,8 +176,8 @@ export function userCanKey(
 
 /**
  * Permissions that unlock a dashboard path (any-of).
- * ``"admin"`` means role===admin only (no module key this round).
- * ``null`` means no special gate.
+ * ``"admin"`` means role===admin only — the ``/admin/*`` fallback, for paths
+ * without a module key. ``null`` means no special gate.
  */
 export function pathPermissionKeys(pathname: string): PermissionKeys | null {
   // The two module surfaces of design §5.2. The nav entry and the route read
@@ -274,9 +277,10 @@ export function pathPermissionKeys(pathname: string): PermissionKeys | null {
   if (pathname === "/workbench" || pathname.startsWith("/workbench/")) {
     return PERM.workbench;
   }
-  // ACP: no module key this round — admin role only.
+  // ACP: the nav entry and this route read the same module key. The global
+  // runner definitions inside are still a system-administrator write.
   if (pathname === "/acp" || pathname.startsWith("/acp/")) {
-    return "admin";
+    return PERM.acp;
   }
   return null;
 }

@@ -11,6 +11,12 @@ interface ACPCardProps {
   config: ACPRunnerConfig;
   isHover: boolean;
   toggleLoading?: boolean;
+  /**
+   * Runner definitions are a system-administrator write (design §4.4): when
+   * false the card is information only — no enable switch, and a click does
+   * not open the editor. Default true.
+   */
+  editable?: boolean;
   onClick: () => void;
   onMouseEnter: () => void;
   onMouseLeave: () => void;
@@ -26,6 +32,7 @@ export function ACPCard({
   config,
   isHover,
   toggleLoading,
+  editable = true,
   onClick,
   onMouseEnter,
   onMouseLeave,
@@ -46,7 +53,8 @@ export function ACPCard({
   const cardClass = [
     styles.channelCard,
     config.enabled ? styles.enabled : styles.normal,
-    isHover ? styles.hover : "",
+    editable && isHover ? styles.hover : "",
+    editable ? "" : acpStyles.readOnly,
   ]
     .filter(Boolean)
     .join(" ");
@@ -71,7 +79,7 @@ export function ACPCard({
   return (
     <div
       className={cardClass}
-      onClick={onClick}
+      onClick={editable ? onClick : undefined}
       onMouseEnter={onMouseEnter}
       onMouseLeave={onMouseLeave}
     >
@@ -87,23 +95,25 @@ export function ACPCard({
             .join(" ")}
         />
         <span className={styles.cardTitle}>{label}</span>
-        <div onClick={(e) => e.stopPropagation()}>
-          <Tooltip
-            title={
-              !configured && !config.enabled
-                ? t("acp.clickCardToConfigure")
-                : undefined
-            }
-          >
-            <Switch
-              size="small"
-              checked={config.enabled}
-              loading={toggleLoading}
-              disabled={!configured && !config.enabled}
-              onChange={(checked) => onToggleEnabled(runnerKey, checked)}
-            />
-          </Tooltip>
-        </div>
+        {editable ? (
+          <div onClick={(e) => e.stopPropagation()}>
+            <Tooltip
+              title={
+                !configured && !config.enabled
+                  ? t("acp.clickCardToConfigure")
+                  : undefined
+              }
+            >
+              <Switch
+                size="small"
+                checked={config.enabled}
+                loading={toggleLoading}
+                disabled={!configured && !config.enabled}
+                onChange={(checked) => onToggleEnabled(runnerKey, checked)}
+              />
+            </Tooltip>
+          </div>
+        ) : null}
       </div>
 
       <p className={styles.cardDescription}>{intro}</p>

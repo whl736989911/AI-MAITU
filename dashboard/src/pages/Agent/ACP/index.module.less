@@ -42,6 +42,16 @@
   color: var(--fn-text-secondary);
 }
 
+/* Read-only card (non-administrator): the definition it shows is not theirs to
+   edit, so it must not advertise a click it will ignore. */
+.readOnly {
+  cursor: default;
+
+  &:active {
+    transform: none;
+  }
+}
+
 .drawerHint {
   margin: 0 0 16px;
   font-size: 13px;

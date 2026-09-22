@@ -9,19 +9,29 @@
  * the agents their features run on) — and either one opens a drawer with that
  * user's agents.
  *
- * Authorization mirrors ``src/octop/api/routers/users.py`` (997fe63): the
- * ``users`` module key opens the surface, the ``admin`` role owns everything
- * that moves the boundary. A control the actor may not use is hidden, never
- * disabled.
- *   GET    /api/users                        ``users``
- *   POST   /api/users                        ``users``; org_unit needs admin
- *   PATCH  /api/users/{id}                   ``users``; role / org_unit /
- *                                            disabled / denied_permissions
- *                                            need admin (``_assert_admin`` /
- *                                            ``_assert_can_administer``)
- *   POST   /api/users/{id}/reset-password    admin
- *   POST   /api/users/{id}/unlock-login      ``users``
- *   DELETE /api/users/{id}                   admin (``require_admin``)
+ * Authorization mirrors ``src/octop/api/routers/users.py``: the ``users``
+ * module key opens the surface, and three further rules bound every write —
+ * the **organization scope** (:mod:`octop.infra.users.scope`) decides which
+ * accounts and departments an actor reaches, the **role level** decides which
+ * roles it may hand out or administer, and the module keys it may grant are
+ * the ones it *effectively* holds (``can_grant`` on the catalog below). Only
+ * the permission **deny list** stays a system administrator's write. A control
+ * the actor may not use is hidden, never disabled.
+ *   GET    /api/users                        ``users``; scope-filtered
+ *   GET    /api/users/{id}                   ``users``; scope
+ *   POST   /api/users                        ``users``; scope; role level;
+ *                                            ``permissions`` within ``can_grant``;
+ *                                            denied_permissions needs admin
+ *   PATCH  /api/users/{id}                   ``users``; scope; role level;
+ *                                            ``permissions`` within ``can_grant``;
+ *                                            denied_permissions needs admin
+ *   POST   /api/users/{id}/reset-password    ``users``; scope
+ *   POST   /api/users/{id}/unlock-login      ``users``; scope
+ *   DELETE /api/users/{id}                   ``users``; scope; never yourself
+ *
+ * The routes are the contract, not this panel's toolbar: the row controls are
+ * still shown to a system administrator only, which is narrower than what the
+ * backend admits (any holder of ``users`` inside its own scope).
  *
  * ``denied_permissions`` is the last leg of ``role ∪ unit ∪ grant − deny``
  * and outranks the other three, so the edit drawer never shows a tick without
@@ -186,6 +196,17 @@ interface PermissionCatalogItem {
   label: string;
   page?: string;
   page_label?: string;
+  /**
+   * Whether the signed-in operator may hand this key out — answered by the
+   * server (design §4.1), never re-derived here: it resolves the actor's
+   * ``role ∪ department ∪ grant − deny`` with the admin bypass through
+   * ``effective_permissions``, the same function the write path checks
+   * (``assert_can_grant``). Re-deriving it from the signed-in user's own module
+   * list got the department leg and the admin bypass wrong in both directions.
+   */
+  can_grant: boolean;
+  /** Sent by the catalog: key derived rather than written out (channel types). */
+  dynamic?: boolean;
 }
 
 function permFullLabel(item: PermissionCatalogItem): string {
@@ -1382,16 +1403,18 @@ export default function UsersListPanel() {
   );
 
   /**
-   * Module keys this actor may hand out. The backend (``_assert_can_assign``)
-   * compares the whole submitted list against the actor's own keys, so a
-   * non-admin must not even be offered a key it does not hold — picking one
-   * would 403 the request it rides on.
+   * Module keys this actor may hand out — the server's answer, not ours.
+   * ``GET /users/permissions`` marks each key with ``can_grant``, resolved
+   * through ``effective_permissions``: the actor's own
+   * ``role ∪ department ∪ grant − deny`` (design §4.3 rule 4). The write path
+   * (``_assert_can_assign`` → ``assert_can_grant``) applies that same function
+   * to the submitted list, so a key the picker offers is a key the submit
+   * accepts — which is why a key the actor may not hand out is never shown.
    */
-  const assignableCatalog = useMemo(() => {
-    if (admin) return permCatalog;
-    const held = new Set(currentUser?.permissions ?? []);
-    return permCatalog.filter((p) => held.has(p.key));
-  }, [admin, permCatalog, currentUser]);
+  const assignableCatalog = useMemo(
+    () => permCatalog.filter((p) => p.can_grant),
+    [permCatalog],
+  );
 
   const baselinePermissions = useMemo(
     () =>
@@ -1487,18 +1510,22 @@ export default function UsersListPanel() {
 
   /**
    * Whether the edit drawer may submit ``permissions`` for the target on
-   * screen. Admins grant anything; a non-admin grants only keys it holds, and
-   * ``_assert_can_assign`` rejects the whole list on a single foreign key — so
-   * a target carrying keys the actor lacks is saved without the field
-   * (omitted = untouched on both sides) instead of by a request that would
-   * 403 and take the display-name edit down with it.
+   * screen. Admins grant anything; a non-admin grants only keys the catalog
+   * marks ``can_grant``, and ``_assert_can_assign`` rejects the whole list on a
+   * single key the server would refuse — so a target carrying such a key is
+   * saved without the field (omitted = untouched on both sides) instead of by a
+   * request that would 403 and take the display-name edit down with it.
+   *
+   * A key that is not in the catalog at all (an unknown or legacy key stored on
+   * the row) is *not* grantable: the server answers the same way, since
+   * ``effective_permissions`` only ever holds catalog keys.
    */
   const canSubmitPermissions = useMemo(() => {
     if (admin) return true;
     if (!editTarget || editTarget.role === "admin") return false;
-    const held = new Set(currentUser?.permissions ?? []);
-    return (editTarget.permissions ?? []).every((key) => held.has(key));
-  }, [admin, editTarget, currentUser]);
+    const grantable = new Set(assignableCatalog.map((p) => p.key));
+    return (editTarget.permissions ?? []).every((key) => grantable.has(key));
+  }, [admin, editTarget, assignableCatalog]);
 
   const hasLockedUser = useMemo(
     () => rows.some((row) => row.login_locked),
