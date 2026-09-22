@@ -225,6 +225,25 @@ describe("<PersonalizationPage /> feature scope", () => {
     expect(screen.queryByTestId("subagents")).toBeNull();
   });
 
+  it("says the feature agent's memory is shared with every caller, and only there", async () => {
+    const user1 = userEvent.setup();
+    renderPage("/personalization/memory");
+
+    // On the caller's own expert the memory is theirs alone, so there is nothing
+    // to warn about — the same rule the MBTI note follows.
+    expect(await screen.findByTestId("memory")).toBeInTheDocument();
+    expect(screen.queryByText("personalization.memorySharedNote")).toBeNull();
+
+    await user1.click(await screen.findByText("pick:weekly-report"));
+
+    // One agent, one MEMORY.md, every caller: the panel stays usable, but it
+    // must not read as "my own memory".
+    expect(
+      await screen.findByText("personalization.memorySharedNote"),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId("memory")).toHaveTextContent(`memory:${AGENT_ID}`);
+  });
+
   it("edits the feature's persona files from the tab that scope adds", async () => {
     const user1 = userEvent.setup();
     renderPage("/personalization/files?feature=weekly-report");

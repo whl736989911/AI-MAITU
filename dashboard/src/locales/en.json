@@ -4446,7 +4446,8 @@
       }
     },
     "filesFailed": "Could not list the persona files",
-    "filesMissing": "Not created yet — saving creates it"
+    "filesMissing": "Not created yet — saving creates it",
+    "memorySharedNote": "This memory belongs to the feature's agent, and every caller shares it: what one caller writes is read by the next one and written back to the same MEMORY.md. The feature's agent has no per-caller memory scope yet."
   },
   "consoleBubble": {
     "title": "New Message"

@@ -4446,7 +4446,8 @@
       }
     },
     "filesFailed": "读取人设文件列表失败",
-    "filesMissing": "尚未创建，保存时会新建"
+    "filesMissing": "尚未创建，保存时会新建",
+    "memorySharedNote": "这份记忆属于功能 agent 本身，由全体调用者共享：任何调用者写入的记忆，其他调用者下次运行都会读到，也会写回同一份 MEMORY.md。功能 agent 目前没有按调用者隔离的记忆作用域。"
   },
   "consoleBubble": {
     "title": "消息来了"

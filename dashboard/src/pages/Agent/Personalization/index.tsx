@@ -453,6 +453,17 @@ export default function PersonalizationPage() {
             style={{ display: activeTab === "memory" ? "flex" : "none" }}
             aria-hidden={activeTab !== "memory"}
           >
+            {featureId !== null && (
+              // One agent means one MEMORY.md, and this agent serves every
+              // caller: the file is shared, not scoped. The panel is still
+              // usable — what it must not do is read as "my own memory".
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 12 }}
+                message={t("personalization.memorySharedNote")}
+              />
+            )}
             {isMobile ? (
               <MemoryPanel agentId={scopeAgentId} fill={false} />
             ) : (
