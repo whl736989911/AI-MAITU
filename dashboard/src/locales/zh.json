@@ -1062,7 +1062,7 @@
     "description": "描述",
     "editDefinition": "编辑功能",
     "empty": "还没有功能",
-    "emptyHint": "创建一个功能：它自带一个 agent，和专家同款配置，并可作为对话入口被调用。",
+    "emptyHint": "创建一个功能：它自带一个 agent，能力配置由你定义，并可作为对话入口被调用。",
     "total": "共 {{count}} 个功能",
     "backToList": "返回功能列表",
     "notFound": "这个功能不在你可以访问的范围内。",
@@ -5669,7 +5669,7 @@
     },
     "features": {
       "title": "功能",
-      "subtitle": "你的功能：每一个都自带一个 agent，配置方式和专家一样，并且可以被调用。"
+      "subtitle": "你的功能：每一个都自带一个 agent，由作者定义与配置，可作为对话入口被调用。"
     },
     "tasks": {
       "title": "自动化",

@@ -1062,7 +1062,7 @@
     "description": "Description",
     "editDefinition": "Edit feature",
     "empty": "No features yet",
-    "emptyHint": "Create a feature: it brings its own agent, is configured exactly the way an expert is, and can be called as a conversation entry point.",
+    "emptyHint": "Create a feature: it brings its own agent, its capabilities are yours to configure, and it can be called as a conversation entry point.",
     "total": "{{count}} features",
     "backToList": "Back to features",
     "notFound": "This feature is not one you can reach.",
@@ -5669,7 +5669,7 @@
     },
     "features": {
       "title": "Features",
-      "subtitle": "Your features — each one carries its own agent, is configured the way an expert is, and can be called."
+      "subtitle": "Your features — each one carries its own agent, is defined and configured by its author, and can be called as a conversation entry point."
     },
     "tasks": {
       "title": "Automation",

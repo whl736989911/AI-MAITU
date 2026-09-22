@@ -74,8 +74,10 @@ describe("AgentSelector", () => {
     context.activeAgentId = FEATURE.agent_id;
     render(
       <>
+        {/* The page's own pair (``AgentScopeBars``): one control, one rule, so
+            the features' row is drawn exactly as the experts' row is. */}
         <AgentSelector />
-        <AgentSelector scope="features" variant="select" />
+        <AgentSelector scope="features" />
       </>,
     );
 

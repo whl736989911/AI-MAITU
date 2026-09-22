@@ -14,8 +14,11 @@
  * ``activeAgentId``; neither pulls the page off the other half's choice — see
  * the bar's own note.
  *
- * The features' row is the ``select`` variant, so it is one line however many
- * features the caller holds, and it keeps its distance from the row above.
+ * Neither row is told which variant to draw: both take ``AgentSelector``'s own
+ * rule, so a page whose half is small enough for a row of chips gets a row of
+ * chips on *both* rows and a half too big for one gets a select on both — the
+ * same control, drawn the same way, whichever half it is over. The features' row
+ * keeps its distance from the row above; nothing else about the two differs.
  *
  * Each row is drawn by its own option set: the bar renders nothing when the
  * caller holds none of that kind, and a bar with nothing in it collapses the
@@ -29,11 +32,7 @@ export default function AgentScopeBars() {
   return (
     <>
       <AgentSelector />
-      <AgentSelector
-        scope="features"
-        variant="select"
-        style={{ marginTop: 10 }}
-      />
+      <AgentSelector scope="features" style={{ marginTop: 10 }} />
     </>
   );
 }
