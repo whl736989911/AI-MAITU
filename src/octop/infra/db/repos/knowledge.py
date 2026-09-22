@@ -41,15 +41,19 @@ class KnowledgeBaseRow:
     embedding_dim: int
     doc_count: int
     max_documents: int
+    is_enterprise: bool
     created_at: int
     updated_at: int
 
     @classmethod
     def from_row(cls, r: DbRow) -> KnowledgeBaseRow:
         # Schema v10 adds max_documents. Fall back to 100 for pre-v10 DBs.
+        # Schema v27 adds is_enterprise; a row read before the seed ran is not
+        # the enterprise space, which is what the default says.
         # sqlite3.Row has no __contains__; use keys() (like users.py).
         keys = frozenset(r.keys()) if hasattr(r, "keys") else frozenset()
         max_doc = int(r["max_documents"]) if "max_documents" in keys else 100
+        is_enterprise = bool(int(r["is_enterprise"])) if "is_enterprise" in keys else False
         return cls(
             id=str(r["knowledge_base_id"]),
             pk=int(r["id"]),
@@ -62,6 +66,7 @@ class KnowledgeBaseRow:
             embedding_dim=r["embedding_dim"],
             doc_count=r["doc_count"],
             max_documents=max_doc,
+            is_enterprise=is_enterprise,
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         )
@@ -234,6 +239,17 @@ class KnowledgeRepo:
                 "SELECT * FROM knowledge_bases WHERE knowledge_base_id = ?",
                 (kb_id,),
             ).fetchone()
+        return KnowledgeBaseRow.from_row(r) if r else None
+
+    def get_enterprise_space(self) -> KnowledgeBaseRow | None:
+        """The deployment's one enterprise knowledge space, when seeded.
+
+        A singleton by construction — ``idx_knowledge_bases_enterprise`` makes
+        the database refuse a second one — so this reads the row the v27 seed
+        wrote instead of filtering a list down to one.
+        """
+        with self._db.connect() as conn:
+            r = conn.execute("SELECT * FROM knowledge_bases WHERE is_enterprise = 1").fetchone()
         return KnowledgeBaseRow.from_row(r) if r else None
 
     def update_base(

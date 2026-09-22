@@ -54,7 +54,6 @@ import {
   PanelLeftOpen,
   Pencil,
   PencilLine,
-  Plus,
   RefreshCw,
   Search,
   Settings,
@@ -183,7 +182,11 @@ function formatKnowledgeOwner(
     KnowledgeBase,
     "owner_display_name" | "owner_username" | "owner_user_id"
   >,
+  systemLabel: string,
 ): string {
+  // A NULL owner is the system, not a missing value: the enterprise space
+  // belongs to the deployment rather than to a user (schema v27).
+  if (base.owner_user_id === null) return systemLabel;
   const displayName = base.owner_display_name?.trim() || "";
   const username = base.owner_username?.trim() || "";
   return displayName || username || String(base.owner_user_id);
@@ -690,10 +693,6 @@ export default function KnowledgeBasesPage() {
     ? `${BASE_DOCUMENT_TYPES},${OCR_DOCUMENT_TYPES}`
     : BASE_DOCUMENT_TYPES;
   const limits = capability?.limits ?? DEFAULT_KNOWLEDGE_LIMITS;
-  const ownedBaseCount = user
-    ? bases.filter((base) => base.owner_user_id === user.id).length
-    : 0;
-  const atBaseLimit = ownedBaseCount >= limits.max_bases_per_owner;
   const fileCount = documents.filter((document) => !document.is_dir).length;
   const isAtDocumentLimit =
     fileCount >= (selected?.max_documents ?? limits.max_docs_per_kb);
@@ -969,27 +968,6 @@ export default function KnowledgeBasesPage() {
     if (isMobile) setMobilePane("detail");
   };
 
-  const openCreate = () => {
-    if (atBaseLimit) {
-      message.warning(
-        t("knowledgeBases.baseLimitReached", {
-          count: limits.max_bases_per_owner,
-        }),
-      );
-      return;
-    }
-    baseForm.setFieldsValue({
-      name: "",
-      description: "",
-      icon_name: "book-open",
-      max_documents: 100,
-    });
-    setDefaultOpenChecked(false);
-    setSharedChecked(false);
-    setEditingBaseId(null);
-    setBaseDrawerOpen(true);
-  };
-
   const openEdit = (base: KnowledgeBase) => {
     baseForm.setFieldsValue({
       name: base.name,
@@ -1004,6 +982,9 @@ export default function KnowledgeBasesPage() {
   };
 
   const saveBase = async () => {
+    // The drawer only ever edits now: a user creating a knowledge base is the
+    // model the design replaced, so this is a real guard and not a defensive one.
+    if (!editingBaseId) return;
     const values = await baseForm.validateFields();
     const payload = {
       ...values,
@@ -1011,16 +992,12 @@ export default function KnowledgeBasesPage() {
       shared: sharedChecked,
     };
     try {
-      const next = editingBaseId
-        ? await knowledgeBasesApi.update(editingBaseId, payload)
-        : await knowledgeBasesApi.create(payload);
+      const next = await knowledgeBasesApi.update(editingBaseId, payload);
       setBaseDrawerOpen(false);
       await loadBases();
       await loadDetail(next.id);
       if (isMobile) setMobilePane("detail");
-      message.success(
-        t(editingBaseId ? "knowledgeBases.updated" : "knowledgeBases.created"),
-      );
+      message.success(t("knowledgeBases.updated"));
     } catch (error) {
       message.error(apiErrorMessage(error, t("knowledgeBases.saveFailed"), t));
     }
@@ -1934,26 +1911,7 @@ export default function KnowledgeBasesPage() {
             icon={setupIcon}
             title={t("knowledgeBases.emptyGuideTitle")}
             description={t("knowledgeBases.emptyGuideDesc")}
-            steps={[
-              {
-                label: t("knowledgeBases.emptyGuideStepWhat"),
-                detail: t("knowledgeBases.emptyGuideStepWhatDetail"),
-              },
-              {
-                label: t("knowledgeBases.emptyGuideStepHow"),
-                detail: t("knowledgeBases.emptyGuideStepHowDetail"),
-              },
-              {
-                label: t("knowledgeBases.emptyGuideStepShare"),
-                detail: t("knowledgeBases.emptyGuideStepShareDetail"),
-              },
-            ]}
-            primaryAction={{
-              label: t("knowledgeBases.create"),
-              onClick: openCreate,
-              icon: <Plus size={14} />,
-              disabled: atBaseLimit,
-            }}
+            steps={[]}
           />
         </div>
       ) : (
@@ -1987,14 +1945,6 @@ export default function KnowledgeBasesPage() {
                 ) : null}
               </div>
               <div className={styles.listActions}>
-                <Button
-                  type="primary"
-                  icon={<Plus size={15} />}
-                  disabled={!usable || atBaseLimit}
-                  onClick={openCreate}
-                >
-                  {t("knowledgeBases.create")}
-                </Button>
                 <Tooltip title={t("common.refresh")}>
                   <Button
                     icon={<RefreshCw size={15} />}
@@ -2064,8 +2014,17 @@ export default function KnowledgeBasesPage() {
                               count: base.doc_count,
                             })}
                           </Tag>
-                          {base.default_open || base.shared ? (
+                          {base.is_enterprise ||
+                          base.default_open ||
+                          base.shared ? (
                             <div className={styles.listMetaBadges}>
+                              {base.is_enterprise ? (
+                                <span
+                                  className={`${styles.listBadge} ${styles.listBadgeEnterprise}`}
+                                >
+                                  {t("knowledgeBases.enterpriseBadge")}
+                                </span>
+                              ) : null}
                               {base.default_open ? (
                                 <span
                                   className={`${styles.listBadge} ${styles.listBadgeDefaultOpen}`}
@@ -2175,7 +2134,10 @@ export default function KnowledgeBasesPage() {
                         className={styles.detailCreator}
                       >
                         {t("knowledgeBases.createdBy", {
-                          name: formatKnowledgeOwner(selected),
+                          name: formatKnowledgeOwner(
+                            selected,
+                            t("knowledgeBases.systemOwner"),
+                          ),
                         })}
                       </Typography.Text>
                     </div>
@@ -2988,9 +2950,7 @@ export default function KnowledgeBasesPage() {
       />
 
       <Drawer
-        title={t(
-          editingBaseId ? "knowledgeBases.edit" : "knowledgeBases.create",
-        )}
+        title={t("knowledgeBases.edit")}
         placement="right"
         open={baseDrawerOpen}
         onClose={() => setBaseDrawerOpen(false)}
@@ -3003,7 +2963,7 @@ export default function KnowledgeBasesPage() {
               {t("common.cancel")}
             </Button>
             <Button type="primary" onClick={() => void saveBase()}>
-              {t(editingBaseId ? "common.save" : "common.create")}
+              {t("common.save")}
             </Button>
           </div>
         }

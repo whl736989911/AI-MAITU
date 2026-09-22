@@ -51,7 +51,6 @@ from octop.infra.knowledge.ocr import (
     validate_ocr_settings,
 )
 from octop.infra.knowledge.service import (
-    MAX_BASES_PER_OWNER,
     MAX_DOCS_PER_KB,
     MAX_DOCUMENT_BYTES,
     KnowledgeService,
@@ -85,20 +84,6 @@ class FeatureBody(BaseModel):
 
 class OnnxDownloadBody(BaseModel):
     model: str = Field(min_length=1, description="Catalog ONNX embedding model id to download.")
-
-
-class CreateBaseBody(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    description: str = Field(default="", max_length=2000)
-    default_open: bool = False
-    shared: bool = False
-    icon_name: str = Field(default="", max_length=64)
-    max_documents: int | None = Field(
-        default=None,
-        ge=0,
-        le=10_000,
-        description="Per-base document limit. 0 = unlimited, default 100.",
-    )
 
 
 class CreateFolderBody(BaseModel):
@@ -158,7 +143,14 @@ def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any
     return payload
 
 
-def _owner_fields(server: OctopServer, owner_user_id: int) -> dict[str, str | None]:
+def _owner_fields(server: OctopServer, owner_user_id: int | None) -> dict[str, str | None]:
+    """Owner display fields; a NULL owner is the system, which has no name.
+
+    The enterprise space is system-owned (schema v27), so this is a real case
+    and not a defensive branch: ``None`` is nobody's user id.
+    """
+    if owner_user_id is None:
+        return {"owner_username": None, "owner_display_name": None}
     if server.services is None:
         return {"owner_username": None, "owner_display_name": None}
     user_repo = getattr(server.services, "user_repo", None)
@@ -319,7 +311,6 @@ def _capability_payload(server: OctopServer) -> dict[str, Any]:
         server.services.settings_repo.get, server.services.provider_repo
     )
     payload["limits"] = {
-        "max_bases_per_owner": MAX_BASES_PER_OWNER,
         "max_docs_per_kb": MAX_DOCS_PER_KB,
         "max_document_bytes": _max_upload_bytes(server),
     }
@@ -544,28 +535,30 @@ async def list_bases(
     return [_base_payload(server, base, public_ids=public_ids) for base in bases]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, summary="Create a knowledge base")
-async def create_base(
-    body: CreateBaseBody,
+@router.get("/enterprise", summary="Get the enterprise knowledge space")
+async def enterprise_space(
     request: Request,
     server: OctopServer = Depends(get_server),
-    user: User = Depends(require_permission("knowledge_bases")),
+    user: User = Depends(current_user),
 ) -> dict[str, Any]:
-    locale = resolve_request_locale(request)
+    """The deployment's one logical knowledge base (design §1, §11).
+
+    There is no create route beside this one on purpose: a user creating a
+    knowledge base is the model the design replaced. The space is read-checked
+    like any other base, so which callers may see it stays a rule rather than a
+    property of this route.
+    """
+    service = _knowledge_service(server)
     try:
-        _require_usable(server, request)
-        base = _knowledge_service(server).create_base(
-            owner_user_id=user.id,
-            name=body.name.strip(),
-            description=body.description.strip(),
-            default_open=body.default_open,
-            shared=body.shared,
-            icon_name=body.icon_name.strip(),
-            max_documents=body.max_documents if body.max_documents is not None else MAX_DOCS_PER_KB,
+        space = service.enterprise_space()
+        return _base_payload(
+            server,
+            service.get_readable_base(space.id, actor_user_id=user.id, is_admin=_is_admin(user)),
         )
-        return _base_payload(server, base)
     except Exception as exc:
-        raise _map_knowledge_error(exc, locale=locale, server=server) from exc
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
 
 
 @router.get("/default-open", summary="List current user's default-open knowledge-base IDs")

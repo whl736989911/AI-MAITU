@@ -42,6 +42,26 @@ def _acl_rows(pool: SqlitePool) -> list[tuple]:
     return [tuple(r) for r in rows]
 
 
+def _space_id(pool: SqlitePool) -> str:
+    """The v27 enterprise space's id."""
+    with pool.connect() as conn:
+        row = conn.execute(
+            "SELECT knowledge_base_id FROM knowledge_bases WHERE is_enterprise = 1"
+        ).fetchone()
+    return str(row["knowledge_base_id"])
+
+
+def _legacy_acl_rows(pool: SqlitePool) -> list[tuple]:
+    """``_acl_rows`` without the enterprise space.
+
+    The space is seeded by a later migration than the one under test, and it
+    has no legacy flag to mirror, so it is not part of what these assertions
+    are about. Its own row is pinned in ``test_enterprise_space_acl_is_public``.
+    """
+    space = _space_id(pool)
+    return [row for row in _acl_rows(pool) if row[1] != space]
+
+
 def _legacy_v17_db(tmp_path: Path) -> SqlitePool:
     """A v17-shaped database: no ACL tables, legacy boolean flags populated."""
     pool = SqlitePool(tmp_path / "octop.db")
@@ -86,7 +106,7 @@ def test_run_migrations_creates_acl_tables(tmp_path: Path) -> None:
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
 
-    assert _version(pool) == 26
+    assert _version(pool) == 27
     assert set(_ACL_TABLES).issubset(_table_names(pool))
     assert _columns(pool, "resource_acl") == {
         "resource_type",
@@ -147,13 +167,25 @@ def test_acl_tables_reject_duplicate_rows(tmp_path: Path) -> None:
             )
 
 
+def test_enterprise_space_acl_is_public(tmp_path: Path) -> None:
+    """The space is seeded with the row that makes it readable.
+
+    Access is granted by an ACL row and never by its absence, so a seeded space
+    without this row would be an enterprise knowledge base nobody could read.
+    """
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+
+    assert _acl_rows(pool) == [("knowledge_base", _space_id(pool), None, "public", None, 1)]
+
+
 def test_upgrade_from_v17_backfills_legacy_shared_flags(tmp_path: Path) -> None:
     pool = _legacy_v17_db(tmp_path)
 
     run_migrations(pool)
 
-    assert _version(pool) == 26
-    assert _acl_rows(pool) == [
+    assert _version(pool) == 27
+    assert _legacy_acl_rows(pool) == [
         ("agent", "ag_private", 1, "private", None, 1),
         ("agent", "ag_shared", 1, "public", None, 1),
         ("connector", "cn_shared", 2, "public", None, 1),
@@ -170,7 +202,7 @@ def test_backfill_runs_when_watermark_skipped_018(tmp_path: Path) -> None:
     run_migrations(pool)
 
     assert set(_ACL_TABLES).issubset(_table_names(pool))
-    assert len(_acl_rows(pool)) == 4
+    assert len(_legacy_acl_rows(pool)) == 4
 
 
 def test_backfill_covers_ownerless_agents_as_system_owned(tmp_path: Path) -> None:
@@ -188,7 +220,7 @@ def test_backfill_covers_ownerless_agents_as_system_owned(tmp_path: Path) -> Non
 
     run_migrations(pool)
 
-    assert _acl_rows(pool) == [
+    assert _legacy_acl_rows(pool) == [
         ("agent", "ag_orphan_private", None, "private", None, 1),
         ("agent", "ag_orphan_shared", None, "public", None, 1),
         ("agent", "ag_private", 1, "private", None, 1),
@@ -219,7 +251,7 @@ def test_backfill_never_overwrites_a_later_acl_edit(tmp_path: Path) -> None:
             "WHERE resource_type = 'agent' AND resource_id = 'ag_shared'"
         ).fetchone()
     assert tuple(row) == ("unit", "sales", 4)
-    assert len(_acl_rows(pool)) == 4
+    assert len(_legacy_acl_rows(pool)) == 4
 
 
 # ----------------------------------------------------------------------
@@ -294,7 +326,7 @@ def test_v21_drops_the_share_columns_and_no_other_column(tmp_path: Path) -> None
 
     run_migrations(pool)
 
-    assert _version(pool) == 26
+    assert _version(pool) == 27
     for table, column in _SHARE_COLUMNS:
         assert column in before[table]
         assert _columns(pool, table) == before[table] - {column}
@@ -338,7 +370,7 @@ def test_v21_mirrors_the_flags_before_dropping_them(tmp_path: Path) -> None:
 
     run_migrations(pool)
 
-    assert _acl_rows(pool) == [
+    assert _legacy_acl_rows(pool) == [
         ("agent", "ag_private", 1, "private", None, 1),
         ("agent", "ag_shared", 1, "public", None, 1),
         ("connector", "cn_shared", 2, "public", None, 1),

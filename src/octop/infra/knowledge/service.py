@@ -30,7 +30,6 @@ from octop.infra.knowledge.scope import may_read_knowledge_base
 from octop.infra.sharing import user_scope
 
 MAX_DOCS_PER_KB = 100
-MAX_BASES_PER_OWNER = 20
 MAX_DOCUMENT_BYTES = upload_mb_to_bytes(DEFAULT_MAX_UPLOAD_MB)
 # Upper bound for the per-base max_documents field. Mirrors Field(le=10000).
 MAX_KB_MAX_DOCUMENTS = 10_000
@@ -116,39 +115,23 @@ class KnowledgeService:
     def _repo(self) -> Any:
         return self._services.knowledge_repo
 
-    def create_base(
-        self,
-        *,
-        owner_user_id: int,
-        name: str,
-        description: str = "",
-        default_open: bool = False,
-        shared: bool = False,
-        icon_name: str = "",
-        max_documents: int = MAX_DOCS_PER_KB,
-    ) -> KnowledgeBaseRow:
-        assert_knowledge_usable(
-            self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
-        )
-        if max_documents < 0 or max_documents > MAX_KB_MAX_DOCUMENTS:
-            raise ValueError(f"max_documents must be between 0 and {MAX_KB_MAX_DOCUMENTS}")
-        owned = self._repo.count_bases_for_owner(owner_user_id)
-        if owned >= MAX_BASES_PER_OWNER:
-            raise ValueError(f"a user can own at most {MAX_BASES_PER_OWNER} knowledge bases")
-        model = (self._services.settings_repo.get("knowledge_embedding_model") or "").strip()
-        return cast(
-            KnowledgeBaseRow,
-            self._repo.create_base(
-                owner_user_id=owner_user_id,
-                name=name,
-                description=description,
-                default_open=default_open,
-                shared=shared,
-                icon_name=icon_name,
-                embedding_model=model,
-                max_documents=max_documents,
-            ),
-        )
+    def enterprise_space(self) -> KnowledgeBaseRow:
+        """The deployment's one enterprise knowledge space.
+
+        Schema v27 makes ``knowledge_bases`` a singleton space: the migration
+        seeds the row and the database refuses a second one
+        (``idx_knowledge_bases_enterprise``). There is deliberately no
+        ``create_base`` beside this — a user creating a knowledge base is the
+        model the design replaced, so the capability is gone rather than
+        discouraged, and the knowledge-base API no longer has a create route.
+
+        Raising rather than returning ``None`` is the signal that matters: a
+        deployment without its space is a broken schema, not an empty one.
+        """
+        space = cast(KnowledgeBaseRow | None, self._repo.get_enterprise_space())
+        if space is None:
+            raise RuntimeError("the enterprise knowledge space has not been seeded")
+        return space
 
     def list_visible_bases(self, *, actor_user_id: int) -> list[KnowledgeBaseRow]:
         """Knowledge bases this actor may use, per the one access rule.

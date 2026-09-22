@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -53,11 +54,34 @@ def test_knowledge_tables_migrated(db: SqlitePool) -> None:
         "knowledge_bases",
         "knowledge_documents",
     }.issubset(names)
-    assert v == 26
+    assert v == 27
     assert "knowledge_base_members" not in names
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
     assert "knowledge_base_id" in cols
     assert "max_documents" in cols
+
+
+def test_only_one_enterprise_space_can_exist(
+    repo: KnowledgeRepo, db: SqlitePool, owner_id: int
+) -> None:
+    """The one-space rule is the schema's, not a rule callers have to remember.
+
+    Design §1 says a deployment has a single logical knowledge base. Enforcing
+    it with a partial unique index is what makes "a user cannot create a second
+    one" survive a caller that forgets — including the API route this change
+    removed.
+    """
+    space = repo.get_enterprise_space()
+    assert space is not None
+    assert space.owner_user_id is None
+
+    with pytest.raises(sqlite3.IntegrityError), db.connect() as conn:
+        conn.execute(
+            "INSERT INTO knowledge_bases("
+            "knowledge_base_id, owner_user_id, name, created_at, updated_at, is_enterprise"
+            ") VALUES ('kb_second', ?, 'Second', 1, 1, 1)",
+            (owner_id,),
+        )
 
 
 def test_path_layout_knowledge_dir(tmp_path: Path) -> None:
@@ -117,6 +141,8 @@ def test_list_visible_is_what_the_access_rule_permits(repo: KnowledgeRepo, db: S
     admin = users.create(username="kb_admin", password_hash="h", role="admin")
 
     acl = ResourceAclRepo(db)
+    space = repo.get_enterprise_space()
+    assert space is not None
     shapes = {
         "private": ("private", None, ()),
         "public": ("public", None, ()),
@@ -142,7 +168,10 @@ def test_list_visible_is_what_the_access_rule_permits(repo: KnowledgeRepo, db: S
         )
 
     entries = {entry.resource_id: entry for entry in acl.list_for_type("knowledge_base")}
-    assert set(entries) == set(created.values())
+    # The deployment's own enterprise space is one of the entries too: v27 seeds
+    # it public, so every viewer — the unknown id included — sees it next to the
+    # fixtures below rather than instead of them.
+    assert set(entries) == set(created.values()) | {space.id}
     viewers = {
         "owner": owner,
         "peer_sales": peer,
@@ -171,9 +200,10 @@ def test_list_visible_is_what_the_access_rule_permits(repo: KnowledgeRepo, db: S
         created["public"],
         created["unit"],
         created["unit-grant"],
+        space.id,
     }
-    assert {row.id for row in repo.list_visible(admin)} == set(created.values())
-    assert {row.id for row in repo.list_visible(999_999)} == {created["public"]}
+    assert {row.id for row in repo.list_visible(admin)} == set(created.values()) | {space.id}
+    assert {row.id for row in repo.list_visible(999_999)} == {created["public"], space.id}
 
 
 def test_knowledge_folders_and_nested_documents(repo: KnowledgeRepo, owner_id: int) -> None:

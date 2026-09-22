@@ -48,7 +48,7 @@ def test_create_and_update_text_document(
         lambda *_a, **_k: None,
     )
     svc = KnowledgeService(services)
-    base = svc.create_base(owner_user_id=services.owner_id, name="Docs")
+    base = services.knowledge_repo.create_base(owner_user_id=services.owner_id, name="Docs")
     created = svc.create_text_document(
         base.id,
         actor_user_id=services.owner_id,
@@ -82,7 +82,7 @@ def test_upload_spreadsheet_documents(
         lambda *_a, **_k: None,
     )
     svc = KnowledgeService(services)
-    base = svc.create_base(owner_user_id=services.owner_id, name="Sheets")
+    base = services.knowledge_repo.create_base(owner_user_id=services.owner_id, name="Sheets")
     xlsx = svc.upload_document(
         base.id,
         actor_user_id=services.owner_id,
@@ -143,7 +143,7 @@ def test_image_upload_requires_ocr(
         lambda *_a, **_k: None,
     )
     svc = KnowledgeService(services)
-    base = svc.create_base(owner_user_id=services.owner_id, name="Images")
+    base = services.knowledge_repo.create_base(owner_user_id=services.owner_id, name="Images")
 
     with pytest.raises(ValueError, match="OCR must be enabled"):
         svc.upload_document(

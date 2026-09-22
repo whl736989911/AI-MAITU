@@ -1,7 +1,6 @@
 import { request, requestBlob, requestUpload } from "../request";
 
 export interface KnowledgeLimits {
-  max_bases_per_owner: number;
   max_docs_per_kb: number;
   max_document_bytes: number;
 }
@@ -38,13 +37,16 @@ export interface KnowledgeBase {
   id: string;
   knowledge_base_id?: string;
   pk?: number;
-  owner_user_id: number;
+  /** null for the enterprise space, which is system-owned. */
+  owner_user_id: number | null;
   owner_username?: string | null;
   owner_display_name?: string | null;
   name: string;
   description: string;
   default_open: boolean;
   shared: boolean;
+  /** The deployment's one logical knowledge base (design §1). */
+  is_enterprise: boolean;
   icon_name: string;
   embedding_model: string;
   embedding_dim: number;
@@ -108,7 +110,6 @@ export interface KnowledgeOnnxDownloadState {
 }
 
 export const DEFAULT_KNOWLEDGE_LIMITS: KnowledgeLimits = {
-  max_bases_per_owner: 20,
   max_docs_per_kb: 100,
   max_document_bytes: 100 * 1024 * 1024,
 };
@@ -176,18 +177,13 @@ export const knowledgeBasesApi = {
 
   get: (id: string) => request<KnowledgeBase>(`/knowledge-bases/${id}`),
 
-  create: (body: {
-    name: string;
-    description?: string;
-    default_open?: boolean;
-    shared?: boolean;
-    icon_name?: string;
-    max_documents?: number;
-  }) =>
-    request<KnowledgeBase>("/knowledge-bases", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  /**
+   * The deployment's one enterprise knowledge space.
+   *
+   * There is no `create` beside this on purpose: a user creating a knowledge
+   * base is the model the design replaced.
+   */
+  getEnterprise: () => request<KnowledgeBase>("/knowledge-bases/enterprise"),
 
   update: (
     id: string,

@@ -15,7 +15,7 @@ from typing import Any
 
 from octop.infra.agents.kinds import KIND_FEATURE
 from octop.infra.db.pool import DatabasePool
-from octop.infra.utils.ulid import new_ulid
+from octop.infra.utils.ulid import new_short_id, new_ulid
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _SQL_STMT_RE = re.compile(r";\s*\n")
@@ -1007,6 +1007,172 @@ def _ensure_data_sources_schema(db: DatabasePool) -> None:
         )
 
 
+_ENTERPRISE_SPACE_NAME = "企业知识库"
+"""Display name seeded for the enterprise knowledge space.
+
+The dashboard renders a localized label for the singleton, so this is what an
+API consumer sees rather than the copy a reader does. Seeding never updates an
+existing row, so an administrator who renames the space keeps the new name.
+"""
+
+_KNOWLEDGE_BASES_V27_DDL = """
+CREATE TABLE knowledge_bases (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  knowledge_base_id TEXT NOT NULL UNIQUE,
+  owner_user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  name              TEXT NOT NULL,
+  description       TEXT NOT NULL DEFAULT '',
+  default_open      INTEGER NOT NULL DEFAULT 0,
+  icon_name         TEXT NOT NULL DEFAULT '',
+  embedding_model   TEXT NOT NULL DEFAULT '',
+  embedding_dim     INTEGER NOT NULL DEFAULT 0,
+  doc_count         INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  max_documents     INTEGER NOT NULL DEFAULT 100,
+  is_enterprise     INTEGER NOT NULL DEFAULT 0
+)
+"""
+"""``knowledge_bases`` as v27 declares it: nullable owner, plus the flag."""
+
+_KNOWLEDGE_BASES_V27_COLUMNS = (
+    "id",
+    "knowledge_base_id",
+    "owner_user_id",
+    "name",
+    "description",
+    "default_open",
+    "icon_name",
+    "embedding_model",
+    "embedding_dim",
+    "doc_count",
+    "created_at",
+    "updated_at",
+    "max_documents",
+)
+
+_KNOWLEDGE_BASES_V27_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_knowledge_bases_owner ON knowledge_bases(owner_user_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_bases_enterprise "
+    "ON knowledge_bases(is_enterprise) WHERE is_enterprise = 1",
+)
+
+
+def _ensure_enterprise_knowledge_space(db: DatabasePool) -> None:
+    """Make ``knowledge_bases`` the deployment's one enterprise space (v27).
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers: a
+    database whose watermark skipped 27 still has to end up with a nullable
+    owner, the ``is_enterprise`` flag and the single row phase 1 is about.
+
+    The SQLite rebuild is guarded by the flag's absence, which is exactly the
+    one boot that needs it — every later boot finds the column and goes
+    straight to the (also guarded) row seed. Rows that predate v27 keep their
+    owner and are copied across untouched, so nothing about an existing
+    knowledge base's reach changes here.
+    """
+    if not _table_exists(db, "knowledge_bases"):
+        return
+    if db.dialect == "postgresql":
+        with db.connect() as conn:
+            conn.execute("ALTER TABLE knowledge_bases ALTER COLUMN owner_user_id DROP NOT NULL")
+        _ensure_column(db, "knowledge_bases", "is_enterprise", "INTEGER NOT NULL DEFAULT 0")
+    elif "is_enterprise" not in _table_columns(db, "knowledge_bases"):
+        _rebuild_sqlite_table(
+            db,
+            "knowledge_bases",
+            ddl=_KNOWLEDGE_BASES_V27_DDL,
+            columns=_KNOWLEDGE_BASES_V27_COLUMNS,
+            indexes=_KNOWLEDGE_BASES_V27_INDEXES,
+        )
+    # Unconditionally, on both dialects and both branches: a rebuild of this
+    # table recreates it without its indexes, so the one that says "at most one
+    # enterprise space" would otherwise be lost on the boot that rebuilt it.
+    with db.connect() as conn:
+        for statement in _KNOWLEDGE_BASES_V27_INDEXES:
+            conn.execute(statement)
+    _seed_enterprise_knowledge_space(db)
+
+
+def _seed_enterprise_knowledge_space(db: DatabasePool) -> None:
+    """Insert the enterprise space row and its ACL row, each when missing.
+
+    Two independent guards, because the two can go missing independently. Every
+    table carries its own history: a database whose ``resource_acl`` tables were
+    rebuilt goes through the generic backfill, which describes every knowledge
+    base by its legacy ``shared`` flag — and the space has none, so it lands
+    there as private. Turning only the knowledge row into a guard would leave
+    that database's space readable by administrators alone.
+
+    Creating a *missing* ACL row and never overwriting a present one is what
+    keeps this from fighting the product: an administrator who narrows the
+    space through the sharing pipeline keeps the narrowing.
+
+    The ACL row matters as much as the knowledge row: access is granted by a
+    row and never by its absence. ``owner_user_id`` is NULL — system-owned — and
+    the visibility is ``public``, which is how this codebase already spells the
+    enterprise-wide audience (design §5.1). Narrowing it to folders and files is
+    what the design's phase 8 adds; until then the space is one audience.
+    """
+    if not _table_exists(db, "knowledge_bases") or not _table_exists(db, "resource_acl"):
+        return
+    ts = int(time.time())
+    with db.connect() as conn:
+        existing = conn.execute(
+            "SELECT knowledge_base_id FROM knowledge_bases WHERE is_enterprise = 1"
+        ).fetchone()
+        if existing is None:
+            kb_id = new_short_id()
+            conn.execute(
+                "INSERT INTO knowledge_bases("
+                "knowledge_base_id, owner_user_id, name, description, default_open, "
+                "icon_name, embedding_model, embedding_dim, doc_count, created_at, "
+                "updated_at, is_enterprise"
+                ") VALUES (?, NULL, ?, '', 0, '', '', 0, 0, ?, ?, 1)",
+                (kb_id, _ENTERPRISE_SPACE_NAME, ts, ts),
+            )
+        else:
+            kb_id = str(existing["knowledge_base_id"])
+        conn.execute(
+            "INSERT INTO resource_acl("
+            "resource_type, resource_id, owner_user_id, visibility, unit_key, version, updated_at"
+            ") VALUES ('knowledge_base', ?, NULL, 'public', NULL, 1, ?) "
+            "ON CONFLICT (resource_type, resource_id) DO NOTHING",
+            (kb_id, ts),
+        )
+
+
+def _ensure_data_sources_connection_schema(db: DatabasePool) -> None:
+    """Add the folder-source columns to ``data_sources`` (schema v27).
+
+    ``config_json`` keeps carrying the per-kind payload it always did; these
+    columns are the ones a query filters on (a connection status, a scan
+    interval) or that must never travel through JSON — the connecting user's
+    secret, which lives encrypted in ``credentials_enc`` and is only ever
+    reported as present.
+    """
+    if not _table_exists(db, "data_sources"):
+        return
+    blob_type = "BYTEA" if db.dialect == "postgresql" else "BLOB"
+    columns = (
+        ("server", "TEXT NOT NULL DEFAULT ''"),
+        ("share", "TEXT NOT NULL DEFAULT ''"),
+        ("root_path", "TEXT NOT NULL DEFAULT ''"),
+        ("username", "TEXT NOT NULL DEFAULT ''"),
+        ("credentials_enc", blob_type),
+        ("read_only", "INTEGER NOT NULL DEFAULT 1"),
+        ("include_globs", "TEXT NOT NULL DEFAULT ''"),
+        ("exclude_globs", "TEXT NOT NULL DEFAULT ''"),
+        ("scan_interval_seconds", "INTEGER NOT NULL DEFAULT 0"),
+        ("connection_status", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("connection_error", "TEXT"),
+        ("last_scan_at", "INTEGER"),
+        ("last_scan_ok_at", "INTEGER"),
+    )
+    for column, definition in columns:
+        _ensure_column(db, "data_sources", column, definition)
+
+
 def _ensure_org_units_schema(db: DatabasePool) -> None:
     """Create org units + unit grants and the user scope columns (schema v17)."""
     if _table_exists(db, "users"):
@@ -1287,7 +1453,7 @@ _LEGACY_SHARE_COLUMNS = (
         CREATE TABLE knowledge_bases (
           id                INTEGER PRIMARY KEY AUTOINCREMENT,
           knowledge_base_id TEXT NOT NULL UNIQUE,
-          owner_user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          owner_user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
           name              TEXT NOT NULL,
           description       TEXT NOT NULL DEFAULT '',
           default_open      INTEGER NOT NULL DEFAULT 0,
@@ -1298,6 +1464,7 @@ _LEGACY_SHARE_COLUMNS = (
           created_at        INTEGER NOT NULL,
           updated_at        INTEGER NOT NULL,
           max_documents     INTEGER NOT NULL DEFAULT 100,
+          is_enterprise     INTEGER NOT NULL DEFAULT 0,
           UNIQUE(owner_user_id, name)
         )
         """,
@@ -1315,6 +1482,7 @@ _LEGACY_SHARE_COLUMNS = (
             "created_at",
             "updated_at",
             "max_documents",
+            "is_enterprise",
         ),
         ("CREATE INDEX IF NOT EXISTS idx_knowledge_bases_owner ON knowledge_bases(owner_user_id)",),
     ),
@@ -1334,6 +1502,13 @@ def _drop_legacy_share_columns(db: DatabasePool) -> None:
 
     Idempotent: a table whose flag is already gone is skipped, so a boot that
     lands between the PostgreSQL and SQLite paths converges.
+
+    The SQLite DDL is each table's *current* shape, not its v20 one, because
+    this helper is re-run on every boot rather than once: a later migration that
+    changes one of these tables is reflected in ``_LEGACY_SHARE_COLUMNS`` too.
+    ``_live_columns`` then keeps the copy to the columns the live table has, so
+    a column that migration has not added yet takes the DDL's default rather
+    than failing the INSERT.
     """
     if not _table_exists(db, "users"):
         return
@@ -1345,10 +1520,29 @@ def _drop_legacy_share_columns(db: DatabasePool) -> None:
             # ``DROP COLUMN`` takes the partial flag index with it.
             _drop_column(db, table, column)
             continue
-        _rebuild_sqlite_without_legacy_share(db, table, ddl=ddl, columns=columns, indexes=indexes)
+        _rebuild_sqlite_table(
+            db,
+            table,
+            ddl=ddl,
+            columns=_live_columns(db, table, columns),
+            indexes=indexes,
+        )
 
 
-def _rebuild_sqlite_without_legacy_share(
+def _live_columns(db: DatabasePool, table: str, columns: tuple[str, ...]) -> tuple[str, ...]:
+    """*columns* narrowed to the ones the table actually has right now.
+
+    The rebuild DDL describes each table's *current* shape, because the helper
+    that runs it is re-run on every boot rather than once — while ``columns``
+    also lists what later migrations added to the same table. Naming a column
+    the live table lacks would fail the copy instead of letting the DDL's
+    default stand, so the two lists are reconciled here.
+    """
+    live = _table_columns(db, table)
+    return tuple(name for name in columns if name in live)
+
+
+def _rebuild_sqlite_table(
     db: DatabasePool,
     table: str,
     *,
@@ -1356,7 +1550,13 @@ def _rebuild_sqlite_without_legacy_share(
     columns: tuple[str, ...],
     indexes: tuple[str, ...],
 ) -> None:
-    """Rebuild *table* from *columns*, leaving the legacy flag behind."""
+    """Rebuild *table* from *columns*, keeping the rows and dropping the rest.
+
+    SQLite cannot drop a constraint (a ``NOT NULL``) or a column that an index
+    covers, so both callers go through a rename/copy/drop cycle. Any column
+    *ddl* declares but *columns* omits is created empty, taking its declared
+    default.
+    """
     legacy = f"{table}_legacy"
     column_list = ", ".join(columns)
     with db.connect() as conn:
@@ -2131,6 +2331,10 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     drops what they would create, and their DDL is not re-runnable.
     Version 26 adds ``agents.kind`` — marking the app-owned rows the old model
     froze as the feature agents they were — and drops those tables.
+    Version 27 makes ``knowledge_bases`` the single enterprise space (nullable
+    owner, ``is_enterprise``, one seeded row) and gives ``data_sources`` the
+    folder-connection columns. Both must also reach databases whose watermark
+    already passed 27, so this branch calls the ensure helpers.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -2273,6 +2477,12 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 27:
+        _ensure_enterprise_knowledge_space(db)
+        _ensure_data_sources_connection_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2301,6 +2511,9 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_published_experts_schema(db)
             if version == 10:
                 _ensure_knowledge_bases_schema(db)
+            if version == 27:
+                _ensure_enterprise_knowledge_space(db)
+                _ensure_data_sources_connection_schema(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -2322,3 +2535,5 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_data_sources_schema(db)
     _ensure_agent_kind_column(db)
     _drop_feature_tables(db)
+    _ensure_enterprise_knowledge_space(db)
+    _ensure_data_sources_connection_schema(db)

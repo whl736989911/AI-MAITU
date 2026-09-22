@@ -376,7 +376,7 @@ def test_pg_reapplying_v21_after_a_rollback_still_reaches_v21() -> None:
     try:
         _reset_public_schema(pool)
         run_migrations(pool)
-        assert _version() == 26
+        assert _version() == 27
         upgraded = _columns()
 
         # What a build without 021 does to a v21 database when it boots.
@@ -385,7 +385,7 @@ def test_pg_reapplying_v21_after_a_rollback_still_reaches_v21() -> None:
 
         run_migrations(pool)
 
-        assert _version() == 26
+        assert _version() == 27
         assert _columns() == upgraded
     finally:
         pool.close()
