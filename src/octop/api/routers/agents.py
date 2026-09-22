@@ -258,6 +258,29 @@ async def list_agents(
     )
 
 
+@router.get("/kinds", summary="Which kinds of agent this deployment holds")
+async def list_agent_kinds(
+    _user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, Any]:
+    """The kinds this deployment holds, each once.
+
+    For the surfaces that draw one branch per ``kind`` (:mod:`octop.infra.agents.kinds`)
+    and have to decide, from one answer, whether that branch exists at all. The
+    agent list itself cannot answer it for everyone: ``GET /agents`` returns what
+    the caller may see — ``scope=all`` behind the ``users`` permission — so a
+    caller without it would decide from a subset and hide a branch the deployment
+    does hold.
+
+    A branch is a fact about the deployment, not about the caller, so it is read
+    here, once, from the whole ``agents`` table (``AgentRepo.present_kinds``), for
+    any authenticated caller. The answer is the kinds' own vocabulary and nothing
+    else: no agent ids, no names — a caller learns which kinds exist, not who
+    holds which agent, which is the one thing ``scope=all`` guards.
+    """
+    return {"kinds": server.services.agent_repo.present_kinds()}
+
+
 @router.post("", status_code=201, summary="Create agent")
 async def create_agent(
     body: AgentCreateBody,

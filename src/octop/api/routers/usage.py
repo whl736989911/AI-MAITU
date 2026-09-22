@@ -164,12 +164,19 @@ def _export_response(
         window=window,
         granularity="by_day",
     )["buckets"]
-    by_agent = _summary_or_raise(
+    by_expert = _summary_or_raise(
         server=server,
         user_id=user_id,
         agent_id=agent_id,
         window=window,
-        granularity="by_agent",
+        granularity="by_expert",
+    )["buckets"]
+    by_feature = _summary_or_raise(
+        server=server,
+        user_id=user_id,
+        agent_id=agent_id,
+        window=window,
+        granularity="by_feature",
     )["buckets"]
     by_model = _summary_or_raise(
         server=server,
@@ -182,7 +189,8 @@ def _export_response(
     payload = build_usage_xlsx(
         rows=rows,
         by_day=by_day,
-        by_agent=by_agent,
+        by_expert=by_expert,
+        by_feature=by_feature,
         by_model=by_model,
         agent_names=_agent_name_map(server),
         usernames=_username_map(server),

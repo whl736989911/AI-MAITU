@@ -127,3 +127,57 @@ async def test_regular_user_can_create_and_reload_agent(env) -> None:
 
     r = await c.post(f"/api/agents/{agent_id}/start", headers=user_auth)
     assert r.status_code == 204
+
+
+async def test_agent_kinds_are_readable_without_the_deployment_list_scope(env) -> None:
+    """Which kinds exist is the deployment's, and is read without the list's permission.
+
+    The agent list is what the caller may see, so a caller without the ``users``
+    permission decides from a subset: here their own list holds no feature at all,
+    while the deployment does. A surface drawing one branch per kind has to get
+    the deployment's answer, or it hides a branch that has rows in it.
+    """
+    c, _srv, admin_auth = env
+    caller_auth = await create_user(c, admin_auth, username="kinds_caller")
+
+    r = await c.post("/api/agents", headers=admin_auth, json={"name": "kinds-expert"})
+    assert r.status_code == 201, r.text
+    r = await c.post(
+        "/api/features",
+        headers=admin_auth,
+        json={"feature_id": "kinds-feature", "name": "kinds feature"},
+    )
+    assert r.status_code == 201, r.text
+
+    # The deployment's own list stays the permission's to read …
+    r = await c.get("/api/agents?scope=all", headers=caller_auth)
+    assert r.status_code == 403
+    r = await c.get("/api/agents", headers=caller_auth)
+    assert r.status_code == 200
+    assert "feature" not in {row["kind"] for row in r.json()}
+
+    # … and the kinds the deployment holds are not.
+    r = await c.get("/api/agents/kinds", headers=caller_auth)
+    assert r.status_code == 200
+    assert r.json() == {"kinds": ["agent", "feature"]}
+
+
+async def test_agent_kinds_count_only_enabled_rows(env) -> None:
+    """A disabled row is not "the deployment holds this kind" — the list it is read from is enabled-only."""
+    c, srv, admin_auth = env
+    r = await c.post("/api/agents", headers=admin_auth, json={"name": "kinds-enabled"})
+    assert r.status_code == 201, r.text
+    r = await c.post(
+        "/api/features",
+        headers=admin_auth,
+        json={"feature_id": "kinds-disabled", "name": "kinds disabled"},
+    )
+    assert r.status_code == 201, r.text
+
+    r = await c.get("/api/agents/kinds", headers=admin_auth)
+    assert "feature" in r.json()["kinds"]
+
+    srv.services.agent_repo.set_enabled("feat-kinds-disabled", False)
+    r = await c.get("/api/agents/kinds", headers=admin_auth)
+    assert "feature" not in r.json()["kinds"]
+    assert "agent" in r.json()["kinds"]

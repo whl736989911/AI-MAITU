@@ -329,6 +329,7 @@ async def test_user_export_xlsx(env: Any) -> None:
     assert "明细" in wb.sheetnames
     assert "按天" in wb.sheetnames
     assert "按专家" in wb.sheetnames
+    assert "按功能" in wb.sheetnames
     assert "按模型" in wb.sheetnames
     detail = wb["明细"]
     headers = [cell.value for cell in detail[1]]
@@ -356,6 +357,100 @@ async def test_user_export_xlsx(env: Any) -> None:
     assert wb["按天"]._charts
     assert wb["按专家"]._charts
     assert wb["按模型"]._charts
+
+
+async def test_export_summary_sheets_count_one_kind_each(env: Any) -> None:
+    """「按专家」 holds the experts and 「按功能」 the features — nothing of either in the other."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    c, srv, _admin_auth, alice_auth, ctx = env
+    _seed_usage_agents(srv, ["export-expert"], user_id=ctx["alice_id"])
+    _seed_usage_agents(srv, ["export-feature"], user_id=ctx["alice_id"], kind="feature")
+    with srv.services.db.connect() as conn:
+        conn.execute(
+            "UPDATE agents SET name = ? WHERE agent_id = ?",
+            ("Export Expert", "export-expert"),
+        )
+        conn.execute(
+            "UPDATE agents SET name = ? WHERE agent_id = ?",
+            ("Export Feature", "export-feature"),
+        )
+    repo = srv.services.usage_repo
+    repo.record(
+        agent_id="export-expert",
+        user_id=ctx["alice_id"],
+        input_tokens=20,
+        output_tokens=10,
+    )
+    repo.record(
+        agent_id="export-feature",
+        user_id=ctx["alice_id"],
+        input_tokens=4,
+        output_tokens=2,
+    )
+
+    r = await c.get(
+        "/api/usage/export.xlsx?window=all",
+        headers={**alice_auth, "Accept-Language": "zh"},
+    )
+    assert r.status_code == 200
+    wb = load_workbook(BytesIO(r.content))
+
+    def rows_of(sheet_name: str) -> list[list[Any]]:
+        sheet = wb[sheet_name]
+        assert sheet.cell(sheet.max_row, 1).value == "合计"
+        return [
+            [cell.value for cell in row]
+            for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row - 2)
+        ]
+
+    experts = rows_of("按专家")
+    assert [row[1] for row in experts] == ["export-expert"]
+    assert experts[0][0] == "Export Expert"
+    assert experts[0][4] == 30
+    assert wb["按专家"]._charts
+
+    features = rows_of("按功能")
+    assert [row[1] for row in features] == ["export-feature"]
+    assert features[0][0] == "Export Feature"
+    assert features[0][4] == 6
+    assert wb["按功能"]._charts
+
+    # The two sheets are one partition: what each kind spent is in exactly one of
+    # them, so nothing an agent did is missing from the summary.
+    expert_total = sum(row[4] for row in experts)
+    feature_total = sum(row[4] for row in features)
+    assert (expert_total, feature_total) == (30, 6)
+    assert expert_total + feature_total == 36
+
+
+async def test_export_summary_feature_sheet_is_empty_without_features(env: Any) -> None:
+    """A window with no feature usage still has the sheet, and it is empty of rows."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    c, srv, _admin_auth, alice_auth, ctx = env
+    _seed_usage_agents(srv, ["export-only-expert"], user_id=ctx["alice_id"])
+    srv.services.usage_repo.record(
+        agent_id="export-only-expert",
+        user_id=ctx["alice_id"],
+        input_tokens=7,
+        output_tokens=3,
+    )
+
+    r = await c.get(
+        "/api/usage/export.xlsx?window=all",
+        headers={**alice_auth, "Accept-Language": "zh"},
+    )
+    assert r.status_code == 200
+    wb = load_workbook(BytesIO(r.content))
+    feature_sheet = wb["按功能"]
+    assert [cell.value for cell in feature_sheet[1]][:2] == ["功能名称", "功能 ID"]
+    assert feature_sheet.max_row == 1
+    assert wb["按专家"].cell(2, 5).value == 10
 
 
 async def test_admin_export_requires_admin(env: Any) -> None:

@@ -330,14 +330,30 @@ def build_usage_xlsx(
     *,
     rows: list[UsageRow],
     by_day: list[dict[str, Any]],
-    by_agent: list[dict[str, Any]],
+    by_expert: list[dict[str, Any]],
+    by_feature: list[dict[str, Any]],
     by_model: list[dict[str, Any]],
     agent_names: dict[str, str],
     usernames: dict[int, str],
     timezone: str,
     locale: str,
 ) -> bytes:
-    """Build a multi-sheet workbook: detail + by-day/agent/model with charts."""
+    """Build a multi-sheet workbook: detail + by-day/kind/model with charts.
+
+    One sheet per kind rather than one sheet for both: a feature runs on an agent
+    of its own (``agents.kind``, :mod:`octop.infra.agents.kinds`), so an expert and
+    a feature are counted apart here for the same reason the token statistics tell
+    them apart — a reader of the workbook adds up one column and gets the experts'
+    usage, not experts-and-features. ``by_expert`` and ``by_feature`` are that one
+    grouping narrowed to a kind in the ledger's own query, so the two sheets
+    partition the agents: neither kind's usage is silently left out of the summary.
+
+    The sheet set is fixed, unlike the dashboard's branches: a workbook is a file
+    someone scripts against, and a sheet that appears with the window's first
+    feature usage would make the file's shape a function of the date range. An
+    empty kind is a sheet with headers and no rows — "this window has none" — which
+    is the honest thing to say in a document.
+    """
     from openpyxl import Workbook
 
     loc = normalize_locale(locale)
@@ -496,19 +512,9 @@ def build_usage_xlsx(
         chart_kind="line",
     )
 
-    # --- By agent ---
-    _write_category_sheet(
-        title_key="sheet_by_agent",
-        chart_title_key="chart_by_agent",
-        headers=[
-            _label(loc, "col_agent_name"),
-            _label(loc, "col_agent_id"),
-            _label(loc, "col_input_tokens"),
-            _label(loc, "col_output_tokens"),
-            _label(loc, "col_total_tokens"),
-            _label(loc, "col_turns"),
-        ],
-        records=[
+    # --- By kind: one sheet each, so an expert is not counted with a feature ---
+    def _kind_records(buckets: list[dict[str, Any]]) -> list[list[Any]]:
+        return [
             [
                 agent_names.get(str(bucket.get("key") or ""), str(bucket.get("key") or "")),
                 str(bucket.get("key") or ""),
@@ -517,8 +523,42 @@ def build_usage_xlsx(
                 int(bucket.get("total_tokens") or 0),
                 int(bucket.get("turns") or 0),
             ]
-            for bucket in by_agent
+            for bucket in buckets
+        ]
+
+    _write_category_sheet(
+        title_key="sheet_by_expert",
+        chart_title_key="chart_by_expert",
+        headers=[
+            _label(loc, "col_agent_name"),
+            _label(loc, "col_agent_id"),
+            _label(loc, "col_input_tokens"),
+            _label(loc, "col_output_tokens"),
+            _label(loc, "col_total_tokens"),
+            _label(loc, "col_turns"),
         ],
+        records=_kind_records(by_expert),
+        label_col=1,
+        sum_cols=[3, 4, 5, 6],
+        chart_cat_col=1,
+        chart_data_min=3,
+        chart_data_max=4,
+        chart_anchor="H3",
+        chart_kind="col",
+    )
+
+    _write_category_sheet(
+        title_key="sheet_by_feature",
+        chart_title_key="chart_by_feature",
+        headers=[
+            _label(loc, "col_feature_name"),
+            _label(loc, "col_feature_id"),
+            _label(loc, "col_input_tokens"),
+            _label(loc, "col_output_tokens"),
+            _label(loc, "col_total_tokens"),
+            _label(loc, "col_turns"),
+        ],
+        records=_kind_records(by_feature),
         label_col=1,
         sum_cols=[3, 4, 5, 6],
         chart_cat_col=1,

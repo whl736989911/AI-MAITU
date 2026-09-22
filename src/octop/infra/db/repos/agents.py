@@ -185,6 +185,27 @@ class AgentRepo:
             rows = conn.execute(sql).fetchall()
         return map_rows(rows, AgentRow)
 
+    def present_kinds(self) -> list[str]:
+        """The ``kind``s this table holds, each once — which branches there are.
+
+        The one question a surface that draws one branch per kind asks, and it is
+        asked of the whole table: a kind that no row carries has nothing to show,
+        while a per-kind question ("is there a row of kind X") would have to be
+        asked once per kind and answered from whatever the caller can see. Rows
+        that are disabled do not count — the deployment is not running them, and
+        the enabled rows are the same population ``AgentManager.list_rows`` hands
+        Admin → Users, so the two agree on what this deployment holds.
+
+        Answers in the kinds' own vocabulary (:mod:`octop.infra.agents.kinds`),
+        never in a surface's words for them: which kinds are worth a branch is
+        this method's answer, what to call the branch is the caller's.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT DISTINCT kind FROM agents WHERE enabled = 1 ORDER BY kind"
+            ).fetchall()
+        return [str(r["kind"]) for r in rows]
+
     def set_enabled(self, agent_id: str, enabled: bool) -> None:
         with self._db.transaction() as conn:
             conn.execute(
