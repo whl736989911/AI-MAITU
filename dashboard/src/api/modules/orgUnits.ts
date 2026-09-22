@@ -59,6 +59,12 @@ interface UserScopeRow {
   org_unit?: string | null;
 }
 
+/** ``GET``/``PUT /api/org-units/{key}/permissions`` — the unit's own grants. */
+export interface OrgUnitPermissions {
+  unit_key: string;
+  permissions: string[];
+}
+
 export const orgUnitsApi = {
   list: () => request<OrgUnitListResponse>("/org-units"),
 
@@ -78,6 +84,28 @@ export const orgUnitsApi = {
     request<void>(`/org-units/${encodeURIComponent(key)}`, {
       method: "DELETE",
     }),
+
+  /**
+   * The unit's own module grants — what ``setPermissions`` writes.
+   *
+   * Not the inherited union: the keys a member gains from an ancestor are that
+   * ancestor's rows, and showing them here would let an edit below look like it
+   * granted something it does not own.
+   */
+  getPermissions: (key: string) =>
+    request<OrgUnitPermissions>(
+      `/org-units/${encodeURIComponent(key)}/permissions`,
+    ),
+
+  /** Replace the unit's grants; the body is the whole set, so clearing revokes. */
+  setPermissions: (key: string, permissions: string[]) =>
+    request<OrgUnitPermissions>(
+      `/org-units/${encodeURIComponent(key)}/permissions`,
+      {
+        method: "PUT",
+        body: JSON.stringify({ permissions }),
+      },
+    ),
 
   /**
    * Usernames scoped to each unit, keyed by unit key.
