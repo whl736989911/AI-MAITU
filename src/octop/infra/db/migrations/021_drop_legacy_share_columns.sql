@@ -12,6 +12,14 @@
 -- present in v20, ``max_documents`` (v10) and the profile columns (v7)
 -- included — and the rows are copied across by name.
 --
+-- The rebuilds below describe each table's *current* shape, not its v20 one:
+-- migrate.py re-runs them on every boot, so a later migration that changes one
+-- of these tables has to be reflected here too (v27's ``is_enterprise`` and the
+-- nullable ``knowledge_bases.owner_user_id`` are). The copy names only the
+-- columns the live table actually has — ``_live_columns`` reconciles the two
+-- lists — so a column that does not exist yet takes its declared default
+-- instead of failing the INSERT.
+--
 -- SQLite boots apply this through migrate.py::_drop_legacy_share_columns, which
 -- mirrors the flags into ``resource_acl`` *before* dropping them and is
 -- idempotent; the rebuild below is what the helper executes, listed here so the
@@ -105,7 +113,7 @@ ALTER TABLE knowledge_bases RENAME TO knowledge_bases_legacy;
 CREATE TABLE knowledge_bases (
   id                INTEGER PRIMARY KEY AUTOINCREMENT,
   knowledge_base_id TEXT NOT NULL UNIQUE,
-  owner_user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  owner_user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
   name              TEXT NOT NULL,
   description       TEXT NOT NULL DEFAULT '',
   default_open      INTEGER NOT NULL DEFAULT 0,
@@ -116,6 +124,7 @@ CREATE TABLE knowledge_bases (
   created_at        INTEGER NOT NULL,
   updated_at        INTEGER NOT NULL,
   max_documents     INTEGER NOT NULL DEFAULT 100,
+  is_enterprise     INTEGER NOT NULL DEFAULT 0,
   UNIQUE(owner_user_id, name)
 );
 INSERT INTO knowledge_bases(

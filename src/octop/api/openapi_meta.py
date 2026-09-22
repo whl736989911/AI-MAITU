@@ -80,7 +80,10 @@ OPENAPI_TAGS: list[dict[str, str]] = [
     },
     {
         "name": "knowledge",
-        "description": "Private, shareable document knowledge bases and their indexing capability.",
+        "description": (
+            "The deployment's single enterprise knowledge base: its documents, its folder "
+            "data sources (local, SMB), connection tests, scans and extraction runs."
+        ),
     },
     {
         "name": "internal-mcp",

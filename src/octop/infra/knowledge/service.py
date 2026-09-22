@@ -14,6 +14,7 @@ from octop.infra.db.repos.knowledge import KnowledgeBaseRow, KnowledgeDocumentRo
 from octop.infra.knowledge.files import (
     delete_document_file,
     delete_knowledge_base_files,
+    document_digest,
     document_path,
     write_document,
 )
@@ -26,11 +27,21 @@ from octop.infra.knowledge.ocr import (
 )
 from octop.infra.knowledge.parse import parse_document
 from octop.infra.knowledge.relpath import normalize_kb_path, path_basename, path_parent
-from octop.infra.knowledge.scope import may_read_knowledge_base
+from octop.infra.knowledge.scope import (
+    may_read_document,
+    may_read_knowledge_base,
+    readable_documents,
+)
+from octop.infra.knowledge.search import (
+    DEFAULT_SEARCH_K,
+    SearchHit,
+    query_terms,
+    search_base,
+    snippet,
+)
 from octop.infra.sharing import user_scope
 
 MAX_DOCS_PER_KB = 100
-MAX_BASES_PER_OWNER = 20
 MAX_DOCUMENT_BYTES = upload_mb_to_bytes(DEFAULT_MAX_UPLOAD_MB)
 # Upper bound for the per-base max_documents field. Mirrors Field(le=10000).
 MAX_KB_MAX_DOCUMENTS = 10_000
@@ -44,12 +55,18 @@ _EXT_TO_CONTENT_TYPE = {
     ".htm": "text/html",
     ".json": "application/json",
     ".jsonl": "application/jsonl",
+    ".xml": "application/xml",
     ".yaml": "application/yaml",
     ".yml": "application/yaml",
     ".csv": "text/csv",
     ".tsv": "text/tab-separated-values",
     ".pdf": "application/pdf",
+    # design §6.1: the binary Office formats are converted by LibreOffice before
+    # parsing (``octop.infra.knowledge.legacy_office``), so the platform accepts
+    # and indexes them like any other document.
+    ".doc": "application/msword",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ".ppt": "application/vnd.ms-powerpoint",
     ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
     ".xls": "application/vnd.ms-excel",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -116,39 +133,23 @@ class KnowledgeService:
     def _repo(self) -> Any:
         return self._services.knowledge_repo
 
-    def create_base(
-        self,
-        *,
-        owner_user_id: int,
-        name: str,
-        description: str = "",
-        default_open: bool = False,
-        shared: bool = False,
-        icon_name: str = "",
-        max_documents: int = MAX_DOCS_PER_KB,
-    ) -> KnowledgeBaseRow:
-        assert_knowledge_usable(
-            self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
-        )
-        if max_documents < 0 or max_documents > MAX_KB_MAX_DOCUMENTS:
-            raise ValueError(f"max_documents must be between 0 and {MAX_KB_MAX_DOCUMENTS}")
-        owned = self._repo.count_bases_for_owner(owner_user_id)
-        if owned >= MAX_BASES_PER_OWNER:
-            raise ValueError(f"a user can own at most {MAX_BASES_PER_OWNER} knowledge bases")
-        model = (self._services.settings_repo.get("knowledge_embedding_model") or "").strip()
-        return cast(
-            KnowledgeBaseRow,
-            self._repo.create_base(
-                owner_user_id=owner_user_id,
-                name=name,
-                description=description,
-                default_open=default_open,
-                shared=shared,
-                icon_name=icon_name,
-                embedding_model=model,
-                max_documents=max_documents,
-            ),
-        )
+    def enterprise_space(self) -> KnowledgeBaseRow:
+        """The deployment's one enterprise knowledge space.
+
+        Schema v27 makes ``knowledge_bases`` a singleton space: the migration
+        seeds the row and the database refuses a second one
+        (``idx_knowledge_bases_enterprise``). There is deliberately no
+        ``create_base`` beside this — a user creating a knowledge base is the
+        model the design replaced, so the capability is gone rather than
+        discouraged, and the knowledge-base API no longer has a create route.
+
+        Raising rather than returning ``None`` is the signal that matters: a
+        deployment without its space is a broken schema, not an empty one.
+        """
+        space = cast(KnowledgeBaseRow | None, self._repo.get_enterprise_space())
+        if space is None:
+            raise RuntimeError("the enterprise knowledge space has not been seeded")
+        return space
 
     def list_visible_bases(self, *, actor_user_id: int) -> list[KnowledgeBaseRow]:
         """Knowledge bases this actor may use, per the one access rule.
@@ -194,9 +195,18 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False, prefix: str | None = None
     ) -> list[KnowledgeDocumentRow]:
         self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
-        if prefix is None:
-            return cast(list[KnowledgeDocumentRow], self._repo.list_documents(kb_id))
-        return cast(list[KnowledgeDocumentRow], self._repo.list_children(kb_id, prefix))
+        documents = (
+            self._repo.list_documents(kb_id)
+            if prefix is None
+            else self._repo.list_children(kb_id, prefix)
+        )
+        # design §14: a file the actor may not read is absent from the listing
+        # and from search — one filter, so the two cannot disagree.
+        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
+        return cast(
+            list[KnowledgeDocumentRow],
+            readable_documents(documents, restricted=restricted, readable=readable),
+        )
 
     def create_folder(
         self, kb_id: str, *, actor_user_id: int, path: str, is_admin: bool = False
@@ -206,23 +216,99 @@ class KnowledgeService:
 
     def preview_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
-    ) -> dict[str, str]:
-        """Return extracted plain text for a readable knowledge document."""
+    ) -> dict[str, Any]:
+        """Return extracted plain text for a readable knowledge document.
+
+        The document's own title and headings come with it: they are what the
+        parser already worked out (design §6.2), and a reader who is looking at
+        the text wants to know what the document calls itself. Tables are left
+        out on purpose — the text below already holds them, and a spreadsheet's
+        structure is the whole file twice over.
+        """
         self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise LookupError("knowledge document not found")
+        self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
         path = document_path(kb_id, doc_id, document.filename)
-        text = parse_document(path, ocr=optional_ocr_extractor(self._services))
+        parsed = parse_document(
+            path,
+            ocr=optional_ocr_extractor(self._services),
+            # The on-disk name is the document id, so the parser has to be told
+            # what the file is really called.
+            source_path=document.display_path,
+        )
+        text = parsed.text
         if len(text) > _MAX_PREVIEW_CHARS:
             text = text[:_MAX_PREVIEW_CHARS]
         return {
             "id": document.id,
             "filename": document.filename,
+            "title": parsed.title,
+            "pages": parsed.pages,
+            "sections": list(parsed.sections),
             "text": text,
         }
+
+    def search(
+        self,
+        *,
+        actor_user_id: int,
+        query: str,
+        kb_id: str | None = None,
+        limit: int = DEFAULT_SEARCH_K,
+        is_admin: bool = False,
+    ) -> list[SearchHit]:
+        """Keyword and full-text search over the knowledge an actor may read.
+
+        The scope is the same one chat retrieval applies — the bases the actor
+        can read (``list_visible`` resolves the ACL, admin bypass included) and
+        only their ``ready`` documents — so search cannot surface what a citation
+        or a download would refuse (design §14), and the two paths cannot drift
+        apart. An indexing, failed, or deleted-pending file is not searchable.
+
+        Passing *kb_id* narrows the search to one base and checks read access to
+        it; leaving it out searches every base the actor can read.
+        """
+        cleaned = (query or "").strip()
+        if not cleaned or limit <= 0:
+            return []
+        if kb_id is not None:
+            bases = [self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)]
+        else:
+            bases = self.list_visible_bases(actor_user_id=actor_user_id)
+        terms = query_terms(cleaned)
+        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
+        hits: list[SearchHit] = []
+        for base in bases:
+            ready = {
+                document.id: document
+                for document in readable_documents(
+                    self._repo.list_documents(base.id), restricted=restricted, readable=readable
+                )
+                if document.status == "ready" and not document.is_dir
+            }
+            for hit, document in search_base(
+                base.id, query=cleaned, ready_documents=ready, limit=limit
+            ):
+                hits.append(
+                    SearchHit(
+                        kb_id=base.id,
+                        base_name=base.name,
+                        document_id=document.id,
+                        filename=document.filename,
+                        path=document.path,
+                        source_path=document.source_path,
+                        title=document.title,
+                        ordinal=hit.ordinal,
+                        snippet=snippet(hit.text, terms),
+                        score=hit.score,
+                    )
+                )
+        hits.sort(key=lambda row: (-row.score, row.base_name, row.path, row.ordinal))
+        return hits[:limit]
 
     def resolve_document_file(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
@@ -238,6 +324,7 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise LookupError("knowledge document not found")
+        self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
         path = document_path(kb_id, doc_id, document.filename)
         if not path.is_file():
             raise FileNotFoundError("knowledge document original file not found")
@@ -259,6 +346,7 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise LookupError("knowledge document not found")
+        self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
         if document.content_type not in _TEXT_CONTENT_TYPES:
             raise ValueError("unsupported knowledge document content type: not editable text")
         raw = document_path(kb_id, doc_id, document.filename).read_bytes()
@@ -270,6 +358,10 @@ class KnowledgeService:
             "id": document.id,
             "filename": document.filename,
             "content_type": document.content_type,
+            # The title the parser stored, not one recomputed here: it is the
+            # same value the listing shows, and computing it twice would let the
+            # two disagree.
+            "title": document.title,
             "text": text,
         }
 
@@ -343,10 +435,40 @@ class KnowledgeService:
             error_message="",
             chunk_count=0,
         )
+        # The old structure described the old text.
+        self._repo.set_derived(doc_id, None)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
             raise LookupError("knowledge document not found")
         return cast(KnowledgeDocumentRow, refreshed)
+
+    def document_read_scope(
+        self, actor_user_id: int, *, is_admin: bool = False
+    ) -> tuple[set[str], set[str]]:
+        """``(restricted, readable)`` document ids for this actor.
+
+        ``restricted`` is every document that carries a file-level entry of its
+        own; ``readable`` is the subset the actor may read. Both come from
+        ``resource_acl``'s list entry point, so this cannot answer differently
+        from the single-document check below it.
+        """
+        return (
+            set(self._repo.document_acl_entries()),
+            self._repo.readable_document_ids(user_id=actor_user_id, is_admin=is_admin),
+        )
+
+    def require_document_readable(
+        self, document: KnowledgeDocumentRow, *, actor_user_id: int, is_admin: bool = False
+    ) -> None:
+        """Refuse a document whose own file-level entry excludes the actor.
+
+        The base has already been checked by the caller; this is the second half
+        of design §5.2 — a file rule narrows what the base allows and never
+        widens it.
+        """
+        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
+        if not may_read_document(document.id, restricted=restricted, readable=readable):
+            raise PermissionError("knowledge document read access is required")
 
     def get_readable_base(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
@@ -418,6 +540,7 @@ class KnowledgeService:
             path=rel,
             content_type=resolved_type,
             byte_size=len(content),
+            content_hash=document_digest(content),
             max_documents=base.max_documents,
         )
         try:
@@ -478,6 +601,7 @@ class KnowledgeService:
             path=rel,
             content_type=resolved_type,
             byte_size=len(content),
+            content_hash=document_digest(content),
             status="pending",
             error_message="",
             chunk_count=0,
@@ -505,6 +629,7 @@ class KnowledgeService:
             path=rel,
             content_type=resolved_type,
             byte_size=len(content),
+            content_hash=document_digest(content),
             max_documents=base.max_documents,
         )
         try:
@@ -541,6 +666,7 @@ class KnowledgeService:
         if document.is_dir:
             raise ValueError("folders cannot be reindexed")
         self._repo.update_document(doc_id, status="pending", error_message="", chunk_count=0)
+        self._repo.set_derived(doc_id, None)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
             raise LookupError("knowledge document not found")

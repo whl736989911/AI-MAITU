@@ -14,6 +14,11 @@ describe("canPreviewKnowledgeDocument", () => {
     expect(canPreviewKnowledgeDocument({ filename: "a.xlsx" })).toBe(true);
     expect(canPreviewKnowledgeDocument({ filename: "a.md" })).toBe(true);
     expect(canPreviewKnowledgeDocument({ filename: "a.csv" })).toBe(true);
+    expect(canPreviewKnowledgeDocument({ filename: "a.xml" })).toBe(true);
+    // Legacy Word has no in-browser renderer, but the server extracts it, so
+    // the Eye is enabled and shows the extracted text (design §6.1).
+    expect(canPreviewKnowledgeDocument({ filename: "a.doc" })).toBe(true);
+    expect(canPreviewKnowledgeDocument({ filename: "a.ppt" })).toBe(true);
   });
 
   it("rejects directories and unknown binaries", () => {
@@ -63,8 +68,11 @@ describe("canRichPreviewKnowledgeDocument", () => {
   it("requires original and a supported office/pdf extension", () => {
     expect(canRichPreviewKnowledgeDocument({ filename: "a.pdf" })).toBe(true);
     expect(canRichPreviewKnowledgeDocument({ filename: "a.docx" })).toBe(true);
-    expect(canRichPreviewKnowledgeDocument({ filename: "a.doc" })).toBe(true);
+    // `.xls` is readable by the bundled spreadsheet reader; the two legacy
+    // formats with no in-browser renderer are not, so they fall back to the
+    // text the server extracted (design §6.1).
     expect(canRichPreviewKnowledgeDocument({ filename: "a.xls" })).toBe(true);
+    expect(canRichPreviewKnowledgeDocument({ filename: "a.doc" })).toBe(false);
     expect(canRichPreviewKnowledgeDocument({ filename: "a.ppt" })).toBe(false);
     expect(
       canRichPreviewKnowledgeDocument({
