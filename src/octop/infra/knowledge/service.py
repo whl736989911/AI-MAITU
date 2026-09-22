@@ -195,8 +195,15 @@ class KnowledgeService:
 
     def preview_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
-    ) -> dict[str, str]:
-        """Return extracted plain text for a readable knowledge document."""
+    ) -> dict[str, Any]:
+        """Return extracted plain text for a readable knowledge document.
+
+        The document's own title and headings come with it: they are what the
+        parser already worked out (design §6.2), and a reader who is looking at
+        the text wants to know what the document calls itself. Tables are left
+        out on purpose — the text below already holds them, and a spreadsheet's
+        structure is the whole file twice over.
+        """
         self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
@@ -204,12 +211,22 @@ class KnowledgeService:
         if document.is_dir:
             raise LookupError("knowledge document not found")
         path = document_path(kb_id, doc_id, document.filename)
-        text = parse_document(path, ocr=optional_ocr_extractor(self._services))
+        parsed = parse_document(
+            path,
+            ocr=optional_ocr_extractor(self._services),
+            # The on-disk name is the document id, so the parser has to be told
+            # what the file is really called.
+            source_path=document.display_path,
+        )
+        text = parsed.text
         if len(text) > _MAX_PREVIEW_CHARS:
             text = text[:_MAX_PREVIEW_CHARS]
         return {
             "id": document.id,
             "filename": document.filename,
+            "title": parsed.title,
+            "pages": parsed.pages,
+            "sections": list(parsed.sections),
             "text": text,
         }
 
@@ -259,6 +276,10 @@ class KnowledgeService:
             "id": document.id,
             "filename": document.filename,
             "content_type": document.content_type,
+            # The title the parser stored, not one recomputed here: it is the
+            # same value the listing shows, and computing it twice would let the
+            # two disagree.
+            "title": document.title,
             "text": text,
         }
 
@@ -332,6 +353,8 @@ class KnowledgeService:
             error_message="",
             chunk_count=0,
         )
+        # The old structure described the old text.
+        self._repo.set_derived(doc_id, None)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
             raise LookupError("knowledge document not found")
@@ -530,6 +553,7 @@ class KnowledgeService:
         if document.is_dir:
             raise ValueError("folders cannot be reindexed")
         self._repo.update_document(doc_id, status="pending", error_message="", chunk_count=0)
+        self._repo.set_derived(doc_id, None)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
             raise LookupError("knowledge document not found")

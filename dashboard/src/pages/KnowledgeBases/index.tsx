@@ -363,6 +363,11 @@ export default function KnowledgeBasesPage() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewFilename, setPreviewFilename] = useState("");
+  /**
+   * What the document calls itself, when it declares a title (design §6.2).
+   * Kept apart from the file name: the download still needs the real one.
+   */
+  const [previewTitle, setPreviewTitle] = useState("");
   const [previewText, setPreviewText] = useState("");
   const [previewKind, setPreviewKind] = useState<DocKind | null>(null);
   const [previewDocId, setPreviewDocId] = useState<string | null>(null);
@@ -1470,6 +1475,7 @@ export default function KnowledgeBasesPage() {
     previewTextAbortRef.current = abort;
     setPreviewOpen(true);
     setPreviewFilename(document.filename);
+    setPreviewTitle(document.title || "");
     setPreviewKind(kind);
     setPreviewDocId(document.id);
     setPreviewHasOriginal(canDownloadKnowledgeOriginal(document));
@@ -1495,6 +1501,7 @@ export default function KnowledgeBasesPage() {
         );
         if (abort.signal.aborted) return;
         setPreviewFilename(payload.filename);
+        setPreviewTitle(payload.title || document.title || "");
         setPreviewText(
           payload.text.trim() ? payload.text : t("knowledgeBases.previewEmpty"),
         );
@@ -1505,6 +1512,7 @@ export default function KnowledgeBasesPage() {
         );
         if (abort.signal.aborted) return;
         setPreviewFilename(preview.filename);
+        setPreviewTitle(preview.title || document.title || "");
         setPreviewText(
           preview.text.trim() ? preview.text : t("knowledgeBases.previewEmpty"),
         );
@@ -2584,7 +2592,9 @@ export default function KnowledgeBasesPage() {
               className={styles.previewModalTitleText}
               title={previewFilename || undefined}
             >
-              {previewFilename || t("knowledgeBases.previewDocument")}
+              {previewTitle ||
+                previewFilename ||
+                t("knowledgeBases.previewDocument")}
             </span>
             {previewNavIndex >= 0 ? (
               <span className={styles.previewModalNav}>

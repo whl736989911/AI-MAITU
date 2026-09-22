@@ -138,7 +138,12 @@ def _knowledge_service(server: OctopServer) -> KnowledgeService:
 
 def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any]:
     payload = asdict(row)
+    # The stored structure (design §3.4) is a cache, not an API value: shipping
+    # it raw would send every table twice — the text already carries them — so
+    # the row reports the one field of it a reader asks for.
+    payload.pop("derived_json", None)
     payload["document_id"] = row.id
+    payload["title"] = getattr(row, "title", "")
     if has_original is None:
         if getattr(row, "is_dir", False):
             has_original = False

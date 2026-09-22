@@ -123,7 +123,15 @@ def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -
     repo.update_document(doc_id, status="processing", error_message="")
     try:
         with parse_path(document) as path:
-            text = parse_document(path, ocr=optional_ocr_extractor(services))
+            parsed = parse_document(
+                path,
+                ocr=optional_ocr_extractor(services),
+                # The path the document really has: a source's file is parsed
+                # from a staged copy, and a stored one lives under its id, so
+                # neither on-disk name is the file's own.
+                source_path=document.display_path,
+            )
+        text = parsed.text
         knobs = get_advanced_settings(services.settings_repo.get)
         chunks = chunk_text(text, size=knobs["chunk_size"], overlap=knobs["chunk_overlap"])
         if not (text or "").strip() or not chunks:
@@ -132,6 +140,9 @@ def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -
         KnowledgeIndex(kb_id).replace_doc_chunks(doc_id, chunks, embeddings)
         dimension = len(embeddings[0]) if embeddings else 0
         repo.update_document(doc_id, status="ready", error_message="", chunk_count=len(chunks))
+        # design §3.4: the structure is derived content, stored once the file it
+        # describes has parsed — the text itself lives in the chunks above.
+        repo.set_derived(doc_id, parsed.derived())
         if dimension and base.embedding_dim != dimension:
             repo.update_base(kb_id, embedding_dim=dimension)
     except Exception as exc:

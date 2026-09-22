@@ -82,6 +82,11 @@ export interface KnowledgeDocument {
     | "password_required";
   error_message: string;
   chunk_count: number;
+  /**
+   * What the document calls itself (design §6.2), from the structure the
+   * parser stored. Empty until the file has been indexed.
+   */
+  title?: string;
   created_at: number;
   updated_at: number;
   /** True when the uploaded original still exists on disk. */
@@ -251,6 +256,8 @@ export const knowledgeBasesApi = {
       id: string;
       filename: string;
       content_type: string;
+      /** The title the parser stored, empty until the file has been indexed. */
+      title: string;
       text: string;
     }>(`/knowledge-bases/${id}/documents/${documentId}/content`),
 
@@ -292,9 +299,16 @@ export const knowledgeBasesApi = {
     ),
 
   previewDocument: (id: string, documentId: string) =>
-    request<{ id: string; filename: string; text: string }>(
-      `/knowledge-bases/${id}/documents/${documentId}/preview`,
-    ),
+    request<{
+      id: string;
+      filename: string;
+      /** What the document calls itself (design §6.2), else its file name. */
+      title: string;
+      /** Page count when the format declares one (PDF pages, slides). */
+      pages: number | null;
+      sections: string[];
+      text: string;
+    }>(`/knowledge-bases/${id}/documents/${documentId}/preview`),
 
   /** Authenticated original-file bytes (download or preview). */
   fetchDocumentFile: (

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Collection
 from dataclasses import dataclass
+from typing import Any
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import (
@@ -111,6 +113,38 @@ class KnowledgeDocumentRow:
     chunk_count: int
     created_at: int
     updated_at: int
+    derived_json: str = ""
+
+    @property
+    def derived(self) -> dict[str, Any]:
+        """The parsed structure (design §6.2), or ``{}`` before a file is parsed.
+
+        An unreadable payload degrades to ``{}`` like every other JSON column in
+        the repos: the column is derived data, and refusing to read a document
+        because its cache is corrupt would lose the document too.
+        """
+        try:
+            decoded = json.loads(self.derived_json or "{}")
+        except ValueError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+
+    @property
+    def title(self) -> str:
+        """The document's own title where it declared one (design §6.2)."""
+        return str(self.derived.get("title") or "")
+
+    @property
+    def display_path(self) -> str:
+        """The path to show for this document, and the one parsers are told.
+
+        Its file lives at ``<doc_id><suffix>`` on disk (``files.document_path``
+        keeps only the extension), so the on-disk name is never the real one —
+        a parser handed that path would take a document id for the file's name.
+        A file inside a source reports where it sits there; everything the
+        platform holds reports its own file name.
+        """
+        return self.source_path or self.filename
 
     @classmethod
     def from_row(cls, r: DbRow) -> KnowledgeDocumentRow:
@@ -144,6 +178,7 @@ class KnowledgeDocumentRow:
             chunk_count=r["chunk_count"],
             created_at=r["created_at"],
             updated_at=r["updated_at"],
+            derived_json=str(r["derived_json"] or "") if "derived_json" in keys else "",
         )
 
     def scan_row(self) -> IndexedFile:
@@ -672,6 +707,25 @@ class KnowledgeRepo:
                 (now_ts(), doc_id),
             )
 
+    def set_derived(self, doc_id: str, derived: dict[str, Any] | None) -> None:
+        """Replace the stored structure (design §3.4), or clear it with ``None``.
+
+        Written once, by the pipeline that just parsed the file, and cleared
+        wherever the content is replaced: a structure that outlives its text
+        would describe a document that no longer exists.
+        """
+        payload = (
+            ""
+            if derived is None
+            else json.dumps(derived, ensure_ascii=False, separators=(",", ":"))
+        )
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_documents SET derived_json = ?, updated_at = ? "
+                "WHERE document_id = ?",
+                (payload, now_ts(), doc_id),
+            )
+
     def reindex_all_documents(self, embedding_model: str) -> list[KnowledgeDocumentRow]:
         """Reset all document work after changing the shared embedding model."""
         ts = now_ts()
@@ -682,7 +736,8 @@ class KnowledgeRepo:
             )
             conn.execute(
                 "UPDATE knowledge_documents "
-                "SET status = 'pending', error_message = '', chunk_count = 0, updated_at = ? "
+                "SET status = 'pending', error_message = '', chunk_count = 0, "
+                "derived_json = '', updated_at = ? "
                 "WHERE is_dir = 0",
                 (ts,),
             )

@@ -1243,6 +1243,22 @@ def _ensure_knowledge_sync_runs_schema(db: DatabasePool) -> None:
         )
 
 
+def _ensure_knowledge_derived_schema(db: DatabasePool) -> None:
+    """Give ``knowledge_documents`` the parsed structure it derives (schema v29).
+
+    Emptiness is meaningful: ``''`` says "this file has not been parsed since
+    the structure started being stored", which is what a re-derivation keys off.
+
+    The column holds the *structure* (design §6.2) and not the text: the chunk
+    table already holds the text, and what the text cannot express — which
+    sheet a table came from, which heading a paragraph sits under — is the
+    reason to store it at all.
+    """
+    if not _table_exists(db, "knowledge_documents"):
+        return
+    _ensure_column(db, "knowledge_documents", "derived_json", "TEXT NOT NULL DEFAULT ''")
+
+
 def _ensure_org_units_schema(db: DatabasePool) -> None:
     """Create org units + unit grants and the user scope columns (schema v17)."""
     if _table_exists(db, "users"):
@@ -2562,6 +2578,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 29:
+        _ensure_knowledge_derived_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2596,6 +2617,8 @@ def run_migrations(db: DatabasePool) -> None:
             if version == 28:
                 _ensure_knowledge_file_index_schema(db)
                 _ensure_knowledge_sync_runs_schema(db)
+            if version == 29:
+                _ensure_knowledge_derived_schema(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -2621,3 +2644,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_data_sources_connection_schema(db)
     _ensure_knowledge_file_index_schema(db)
     _ensure_knowledge_sync_runs_schema(db)
+    _ensure_knowledge_derived_schema(db)

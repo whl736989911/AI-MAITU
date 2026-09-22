@@ -969,6 +969,29 @@ def test_a_file_that_comes_back_unchanged_is_not_indexed_again(
     assert _chunk_count(base.id) == chunks_before
 
 
+def test_a_scanned_file_stores_the_structure_it_yielded(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """design §3.4: the parsed structure lands on the row as derived content."""
+    root = _local_root(tmp_path)
+    _source_file(root, "contract.md", "# 采购合同\n\n第一条 为了规范\n")
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/contract.md")
+    assert document is not None
+    assert document.status == "ready"
+    assert document.derived["title"] == "采购合同"
+    assert document.derived["sections"] == ["采购合同"]
+    # The structure names the file the source holds, not the staged copy the
+    # parser actually read.
+    assert document.derived["source_path"] == "contract.md"
+    assert document.derived["filename"] == "contract.md"
+
+
 def test_scan_marks_a_file_this_build_cannot_parse_unsupported(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
 ) -> None:

@@ -106,7 +106,7 @@ def test_run_migrations_creates_acl_tables(tmp_path: Path) -> None:
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
 
-    assert _version(pool) == 28
+    assert _version(pool) == 29
     assert set(_ACL_TABLES).issubset(_table_names(pool))
     assert _columns(pool, "resource_acl") == {
         "resource_type",
@@ -184,7 +184,7 @@ def test_upgrade_from_v17_backfills_legacy_shared_flags(tmp_path: Path) -> None:
 
     run_migrations(pool)
 
-    assert _version(pool) == 28
+    assert _version(pool) == 29
     assert _legacy_acl_rows(pool) == [
         ("agent", "ag_private", 1, "private", None, 1),
         ("agent", "ag_shared", 1, "public", None, 1),
@@ -326,7 +326,7 @@ def test_v21_drops_the_share_columns_and_no_other_column(tmp_path: Path) -> None
 
     run_migrations(pool)
 
-    assert _version(pool) == 28
+    assert _version(pool) == 29
     for table, column in _SHARE_COLUMNS:
         assert column in before[table]
         assert _columns(pool, table) == before[table] - {column}

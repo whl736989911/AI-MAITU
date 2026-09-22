@@ -89,8 +89,8 @@ def test_image_and_blank_pdf_use_ocr(tmp_path: Path) -> None:
         calls.append(path)
         return "recognized text"
 
-    assert parse_document(image, ocr=fake_ocr) == "recognized text"
-    assert parse_document(pdf, ocr=fake_ocr) == "recognized text"
+    assert parse_document(image, ocr=fake_ocr).text == "recognized text"
+    assert parse_document(pdf, ocr=fake_ocr).text == "recognized text"
     assert calls == [image, pdf]
 
 
@@ -105,13 +105,15 @@ def test_text_pdf_does_not_require_ocr(tmp_path: Path, monkeypatch: pytest.Monke
 
     monkeypatch.setattr(
         "pypdf.PdfReader",
-        lambda _path: SimpleNamespace(pages=[Page()]),
+        # The stub stands in for the reader the parser actually reads: its pages
+        # (for text and the page count) and its metadata (for the title).
+        lambda _path: SimpleNamespace(pages=[Page()], metadata=None),
     )
 
     def unexpected_ocr(_path: Path) -> str:
         raise AssertionError("OCR must not run for a text PDF")
 
-    assert parse_document(pdf, ocr=unexpected_ocr) == "embedded text"
+    assert parse_document(pdf, ocr=unexpected_ocr).text == "embedded text"
 
 
 def test_image_requires_enabled_ocr(tmp_path: Path) -> None:
