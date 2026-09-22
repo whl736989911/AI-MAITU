@@ -45,7 +45,7 @@ export const mbtiApi = {
       headers: agentHeaders(agentId),
     }),
 
-  /** Apply a specific MBTI type to the active agent (regenerates SOUL.md). */
+  /** Apply a specific MBTI type to the active agent (its recorded system prompt). */
   applyMBTIType: (code: string, language = "zh", agentId?: string) =>
     request<MBTIApplyResponse>("/mbti/apply", {
       method: "POST",

@@ -19,14 +19,16 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
  *   - the persona files tab belongs to that scope, and is not offered without it.
  */
 
-const { listFeatures, personalizeFeature, getAgentStatus } = vi.hoisted(() => ({
-  listFeatures: vi.fn(),
-  personalizeFeature: vi.fn(),
-  getAgentStatus: vi.fn(),
-}));
+const { listFeatures, personalizeFeature, getFeatureMeta, getAgentStatus } =
+  vi.hoisted(() => ({
+    listFeatures: vi.fn(),
+    personalizeFeature: vi.fn(),
+    getFeatureMeta: vi.fn(),
+    getAgentStatus: vi.fn(),
+  }));
 
 vi.mock("../../../api/modules/features", () => ({
-  featuresApi: { listFeatures, personalizeFeature },
+  featuresApi: { listFeatures, personalizeFeature, getFeatureMeta },
 }));
 vi.mock("../../../api/modules/octopAgents", () => ({
   octopAgentsApi: { getAgentStatus },
@@ -152,14 +154,43 @@ const FEATURES = {
 
 const AGENT_ID = "feat-weekly-report";
 
-function renderPage(path = "/personalization/skills") {
+/** One definition this instance ships: readable, and never personalizable. */
+const BUNDLED_ID = "meeting-notes";
+
+/** The catalog plus a shipped definition — what ``GET /features`` answers. */
+function catalogWithShipped() {
+  return {
+    features: [
+      ...FEATURES.features,
+      {
+        ...FEATURES.features[0],
+        id: BUNDLED_ID,
+        label: { zh: "会议纪要", en: "Meeting notes" },
+      },
+    ],
+    units: [],
+  };
+}
+
+/** ``GET /features/_meta``: the same writability test the server refuses on. */
+const META = {
+  units: [],
+  icons: [],
+  output_kinds: ["markdown", "json", "text"],
+  bundled_ids: [] as string[],
+};
+
+/** A caller who holds ``features`` without being an administrator. */
+const FEATURES_USER: OctopUser = { ...user, username: "member1", role: "user" };
+
+function renderPage(path = "/personalization/skills", as: OctopUser = user) {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route
           path="/personalization/*"
           element={
-            <CurrentUserProvider user={user} setUser={vi.fn()}>
+            <CurrentUserProvider user={as} setUser={vi.fn()}>
               <PersonalizationPage />
             </CurrentUserProvider>
           }
@@ -174,6 +205,7 @@ describe("<PersonalizationPage /> feature scope", () => {
     vi.clearAllMocks();
     localStorage.clear();
     listFeatures.mockResolvedValue(FEATURES);
+    getFeatureMeta.mockResolvedValue(META);
     personalizeFeature.mockResolvedValue({
       feature_id: "weekly-report",
       agent_id: AGENT_ID,
@@ -252,5 +284,50 @@ describe("<PersonalizationPage /> feature scope", () => {
       `files:${AGENT_ID}`,
     );
     await waitFor(() => expect(personalizeFeature).toHaveBeenCalledOnce());
+  });
+
+  /**
+   * The row and ``POST /features/{id}/agent`` name the same set. The call
+   * refuses a bundled definition (403, ``reason: "bundled"``), so the definition
+   * must not be in the picker either: an option whose only outcome is a refusal
+   * is a dead end, not a choice.
+   */
+  it("does not offer a definition this instance ships", async () => {
+    listFeatures.mockResolvedValue(catalogWithShipped());
+    getFeatureMeta.mockResolvedValue({ ...META, bundled_ids: [BUNDLED_ID] });
+    renderPage();
+
+    // The user's own definition is offered — the row is not simply empty.
+    expect(await screen.findByText("pick:weekly-report")).toBeInTheDocument();
+    expect(screen.queryByText(`pick:${BUNDLED_ID}`)).toBeNull();
+  });
+
+  it("never asks the server for a bundled definition reached by URL", async () => {
+    listFeatures.mockResolvedValue(catalogWithShipped());
+    getFeatureMeta.mockResolvedValue({ ...META, bundled_ids: [BUNDLED_ID] });
+    renderPage(`/personalization/skills?feature=${BUNDLED_ID}`);
+
+    await screen.findByText("pick:weekly-report");
+    // Not materialized: the call is the 403, and a refusal is not a scope.
+    expect(personalizeFeature).not.toHaveBeenCalled();
+    // Dropped rather than shown, so the page is the caller's own expert again —
+    // with neither the refusal screen nor the persona-files tab that scope adds.
+    expect(await screen.findByTestId("skills")).toHaveTextContent(
+      "skills:my-expert",
+    );
+    expect(screen.queryByText("features.scopeFeatureAgentFailed")).toBeNull();
+    expect(screen.queryByText("personalization.tabs.files")).toBeNull();
+  });
+
+  it("offers the feature row only to the caller the call accepts", async () => {
+    // ``features`` alone is a run permission; giving a definition an agent is an
+    // administrator's call, and every pick would come back refused.
+    renderPage("/personalization/skills", FEATURES_USER);
+
+    expect(await screen.findByTestId("skills")).toHaveTextContent(
+      "skills:my-expert",
+    );
+    expect(screen.queryByText("pick:weekly-report")).toBeNull();
+    expect(listFeatures).not.toHaveBeenCalled();
   });
 });

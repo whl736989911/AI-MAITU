@@ -438,7 +438,7 @@
     "settingsEditTitle": "Feature settings",
     "settingsTabDefinition": "Definition",
     "settingsTabSteps": "Steps",
-    "personalizationMbtiNote": "Applying an MBTI type regenerates SOUL.md, overwriting any soul you wrote by hand.",
+    "personalizationMbtiNote": "Applying an MBTI type rewrites this agent's system prompt — the workspace persona files (SOUL.md among them) are left as they are, so a soul you wrote by hand is not overwritten. The type is stored on this shared agent, so it shapes every caller's runs.",
     "settingsCreated": "Feature created",
     "settingsSaved": "Feature saved",
     "settingsDeleted": "Feature deleted",

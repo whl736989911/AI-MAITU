@@ -438,7 +438,7 @@
     "settingsEditTitle": "功能设置",
     "settingsTabDefinition": "定义",
     "settingsTabSteps": "步骤",
-    "personalizationMbtiNote": "应用 MBTI 人格会重写 SOUL.md；手改过的灵魂设定会被覆盖。",
+    "personalizationMbtiNote": "应用 MBTI 人格重写的是这个 agent 的系统提示词——工作区里的人设文件（SOUL.md 等）原样保留，手写的灵魂设定不会被覆盖。人格记在这个共用 agent 上，对所有调用者生效。",
     "settingsCreated": "功能已创建",
     "settingsSaved": "功能已保存",
     "settingsDeleted": "功能已删除",

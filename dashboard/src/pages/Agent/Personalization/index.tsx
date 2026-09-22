@@ -14,6 +14,13 @@
  * app-owned agent never is. So the active agent stays the caller's, and only the
  * id the panels receive switches.
  *
+ * The row offers the definitions that call accepts, and no others: the catalog
+ * minus ``_meta``'s ``bundled_ids``, which is the store's own writability test —
+ * the very one that refuses with ``reason: "bundled"``. A shipped definition is
+ * absent from the picker rather than greyed out (an option whose only outcome is
+ * a refusal is a dead end, not a choice), and an id the picker does not offer is
+ * dropped from the URL instead of being opened.
+ *
  * The id itself comes from the server: ``POST /features/{id}/agent`` (idempotent:
  * it is the "open the personalization surface" call) answers with the agent, and
  * the status endpoint answers with its runtime state. Neither is derived from the
@@ -41,7 +48,7 @@ import { useAgent } from "../../../context/AgentContext";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { usePathTabs } from "../../../hooks/usePathTabs";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { userCan } from "../../../utils/permissions";
+import { isSystemAdmin, userCan } from "../../../utils/permissions";
 import { apiErrorMessage } from "../../../utils/apiError";
 import {
   featuresApi,
@@ -112,10 +119,27 @@ export default function PersonalizationPage() {
   const lang = normalizeUiLocale(i18n.language);
 
   const featureId = searchParams.get(FEATURE_PARAM);
-  const canManageFeatures = userCan(user, "features");
 
-  const [features, setFeatures] = useState<FeatureSummary[]>([]);
-  const [featuresLoading, setFeaturesLoading] = useState(false);
+  /**
+   * Giving a definition an agent of its own is instance configuration: the call
+   * behind the row is admin-gated, while ``features`` on its own is the *run*
+   * permission. A caller holding only that permission would be refused at every
+   * pick, so they are not shown the row at all.
+   */
+  const canPersonalizeFeature = isSystemAdmin(user);
+
+  /**
+   * The definitions this caller may actually personalize: ``null`` until the
+   * server has answered.
+   *
+   * One question, and it takes two calls to answer it: which definitions exist
+   * (``GET /features``) and which of them this instance will write (``_meta``'s
+   * ``bundled_ids``, the store's own writability test — the very test the server
+   * refuses a personalization on). The row must offer the same set the call
+   * accepts, so a bundled definition is *absent* from it rather than greyed out:
+   * a control whose only outcome is a refusal is a dead end, not a choice.
+   */
+  const [offered, setOffered] = useState<FeatureSummary[] | null>(null);
   /** The selected feature's own agent, as the server answered for it. */
   const [featureAgent, setFeatureAgent] = useState<{
     agent_id: string;
@@ -134,30 +158,42 @@ export default function PersonalizationPage() {
     [searchParams, setSearchParams],
   );
 
-  // Only the features this caller may configure are offered: the row is the way
-  // in to an app-owned agent, which is instance configuration.
   useEffect(() => {
-    if (!canManageFeatures) return;
+    if (!canPersonalizeFeature) return;
     let cancelled = false;
-    setFeaturesLoading(true);
-    featuresApi
-      .listFeatures()
-      .then((answer) => {
-        if (!cancelled) setFeatures(answer.features);
+    Promise.all([featuresApi.listFeatures(), featuresApi.getFeatureMeta()])
+      .then(([catalog, meta]) => {
+        if (cancelled) return;
+        const shipped = new Set(meta.bundled_ids);
+        setOffered(
+          catalog.features.filter((feature) => !shipped.has(feature.id)),
+        );
       })
       .catch(() => {
         // Offering nothing is the honest answer to "which features may I
-        // configure?" when the list could not be read; the agent bar comes back
-        // as the ordinary one and no feature can be selected.
-        if (!cancelled) setFeatures([]);
-      })
-      .finally(() => {
-        if (!cancelled) setFeaturesLoading(false);
+        // personalize?" when the answer could not be read; the agent bar comes
+        // back as the ordinary one and no feature can be selected. An unanswered
+        // ``bundled_ids`` in particular would offer exactly the ones the server
+        // refuses, so half an answer is no answer.
+        if (!cancelled) setOffered([]);
       });
     return () => {
       cancelled = true;
     };
-  }, [canManageFeatures]);
+  }, [canPersonalizeFeature]);
+
+  /**
+   * The scope this page acts on: the id in the URL, once the answer names it.
+   * Until then there is nothing to open — and for a bundled definition there
+   * never will be, because the call that opens it is the one that gets refused.
+   */
+  const scopedFeatureId = useMemo(
+    () =>
+      featureId !== null && offered?.some((feature) => feature.id === featureId)
+        ? featureId
+        : null,
+    [featureId, offered],
+  );
 
   /**
    * Materialize (or re-open) the selected feature's agent, and read the state the
@@ -182,22 +218,31 @@ export default function PersonalizationPage() {
   }, []);
 
   useEffect(() => {
-    if (featureId === null) {
+    if (scopedFeatureId === null) {
       setFeatureAgent(null);
       setAgentFailure(null);
       return;
     }
-    void openFeatureAgent(featureId);
-  }, [featureId, openFeatureAgent]);
+    void openFeatureAgent(scopedFeatureId);
+  }, [scopedFeatureId, openFeatureAgent]);
 
-  // A feature nobody offered (no permission, or an id that is not in the list)
-  // is not a scope this page can honour — it is dropped rather than shown as a
-  // selected feature the panels cannot use.
+  // A definition the answer did not name is not a scope this page can honour — it
+  // is dropped rather than shown as a selected feature the panels cannot use.
+  // ``offered === null`` drops nothing: "not answered yet" is not "not offered".
   useEffect(() => {
-    if (featureId === null || !canManageFeatures) return;
-    if (featuresLoading || features.length === 0) return;
-    if (!features.some((feature) => feature.id === featureId)) setFeatureId(null);
-  }, [featureId, canManageFeatures, features, featuresLoading, setFeatureId]);
+    if (featureId === null) return;
+    if (!canPersonalizeFeature) {
+      setFeatureId(null);
+      return;
+    }
+    if (offered !== null && scopedFeatureId === null) setFeatureId(null);
+  }, [
+    canPersonalizeFeature,
+    featureId,
+    offered,
+    scopedFeatureId,
+    setFeatureId,
+  ]);
 
   const tabs = useMemo<readonly PersonalizationTab[]>(
     () =>
@@ -259,14 +304,17 @@ export default function PersonalizationPage() {
 
   const scopeBar = useMemo(
     () =>
-      canManageFeatures ? (
+      canPersonalizeFeature ? (
         <FeatureScopeBar
-          features={features.map((feature) => ({
+          features={(offered ?? []).map((feature) => ({
             id: feature.id,
             label: pickLocale(feature.label, lang),
           }))}
-          featuresLoading={featuresLoading}
-          selected={featureId}
+          // ``offered === null`` is the whole of "still asking": the two calls
+          // behind the row are one answer, and until they answer nothing may be
+          // picked — least of all a definition the server would refuse.
+          featuresLoading={offered === null}
+          selected={scopedFeatureId}
           onSelect={setFeatureId}
           agentId={featureAgent?.agent_id ?? null}
           agentState={featureAgent?.state ?? null}
@@ -280,20 +328,21 @@ export default function PersonalizationPage() {
                   t,
                 )
           }
-          onRetry={() => featureId !== null && void openFeatureAgent(featureId)}
+          onRetry={() =>
+            scopedFeatureId !== null && void openFeatureAgent(scopedFeatureId)
+          }
           retryLabel={t("features.settingsCapabilityRetry")}
         />
       ) : null,
     [
       agentFailure,
       agentLoading,
-      canManageFeatures,
+      canPersonalizeFeature,
       featureAgent,
-      featureId,
-      features,
-      featuresLoading,
       lang,
+      offered,
       openFeatureAgent,
+      scopedFeatureId,
       setFeatureId,
       t,
     ],
@@ -303,6 +352,10 @@ export default function PersonalizationPage() {
   // rendered at all, because every one of them would describe an agent that is
   // not there. Loading and failure are different screens, and neither is "empty".
   if (featureId !== null && scopeAgentId === null) {
+    // No scope to open is not a failure to report: the answer has not arrived
+    // yet, or it arrived and did not name this definition — which the effect
+    // above turns into a URL without it. Both are the same waiting screen.
+    const settling = scopedFeatureId === null || agentLoading;
     return (
       <PageShell
         title={pageTitle}
@@ -313,7 +366,7 @@ export default function PersonalizationPage() {
         pathTabs={pathTabs}
       >
         <div className={styles.scopeStatus}>
-          {agentLoading ? (
+          {settling ? (
             <>
               <Spin size="small" />
               <span>{t("features.scopeFeatureAgentLoading")}</span>
@@ -332,7 +385,7 @@ export default function PersonalizationPage() {
                 <Button
                   size="small"
                   icon={<RefreshCw size={13} />}
-                  onClick={() => void openFeatureAgent(featureId)}
+                  onClick={() => void openFeatureAgent(scopedFeatureId)}
                 >
                   {t("features.settingsCapabilityRetry")}
                 </Button>
@@ -426,9 +479,10 @@ export default function PersonalizationPage() {
             ) : (
               <div className={pageShellStyles.fillChild}>
                 {featureId !== null && (
-                  // Applying a type regenerates SOUL.md; on a feature's agent the
-                  // soul file is edited on this same page, so the collision is
-                  // said out loud where it happens.
+                  // Applying a type writes this agent's system prompt and nothing
+                  // in the workspace: the persona files edited on this same page
+                  // (SOUL.md among them) are left alone. What *is* shared is the
+                  // agent itself, so it is said where that is true.
                   <Alert
                     type="info"
                     showIcon
