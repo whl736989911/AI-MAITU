@@ -30,6 +30,22 @@ vi.mock("../../../api/modules/memoryDashboard", () => ({
   },
 }));
 
+/**
+ * Promote/reject both toast through ``@/utils/antdMessage``. With no antd
+ * ``<App>`` provider in the tree the util falls back to antd's *static*
+ * ``message`` singleton, which renders its notices into its own React root
+ * (``antd/lib/message`` → ``rc-notification``) and arms a 3 s auto-dismiss
+ * timer per toast. That root is outside the RTL container, so ``cleanup()``
+ * never unmounts it: the timers outlive the test and, under load, their React
+ * updates land after this file's environment is torn down — the
+ * "update was not wrapped in act(...)" warning / "caught after test
+ * environment was torn down" error. Same mock as the other suites that render
+ * toast-calling components.
+ */
+vi.mock("@/utils/antdMessage", () => ({
+  message: { error: vi.fn(), success: vi.fn(), warning: vi.fn() },
+}));
+
 import { memoryDashboardApi } from "../../../api/modules/memoryDashboard";
 import CandidatesReview from "./CandidatesReview";
 
