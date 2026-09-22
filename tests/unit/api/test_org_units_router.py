@@ -69,7 +69,7 @@ async def _create(
             parent_key=parent,
             sort_order=sort_order,
         ),
-        user=world.admin,
+        actor=world.admin,
         server=world.server,
     )
 
@@ -87,7 +87,7 @@ async def test_create_patch_delete_roundtrip(world: SimpleNamespace) -> None:
     moved = await patch_org_unit(
         "ops",
         OrgUnitPatchBody(label_zh="运维", label_en="Operations", parent_key="hq", sort_order=2),
-        user=world.admin,
+        actor=world.admin,
         server=world.server,
     )
     assert moved["label"] == {"zh": "运维", "en": "Operations"}
@@ -96,16 +96,16 @@ async def test_create_patch_delete_roundtrip(world: SimpleNamespace) -> None:
 
     # Omitted parent_key keeps the parent; an explicit null moves the unit to the root.
     kept = await patch_org_unit(
-        "ops", OrgUnitPatchBody(label_en="Ops"), user=world.admin, server=world.server
+        "ops", OrgUnitPatchBody(label_en="Ops"), actor=world.admin, server=world.server
     )
     assert kept["parent_key"] == "hq"
     assert kept["label"] == {"zh": "运维", "en": "Ops"}
     detached = await patch_org_unit(
-        "ops", OrgUnitPatchBody(parent_key=None), user=world.admin, server=world.server
+        "ops", OrgUnitPatchBody(parent_key=None), actor=world.admin, server=world.server
     )
     assert detached["parent_key"] is None
 
-    assert await delete_org_unit("ops", user=world.admin, server=world.server) is None
+    assert await delete_org_unit("ops", actor=world.admin, server=world.server) is None
     assert world.units.get("ops") is None
     assert world.units.get("hq") is not None
 
@@ -143,7 +143,7 @@ async def test_patch_rejects_parent_that_would_cycle(
         await patch_org_unit(
             "ops",
             OrgUnitPatchBody(parent_key=new_parent),
-            user=world.admin,
+            actor=world.admin,
             server=world.server,
         )
 
@@ -162,7 +162,7 @@ async def test_patch_terminates_on_hierarchy_that_already_cycles(world: SimpleNa
         conn.execute("UPDATE org_units SET parent_key = 'a' WHERE key = 'b'")
 
     reparented = await patch_org_unit(
-        "c", OrgUnitPatchBody(parent_key="a"), user=world.admin, server=world.server
+        "c", OrgUnitPatchBody(parent_key="a"), actor=world.admin, server=world.server
     )
 
     assert reparented["parent_key"] == "a"
@@ -173,7 +173,7 @@ async def test_delete_rejects_unit_with_children(world: SimpleNamespace) -> None
     await _create(world, "ops-cn", parent="ops")
 
     with pytest.raises(OctopError) as exc:
-        await delete_org_unit("ops", user=world.admin, server=world.server)
+        await delete_org_unit("ops", actor=world.admin, server=world.server)
 
     assert exc.value.code is ErrorCode.ORG_UNIT_HAS_CHILDREN
     assert exc.value.status == 409
@@ -188,7 +188,7 @@ async def test_delete_rejects_unit_assigned_to_users(world: SimpleNamespace) -> 
     alice = world.users.create(username="alice", password_hash="h", role="user", org_unit="ops")
 
     with pytest.raises(OctopError) as exc:
-        await delete_org_unit("ops", user=world.admin, server=world.server)
+        await delete_org_unit("ops", actor=world.admin, server=world.server)
 
     assert exc.value.code is ErrorCode.ORG_UNIT_IN_USE
     assert exc.value.status == 409
@@ -199,7 +199,7 @@ async def test_delete_rejects_unit_assigned_to_users(world: SimpleNamespace) -> 
     # so skipping them would leave a reference no later read can resolve.
     world.users.set_disabled(alice, True)
     with pytest.raises(OctopError) as exc:
-        await delete_org_unit("ops", user=world.admin, server=world.server)
+        await delete_org_unit("ops", actor=world.admin, server=world.server)
     assert exc.value.code is ErrorCode.ORG_UNIT_IN_USE
     assert world.units.get("ops") is not None
 
@@ -207,13 +207,13 @@ async def test_delete_rejects_unit_assigned_to_users(world: SimpleNamespace) -> 
 async def test_patch_and_delete_reject_unknown_unit(world: SimpleNamespace) -> None:
     with pytest.raises(OctopError) as exc:
         await patch_org_unit(
-            "ghost", OrgUnitPatchBody(label_en="Ghost"), user=world.admin, server=world.server
+            "ghost", OrgUnitPatchBody(label_en="Ghost"), actor=world.admin, server=world.server
         )
     assert exc.value.code is ErrorCode.NOT_FOUND
     assert exc.value.status == 404
 
     with pytest.raises(OctopError) as exc:
-        await delete_org_unit("ghost", user=world.admin, server=world.server)
+        await delete_org_unit("ghost", actor=world.admin, server=world.server)
     assert exc.value.code is ErrorCode.NOT_FOUND
 
 
@@ -224,11 +224,11 @@ async def test_unit_permissions_roundtrip(world: SimpleNamespace) -> None:
     stored = await set_org_unit_permissions(
         "ops",
         OrgUnitPermissionsBody(permissions=["browser", "knowledge_bases"]),
-        user=world.admin,
+        actor=world.admin,
         server=world.server,
     )
     assert stored == {"unit_key": "ops", "permissions": ["browser", "knowledge_bases"]}
-    assert await get_org_unit_permissions("ops", _user=world.admin, server=world.server) == {
+    assert await get_org_unit_permissions("ops", actor=world.admin, server=world.server) == {
         "unit_key": "ops",
         "permissions": ["browser", "knowledge_bases"],
     }
@@ -237,7 +237,7 @@ async def test_unit_permissions_roundtrip(world: SimpleNamespace) -> None:
     replaced = await set_org_unit_permissions(
         "ops",
         OrgUnitPermissionsBody(permissions=["knowledge_bases"]),
-        user=world.admin,
+        actor=world.admin,
         server=world.server,
     )
     assert replaced["permissions"] == ["knowledge_bases"]
@@ -252,19 +252,19 @@ async def test_unit_permissions_reject_unknown_unit_and_key(world: SimpleNamespa
     await _create(world, "ops")
 
     with pytest.raises(OctopError) as exc:
-        await get_org_unit_permissions("ghost", _user=world.admin, server=world.server)
+        await get_org_unit_permissions("ghost", actor=world.admin, server=world.server)
     assert exc.value.code is ErrorCode.NOT_FOUND
 
     with pytest.raises(OctopError) as exc:
         await set_org_unit_permissions(
             "ops",
             OrgUnitPermissionsBody(permissions=["not_a_module"]),
-            user=world.admin,
+            actor=world.admin,
             server=world.server,
         )
     assert exc.value.code is ErrorCode.FORBIDDEN
     assert exc.value.status == 400
-    assert await get_org_unit_permissions("ops", _user=world.admin, server=world.server) == {
+    assert await get_org_unit_permissions("ops", actor=world.admin, server=world.server) == {
         "unit_key": "ops",
         "permissions": [],
     }
@@ -300,7 +300,7 @@ async def test_unit_permission_writes_are_scoped_to_own_unit(
             await set_org_unit_permissions(
                 "ops",
                 OrgUnitPermissionsBody(permissions=["users"]),
-                user=actor,
+                actor=actor,
                 server=world.server,
             )
         assert exc.value.code is ErrorCode.FORBIDDEN
@@ -311,7 +311,7 @@ async def test_unit_permission_writes_are_scoped_to_own_unit(
     written = await set_org_unit_permissions(
         "ops",
         OrgUnitPermissionsBody(permissions=["users"]),
-        user=actor,
+        actor=actor,
         server=world.server,
     )
     assert written["permissions"] == ["users"]
@@ -333,7 +333,7 @@ async def test_unit_admin_may_not_grant_keys_it_does_not_hold(world: SimpleNames
         await set_org_unit_permissions(
             "ops",
             OrgUnitPermissionsBody(permissions=["users", "security"]),
-            user=holder,
+            actor=holder,
             server=world.server,
         )
     assert exc.value.code is ErrorCode.FORBIDDEN
@@ -346,7 +346,7 @@ async def test_unit_admin_may_not_grant_keys_it_does_not_hold(world: SimpleNames
     kept = await set_org_unit_permissions(
         "ops",
         OrgUnitPermissionsBody(permissions=["users", "knowledge_bases"]),
-        user=holder,
+        actor=holder,
         server=world.server,
     )
     assert kept["permissions"] == ["users", "knowledge_bases"]

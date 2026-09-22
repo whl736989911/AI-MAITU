@@ -1,22 +1,26 @@
 """Admin CRUD for users.
 
-Two gates, deliberately distinct:
+Gates, deliberately distinct (design §2.1, §4.3):
 
-* the ``users`` module key opens this surface — listing accounts, creating a
-  plain ``user`` account, editing profile fields, and granting module keys the
-  actor *effectively* holds (``role ∪ department ∪ grant − deny``: the very set
+* the ``users`` module key opens this surface — listing accounts, creating an
+  account, editing profile fields, and granting module keys the actor
+  *effectively* holds (``role ∪ department ∪ grant − deny``: the very set
   ``/auth/me`` publishes as the editor's checkboxes — ``_assert_can_assign``);
-* the operations that move the authorization boundary itself — a role grant
-  (whether the role is set at creation or by a later edit), another account's
-  password / disabled state / deletion, department assignment, and permission
-  denies — require the ``admin`` role (``_assert_admin`` /
-  ``_assert_can_administer``).
+* the **organization scope** bounds *which* accounts and departments that key
+  reaches — a department administrator its own department and its
+  sub-departments, an enterprise administrator its whole enterprise
+  (:mod:`octop.infra.users.scope`). Every read and every write asks the same
+  question, so a row the actor may not edit is not a row it may list either;
+* the **role level** bounds which roles an actor may hand out or administer: a
+  peer and a senior are out of reach for everyone but a system administrator
+  (``assert_assignable_role`` / ``OrgScope.covers_account``);
+* permission **denies** stay a system administrator's write (design §2.1: 拒绝权限
+  属于高风险操作，第一阶段只允许系统管理员使用).
 
-Guarding is on the *target*, not on "is this me": promoting yourself is the same
-escalation as promoting somebody else, and a department carries module grants,
-so binding an account to one is a permission grant by another name. A deny is
-that same move run backwards: it subtracts, but it subtracts over the department
-too, and it can take the ``users`` key itself away from a colleague.
+Guarding is on the *target*, not on "is this me": a department carries module
+grants, so binding an account to one is a permission grant by another name. A
+deny is that same move run backwards: it subtracts, but it subtracts over the
+department too.
 """
 
 from __future__ import annotations
@@ -31,16 +35,27 @@ from octop.api.deps import (
     current_user,
     get_server,
     request_unit_grants,
-    require_admin,
     require_permission,
 )
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.users.identity import Role, User
-from octop.infra.users.permissions import PERMISSIONS, assert_can_grant, validate_permission_keys
+from octop.infra.users.identity import Role, User, role_level
+from octop.infra.users.permissions import (
+    PERMISSIONS,
+    assert_can_grant,
+    effective_permissions,
+    validate_permission_keys,
+)
 from octop.infra.users.resource_policy import (
     normalize_token_quota,
     normalize_workspace_root_dir,
     public_policy_fields,
+)
+from octop.infra.users.scope import (
+    OrgScope,
+    assert_assignable_role,
+    assert_may_manage_account,
+    assert_may_manage_unit,
+    scope_for,
 )
 from octop.infra.utils.locale import resolve_request_locale
 
@@ -136,33 +151,21 @@ def _policy_kwargs_from_body(body: UserCreateBody | UserPatchBody) -> dict[str, 
 
 
 def _assert_admin(actor: User, action: str) -> None:
-    """Refuse anything but an admin; ``action`` names the attempt.
+    """Refuse anything but a system administrator; ``action`` names the attempt.
 
-    The ``users`` key opens the management page — it does not carry the role
-    system, the account-recovery path, or department assignment. A caller that
-    holds ``users`` but not ``admin`` could otherwise promote itself, take over
-    an admin account, or lock one out; the module key would then be equivalent
-    to ``admin`` in effect and the role boundary would be decorative.
+    Narrow on purpose: after the four-level model this gate is left to the
+    writes that stay a system administrator's alone regardless of scope —
+    permission denies (design §2.1: 拒绝权限属于高风险操作，第一阶段只允许系统管理员使
+    用). Everything else asks the scope and role questions below.
     """
     if actor.is_admin:
         return
     raise OctopError(ErrorCode.FORBIDDEN, f"admin required to {action}")
 
 
-def _assert_can_administer(actor: User, target_user_id: int, action: str) -> None:
-    """:func:`_assert_admin`, but an account may still act on itself.
-
-    Used where the self case cannot escalate (disabling yourself, re-setting
-    your own password): the guard is on *who is being acted on*, never on "is
-    this me and am I being careful".
-    """
-    if actor.is_admin or target_user_id == actor.id:
-        return
-    raise OctopError(
-        ErrorCode.FORBIDDEN,
-        f"admin required to {action}",
-        details={"user_id": target_user_id},
-    )
+def _scope(server: Any, actor: User) -> OrgScope:
+    """The actor's reach, resolved from the org tree (design §2.1/§4.2)."""
+    return scope_for(actor, server.services.repos.org_unit_repo)
 
 
 def _assert_org_unit_exists(server: Any, unit_key: str) -> None:
@@ -179,6 +182,36 @@ def _assert_org_unit_exists(server: Any, unit_key: str) -> None:
             f"org unit {unit_key!r} not found",
             details={"unit_key": unit_key, "reason": f"unknown org unit {unit_key!r}"},
         )
+
+
+def _assert_target_unit(server: Any, scope: OrgScope, unit_key: str | None, *, action: str) -> None:
+    """Check the department of a write: scope first, existence second.
+
+    The order is the point. An out-of-scope key answers 403 whether or not it
+    exists, so the endpoint cannot be used by a scoped administrator to probe
+    which department keys another enterprise holds.
+    """
+    assert_may_manage_unit(scope, unit_key, action=action)
+    if unit_key is not None:
+        _assert_org_unit_exists(server, unit_key)
+
+
+def _require_known_role(raw: str) -> Role:
+    """Parse a wire role, refusing a name outside the four-level model.
+
+    ``Role(raw)`` raises a bare ``ValueError`` — a 500 for what is a bad request
+    — and defaulting to ``user`` instead would turn a typo such as
+    ``enterpise_admin`` into an account whose powers are not the ones the
+    operator asked for. Both directions are wrong, so this reports the request.
+    """
+    try:
+        return Role(raw)
+    except ValueError as exc:
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            f"unknown role {raw!r}; expected one of {[member.value for member in Role]}",
+            status=400,
+        ) from exc
 
 
 def _assert_denied_keys_known(denied: list[str] | None) -> list[str]:
@@ -243,11 +276,23 @@ def _assert_not_last_user_manager(
 @router.get("/permissions", summary="List assignable permission catalog")
 async def list_permission_catalog(
     request: Request,
-    _: User = Depends(current_user),
-) -> list[dict[str, str]]:
-    """Return all permissions, localized by Accept-Language, for the UI picker."""
+    actor: User = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> list[dict[str, Any]]:
+    """Return all permissions, localized by Accept-Language, for the UI picker.
+
+    Each item carries what design §4.1 asks the catalog for: the key, its
+    localized display name, whether it is ``dynamic`` (derived rather than
+    written out — today the channel types), and ``can_grant`` — whether *this*
+    operator may hand it out. ``can_grant`` is resolved through
+    :func:`effective_permissions`, the same function the write path checks
+    against, so a box the editor offers is a key the submit accepts.
+    """
     locale = resolve_request_locale(request)
-    items: list[dict[str, str]] = []
+    grantable = set(
+        effective_permissions(actor, unit_grants=request_unit_grants(request, server, actor))
+    )
+    items: list[dict[str, Any]] = []
     zh = locale.startswith("zh")
     for key, p in PERMISSIONS.items():
         labels = [(p.label_zh, p.label_en), *p.extra_tabs]
@@ -259,6 +304,8 @@ async def list_permission_catalog(
                     "label": label_zh if zh else label_en,
                     "page": p.page,
                     "page_label": (p.page_zh if zh else p.page_en) if p.page else "",
+                    "dynamic": p.dynamic,
+                    "can_grant": key in grantable,
                 }
             )
     return items
@@ -266,9 +313,21 @@ async def list_permission_catalog(
 
 @router.get("")
 async def list_users(
-    _: Any = Depends(require_permission("users")), server: Any = Depends(get_server)
+    actor: Any = Depends(require_permission("users")), server: Any = Depends(get_server)
 ) -> list[dict[str, Any]]:
-    rows = server.user_manager.list_all(include_disabled=True)
+    """List the accounts this operator may administer (design §4.2).
+
+    The filter is the same check every write below runs, so the list cannot
+    advertise a row the operator would be refused on.
+    """
+    scope = _scope(server, actor)
+    rows = [
+        r
+        for r in server.user_manager.list_all(include_disabled=True)
+        if scope.covers_account(
+            user_id=int(r.id), role=r.role, org_unit=getattr(r, "org_unit", None) or None
+        )
+    ]
     policy_map = server.services.user_policy_repo.list_by_user_ids([r.id for r in rows])
     return [_row_to_dict(r, policy_map.get(r.id)) for r in rows]
 
@@ -280,15 +339,33 @@ async def create_user(
     actor: Any = Depends(require_permission("users")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
+    """Create an account inside the actor's own reach (design §4.3 rules 1-4).
+
+    Four checks, in the order design §4.3 lists them: the ``users`` key (the
+    dependency above), the target department, the target role, and the keys
+    handed out. Note what the department rule means for a scoped administrator:
+    the new account must land in one of *its* departments — an account it could
+    not administer afterwards is not one it may create.
+    """
     _assert_can_assign(request, server, actor, body.permissions)
-    if body.org_unit is not None:
+    scope = _scope(server, actor)
+    if body.org_unit is None:
+        if not scope.is_system_admin:
+            raise OctopError(
+                ErrorCode.FORBIDDEN,
+                "an account you create must be bound to one of your departments",
+                details={
+                    "scope_units": sorted(scope.units),
+                    "reason": "an unbound account is outside every department tree",
+                },
+            )
+    else:
         # A department carries module grants, so this binds permissions.
-        _assert_admin(actor, "bind an account to a department")
-        _assert_org_unit_exists(server, body.org_unit)
+        _assert_target_unit(server, scope, body.org_unit, action="bind an account to a department")
     # A deny outranks role, unit and grant, so writing one moves the
-    # authorization boundary — admin-only, exactly like the department binding
-    # above. An empty list is the stored default and moves nothing, so a
-    # ``users``-only operator creating a plain account is not turned away.
+    # authorization boundary — a system administrator's write (design §2.1). An
+    # empty list is the stored default and moves nothing, so an operator who
+    # merely round-trips the field is not turned away.
     denied: list[str] = []
     if body.denied_permissions:
         _assert_admin(actor, "deny permissions for an account")
@@ -298,13 +375,12 @@ async def create_user(
         normalize_workspace_root_dir(policy_kwargs["workspace_root_dir"])
     if "token_quota" in policy_kwargs:
         normalize_token_quota(policy_kwargs["token_quota"])
-    role = Role(body.role)
-    if role is not Role.USER:
-        # Creating a non-``user`` account is a role grant, so it needs the same
-        # gate as changing one later. Without it ``users`` alone mints a fresh
-        # admin — a second door to exactly what the PATCH guard closes, and one
-        # that needs no victim: the caller knows the password it just chose.
-        _assert_admin(actor, "create a non-user account")
+    role = _require_known_role(body.role)
+    # A role named at creation is a role grant, so it is bounded by the same set
+    # that bounds a later role change: without this ``users`` alone mints a fresh
+    # administrator — a victimless route that even comes with a password the
+    # caller chose.
+    assert_assignable_role(actor, role, action="create an account with that role")
     user = await server.user_manager.create(
         username=body.username,
         password=body.password,
@@ -327,12 +403,13 @@ async def create_user(
 @router.get("/{user_id}")
 async def get_user(
     user_id: int,
-    _: Any = Depends(require_permission("users")),
+    actor: Any = Depends(require_permission("users")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     row = server.user_manager.get_row(user_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+    assert_may_manage_account(_scope(server, actor), row, action="read this account")
     return _row_to_dict(row, server.services.user_policy_repo.list_for_user(row.id))
 
 
@@ -347,6 +424,12 @@ async def patch_user(
     row = server.user_manager.get_row(user_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+    scope = _scope(server, actor)
+    # Every write below lands on this account, so the account is checked once,
+    # up front: a field the actor may not write on somebody else's account is
+    # refused even when its own value would have been acceptable (design §4.3
+    # rule 5/6, and 目标用户是否在创建者可管理范围内).
+    assert_may_manage_account(scope, row, action="edit this account")
     if body.permissions is not None:
         _assert_can_assign(request, server, actor, body.permissions)
         _assert_not_last_user_manager(
@@ -356,26 +439,31 @@ async def patch_user(
             new_permissions=body.permissions,
         )
     if body.role is not None:
-        _assert_admin(actor, "change a role")
-        if user_id == actor.id and Role(body.role) is not Role.ADMIN:
+        role = _require_known_role(body.role)
+        assert_assignable_role(actor, role, action="change a role")
+        if user_id == actor.id and role_level(role) < role_level(actor.role):
+            # Self-demotion is not an escalation, but it is the one role move
+            # whose consequence the actor cannot undo: it drops the reach it
+            # would need to take the role back.
             raise OctopError(ErrorCode.FORBIDDEN, "cannot demote yourself")
-        await server.user_manager.set_role(row.username, Role(body.role))
+        await server.user_manager.set_role(row.username, role)
     if body.display_name is not None:
         await server.user_manager.set_display_name(row.username, body.display_name)
     if "email" in body.model_fields_set:
         await server.user_manager.set_email(row.username, body.email)
     if "org_unit" in body.model_fields_set:
         # Explicit ``null`` clears the binding; an omitted field was filtered out
-        # above, so this branch never runs for "leave it as it is".
-        _assert_admin(actor, "change the department of an account")
-        if body.org_unit is not None:
-            _assert_org_unit_exists(server, body.org_unit)
+        # above, so this branch never runs for "leave it as it is". Clearing is
+        # a system administrator's move: an unbound account is outside every
+        # department tree, so a scoped administrator could otherwise park a user
+        # out of its own reach.
+        _assert_target_unit(
+            server, scope, body.org_unit, action="change the department of an account"
+        )
         await server.user_manager.set_org_unit(row.username, body.org_unit)
     if body.disabled is True:
-        _assert_can_administer(actor, user_id, "disable another account")
         await server.user_manager.disable(row.username)
     elif body.disabled is False:
-        _assert_can_administer(actor, user_id, "enable another account")
         await server.user_manager.enable(row.username)
     if body.permissions is not None:
         await server.user_manager.set_permissions(row.username, body.permissions)
@@ -400,13 +488,14 @@ async def patch_user(
 @router.post("/{user_id}/unlock-login", status_code=204, summary="Clear login lockout")
 async def unlock_user_login(
     user_id: int,
-    _: Any = Depends(require_permission("users")),
+    actor: Any = Depends(require_permission("users")),
     server: Any = Depends(get_server),
 ) -> None:
     """Clear failed-login counter and temporary lock for a user."""
     row = server.user_manager.get_row(user_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+    assert_may_manage_account(_scope(server, actor), row, action="unlock this account")
     await server.user_manager.unlock_login(row.username)
 
 
@@ -419,27 +508,37 @@ async def reset_password(
 ) -> None:
     """Set a new password without the old one — an account-recovery action.
 
-    Admin-only for anyone else's account: password reset *is* account takeover,
-    so an operator holding only ``users`` must not be able to aim it at an admin
-    (or at a colleague). Setting your own stays open — it cannot escalate.
+    Bounded by the same scope as every other write on the account: password
+    reset *is* account takeover, so it reaches exactly the accounts the actor
+    may already administer — its own, and an account strictly below it inside
+    its departments. An operator holding only ``users`` cannot aim it at a
+    system administrator, at a peer, or at somebody in another department.
+    Setting your own stays open — it cannot escalate.
     """
     row = server.user_manager.get_row(user_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
-    _assert_can_administer(actor, user_id, "reset another account's password")
+    assert_may_manage_account(_scope(server, actor), row, action="reset this account's password")
     await server.user_manager.reset_password(row.username, body.new_password)
 
 
 @router.delete("/{user_id}", status_code=204)
 async def delete_user(
     user_id: int,
-    actor: Any = Depends(require_admin()),
+    actor: Any = Depends(require_permission("users")),
     server: Any = Depends(get_server),
 ) -> None:
-    """Delete an account. Admin-only: ``users`` manages, it does not remove."""
+    """Delete an account inside the operator's reach.
+
+    Deletion is part of administering the accounts a role already reaches
+    (design §4.2 lists 删除 alongside 修改 as scope-checked), so the gate is the
+    scope rather than the role: an administrator removes the accounts below it
+    in its own departments, and nobody removes itself.
+    """
     if user_id == actor.id:
         raise OctopError(ErrorCode.FORBIDDEN, "cannot delete yourself")
     row = server.user_manager.get_row(user_id)
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+    assert_may_manage_account(_scope(server, actor), row, action="delete this account")
     await server.user_manager.remove(row.username)

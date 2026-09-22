@@ -157,9 +157,17 @@ function fetchOrgUnits(): Promise<OrgUnit[]> {
   );
 }
 
-/** Role → i18n label key. Exhaustive so a new role fails the build here. */
+/**
+ * Role → i18n label key. Exhaustive so a new role fails the build here.
+ *
+ * ``adminUsers.*`` labels predate the fourth role; the one this workstream adds
+ * comes from its own ``roles.*`` namespace (the parallel-workstream convention
+ * reserves ``perms*`` / ``org*`` / ``roles*`` / ``orgUnits*``), so the older keys
+ * are left exactly as they are.
+ */
 const ROLE_LABEL_KEYS: Record<OctopRole, string> = {
   admin: "adminUsers.roleAdmin",
+  enterprise_admin: "roles.enterpriseAdmin",
   unit_admin: "adminUsers.roleUnitAdmin",
   user: "adminUsers.roleUser",
 };
@@ -167,6 +175,7 @@ const ROLE_LABEL_KEYS: Record<OctopRole, string> = {
 /** Role → picker icon, same exhaustive mapping. */
 const ROLE_ICONS: Record<OctopRole, LucideIcon> = {
   admin: ShieldCheck,
+  enterprise_admin: Building2,
   unit_admin: Building2,
   user: UserRound,
 };
@@ -219,6 +228,7 @@ interface ResetValues {
 
 function roleToneClass(role: OctopRole): string {
   if (role === "admin") return styles.roleToneAdmin;
+  if (role === "enterprise_admin") return styles.roleToneUnitAdmin;
   if (role === "unit_admin") return styles.roleToneUnitAdmin;
   return styles.roleToneUser;
 }
@@ -432,11 +442,17 @@ function RolePicker({ value, onChange, options, disabled }: RolePickerProps) {
 /**
  * Org-unit scope picker for non-admin roles. The unit drives the resource
  * boundary (and its module grants); leaving it empty means no unit scope.
+ *
+ * ``required`` is set where the backend refuses an unbound account: an account
+ * a scoped administrator creates must land in one of its departments, and an
+ * enterprise administrator with no department reaches nothing at all.
  */
 function OrgUnitField({
   options,
+  required = false,
 }: {
   options: { value: string; label: string }[];
+  required?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -448,6 +464,7 @@ function OrgUnitField({
         </span>
       }
       name="org_unit"
+      rules={required ? [{ required: true, message: t("orgUnits.required") }] : undefined}
       extra={t("adminUsers.orgUnitHint")}
     >
       <Select
@@ -1301,6 +1318,14 @@ export default function UsersListPanel() {
   const isMobile = useIsMobile();
   const currentUser = useCurrentUser();
   const admin = isSystemAdmin(currentUser);
+  /**
+   * A scoped administrator — enterprise or department — whose creation and
+   * department writes must land inside the branch it administers (design §2.1).
+   * The reach itself is resolved server-side; this only decides which fields the
+   * form shows.
+   */
+  const scopedActor =
+    currentUser?.role === "enterprise_admin" || currentUser?.role === "unit_admin";
   const [agents, setAgents] = useState<OctopAgent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [rows, setRows] = useState<UserRow[]>([]);
@@ -1415,12 +1440,44 @@ export default function UsersListPanel() {
         hint: t("adminUsers.roleUnitAdminHint"),
       },
       {
+        value: "enterprise_admin" as const,
+        label: t("roles.enterpriseAdmin"),
+        hint: t("roles.enterpriseAdminHint"),
+      },
+      {
         value: "admin" as const,
         label: t("adminUsers.roleAdmin"),
         hint: t("adminUsers.roleAdminHint"),
       },
     ],
     [t],
+  );
+
+  /**
+   * Roles this actor may hand out (design §2.1): a system administrator every
+   * role, an enterprise administrator the two below it, a department
+   * administrator only employees. The backend enforces the same rule, so this
+   * only keeps the picker from offering a box that would come back 403.
+   */
+  const assignableRoleValues = useMemo<OctopRole[]>(() => {
+    switch (currentUser?.role) {
+      case "admin":
+        return ["admin", "enterprise_admin", "unit_admin", "user"];
+      case "enterprise_admin":
+        return ["unit_admin", "user"];
+      case "unit_admin":
+        return ["user"];
+      default:
+        return [];
+    }
+  }, [currentUser?.role]);
+
+  const assignableRoleOptions = useMemo(
+    () =>
+      createRoleOptions.filter((option) =>
+        assignableRoleValues.includes(option.value),
+      ),
+    [createRoleOptions, assignableRoleValues],
   );
 
   const isSelfAdmin = useCallback(
@@ -1613,13 +1670,16 @@ export default function UsersListPanel() {
           display_name: values.display_name?.trim() || null,
           email: values.email?.trim() || null,
           password: values.password,
-          // The create picker is admin-only (``_assert_admin(actor, "create a
-          // non-user account")``), so a non-admin mints plain accounts: the
-          // field is not registered for them and the role is pinned here.
-          role: admin ? values.role : "user",
-          org_unit: !admin || values.role === "admin" ? null : values.org_unit ?? null,
-          permissions:
-            admin && values.role === "admin" ? [] : values.permissions ?? [],
+          // Only the roles this actor may hand out are offered (design §2.1), and
+          // the field is unregistered when that set is the implicit ``user``
+          // default — so the fallback names the same role the form would.
+          role: assignableRoleValues.includes(values.role)
+            ? values.role
+            : "user",
+          // A scoped administrator may only create inside one of its departments,
+          // so its unit is sent; the ``admin`` role carries none.
+          org_unit: values.role === "admin" ? null : values.org_unit ?? null,
+          permissions: values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
         }),
       });
@@ -1750,8 +1810,10 @@ export default function UsersListPanel() {
       // root-dir picker cannot show the value it would clear: keep it.
       ...(workspaceRootAllowed ? { workspace_root_dir } : {}),
     };
-    if (admin) {
+    if (assignableRoleValues.length > 0) {
       body.role = values.role;
+      // Only the ``admin`` role carries no department: a scoped administrator is
+      // defined by the department it administers, so its unit is kept.
       body.org_unit = values.role === "admin" ? null : values.org_unit ?? null;
       body.permissions =
         values.role === "admin" ? [] : values.permissions ?? [];
@@ -2365,18 +2427,18 @@ export default function UsersListPanel() {
               <CircleHelp size={15} strokeWidth={2} />
               <span>{t("adminUsers.permEditHint")}</span>
             </div>
-            {/* ``_assert_admin(actor, "create a non-user account")``: every role
-                but ``user`` is refused for a ``users`` holder, so the picker is
-                admin-only. The form still carries the ``user`` default
-                (``openCreate``), which keeps the plain path working. */}
-            {admin && (
+            {/* Roles are bounded by the actor's own level (the backend's
+                ``assert_assignable_role``: design §2.1), so the picker offers the
+                subset the server would accept — and stays hidden when that
+                subset is the implicit ``user`` default. */}
+            {assignableRoleOptions.length > 1 && (
               <Form.Item
                 label={t("adminUsers.formRole")}
                 name="role"
                 rules={[{ required: true }]}
                 className={styles.createUserRoleItem}
               >
-                <RolePicker options={createRoleOptions} />
+                <RolePicker options={assignableRoleOptions} />
               </Form.Item>
             )}
             <Form.Item
@@ -2395,9 +2457,19 @@ export default function UsersListPanel() {
                 }
                 return (
                   <>
-                    {/* Binding a department is a permission grant: admin-only
-                        on create too (``_assert_admin``). */}
-                    {admin && <OrgUnitField options={orgUnitOptions} />}
+                    {/* A department carries module grants, and a scoped
+                        administrator may only create inside its own branch, so
+                        the picker is shown to both — required where the backend
+                        refuses an unbound account. */}
+                    {(admin || scopedActor) && (
+                      <OrgUnitField
+                        options={orgUnitOptions}
+                        required={
+                          scopedActor ||
+                          getFieldValue("role") === "enterprise_admin"
+                        }
+                      />
+                    )}
                     <Form.Item
                       label={t("adminUsers.colPermissions")}
                       name="permissions"
@@ -2511,8 +2583,11 @@ export default function UsersListPanel() {
               <CircleHelp size={15} strokeWidth={2} />
               <span>{t("adminUsers.permEditHint")}</span>
             </div>
-            {/* ``_assert_admin``: role and department are admin-only writes. */}
-            {admin && (
+            {/* Role and department edits are bounded by the actor's scope and role
+                level (design §4.2/§4.3), not by the system-administrator role
+                alone; the picker offers what the level allows and the server
+                refuses the rest. */}
+            {assignableRoleOptions.length > 1 && (
               <Form.Item
                 label={t("adminUsers.formRole")}
                 name="role"
@@ -2525,7 +2600,7 @@ export default function UsersListPanel() {
                 }
               >
                 <RolePicker
-                  options={createRoleOptions}
+                  options={assignableRoleOptions}
                   disabled={Boolean(editTarget && isSelfAdmin(editTarget))}
                 />
               </Form.Item>
@@ -2551,7 +2626,15 @@ export default function UsersListPanel() {
                 }
                 return (
                   <>
-                    {admin && <OrgUnitField options={orgUnitOptions} />}
+                    {(admin || scopedActor) && (
+                      <OrgUnitField
+                        options={orgUnitOptions}
+                        required={
+                          scopedActor ||
+                          getFieldValue("role") === "enterprise_admin"
+                        }
+                      />
+                    )}
                     <Form.Item
                       noStyle
                       shouldUpdate={(prev, cur) =>

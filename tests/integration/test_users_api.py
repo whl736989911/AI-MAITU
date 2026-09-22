@@ -390,7 +390,13 @@ async def test_department_grant_reaches_members(env):
 
 
 async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
-    """``users`` opens the page; it does not hand over roles or accounts."""
+    """``users`` opens the page; it does not hand over roles or accounts.
+
+    The account below is an *employee*: design §2.1 says 企业员工 不能创建账号或授权
+    and 员工's 数据管理范围 is 仅自身可用资源, so the module key reaches no other
+    account at all — the capability a delegated operator needs is the scoped
+    administrator role, covered by the tests below this one.
+    """
     from tests.support.auth import TEST_PASSWORD, create_user
 
     c, _srv, auth = env
@@ -405,14 +411,27 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
     victim_id = next(u["id"] for u in rows if u["username"] == "victim")
     me = (await c.get("/api/auth/me", headers=support)).json()
 
-    # The module key still opens what it names: listing and profile edits.
-    assert (await c.get("/api/users", headers=support)).status_code == 200
-    renamed = await c.patch(
-        f"/api/users/{victim_id}", headers=support, json={"display_name": "renamed by support"}
+    # The module key still opens what it names: the account list, which for an
+    # employee is its own account, and its own profile.
+    listed = await c.get("/api/users", headers=support)
+    assert listed.status_code == 200
+    assert [u["username"] for u in listed.json()] == ["helpdesk"]
+    assert (await c.get(f"/api/users/{me['id']}", headers=support)).status_code == 200
+    renamed_self = await c.patch(
+        f"/api/users/{me['id']}", headers=support, json={"display_name": "Desk"}
     )
-    assert renamed.status_code == 200, renamed.text
+    assert renamed_self.status_code == 200, renamed_self.text
 
-    # Everything that moves the authorization boundary is admin-only.
+    # Somebody else's account is out of reach in every direction — including the
+    # profile edit the module key used to carry.
+    assert (
+        await c.patch(f"/api/users/{victim_id}", headers=support, json={"display_name": "x"})
+    ).status_code == 403
+    assert (await c.get(f"/api/users/{victim_id}", headers=support)).status_code == 403
+
+    # Everything that moves the authorization boundary is out of reach too —
+    # refused by the scope (an employee administers no account but its own) and
+    # by the role level (a peer and a senior are nobody's to edit).
     assert (
         await c.patch(f"/api/users/{victim_id}", headers=support, json={"role": "admin"})
     ).status_code == 403
@@ -502,8 +521,10 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
             },
         )
     ).status_code == 403
-    # An empty deny list is the stored default: it moves nothing, so a plain
-    # account that happens to carry the field is still creatable.
+    # Creating an account is refused for an employee in every shape: it
+    # administers no department, so there is nowhere it could put one (design
+    # §2.1: 企业员工 不能创建账号或授权). An empty deny list changes nothing about
+    # that — the department check comes first.
     assert (
         await c.post(
             "/api/users",
@@ -515,15 +536,14 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
                 "denied_permissions": [],
             },
         )
-    ).status_code == 201
-    # Creating a plain account is what the module key is *for*; it stays open.
-    created = await c.post(
-        "/api/users",
-        headers=support,
-        json={"username": "plain", "password": TEST_PASSWORD, "role": "user"},
-    )
-    assert created.status_code == 201, created.text
-    assert created.json()["role"] == "user"
+    ).status_code == 403
+    assert (
+        await c.post(
+            "/api/users",
+            headers=support,
+            json={"username": "plain", "password": TEST_PASSWORD, "role": "user"},
+        )
+    ).status_code == 403
 
     # Nothing leaked through the refusals.
     victim = (await c.get(f"/api/users/{victim_id}", headers=auth)).json()
@@ -791,6 +811,11 @@ async def test_department_granted_key_is_assignable(env):
     member_id = await resolve_user_id(c, auth, "member")
     bound = await c.patch(f"/api/users/{lead_id}", headers=auth, json={"org_unit": "sales"})
     assert bound.status_code == 200, bound.text
+    # The delegate administers *its* department, so the account it writes has to
+    # be in one (design §2.1: 部门管理员 只能创建本管理范围内的员工).
+    assert (
+        await c.patch(f"/api/users/{member_id}", headers=auth, json={"org_unit": "sales"})
+    ).status_code == 200
 
     # Exactly the set the editor renders as checkboxes: department included.
     assert "terminal" in (await c.get("/api/auth/me", headers=lead)).json()["permissions"]
@@ -810,6 +835,7 @@ async def test_department_granted_key_is_assignable(env):
             "password": TEST_PASSWORD,
             "role": "user",
             "permissions": ["terminal"],
+            "org_unit": "sales",
         },
     )
     assert created.status_code == 201, created.text
@@ -844,10 +870,26 @@ async def test_denied_key_cannot_be_passed_on(env):
     from tests.support.auth import create_user, resolve_user_id
 
     c, _srv, auth = env
-    operator = await create_user(c, auth, username="operator", permissions=["users", "terminal"])
+    # A department administrator is the account that hands keys to somebody
+    # else in the four-level model (design §2.1: 部门管理员 只能创建本管理范围内的员
+    # 工), so the delegation rule below is exercised through it.
+    await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "ops2", "label_zh": "运维二组", "label_en": "Ops Two"},
+    )
+    operator = await create_user(
+        c, auth, username="operator", role="unit_admin", permissions=["users", "terminal"]
+    )
     operator_id = await resolve_user_id(c, auth, "operator")
     await create_user(c, auth, username="member")
     member_id = await resolve_user_id(c, auth, "member")
+    assert (
+        await c.patch(f"/api/users/{operator_id}", headers=auth, json={"org_unit": "ops2"})
+    ).status_code == 200
+    assert (
+        await c.patch(f"/api/users/{member_id}", headers=auth, json={"org_unit": "ops2"})
+    ).status_code == 200
     denied = await c.patch(
         f"/api/users/{operator_id}", headers=auth, json={"denied_permissions": ["terminal"]}
     )
@@ -873,3 +915,314 @@ async def test_denied_key_cannot_be_passed_on(env):
     )
     assert allowed.status_code == 200, allowed.text
     assert allowed.json()["permissions"] == ["users"]
+
+
+async def _seed_two_enterprises(c, auth) -> None:
+    """``acme`` with a department tree, and a second enterprise ``globex``."""
+    for key, parent in (
+        ("acme", None),
+        ("acme-ops", "acme"),
+        ("acme-ops-night", "acme-ops"),
+        ("acme-sales", "acme"),
+        ("globex", None),
+        ("globex-ops", "globex"),
+    ):
+        body: dict[str, object] = {"key": key, "label_zh": key, "label_en": key}
+        if parent is not None:
+            body["parent_key"] = parent
+        assert (await c.post("/api/org-units", headers=auth, json=body)).status_code == 201
+
+
+async def _bind(c, auth, username: str, org_unit: str) -> int:
+    from tests.support.auth import resolve_user_id
+
+    uid = await resolve_user_id(c, auth, username)
+    bound = await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": org_unit})
+    assert bound.status_code == 200, bound.text
+    return uid
+
+
+async def test_enterprise_admin_is_bounded_to_its_enterprise(env):
+    """企业管理员: 系统管理员授予的权限, 本企业全部部门和用户 (design §2.1)."""
+    from tests.support.auth import TEST_PASSWORD, create_user, resolve_user_id
+
+    c, _srv, auth = env
+    await _seed_two_enterprises(c, auth)
+    # Granted ``users`` and nothing else: the role carries reach, never keys.
+    leader = await create_user(
+        c, auth, username="acme-lead", role="enterprise_admin", permissions=["users"]
+    )
+    await _bind(c, auth, "acme-lead", "acme-ops")
+    await create_user(c, auth, username="acme-staff", permissions=[])
+    await _bind(c, auth, "acme-staff", "acme-ops-night")
+    await create_user(c, auth, username="globex-staff", permissions=[])
+    await _bind(c, auth, "globex-staff", "globex-ops")
+    globex_staff = await resolve_user_id(c, auth, "globex-staff")
+
+    # No implicit catalog: the enterprise administrator holds what it was granted.
+    held = set((await c.get("/api/auth/me", headers=leader)).json()["permissions"])
+    assert "users" in held
+    assert "providers" not in held and "security" not in held
+
+    # The account list is its own enterprise — 本企业.
+    listed = await c.get("/api/users", headers=leader)
+    assert listed.status_code == 200
+    assert {u["username"] for u in listed.json()} == {"acme-lead", "acme-staff"}
+
+    # Creating inside the enterprise works, including a department administrator.
+    made = await c.post(
+        "/api/users",
+        headers=leader,
+        json={
+            "username": "acme-ops-admin",
+            "password": TEST_PASSWORD,
+            "role": "unit_admin",
+            "org_unit": "acme-ops",
+            "permissions": ["users"],
+        },
+    )
+    assert made.status_code == 201, made.text
+    assert made.json()["role"] == "unit_admin"
+
+    # Another enterprise is out of reach, in every direction.
+    assert (
+        await c.post(
+            "/api/users",
+            headers=leader,
+            json={
+                "username": "globex-planted",
+                "password": TEST_PASSWORD,
+                "role": "user",
+                "org_unit": "globex-ops",
+            },
+        )
+    ).status_code == 403
+    assert (await c.get(f"/api/users/{globex_staff}", headers=leader)).status_code == 403
+    assert (
+        await c.patch(f"/api/users/{globex_staff}", headers=leader, json={"disabled": True})
+    ).status_code == 403
+    assert (
+        await c.patch(f"/api/users/{globex_staff}", headers=leader, json={"org_unit": "acme-ops"})
+    ).status_code == 403
+    assert (await c.delete(f"/api/users/{globex_staff}", headers=leader)).status_code == 403
+    # ...and so is the department tree of another enterprise.
+    assert (
+        await c.put(
+            "/api/org-units/globex-ops/permissions",
+            headers=leader,
+            json={"permissions": []},
+        )
+    ).status_code == 403
+    assert {u["key"] for u in (await c.get("/api/org-units", headers=leader)).json()["units"]} == {
+        "acme",
+        "acme-ops",
+        "acme-ops-night",
+        "acme-sales",
+    }
+    # A department inside its enterprise is its to configure.
+    assert (
+        await c.put(
+            "/api/org-units/acme-ops-night/permissions",
+            headers=leader,
+            json={"permissions": ["users"]},
+        )
+    ).status_code == 200
+
+    # It cannot mint a system administrator or another enterprise administrator
+    # (design §2.1: 企业管理员和部门管理员不能创建系统管理员或企业管理员).
+    for role in ("admin", "enterprise_admin"):
+        refused = await c.post(
+            "/api/users",
+            headers=leader,
+            json={
+                "username": f"acme-{role}",
+                "password": TEST_PASSWORD,
+                "role": role,
+                "org_unit": "acme-ops",
+            },
+        )
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["error"]["details"]["target_role"] == role
+
+    # Denies stay a system administrator's write.
+    staff = await resolve_user_id(c, auth, "acme-staff")
+    assert (
+        await c.patch(
+            f"/api/users/{staff}", headers=leader, json={"denied_permissions": ["browser"]}
+        )
+    ).status_code == 403
+
+
+async def test_unit_admin_manages_its_department_and_sub_departments_only(env):
+    """部门管理员: 本部门及所有子部门, never a sibling or the level above."""
+    from tests.support.auth import create_user
+
+    c, _srv, auth = env
+    await _seed_two_enterprises(c, auth)
+    await c.put(
+        "/api/org-units/acme-ops/permissions", headers=auth, json={"permissions": ["users"]}
+    )
+    lead = await create_user(c, auth, username="ops-lead", role="unit_admin", permissions=["users"])
+    await _bind(c, auth, "ops-lead", "acme-ops")
+    await create_user(c, auth, username="night-staff", permissions=[])
+    night_staff = await _bind(c, auth, "night-staff", "acme-ops-night")
+    await create_user(c, auth, username="sales-staff", permissions=[])
+    sales_staff = await _bind(c, auth, "sales-staff", "acme-sales")
+    await create_user(c, auth, username="ops-peer", role="unit_admin", permissions=["users"])
+    ops_peer = await _bind(c, auth, "ops-peer", "acme-ops-night")
+
+    # The list is the same check as every write below it (design §4.2: 列表查询、
+    # 详情查询、修改和删除操作都使用相同的范围校验): the sub-department's employee is
+    # in scope, a peer administrator is not — nothing administers a peer, so
+    # nothing lists one either.
+    listed = await c.get("/api/users", headers=lead)
+    assert {u["username"] for u in listed.json()} == {"ops-lead", "night-staff"}
+
+    # A sub-department is inside the scope, and so is administering it.
+    assert (
+        await c.patch(f"/api/users/{night_staff}", headers=lead, json={"disabled": True})
+    ).status_code == 200
+    assert (
+        await c.patch(f"/api/users/{night_staff}", headers=lead, json={"disabled": False})
+    ).status_code == 200
+    assert (
+        await c.post(
+            f"/api/users/{night_staff}/reset-password",
+            headers=lead,
+            json={"new_password": "Rotated12345"},
+        )
+    ).status_code == 204
+    sub = await c.post(
+        "/api/users",
+        headers=lead,
+        json={
+            "username": "night-hire",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "acme-ops-night",
+        },
+    )
+    assert sub.status_code == 201, sub.text
+
+    # A sibling department, the enterprise root and another enterprise are not.
+    for blocked in (sales_staff, ops_peer):
+        assert (await c.get(f"/api/users/{blocked}", headers=lead)).status_code == 403
+        assert (
+            await c.patch(f"/api/users/{blocked}", headers=lead, json={"disabled": True})
+        ).status_code == 403
+    assert (
+        await c.post(
+            "/api/users",
+            headers=lead,
+            json={
+                "username": "sales-hire",
+                "password": "TestPass12",
+                "role": "user",
+                "org_unit": "acme-sales",
+            },
+        )
+    ).status_code == 403
+    # An account with no department is outside every department tree: only a
+    # system administrator creates one of those.
+    assert (
+        await c.post(
+            "/api/users",
+            headers=lead,
+            json={"username": "floating", "password": "TestPass12", "role": "user"},
+        )
+    ).status_code == 403
+    assert (
+        await c.put("/api/org-units/acme-sales/permissions", headers=lead, json={"permissions": []})
+    ).status_code == 403
+    assert (
+        await c.put(
+            "/api/org-units/acme-ops-night/permissions", headers=lead, json={"permissions": []}
+        )
+    ).status_code == 200
+
+    # A peer is not below the actor, so it cannot be edited even inside the scope.
+    assert (
+        await c.patch(f"/api/users/{ops_peer}", headers=lead, json={"role": "user"})
+    ).status_code == 403
+    # Nor may it hand out a peer role — 只能创建本管理范围内的员工.
+    assert (
+        await c.post(
+            "/api/users",
+            headers=lead,
+            json={
+                "username": "peer-hire",
+                "password": "TestPass12",
+                "role": "unit_admin",
+                "org_unit": "acme-ops",
+            },
+        )
+    ).status_code == 403
+
+
+async def test_admin_scope_is_unchanged_and_it_creates_unbound_accounts(env):
+    """The system administrator's boundary stays what it was: everything."""
+    from tests.support.auth import TEST_PASSWORD
+
+    c, _srv, auth = env
+    await _seed_two_enterprises(c, auth)
+    made = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "floating-admin-made",
+            "password": TEST_PASSWORD,
+            "role": "enterprise_admin",
+        },
+    )
+    assert made.status_code == 201, made.text
+    assert made.json()["org_unit"] is None
+
+    # Every unit, every account, every role — including the new fourth role.
+    assert {u["key"] for u in (await c.get("/api/org-units", headers=auth)).json()["units"]} == {
+        "acme",
+        "acme-ops",
+        "acme-ops-night",
+        "acme-sales",
+        "globex",
+        "globex-ops",
+    }
+
+
+async def test_permission_catalog_reports_can_grant_and_dynamic(env):
+    """Design §4.1: key, label, dynamic flag, and whether *this* operator may grant it."""
+    from tests.support.auth import create_user
+
+    c, _srv, auth = env
+    catalog = (await c.get("/api/users/permissions", headers=auth)).json()
+    by_key = {item["key"]: item for item in catalog}
+    # Every item carries the shape the editor needs, and the keys the catalog
+    # gained in this round are all there.
+    for key in ("mbti", "experts", "features", "acp", "channel_feishu"):
+        assert key in by_key
+        assert by_key[key]["label"]
+        assert by_key[key]["category"] in {"settings", "control", "admin"}
+        assert by_key[key]["can_grant"] is True  # a system administrator grants all
+    assert by_key["channel_feishu"]["dynamic"] is True
+    assert by_key["channels"]["dynamic"] is False
+
+    # A department administrator sees what it may hand out, and only that: the
+    # department's ``users`` grant is inside its held set, ``providers`` is not.
+    await c.post(
+        "/api/org-units", headers=auth, json={"key": "cat-ops", "label_zh": "甲", "label_en": "A"}
+    )
+    await c.put("/api/org-units/cat-ops/permissions", headers=auth, json={"permissions": ["users"]})
+    lead = await create_user(c, auth, username="cat-lead", role="unit_admin", permissions=["users"])
+    uid = next(
+        u["id"]
+        for u in (await c.get("/api/users", headers=auth)).json()
+        if u["username"] == "cat-lead"
+    )
+    assert (
+        await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "cat-ops"})
+    ).status_code == 200
+    held = {
+        item["key"]: item for item in (await c.get("/api/users/permissions", headers=lead)).json()
+    }
+    assert held["users"]["can_grant"] is True
+    assert held["providers"]["can_grant"] is False
+    assert held["experts"]["can_grant"] is False

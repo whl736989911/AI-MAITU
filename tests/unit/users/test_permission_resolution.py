@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 
 import pytest
@@ -30,12 +31,18 @@ class _LegacyUser:
 
 @dataclass
 class _UnitRepo:
-    """Fake org-unit store implementing ``list_unit_permissions``."""
+    """Fake org-unit store: a flat tree, so a unit is its own only ancestor."""
 
     grants: dict[str, list[str]] = field(default_factory=dict)
 
     def list_unit_permissions(self, unit_key: str) -> list[str]:
         return list(self.grants.get(unit_key, []))
+
+    def ancestor_keys(self, unit_key: str) -> list[str]:
+        return [unit_key] if unit_key in self.grants else []
+
+    def grants_for_units(self, unit_keys: Iterable[str]) -> set[str]:
+        return {key for unit in unit_keys for key in self.grants.get(str(unit), [])}
 
 
 def _user(

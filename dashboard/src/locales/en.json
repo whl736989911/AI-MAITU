@@ -5956,11 +5956,16 @@
     "actionFailed": "The change was refused",
     "adminOnlyHint": "Only a {{brand}} administrator can change the org structure.",
     "emptyTitle": "No departments yet",
-    "emptyHint": "Start with a top-level department, then nest sub-departments under it."
+    "emptyHint": "Start with a top-level department, then nest sub-departments under it.",
+    "required": "Select an org unit"
   },
   "pwa": {
     "updateReady": "A new version is ready",
     "updateNow": "Update now",
     "later": "Later"
+  },
+  "roles": {
+    "enterpriseAdmin": "Enterprise admin",
+    "enterpriseAdminHint": "Manages its own enterprise's departments and users; may create department admins and employees."
   }
 }

@@ -15,6 +15,7 @@ from typing import Any
 
 from octop.infra.agents.kinds import KIND_FEATURE
 from octop.infra.db.pool import DatabasePool
+from octop.infra.users.permissions import CHANNEL_PERMISSION_KEYS
 from octop.infra.utils.ulid import new_ulid
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -954,6 +955,117 @@ def _ensure_agent_kind_column(db: DatabasePool) -> None:
     _ensure_column(db, "agents", "kind", f"TEXT NOT NULL DEFAULT '{_DEFAULT_AGENT_KIND}'")
     with db.connect() as conn:
         conn.execute(f"UPDATE agents SET kind = '{KIND_FEATURE}' WHERE user_id IS NULL")
+
+
+#: Module keys schema v30 hands to every existing non-admin account.
+#:
+#: ``mbti`` / ``experts`` / ``features`` were reachable by every signed-in account
+#: before they were catalogued: the catalog is what turns them into grantable
+#: keys, and a key nobody holds is a module that disappears the moment a route
+#: starts checking it (design §6: 新增权限没有历史数据时，按升级前行为进行安全回填).
+#: Naming them here, instead of deriving them from today's catalog, is what keeps
+#: this a historical record — a key added later gets its own migration rather than
+#: appearing retroactively in this one.
+_BACKFILLED_MODULE_KEYS = ("experts", "features", "mbti")
+
+
+def _parse_backfill_keys(raw: object) -> list[str] | None:
+    """Permission keys out of a JSON column; ``None`` when it is not JSON at all.
+
+    The two dialects hand the column back differently (``TEXT`` / ``JSONB``, and
+    a driver may have decoded it already), so every shape is accepted. A value
+    that parses as nothing is *not* an empty list: the row was hand-edited, and
+    rewriting it would erase what it says instead of backfilling it.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(v) for v in raw]
+    try:
+        parsed = json.loads(str(raw))
+    except ValueError:
+        return None
+    return [str(v) for v in parsed] if isinstance(parsed, list) else None
+
+
+def _backfill_new_module_permissions(db: DatabasePool) -> None:
+    """Grant the newly catalogued module keys to existing accounts (schema v30).
+
+    Two historical equivalences are preserved, and nothing else is touched:
+
+    * an account could always reach MBTI, the expert catalog and the feature
+      pages, so it is granted those keys explicitly (design §6: 已有用户的显式权限
+      不直接清空);
+    * channel *types* were gated by ``channels`` alone, so every holder of that
+      key gains every ``channel_<kind>`` this build knows, and so does every
+      department whose grant set carries ``channels`` — that is what its members
+      were using.
+
+    Deliberately unchanged:
+
+    * ``acp`` — before the catalog its entry was gated on the ``admin`` role, and
+      a system administrator needs no stored key;
+    * keys an account already denies — a deny is an explicit decision, and
+      writing a grant underneath it would report a permission the account does
+      not have;
+    * system administrators, which are skipped entirely: their access is the
+      catalog-wide bypass, so a stored key would be dead data that outlived a
+      later demotion.
+
+    Runs for both dialects (the SQLite and PostgreSQL watermarks each call it)
+    so the two grant exactly the same keys, and its own migration watermark is
+    what keeps it once-only: re-running it would hand back a key an administrator
+    had revoked in the meantime.
+    """
+    channel_keys = list(CHANNEL_PERMISSION_KEYS)
+    if not _table_exists(db, "users"):
+        return
+    with db.transaction() as conn:
+        rows = conn.execute(
+            "SELECT id, role, permissions, denied_permissions FROM users"
+        ).fetchall()
+        for row in rows:
+            if str(row["role"]) == "admin":
+                continue
+            permissions = _parse_backfill_keys(row["permissions"])
+            if permissions is None:
+                continue
+            denied = _parse_backfill_keys(row["denied_permissions"]) or []
+            wanted = list(_BACKFILLED_MODULE_KEYS)
+            if "channels" in permissions and "channels" not in denied:
+                # A denied ``channels`` means the account has no channel access
+                # at all — the deny outranks the grant — so its type keys would
+                # be keys for a surface it cannot open.
+                wanted += channel_keys
+            missing = [key for key in wanted if key not in permissions and key not in denied]
+            if not missing:
+                continue
+            conn.execute(
+                "UPDATE users SET permissions = ? WHERE id = ?",
+                (json.dumps(permissions + missing, ensure_ascii=False), int(row["id"])),
+            )
+
+        if not _table_exists(db, "org_unit_permissions"):
+            return
+        granted_units = conn.execute(
+            "SELECT unit_key FROM org_unit_permissions WHERE permission_key = 'channels'"
+        ).fetchall()
+        for unit_row in granted_units:
+            unit_key = str(unit_row["unit_key"])
+            have = {
+                str(existing["permission_key"])
+                for existing in conn.execute(
+                    "SELECT permission_key FROM org_unit_permissions WHERE unit_key = ?",
+                    (unit_key,),
+                ).fetchall()
+            }
+            for key in channel_keys:
+                if key in have:
+                    continue
+                conn.execute(
+                    "INSERT INTO org_unit_permissions(unit_key, permission_key) VALUES (?, ?)",
+                    (unit_key, key),
+                )
 
 
 def _drop_feature_tables(db: DatabasePool) -> None:
@@ -2131,6 +2243,9 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     drops what they would create, and their DDL is not re-runnable.
     Version 26 adds ``agents.kind`` — marking the app-owned rows the old model
     froze as the feature agents they were — and drops those tables.
+    Version 30 backfills the module keys this build added to the catalog
+    (``mbti`` / ``experts`` / ``features`` and the channel types), so an upgrade
+    does not take a module away from an account that could already use it.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -2273,6 +2388,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 30:
+        _backfill_new_module_permissions(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2301,6 +2421,11 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_published_experts_schema(db)
             if version == 10:
                 _ensure_knowledge_bases_schema(db)
+            if version == 30:
+                # The pair's watermark lives in ``030_*.pg.sql``; the backfill
+                # itself is the same Python the SQLite branch runs, so both
+                # dialects grant exactly the same keys.
+                _backfill_new_module_permissions(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)

@@ -182,7 +182,23 @@ function describeRefusal(
 
 export default function AdminOrgUnitsPage() {
   const { t, i18n } = useTranslation();
-  const canManage = isSystemAdmin(useCurrentUser());
+  const currentUser = useCurrentUser();
+  /**
+   * Who may edit the tree. The backend bounds the *branch* an actor may write
+   * (design §2.1: 企业管理员 本企业, 部门管理员 本部门及子部门) and the API only
+   * lists the units in that branch, so the page shows the controls to an actor
+   * that has any reach at all — a system administrator, an enterprise
+   * administrator or a department administrator. A plain employee with the
+   * ``users`` key administers no department and is still refused server-side.
+   */
+  const canManage = useMemo(() => {
+    const role = currentUser?.role;
+    return (
+      isSystemAdmin(currentUser) ||
+      role === "enterprise_admin" ||
+      role === "unit_admin"
+    );
+  }, [currentUser]);
   const lang = normalizeUiLocale(i18n.language);
   const [form] = Form.useForm<OrgUnitFormValues>();
 

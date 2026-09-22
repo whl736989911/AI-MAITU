@@ -10,7 +10,7 @@ import jwt
 from fastapi import Depends, Header, Query, Request
 
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.users.permissions import PERMISSIONS, user_has_permission
+from octop.infra.users.permissions import PERMISSIONS, unit_permissions, user_has_permission
 
 if TYPE_CHECKING:
     from octop.infra.server import OctopServer
@@ -178,18 +178,18 @@ _UNIT_GRANTS_ATTR = "octop_unit_grants"
 
 
 def unit_grants_for(server: OctopServer, user: User) -> set[str]:
-    """Module keys granted by ``user.org_unit``.
+    """Module keys granted to ``user.org_unit`` — its own grants and its parents'.
 
-    A user with no org unit gets the empty set and costs no query. A user that
-    *does* belong to a unit is resolved through the control-plane repo: an
-    unresolvable unit raises instead of silently dropping the grants, which would
-    look like permissions mysteriously disappearing.
+    A department includes its sub-departments (design §2.1), so the grants of
+    every unit above the user's own reach it too; :func:`unit_permissions` owns
+    that rule and this is only its call site. A user with no org unit gets the
+    empty set and costs no query.
     """
     unit = getattr(user, "org_unit", None)
     if not unit:
         return set()
     assert server.services is not None
-    return server.services.repos.org_unit_repo.grants_for_units([unit])
+    return unit_permissions(unit, server.services.repos.org_unit_repo)
 
 
 def request_unit_grants(request: Request, server: OctopServer, user: User) -> set[str]:

@@ -5956,11 +5956,16 @@
     "actionFailed": "修改被拒绝",
     "adminOnlyHint": "只有 {{brand}} 管理员可以修改组织架构。",
     "emptyTitle": "还没有部门",
-    "emptyHint": "先建一个顶级部门，再往下细分下级部门。"
+    "emptyHint": "先建一个顶级部门，再往下细分下级部门。",
+    "required": "请选择部门"
   },
   "pwa": {
     "updateReady": "新版本已就绪",
     "updateNow": "立即更新",
     "later": "稍后更新"
+  },
+  "roles": {
+    "enterpriseAdmin": "企业管理员",
+    "enterpriseAdminHint": "管理本企业的部门和用户；可创建部门管理员和员工。"
   }
 }
