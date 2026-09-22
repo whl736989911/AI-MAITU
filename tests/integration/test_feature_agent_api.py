@@ -536,6 +536,68 @@ async def test_the_declared_scope_is_intersected_with_the_agent_that_runs(
     assert _scope(_run_request(srv, after["task_id"]))["subagents"] == []
 
 
+# --- the editor describes the same agent the run uses (design 5.1) ----------
+
+
+async def test_the_editors_capability_lists_follow_the_agent_a_run_would_use(
+    env_speaking: tuple[httpx.AsyncClient, OctopServer, dict[str, str]],
+) -> None:
+    """The checklist answers for the *run* agent, and ``feature_id`` selects it.
+
+    ``resolve_capability`` intersects a definition's declared scope with the agent
+    that runs it, so once a definition has an agent of its own every capability the
+    editor offers has to be read off *that* agent: an entry taken from the caller's
+    would be ticked here and silently withheld by the run. The definition declares no
+    ``agent`` node at all — the lists under test are the agent's own, which is
+    exactly what the parameter switches between.
+    """
+    client, _srv, auth = env_speaking
+    alice = await create_user(client, auth, username="alice")
+    alice_agent = await create_agent(client, alice)
+    installed = await client.post(
+        f"/api/agents/{alice_agent}/subagents/install",
+        headers=alice,
+        json={"slug": "engineering-software-architect", "locale": "en"},
+    )
+    assert installed.status_code == 201, installed.text
+    listed = await client.get(f"/api/agents/{alice_agent}/subagents", headers=alice)
+    role = next(
+        row["name"] for row in listed.json() if row["slug"] == "engineering-software-architect"
+    )
+    created = await client.post("/api/features", headers=auth, json=_definition())
+
+    assert created.status_code == 201, created.text
+    before = await client.get(
+        "/api/features/_capabilities", headers=alice, params={"feature_id": FEATURE_ID}
+    )
+
+    assert before.status_code == 200, before.text
+    assert role in before.json()["subagents"], "unpersonalized, the run agent is alice's own"
+
+    await _personalize(client, auth)
+    after = await client.get(
+        "/api/features/_capabilities", headers=alice, params={"feature_id": FEATURE_ID}
+    )
+    without_id = await client.get("/api/features/_capabilities", headers=alice)
+
+    assert after.status_code == 200, after.text
+    assert without_id.status_code == 200, without_id.text
+    personalized = after.json()
+    assert role not in personalized["subagents"], "the feature's own agent never got the role"
+    assert isinstance(personalized["skills"], list)
+    assert isinstance(personalized["subagents"], list)
+    assert personalized.keys() == without_id.json().keys(), "the id changes values, not shape"
+    # The parameter is what changed the answer — personalizing alone did not.
+    assert role in without_id.json()["subagents"]
+
+    unknown = await client.get(
+        "/api/features/_capabilities", headers=alice, params={"feature_id": "no-such-feature"}
+    )
+
+    assert unknown.status_code == 404, unknown.text
+    assert unknown.json()["error"]["code"] == "NOT_FOUND"
+
+
 # --- concurrency (design 7.2) -----------------------------------------------
 
 

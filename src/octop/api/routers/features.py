@@ -312,17 +312,17 @@ def _knowledge_base_choices(server: Any, user: Any) -> list[dict[str, str]]:
     return [{"id": str(base.id), "name": str(base.name)} for base in bases]
 
 
-async def _capability_agent_id(server: Any, user: Any) -> str:
-    """The caller's own agent, started — the agent its capability lists come from.
+async def _capability_agent_id(server: Any, agent_id: str) -> str:
+    """*agent_id*, started — the one source of the agent-scoped capability lists.
 
     Skills and subagents are read off a *live* harness handle
-    (``list_skill_summaries`` starts with ``get_agent``), and a run boots the
-    caller's agent the same way, so booting it here is what makes the editor
-    describe exactly the agent a run would use. Nothing is swallowed: an agent
+    (``list_skill_summaries`` starts with ``get_agent``), and a run boots its agent
+    the same way, so booting it here is what makes the editor describe exactly the
+    agent a run would use — whichever agent that is (:func:`_capability_choices`
+    decides, and this starts it for both branches). Nothing is swallowed: an agent
     that cannot start is reported, because an empty skills list would read as
     "this agent has no skills" and quietly offer the wrong choices.
     """
-    agent_id = _run_agent_id(server, int(user.id))
     if not _is_agent_running(server, agent_id):
         await server.app_runtime.agent_registry.start(agent_id)
     return agent_id
@@ -341,7 +341,9 @@ async def _agent_scoped_choices(server: Any, agent_id: str, key: str) -> list[st
     return sorted({str(row.get("name") or "") for row in summaries} - {""})
 
 
-async def _capability_choices(server: Any, user: Any) -> dict[str, Any]:
+async def _capability_choices(
+    server: Any, user: Any, feature: Feature | None = None
+) -> dict[str, Any]:
     """Everything the capability layer of a definition may name, for *user*.
 
     Every list is resolved through the caller's own visibility (their connectors,
@@ -349,10 +351,24 @@ async def _capability_choices(server: Any, user: Any) -> dict[str, Any]:
     editor offers exactly what a run started by this caller could really use — the
     same rule the run path applies (design 5.2).
 
+    *feature* moves the two agent-scoped lists onto the agent a run of it would use
+    (:func:`_feature_run_agent_id`, design 5.1). That is the whole point of the
+    parameter: ``resolve_capability`` intersects a definition's declared scope with
+    *that* agent, so answering from any other one offers the administrator entries
+    the run silently withholds. Everything keyed by the caller stays keyed by the
+    caller — the switch is the agent's configuration, never the data plane.
+
     This is the one editor call that needs an agent, which is why it is not part
     of ``_meta``: opening the editor must not depend on one agent starting.
     """
-    agent_id = await _capability_agent_id(server, user)
+    # Both branches name the agent a run would use — the second is the router's
+    # one resolution path for it, never a second copy of the rule.
+    run_agent_id = (
+        _run_agent_id(server, int(user.id))
+        if feature is None
+        else _feature_run_agent_id(server, feature, int(user.id))
+    )
+    agent_id = await _capability_agent_id(server, run_agent_id)
     return {
         "models": _model_choices(server),
         "tools": _tool_choices(),
@@ -1178,19 +1194,35 @@ async def feature_meta(
 async def feature_capabilities(
     user: Any = Depends(require_permission("features")),
     server: Any = Depends(get_server),
+    feature_id: str | None = Query(
+        None,
+        description=(
+            "the definition the capability lists describe: its own agent once it "
+            "has one, else the caller's (default: the caller's own agent)"
+        ),
+    ),
 ) -> dict[str, Any]:
     """What the capability layer of a definition may name — skills and subagents
-    included, which only the caller's own agent can answer for.
+    included, which only an agent can answer for.
 
-    Split from ``_meta`` on purpose. Listing skills means starting the caller's
-    agent (the registry reads them off the live harness handle), and that must not
-    be a precondition for opening the editor: the settings drawer loads ``_meta``
-    on open and calls this only when the capability block is expanded. An agent
-    that cannot start is reported here rather than answered with empty lists —
-    "could not load" and "you have none" are different facts, and the editor shows
-    the first as an error.
+    ``feature_id`` is what makes the answer describe the agent a *run* of that
+    definition would use: once a definition has been personalized that is its own
+    agent, not the caller's (design 5.1). ``resolve_capability`` intersects the
+    declared scope with exactly that agent, so the editor has to ask about it —
+    otherwise it offers skills and subagents the run silently withholds, and the
+    administrator ticks entries that never take effect. Without the parameter this
+    stays the caller's own agent, the definition nobody personalized runs on.
+
+    Split from ``_meta`` on purpose. Listing skills means starting an agent (the
+    registry reads them off the live harness handle), and that must not be a
+    precondition for opening the editor: the settings drawer loads ``_meta`` on open
+    and calls this only when the capability block is expanded. An agent that cannot
+    start is reported here rather than answered with empty lists — "could not load"
+    and "you have none" are different facts, and the editor shows the first as an
+    error.
     """
-    return await _capability_choices(server, user)
+    feature = None if feature_id is None else _require_feature(server, feature_id)
+    return await _capability_choices(server, user, feature)
 
 
 @router.get("/{feature_id}", summary="Get one feature definition")
