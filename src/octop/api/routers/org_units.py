@@ -55,6 +55,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from octop.api.common.channel_runtime import sync_channel_runtime, unit_member_ids
 from octop.api.deps import get_server, require_permission
 from octop.infra.db.repos._base import UNSET
 from octop.infra.db.repos.org_units import OrgUnitRepo, OrgUnitRow
@@ -350,6 +351,10 @@ async def set_org_unit_permissions(
             details={"unit_key": unit_key},
         )
     repo.set_grants(unit_key, keys)
+    # A department grant is the "unit" leg of every member's effective set, so
+    # this write can revoke a ``channel_<kind>`` for a whole subtree at once;
+    # their channels stop now (design §2.3/§2.4).
+    await sync_channel_runtime(server, user_ids=unit_member_ids(server, unit_key))
     return {"unit_key": unit_key, "permissions": keys}
 
 

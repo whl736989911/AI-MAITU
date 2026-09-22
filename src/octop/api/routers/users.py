@@ -31,6 +31,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, ConfigDict, Field
 
+from octop.api.common.channel_runtime import sync_channel_runtime
 from octop.api.deps import (
     current_user,
     get_server,
@@ -148,6 +149,23 @@ def _policy_kwargs_from_body(body: UserCreateBody | UserPatchBody) -> dict[str, 
     if "token_quota" in body.model_fields_set:
         policy_kwargs["token_quota"] = body.token_quota
     return policy_kwargs
+
+
+def _writes_access(body: UserPatchBody) -> bool:
+    """True when the patch can change an effective key of the target account.
+
+    Each field that reaches :func:`octop.infra.users.permissions.resolve_permissions`:
+    ``permissions`` and ``denied_permissions`` are the account's own grant/deny
+    legs, ``org_unit`` is the department leg and ``role`` the role leg (and the
+    ``admin`` bypass). Everything else a patch writes — display name, email,
+    locale, quotas — leaves the effective set alone.
+    """
+    return (
+        body.permissions is not None
+        or body.role is not None
+        or "denied_permissions" in body.model_fields_set
+        or "org_unit" in body.model_fields_set
+    )
 
 
 def _assert_admin(actor: User, action: str) -> None:
@@ -474,6 +492,11 @@ async def patch_user(
         # deny was holding down — so neither is open to a non-admin.
         _assert_admin(actor, "deny permissions for an account")
         await server.user_manager.set_denied_permissions(row.username, body.denied_permissions)
+    if _writes_access(body):
+        # The account's effective ``channel_<kind>`` may have just changed, and
+        # a channel that lost its type key stops now rather than at its next
+        # restart (design §2.3/§2.4).
+        await sync_channel_runtime(server, user_ids=[user_id])
     policy_kwargs = _policy_kwargs_from_body(body)
     if policy_kwargs:
         await server.user_manager.set_resource_policy(row.username, **policy_kwargs)

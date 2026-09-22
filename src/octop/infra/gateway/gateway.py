@@ -6,16 +6,21 @@ import asyncio
 import json
 import logging
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from harness_gateway.channel import ChannelCredentialsError
+from harness_gateway.channel import ChannelCredentialsError, MessageProcessor
 from harness_gateway.channels import ChannelKind
 from harness_gateway.manager import ChannelManager
-from harness_gateway.models import ChannelSubject
+from harness_gateway.models import ChannelSubject, InboundMessage, MessageEvent
 
-from octop.i18n import channel_probe_incomplete, channel_runtime_reason, tr
+from octop.i18n import (
+    channel_permission_revoked,
+    channel_probe_incomplete,
+    channel_runtime_reason,
+    tr,
+)
 from octop.infra.db.repos.channels import ChannelRow
 from octop.infra.db.repos.sessions import SessionRow
 from octop.infra.errors import ErrorCode, OctopError
@@ -35,7 +40,12 @@ from octop.infra.gateway.ws import (
     WebSocketChannel,
     WebSocketHub,
 )
-from octop.infra.utils.locale import DEFAULT_LOCALE, Locale
+from octop.infra.users.permissions import (
+    channel_permission_key,
+    unit_permissions,
+    user_has_permission,
+)
+from octop.infra.utils.locale import DEFAULT_LOCALE, Locale, normalize_locale
 
 if TYPE_CHECKING:
     from octop.infra.agents.manager import AgentManager
@@ -88,6 +98,38 @@ async def _probe_processor(_msg: Any) -> Any:
     """Stub processor for ephemeral channel probe instances."""
     if False:  # pragma: no cover - makes this an async generator
         yield None
+
+
+class _PermissionGatedProcessor:
+    """``MessageProcessor`` wrapper that re-asks whether the channel may run.
+
+    Runtime is where a revoked module key has to bite (design §4.5: 通道收发消息前
+    检查对应 ``channel_<kind>``): the page that created the channel, the JWT in the
+    browser and the row in the database all say what was true when they were
+    written, and the message arriving now is the first chance to ask again.
+    ``refusal`` returns the line the IM user gets when the channel may not run,
+    or ``None`` when it may — a channel that stops answering without a word
+    reads as a broken bot, not as a revoked authorization (§2.4 has no silent
+    half).
+    """
+
+    def __init__(self, inner: MessageProcessor, refusal: Callable[[], str | None]) -> None:
+        self._inner = inner
+        self._refusal = refusal
+
+    @property
+    def inner(self) -> MessageProcessor:
+        """The processor this gate wraps — the response-mode layer under it."""
+        return self._inner
+
+    async def __call__(self, message: InboundMessage) -> AsyncIterator[MessageEvent]:
+        denied = self._refusal()
+        if denied is not None:
+            yield MessageEvent.error_event(denied)
+            yield MessageEvent.completed()
+            return
+        async for event in self._inner(message):
+            yield event
 
 
 class Gateway:
@@ -238,7 +280,7 @@ class Gateway:
 
         rows = self._repos.channel_repo.list_all(include_disabled=False)
         if rows:
-            await asyncio.gather(*(self._safe_register_channel(row) for row in rows))
+            await asyncio.gather(*(self._start_channel(row) for row in rows))
 
         logger.info("Gateway booted")
 
@@ -281,7 +323,7 @@ class Gateway:
 
         rows = self._repos.channel_repo.list_all(include_disabled=False)
         if rows:
-            await asyncio.gather(*(self._safe_register_channel(row) for row in rows))
+            await asyncio.gather(*(self._start_channel(row) for row in rows))
         await self.refresh_media_backends()
         logger.info("Gateway channels reloaded from DB (%d enabled)", len(rows))
 
@@ -330,10 +372,7 @@ class Gateway:
         )
         row = self._repos.channel_repo.get(spec.channel_id)
         assert row is not None
-        if row.enabled:
-            await self._safe_register_channel(row)
-        else:
-            self._set_runtime_status(row.channel_id, connected=False, reason="disabled")
+        await self._start_channel(row)
         return row
 
     async def update_channel(
@@ -354,10 +393,8 @@ class Gateway:
         )
         row = self._repos.channel_repo.get(channel_id)
         await self._unregister(channel_id)
-        if row and row.enabled:
-            await self._safe_register_channel(row)
-        elif row is not None:
-            self._set_runtime_status(channel_id, connected=False, reason="disabled")
+        if row is not None:
+            await self._start_channel(row)
         return row
 
     async def delete_channel(self, channel_id: str) -> None:
@@ -526,7 +563,21 @@ class Gateway:
         subject: ChannelSubject,
         text: str,
     ) -> None:
-        """Proactively push text to an IM user via ChannelManager."""
+        """Proactively push text to an IM user via ChannelManager.
+
+        The send entry refuses too (design §4.5: 发送入口也必须拒绝): a revoked type
+        must not keep talking to the IM users it already reached. A ``channel_id``
+        with no row is the virtual dashboard / CLI channel; those are not IM
+        channels of any kind, and the surfaces that serve them carry their own
+        module keys.
+        """
+        row = self._repos.channel_repo.get(channel_id)
+        if row is not None and self.channel_refusal(row) is not None:
+            raise OctopError(
+                ErrorCode.FORBIDDEN,
+                "channel type permission revoked",
+                details={"permission": channel_permission_key(str(row.kind))},
+            )
         await self._require_channel_manager().push_text(channel_id, subject, text)
 
     async def probe_channel(
@@ -629,6 +680,88 @@ class Gateway:
                 row.channel_id, connected=False, reason="error", detail=str(exc)
             )
 
+    def channel_owner_allowed(self, owner: Any | None, kind: str) -> bool:
+        """Whether ``owner`` may use channel type ``kind`` (design §2.3).
+
+        The subject of a channel-type permission is the account the channel
+        belongs to (``channels.user_id``) — one and the same account at create
+        time and at three in the morning when a message arrives, so what an
+        administrator revokes is what the runtime stops.
+        """
+        if owner is None:
+            return False
+        grants = unit_permissions(getattr(owner, "org_unit", None), self._repos.org_unit_repo)
+        return user_has_permission(owner, channel_permission_key(kind), unit_grants=grants)
+
+    def channel_refusal(self, row: ChannelRow) -> str | None:
+        """The line an IM user gets while ``row`` may not run, else ``None``."""
+        owner = self._repos.user_repo.get(row.user_id)
+        if self.channel_owner_allowed(owner, str(row.kind)):
+            return None
+        return channel_permission_revoked(normalize_locale(getattr(owner, "locale", None)))
+
+    async def _stop_channel(self, channel_id: str, *, reason: str) -> None:
+        """Take ``channel_id`` out of the manager; the reason is what the UI reads."""
+        await self._unregister(channel_id)
+        self._set_runtime_status(channel_id, connected=False, reason=reason)
+
+    async def _start_channel(self, row: ChannelRow) -> None:
+        """Register ``row`` if it may run at all — the one gate every path shares.
+
+        Boot, reload, create, update and a permission change all land here, so
+        已存在的通道在类型权限被撤销后立即停止运行 (design §2.3) cannot hold on one of
+        them and not on another.
+        """
+        if not row.enabled:
+            await self._stop_channel(row.channel_id, reason="disabled")
+            return
+        if not self.channel_owner_allowed(self._repos.user_repo.get(row.user_id), str(row.kind)):
+            await self._stop_channel(row.channel_id, reason="permission")
+            return
+        await self._safe_register_channel(row)
+
+    async def reconcile_channel_permissions(self, user_ids: Iterable[int]) -> None:
+        """Re-derive the runtime state of the channels owned by ``user_ids``.
+
+        Called when an account's own keys, role, department or denies change, or
+        when a department's grants change (design §2.4: 已经配置的能力，在权限撤销后
+        也不能继续运行). A channel that lost its type key is unregistered — its IM
+        connection goes down and an in-flight turn is cancelled with it, which is
+        what "立即" means for a long-running task — and one that got its key back
+        is registered again, the same 通道管理服务恢复 the design leaves the recovery
+        scope to.
+        """
+        wanted = set(user_ids)
+        if not wanted:
+            return
+        for row in self._repos.channel_repo.list_all():
+            if row.user_id not in wanted:
+                continue
+            if row.enabled and self.channel_owner_allowed(
+                self._repos.user_repo.get(row.user_id), str(row.kind)
+            ):
+                if self._is_channel_live(row.channel_id):
+                    continue
+                await self._start_channel(row)
+            else:
+                await self._stop_channel(
+                    row.channel_id, reason="permission" if row.enabled else "disabled"
+                )
+
+    def _is_channel_live(self, channel_id: str) -> bool:
+        if self._channel_manager is None:
+            return False
+        return self._channel_manager.get_channel(channel_id) is not None
+
+    def _gated_processor(self, row: ChannelRow, processor: MessageProcessor) -> MessageProcessor:
+        """``processor`` wrapped so every inbound message re-asks the type key.
+
+        Design §4.5: 运行时必须重新检查权限，不能只依赖页面进入时的结果. The
+        registration is where the channel's kind and owner are known, so the
+        check is bound here and re-run per message.
+        """
+        return _PermissionGatedProcessor(processor, lambda: self.channel_refusal(row))
+
     async def _register_channel(self, row: ChannelRow) -> None:
         if not self._channel_manager or not self._processor:
             return
@@ -639,6 +772,7 @@ class Gateway:
             else normalize_channel_response_mode(config.get("response_mode"))
         )
         processor = processor_for_response_mode(self._processor, response_mode)
+        processor = self._gated_processor(row, processor)
         manager = self._require_channel_manager()
         await manager.add_channel(
             row.kind,

@@ -563,8 +563,10 @@
     "runtime": {
       "disabled": "频道已停用",
       "unregistered": "未注册",
-      "error": "连接失败"
+      "error": "连接失败",
+      "permission": "无此频道类型权限"
     },
+    "permission_revoked": "该通道已停止：其所有者已不再拥有此通道类型的权限。",
     "probe": {
       "incomplete": "凭据不完整：缺少 {fields}",
       "invalid_credentials": "凭据无效，请检查 App ID 与 App Secret 是否正确",

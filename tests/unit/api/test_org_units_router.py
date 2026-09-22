@@ -42,11 +42,17 @@ def world(tmp_path: Path) -> SimpleNamespace:
     db = SqlitePool(tmp_path / "octop.db")
     run_migrations(db)
     units = OrgUnitRepo(db)
-    server = SimpleNamespace(services=SimpleNamespace(repos=SimpleNamespace(org_unit_repo=units)))
+    users = UserRepo(db)
+    # A grant write also re-derives the channels of the department's members
+    # (design §2.4), so the double carries the user repo that walk reads — and,
+    # through the absent ``app_runtime``, no gateway to re-derive for.
+    server = SimpleNamespace(
+        services=SimpleNamespace(repos=SimpleNamespace(org_unit_repo=units, user_repo=users))
+    )
     return SimpleNamespace(
         db=db,
         units=units,
-        users=UserRepo(db),
+        users=users,
         server=server,
         admin=SimpleNamespace(id=1, is_admin=True),
     )

@@ -40,9 +40,27 @@ vi.mock("../../../api/request", () => ({
 }));
 
 import { request } from "../../../api/request";
+import { CurrentUserProvider } from "../../../hooks/useCurrentUser";
+import type { OctopUser } from "../../../api/modules/auth";
 import ChannelsPanel from "./ChannelsPanel";
 
 const api = vi.mocked(request, true);
+
+/** A baseline holder: every channel type, so the catalogue is the full one. */
+const baselineUser = {
+  id: 2,
+  username: "member",
+  role: "user",
+  permissions: ["channels", "channel_telegram"],
+} as OctopUser;
+
+function renderPanel(user: OctopUser) {
+  return render(
+    <CurrentUserProvider user={user} setUser={() => undefined}>
+      <ChannelsPanel agentId="ag1" />
+    </CurrentUserProvider>,
+  );
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -57,7 +75,7 @@ beforeEach(() => {
 
 describe("<ChannelsPanel /> create-flow default", () => {
   async function openTelegramCreateDrawer(user: UserEvent) {
-    render(<ChannelsPanel agentId="ag1" />);
+    renderPanel(baselineUser);
     // Telegram is collapsed behind "更多通道" until expanded.
     await user.click(
       await screen.findByRole("button", {
@@ -134,5 +152,34 @@ describe("<ChannelsPanel /> create-flow default", () => {
         JSON.stringify({ enabled: false }),
       );
     });
+  });
+});
+
+describe("<ChannelsPanel /> channel types the account may use", () => {
+  it("offers only the types the account holds a key for", async () => {
+    renderPanel({ ...baselineUser, permissions: ["channels", "channel_feishu"] });
+
+    expect((await screen.findAllByText("channels.label_feishu")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("channels.label_wecom")).toBeNull();
+    // The collapsed "更多通道" bucket is drawn from the authorized set too.
+    expect(
+      screen.queryByRole("button", { name: /channels\.showMoreChannels/ }),
+    ).toBeNull();
+  });
+
+  it("says so when no channel type is authorized at all", async () => {
+    renderPanel({ ...baselineUser, permissions: ["channels"] });
+
+    expect((await screen.findAllByText("channels.noAuthorizedTypes")).length).toBeGreaterThan(0);
+    expect(screen.queryByText("channels.label_feishu")).toBeNull();
+  });
+
+  it("gives a system administrator every type through the role bypass", async () => {
+    renderPanel({ ...baselineUser, role: "admin", permissions: [] });
+
+    expect((await screen.findAllByText("channels.label_feishu")).length).toBeGreaterThan(0);
+    expect(
+      await screen.findByRole("button", { name: /channels\.showMoreChannels/ }),
+    ).toBeDefined();
   });
 });

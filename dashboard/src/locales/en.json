@@ -2502,6 +2502,7 @@
     "botNameTip": "When set, @BotName mentions will be stripped from group messages",
     "botNamePlaceholder": "e.g. My Assistant",
     "noAgentSelected": "Select or create an agent first to manage its channels",
+    "noAuthorizedTypes": "No channel types are authorized for this account. Ask an administrator to grant one.",
     "statsSummary": "Supports {{supported}} channels, {{configured}} configured",
     "showMoreChannels": "More channels ({{count}})",
     "hideMoreChannels": "Show less",

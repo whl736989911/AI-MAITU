@@ -167,6 +167,23 @@ export function navAllowed(
   return canAccessKeys(user, NAV_PERMISSIONS[navKey]);
 }
 
+/**
+ * The channel types out of ``kinds`` this holder may use, in the order given.
+ *
+ * Design §2.3 makes ``channel_<kind>`` (the key the backend catalog derives from
+ * the gateway's own kind list) the unit of channel authorization, and §5.2/§8
+ * make the type selector show the authorized types only. Exported because the
+ * grid, the create drawer's kind and the row count must read one array rather
+ * than each filtering for itself — and because a page that lists a type the
+ * backend will refuse is the inconsistency §5.1 forbids.
+ */
+export function allowedChannelKinds<T extends string>(
+  user: PermissionHolder | null | undefined,
+  kinds: readonly T[],
+): T[] {
+  return kinds.filter((kind) => userCan(user, `channel_${kind}`));
+}
+
 export function userCanKey(
   user: PermissionHolder | null | undefined,
   key: string | readonly string[],

@@ -10,6 +10,8 @@ import { RefreshCw } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { CardSkeleton } from "../../../components/Skeleton";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { allowedChannelKinds } from "../../../utils/permissions";
 import {
   ChannelCard,
   ChannelDrawer,
@@ -94,6 +96,7 @@ export interface ChannelsPanelProps {
 
 export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
   const { t } = useTranslation();
+  const user = useCurrentUser();
   const {
     channels,
     loading,
@@ -104,6 +107,13 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
     deleteChannel,
     probeChannelConfig,
   } = useChannels(agentId);
+
+  // The catalogue this page offers: a type the account holds no ``channel_<kind>``
+  // for is not shown, not creatable and not editable here (design §2.3/§5.2).
+  const offeredChannelKeys = useMemo(
+    () => allowedChannelKinds(user, CHANNEL_KEYS),
+    [user],
+  );
 
   const [hoverId, setHoverId] = useState<ChannelKey | null>(null);
   const [showMoreChannels, setShowMoreChannels] = useState(false);
@@ -129,22 +139,22 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
     const map = new Map<ChannelKey, ChannelRow>();
     for (const row of channels) {
       const key = row.kind as ChannelKey;
-      if (!CHANNEL_KEYS.includes(key)) continue;
+      if (!offeredChannelKeys.includes(key)) continue;
       const existing = map.get(key);
       if (!existing || (!existing.enabled && row.enabled)) {
         map.set(key, row);
       }
     }
     return map;
-  }, [channels]);
+  }, [channels, offeredChannelKeys]);
 
   const { featuredChannelKeys, moreChannelKeys } = useMemo(() => {
     const { featured, more } = partitionChannelKeys(
-      CHANNEL_KEYS,
+      offeredChannelKeys,
       new Set(channelByKind.keys()),
     );
     return { featuredChannelKeys: featured, moreChannelKeys: more };
-  }, [channelByKind]);
+  }, [channelByKind, offeredChannelKeys]);
 
   const visibleChannelKeys = showMoreChannels
     ? [...featuredChannelKeys, ...moreChannelKeys]
@@ -408,7 +418,7 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
       <div className={styles.channelsToolbar}>
         <span className={styles.channelsStats}>
           {t("channels.statsSummary", {
-            supported: CHANNEL_KEYS.length,
+            supported: offeredChannelKeys.length,
             configured: channelByKind.size,
           })}
         </span>
@@ -425,6 +435,13 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
         <div className={styles.channelsBody}>
           <CardSkeleton count={10} />
         </div>
+      ) : offeredChannelKeys.length === 0 ? (
+        // Nothing to offer is not an empty grid: the account holds no channel
+        // type at all, and an administrator is what changes that (§2.3).
+        <Empty
+          description={t("channels.noAuthorizedTypes")}
+          style={{ marginTop: 60 }}
+        />
       ) : (
         <div className={styles.channelsBody}>
           <div className={styles.channelsGrid}>

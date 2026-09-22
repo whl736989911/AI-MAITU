@@ -563,8 +563,10 @@
     "runtime": {
       "disabled": "Channel disabled",
       "unregistered": "Not registered",
-      "error": "Connection failed"
+      "error": "Connection failed",
+      "permission": "Channel type not authorized"
     },
+    "permission_revoked": "This channel is stopped: its owner is no longer authorized for this channel type.",
     "probe": {
       "incomplete": "Incomplete credentials: missing {fields}",
       "invalid_credentials": "Invalid credentials — check the App ID and App Secret",

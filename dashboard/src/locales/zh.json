@@ -2502,6 +2502,7 @@
     "botNameTip": "填写后会自动去除群聊消息中的 @机器人名 前缀",
     "botNamePlaceholder": "如：小助手",
     "noAgentSelected": "请先选择或创建一个 Agent 才能管理其频道",
+    "noAuthorizedTypes": "当前账号未获得任何通道类型权限，请联系管理员授权。",
     "statsSummary": "当前支持 {{supported}} 个通道，已配置 {{configured}} 个",
     "showMoreChannels": "更多通道（{{count}}）",
     "hideMoreChannels": "收起",

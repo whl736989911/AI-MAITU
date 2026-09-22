@@ -31,6 +31,10 @@ def gateway(tmp_path: Path) -> Gateway:
     repos.session_repo = SessionRepo(db)
     repos.thread_repo = ThreadRepo(db)
     repos.channel_repo = MagicMock()
+    # The send entry asks the channel's row whether its type may still be used
+    # (design §4.5). This double has no rows — the shape the virtual dashboard /
+    # cli channels have too, and those are gated on the surfaces that serve them.
+    repos.channel_repo.get.return_value = None
     agent_manager = MagicMock()
     gw = Gateway(agent_manager=agent_manager, repos=repos)
     gw._channel_manager = MagicMock()

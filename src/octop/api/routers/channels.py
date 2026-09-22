@@ -20,11 +20,12 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request
 from pydantic import BaseModel, ValidationError
 
 from octop.api.common.agent import AgentCapability, require_agent_capability_row
-from octop.api.deps import get_server, require_permission
+from octop.api.deps import current_user, get_server, request_unit_grants, require_permission
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.bot_creators.feishu_runner import extract_feishu_credentials
 from octop.infra.gateway.channels import dingtalk_registration, qr_bind
 from octop.infra.gateway.gateway import ChannelKind
+from octop.infra.users.permissions import channel_permission_key, user_has_permission
 from octop.infra.utils.locale import DEFAULT_LOCALE, resolve_request_locale
 from octop.infra.utils.subprocess_io import parse_subprocess_json_lines
 
@@ -127,6 +128,110 @@ def _acting_user_id(user: Any, as_user: int | None) -> int:
     return int(as_user if as_user is not None else user.id)
 
 
+# ─── Channel-type permission (design §2.3) ──────────────────────────────────
+#
+# A channel *type* carries an authorization of its own: ``channels`` opens the
+# module, ``channel_<kind>`` decides whether that type may be created, edited,
+# deleted, tested, bound or viewed at all. Which key a request needs is decided
+# by the kind the request touches, and a route can learn its kind in exactly
+# three ways:
+#
+#   * its path names it — ``/channels/dingtalk/qrcode/generate`` — so the key is
+#     a constant of that route: ``require_permission(channel_permission_key(...))``;
+#   * its body names it (create, draft probe) — :func:`require_channel_kind_from_body`;
+#   * the stored row names it (get / patch / delete / test by id) —
+#     :func:`require_channel_kind_from_row`.
+#
+# Only the first shape mentions a kind at all, and the generic routes — the ones
+# a brand-new kind uses on day one — resolve it through
+# :func:`channel_permission_key`, which derives ``channel_<kind>`` from the
+# gateway's own ``SUPPORTED_CHANNEL_KINDS``. So a kind added to the gateway is
+# gated on every generic route the moment it exists, with no change here. A
+# *kind-specific* route is the one shape that still needs a line of code, and
+# there the path itself is the declaration:
+# ``tests/unit/api/test_acl_gate_coverage.py`` reads the kind out of the route
+# path and insists the gate asks for exactly that kind's key, so a new one that
+# copies a neighbour's key — or names none — fails the suite rather than opening
+# a type.
+
+
+class _KindOnlyBody(BaseModel):
+    """Just the ``kind`` field the type gate reads out of a request body.
+
+    FastAPI parses the JSON body once per request and hands the same object to
+    every body parameter, so the gate validates ``kind`` against the same
+    ``ChannelKind`` the route does — one parse, one set of validation rules.
+    """
+
+    kind: ChannelKind
+
+
+def _require_channel_type(user: Any, request: Request, server: Any, *, kind: str) -> Any:
+    """Refuse when the actor may not use channel type ``kind`` (design §2.3)."""
+    key = channel_permission_key(kind)
+    grants = request_unit_grants(request, server, user)
+    if not user_has_permission(user, key, unit_grants=grants):
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            "permission required",
+            details={"permission": key},
+        )
+    return user
+
+
+def require_channel_kind_from_body() -> Any:
+    """Dependency: gate on the ``channel_<kind>`` key this request body asks for."""
+
+    async def _dep(
+        request: Request,
+        body: _KindOnlyBody,
+        user: Any = Depends(current_user),
+        server: Any = Depends(get_server),
+    ) -> Any:
+        return _require_channel_type(user, request, server, kind=str(body.kind))
+
+    return _dep
+
+
+def require_channel_kind_from_row() -> Any:
+    """Dependency: gate on the ``channel_<kind>`` key of the stored channel.
+
+    A missing row is left to the route (it answers 404): there is no type to
+    authorize, and the route is the only place that knows which of "not found"
+    and "not this agent's channel" applies.
+    """
+
+    async def _dep(
+        channel_id: str,
+        request: Request,
+        user: Any = Depends(current_user),
+        server: Any = Depends(get_server),
+    ) -> Any:
+        row = server.app_runtime.gateway.get_channel(channel_id)
+        if row is None:
+            return user
+        return _require_channel_type(user, request, server, kind=str(row.kind))
+
+    return _dep
+
+
+def _channels_of_authorized_types(
+    rows: list[Any], *, user: Any, request: Request, server: Any
+) -> list[Any]:
+    """The rows whose type ``user`` may use (design §2.3: 不能…查看该类型通道).
+
+    A channel of an unauthorized type is not listed at all — showing it would
+    hand out the view the type key is supposed to withhold. The unit grants are
+    resolved once for the whole list.
+    """
+    grants = request_unit_grants(request, server, user)
+    return [
+        row
+        for row in rows
+        if user_has_permission(user, channel_permission_key(str(row.kind)), unit_grants=grants)
+    ]
+
+
 @router.get("/agents/{agent_id}/channels")
 async def list_channels(
     agent_id: str,
@@ -137,7 +242,9 @@ async def list_channels(
 ) -> list[dict[str, Any]]:
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
     gw = server.app_runtime.gateway
-    rows = gw.list_channels(agent_id)
+    rows = _channels_of_authorized_types(
+        gw.list_channels(agent_id), user=user, request=request, server=server
+    )
     locale = resolve_request_locale(request)
     return [_row_to_dict(r, gateway=gw, locale=locale) for r in rows]
 
@@ -149,6 +256,8 @@ async def create_channel(
     request: Request,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    # The type key of the kind being created (design §2.3: 不能创建…该类型通道).
+    _kind: Any = Depends(require_channel_kind_from_body()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
@@ -176,6 +285,7 @@ async def get_channel(
     request: Request,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_channel_kind_from_row()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
@@ -195,12 +305,17 @@ async def patch_channel(
     request: Request,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_channel_kind_from_row()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
     existing = server.app_runtime.gateway.get_channel(channel_id)
     if existing is None or existing.agent_id != agent_id:
         raise OctopError(ErrorCode.NOT_FOUND, "channel not found")
+    if body.kind is not None and str(body.kind) != str(existing.kind):
+        # Re-typing a channel is using the *target* type, so it needs that
+        # type's key as well: the gate above authorized the type it has now.
+        _require_channel_type(user, request, server, kind=str(body.kind))
     row = await server.app_runtime.gateway.update_channel(
         channel_id,
         kind=str(body.kind) if body.kind is not None else None,
@@ -219,6 +334,7 @@ async def delete_channel(
     channel_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_channel_kind_from_row()),
     server: Any = Depends(get_server),
 ) -> None:
     _require_agent_access(agent_id, user=user, as_user=as_user, server=server)
@@ -235,6 +351,7 @@ async def test_channel(
     request: Request,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_channel_kind_from_row()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Probe a channel via Gateway.probe_channel()."""
@@ -257,6 +374,7 @@ async def probe_channel_config(
     request: Request,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_channel_kind_from_body()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Probe channel credentials from a draft config (no save required)."""
@@ -468,6 +586,7 @@ async def dingtalk_qrcode_generate(
     agent_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("dingtalk"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Start DingTalk Device Flow while retaining the device code server-side."""
@@ -512,6 +631,7 @@ async def dingtalk_qrcode_poll(
     request: Request,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("dingtalk"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Poll DingTalk registration and create the channel without exposing secrets."""
@@ -613,6 +733,7 @@ async def wecom_qrcode_generate(
     agent_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("wecom"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Generate WeCom AI Bot QR code for registration."""
@@ -632,6 +753,7 @@ async def wecom_qrcode_poll(
     as_user: int | None = None,
     scode: str = Body(..., embed=True),
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("wecom"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Poll WeCom QR scan result."""
@@ -657,6 +779,7 @@ async def qq_qrcode_generate(
     agent_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("qq"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Create an in-memory QQ Bot binding session and return its QR target URL."""
@@ -679,6 +802,7 @@ async def qq_qrcode_poll(
     as_user: int | None = None,
     qrcode_token: str = Body(..., embed=True),
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("qq"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Poll the active QQ Bot binding task and return credentials after confirmation."""
@@ -714,6 +838,7 @@ async def weixin_qrcode_generate(
     agent_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("weixin"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Generate WeChat iLink Bot QR code."""
@@ -741,6 +866,7 @@ async def weixin_qrcode_poll(
     as_user: int | None = None,
     qrcode_token: str = Body(..., embed=True),
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("weixin"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Poll WeChat QR scan result (single long-poll, ~40s)."""
@@ -796,6 +922,7 @@ async def feishu_bot_creator_start(
     as_user: int | None = None,
     body: dict[str, Any] = Body(default=None),
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("feishu"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Start the Feishu bot creator subprocess."""
@@ -851,6 +978,7 @@ async def feishu_bot_creator_poll(
     agent_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("feishu"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Poll feishu bot creator subprocess for new output."""
@@ -905,6 +1033,7 @@ async def feishu_bot_creator_stop(
     agent_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("feishu"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Stop the feishu bot creator subprocess."""
@@ -944,6 +1073,7 @@ async def yuanbao_bot_creator_start(
     as_user: int | None = None,
     body: dict[str, Any] = Body(default=None),
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("yuanbao"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Start the YuanBao bot creator subprocess."""
@@ -1000,6 +1130,7 @@ async def yuanbao_bot_creator_poll(
     agent_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("yuanbao"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Poll YuanBao bot creator subprocess for new output."""
@@ -1065,6 +1196,7 @@ async def yuanbao_bot_creator_stop(
     agent_id: str,
     as_user: int | None = None,
     user: Any = Depends(require_permission("channels")),
+    _kind: Any = Depends(require_permission(channel_permission_key("yuanbao"))),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Stop the YuanBao bot creator subprocess."""

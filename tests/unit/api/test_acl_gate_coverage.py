@@ -5,7 +5,7 @@ from __future__ import annotations
 import ast
 import pathlib
 
-from octop.infra.users.permissions import ALL_PERMISSION_KEYS
+from octop.infra.users.permissions import ALL_PERMISSION_KEYS, channel_permission_key
 
 API_ROOT = pathlib.Path("src/octop/api")
 
@@ -126,6 +126,11 @@ ROUTE_GATED_FILES = [
     "routers/org_units.py",
     "routers/invites.py",
     "routers/sharing.py",
+    # The channel surface is gated per *type* (§2.3), which is why it is here as
+    # well as in GATED_FILES: every route on it names a gate of its own, and
+    # ``test_every_channel_route_reads_its_kind_from_somewhere`` below insists the
+    # gate is the key of the kind that route touches, not just any key.
+    "routers/channels.py",
 ]
 
 #: Routes on those surfaces that deliberately carry no gate, and why. An empty
@@ -193,13 +198,28 @@ def _route_functions(
     ]
 
 
-def _names_a_gate(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True when the route's own parameters ask for a gate."""
+def _gate_defaults(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
+    """Source of every parameter default that could be a ``Depends`` gate."""
     args = node.args
     defaults = [*args.defaults, *(d for d in args.kw_defaults if d is not None)]
+    return [ast.unparse(default) for default in defaults]
+
+
+def _names_a_gate(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    """True when the route's own parameters ask for a gate.
+
+    Three shapes count, and all three are ``require_*`` dependency factories:
+    ``require_permission(key)``, ``require_admin()``, and the channel surface's
+    two per-type factories (``require_channel_kind_from_body`` /
+    ``_from_row``), which resolve the key at request time instead of naming it —
+    what they must ask for is checked key by key in
+    :func:`test_every_channel_route_reads_its_kind_from_somewhere`.
+    """
     return any(
-        "require_permission(" in ast.unparse(default) or "require_admin(" in ast.unparse(default)
-        for default in defaults
+        "require_permission(" in default
+        or "require_admin(" in default
+        or "require_channel_kind_from_" in default
+        for default in _gate_defaults(node)
     )
 
 
@@ -245,3 +265,92 @@ def test_every_websocket_on_a_gated_surface_checks_its_key() -> None:
                 f"(checks: {sorted(checked)}) — a socket must run the same module gate "
                 "as the HTTP routes of its surface (design §2.4)"
             )
+
+
+_CHANNEL_ROUTER = "routers/channels.py"
+
+#: Channel-surface routes that carry no type gate of their own, and why. A route
+#: is either gated on the kind it touches or explained here.
+CHANNEL_TYPE_FILTERED_ROUTES: dict[str, str] = {
+    # The list answers for *every* kind the actor may use at once, so it filters
+    # the rows by ``channel_<kind>`` instead of refusing outright — a 403 would
+    # hide the channels the actor is entitled to because of one it is not
+    # (design §2.3: 不能…查看该类型通道).
+    "list_channels": "filters its rows by kind instead of refusing (§2.3)",
+}
+
+
+def _path_of(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str | None:
+    for dec in node.decorator_list:
+        if (
+            isinstance(dec, ast.Call)
+            and isinstance(dec.func, ast.Attribute)
+            and dec.func.attr in _HTTP_METHODS
+            and dec.args
+            and isinstance(dec.args[0], ast.Constant)
+            and isinstance(dec.args[0].value, str)
+        ):
+            return dec.args[0].value
+    return None
+
+
+def _kind_in_path(path: str) -> str | None:
+    """The channel kind ``path`` names, if any — read off the catalog itself.
+
+    A segment counts only when it is a kind the gateway supports, so the
+    ``probe`` of ``/channels/probe`` is not mistaken for one and neither is a
+    ``{channel_id}`` placeholder.
+    """
+    for segment in path.strip("/").split("/"):
+        if channel_permission_key(segment) in ALL_PERMISSION_KEYS:
+            return segment
+    return None
+
+
+def test_every_channel_route_reads_its_kind_from_somewhere() -> None:
+    """A channel route is gated on the type key of the kind the request touches.
+
+    Design §2.3 gates channel types, not the channel module: ``channels`` alone
+    must never be enough to create, edit, delete, test, bind or view a channel.
+    Which kind a request touches is decided by the path (``.../dingtalk/...``),
+    by its body, or by the stored row — and the three shapes are the three this
+    test accepts. A new route that names none of them fails here, and so does one
+    that names the wrong kind's key: the key is read out of the path rather than
+    from a table kept next to it.
+    """
+    seen: set[str] = set()
+    for node in _route_functions(_CHANNEL_ROUTER):
+        path = _path_of(node)
+        assert path is not None, f"{_CHANNEL_ROUTER}: {node.name!r} has no path"
+        seen.add(node.name)
+        defaults = _gate_defaults(node)
+        kind = _kind_in_path(path)
+        if kind is not None:
+            # ``ast.unparse`` renders string constants with ``repr`` (single
+            # quotes), so the expectation is spelled the same way.
+            expected = f"require_permission(channel_permission_key('{kind}'))"
+            assert any(expected in default for default in defaults), (
+                f"{_CHANNEL_ROUTER}: {node.name!r} names kind {kind!r} in its path but "
+                f"does not ask for {channel_permission_key(kind)!r} "
+                f"(gates: {defaults})"
+            )
+            continue
+        resolved = [
+            default
+            for default in defaults
+            if "require_channel_kind_from_body()" in default
+            or "require_channel_kind_from_row()" in default
+        ]
+        if resolved:
+            continue
+        assert node.name in CHANNEL_TYPE_FILTERED_ROUTES, (
+            f"{_CHANNEL_ROUTER}: {node.name!r} ({path}) is gated on the module key alone — "
+            "give it the type key of the kind it touches, or list it in "
+            "CHANNEL_TYPE_FILTERED_ROUTES with the reason it has none"
+        )
+        assert "_channels_of_authorized_types(" in ast.unparse(node), (
+            f"{_CHANNEL_ROUTER}: {node.name!r} is exempted as a filtering route but does "
+            "not filter anything"
+        )
+    missing = set(CHANNEL_TYPE_FILTERED_ROUTES) - seen
+    assert not missing, f"{_CHANNEL_ROUTER}: exempted routes that no longer exist: {missing}"
