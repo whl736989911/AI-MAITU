@@ -1,5 +1,5 @@
 // dashboard/src/pages/Experts/components/ExpertCard.tsx
-import { memo } from "react";
+import { memo, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { CheckCircle } from "lucide-react";
 import { pickLocale } from "../../../utils/localizedText";
@@ -18,44 +18,70 @@ export interface ExpertSummary {
   task_examples?: { zh?: string[]; en?: string[] } | null;
 }
 
-interface ExpertCardProps {
-  expert: ExpertSummary;
-  lang: "zh" | "en";
-  isInstalled: boolean;
-  onCreate: (expert: ExpertSummary) => void;
+/**
+ * The accent hook the card's own styles read (border, hover wash, footer
+ * hint). A caller that names its own tint differently — the feature catalog's
+ * ``--feature-tint`` — passes it as ``accentVar``; the hook is then chained to
+ * that token so a single value still drives both names.
+ */
+const ACCENT_HOOK = "--expert-accent";
+
+export interface TemplateCardProps {
+  /** Localized card title. */
+  title: string;
+  /** Localized description; an empty one keeps the card's two-line slot. */
+  description: string;
+  /** Colour behind the icon chip, the hover border and the footer hint. */
+  accent: string;
+  /**
+   * Draws the chip's glyph. The card hands it the box it has: 44px when the
+   * chip is an avatar, 20px for the square one.
+   */
+  renderIcon: (size: number) => ReactNode;
+  /** Draw the chip as a 44px avatar rather than the tinted square. */
+  portrait?: boolean;
+  /** Custom property to publish ``accent`` under; see ``ACCENT_HOOK``. */
+  accentVar?: string;
+  /** Row under the description — a template's call to action, a badge. */
+  footer?: ReactNode;
+  onClick: () => void;
 }
 
-export const ExpertCard = memo(function ExpertCard({
-  expert,
-  lang,
-  isInstalled,
-  onCreate,
-}: ExpertCardProps) {
-  const { t } = useTranslation();
-  const label = pickLocale(expert.label, lang) || expert.id;
-  const desc = pickLocale(expert.description, lang);
-  const accent = expert.color || "var(--fn-color-brand)";
-  const portraitUrl = resolveExpertAvatarUrl(expert.icon_url);
-  const hasPortrait = Boolean(portraitUrl);
-
+/**
+ * The template card. Expert templates and feature-catalog entries are the same
+ * card; they differ only in the icon they draw, the name they publish their
+ * accent under, and whether they have a footer.
+ *
+ * It is a ``button`` — the whole card is one click target, so it has to be
+ * reachable and operable from the keyboard.
+ */
+export function TemplateCard({
+  title,
+  description,
+  accent,
+  renderIcon,
+  portrait = false,
+  accentVar = ACCENT_HOOK,
+  footer,
+  onClick,
+}: TemplateCardProps) {
   return (
-    <div
+    <button
+      type="button"
       className={styles.expertTemplateCard}
-      onClick={() => onCreate(expert)}
-      style={
-        {
-          "--expert-accent": accent,
-        } as React.CSSProperties
-      }
+      style={accentStyle(accentVar, accent)}
+      onClick={onClick}
     >
       {/* Icon + title */}
-      <div className={styles.expertTemplateHeader}>
-        <div
-          className={`${styles.agentCardIcon} ${
-            hasPortrait ? styles.agentCardPortrait : ""
-          }`}
+      <span className={styles.expertTemplateHeader}>
+        <span
+          className={
+            portrait
+              ? `${styles.agentCardIcon} ${styles.agentCardPortrait}`
+              : styles.agentCardIcon
+          }
           style={
-            hasPortrait
+            portrait
               ? undefined
               : {
                   color: accent,
@@ -63,32 +89,81 @@ export const ExpertCard = memo(function ExpertCard({
                 }
           }
         >
-          <ExpertIcon
-            iconUrl={portraitUrl}
-            iconName={expert.icon_name}
-            size={hasPortrait ? 44 : 20}
-          />
-        </div>
-        <div className={styles.agentCardTitleBlock}>
-          <div className={styles.agentCardName}>{label}</div>
-        </div>
-      </div>
+          {renderIcon(portrait ? 44 : 20)}
+        </span>
+        <span className={styles.agentCardTitleBlock}>
+          <span className={styles.agentCardName}>{title}</span>
+        </span>
+      </span>
 
       {/* Description */}
-      <div className={styles.agentCardDesc}>{desc || "\u00a0"}</div>
+      <span className={styles.agentCardDesc}>{description || "\u00a0"}</span>
 
       {/* Footer */}
-      <div className={styles.expertCardFooter}>
-        <div className={styles.expertCardHint}>
-          {t("experts.createFromTemplate")}
-        </div>
-        {isInstalled && (
-          <div className={styles.expertInstalledLabel}>
-            <CheckCircle size={12} />
-            {t("experts.installedBadge")}
-          </div>
-        )}
-      </div>
-    </div>
+      {footer ? (
+        <span className={styles.expertCardFooter}>{footer}</span>
+      ) : null}
+    </button>
+  );
+}
+
+/**
+ * ``accent`` published under the caller's token. The card's styles read
+ * ``ACCENT_HOOK``, so when the caller names its token something else the hook
+ * is pointed at it rather than being set twice.
+ */
+function accentStyle(token: string, accent: string): CSSProperties {
+  if (token === ACCENT_HOOK) return { [ACCENT_HOOK]: accent } as CSSProperties;
+  return {
+    [token]: accent,
+    [ACCENT_HOOK]: `var(${token})`,
+  } as CSSProperties;
+}
+
+interface ExpertCardProps {
+  expert: ExpertSummary;
+  lang: "zh" | "en";
+  isInstalled: boolean;
+  onCreate: (expert: ExpertSummary) => void;
+}
+
+/** A built-in expert template, rendered as the shared template card. */
+export const ExpertCard = memo(function ExpertCard({
+  expert,
+  lang,
+  isInstalled,
+  onCreate,
+}: ExpertCardProps) {
+  const { t } = useTranslation();
+  const portraitUrl = resolveExpertAvatarUrl(expert.icon_url);
+
+  return (
+    <TemplateCard
+      title={pickLocale(expert.label, lang) || expert.id}
+      description={pickLocale(expert.description, lang)}
+      accent={expert.color || "var(--fn-color-brand)"}
+      portrait={Boolean(portraitUrl)}
+      renderIcon={(size) => (
+        <ExpertIcon
+          iconUrl={portraitUrl}
+          iconName={expert.icon_name}
+          size={size}
+        />
+      )}
+      footer={
+        <>
+          <span className={styles.expertCardHint}>
+            {t("experts.createFromTemplate")}
+          </span>
+          {isInstalled && (
+            <span className={styles.expertInstalledLabel}>
+              <CheckCircle size={12} />
+              {t("experts.installedBadge")}
+            </span>
+          )}
+        </>
+      }
+      onClick={() => onCreate(expert)}
+    />
   );
 });

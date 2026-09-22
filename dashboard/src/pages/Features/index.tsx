@@ -1,15 +1,10 @@
 /**
  * Feature catalog — every ``feature.json`` on disk, grouped by organization
- * unit. Cards are the entry point into the schema-driven run form.
+ * unit. Cards are the expert-template card, tinted with the feature's own
+ * colour, and are the entry point into the schema-driven run form.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type CSSProperties,
-} from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button, Spin } from "antd";
 import { Plus, RefreshCw } from "lucide-react";
@@ -26,6 +21,7 @@ import { apiErrorMessage } from "../../utils/apiError";
 import { normalizeUiLocale } from "../../utils/localePrefs";
 import { isSystemAdmin } from "../../utils/permissions";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
+import { TemplateCard } from "../Experts/components/ExpertCard";
 import { FeatureIcon } from "./components/FeatureIcon";
 import FeatureCreateDrawer from "./components/FeatureCreateDrawer";
 import { localizedText } from "./components/SchemaForm";
@@ -97,10 +93,7 @@ export default function FeaturesPage() {
     void load();
   }, [load]);
 
-  const groups = useMemo(
-    () => groupByUnit(features, units),
-    [features, units],
-  );
+  const groups = useMemo(() => groupByUnit(features, units), [features, units]);
 
   return (
     <PageShell
@@ -160,29 +153,17 @@ export default function FeaturesPage() {
           </div>
           <div className={styles.grid}>
             {group.items.map((feature) => (
-              <button
+              <TemplateCard
                 key={feature.id}
-                type="button"
-                className={styles.card}
-                style={
-                  {
-                    "--feature-tint": feature.color || BRAND.color.accent,
-                  } as CSSProperties
-                }
+                title={localizedText(feature.label, lang)}
+                description={localizedText(feature.description, lang)}
+                accent={feature.color || BRAND.color.accent}
+                accentVar="--feature-tint"
+                renderIcon={(size) => (
+                  <FeatureIcon name={feature.icon_name} size={size} />
+                )}
                 onClick={() => navigate(`/features/${feature.id}`)}
-              >
-                <span className={styles.cardIcon}>
-                  <FeatureIcon name={feature.icon_name} size={20} />
-                </span>
-                <span className={styles.cardBody}>
-                  <span className={styles.cardTitle}>
-                    {localizedText(feature.label, lang)}
-                  </span>
-                  <span className={styles.cardDesc}>
-                    {localizedText(feature.description, lang)}
-                  </span>
-                </span>
-              </button>
+              />
             ))}
           </div>
         </section>

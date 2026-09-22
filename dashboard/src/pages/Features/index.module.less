@@ -1,7 +1,7 @@
 /**
  * Features page — catalog grid (grouped by unit) plus the run form / result
- * split view. Card chrome follows the skills grid shell; colours come from
- * theme variables so palette switching keeps working.
+ * split view. The cards themselves are the shared expert-template card; what
+ * lives here is the grouping chrome around them.
  */
 
 .loading {
@@ -70,94 +70,6 @@
   @media (max-width: 767px) {
     grid-template-columns: 1fr;
   }
-}
-
-.card {
-  /* Overridden per card with the feature's own tint (brand accent fallback). */
-  --feature-tint: var(--fn-color-brand);
-
-  display: flex;
-  align-items: flex-start;
-  gap: 12px;
-  padding: 16px;
-  text-align: left;
-  background: var(--fn-bg-primary);
-  border: 1px solid var(--fn-card-border-normal);
-  border-radius: var(--fn-radius-lg);
-  box-shadow: var(--fn-card-shadow-normal);
-  cursor: pointer;
-  outline: none;
-  transition:
-    transform 0.25s ease,
-    box-shadow 0.25s ease,
-    border-color 0.25s ease;
-
-  &:hover {
-    transform: translateY(-2px);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.12);
-    border-color: color-mix(
-      in srgb,
-      var(--feature-tint) 30%,
-      var(--fn-card-border-normal)
-    );
-  }
-
-  &:focus-visible {
-    outline: 2px solid var(--fn-color-brand);
-    outline-offset: 2px;
-  }
-
-  &:active {
-    transform: translateY(0);
-    transition-duration: 0.05s;
-  }
-
-  @media (max-width: 767px) {
-    &:hover {
-      transform: none;
-      box-shadow: var(--fn-card-shadow-normal);
-      border-color: var(--fn-card-border-normal);
-    }
-  }
-}
-
-.cardIcon {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 40px;
-  height: 40px;
-  color: var(--feature-tint);
-  background: color-mix(in srgb, var(--feature-tint) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--feature-tint) 26%, transparent);
-  border-radius: var(--fn-radius-md);
-}
-
-.cardBody {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.cardTitle {
-  font-size: 15px;
-  font-weight: 600;
-  line-height: 1.35;
-  color: var(--fn-text-primary);
-  word-break: break-word;
-}
-
-.cardDesc {
-  display: -webkit-box;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--fn-text-secondary);
-  word-break: break-word;
 }
 
 // ── Run page ────────────────────────────────────────────────────────────────
@@ -1351,4 +1263,3 @@
   font-size: 11px;
   color: var(--fn-text-tertiary);
 }
-

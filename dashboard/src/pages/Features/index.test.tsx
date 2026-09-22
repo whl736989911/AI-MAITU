@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import userEvent from "@testing-library/user-event";
+import { MemoryRouter, Route, Routes, useParams } from "react-router-dom";
 import type { OctopUser } from "../../api/modules/auth";
+import type { FeatureSummary } from "../../api/modules/features";
+import { BRAND } from "../../brand.generated";
 
 /**
  * Writing a definition belongs to an administrator, and to features the
@@ -105,5 +108,107 @@ describe("<FeaturesPage /> settings entry", () => {
     expect(
       screen.queryByRole("button", { name: "features.settingsNew" }),
     ).toBeNull();
+  });
+});
+
+const QUOTE: FeatureSummary = {
+  id: "quote-draft",
+  version: 1,
+  label: { zh: "报价单草稿", en: "Quote draft" },
+  description: { zh: "生成报价单", en: "Draft a quote" },
+  icon_name: "receipt",
+  color: "#f97316",
+  unit: "sales",
+  output_kind: "markdown",
+  permissions: {},
+};
+
+const INVOICE: FeatureSummary = {
+  id: "invoice-chase",
+  version: 1,
+  label: { zh: "催款函", en: "Payment chase" },
+  description: { zh: "生成催款函", en: "Chase an invoice" },
+  icon_name: "mail",
+  color: null,
+  unit: "sales",
+  output_kind: "text",
+  permissions: {},
+};
+
+const SHIPMENT: FeatureSummary = {
+  id: "shipment-track",
+  version: 2,
+  label: { zh: "物流跟踪", en: "Track shipment" },
+  description: { zh: "汇总物流状态", en: "Summarize tracking" },
+  icon_name: "truck",
+  color: "#0ea5e9",
+  unit: "ops",
+  output_kind: "markdown",
+  permissions: {},
+};
+
+function OpenedFeature() {
+  const { id } = useParams();
+  return <div>opened:{id}</div>;
+}
+
+/** The catalog with its detail route, so a card click is observable. */
+function renderCatalog() {
+  return render(
+    <MemoryRouter initialEntries={["/features"]}>
+      <CurrentUserProvider user={MEMBER} setUser={vi.fn()}>
+        <Routes>
+          <Route path="/features" element={<FeaturesPage />} />
+          <Route path="/features/:id" element={<OpenedFeature />} />
+        </Routes>
+      </CurrentUserProvider>
+    </MemoryRouter>,
+  );
+}
+
+describe("<FeaturesPage /> catalog", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    listFeatures.mockResolvedValue({
+      features: [QUOTE, INVOICE, SHIPMENT],
+      units: [
+        { key: "sales", count: 2 },
+        { key: "ops", count: 1 },
+      ],
+    });
+  });
+
+  it("keeps the unit grouping and its counts", async () => {
+    renderCatalog();
+
+    expect(
+      await screen.findByRole("heading", { name: "sales" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "ops" })).toBeInTheDocument();
+    expect(screen.getByText("2")).toBeInTheDocument();
+    expect(screen.getByText("1")).toBeInTheDocument();
+  });
+
+  it("opens the feature a card names", async () => {
+    const user = userEvent.setup();
+    renderCatalog();
+
+    const card = await screen.findByRole("button", { name: /报价单草稿/ });
+    await user.click(card);
+
+    expect(await screen.findByText("opened:quote-draft")).toBeInTheDocument();
+  });
+
+  it("tints each card with the feature's own colour", async () => {
+    renderCatalog();
+
+    const tinted = await screen.findByRole("button", { name: /报价单草稿/ });
+    // The brand accent stands in where a feature names no colour of its own.
+    const plain = screen.getByRole("button", { name: /催款函/ });
+
+    expect(tinted.getAttribute("style")).toContain("--feature-tint: #f97316");
+    expect(plain.getAttribute("style")).toContain(
+      `--feature-tint: ${BRAND.color.accent}`,
+    );
   });
 });
