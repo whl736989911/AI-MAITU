@@ -16,6 +16,7 @@ from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
 from octop.infra.db.repos.providers import ProviderRepo
@@ -67,6 +68,7 @@ class RepoBundle:
     sso_repo: SsoRepo
     resource_acl_repo: ResourceAclRepo
     data_sources_repo: DataSourceRepo
+    knowledge_sync_runs_repo: KnowledgeSyncRunRepo
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
@@ -99,6 +101,7 @@ class RepoBundle:
             sso_repo=SsoRepo(db),
             resource_acl_repo=ResourceAclRepo(db),
             data_sources_repo=DataSourceRepo(db),
+            knowledge_sync_runs_repo=KnowledgeSyncRunRepo(db),
         )
 
 
@@ -215,6 +218,10 @@ class SharedServices:
     @property
     def data_sources_repo(self) -> DataSourceRepo:
         return self.repos.data_sources_repo
+
+    @property
+    def knowledge_sync_runs_repo(self) -> KnowledgeSyncRunRepo:
+        return self.repos.knowledge_sync_runs_repo
 
 
 def build_shared_services(

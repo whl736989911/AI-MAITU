@@ -13,7 +13,7 @@ import logging
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from octop.api.deps import current_user, get_server, require_permission
@@ -23,6 +23,7 @@ from octop.api.deps import current_user, get_server, require_permission
 # describing the same statuses and messages twice.
 from octop.api.routers.knowledge_bases import _map_knowledge_error
 from octop.infra.db.repos.data_sources import KINDS, DataSourceRow
+from octop.infra.db.repos.knowledge_sync_runs import SyncRunRow
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.data_sources import (
     DataSourceService,
@@ -124,6 +125,12 @@ def _payload(row: DataSourceRow) -> dict[str, Any]:
     payload = asdict(row)
     payload["data_source_id"] = row.id
     payload["config"] = row.config
+    return payload
+
+
+def _run_payload(row: SyncRunRow) -> dict[str, Any]:
+    payload = asdict(row)
+    payload["run_id"] = row.id
     return payload
 
 
@@ -317,6 +324,30 @@ async def test_data_source(
             exc, locale=resolve_request_locale(request), server=server
         ) from exc
     return {"ok": True, "detail": detail}
+
+
+@router.get("/data-sources/{ds_id}/runs", summary="List a data source's scans")
+async def list_data_source_runs(
+    ds_id: str,
+    request: Request,
+    limit: int = Query(default=20, ge=1, le=100, description="Maximum runs to return."),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(current_user),
+) -> list[dict[str, Any]]:
+    """The source's scan history, newest first (design §8.4).
+
+    A run is a summary; the per-file outcome — including a failure's reason —
+    stays on the document row, which ``GET .../documents`` lists.
+    """
+    try:
+        rows = _service(server).list_runs(
+            ds_id, actor_user_id=user.id, is_admin=_is_admin(user), limit=limit
+        )
+        return [_run_payload(row) for row in rows]
+    except Exception as exc:
+        raise _map_data_source_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
 
 
 @router.delete(

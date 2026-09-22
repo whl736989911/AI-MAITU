@@ -16,14 +16,26 @@ from octop.infra.knowledge.sources.base import (
     SourceUnsupported,
 )
 from octop.infra.knowledge.sources.local import LocalFolderConnector
+from octop.infra.knowledge.sources.scan import (
+    DEBOUNCE_SECONDS,
+    DELETE_CONFIRM_SECONDS,
+    IndexedFile,
+    ScanPlan,
+    filter_entries,
+    plan_scan,
+)
 from octop.infra.knowledge.sources.smb import SmbConnector
 
 __all__ = [
+    "DEBOUNCE_SECONDS",
+    "DELETE_CONFIRM_SECONDS",
     "FOLDER_KINDS",
     "KIND_LOCAL",
     "KIND_NFS",
     "KIND_SMB",
+    "IndexedFile",
     "LocalFolderConnector",
+    "ScanPlan",
     "SmbConnector",
     "SourceConnector",
     "SourceDependencyMissing",
@@ -31,7 +43,9 @@ __all__ = [
     "SourceError",
     "SourceUnsupported",
     "build_connector",
+    "filter_entries",
     "is_folder_kind",
+    "plan_scan",
 ]
 
 KIND_LOCAL = "local"

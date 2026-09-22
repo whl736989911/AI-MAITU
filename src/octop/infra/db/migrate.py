@@ -1173,6 +1173,76 @@ def _ensure_data_sources_connection_schema(db: DatabasePool) -> None:
         _ensure_column(db, "data_sources", column, definition)
 
 
+_KNOWLEDGE_FILE_INDEX_COLUMNS = (
+    ("data_source_id", "TEXT REFERENCES data_sources(id) ON DELETE CASCADE"),
+    ("source_path", "TEXT NOT NULL DEFAULT ''"),
+    ("source_size", "INTEGER NOT NULL DEFAULT 0"),
+    ("source_modified_at", "INTEGER"),
+    ("obs_size", "INTEGER"),
+    ("obs_modified_at", "INTEGER"),
+    ("obs_at", "INTEGER"),
+    ("delete_pending_since", "INTEGER"),
+)
+"""What a scan adds to the file index (schema v28).
+
+``data_source_id`` cascades so a source's index dies with it; ``obs_*`` is the
+previous scan's observation, which is what makes the debounce in design §8.3
+possible — a file still being copied differs between two consecutive scans.
+"""
+
+
+def _ensure_knowledge_file_index_schema(db: DatabasePool) -> None:
+    """Give ``knowledge_documents`` the columns a scan needs (schema v28)."""
+    if not _table_exists(db, "knowledge_documents") or not _table_exists(db, "data_sources"):
+        # The foreign key below targets ``data_sources``, and a database old or
+        # partial enough to be missing it has no external source to index.
+        return
+    for column, definition in _KNOWLEDGE_FILE_INDEX_COLUMNS:
+        _ensure_column(db, "knowledge_documents", column, definition)
+    with db.connect() as conn:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_documents_source "
+            "ON knowledge_documents (data_source_id, source_path)"
+        )
+
+
+def _ensure_knowledge_sync_runs_schema(db: DatabasePool) -> None:
+    """Create the scan's task table (schema v28).
+
+    One row per scan, with its counts and its stop reason: design §8.4 wants
+    every extraction to be a traceable task, and the per-file outcome stays on
+    the document row so a run is a summary rather than the only record.
+    """
+    if not _table_exists(db, "data_sources"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_sync_runs (
+              id             TEXT PRIMARY KEY,
+              data_source_id TEXT NOT NULL
+                             REFERENCES data_sources(id) ON DELETE CASCADE,
+              trigger        TEXT NOT NULL,
+              status         TEXT NOT NULL,
+              started_at     {int_type} NOT NULL,
+              finished_at    {int_type},
+              scanned        INTEGER NOT NULL DEFAULT 0,
+              added          INTEGER NOT NULL DEFAULT 0,
+              updated        INTEGER NOT NULL DEFAULT 0,
+              removed        INTEGER NOT NULL DEFAULT 0,
+              deferred       INTEGER NOT NULL DEFAULT 0,
+              failed         INTEGER NOT NULL DEFAULT 0,
+              error          TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_sync_runs_source "
+            "ON knowledge_sync_runs (data_source_id, started_at)"
+        )
+
+
 def _ensure_org_units_schema(db: DatabasePool) -> None:
     """Create org units + unit grants and the user scope columns (schema v17)."""
     if _table_exists(db, "users"):
@@ -2335,6 +2405,9 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     owner, ``is_enterprise``, one seeded row) and gives ``data_sources`` the
     folder-connection columns. Both must also reach databases whose watermark
     already passed 27, so this branch calls the ensure helpers.
+    Version 28 gives ``knowledge_documents`` the columns a file scan needs and
+    creates ``knowledge_sync_runs``. Same reason: the ensure helpers must also
+    reach databases whose watermark already passed 28.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -2483,6 +2556,12 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 28:
+        _ensure_knowledge_file_index_schema(db)
+        _ensure_knowledge_sync_runs_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -2514,6 +2593,9 @@ def run_migrations(db: DatabasePool) -> None:
             if version == 27:
                 _ensure_enterprise_knowledge_space(db)
                 _ensure_data_sources_connection_schema(db)
+            if version == 28:
+                _ensure_knowledge_file_index_schema(db)
+                _ensure_knowledge_sync_runs_schema(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -2537,3 +2619,5 @@ def run_migrations(db: DatabasePool) -> None:
     _drop_feature_tables(db)
     _ensure_enterprise_knowledge_space(db)
     _ensure_data_sources_connection_schema(db)
+    _ensure_knowledge_file_index_schema(db)
+    _ensure_knowledge_sync_runs_schema(db)

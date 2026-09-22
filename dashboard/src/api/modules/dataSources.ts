@@ -120,6 +120,25 @@ export interface DataSourceTestResult {
   detail: string;
 }
 
+/** One scan of a folder source (design §8.4). */
+export interface DataSourceRun {
+  id: string;
+  run_id: string;
+  data_source_id: string;
+  trigger: "manual" | "scheduled";
+  status: "running" | "ok" | "failed";
+  started_at: number;
+  finished_at: number | null;
+  scanned: number;
+  added: number;
+  updated: number;
+  removed: number;
+  /** Seen but still being copied, so deliberately not processed this time. */
+  deferred: number;
+  failed: number;
+  error: string | null;
+}
+
 export const dataSourcesApi = {
   list: (kbId: string) =>
     request<DataSource[]>(`/knowledge-bases/${kbId}/data-sources`),
@@ -152,6 +171,10 @@ export const dataSourcesApi = {
   /** Ingest what the source points at. Synchronous and potentially slow. */
   sync: (id: string) =>
     request<DataSource>(`/data-sources/${id}/sync`, { method: "POST" }),
+
+  /** A folder source's scan history, newest first. */
+  runs: (id: string, limit = 20) =>
+    request<DataSourceRun[]>(`/data-sources/${id}/runs?limit=${limit}`),
 
   /**
    * Drop the source record. The knowledge base's documents are untouched —

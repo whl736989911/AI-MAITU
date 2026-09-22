@@ -8,6 +8,7 @@ document status — is produced and asserted for real.
 
 from __future__ import annotations
 
+import os
 import shutil
 import sqlite3
 from dataclasses import asdict, replace
@@ -18,9 +19,11 @@ import pytest
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos._base import now_ts
 from octop.infra.db.repos.audit import AuditRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.settings import SettingsRepo
@@ -37,7 +40,12 @@ from octop.infra.knowledge.data_sources import (
 from octop.infra.knowledge.files import document_path
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.service import KnowledgeService
-from octop.infra.knowledge.sources import SourceError, SourceUnsupported
+from octop.infra.knowledge.sources import (
+    DELETE_CONFIRM_SECONDS,
+    LocalFolderConnector,
+    SourceError,
+    SourceUnsupported,
+)
 from octop.infra.knowledge.url_fetch import FetchedDocument
 from octop.infra.utils.paths import PathLayout
 from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
@@ -60,6 +68,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         paths=PathLayout.from_env(),
         knowledge_repo=KnowledgeRepo(pool),
         data_sources_repo=DataSourceRepo(pool),
+        knowledge_sync_runs_repo=KnowledgeSyncRunRepo(pool),
         settings_repo=SettingsRepo(pool),
         user_repo=UserRepo(pool),
         secret_repo=SecretRepo(pool),
@@ -728,3 +737,345 @@ def test_update_validates_before_it_writes(
         )
 
     assert env.services.data_sources_repo.get(source.id).root_path == source.root_path
+
+
+# ---------------------------------------------------------------------------
+# folder scanning — design §8
+# ---------------------------------------------------------------------------
+
+_DOC_BODY = "refunds take five business days"
+
+
+def _scanned_source(env: SimpleNamespace, owner_id: int, root: Path):
+    base = _base(env, owner_id)
+    source = env.sources.create(
+        base.id,
+        actor_user_id=owner_id,
+        name="Policies",
+        kind="local",
+        folder=FolderSettings(root_path=str(root)),
+    )
+    return base, source
+
+
+def _source_file(root: Path, name: str, body: str) -> Path:
+    path = root / name
+    path.write_text(body, encoding="utf-8")
+    return path
+
+
+def _settle(env: SimpleNamespace, source_id: str, *, seconds: int = 600) -> None:
+    """Backdate every observation so the debounce window has already passed.
+
+    A scan otherwise defers a file for ``DEBOUNCE_SECONDS`` and no test can wait
+    that long; moving the recorded instant is the same thing from the planner's
+    point of view.
+    """
+    now = now_ts()
+    for row in env.services.knowledge_repo.list_source_files(source_id):
+        if row.observed_at is None:
+            continue
+        env.services.knowledge_repo.record_observation(
+            row.id,
+            size=row.observed_size or 0,
+            modified_at=row.observed_modified_at,
+            at=now - seconds,
+        )
+
+
+def _last_run(env: SimpleNamespace, source_id: str):
+    return env.services.knowledge_sync_runs_repo.list_for_source(source_id)[0]
+
+
+def test_scan_defers_a_new_file_then_indexes_it_once_it_settles(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """The debounce, end to end: a file being copied is not indexed half-written."""
+    root = _local_root(tmp_path)
+    _source_file(root, "policy.md", _DOC_BODY)
+    base, source = _scanned_source(env, people.owner, root)
+
+    first = env.sources.sync(source.id, actor_user_id=people.owner)
+
+    assert first.sync_status == "ok"
+    assert _last_run(env, source.id).deferred == 1
+    assert _last_run(env, source.id).added == 0
+    rows = env.services.knowledge_repo.list_source_files(source.id)
+    # The stored path is namespaced by source, so the tree gains a top-level
+    # folder named after it; the file itself is seen but not indexed yet.
+    assert [row.path for row in rows if row.is_dir] == [source.id]
+    discovered = [row for row in rows if not row.is_dir]
+    assert [row.status for row in discovered] == ["discovered"]
+    assert discovered[0].chunk_count == 0
+
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    run = _last_run(env, source.id)
+    assert (run.added, run.deferred, run.failed) == (1, 0, 0)
+    documents = [
+        row
+        for row in env.services.knowledge_repo.list_source_files(source.id)
+        if not row.is_dir and row.status == "ready"
+    ]
+    assert len(documents) == 1
+    document = documents[0]
+    assert document.source_path == "policy.md"
+    # The stored path is namespaced by source so two sources can hold one name.
+    assert document.path == f"{source.id}/policy.md"
+    assert document.chunk_count > 0
+    assert _DOC_BODY.split()[0] in _indexed_text(base.id)
+    # design §3.3: the folder is the source of truth, so the platform holds no
+    # second copy of the file — only the index built from it.
+    assert not document_path(base.id, document.id, document.filename).exists()
+    assert document.content_type == "text/markdown"
+
+
+def test_scan_reindexes_a_file_whose_contents_changed(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    root = _local_root(tmp_path)
+    path = _source_file(root, "policy.md", _DOC_BODY)
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    path.write_text("refunds now take two days", encoding="utf-8")
+    os.utime(path, (now_ts() + 5, now_ts() + 5))
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    assert _last_run(env, source.id).deferred == 1
+
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    run = _last_run(env, source.id)
+    assert (run.updated, run.added, run.failed) == (1, 0, 0)
+    stored = _indexed_text(base.id)
+    assert "two days" in stored
+    assert "five business days" not in stored
+
+
+def test_scan_removes_a_deleted_file_only_after_the_confirmation_window(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """A share that blinked must not read as "the folder was emptied"."""
+    root = _local_root(tmp_path)
+    path = _source_file(root, "policy.md", _DOC_BODY)
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert document is not None
+
+    path.unlink()
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    # First sighting of the absence: held, and still searchable.
+    assert _last_run(env, source.id).removed == 0
+    held = env.services.knowledge_repo.get_document(document.id)
+    assert held is not None
+    assert held.delete_pending_since is not None
+    assert _indexed_text(base.id) != ""
+
+    # The window has passed, so the next scan believes it.
+    env.services.knowledge_repo.mark_delete_pending(
+        document.id, since=now_ts() - DELETE_CONFIRM_SECONDS
+    )
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    assert _last_run(env, source.id).removed == 1
+    assert env.services.knowledge_repo.get_document(document.id) is None
+    assert _indexed_text(base.id) == ""
+
+
+def test_scan_keeps_everything_when_the_walk_fails(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a listing there is no evidence a file is gone (design §8.3)."""
+    root = _local_root(tmp_path)
+    _source_file(root, "policy.md", _DOC_BODY)
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    before = env.services.knowledge_repo.list_source_files(source.id)
+
+    def _drop_connection(*_args: object, **_kwargs: object) -> object:
+        raise SourceError("cannot list the source root: connection reset")
+
+    monkeypatch.setattr(LocalFolderConnector, "walk", _drop_connection)
+
+    with pytest.raises(DataSourceSyncFailed):
+        env.sources.sync(source.id, actor_user_id=people.owner)
+
+    row = env.services.data_sources_repo.get(source.id)
+    assert row.sync_status == "failed"
+    assert "connection reset" in (row.sync_error or "")
+    assert _last_run(env, source.id).status == "failed"
+    assert env.services.knowledge_repo.list_source_files(source.id) == before
+
+
+def test_an_aborted_first_scan_is_not_a_successful_view_of_the_source(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``last_scan_ok_at`` stays empty: the source has never been seen whole."""
+    base, source = _scanned_source(env, people.owner, _local_root(tmp_path))
+
+    def _drop_connection(*_args: object, **_kwargs: object) -> object:
+        raise SourceError("cannot list the source root: connection reset")
+
+    monkeypatch.setattr(LocalFolderConnector, "walk", _drop_connection)
+
+    with pytest.raises(DataSourceSyncFailed):
+        env.sources.sync(source.id, actor_user_id=people.owner)
+
+    row = env.services.data_sources_repo.get(source.id)
+    assert row.last_scan_at is not None
+    assert row.last_scan_ok_at is None
+
+
+def test_a_file_that_comes_back_unchanged_is_not_indexed_again(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """A share that blinked leaves the file — and its index — exactly as it was."""
+    root = _local_root(tmp_path)
+    path = _source_file(root, "policy.md", _DOC_BODY)
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    chunks_before = _chunk_count(base.id)
+    before = path.stat()
+
+    path.unlink()
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert document is not None
+    assert document.delete_pending_since is not None
+
+    # The same file is back, byte-for-byte and timestamp-for-timestamp.
+    _source_file(root, "policy.md", _DOC_BODY)
+    os.utime(path, (before.st_atime, before.st_mtime))
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    run = _last_run(env, source.id)
+    assert (run.added, run.updated, run.removed) == (0, 0, 0)
+    returned = env.services.knowledge_repo.get_document(document.id)
+    assert returned is not None
+    assert returned.status == "ready"
+    assert returned.delete_pending_since is None
+    assert _chunk_count(base.id) == chunks_before
+
+
+def test_scan_marks_a_file_this_build_cannot_parse_unsupported(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """design §6.2: keep the metadata and mark it, rather than refuse the file."""
+    root = _local_root(tmp_path)
+    (root / "installer.exe").write_bytes(b"MZ\x00\x00binary")
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    document = env.services.knowledge_repo.get_document_by_path(
+        base.id, f"{source.id}/installer.exe"
+    )
+    assert document is not None
+    assert document.status == "unsupported"
+    assert document.byte_size == len(b"MZ\x00\x00binary")
+    # Marked, so it is not retried on every scan.
+    assert document.source_size == len(b"MZ\x00\x00binary")
+    assert _last_run(env, source.id).failed == 0
+
+
+def test_scan_records_a_run_for_every_attempt(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    base, source = _scanned_source(env, people.owner, _local_root(tmp_path))
+
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    runs = env.sources.list_runs(source.id, actor_user_id=people.owner)
+    assert len(runs) == 2
+    assert [run.status for run in runs] == ["ok", "ok"]
+    assert all(run.finished_at is not None for run in runs)
+    assert all(run.trigger == "manual" for run in runs)
+
+
+def test_a_viewer_can_read_the_runs_but_the_owner_alone_runs_them(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    base, source = _scanned_source(env, people.owner, _local_root(tmp_path))
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    env.services.knowledge_repo.update_base(base.id, shared=True)
+
+    assert len(env.sources.list_runs(source.id, actor_user_id=people.viewer)) == 1
+    with pytest.raises(PermissionError):
+        env.sources.sync(source.id, actor_user_id=people.viewer)
+
+
+def test_a_file_that_cannot_be_parsed_records_why(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """design §8.4: a failure has a reason to read, on the row and in the run."""
+    root = _local_root(tmp_path)
+    (root / "broken.docx").write_bytes(b"this is not a docx")
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/broken.docx")
+    assert document is not None
+    assert document.status == "failed"
+    assert document.error_message
+    assert _last_run(env, source.id).failed == 1
+    # Not marked processed, so the next scan retries it once it is fixed.
+    assert document.source_size == 0
+
+
+def test_deleting_a_folder_source_takes_its_index_with_it(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """The rows go with the source, and so do ``doc_count`` and the chunks."""
+    root = _local_root(tmp_path)
+    _source_file(root, "policy.md", _DOC_BODY)
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    assert env.services.knowledge_repo.count_documents(base.id) == 1
+    assert _indexed_text(base.id) != ""
+
+    env.sources.delete(source.id, actor_user_id=people.owner)
+
+    assert env.services.knowledge_repo.list_documents(base.id) == []
+    assert env.services.knowledge_repo.get_base(base.id).doc_count == 0
+    assert _indexed_text(base.id) == ""
+    assert env.services.data_sources_repo.get(source.id) is None
+
+
+def test_deleting_a_folder_source_leaves_uploaded_documents_alone(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    """A document the platform holds is not the source's to remove."""
+    root = _local_root(tmp_path)
+    base, source = _scanned_source(env, people.owner, root)
+    uploaded = env.knowledge.upload_document(
+        base.id,
+        actor_user_id=people.owner,
+        filename="handbook.md",
+        content_type="text/markdown",
+        content=_DOC_BODY.encode("utf-8"),
+    )
+
+    env.sources.delete(source.id, actor_user_id=people.owner)
+
+    assert env.services.knowledge_repo.get_document(uploaded.id) is not None
+    assert env.services.knowledge_repo.count_documents(base.id) == 1

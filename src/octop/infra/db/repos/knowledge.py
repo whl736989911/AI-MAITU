@@ -22,10 +22,25 @@ from octop.infra.knowledge.relpath import (
     path_is_direct_child,
     path_parent,
 )
+from octop.infra.knowledge.sources.scan import IndexedFile
 from octop.infra.sharing import VISIBILITY_PRIVATE, VISIBILITY_PUBLIC, AclEntry
 from octop.infra.utils.ulid import new_short_id, new_ulid
 
 _DIR_CONTENT_TYPE = "application/x-directory"
+
+_PROCESSED_STATUSES = frozenset({"ready", "unsupported"})
+"""Statuses that mean "this file's content has already been dealt with".
+
+``unsupported`` counts: design §6's matrix ends at saving metadata and marking
+the type unsupported, and re-trying such a file on every scan would never
+succeed. ``failed`` is deliberately absent, so a file whose indexing failed is
+retried.
+
+A file whose deletion is pending keeps the status its content earned — that
+state lives in ``delete_pending_since`` — so it is covered here as whatever it
+already was, and a file that comes back unchanged is recognised as indexed
+rather than re-parsed.
+"""
 
 
 @dataclass(frozen=True)
@@ -80,6 +95,14 @@ class KnowledgeDocumentRow:
     path: str
     filename: str
     is_dir: bool
+    data_source_id: str | None
+    source_path: str
+    source_size: int
+    source_modified_at: int | None
+    observed_size: int | None
+    observed_modified_at: int | None
+    observed_at: int | None
+    delete_pending_since: int | None
     content_type: str
     byte_size: int
     content_hash: str
@@ -91,6 +114,9 @@ class KnowledgeDocumentRow:
 
     @classmethod
     def from_row(cls, r: DbRow) -> KnowledgeDocumentRow:
+        # Schema v28 adds the source columns. Fall back for a row read before
+        # the helper ran: a document without them is one the platform holds.
+        keys = frozenset(r.keys()) if hasattr(r, "keys") else frozenset()
         return cls(
             id=str(r["document_id"]),
             pk=int(r["id"]),
@@ -98,6 +124,18 @@ class KnowledgeDocumentRow:
             path=str(r["path"]),
             filename=str(r["filename"] or path_basename(str(r["path"]))),
             is_dir=bool(int(r["is_dir"])),
+            data_source_id=(
+                str(r["data_source_id"])
+                if "data_source_id" in keys and r["data_source_id"] is not None
+                else None
+            ),
+            source_path=str(r["source_path"] or "") if "source_path" in keys else "",
+            source_size=int(r["source_size"] or 0) if "source_size" in keys else 0,
+            source_modified_at=_optional_int(r, "source_modified_at", keys),
+            observed_size=_optional_int(r, "obs_size", keys),
+            observed_modified_at=_optional_int(r, "obs_modified_at", keys),
+            observed_at=_optional_int(r, "obs_at", keys),
+            delete_pending_since=_optional_int(r, "delete_pending_since", keys),
             content_type=r["content_type"],
             byte_size=r["byte_size"],
             content_hash=r["content_hash"],
@@ -107,6 +145,27 @@ class KnowledgeDocumentRow:
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         )
+
+    def scan_row(self) -> IndexedFile:
+        """This row as the scan planner sees it."""
+        return IndexedFile(
+            document_id=self.id,
+            source_path=self.source_path,
+            size=self.source_size,
+            modified_at=self.source_modified_at,
+            observed_size=self.observed_size,
+            observed_modified_at=self.observed_modified_at,
+            observed_at=self.observed_at,
+            delete_pending_since=self.delete_pending_since,
+            processed=self.status in _PROCESSED_STATUSES,
+        )
+
+
+def _optional_int(row: DbRow, column: str, keys: frozenset[str]) -> int | None:
+    if column not in keys:
+        return None
+    value = row[column]
+    return int(value) if value is not None else None
 
 
 class KnowledgeRepo:
@@ -325,7 +384,9 @@ class KnowledgeRepo:
         ).fetchone()
         return KnowledgeDocumentRow.from_row(r) if r else None
 
-    def ensure_folder(self, kb_id: str, path: str) -> KnowledgeDocumentRow:
+    def ensure_folder(
+        self, kb_id: str, path: str, *, data_source_id: str | None = None
+    ) -> KnowledgeDocumentRow:
         rel = normalize_kb_path(path)
         if not rel:
             raise ValueError("invalid knowledge folder path")
@@ -340,9 +401,19 @@ class KnowledgeRepo:
                 conn.execute(
                     "INSERT INTO knowledge_documents("
                     "document_id, kb_id, path, filename, is_dir, content_type, byte_size, "
-                    "content_hash, status, error_message, chunk_count, created_at, updated_at"
-                    ") VALUES (?, ?, ?, ?, 1, ?, 0, '', 'ready', '', 0, ?, ?)",
-                    (new_ulid(), kb_id, folder, path_basename(folder), _DIR_CONTENT_TYPE, ts, ts),
+                    "content_hash, status, error_message, chunk_count, created_at, updated_at, "
+                    "data_source_id"
+                    ") VALUES (?, ?, ?, ?, 1, ?, 0, '', 'ready', '', 0, ?, ?, ?)",
+                    (
+                        new_ulid(),
+                        kb_id,
+                        folder,
+                        path_basename(folder),
+                        _DIR_CONTENT_TYPE,
+                        ts,
+                        ts,
+                        data_source_id,
+                    ),
                 )
         row = self.get_document_by_path(kb_id, rel)
         if row is None:
@@ -360,13 +431,17 @@ class KnowledgeRepo:
         status: str = "pending",
         max_documents: int | None = None,
         path: str | None = None,
+        data_source_id: str | None = None,
+        source_path: str = "",
+        source_size: int = 0,
+        source_modified_at: int | None = None,
     ) -> KnowledgeDocumentRow:
         rel = normalize_kb_path(path or filename)
         if not rel:
             raise ValueError("invalid knowledge document path")
         name = path_basename(rel)
         for folder in ancestor_dirs(rel):
-            self.ensure_folder(kb_id, folder)
+            self.ensure_folder(kb_id, folder, data_source_id=data_source_id)
         doc_id = new_ulid()
         ts = now_ts()
         # Treat both None (caller did not specify) and 0 (per-base "unlimited"
@@ -385,9 +460,25 @@ class KnowledgeRepo:
             conn.execute(
                 "INSERT INTO knowledge_documents("
                 "document_id, kb_id, path, filename, is_dir, content_type, byte_size, "
-                "content_hash, status, error_message, chunk_count, created_at, updated_at"
-                ") VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, '', 0, ?, ?)",
-                (doc_id, kb_id, rel, name, content_type, byte_size, content_hash, status, ts, ts),
+                "content_hash, status, error_message, chunk_count, created_at, updated_at, "
+                "data_source_id, source_path, source_size, source_modified_at"
+                ") VALUES (?, ?, ?, ?, 0, ?, ?, ?, ?, '', 0, ?, ?, ?, ?, ?, ?)",
+                (
+                    doc_id,
+                    kb_id,
+                    rel,
+                    name,
+                    content_type,
+                    byte_size,
+                    content_hash,
+                    status,
+                    ts,
+                    ts,
+                    data_source_id,
+                    source_path,
+                    source_size,
+                    source_modified_at,
+                ),
             )
             if not enforce_limit:
                 conn.execute(
@@ -508,6 +599,78 @@ class KnowledgeRepo:
                 (kb_id,),
             ).fetchone()
         return int(row["n"]) if row else 0
+
+    def list_source_files(self, data_source_id: str) -> list[KnowledgeDocumentRow]:
+        """Everything indexed for one source, folders included.
+
+        Folders are listed because a scan has to know about an empty one too:
+        it is part of the tree the source reported, and dropping it here would
+        make the next scan re-create it on every pass.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM knowledge_documents WHERE data_source_id = ? ORDER BY source_path",
+                (data_source_id,),
+            ).fetchall()
+        return map_rows(rows, KnowledgeDocumentRow)
+
+    def record_observation(
+        self, doc_id: str, *, size: int, modified_at: int | None, at: int
+    ) -> None:
+        """Remember what this scan saw and when, so the next one can tell it settled.
+
+        The debounce in design §8.3 is this comparison: a file still being
+        copied reports a different size next time, and one that has stopped
+        moving keeps the same identity across the window.
+        """
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_documents SET obs_size = ?, obs_modified_at = ?, obs_at = ?, "
+                "updated_at = ? WHERE document_id = ?",
+                (size, modified_at, at, now_ts(), doc_id),
+            )
+
+    def mark_source_processed(self, doc_id: str, *, size: int, modified_at: int | None) -> None:
+        """Record the source identity of a file that is now indexed.
+
+        This is what change detection compares against next time, and clearing
+        the observation at the same moment keeps a stale one from making a
+        processed file look like it settled twice.
+        """
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_documents SET source_size = ?, source_modified_at = ?, "
+                "obs_size = NULL, obs_modified_at = NULL, obs_at = NULL, "
+                "delete_pending_since = NULL, "
+                "updated_at = ? WHERE document_id = ?",
+                (size, modified_at, now_ts(), doc_id),
+            )
+
+    def mark_delete_pending(self, doc_id: str, *, since: int) -> None:
+        """Start the confirmation window for a file the source did not list.
+
+        Only the timestamp moves. The status stays whatever the file's content
+        made it, because it is the *only* writer of that column's meaning: a
+        second writer would have to guess what to restore when the file comes
+        back, and guessed wrong for an ``unsupported`` file. ``delete_pending_since``
+        is the pending-deletion state, and it travels in the API payload, so
+        nothing has to be inferred from it.
+        """
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_documents SET delete_pending_since = ?, updated_at = ? "
+                "WHERE document_id = ?",
+                (since, now_ts(), doc_id),
+            )
+
+    def clear_delete_pending(self, doc_id: str) -> None:
+        """The file is back (or was never gone): drop the pending deletion."""
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_documents SET delete_pending_since = NULL, updated_at = ? "
+                "WHERE document_id = ?",
+                (now_ts(), doc_id),
+            )
 
     def reindex_all_documents(self, embedding_model: str) -> list[KnowledgeDocumentRow]:
         """Reset all document work after changing the shared embedding model."""
