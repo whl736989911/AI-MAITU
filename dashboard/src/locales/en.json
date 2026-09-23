@@ -1186,29 +1186,11 @@
     "empty": "No features yet",
     "emptyHint": "Create a feature: it brings its own agent, its capabilities are yours to configure, and it can be called as a conversation entry point.",
     "total": "{{count}} features",
-    "backToList": "Back to features",
-    "notFound": "This feature is not one you can reach.",
-    "notFoundHint": "It may have been deleted, or it was never shared with you.",
-    "scopeLabel": "Configuring",
-    "definedBy": "Defined by {{name}}",
-    "unknownAuthor": "Unknown author",
-    "tabDefinition": "Definition",
-    "tabPersonalization": "Capabilities",
     "agentId": "Agent ID",
     "copyAgentId": "Click to copy agent ID",
     "share": {
       "fromOwner": "Shared feature · from {{name}}"
-    },
-    "author": "Author",
-    "authorIsYou": "You (this account)",
-    "state": "State",
-    "defaultModel": "Default model",
-    "welcome": "Welcome message",
-    "knowledgeBases": "Default knowledge bases",
-    "connectors": "Default connectors",
-    "notSet": "Not set",
-    "noDescription": "No description yet",
-    "definitionAuthorOnly": "This feature is defined by {{author}}; only its author can change it. Calling it runs it as that author configured it."
+    }
   },
   "sharing": {
     "tabQueue": "Approval queue",

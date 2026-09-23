@@ -45,7 +45,11 @@ import {
   isAgentModelConfigError,
 } from "../../../utils/agentError";
 import styles from "../index.module.less";
-import { isSharedExpertViewer } from "../../../utils/sharedExpert";
+import {
+  canManageExpert,
+  isSharedExpertViewer,
+} from "../../../utils/sharedExpert";
+import { useUserRole } from "../../../hooks/useUserRole";
 import type { PublishedExpert } from "../../../api/modules/publishedExperts";
 import PublishTemplateButton from "./PublishTemplateButton";
 import AgentMoreActions from "./AgentMoreActions";
@@ -81,6 +85,9 @@ export default function AgentExpertsTable({
   const { t } = useTranslation();
   const navigate = useNavigate();
   const isMobile = useIsMobile();
+  // The same judgement the card makes, from the same place — who may write a row
+  // is the server's rule (owner or administrator), not ownership alone.
+  const role = useUserRole();
   const { setActiveAgent, refresh: refreshAgents } = useAgent();
   const [localStates, setLocalStates] = useState<Record<string, string>>({});
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
@@ -347,7 +354,7 @@ export default function AgentExpertsTable({
         const state = localStates[row.agent_id] ?? row.state;
         const isTransient = TRANSIENT.has(state);
         const switchChecked = state === "running" || state === "starting";
-        const isOwner = row.is_owner !== false;
+        const canManage = canManageExpert(row, role);
         const friendlyError =
           state === "failed" && row.last_error
             ? formatAgentError(row.last_error, t)
@@ -361,7 +368,7 @@ export default function AgentExpertsTable({
               >
                 {formatAgentState(state, t)}
               </Tag>
-              {isOwner && (
+              {canManage && (
                 <Switch
                   size="small"
                   checked={switchChecked}
@@ -414,7 +421,7 @@ export default function AgentExpertsTable({
         <MbtiPersonaTag
           value={value}
           onClick={
-            row.is_owner !== false
+            canManageExpert(row, role)
               ? () => openMbtiCatalog(row.agent_id)
               : undefined
           }
@@ -430,10 +437,10 @@ export default function AgentExpertsTable({
         const state = localStates[row.agent_id] ?? row.state;
         const isTransient = TRANSIENT.has(state);
         const chatReady = isAgentChatReady(state);
-        const isOwner = row.is_owner !== false;
+        const canManage = canManageExpert(row, role);
         return (
           <div className={styles.tableActions}>
-            {isOwner && (
+            {canManage && (
               <>
                 <Tooltip
                   title={
@@ -525,7 +532,7 @@ export default function AgentExpertsTable({
                 {t("experts.openChat", "对话")}
                 <ChevronRight size={13} />
               </button>
-            ) : isOwner &&
+            ) : canManage &&
               (state === "failed" ||
                 state === "stopped" ||
                 state === "created") ? (

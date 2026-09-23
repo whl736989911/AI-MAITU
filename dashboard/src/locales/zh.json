@@ -1186,29 +1186,11 @@
     "empty": "还没有功能",
     "emptyHint": "创建一个功能：它自带一个 agent，能力配置由你定义，并可作为对话入口被调用。",
     "total": "共 {{count}} 个功能",
-    "backToList": "返回功能列表",
-    "notFound": "这个功能不在你可以访问的范围内。",
-    "notFoundHint": "它可能已被删除，也可能从未共享给你。",
-    "scopeLabel": "正在配置",
-    "definedBy": "由 {{name}} 定义",
-    "unknownAuthor": "未知作者",
-    "tabDefinition": "功能定义",
-    "tabPersonalization": "能力配置",
     "agentId": "Agent ID",
     "copyAgentId": "点击复制 Agent ID",
     "share": {
       "fromOwner": "共享功能 · 来自 {{name}}"
-    },
-    "author": "作者",
-    "authorIsYou": "你（本账号）",
-    "state": "状态",
-    "defaultModel": "默认模型",
-    "welcome": "欢迎语",
-    "knowledgeBases": "默认知识库",
-    "connectors": "默认连接器",
-    "notSet": "未设置",
-    "noDescription": "还没有描述",
-    "definitionAuthorOnly": "这个功能由 {{author}} 定义，只有作者能修改它；调用它时，它按作者配置好的样子运行。"
+    }
   },
   "sharing": {
     "tabQueue": "审批队列",

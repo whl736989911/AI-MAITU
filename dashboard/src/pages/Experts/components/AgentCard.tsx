@@ -36,8 +36,12 @@ import {
   isAgentModelConfigError,
 } from "../../../utils/agentError";
 import styles from "../index.module.less";
-import { isSharedExpertViewer } from "../../../utils/sharedExpert";
+import {
+  canManageExpert,
+  isSharedExpertViewer,
+} from "../../../utils/sharedExpert";
 import { isFeatureAgent } from "../../../utils/agentKind";
+import { useUserRole } from "../../../hooks/useUserRole";
 import type { PublishedExpert } from "../../../api/modules/publishedExperts";
 import PublishTemplateButton from "./PublishTemplateButton";
 import AgentMoreActions from "./AgentMoreActions";
@@ -309,7 +313,10 @@ export const AgentCard = memo(function AgentCard({
   const friendlyError = formatAgentError(localError, t);
   const chatReady = isAgentChatReady(localState);
   const sharedViewer = isSharedExpertViewer(agent);
-  const isOwner = agent.is_owner !== false;
+  // Who may write it is the server's rule — the owner, or an administrator — and
+  // not this card's guess from ownership alone. See ``canManageExpert``.
+  const role = useUserRole();
+  const canManage = canManageExpert(agent, role);
 
   return (
     <>
@@ -379,12 +386,12 @@ export const AgentCard = memo(function AgentCard({
               )}
               <MbtiPersonaTag
                 value={agent.persona_mbti}
-                onClick={isOwner ? () => setMbtiCatalogOpen(true) : undefined}
+                onClick={canManage ? () => setMbtiCatalogOpen(true) : undefined}
               />
             </div>
           </div>
 
-          {isOwner && (
+          {canManage && (
             <div className={styles.agentCard2HeaderActions}>
               <Switch
                 size="small"
@@ -429,7 +436,7 @@ export const AgentCard = memo(function AgentCard({
 
         {/* Footer actions */}
         <div className={styles.agentCard2Footer}>
-          {isOwner && (
+          {canManage && (
             <>
               <Tooltip
                 title={
@@ -527,7 +534,7 @@ export const AgentCard = memo(function AgentCard({
               {t("experts.openChat", "对话")}
               <ChevronRight size={13} />
             </button>
-          ) : isOwner &&
+          ) : canManage &&
             (localState === "failed" ||
               localState === "stopped" ||
               localState === "created") ? (

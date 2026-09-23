@@ -1,5 +1,5 @@
 /**
- * Features — the caller's own list, and the way into one.
+ * Features — the caller's own list, and what a card on it can do.
  *
  * A feature *is* an agent (``utils/agentKind.ts``): this page is the same grid the
  * Experts page shows its own experts in, built from the same card
@@ -9,18 +9,23 @@
  *
  * What the card offers a reader is the card's own answer, which is already the
  * matrix: its author reaches the start switch, the workspace, the reload, the edit
- * and the catalogs, and a caller of it reaches the conversation and nothing that
- * writes (``AgentCard``'s ``isOwner`` gate). The page adds no gate of its own, so
- * the two cannot disagree.
+ * and the catalogs, an administrator reaches them on any feature in front of them
+ * (``canManageExpert`` in ``utils/sharedExpert``, the server's own "the owner, or
+ * an administrator"), and a caller of one reaches the conversation and nothing
+ * that writes. The page adds no gate of its own, so the two cannot disagree.
  *
- * ── Where a feature's configuration lives ───────────────────────────────────
- * Not here. Clicking a feature opens its own page (``/features/:agentId``), whose
- * first level is the feature's definition and whose second is the experts' own
- * personalization panels — one stack, shared with the Personalization page.
+ * ── Where a feature is configured ───────────────────────────────────────────
+ * Nowhere else: the two surfaces an expert is configured with *are* the two this
+ * page's cards open. What a feature *is* is the experts' own drawer, opened from
+ * this page's card (``EditAgentDrawer``) — the same component the Experts page
+ * opens from its own pencil, over the same row, so the two cannot drift and the
+ * list never leaves the screen. What it can *do* is the card's other action, the
+ * catalog menu: one capability at a time, out of the same panels the
+ * Personalization page shows for the feature's own agent
+ * (``PersonalizationPanels``, whose feature scope adds its persona files).
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Spin, Tooltip } from "antd";
 import { LayoutGrid, Plus, RefreshCw } from "lucide-react";
@@ -30,6 +35,7 @@ import PageShell from "../../layouts/PageShell";
 import { useAgent, type OctopAgent } from "../../context/AgentContext";
 import { isFeatureAgent } from "../../utils/agentKind";
 import { AgentCard } from "../Experts/components/AgentCard";
+import EditAgentDrawer from "../Experts/components/EditAgentDrawer";
 import { EmptyStateIcon } from "../../components/EmptyState";
 import FeatureCreateDrawer from "./components/FeatureCreateDrawer";
 // The experts' own grid, toolbar and empty-state styles: a feature's list is the
@@ -52,7 +58,6 @@ function orderFeatures(features: OctopAgent[]): OctopAgent[] {
 
 export default function FeaturesPage() {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const { agents, refresh, loading } = useAgent();
 
   const features = useMemo(
@@ -63,6 +68,8 @@ export default function FeaturesPage() {
   const [localFeatures, setLocalFeatures] = useState<OctopAgent[]>(features);
   const [refreshing, setRefreshing] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
+  /** The feature the card's pencil was pressed on — the drawer's row, or none. */
+  const [editFeature, setEditFeature] = useState<OctopAgent | null>(null);
 
   useEffect(() => {
     setLocalFeatures(features);
@@ -94,6 +101,32 @@ export default function FeaturesPage() {
   );
 
   const openCreate = useCallback(() => setCreateOpen(true), []);
+
+  /**
+   * What the drawer hands back is the row it wrote, so the card follows the
+   * server's copy of it without re-reading the whole list — the same handling
+   * the Experts page gives the same drawer.
+   */
+  const handleEditSaved = useCallback(
+    (
+      updated: Pick<
+        OctopAgent,
+        | "agent_id"
+        | "name"
+        | "description"
+        | "default_model"
+        | "is_shared"
+        | "color"
+        | "icon_url"
+      >,
+    ) => {
+      setEditFeature(null);
+      setLocalFeatures((prev) =>
+        prev.map((a) => (a.agent_id === updated.agent_id ? { ...a, ...updated } : a)),
+      );
+    },
+    [],
+  );
 
   const refreshButton = (
     <Tooltip title={t("common.refresh")}>
@@ -154,9 +187,13 @@ export default function FeaturesPage() {
               // The card's own id row, labelled as what it holds here: a
               // feature's agent id, not an expert's.
               idLabelKey="features.agentId"
-              // A feature is configured on its own page; that is where the card's
-              // edit action leads instead of the experts' edit drawer.
-              onEdit={(agentId) => navigate(`/features/${agentId}/definition`)}
+              // A feature is edited where an expert is: the experts' own drawer,
+              // opened here over the feature's row (``EditAgentDrawer``).
+              onEdit={(agentId) =>
+                setEditFeature(
+                  localFeatures.find((a) => a.agent_id === agentId) ?? null,
+                )
+              }
               onDeleted={handleDeleted}
               onStateChange={handleStateChange}
             />
@@ -172,13 +209,25 @@ export default function FeaturesPage() {
     >
       {content}
 
+      {/* The experts' own editor, mounted at the page's level the way the Experts
+          page mounts it: the card's pencil opens it over the list. */}
+      <EditAgentDrawer
+        open={!!editFeature}
+        agent={editFeature}
+        titleKey="features.editDefinition"
+        onClose={() => setEditFeature(null)}
+        onSaved={handleEditSaved}
+      />
+
       <FeatureCreateDrawer
         open={createOpen}
         onClose={() => setCreateOpen(false)}
-        onCreated={(agentId) => {
+        // A new feature lands on this list, next to the ones already here: the
+        // drawer's own toast has named it, the refetch puts its card in the grid,
+        // and that card is where it is configured (see this file's own header).
+        onCreated={() => {
           setCreateOpen(false);
           void refresh({ silent: true, force: true });
-          navigate(`/features/${agentId}/definition`);
         }}
       />
     </PageShell>
