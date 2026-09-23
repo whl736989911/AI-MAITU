@@ -1808,6 +1808,117 @@ def _ensure_acl_permission_level(db: DatabasePool) -> None:
     _ensure_column(db, "resource_acl", "permission", "TEXT NOT NULL DEFAULT 'read'")
 
 
+def _ensure_feature_overlay_schema(db: DatabasePool) -> None:
+    """Create ``feature_user_overlays`` (schema v36) — one caller's own text.
+
+    A feature's workflow is declared once, by its author, for everybody. This table
+    is the layer above it: a caller's own wording — written by them, or summarised
+    out of their own runs — which is injected *after* the definition and says it
+    wins where the two disagree. It is keyed by ``(feature_id, user_id)`` because
+    that is what it is: one person's standing instruction on one feature, never the
+    feature's own configuration, and never visible to another caller.
+
+    ``feature_id`` is the feature's public id (the one the ACL uses), not the
+    ``feat-`` agent id: the feature is the resource, and its agent is how it is
+    reached.
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers, so a
+    database whose watermark skipped 36 — or a fresh one built by the v18 create
+    path — still gets the table.
+    """
+    if not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_user_overlays (
+              feature_id TEXT NOT NULL,
+              user_id    {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              content    TEXT NOT NULL,
+              updated_at {int_type} NOT NULL,
+              PRIMARY KEY (feature_id, user_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_user_overlays_user "
+            "ON feature_user_overlays(user_id)"
+        )
+
+
+def _ensure_feature_run_schema(db: DatabasePool) -> None:
+    """Create ``feature_workflow_runs`` (schema v36) — the evidence layer.
+
+    A feature's runs are read afterwards for one reason: to answer *what was this
+    run given, and what did it run under*. The submitted values live here because
+    nothing else keeps them — the card's message text is a rendering, and the
+    definition may have been edited since — and the definition is stored as a
+    snapshot for the same reason, so an edit never rewrites what an earlier run
+    was measured against.
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers.
+    """
+    if not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_workflow_runs (
+              id         TEXT PRIMARY KEY,
+              feature_id TEXT NOT NULL,
+              agent_id   TEXT NOT NULL,
+              user_id    {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              thread_id  TEXT,
+              inputs     TEXT NOT NULL,
+              definition TEXT NOT NULL,
+              created_at {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_workflow_runs_feature_user "
+            "ON feature_workflow_runs(feature_id, user_id, created_at)"
+        )
+
+
+def _ensure_feature_change_schema(db: DatabasePool) -> None:
+    """Create ``feature_workflow_changes`` (schema v36) — improvements and undo.
+
+    Every applied improvement is a row here, which is what makes "默认生效 + 撤销"
+    honest rather than hopeful: the change carries its own way back (each item's
+    ``before``), so undo is the same list in reverse and needs no rule that knows
+    how to reverse a particular kind of edit.
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers.
+    """
+    if not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_workflow_changes (
+              id          TEXT PRIMARY KEY,
+              feature_id  TEXT NOT NULL,
+              user_id     {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              run_id      TEXT,
+              target      TEXT NOT NULL,
+              summary     TEXT NOT NULL,
+              items       TEXT NOT NULL,
+              status      TEXT NOT NULL,
+              created_at  {int_type} NOT NULL,
+              reverted_at {int_type}
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_workflow_changes_feature "
+            "ON feature_workflow_changes(feature_id, created_at)"
+        )
+
+
 def _ensure_resource_acl_schema(db: DatabasePool) -> None:
     """Create the unified ACL tables (schema v18) and mirror the legacy flags.
 
@@ -2781,6 +2892,9 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_column(db, "users", "permissions", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_resource_acl_schema(db)
         _ensure_acl_permission_level(db)
+        _ensure_feature_overlay_schema(db)
+        _ensure_feature_run_schema(db)
+        _ensure_feature_change_schema(db)
         _ensure_data_sources_schema(db)
 
 
@@ -3115,8 +3229,11 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         return
     if version == 36:
         # ``036_acl_permission_level.sql`` is the readable record; SQLite boots
-        # run the helper, which adds the column only when it is missing.
+        # run the helpers, each of which applies its DDL only when it is missing.
         _ensure_acl_permission_level(db)
+        _ensure_feature_overlay_schema(db)
+        _ensure_feature_run_schema(db)
+        _ensure_feature_change_schema(db)
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
@@ -3168,10 +3285,13 @@ def run_migrations(db: DatabasePool) -> None:
             if version == 35:
                 _merge_legacy_knowledge_bases(db)
             if version == 36:
-                # ``036_*.pg.sql`` already ran; this keeps the recorded-version
+                # ``036_*.pg.sql`` already ran; these keep the recorded-version
                 # path equivalent to it (a clamp or a build that stamped 36
                 # without the DDL still converges).
                 _ensure_acl_permission_level(db)
+                _ensure_feature_overlay_schema(db)
+                _ensure_feature_run_schema(db)
+                _ensure_feature_change_schema(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -3190,6 +3310,9 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_org_units_schema(db)
     _ensure_resource_acl_schema(db)
     _ensure_acl_permission_level(db)
+    _ensure_feature_overlay_schema(db)
+    _ensure_feature_run_schema(db)
+    _ensure_feature_change_schema(db)
     _drop_legacy_share_columns(db)
     _ensure_data_sources_schema(db)
     _ensure_agent_kind_column(db)

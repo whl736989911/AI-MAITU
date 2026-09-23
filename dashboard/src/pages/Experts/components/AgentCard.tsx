@@ -15,6 +15,7 @@ import {
   FolderOpen,
   RefreshCw,
   MessageSquare,
+  Workflow,
 } from "lucide-react";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
 import SubagentCatalogDrawer from "./SubagentCatalogDrawer";
@@ -90,6 +91,7 @@ export interface AgentCardProps {
   publishedExpert?: PublishedExpert | null;
   onPublishedChange?: () => void;
   onEdit: (agentId: string) => void;
+  onWorkflow?: (agentId: string) => void;
   onDeleted: (agentId: string) => void;
   onStateChange: (agentId: string, newState: string) => void;
   /** Called when a start/stop poll settles (e.g. admin views another user's agents). */
@@ -111,6 +113,7 @@ export const AgentCard = memo(function AgentCard({
   publishedExpert = null,
   onPublishedChange,
   onEdit,
+  onWorkflow,
   onDeleted,
   onStateChange,
   onPollSettled,
@@ -524,6 +527,18 @@ export const AgentCard = memo(function AgentCard({
             </>
           )}
 
+          {onWorkflow && (
+            <Tooltip title={t("features.tabWorkflow")} mouseEnterDelay={0.5}>
+              <button
+                type="button"
+                className={styles.agentCard2EditBtn}
+                onClick={() => onWorkflow(agent.agent_id)}
+                aria-label={t("features.tabWorkflow")}
+              >
+                <Workflow size={13} />
+              </button>
+            </Tooltip>
+          )}
           {chatReady ? (
             <button
               className={styles.agentCard2ChatBtn}

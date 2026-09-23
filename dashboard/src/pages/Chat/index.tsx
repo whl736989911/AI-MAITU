@@ -19,7 +19,11 @@ import { useIsMobile } from "../../hooks/useIsMobile";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { userCan } from "../../utils/permissions";
 import { useChat } from "./hooks/useChat";
-import { useSessions, fetchAndSyncSessionArtifacts } from "./hooks/useSessions";
+import {
+  useSessions,
+  fetchAndSyncSessionArtifacts,
+  isPendingThread,
+} from "./hooks/useSessions";
 import * as chatStore from "./hooks/chatStore";
 import { formatRunUsage, assistantTurnsFromEnd } from "./utils/chatMessages";
 import { useChatSidebarState } from "./hooks/useChatSidebarState";
@@ -81,6 +85,7 @@ import {
 import ChatSidebarPanel from "./components/ChatSidebarPanel";
 import ChatTitleBar from "./components/ChatTitleBar";
 import ChatComposerChrome from "./components/ChatComposerChrome";
+import WorkflowRunCards from "./components/WorkflowRunCards";
 import AskQuestionCard from "./components/AskQuestionCard";
 import { findPendingAsk, hasPendingHitl } from "./utils/pendingHitl";
 import { isAgentChatReady } from "../../utils/agentError";
@@ -1416,6 +1421,25 @@ function ChatPageInner() {
                 </div>
               </div>
             ) : null}
+            {/* A feature's declared inputs, and what its run produced. Nothing
+                renders for an expert or for a feature without a workflow. */}
+            <WorkflowRunCards
+              agentId={resolvedAgentId}
+              agentKind={activeAgent?.kind}
+              threadId={activeThreadId}
+              featureName={activeAgent?.name}
+              busy={
+                isStreaming ||
+                !agentChatReady ||
+                isPendingThread(activeThreadId ?? "") ||
+                Boolean(pendingAsk) ||
+                hasPendingHitlPause
+              }
+              isStreaming={isStreaming}
+              onRun={(text, attachments, payload) =>
+                wrappedHandleSend(text, attachments, { featureRun: payload })
+              }
+            />
             <ChatInput
               ref={chatInputRef}
               onSend={wrappedHandleSend}

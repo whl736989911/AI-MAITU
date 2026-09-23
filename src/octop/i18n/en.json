@@ -428,6 +428,9 @@
     "FEATURE_RUN_NOT_AT_GATE": "This run is not waiting at a gate, so this action cannot be applied to it.",
     "FEATURE_RUN_REQUEST_INVALID": "The run request is invalid: {reason}.",
     "FEATURE_STEP_UNSUPPORTED": "A step of this feature cannot be executed: {reason}. The run was refused and no step was executed.",
+    "WORKFLOW_INVALID": "This workflow definition is not valid: {reason}. Nothing was saved.",
+    "WORKFLOW_NOT_A_FEATURE": "Only a feature has a workflow — this agent is an expert.",
+    "WORKFLOW_CHANGE_CONFLICT": "This change no longer applies: {paths} was edited after it was prepared. Nothing was changed — regenerate the change, or undo the later edit first.",
     "ORG_UNIT_HAS_CHILDREN": "This department still has sub-departments; move or delete them first.",
     "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first."
   },
@@ -742,6 +745,34 @@
       },
       "UnauthorizedOperation": "This Tencent Cloud account is not authorized for this voice API.",
       "RequestLimitExceeded": "Tencent Cloud rate-limited this request. Retry in a moment."
+    }
+  },
+  "workflow": {
+    "value_yes": "yes",
+    "value_no": "no",
+    "uses_skills": "skills: {names}",
+    "uses_subagents": "subagents: {names}",
+    "uses_tools": "tools: {names}",
+    "overlay": {
+      "title": "## This caller's own instructions (highest priority)\nWhere these disagree with the feature's own wording above, follow these."
+    },
+    "block": {
+      "title": "## Feature workflow: {name}",
+      "title_plain": "## Feature workflow",
+      "lead": "This feature runs the fixed steps below. Follow them in order: do not skip a step and do not add one of your own.",
+      "inputs_title": "### This run's input",
+      "inputs_none": "No input card came with this message. If a step needs input that was not given, ask the user for it instead of inventing it.",
+      "attachments_title": "### Files attached to this run",
+      "steps_title": "### Fixed steps (in order)",
+      "steps_none": "No steps are declared: carry the run out in one pass.",
+      "step_line": "{index}/{total}. {name}",
+      "step_prompt": "  Instruction: {prompt}",
+      "step_uses": "  Use: {uses}",
+      "step_depends": "  Built on: {steps}",
+      "step_gate_confirm": "  Stop when this step is done: show the user what it produced and wait for their confirmation before continuing.",
+      "rules_title": "### Rules (these hold for every step)",
+      "outputs_title": "### Deliverables",
+      "output_line": "- {name} ({form})"
     }
   }
 }

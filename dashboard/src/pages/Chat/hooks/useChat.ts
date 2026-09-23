@@ -26,6 +26,7 @@ import {
 import { normalizeComposerContext } from "../utils/chatMessages";
 import { resolveMessageTimestampMs } from "../../../utils/formatMessageTime";
 import { inferKindFromNameAndMime } from "../utils/chatAttachments";
+import type { FeatureRunPayload } from "../utils/featureRun";
 import {
   agentAttachmentAccessUrl,
   parseToolExecutionFeedback,
@@ -831,6 +832,7 @@ export function useChat(
       composerContext?: UserComposerContext,
       reasoningMode?: "auto" | "enabled" | "disabled",
       reasoningEffort?: string | null,
+      featureRun?: FeatureRunPayload,
     ) => {
       const key = storeKey || stableSessionId;
 
@@ -863,6 +865,7 @@ export function useChat(
         targetAgentIds,
         reasoningMode,
         reasoningEffort,
+        featureRun,
       );
     },
     [stableSessionId],

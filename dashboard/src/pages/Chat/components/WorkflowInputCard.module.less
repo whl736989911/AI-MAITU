@@ -1,0 +1,134 @@
+/* The run form a feature's thread docks above the composer: one card, the same
+   width and gutters as the ask card beside it. */
+
+.card {
+  border: 1px solid var(--fn-border-primary);
+  border-radius: var(--fn-radius-lg);
+  padding: 14px 16px;
+  background: var(--fn-bg-primary);
+  box-shadow: var(--fn-shadow-xs);
+  box-sizing: border-box;
+  width: 100%;
+  /* Width is constrained by the dock around it — do not add a second max-width
+     that would drift from the composer when the gutters differ. */
+  max-width: none;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--fn-text-primary);
+}
+
+/* "Already submitted": the values are this thread's, not a form to fill again. */
+.badge {
+  font-size: 12px;
+  color: var(--fn-text-secondary);
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 999px;
+  padding: 1px 8px;
+  white-space: nowrap;
+}
+
+.fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px 14px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fieldLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fn-text-secondary);
+}
+
+.required {
+  color: var(--fn-color-error, #d4380d);
+  margin-left: 2px;
+}
+
+.fieldHint {
+  margin: 0;
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+.readOnlyValue {
+  margin: 0;
+  font-size: 13px;
+  color: var(--fn-text-primary);
+  word-break: break-word;
+}
+
+.wide {
+  width: 100%;
+}
+
+.numberInput {
+  width: 100%;
+}
+
+.fileField {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The real control: a button styled by the theme, so the field stays keyboard
+   reachable without a browser-default file input on screen. */
+.fileInput {
+  display: none;
+}
+
+.fileHint {
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+.fileList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fileRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+}
+
+.fileName {
+  font-size: 12px;
+  color: var(--fn-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 12px;
+}

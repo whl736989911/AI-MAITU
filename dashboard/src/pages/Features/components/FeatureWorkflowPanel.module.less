@@ -1,0 +1,477 @@
+/**
+ * The workflow editor's own chrome — and only that.
+ *
+ * Everything that is a page, a card or a control is antd's, and the page around
+ * this panel is the feature page's own stylesheet (``../index.module.less``). What
+ * is left for this file is the editor's own shape: the panel's column, the four
+ * sections, the outline-and-editor pair the steps are laid out in, and the two
+ * places a document is typed into (a step's prompt, the JSON tab).
+ */
+
+.panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.intro {
+  margin: 0;
+  color: var(--fn-text-secondary);
+  font-size: 13px;
+  line-height: 1.7;
+}
+
+/* Alerts and lists of problems: the same rhythm everywhere they appear. */
+.notice {
+  margin: 0;
+}
+
+.problemList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.8;
+  word-break: break-word;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  flex-shrink: 0;
+}
+
+.toolbarGap {
+  flex: 1;
+}
+
+.statusControl {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.statusHint {
+  margin: -6px 0 0;
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.body {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+/* One section: a heading, a hint, and its own content. */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sectionHeader {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sectionHeading {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sectionTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.sectionBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  background: var(--fn-bg-danger-light);
+  border: 1px solid var(--fn-color-danger-border);
+  color: var(--fn-color-danger);
+  font-size: 11px;
+  line-height: 1;
+  cursor: default;
+}
+
+.sectionHint {
+  margin: 0;
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.sectionEmpty {
+  margin: 0;
+  padding: 14px 16px;
+  border: 1px dashed var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+/* A list of cards: the form's fields, the deliverables. */
+.cardList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  background: var(--fn-bg-secondary);
+}
+
+.cardHeader {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.cardIndex {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.grow {
+  flex: 1;
+  min-width: 120px;
+}
+
+.typeSelect {
+  width: 110px;
+  flex-shrink: 0;
+}
+
+/* One field: a label above the control it names. */
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fieldRow {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.fieldRow > .field {
+  flex: 1;
+  min-width: 160px;
+}
+
+.fieldLabel {
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+}
+
+.fieldHint {
+  color: var(--fn-text-tertiary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.requiredMark {
+  color: var(--fn-color-danger);
+}
+
+/* The steps: an outline on the left, the selected step's editor on the right. */
+.steps {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  min-height: 0;
+}
+
+.stepOutline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 260px;
+  flex-shrink: 0;
+}
+
+.stepRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  background: var(--fn-bg-secondary);
+  cursor: pointer;
+  user-select: none;
+
+  &:hover {
+    border-color: var(--fn-border-primary);
+    background: var(--fn-bg-hover);
+  }
+}
+
+.stepRowActive {
+  border-color: var(--fn-color-brand);
+  background: var(--fn-color-brand-soft);
+}
+
+.stepRowDrop {
+  border-style: dashed;
+  border-color: var(--fn-color-brand);
+}
+
+.stepNumber {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--fn-bg-tertiary);
+  color: var(--fn-text-secondary);
+  font-size: 11px;
+  flex-shrink: 0;
+}
+
+.stepText {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.stepName {
+  font-size: 13px;
+  color: var(--fn-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stepMeta {
+  font-size: 11px;
+  color: var(--fn-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.stepGate {
+  flex-shrink: 0;
+  padding: 1px 6px;
+  border-radius: var(--fn-radius-sm);
+  border: 1px solid var(--fn-color-warning-border);
+  background: var(--fn-bg-warning-light);
+  color: var(--fn-color-warning-text);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.stepWarn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  border: 1px solid var(--fn-color-danger-border);
+  background: var(--fn-bg-danger-light);
+  color: var(--fn-color-danger);
+  font-size: 11px;
+  line-height: 1;
+  cursor: default;
+  flex-shrink: 0;
+}
+
+.stepToggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: var(--fn-radius-sm);
+  background: transparent;
+  color: var(--fn-text-tertiary);
+  cursor: pointer;
+  flex-shrink: 0;
+
+  &:hover {
+    background: var(--fn-bg-hover);
+    color: var(--fn-text-primary);
+  }
+}
+
+.stepToggleClosed {
+  transform: rotate(-90deg);
+}
+
+.stepEditor {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+}
+
+.editorHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.editorTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.editorActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.editorProblems {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fn-color-danger);
+  font-size: 12px;
+  line-height: 1.8;
+  word-break: break-word;
+}
+
+.promptTools {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* A step's prompt: the one place in the editor a whole paragraph is typed. */
+.promptArea {
+  width: 100%;
+  min-height: 140px;
+  padding: 10px 12px;
+  border: 1px solid var(--fn-border-input);
+  border-radius: var(--fn-radius-md);
+  background: var(--fn-bg-primary);
+  color: var(--fn-text-primary);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.7;
+  resize: vertical;
+
+  &:focus {
+    outline: none;
+    border-color: var(--fn-border-focus);
+  }
+}
+
+/* Rules: one sentence each, in the order they are meant to hold. */
+.ruleList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.ruleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* The JSON tab: the document itself, and the room to read it. */
+.jsonPane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-height: 0;
+}
+
+.jsonArea {
+  width: 100%;
+  min-height: 420px;
+  flex: 1;
+  padding: 12px;
+  border: 1px solid var(--fn-border-input);
+  border-radius: var(--fn-radius-md);
+  background: var(--fn-bg-code);
+  color: var(--fn-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  resize: vertical;
+
+  &:focus {
+    outline: none;
+    border-color: var(--fn-border-focus);
+  }
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-top: 4px;
+}
+
+@media (max-width: 768px) {
+  .steps {
+    flex-direction: column;
+  }
+
+  .stepOutline {
+    width: 100%;
+  }
+}

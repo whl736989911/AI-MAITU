@@ -388,3 +388,19 @@ class AgentRepo:
                 feature_id = feature_id_of_agent(agent_id)
                 if feature_id is not None:
                     self._acl.delete("feature", feature_id, conn=conn)
+                    # The feature's own data dies with it, for the same reason the
+                    # entry does: a later feature may take the same id, and
+                    # inheriting the previous one's callers' personal overlays or run
+                    # history would be handing somebody else's text to a new feature.
+                    conn.execute(
+                        "DELETE FROM feature_user_overlays WHERE feature_id = ?",
+                        (feature_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM feature_workflow_runs WHERE feature_id = ?",
+                        (feature_id,),
+                    )
+                    conn.execute(
+                        "DELETE FROM feature_workflow_changes WHERE feature_id = ?",
+                        (feature_id,),
+                    )

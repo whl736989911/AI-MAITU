@@ -15,19 +15,15 @@
  * that writes. The page adds no gate of its own, so the two cannot disagree.
  *
  * ── Where a feature is configured ───────────────────────────────────────────
- * Nowhere else: the two surfaces an expert is configured with *are* the two this
- * page's cards open. What a feature *is* is the experts' own drawer, opened from
- * this page's card (``EditAgentDrawer``) — the same component the Experts page
- * opens from its own pencil, over the same row, so the two cannot drift and the
- * list never leaves the screen. What it can *do* is the card's other action, the
- * catalog menu: one capability at a time, out of the same panels the
- * Personalization page shows for the feature's own agent
- * (``PersonalizationPanels``, whose feature scope adds its persona files).
+ * The card opens the experts' own drawer for its agent definition and the same
+ * capability catalogs used by Personalization. Its workflow action opens this
+ * page's drawer for the feature-specific run definition; callers can read it,
+ * while only its author can write it.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Spin, Tooltip } from "antd";
+import { Drawer, Spin, Tooltip } from "antd";
 import { LayoutGrid, Plus, RefreshCw } from "lucide-react";
 import { message } from "@/utils/antdMessage";
 
@@ -38,6 +34,7 @@ import { AgentCard } from "../Experts/components/AgentCard";
 import EditAgentDrawer from "../Experts/components/EditAgentDrawer";
 import { EmptyStateIcon } from "../../components/EmptyState";
 import FeatureCreateDrawer from "./components/FeatureCreateDrawer";
+import FeatureWorkflowPanel from "./components/FeatureWorkflowPanel";
 // The experts' own grid, toolbar and empty-state styles: a feature's list is the
 // same list, so it is the same stylesheet rather than a look-alike of it.
 import styles from "../Experts/index.module.less";
@@ -70,6 +67,9 @@ export default function FeaturesPage() {
   const [createOpen, setCreateOpen] = useState(false);
   /** The feature the card's pencil was pressed on — the drawer's row, or none. */
   const [editFeature, setEditFeature] = useState<OctopAgent | null>(null);
+  const [workflowFeature, setWorkflowFeature] = useState<OctopAgent | null>(
+    null,
+  );
 
   useEffect(() => {
     setLocalFeatures(features);
@@ -205,6 +205,11 @@ export default function FeaturesPage() {
                   localFeatures.find((a) => a.agent_id === agentId) ?? null,
                 )
               }
+              onWorkflow={(agentId) =>
+                setWorkflowFeature(
+                  localFeatures.find((a) => a.agent_id === agentId) ?? null,
+                )
+              }
               onDeleted={handleDeleted}
               onStateChange={handleStateChange}
             />
@@ -229,6 +234,21 @@ export default function FeaturesPage() {
         onClose={() => setEditFeature(null)}
         onSaved={handleEditSaved}
       />
+      <Drawer
+        open={workflowFeature !== null}
+        title={`${workflowFeature?.name ?? ""} · ${t("features.tabWorkflow")}`}
+        width="min(960px, 100vw)"
+        onClose={() => setWorkflowFeature(null)}
+        destroyOnHidden
+      >
+        {workflowFeature && (
+          <FeatureWorkflowPanel
+            key={workflowFeature.agent_id}
+            agentId={workflowFeature.agent_id}
+            canWrite={workflowFeature.is_owner !== false}
+          />
+        )}
+      </Drawer>
 
       <FeatureCreateDrawer
         open={createOpen}
