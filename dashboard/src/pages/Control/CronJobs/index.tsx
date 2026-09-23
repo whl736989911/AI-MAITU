@@ -21,6 +21,8 @@ import { ResizableTable } from "../../../components/ResizableTable";
 import PageShell from "../../../layouts/PageShell";
 import AgentScopeBars from "../../../components/AgentScopeBars";
 import { useAgent } from "../../../context/AgentContext";
+import { canManageExpert } from "../../../utils/sharedExpert";
+import { useUserRole } from "../../../hooks/useUserRole";
 import { taskExampleColumns } from "./taskExamples";
 import { useTaskExamples } from "./useTaskExamples";
 import styles from "./index.module.less";
@@ -86,7 +88,10 @@ function CronJobsPage() {
     useCardTableView("table");
   const navigate = useNavigate();
   const { activeAgentId, activeAgent } = useAgent();
-  const canManageJobs = activeAgent?.is_owner === true;
+  const role = useUserRole();
+  const canManageJobs = activeAgent
+    ? canManageExpert(activeAgent, role)
+    : false;
   const taskExamples = useTaskExamples(activeAgentId);
   const {
     jobs,

@@ -2,6 +2,8 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { octopCronApi } from "../../../api/modules/cronjob";
 import { useAgent } from "../../../context/AgentContext";
+import { canManageExpert } from "../../../utils/sharedExpert";
+import { useUserRole } from "../../../hooks/useUserRole";
 import type { CronJobSpecOutput, OctopCronRow } from "../../../api/types";
 import { channelFromSessionKey } from "./cronDisplay";
 import { presetToCron, cronToPreset } from "./components/constants";
@@ -171,7 +173,10 @@ function toOctopPatchBody(values: CronJobFormValues) {
 export function useCronJobs() {
   const { t } = useTranslation();
   const { activeAgentId, activeAgent } = useAgent();
-  const canManageJobs = activeAgent?.is_owner === true;
+  const role = useUserRole();
+  const canManageJobs = activeAgent
+    ? canManageExpert(activeAgent, role)
+    : false;
   const [jobs, setJobs] = useState<CronJob[]>([]);
   /** Which agent the currently painted `jobs` belong to (may lag activeAgent). */
   const [jobsOwnerId, setJobsOwnerId] = useState<string | null>(null);
