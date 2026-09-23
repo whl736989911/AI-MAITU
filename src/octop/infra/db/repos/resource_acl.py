@@ -26,7 +26,10 @@ from typing import Any
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import UNSET, DbRow, map_rows, now_ts, sql_in_placeholders
+from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.sharing import (
+    PERMISSION_READ,
+    PERMISSIONS,
     RESOURCE_TYPES,
     VISIBILITY_PRIVATE,
     VISIBILITY_PUBLIC,
@@ -88,6 +91,7 @@ def encode_acl_state(entry: AclEntry) -> str:
         {
             "visibility": entry.visibility,
             "unit_key": entry.unit_key,
+            "permission": entry.permission,
             "grants": [[kind, grantee] for kind, grantee in entry.grants],
             "owner_user_id": entry.owner_user_id,
         },
@@ -102,7 +106,11 @@ def decode_acl_state(
     resource_id: str,
     version: int,
 ) -> AclEntry:
-    """Rebuild an :class:`AclEntry` from a change-log payload."""
+    """Rebuild an :class:`AclEntry` from a change-log payload.
+
+    A payload written before the level existed carries no ``permission``: it
+    decodes as ``read``, which is what that state meant.
+    """
     data = json.loads(payload)
     owner = data.get("owner_user_id")
     return AclEntry(
@@ -112,6 +120,7 @@ def decode_acl_state(
         visibility=str(data["visibility"]),
         unit_key=data["unit_key"],
         version=version,
+        permission=str(data.get("permission") or PERMISSION_READ),
         grants=tuple((str(kind), str(grantee)) for kind, grantee in data.get("grants", ())),
     )
 
@@ -133,6 +142,11 @@ def _validate_visibility(visibility: str) -> None:
         raise ValueError(f"unknown visibility {visibility!r}; expected one of {VISIBILITIES}")
 
 
+def _validate_permission(permission: str) -> None:
+    if permission not in PERMISSIONS:
+        raise ValueError(f"unknown permission {permission!r}; expected one of {PERMISSIONS}")
+
+
 def _validate_grants(grants: Iterable[tuple[str, str]]) -> None:
     for kind, grantee in grants:
         if kind not in GRANTEE_TYPES:
@@ -143,6 +157,7 @@ def _validate_grants(grants: Iterable[tuple[str, str]]) -> None:
 
 def _entry_from_row(row: DbRow, grants: Sequence[tuple[str, str]]) -> AclEntry:
     owner = row["owner_user_id"]
+    permission = row["permission"]
     return AclEntry(
         resource_type=str(row["resource_type"]),
         resource_id=str(row["resource_id"]),
@@ -150,6 +165,7 @@ def _entry_from_row(row: DbRow, grants: Sequence[tuple[str, str]]) -> AclEntry:
         visibility=str(row["visibility"]),
         unit_key=row["unit_key"],
         version=int(row["version"]),
+        permission=str(permission) if permission else PERMISSION_READ,
         grants=tuple(grants),
     )
 
@@ -174,6 +190,10 @@ def _entries_from_join(rows: Sequence[DbRow]) -> list[AclEntry]:
 class ResourceAclRepo:
     def __init__(self, db: DatabasePool) -> None:
         self._db = db
+        # The org tree is what turns a unit scope into the chain a grant matches
+        # against, exactly as it does for module permissions
+        # (``users.permissions.unit_permissions``).
+        self._units = OrgUnitRepo(db)
 
     @contextmanager
     def _tx(self, conn: Any | None) -> Iterator[Any]:
@@ -281,11 +301,11 @@ class ResourceAclRepo:
         *,
         user_id: int,
         role: str,
-        unit_key: str | None,
+        unit_keys: Collection[str],
     ) -> set[str]:
         """Ids of ``resource_type`` visible to this user, per the access rules.
 
-        ``role``/``unit_key`` are resolved by the caller (``can_access`` does no
+        ``role``/``unit_keys`` are resolved by the caller (``can_access`` does no
         IO). The entries decide through ``sharing.allowed_resource_ids`` — this
         is the list entry point for every resource type, not a second statement
         of the rules, so it cannot disagree with ``can_access``.
@@ -298,15 +318,29 @@ class ResourceAclRepo:
             self.list_for_type(resource_type),
             user_id=user_id,
             role=role,
-            unit_key=unit_key,
+            unit_keys=unit_keys,
         )
 
-    def scope_for_user(self, user_id: int) -> tuple[str, str | None]:
-        """``(role, unit_key)`` for the pure rules, from the ``users`` row.
+    def unit_chain(self, unit_key: str | None) -> tuple[str, ...]:
+        """``unit_key`` and the units above it, nearest first.
+
+        The actor's org scope for ``sharing.can_access``, and the same chain
+        ``users.permissions.unit_permissions`` unions module grants over: a
+        grant to a parent unit reaches its sub-departments by naming a unit the
+        viewer's chain contains. An unassigned account, or one whose unit is
+        gone (``ancestor_keys`` answers ``[]`` for an unknown key), resolves to
+        ``()`` and matches no unit scope at all.
+        """
+        if not unit_key:
+            return ()
+        return tuple(self._units.ancestor_keys(unit_key))
+
+    def scope_for_user(self, user_id: int) -> tuple[str, tuple[str, ...]]:
+        """``(role, unit_keys)`` for the pure rules, from the ``users`` row.
 
         ``sharing.can_access`` does no IO, so every caller that decides access
-        itself resolves the actor's scope through here, including
-        :meth:`list_visible_resource_ids_for_user`, so two list paths cannot
+        itself resolves the actor's scope through here — including
+        :meth:`list_visible_resource_ids_for_user` — so two list paths cannot
         read two different callers. An unknown user resolves to no role and no
         unit, which the rules then answer with "public only".
         """
@@ -315,8 +349,8 @@ class ResourceAclRepo:
                 "SELECT role, org_unit FROM users WHERE id = ?", (user_id,)
             ).fetchone()
         if row is None:
-            return ("", None)
-        return (str(row["role"]), str(row["org_unit"]) if row["org_unit"] else None)
+            return ("", ())
+        return (str(row["role"]), self.unit_chain(row["org_unit"]))
 
     def list_visible_resource_ids_for_user(self, resource_type: str, user_id: int) -> set[str]:
         """Visible ids with the caller's scope resolved from ``users``.
@@ -324,12 +358,12 @@ class ResourceAclRepo:
         Convenience for the resource repos, which hold a user id rather than a
         resolved role/unit pair. An unknown user sees only what is public.
         """
-        role, unit_key = self.scope_for_user(user_id)
+        role, unit_keys = self.scope_for_user(user_id)
         return self.list_visible_resource_ids(
             resource_type,
             user_id=user_id,
             role=role,
-            unit_key=unit_key,
+            unit_keys=unit_keys,
         )
 
     # ------------------------------------------------------------------
@@ -337,19 +371,21 @@ class ResourceAclRepo:
     # ------------------------------------------------------------------
 
     def upsert(self, entry: AclEntry, *, conn: Any | None = None) -> None:
-        """Write the whole entry (visibility, unit_key, version, grants)."""
+        """Write the whole entry (visibility, unit_key, permission, version, grants)."""
         _validate_visibility(entry.visibility)
+        _validate_permission(entry.permission)
         _validate_grants(entry.grants)
         if entry.visibility == VISIBILITY_UNIT and not entry.unit_key:
             raise ValueError("unit visibility requires a unit_key snapshot")
         with self._tx(conn) as c:
             c.execute(
                 "INSERT INTO resource_acl("
-                "resource_type, resource_id, owner_user_id, visibility, unit_key, version, "
-                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "resource_type, resource_id, owner_user_id, visibility, unit_key, permission, "
+                "version, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(resource_type, resource_id) DO UPDATE SET "
                 "owner_user_id = excluded.owner_user_id, visibility = excluded.visibility, "
-                "unit_key = excluded.unit_key, version = excluded.version, "
+                "unit_key = excluded.unit_key, permission = excluded.permission, "
+                "version = excluded.version, "
                 "updated_at = excluded.updated_at",
                 (
                     entry.resource_type,
@@ -357,6 +393,7 @@ class ResourceAclRepo:
                     entry.owner_user_id,
                     entry.visibility,
                     entry.unit_key,
+                    entry.permission,
                     entry.version,
                     now_ts(),
                 ),
@@ -378,6 +415,11 @@ class ResourceAclRepo:
         ``unit_key`` must be the *share-time* snapshot; it is never read back
         from the resource's current owner, so a later department change cannot
         widen an already-shared resource.
+
+        ``permission`` is deliberately untouched: sharing a resource and
+        choosing what a share lets people *do* are two decisions, and a new row
+        takes the column's ``read`` default — the level an enterprise space is
+        published at.
         """
         _validate_visibility(visibility)
         if visibility == VISIBILITY_UNIT and not unit_key:

@@ -148,6 +148,7 @@
     "KNOWLEDGE_PREREQUISITES_FAILED": "知识库的向量模型或依赖尚未就绪。",
     "KNOWLEDGE_NOT_FOUND": "未找到知识库或文档。",
     "KNOWLEDGE_FORBIDDEN": "您没有此知识库的访问权限。",
+    "KNOWLEDGE_WRITE_FORBIDDEN": "您可读取此知识库，但没有修改权限。",
     "KNOWLEDGE_DOC_LIMIT": "每个知识库最多可包含 100 个文档。",
     "KNOWLEDGE_DOC_TOO_LARGE": "文档超过 {{max_mb}} MB 大小限制。",
     "KNOWLEDGE_BASE_LIMIT": "每个用户最多可创建 20 个知识库。",
@@ -1290,6 +1291,8 @@
       "unitSnapshot": "组织单元 {{unit}}",
       "notShared": "尚未共享：目前只有所有者和管理员可以访问。",
       "visibilityLabel": "谁可以访问",
+      "permissionLabel": "授予的权限",
+      "permissionHint": "资源所有者和管理员始终可以修改；其他人需要「读写」级别。",
       "unitLabel": "组织单元",
       "unitPlaceholder": "选择组织单元",
       "unitHint": "组织单元在此刻被快照保存：之后更换单元不会改变已共享的范围。",
@@ -1324,6 +1327,14 @@
         "superseded": "已保存，但该状态已被后续变更替换。",
         "failed": "保存变更失败"
       }
+    },
+    "permission": {
+      "read": "只读",
+      "write": "读写"
+    },
+    "permissionHint": {
+      "read": "可以打开、检索和使用，但不能修改其中的内容。",
+      "write": "可以打开、检索和使用，也可以维护它：改名、编辑或删除内容。"
     }
   },
   "subagents": {
@@ -4330,6 +4341,9 @@
     "connectionLost": "连接已断开",
     "processExited": "进程已退出",
     "reconnect": "重新连接",
+    "noExpertsTitle": "还没有专家",
+    "noExpertsHint": "终端在专家的工作区里运行，先创建一个专家再回来开终端。",
+    "noExpertsAction": "去创建专家",
     "themes": {
       "label": "配色主题",
       "darkGroup": "深色",

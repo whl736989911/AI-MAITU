@@ -192,7 +192,10 @@ async def list_agents(
     """List agents for the dashboard.
 
     Default ``scope=mine`` returns agents owned by the authenticated user plus
-    agents other users have explicitly shared.
+    every agent they may use — shared to everyone, to their unit, to their role,
+    or granted to them directly (``sharing.allowed_resource_ids``), which is the
+    same rule that decides opening one. A feature shared through its own ACL entry
+    arrives the same way, as the agent that carries it.
     Holders of the ``users`` permission (and admins) may pass ``scope=all``.
     """
     if scope == "all" and not user_has_permission(
@@ -231,10 +234,13 @@ async def list_agents(
         return _attach_unread_counts(server, user.id, payloads)
 
     owned = registry.list_agents(user.id)
-    shared = server.services.agent_repo.list_shared(exclude_user_id=user.id)
-    rows = list({row.agent_id: row for row in [*shared, *owned]}.values())
+    # Everything else this account may use, by the same rule that decides opening
+    # one: a directed grant, a unit share or a role grant puts an agent here, and
+    # so does a feature shared through its own entry (``list_visible``).
+    usable = server.services.agent_repo.list_visible(user.id, exclude_user_id=user.id)
+    rows = list({row.agent_id: row for row in [*usable, *owned]}.values())
     shared_owner_username_by_id: dict[int, str] = {}
-    for row in shared:
+    for row in usable:
         if row.user_id is None or row.user_id in shared_owner_username_by_id:
             continue
         owner = server.services.user_repo.get(row.user_id)

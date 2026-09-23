@@ -16,7 +16,7 @@ from octop.infra.gateway.process.message_keys import COMPOSER_CTX_KEY, build_com
 from octop.infra.gateway.process.usage_record import UsageTracker, record_turn_usage
 from octop.infra.gateway.threads import ThreadRegistry
 from octop.infra.knowledge.default_open import stamp_turn_knowledge_config
-from octop.infra.sharing import allowed_resource_ids, user_scope
+from octop.infra.sharing import allowed_resource_ids
 from octop.infra.utils.llm_text import strip_thinking
 from octop.infra.utils.locale import resolve_user_locale
 from octop.infra.utils.ulid import new_ulid
@@ -237,8 +237,7 @@ class CronDeliveryService:
         command: CronDeliveryCommand,
         session: SessionRow,
     ) -> None:
-        user_row = self._repos.user_repo.get(session.user_id)
-        role, unit_key = user_scope(user_row)
+        role, unit_keys = self._repos.resource_acl_repo.scope_for_user(session.user_id)
         is_admin = role == "admin"
         # One scope rule for every runtime mount point (``sharing.can_access``):
         # the old ``list_all() if is_admin`` fork repeated the admin bypass that
@@ -248,7 +247,7 @@ class CronDeliveryService:
             self._repos.resource_acl_repo.list_for_type("knowledge_base"),
             user_id=session.user_id,
             role=role,
-            unit_key=unit_key,
+            unit_keys=unit_keys,
         )
         bases = [base for base in self._repos.knowledge_repo.list_all() if base.id in allowed]
         locale = resolve_user_locale(

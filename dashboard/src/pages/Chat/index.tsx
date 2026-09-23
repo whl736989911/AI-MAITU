@@ -111,12 +111,17 @@ function ChatPageInner() {
     agentId?: string;
     threadId?: string;
   }>();
+  const user = useCurrentUser();
+  // Installed plugin UIs are read from a ``plugins``-gated endpoint, so an
+  // account without the key can never render them: skip the probe rather than
+  // have it come back 403 ("a control the actor may not use is hidden, never
+  // disabled" — UsersListPanel).
   usePluginToolUis({
     agentId: routeAgentId ?? null,
     threadId: threadId ?? null,
+    enabled: userCan(user, "plugins"),
   });
   const isMobile = useIsMobile();
-  const user = useCurrentUser();
   const { layoutMode } = useLayoutMode();
   const isMinimalLayout = layoutMode === "minimal";
   const canTerminal = userCan(user, "terminal");
@@ -766,7 +771,12 @@ function ChatPageInner() {
     [resumeHitl, activeThreadId, t],
   );
 
+  const canRecordBrowser = userCan(user, "browser");
   useEffect(() => {
+    // ``/browser/record-replay/status`` is ``browser``-gated: without the key
+    // the probe can only come back 403 and toast "no permission" over a
+    // feature this account cannot use, so it is not sent at all.
+    if (!canRecordBrowser) return;
     let cancelled = false;
     browserApi
       .recordReplayStatus()
@@ -789,7 +799,7 @@ function ChatPageInner() {
     return () => {
       cancelled = true;
     };
-  }, [t]);
+  }, [t, canRecordBrowser]);
 
   // Regenerate: re-send the last user message before this assistant message
   const handleRegenerate = useCallback(

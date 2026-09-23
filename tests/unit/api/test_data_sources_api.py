@@ -95,7 +95,10 @@ async def test_member_may_not_create_delete_or_sync(api: dict[str, Any]) -> None
         json={"name": "Sneaky", "kind": "url", "config": {"url": "https://example.com"}},
     )
     assert created.status_code == 403, created.text
-    assert created.json()["error"]["code"] == "KNOWLEDGE_FORBIDDEN"
+    # A write refusal, not an access refusal: the member may read this base (the
+    # fixture publishes it) and may not change it, and the two now say different
+    # things (design §5.1: read and edit are separate permissions).
+    assert created.json()["error"]["code"] == "KNOWLEDGE_WRITE_FORBIDDEN"
 
     synced = await client.post(f"/api/data-sources/{api['source']}/sync", headers=api["member"])
     assert synced.status_code == 403, synced.text

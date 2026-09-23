@@ -5,7 +5,12 @@ from __future__ import annotations
 from collections.abc import Collection
 from dataclasses import dataclass
 
-from octop.infra.agents.kinds import KIND_AGENT
+from octop.infra.agents.kinds import (
+    KIND_AGENT,
+    feature_agent_id_for,
+    feature_id_of_agent,
+    is_feature_agent,
+)
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import (
     UNSET,
@@ -17,7 +22,7 @@ from octop.infra.db.repos._base import (
     sql_in_placeholders,
 )
 from octop.infra.db.repos.resource_acl import ResourceAclRepo, owner_unit_key
-from octop.infra.sharing import VISIBILITY_PRIVATE, VISIBILITY_PUBLIC
+from octop.infra.sharing import VISIBILITY_PRIVATE, VISIBILITY_PUBLIC, allowed_resource_ids
 
 
 def _opt_str(r: DbRow, key: str) -> str | None:
@@ -237,29 +242,55 @@ class AgentRepo:
     def public_agent_ids(self, agent_ids: Collection[str] | None = None) -> set[str]:
         """Ids of agents published to everyone, per ``resource_acl``.
 
-        The display counterpart of ``list_shared``: rows are not needed to say
-        whether an agent is shared.
+        The display counterpart of ``list_visible``: rows are not needed to say
+        whether an agent is shared. A feature published through its *own* entry
+        publishes the agent that carries it — the two names of one resource — so
+        both are read. When the caller narrows to some rows, only those rows'
+        features are asked, and a plain agent asks for nothing extra.
         """
-        return self._acl.public_resource_ids("agent", resource_ids=agent_ids)
+        public = self._acl.public_resource_ids("agent", resource_ids=agent_ids)
+        feature_ids = (
+            None
+            if agent_ids is None
+            else [
+                feature_id
+                for feature_id in map(feature_id_of_agent, agent_ids)
+                if feature_id is not None
+            ]
+        )
+        for feature_id in self._acl.public_resource_ids("feature", resource_ids=feature_ids):
+            public.add(feature_agent_id_for(feature_id))
+        return public
 
-    def list_shared(self, *, exclude_user_id: int | None = None) -> list[AgentRow]:
-        """Agents published to everyone — the dashboard's shared list.
+    def list_visible(self, user_id: int, *, exclude_user_id: int | None = None) -> list[AgentRow]:
+        """Enabled agents this account may use, per the one access rule.
 
-        This answers "which agents are published", not "which may this user
-        use", so it is deliberately not ``sharing.allowed_resource_ids``: that
-        rule would widen the list with unit and grant shares, which this
-        endpoint does not show, and it cannot express the listing-only
-        ``enabled`` filter. The published predicate itself is not restated here
-        either — it comes from :meth:`ResourceAclRepo.public_resource_ids`.
+        The verdict comes from ``sharing.allowed_resource_ids`` over the ACL
+        entries — the same rule the single-row check resolves through
+        (:func:`octop.api.common.agent.agent_access_entries`), so a list and a
+        direct open cannot disagree about an agent. Two names can name one agent
+        here: a feature's own entry (``resource_type='feature'``, keyed by the
+        feature id) decides the agent that carries it, ``feat-<feature_id>``, so
+        those entries are resolved to their agent id before the rows are read.
+
+        Deliberately not "the published set": a directed grant, a unit share and
+        a role grant all put an agent in this list, which is exactly what the
+        sharing pipeline produces (``POST /api/sharing/acl/agent/{id}``). A
+        listing that only knew ``public`` showed such an account nothing at all,
+        while opening the same agent directly answered 200.
+
+        ``exclude_user_id`` drops the viewer's own rows: the endpoint composes
+        "mine ∪ visible" and an owned agent is listed once.
         """
-        public_ids = self._acl.public_resource_ids("agent")
-        if not public_ids:
+        role, unit_keys = self._acl.scope_for_user(user_id)
+        allowed = self._allowed_agent_ids(user_id=user_id, role=role, unit_keys=unit_keys)
+        if not allowed:
             return []
         sql = (
             "SELECT * FROM agents WHERE enabled = 1 "
-            f"AND agent_id IN ({sql_in_placeholders(len(public_ids))})"
+            f"AND agent_id IN ({sql_in_placeholders(len(allowed))})"
         )
-        params: list[object] = [*sorted(public_ids)]
+        params: list[object] = [*sorted(allowed)]
         if exclude_user_id is not None:
             sql += " AND user_id != ?"
             params.append(exclude_user_id)
@@ -267,6 +298,24 @@ class AgentRepo:
         with self._db.connect() as conn:
             rows = conn.execute(sql, params).fetchall()
         return map_rows(rows, AgentRow)
+
+    def _allowed_agent_ids(
+        self, *, user_id: int, role: str, unit_keys: Collection[str]
+    ) -> set[str]:
+        """Agent ids the actor's entries allow, under both names of the resource."""
+        allowed = allowed_resource_ids(
+            self._acl.list_for_type("agent"), user_id=user_id, role=role, unit_keys=unit_keys
+        )
+        allowed |= {
+            feature_agent_id_for(feature_id)
+            for feature_id in allowed_resource_ids(
+                self._acl.list_for_type("feature"),
+                user_id=user_id,
+                role=role,
+                unit_keys=unit_keys,
+            )
+        }
+        return allowed
 
     def set_state(self, agent_id: str, state: str, *, error: str | None = None) -> None:
         with self._db.transaction() as conn:
@@ -327,5 +376,15 @@ class AgentRepo:
 
     def delete(self, agent_id: str) -> None:
         with self._db.transaction() as conn:
+            row = conn.execute("SELECT kind FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
             conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
             self._acl.delete("agent", agent_id, conn=conn)
+            # A feature's agent carries a second entry, filed under the feature's
+            # own id (``resource_type='feature'``), and it names the same resource
+            # — so it dies with the agent. Left behind it would decide a later
+            # feature that reuses the id: its author would not own the row and the
+            # audience the previous feature had would keep its access.
+            if row is not None and is_feature_agent(str(row["kind"])):
+                feature_id = feature_id_of_agent(agent_id)
+                if feature_id is not None:
+                    self._acl.delete("feature", feature_id, conn=conn)

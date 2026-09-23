@@ -8,6 +8,8 @@ from unittest.mock import AsyncMock, MagicMock, call, patch
 import pytest
 from fastapi.testclient import TestClient
 
+from octop.infra.sharing import AclEntry
+
 
 @pytest.fixture()
 def mock_server_and_user():
@@ -15,9 +17,10 @@ def mock_server_and_user():
     user = MagicMock()
     user.id = 1
     user.is_admin = True
-    # Access is decided by ``sharing.can_access`` through ``user_scope``, which
-    # reads ``role``/``org_unit`` — the same shape the real ``User`` carries.
-    # ``is_admin`` alone is not enough.
+    # Access is decided by ``sharing.can_access``. The caller's scope comes from
+    # ``resource_acl_repo.scope_for_user`` now, which the real repo answers from
+    # the ``users`` row as ``(role, unit_keys)``; the agent's own ACL entry is
+    # what the rules run on. User 1 is an admin, so the first rule admits them.
     user.role = "admin"
     user.org_unit = None
 
@@ -30,6 +33,18 @@ def mock_server_and_user():
     runtime.app_runtime.gateway = MagicMock()
     runtime.services = MagicMock()
     runtime.services.channel_repo.list_by_agent.return_value = []
+    runtime.services.repos.resource_acl_repo.scope_for_user.return_value = (
+        "admin",
+        (),
+    )
+    runtime.services.repos.resource_acl_repo.get.return_value = AclEntry(
+        resource_type="agent",
+        resource_id="agent1",
+        owner_user_id=1,
+        visibility="private",
+        unit_key=None,
+        version=1,
+    )
 
     return runtime, user
 

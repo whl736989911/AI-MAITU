@@ -1790,6 +1790,24 @@ _RESOURCE_ACL_BACKFILL_SOURCES = (
 )
 
 
+def _ensure_acl_permission_level(db: DatabasePool) -> None:
+    """Add ``resource_acl.permission`` (schema v36): read | write.
+
+    The level a share carries, defaulted to ``read`` so every row that predates
+    it keeps its reach and gains nothing: ``sharing.can_write`` reads a
+    ``read`` entry as "may reach it, may not maintain it", which is what every
+    share meant before the column existed — the enterprise space's own
+    ``public`` row included.
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers, so
+    a database whose watermark skipped 36 still gets the column — and so does a
+    fresh one built by the v18 create path.
+    """
+    if not _table_exists(db, "resource_acl"):
+        return
+    _ensure_column(db, "resource_acl", "permission", "TEXT NOT NULL DEFAULT 'read'")
+
+
 def _ensure_resource_acl_schema(db: DatabasePool) -> None:
     """Create the unified ACL tables (schema v18) and mirror the legacy flags.
 
@@ -2762,6 +2780,7 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         # SSO rebuild recreates ``users``; ensure permissions after that path.
         _ensure_column(db, "users", "permissions", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_resource_acl_schema(db)
+        _ensure_acl_permission_level(db)
         _ensure_data_sources_schema(db)
 
 
@@ -3094,6 +3113,13 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 36:
+        # ``036_acl_permission_level.sql`` is the readable record; SQLite boots
+        # run the helper, which adds the column only when it is missing.
+        _ensure_acl_permission_level(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -3141,6 +3167,11 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_extract_results_schema(db)
             if version == 35:
                 _merge_legacy_knowledge_bases(db)
+            if version == 36:
+                # ``036_*.pg.sql`` already ran; this keeps the recorded-version
+                # path equivalent to it (a clamp or a build that stamped 36
+                # without the DDL still converges).
+                _ensure_acl_permission_level(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -3158,6 +3189,7 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_sso_provider_kind_schema(db)
     _ensure_org_units_schema(db)
     _ensure_resource_acl_schema(db)
+    _ensure_acl_permission_level(db)
     _drop_legacy_share_columns(db)
     _ensure_data_sources_schema(db)
     _ensure_agent_kind_column(db)

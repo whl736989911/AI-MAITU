@@ -2,6 +2,7 @@ import type {
   SharingChangeStatus,
   SharingGranteeType,
   SharingImpactScope,
+  SharingPermission,
   SharingResourceType,
   SharingVisibility,
 } from "../../api/modules/sharing";
@@ -42,6 +43,17 @@ export const VISIBILITY_HINT_KEYS: Record<SharingVisibility, string> = {
   private: "sharing.visibilityHint.private",
   unit: "sharing.visibilityHint.unit",
   public: "sharing.visibilityHint.public",
+};
+
+export const PERMISSION_LABEL_KEYS: Record<SharingPermission, string> = {
+  read: "sharing.permission.read",
+  write: "sharing.permission.write",
+};
+
+/** Longer copy for the permission radio cards. */
+export const PERMISSION_HINT_KEYS: Record<SharingPermission, string> = {
+  read: "sharing.permissionHint.read",
+  write: "sharing.permissionHint.write",
 };
 
 export const IMPACT_LABEL_KEYS: Record<SharingImpactScope, string> = {

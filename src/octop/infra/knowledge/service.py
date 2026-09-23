@@ -39,12 +39,32 @@ from octop.infra.knowledge.search import (
     search_base,
     snippet,
 )
-from octop.infra.sharing import user_scope
+from octop.infra.sharing import VISIBILITY_PRIVATE, AclEntry, can_write
 
 MAX_DOCS_PER_KB = 100
 MAX_DOCUMENT_BYTES = upload_mb_to_bytes(DEFAULT_MAX_UPLOAD_MB)
 # Upper bound for the per-base max_documents field. Mirrors Field(le=10000).
 MAX_KB_MAX_DOCUMENTS = 10_000
+ACCESS_READ = "read"
+ACCESS_WRITE = "write"
+
+
+class KnowledgeAccessDenied(PermissionError):
+    """A knowledge refusal that says which access was missing.
+
+    ``PermissionError`` alone carried no such distinction, so every refusal
+    reached the client as "you do not have access to this knowledge base" —
+    including the one raised for an actor who was *reading* that base and only
+    asked to change it. Read and edit are separate permissions here (design
+    §5.1), so the level travels on the exception and the router's error mapping
+    reads it instead of guessing from the message.
+    """
+
+    def __init__(self, message: str, *, access: str) -> None:
+        super().__init__(message)
+        self.access = access
+
+
 _MAX_PREVIEW_CHARS = 200_000
 _EXT_TO_CONTENT_TYPE = {
     ".txt": "text/plain",
@@ -468,7 +488,9 @@ class KnowledgeService:
         """
         restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
         if not may_read_document(document.id, restricted=restricted, readable=readable):
-            raise PermissionError("knowledge document read access is required")
+            raise KnowledgeAccessDenied(
+                "knowledge document read access is required", access=ACCESS_READ
+            )
 
     def get_readable_base(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
@@ -477,23 +499,43 @@ class KnowledgeService:
         # The legacy share column is a write-only mirror: a share applied
         # through the sharing pipeline never lands there, so the ACL row is the
         # only thing that may decide this.
-        role, unit_key = user_scope(self._services.user_repo.get(actor_user_id))
+        role, unit_keys = self._repo.scope_for_user(actor_user_id)
         if may_read_knowledge_base(
             self._repo.acl_entry(kb_id),
             user_id=actor_user_id,
             role="admin" if is_admin else role,
-            unit_key=unit_key,
+            unit_keys=unit_keys,
         ):
             return base
-        raise PermissionError("knowledge base read access is required")
+        raise KnowledgeAccessDenied("knowledge base read access is required", access=ACCESS_READ)
 
     def get_writable_base(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
         base = self._require_base(kb_id)
-        if is_admin or base.owner_user_id == actor_user_id:
+        # Write is the entry's other half: the owner and administrators always
+        # have it, and a share only carries it when the entry says ``write`` —
+        # which is why a ``public`` base is readable by everyone and writable
+        # only by its owner.
+        entry = self._repo.acl_entry(kb_id)
+        if entry is None:
+            entry = AclEntry(
+                resource_type="knowledge_base",
+                resource_id=kb_id,
+                owner_user_id=base.owner_user_id,
+                visibility=VISIBILITY_PRIVATE,
+                unit_key=None,
+                version=0,
+            )
+        role, unit_keys = self._repo.scope_for_user(actor_user_id)
+        if can_write(
+            entry,
+            user_id=actor_user_id,
+            role="admin" if is_admin else role,
+            unit_keys=unit_keys,
+        ):
             return base
-        raise PermissionError("knowledge base write access is required")
+        raise KnowledgeAccessDenied("knowledge base write access is required", access=ACCESS_WRITE)
 
     def require_owner(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
@@ -501,7 +543,7 @@ class KnowledgeService:
         base = self._require_base(kb_id)
         if is_admin or base.owner_user_id == actor_user_id:
             return base
-        raise PermissionError("knowledge base owner access is required")
+        raise KnowledgeAccessDenied("knowledge base owner access is required", access=ACCESS_WRITE)
 
     def upload_document(
         self,

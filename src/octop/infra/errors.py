@@ -91,6 +91,10 @@ class ErrorCode(StrEnum):
     KNOWLEDGE_PREREQUISITES_FAILED = "KNOWLEDGE_PREREQUISITES_FAILED"
     KNOWLEDGE_NOT_FOUND = "KNOWLEDGE_NOT_FOUND"
     KNOWLEDGE_FORBIDDEN = "KNOWLEDGE_FORBIDDEN"
+    # A refusal that is about *changing* a knowledge base its caller may already
+    # read. Read and edit are separate permissions here (design §5.1), so an
+    # actor looking at the base must not be told they have no access to it.
+    KNOWLEDGE_WRITE_FORBIDDEN = "KNOWLEDGE_WRITE_FORBIDDEN"
     KNOWLEDGE_DOC_LIMIT = "KNOWLEDGE_DOC_LIMIT"
     KNOWLEDGE_DOC_TOO_LARGE = "KNOWLEDGE_DOC_TOO_LARGE"
     KNOWLEDGE_BASE_LIMIT = "KNOWLEDGE_BASE_LIMIT"
@@ -249,6 +253,7 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_PREREQUISITES_FAILED: 409,
     ErrorCode.KNOWLEDGE_NOT_FOUND: 404,
     ErrorCode.KNOWLEDGE_FORBIDDEN: 403,
+    ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_DOC_LIMIT: 409,
     ErrorCode.KNOWLEDGE_DOC_TOO_LARGE: 413,
     ErrorCode.KNOWLEDGE_BASE_LIMIT: 409,

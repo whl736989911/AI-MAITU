@@ -99,6 +99,62 @@ def test_shared_reader_cannot_upload(service: KnowledgeService) -> None:
     assert service._services.knowledge_repo.get_base(kb.id).doc_count == 0
 
 
+def test_shared_writer_can_upload_and_maintain(service: KnowledgeService) -> None:
+    """A grant that carries ``write`` is what makes a share maintainable.
+
+    The level is a property of the share, not of the request that made it: the
+    row keeps it, and the same grant narrowed back to ``read`` reaches the
+    viewer without letting them write.
+    """
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    writer = users.create(username="writer", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
+    sharing = SharingService(service._services.db)
+
+    def share(permission: str) -> None:
+        sharing.apply_change(
+            owner,
+            "knowledge_base",
+            kb.id,
+            AclEntry(
+                resource_type="knowledge_base",
+                resource_id=kb.id,
+                owner_user_id=owner,
+                visibility="private",
+                unit_key=None,
+                version=0,
+                grants=(("user", str(writer)),),
+                permission=permission,
+            ),
+        )
+
+    share("write")
+    doc = service.upload_document(
+        kb.id,
+        actor_user_id=writer,
+        filename="by-the-grantee.md",
+        content_type="text/markdown",
+        content=b"# written by the grantee",
+    )
+    assert doc.filename == "by-the-grantee.md"
+    entry = service._services.knowledge_repo.acl_entry(kb.id)
+    assert entry is not None and entry.permission == "write"
+
+    service.delete_document(kb.id, doc.id, actor_user_id=writer)
+
+    share("read")
+    assert service.get_readable_base(kb.id, actor_user_id=writer).id == kb.id
+    with pytest.raises(PermissionError, match="write"):
+        service.upload_document(
+            kb.id,
+            actor_user_id=writer,
+            filename="blocked-again.md",
+            content_type="text/markdown",
+            content=b"# blocked",
+        )
+
+
 def test_shared_reader_can_preview_document_text(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
@@ -327,11 +383,11 @@ def test_list_visible_bases_is_the_rule_for_every_viewer(service: KnowledgeServi
     assert set(entries) == {private.id, published.id, unit.id, granted.id, space.id}
     viewers = {"owner": owner, "peer_sales": peer, "outsider_eng": outsider, "admin": admin}
     for name, user_id in viewers.items():
-        role, unit_key = acl.scope_for_user(user_id)
+        role, unit_keys = acl.scope_for_user(user_id)
         allowed = {
             resource_id
             for resource_id, entry_row in entries.items()
-            if can_access(entry_row, user_id=user_id, role=role, unit_key=unit_key)
+            if can_access(entry_row, user_id=user_id, role=role, unit_keys=unit_keys)
         }
         assert {base.id for base in service.list_visible_bases(actor_user_id=user_id)} == allowed, (
             f"list/{name}"

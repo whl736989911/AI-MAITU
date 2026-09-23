@@ -705,3 +705,53 @@ def test_map_knowledge_error_prerequisites_distinguished() -> None:
     )
     assert err_model.code == ErrorCode.KNOWLEDGE_PREREQUISITES_FAILED
     assert err_model.status == 409
+
+
+def test_map_knowledge_error_tells_a_write_refusal_from_a_read_one() -> None:
+    """④: a refusal that is about *changing* a readable base says so.
+
+    Read and edit are separate permissions (design §5.1). Mapping every
+    ``PermissionError`` to ``KNOWLEDGE_FORBIDDEN`` told an actor who was looking
+    at the base that they had no access to it, which is the one thing that was
+    demonstrably untrue of them.
+    """
+    from octop.api.routers.knowledge_bases import _map_knowledge_error
+    from octop.infra.knowledge.service import (
+        ACCESS_READ,
+        ACCESS_WRITE,
+        KnowledgeAccessDenied,
+    )
+
+    refused_write = _map_knowledge_error(
+        KnowledgeAccessDenied("knowledge base write access is required", access=ACCESS_WRITE),
+        locale="zh",
+    )
+    assert refused_write.code == ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN
+    assert refused_write.status == 403
+
+    # The owner-only refusal is a write refusal too: it is raised by the routes
+    # that change a base, never by the ones that read it.
+    refused_owner = _map_knowledge_error(
+        KnowledgeAccessDenied("knowledge base owner access is required", access=ACCESS_WRITE),
+        locale="zh",
+    )
+    assert refused_owner.code == ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN
+
+    refused_read = _map_knowledge_error(
+        KnowledgeAccessDenied("knowledge base read access is required", access=ACCESS_READ),
+        locale="zh",
+    )
+    assert refused_read.code == ErrorCode.KNOWLEDGE_FORBIDDEN
+    assert refused_read.status == 403
+
+    # Two codes, two sentences: what the client shows cannot be the same line.
+    assert refused_write.localized_message("zh") != refused_read.localized_message("zh")
+
+    # A bare ``PermissionError`` (anything that never learned the distinction)
+    # keeps the access wording rather than claiming a write was refused.
+    assert (
+        _map_knowledge_error(
+            PermissionError("knowledge base read access is required"), locale="zh"
+        ).code
+        is ErrorCode.KNOWLEDGE_FORBIDDEN
+    )

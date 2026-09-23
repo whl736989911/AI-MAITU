@@ -21,7 +21,12 @@ vi.mock("../../../api/modules/sharing", () => ({
 }));
 
 vi.mock("@/utils/antdMessage", () => ({
-  message: { error: vi.fn(), success: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  message: {
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
 }));
 
 import SharingSettingsDrawer from "./SharingSettingsDrawer";
@@ -99,6 +104,8 @@ describe("<SharingSettingsDrawer />", () => {
     expect(changeAcl).toHaveBeenCalledWith("knowledge_base", "kb-1", {
       visibility: "public",
       unit_key: null,
+      // The drawer always submits the level; untouched state keeps the default.
+      permission: "read",
       grants: [],
       reason: null,
     });

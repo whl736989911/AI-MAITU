@@ -316,6 +316,15 @@ class KnowledgeRepo:
         """
         return self._acl.get("knowledge_base", kb_id)
 
+    def scope_for_user(self, user_id: int) -> tuple[str, tuple[str, ...]]:
+        """``(role, unit_keys)`` for the access rules, via the repo that owns the ACL.
+
+        The knowledge service decides read and write itself, so it resolves the
+        actor's scope here — one caller-side resolution, exactly as
+        :meth:`readable_document_ids` does for the document lists.
+        """
+        return self._acl.scope_for_user(user_id)
+
     def document_acl_entries(self) -> dict[str, AclEntry]:
         """Every document that carries a file-level entry, by document id.
 
@@ -334,12 +343,12 @@ class KnowledgeRepo:
         ``sharing.can_access``, so an administrator resolves to every document
         through the rule set rather than around it.
         """
-        role, unit_key = self._acl.scope_for_user(user_id)
+        role, unit_keys = self._acl.scope_for_user(user_id)
         return allowed_resource_ids(
             self._acl.list_for_type("knowledge_document"),
             user_id=user_id,
             role="admin" if is_admin else role,
-            unit_key=unit_key,
+            unit_keys=unit_keys,
         )
 
     def public_base_ids(self, kb_ids: Collection[str] | None = None) -> set[str]:

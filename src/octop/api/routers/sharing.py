@@ -44,6 +44,7 @@ CHANGE_STATUSES = (CHANGE_APPLIED, CHANGE_PENDING, CHANGE_REJECTED, CHANGE_ROLLE
 
 Visibility = Literal["private", "unit", "public"]
 GranteeType = Literal["user", "unit", "role"]
+Permission = Literal["read", "write"]
 
 
 class GrantBody(BaseModel):
@@ -60,6 +61,13 @@ class AclChangeBody(BaseModel):
         max_length=64,
         description=(
             "Org unit snapshot for ``unit`` visibility; omit to snapshot the caller's unit."
+        ),
+    )
+    permission: Permission = Field(
+        default="read",
+        description=(
+            "What reaching the resource lets them do: ``read`` reaches it, "
+            "``write`` maintains it too."
         ),
     )
     grants: list[GrantBody] = Field(
@@ -103,6 +111,7 @@ def _entry_payload(entry: AclEntry) -> dict[str, Any]:
         "owner_user_id": entry.owner_user_id,
         "visibility": entry.visibility,
         "unit_key": entry.unit_key,
+        "permission": entry.permission,
         "version": entry.version,
         "grants": [{"grantee_type": kind, "grantee_id": grantee} for kind, grantee in entry.grants],
     }
@@ -287,6 +296,7 @@ async def change_resource_acl(
         visibility=body.visibility,
         unit_key=unit_key,
         version=0,
+        permission=body.permission,
         grants=tuple((grant.grantee_type, grant.grantee_id) for grant in body.grants),
     )
     result: ChangeResult = _sharing(server).apply_change(

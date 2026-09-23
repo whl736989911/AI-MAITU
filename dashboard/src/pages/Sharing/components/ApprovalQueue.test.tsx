@@ -2,13 +2,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { listChanges, approveChange, rejectChange, request, currentUser } = vi.hoisted(() => ({
-  listChanges: vi.fn(),
-  approveChange: vi.fn(),
-  rejectChange: vi.fn(),
-  request: vi.fn(),
-  currentUser: { value: null as null | { id: number; role: string } },
-}));
+const { listChanges, approveChange, rejectChange, request, currentUser } =
+  vi.hoisted(() => ({
+    listChanges: vi.fn(),
+    approveChange: vi.fn(),
+    rejectChange: vi.fn(),
+    request: vi.fn(),
+    currentUser: { value: null as null | { id: number; role: string } },
+  }));
 
 vi.mock("../../../api/modules/sharing", () => ({
   sharingApi: {
@@ -29,7 +30,12 @@ vi.mock("../../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => currentUser.value,
 }));
 vi.mock("@/utils/antdMessage", () => ({
-  message: { error: vi.fn(), success: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  message: {
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
 }));
 
 import { message } from "@/utils/antdMessage";
@@ -54,6 +60,7 @@ const ORG_CHANGE = {
     owner_user_id: 7,
     visibility: "private",
     unit_key: null,
+    permission: "read",
     version: 1,
     grants: [],
   },
@@ -63,6 +70,7 @@ const ORG_CHANGE = {
     owner_user_id: 7,
     visibility: "public",
     unit_key: null,
+    permission: "write",
     version: 2,
     grants: [],
   },
@@ -77,7 +85,9 @@ describe("<ApprovalQueue />", () => {
       limit: 50,
       changes: [ORG_CHANGE],
     });
-    request.mockResolvedValue([{ id: 7, username: "anna", display_name: "Anna" }]);
+    request.mockResolvedValue([
+      { id: 7, username: "anna", display_name: "Anna" },
+    ]);
   });
 
   it("opens on pending changes and shows what an admin is judging", async () => {
@@ -87,7 +97,9 @@ describe("<ApprovalQueue />", () => {
       expect(listChanges).toHaveBeenCalledWith("pending_approval"),
     );
     expect(await screen.findByText("Handbook")).toBeInTheDocument();
-    expect(screen.getByText("sharing.resourceType.knowledge_base")).toBeInTheDocument();
+    expect(
+      screen.getByText("sharing.resourceType.knowledge_base"),
+    ).toBeInTheDocument();
     expect(screen.getByText("Anna")).toBeInTheDocument();
     expect(screen.getByText("onboarding for everyone")).toBeInTheDocument();
     // Both sides of the change, so the visibility jump is visible.
@@ -95,8 +107,13 @@ describe("<ApprovalQueue />", () => {
     expect(screen.getByText("sharing.queue.after")).toBeInTheDocument();
     expect(screen.getByText("sharing.visibility.private")).toBeInTheDocument();
     expect(screen.getByText("sharing.visibility.public")).toBeInTheDocument();
+    // The level too: a read → write escalation is invisible otherwise.
+    expect(screen.getByText("sharing.permission.read")).toBeInTheDocument();
+    expect(screen.getByText("sharing.permission.write")).toBeInTheDocument();
     // The org-wide jump is called out, not left for the reviewer to spot.
-    expect(screen.getByText("sharing.queue.orgWarningTitle")).toBeInTheDocument();
+    expect(
+      screen.getByText("sharing.queue.orgWarningTitle"),
+    ).toBeInTheDocument();
     expect(screen.getByText("sharing.impactShort.org")).toBeInTheDocument();
   });
 
@@ -132,7 +149,9 @@ describe("<ApprovalQueue />", () => {
 
     // The modal's confirm button — the card's own reject button carries the
     // same label, so it is located through the footer instead.
-    const confirm = document.querySelector(".ant-modal-footer .ant-btn-primary");
+    const confirm = document.querySelector(
+      ".ant-modal-footer .ant-btn-primary",
+    );
     expect(confirm).not.toBeNull();
     await userEvent.click(confirm as Element);
 

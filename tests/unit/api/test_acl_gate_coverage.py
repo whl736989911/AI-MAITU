@@ -131,6 +131,16 @@ ROUTE_GATED_FILES = [
     # ``test_every_channel_route_reads_its_kind_from_somewhere`` below insists the
     # gate is the key of the kind that route touches, not just any key.
     "routers/channels.py",
+    # The knowledge-base surface: every route is gated — its reads on the page's
+    # own key pair (``knowledge_bases`` *or* ``knowledge_settings``, the same pair
+    # ``dashboard/src/utils/permissions.ts`` opens ``/knowledge-bases`` with),
+    # its writes on the single key that owns the thing written. Until this list
+    # included it, the file's *reads* were signed-in-only: revoking the module
+    # key hid the page and refused its writes while ``GET /api/knowledge-bases``,
+    # ``GET /{kb_id}`` and ``GET /{kb_id}/documents`` still answered 200 to a
+    # direct API call (design §2.4: an unauthorized capability must not be
+    # reachable by calling the API directly).
+    "routers/knowledge_bases.py",
 ]
 
 #: Routes on those surfaces that deliberately carry no gate, and why. An empty
@@ -208,15 +218,22 @@ def _gate_defaults(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
 def _names_a_gate(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
     """True when the route's own parameters ask for a gate.
 
-    Three shapes count, and all three are ``require_*`` dependency factories:
-    ``require_permission(key)``, ``require_admin()``, and the channel surface's
-    two per-type factories (``require_channel_kind_from_body`` /
-    ``_from_row``), which resolve the key at request time instead of naming it —
-    what they must ask for is checked key by key in
-    :func:`test_every_channel_route_reads_its_kind_from_somewhere`.
+    Four shapes count, and all four are ``require_*`` dependency factories:
+    ``require_permission(key)``, ``require_any_permission(*keys)`` (a page the
+    dashboard opens through either of two keys — ``/knowledge-bases`` is
+    ``knowledge_bases`` *or* ``knowledge_settings``), ``require_admin()``, and the
+    channel surface's two per-type factories
+    (``require_channel_kind_from_body`` / ``_from_row``), which resolve the key at
+    request time instead of naming it — what they must ask for is checked key by
+    key in :func:`test_every_channel_route_reads_its_kind_from_somewhere`.
+
+    The any-of form is accepted here because its keys are validated where they
+    are written: ``require_any_permission`` refuses an unknown key at import, so
+    the call in the signature cannot name one the catalog does not hold.
     """
     return any(
         "require_permission(" in default
+        or "require_any_permission(" in default
         or "require_admin(" in default
         or "require_channel_kind_from_" in default
         for default in _gate_defaults(node)

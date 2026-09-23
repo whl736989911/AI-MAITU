@@ -35,16 +35,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from octop.infra.agents.kinds import KIND_FEATURE
+from octop.infra.agents.kinds import KIND_FEATURE, feature_agent_id_for
 from octop.infra.agents.manager import AgentCreateSpec, validate_custom_agent_id
 from octop.infra.errors import OctopError
 
 if TYPE_CHECKING:
     from octop.infra.db.repos.agents import AgentRow
     from octop.infra.server import OctopServer
-
-AGENT_ID_PREFIX = "feat-"
-"""Prefix of a feature's own agent id — never a user's, whose ids are minted ULIDs."""
 
 
 def feature_agent_id(feature_id: str) -> str | None:
@@ -69,7 +66,7 @@ def _checked_agent_id(feature_id: str) -> str:
     agent id is — the refusal carries that rule's wording and the id it was applied
     to.
     """
-    candidate = f"{AGENT_ID_PREFIX}{feature_id}"
+    candidate = feature_agent_id_for(feature_id)
     try:
         return validate_custom_agent_id(candidate)
     except OctopError as exc:
@@ -124,4 +121,4 @@ async def create_feature_agent(
     )
 
 
-__all__ = ["AGENT_ID_PREFIX", "create_feature_agent", "feature_agent_id"]
+__all__ = ["create_feature_agent", "feature_agent_id"]

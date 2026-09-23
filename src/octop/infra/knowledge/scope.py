@@ -11,7 +11,8 @@ The single-base read check that needs more than an id stays here: what is
 knowledge-base specific about it is the caller's question, not the rule.
 
 Pure and IO-free: the caller loads the ``resource_type='knowledge_base'``
-entries and resolves the actor's scope with ``sharing.user_scope``.
+entries and resolves the actor's scope with
+``ResourceAclRepo.scope_for_user`` (role + unit chain).
 """
 
 from __future__ import annotations
@@ -29,13 +30,16 @@ def may_read_knowledge_base(
     *,
     user_id: int,
     role: str,
-    unit_key: str | None,
+    unit_keys: Collection[str],
 ) -> bool:
     """Read check for a single base whose entry the caller already holds.
 
     ``None`` denies: access is granted by a row, never by its absence.
+
+    ``unit_keys`` is the actor's unit chain, so a base shared with a department
+    reaches the members of its sub-departments (``sharing.can_access``).
     """
-    return entry is not None and can_access(entry, user_id=user_id, role=role, unit_key=unit_key)
+    return entry is not None and can_access(entry, user_id=user_id, role=role, unit_keys=unit_keys)
 
 
 def may_read_document(

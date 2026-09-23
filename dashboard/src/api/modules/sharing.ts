@@ -10,6 +10,14 @@ export type SharingResourceType =
 /** Who may reach the resource by default. */
 export type SharingVisibility = "private" | "unit" | "public";
 
+/**
+ * What reaching the resource lets someone *do*: ``read`` reaches it (list it,
+ * open it, search it), ``write`` also maintains it. ``read`` is the default,
+ * so a share nobody chose a level for — the published enterprise space
+ * included — is reachable but not writable.
+ */
+export type SharingPermission = "read" | "write";
+
 /** How widely a change lands: the actor alone, their unit, or the whole org. */
 export type SharingImpactScope = "self" | "unit" | "org";
 
@@ -40,6 +48,7 @@ export interface SharingAclEntry {
   visibility: SharingVisibility;
   /** Org unit snapshotted at share time; only meaningful for ``unit``. */
   unit_key: string | null;
+  permission: SharingPermission;
   version: number;
   grants: SharingGrant[];
 }
@@ -56,6 +65,8 @@ export interface SharingAclChangeBody {
   visibility: SharingVisibility;
   /** Org unit snapshot for ``unit``; omit to snapshot the caller's own unit. */
   unit_key?: string | null;
+  /** ``read`` (default) reaches the resource, ``write`` also maintains it. */
+  permission?: SharingPermission;
   grants?: SharingGrant[];
   reason?: string | null;
 }

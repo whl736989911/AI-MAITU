@@ -107,10 +107,13 @@ async def test_text_checkpoint_failure_skips_push() -> None:
     gateway.push_session_text = AsyncMock()
     gateway.notify_dashboard_push = AsyncMock()
 
+    # The turn's knowledge scope resolves the actor through the ACL repo.
+    repos = MagicMock()
+    repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=agent_manager,
-        repos=MagicMock(),
+        repos=repos,
     )
     with pytest.raises(RuntimeError, match="checkpoint down"):
         await service.deliver(_command())
@@ -156,10 +159,13 @@ async def test_text_im_skips_checkpoint() -> None:
     gateway.push_session_text = AsyncMock()
     gateway.notify_dashboard_push = AsyncMock()
 
+    # The turn's knowledge scope resolves the actor through the ACL repo.
+    repos = MagicMock()
+    repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=agent_manager,
-        repos=MagicMock(),
+        repos=repos,
     )
     await service.deliver(_command())
     agent_manager.get_agent.assert_not_called()
@@ -186,10 +192,13 @@ async def test_agent_hitl_does_not_push() -> None:
     gateway.require_session = MagicMock(return_value=session)
     gateway.push_session_text = AsyncMock()
 
+    # The turn's knowledge scope resolves the actor through the ACL repo.
+    repos = MagicMock()
+    repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=agent_manager,
-        repos=MagicMock(),
+        repos=repos,
     )
     with pytest.raises(RuntimeError, match="interaction"):
         await service.deliver(_command(task_type="agent", prompt="run"))
@@ -214,10 +223,13 @@ async def test_agent_empty_reply_does_not_push() -> None:
     gateway.require_session = MagicMock(return_value=session)
     gateway.push_session_text = AsyncMock()
 
+    # The turn's knowledge scope resolves the actor through the ACL repo.
+    repos = MagicMock()
+    repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=agent_manager,
-        repos=MagicMock(),
+        repos=repos,
     )
     with pytest.raises(RuntimeError, match="no visible response"):
         await service.deliver(_command(task_type="agent", prompt="run"))
@@ -244,10 +256,13 @@ async def test_agent_strips_orphan_thinking_prefix() -> None:
     gateway.require_session = MagicMock(return_value=session)
     gateway.push_session_text = AsyncMock()
 
+    # The turn's knowledge scope resolves the actor through the ACL repo.
+    repos = MagicMock()
+    repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=agent_manager,
-        repos=MagicMock(),
+        repos=repos,
     )
     await service.deliver(_command(task_type="agent", prompt="run"))
     assert gateway.push_session_text.await_args.args[1] == "最终学习内容"

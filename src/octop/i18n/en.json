@@ -387,6 +387,7 @@
     "KNOWLEDGE_PREREQUISITES_FAILED": "Knowledge-base embedding prerequisites are not ready.",
     "KNOWLEDGE_NOT_FOUND": "Knowledge base or document not found.",
     "KNOWLEDGE_FORBIDDEN": "You do not have access to this knowledge base.",
+    "KNOWLEDGE_WRITE_FORBIDDEN": "You can read this knowledge base, but you do not have permission to change it.",
     "KNOWLEDGE_DOC_LIMIT": "A knowledge base can contain at most 100 documents.",
     "KNOWLEDGE_DOC_TOO_LARGE": "This document exceeds the {max_mb} MB size limit.",
     "KNOWLEDGE_BASE_LIMIT": "You can create at most 20 knowledge bases.",

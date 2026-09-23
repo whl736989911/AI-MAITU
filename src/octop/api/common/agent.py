@@ -13,10 +13,10 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any
 
-from octop.infra.agents.kinds import is_feature_agent
+from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.sharing import can_access, user_scope
+from octop.infra.sharing import AclEntry, can_access
 
 
 def user_owns_agent(row: Any, user: Any) -> bool:
@@ -141,6 +141,33 @@ def require_agent_capability_row(
     return row
 
 
+def agent_access_entries(row: Any, *, acl: ResourceAclRepo) -> list[AclEntry]:
+    """Every ACL entry that decides this agent row.
+
+    Normally one: the row's own ``agent`` entry. A feature's agent has a second,
+    filed under ``resource_type='feature'`` and keyed by the *feature* id its
+    agent id carries (``feat-<feature_id>``): a feature *is* its agent
+    (:mod:`octop.infra.agents.kinds`), so the entry
+    ``POST /api/sharing/acl/feature/{id}`` writes governs the same resource, and
+    until this was read the sharing API accepted such a grant and nothing
+    anywhere answered it — the one resource type whose entry had no reader.
+
+    Both entries are read and neither narrows the other: ``resource_acl`` states
+    that grants only ever widen access, so the verdict is the union, with no
+    precedence between an agent share and a feature share to get wrong. The
+    rule itself is not restated here — every entry goes through
+    :func:`~octop.infra.sharing.can_access`.
+    """
+    entries = [entry for entry in (acl.get("agent", row.agent_id),) if entry is not None]
+    if is_feature_agent(row.kind):
+        feature_id = feature_id_of_agent(row.agent_id)
+        if feature_id is not None:
+            feature_entry = acl.get("feature", feature_id)
+            if feature_entry is not None:
+                entries.append(feature_entry)
+    return entries
+
+
 def _user_may_access(row: Any, user: Any, *, acl: ResourceAclRepo) -> bool:
     """Whether *user* may use this agent, decided by ``resource_acl`` alone.
 
@@ -149,10 +176,10 @@ def _user_may_access(row: Any, user: Any, *, acl: ResourceAclRepo) -> bool:
     reading the column would deny someone the ACL already published (visible in
     a list, 403 on open).
     """
-    entry = acl.get("agent", row.agent_id)
-    role, unit_key = user_scope(user)
-    return entry is not None and can_access(
-        entry, user_id=int(user.id), role=role, unit_key=unit_key
+    role, unit_keys = acl.scope_for_user(int(user.id))
+    return any(
+        can_access(entry, user_id=int(user.id), role=role, unit_keys=unit_keys)
+        for entry in agent_access_entries(row, acl=acl)
     )
 
 

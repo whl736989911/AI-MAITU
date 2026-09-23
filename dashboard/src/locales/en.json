@@ -148,6 +148,7 @@
     "KNOWLEDGE_PREREQUISITES_FAILED": "Knowledge-base embedding prerequisites are not ready.",
     "KNOWLEDGE_NOT_FOUND": "Knowledge base or document not found.",
     "KNOWLEDGE_FORBIDDEN": "You do not have access to this knowledge base.",
+    "KNOWLEDGE_WRITE_FORBIDDEN": "You can read this knowledge base, but you do not have permission to change it.",
     "KNOWLEDGE_DOC_LIMIT": "A knowledge base can contain at most 100 documents.",
     "KNOWLEDGE_DOC_TOO_LARGE": "This document exceeds the {{max_mb}} MB size limit.",
     "KNOWLEDGE_BASE_LIMIT": "You can create at most 20 knowledge bases.",
@@ -1290,6 +1291,8 @@
       "unitSnapshot": "Unit {{unit}}",
       "notShared": "Not shared yet — only the owner and administrators can reach it.",
       "visibilityLabel": "Who may reach it",
+      "permissionLabel": "What they may do",
+      "permissionHint": "Only the owner and administrators can always change a resource; everyone else needs the write level.",
       "unitLabel": "Org unit",
       "unitPlaceholder": "Pick the org unit",
       "unitHint": "The unit is snapshotted now: a later move does not re-scope what you shared.",
@@ -1324,6 +1327,14 @@
         "superseded": "Saved, but a later change replaced this state.",
         "failed": "Could not save the change"
       }
+    },
+    "permission": {
+      "read": "Read only",
+      "write": "Read and write"
+    },
+    "permissionHint": {
+      "read": "They can open, search, and use it, but not change what is inside.",
+      "write": "They can open, search, and use it, and also maintain it — rename, edit, or remove it."
     }
   },
   "subagents": {
@@ -4330,6 +4341,9 @@
     "connectionLost": "Connection lost",
     "processExited": "Process exited",
     "reconnect": "Reconnect",
+    "noExpertsTitle": "No experts yet",
+    "noExpertsHint": "A terminal runs in an expert's workspace — create an expert first, then come back.",
+    "noExpertsAction": "Create an expert",
     "themes": {
       "label": "Color Theme",
       "darkGroup": "Dark",

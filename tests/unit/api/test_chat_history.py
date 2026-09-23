@@ -33,7 +33,8 @@ def _acl_owner(server: MagicMock, owner_user_id: int) -> None:
     """Authorize the mocked caller through ``resource_acl``.
 
     ``require_agent_row`` decides access from the ACL entry now; a bare
-    ``MagicMock`` would deny every caller.
+    ``MagicMock`` would deny every caller. The scope resolver is stubbed too:
+    the rules read the caller's role and unit chain through it.
     """
     server.services.repos.resource_acl_repo.get.return_value = AclEntry(
         resource_type="agent",
@@ -43,6 +44,7 @@ def _acl_owner(server: MagicMock, owner_user_id: int) -> None:
         unit_key=None,
         version=1,
     )
+    server.services.repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
 
 
 def test_clamp_history_limit() -> None:

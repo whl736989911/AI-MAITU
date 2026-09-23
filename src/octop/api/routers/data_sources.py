@@ -169,7 +169,12 @@ def _map_data_source_error(
         # the connector and carries no secret (design §4).
         return OctopError(ErrorCode.DATA_SOURCE_UNREACHABLE, str(exc), details={"reason": str(exc)})
     if isinstance(exc, PermissionError):
-        return OctopError.localized(ErrorCode.KNOWLEDGE_FORBIDDEN, locale)
+        # One mapping for both routers, which is why this file already imports the
+        # knowledge one: the knowledge router tells a *write* refusal from an
+        # access refusal (design §5.1) and a data source is refused for the same
+        # two reasons — describing them twice is how the write refusal ended up
+        # reading as "no access to this knowledge base".
+        return _map_knowledge_error(exc, locale=locale, server=server)
     if isinstance(exc, LookupError):
         return OctopError.localized(ErrorCode.NOT_FOUND, locale)
     if isinstance(exc, ValueError):

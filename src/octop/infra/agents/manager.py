@@ -67,7 +67,7 @@ from octop.infra.connectors.builder import (
 from octop.infra.connectors.service import ConnectorService
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.sharing import allowed_resource_ids, user_scope
+from octop.infra.sharing import allowed_resource_ids
 from octop.infra.skills.presentation import apply_skill_presentation, localize_skill_summary
 from octop.infra.skills.skill_package_store import SkillPackageStore
 from octop.infra.skills.workspace_catalog import (
@@ -2093,12 +2093,12 @@ class AgentManager:
             return []
         # Same scope rule as the cron mount path (``infra.knowledge.scope``), so a
         # base rejected here is exactly one the runtime would refuse to load.
-        role, unit_key = user_scope(self._repos.user_repo.get(user_id))
+        role, unit_keys = self._repos.resource_acl_repo.scope_for_user(user_id)
         visible = allowed_resource_ids(
             self._repos.resource_acl_repo.list_for_type("knowledge_base", resource_ids=normalized),
             user_id=user_id,
             role=role,
-            unit_key=unit_key,
+            unit_keys=unit_keys,
         )
         unknown = [kb_id for kb_id in normalized if kb_id not in visible]
         if unknown:

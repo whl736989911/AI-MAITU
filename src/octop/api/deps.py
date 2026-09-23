@@ -265,6 +265,41 @@ def require_permission(key: str) -> Callable[..., Awaitable[User]]:
     return _dep
 
 
+def require_any_permission(*keys: str) -> Callable[..., Awaitable[User]]:
+    """Dependency factory: require *one* of the module permissions ``keys``.
+
+    The any-of form of :func:`require_permission`, and the backend half of the
+    dashboard's ``userCanAny`` (``dashboard/src/utils/permissions.ts``): a page
+    can be reachable through more than one key — ``/knowledge-bases`` is
+    ``knowledge_bases`` *or* ``knowledge_settings`` — and the endpoints that
+    serve that page must accept exactly the keys that open it. Gating them on a
+    single key is what left the page rendering while its own reads answered 403.
+
+    Unknown keys fail fast at construction, like the single-key form.
+    """
+    if not keys:
+        raise RuntimeError("require_any_permission needs at least one key")
+    unknown = [key for key in keys if key not in PERMISSIONS]
+    if unknown:
+        raise RuntimeError(f"unknown permission key: {unknown[0]}")
+
+    async def _dep(
+        request: Request,
+        user: User = Depends(current_user),
+        server: Any = Depends(get_server),
+    ) -> User:
+        grants = request_unit_grants(request, server, user)
+        if not any(user_has_permission(user, key, unit_grants=grants) for key in keys):
+            raise OctopError(
+                ErrorCode.FORBIDDEN,
+                "permission required",
+                details={"permission": list(keys)},
+            )
+        return user
+
+    return _dep
+
+
 def require_admin() -> Callable[..., Awaitable[User]]:
     """Dependency factory: require the admin role (no module key)."""
 

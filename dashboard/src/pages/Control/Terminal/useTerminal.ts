@@ -239,10 +239,11 @@ function scheduleReconnect(session: TerminalSession) {
 }
 
 function openWs(session: TerminalSession) {
-  if (!session.agentId) {
-    setConnState(session, "disconnected");
-    return;
-  }
+  // No expert assigned: there is nothing to connect *to*, so this is not a
+  // dropped connection and must not be reported as one. The page owns this
+  // state (its "create an expert first" empty state) — leave ``connState``
+  // alone so no surface paints a reconnect overlay over it.
+  if (!session.agentId) return;
   if (session.ws && session.ws.readyState < WebSocket.CLOSING) {
     try {
       session.ws.close();
@@ -442,17 +443,13 @@ function connect(id: string, agentId: string, cbs: TerminalCallbacks) {
 
   if (validAgentIds.size > 0) {
     session.agentId = pickAgentId(session, agentId, validAgentIds);
-    if (!session.agentId) {
-      setConnState(session, "disconnected");
-      return;
-    }
   } else {
     session.agentId = agentId || session.agentId;
-    if (!session.agentId) {
-      setConnState(session, "disconnected");
-      return;
-    }
   }
+
+  // No expert assigned: nothing to connect to, and no connection was lost —
+  // the page shows its "create an expert first" empty state (see ``openWs``).
+  if (!session.agentId) return;
 
   cbs.onStateChange?.(session.connState);
 

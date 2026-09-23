@@ -106,7 +106,7 @@ def test_run_migrations_creates_acl_tables(tmp_path: Path) -> None:
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
 
-    assert _version(pool) == 35
+    assert _version(pool) == 36
     assert set(_ACL_TABLES).issubset(_table_names(pool))
     assert _columns(pool, "resource_acl") == {
         "resource_type",
@@ -116,6 +116,7 @@ def test_run_migrations_creates_acl_tables(tmp_path: Path) -> None:
         "unit_key",
         "version",
         "updated_at",
+        "permission",
     }
     assert _columns(pool, "resource_acl_grants") == {
         "resource_type",
@@ -326,7 +327,7 @@ def test_v21_drops_the_share_columns_and_no_other_column(tmp_path: Path) -> None
 
     run_migrations(pool)
 
-    assert _version(pool) == 35
+    assert _version(pool) == 36
     for table, column in _SHARE_COLUMNS:
         assert column in before[table]
         assert _columns(pool, table) == before[table] - {column}
@@ -376,7 +377,11 @@ def test_v21_mirrors_the_flags_before_dropping_them(tmp_path: Path, upgrade_thro
         ("connector", "cn_shared", 2, "public", None, 1),
         ("knowledge_base", "kb_shared", 2, "public", None, 1),
     ]
-    assert {row.agent_id for row in AgentRepo(pool).list_shared()} == {"ag_shared"}
+    # The owner reads it back through the rule that now decides the listing: the
+    # migrated ``public`` row is exactly what makes it visible to them (and to
+    # anyone else), which is the fact this test is about.
+    assert {row.agent_id for row in AgentRepo(pool).list_visible(1)} == {"ag_private", "ag_shared"}
+    assert AgentRepo(pool).public_agent_ids() == {"ag_shared"}
     assert ConnectorRepo(pool).public_instance_ids() == {"cn_shared"}
 
 

@@ -11,6 +11,7 @@ import {
 import type { ResolvedModel } from "../../../api/types";
 import { CONNECTORS_CHANGED_EVENT } from "../../Agent/Connectors/customMcpUtils";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import { PERM, userCan, userCanAny } from "../../../utils/permissions";
 import { useAgent } from "../../../context/AgentContext";
 import { activeModelToRef } from "./useChatContextWindow";
 import {
@@ -141,7 +142,19 @@ export function useChatComposerResources(
     conversationOverrides,
   ]);
 
+  // ``/connector-instances`` is ``connectors``-gated, so an account without
+  // the key has no connected accounts to list: skip the probe instead of
+  // sending it and collecting a 403 on every chat mount.
+  const canUseConnectors = userCan(user, "connectors");
+  // ``/knowledge-bases`` is gated on the page's key pair — ``knowledge_bases``
+  // *or* ``knowledge_settings`` (``PERM.knowledgeBasesPage``, the same pair that
+  // opens the page) — so an account holding neither can only collect a 403 on
+  // every chat mount. The probe is skipped and the composer draws no knowledge
+  // picker, rather than a disabled one.
+  const canUseKnowledge = userCanAny(user, PERM.knowledgeBasesPage);
+
   useEffect(() => {
+    if (!canUseConnectors) return;
     let cancelled = false;
     const loadConnectors = () => {
       void connectorsApi.listInstances().then((instances) => {
@@ -191,9 +204,16 @@ export function useChatComposerResources(
       window.removeEventListener("focus", onFocus);
       window.removeEventListener(CONNECTORS_CHANGED_EVENT, loadConnectors);
     };
-  }, [resolvedAgentId, currentUserId, isNewSession, expertMcpKey]);
+  }, [
+    resolvedAgentId,
+    currentUserId,
+    isNewSession,
+    expertMcpKey,
+    canUseConnectors,
+  ]);
 
   useEffect(() => {
+    if (!canUseKnowledge) return;
     let cancelled = false;
     const pendingId = peekPendingAttachKnowledgeBaseId();
     if (isNewSession && !composerTouchedRef.current) {
@@ -256,7 +276,13 @@ export function useChatComposerResources(
     return () => {
       cancelled = true;
     };
-  }, [resolvedAgentId, currentUserId, isNewSession, expertKbKey]);
+  }, [
+    resolvedAgentId,
+    currentUserId,
+    isNewSession,
+    expertKbKey,
+    canUseKnowledge,
+  ]);
 
   useEffect(() => {
     let cancelled = false;

@@ -29,6 +29,9 @@ from octop.infra.sharing.service import SharingService
 
 
 def _user(user_id: int, *, role: str = "user", org_unit: str | None = None) -> SimpleNamespace:
+    """A request-scoped user. ``org_unit`` mirrors the ``users`` row, which is
+    what the rules read: ``ResourceAclRepo.scope_for_user`` resolves the unit
+    chain there, so a stale object cannot re-scope a caller."""
     return SimpleNamespace(id=user_id, role=role, org_unit=org_unit, is_admin=role == "admin")
 
 
@@ -38,10 +41,18 @@ def world(tmp_path: Path) -> SimpleNamespace:
     run_migrations(pool)
     units = OrgUnitRepo(pool)
     units.create(key="sales", label_zh="销售", label_en="Sales")
+    units.create(key="sales-cn", label_zh="华东销售", label_en="Sales CN", parent_key="sales")
     units.create(key="eng", label_zh="研发", label_en="Engineering")
     users = UserRepo(pool)
     owner = users.create(username="owner", password_hash="h", role="user")
     peer = users.create(username="peer", password_hash="h", role="user")
+    sales_peer = users.create(
+        username="peer_sales", password_hash="h", role="user", org_unit="sales"
+    )
+    child_peer = users.create(
+        username="peer_child", password_hash="h", role="user", org_unit="sales-cn"
+    )
+    eng_peer = users.create(username="peer_eng", password_hash="h", role="user", org_unit="eng")
     admin = users.create(username="admin", password_hash="h", role="admin")
     repo = AgentRepo(pool)
     agent_id = repo.create(agent_id="AG1", user_id=owner, name="Bot")
@@ -53,6 +64,9 @@ def world(tmp_path: Path) -> SimpleNamespace:
         row=repo.get(agent_id),
         owner=owner,
         peer=peer,
+        sales_peer=sales_peer,
+        child_peer=child_peer,
+        eng_peer=eng_peer,
         admin=admin,
     )
 
@@ -124,9 +138,12 @@ def test_unit_share_reaches_the_unit(world: SimpleNamespace) -> None:
         ),
     )
 
-    assert_agent_access_row(row, _user(world.peer, org_unit="sales"), acl=world.acl)
+    assert_agent_access_row(row, _user(world.sales_peer), acl=world.acl)
+    # A member of a sub-department is reached too: the unit scope inherits the
+    # way a module grant to ``sales`` reaches ``sales``'s children.
+    assert_agent_access_row(row, _user(world.child_peer), acl=world.acl)
     with pytest.raises(OctopError):
-        assert_agent_access_row(row, _user(world.peer, org_unit="eng"), acl=world.acl)
+        assert_agent_access_row(row, _user(world.eng_peer), acl=world.acl)
 
 
 def test_agent_without_an_acl_row_is_denied_even_to_its_owner(world: SimpleNamespace) -> None:

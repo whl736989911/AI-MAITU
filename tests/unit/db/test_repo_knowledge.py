@@ -54,7 +54,7 @@ def test_knowledge_tables_migrated(db: SqlitePool) -> None:
         "knowledge_bases",
         "knowledge_documents",
     }.issubset(names)
-    assert v == 35
+    assert v == 36
     assert "knowledge_base_members" not in names
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
     assert "knowledge_base_id" in cols
@@ -181,16 +181,16 @@ def test_list_visible_is_what_the_access_rule_permits(repo: KnowledgeRepo, db: S
         "unknown": 999_999,
     }
     for name, user_id in viewers.items():
-        role, unit_key = acl.scope_for_user(user_id)
+        role, unit_keys = acl.scope_for_user(user_id)
         allowed = {
             resource_id
             for resource_id, entry in entries.items()
-            if can_access(entry, user_id=user_id, role=role, unit_key=unit_key)
+            if can_access(entry, user_id=user_id, role=role, unit_keys=unit_keys)
         }
         assert {row.id for row in repo.list_visible(user_id)} == allowed, f"list/{name}"
         assert (
             acl.list_visible_resource_ids(
-                "knowledge_base", user_id=user_id, role=role, unit_key=unit_key
+                "knowledge_base", user_id=user_id, role=role, unit_keys=unit_keys
             )
             == allowed
         ), f"ids/{name}"
