@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import tempfile
-import time
 from pathlib import Path
 
 import pytest
@@ -42,24 +41,6 @@ async def test_resolve_preview_from_outbound_screenshots() -> None:
         png = shots / "harness.png"
         png.write_bytes(b"\x89PNG\r\n")
         # Match POSIX default agent backend (root_dir=/).
-        backend = LocalShellBackend(root_dir="/", virtual_mode=True)
-        workspace = BackendWorkspace(backend, ws)
-        payload = await resolve_preview_payload(
-            source=png.as_uri(),
-            workspace=workspace,
-            mime_hint="image/png",
-        )
-        assert payload is not None
-        data, mime = payload
-        assert data == b"\x89PNG\r\n"
-        assert mime == "image/png"
-
-
-@pytest.mark.asyncio
-async def test_resolve_preview_from_tmp_screenshot() -> None:
-    with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as ext_dir:
-        png = Path(ext_dir) / f"orca-test-preview-{time.time_ns()}.png"
-        png.write_bytes(b"\x89PNG\r\n")
         backend = LocalShellBackend(root_dir="/", virtual_mode=True)
         workspace = BackendWorkspace(backend, ws)
         payload = await resolve_preview_payload(

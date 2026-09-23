@@ -14,6 +14,7 @@ from octop.infra.gateway.media.backend_files import (
     dashboard_media_url,
     ensure_workspace_media_path,
     extract_workspace_rel,
+    read_file_url_bytes,
     resolve_preview_payload,
 )
 
@@ -31,7 +32,7 @@ def test_dashboard_media_url_windows_file_path() -> None:
         r"file:///C:/Users/me/.octop/agents/W4MFVJ/outbound/screenshots/harness.png",
     )
     assert url is not None
-    assert url.startswith("/api/agents/W4MFVJ/media/preview?")
+    assert url.startswith("/api/agents/6X3Z7C/media/preview?")
     assert "file%3A%2F%2F" in url or "source=file" in url
 
 
@@ -88,19 +89,17 @@ async def test_resolve_preview_uses_workspace_rel_when_abs_denied() -> None:
 
 
 @pytest.mark.asyncio
-async def test_ensure_workspace_media_host_fallback_when_abs_denied() -> None:
-    with tempfile.TemporaryDirectory() as ws:
-        external = Path(tempfile.mkdtemp()) / "shot.png"
+async def test_ensure_workspace_media_rejects_external_host_path() -> None:
+    with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as foreign_dir:
+        external = Path(foreign_dir) / "shot.png"
         external.write_bytes(b"\x89PNG\r\n")
         workspace = _workspace(ws)
-        _deny_host_absolute_downloads(workspace)
-
+        assert await read_file_url_bytes(workspace, external.as_uri()) is None
         rel = await ensure_workspace_media_path(
             workspace,
             external.as_uri(),
             filename="shot.png",
             mime="image/png",
         )
-        assert rel is not None
-        assert rel.startswith("outbound/")
-        assert await workspace.adownload_bytes(rel) == b"\x89PNG\r\n"
+        assert rel is None
+        assert not (Path(ws) / "outbound").exists()

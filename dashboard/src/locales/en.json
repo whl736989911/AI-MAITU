@@ -3592,7 +3592,7 @@
       "title": "Version & Updates",
       "description": "Upgrade this fork from its GitHub source. Automatic upgrades from the upstream PyPI package are disabled.",
       "panelTitle": "Installed version",
-      "panelDesc": "This project has no GitHub Release yet. Use its source repository to update instead of installing the upstream octop package.",
+      "panelDesc": "GitHub Releases are available for this project, but automatic upgrades are disabled. Update from this project's source instead of installing the upstream octop package.",
       "currentVersion": "Current Version",
       "restartServiceBtn": "Restart Service",
       "restarting": "Restarting...",
