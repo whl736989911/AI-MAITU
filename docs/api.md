@@ -152,6 +152,22 @@ destination synchronized after the request completes.
 | `POST /agents/{id}/chat/polish` | owner | body `{text, default_model?}` → `{text}` (one-shot prompt refinement) |
 | `POST /agents/{id}/chat/hitl/resume` | owner | body `{thread_id, decisions: [...]}` → SSE chunk stream; finishes with `{"type":"done"}` |
 
+### Feature runs over the chat socket
+
+A turn submitted from a feature's **input card** carries the run as a field of its own
+on the `user_turn` frame:
+
+```jsonc
+{"type": "user_turn", "thread_id": "…", "text": "▶ 运行",
+ "feature_run": {"inputs": {"customer_name": "ACME"}, "attachments": ["inbound/quote.pdf"]}}
+```
+
+The platform records the run (its values and the definition in force — see
+`GET /agents/{aid}/workflow/runs`) and injects the values into that turn's prompt. It
+is a **typed frame field rather than free-form metadata** on purpose: the same turn
+also carries keys the server decides (`user_is_admin`, the resolved model), so what a
+client may write has to stay a closed set.
+
 ### Legacy SSE
 
 The previous `POST /agents/{id}/chat/stream` is gone. The dashboard
@@ -291,6 +307,32 @@ see [Personas](./personas.md).
 Bundled experts live in `src/octop/infra/agents/experts/library/`
 (en/zh divisions); the catalog is locale-aware via
 `Accept-Language` / user preference.
+
+## Feature workflow
+
+A feature is an agent (`kind = 'feature'`); its workflow is a document in that
+agent's workspace (`.octop/workflow.json`) declaring the input form, the fixed
+steps, the deliverables and the soft rules its runs follow. A `draft` is visible
+only to the feature's author for training; an `active` definition is readable by
+anyone who may reach the feature and renders their input card. Only the author
+may write it (`configuration` capability). Both endpoints are refused
+on an expert with `WORKFLOW_NOT_A_FEATURE`.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET`    | `/agents/{aid}/workflow` | agent access | `{workflow, error}` — the author's draft or a published definition; `null` when none exists or the caller cannot see an unpublished draft; `error` when an accessible stored file cannot be read as one |
+| `PUT`    | `/agents/{aid}/workflow` | author (`configuration`) | body `{workflow}`; `draft` is shape-checked, `active` must stand on its own **and** may only reference skills/subagents the feature actually has (the refusal lists what it does have); **every** problem is reported at once (`WORKFLOW_INVALID`) and nothing is written; `null` removes it |
+| `DELETE` | `/agents/{aid}/workflow` | author (`configuration`) | same as `PUT` with `null` |
+| `GET`    | `/agents/{aid}/workflow/runs` | agent access | the caller's own runs, newest first: `{runs: [{id, created_at, thread_id, inputs}]}` |
+| `POST`   | `/agents/{aid}/workflow/changes` | author for `definition`, caller for `overlay` | body `{target, summary, items: [{path, before, after}], run_id?}` → the applied change. Each item's `before` must still be the current value, or the whole batch is refused (`WORKFLOW_CHANGE_CONFLICT`, 409, nothing written); a definition change that would not validate is refused too |
+| `GET`    | `/agents/{aid}/workflow/changes` | agent access | the caller's own changes, newest first: definition edits made by the author and overlay edits made by that caller; draft diffs are not exposed to grantees |
+| `POST`   | `/agents/{aid}/workflow/changes/{change_id}/revert` | as the change | undoes it item by item; an item since edited elsewhere is reported (`WORKFLOW_CHANGE_CONFLICT`) instead of overwritten. Reverting twice is a no-op |
+| `GET`    | `/agents/{aid}/workflow/overlay` | agent access | the caller's own overlay text: `{overlay}` or `null` |
+| `PUT`    | `/agents/{aid}/workflow/overlay` | agent access | body `{overlay}` (at most 4000 chars); blank or `null` removes it |
+
+An **overlay** is the calling user's own layer above the definition: it is injected
+after it, and the run is told to follow it where the two disagree. Keeping one
+changes nobody else's feature and is not visible to another caller.
 
 ## Workspace, skills, subagents, memory, files
 

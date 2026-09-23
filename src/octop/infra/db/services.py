@@ -16,6 +16,9 @@ from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
 from octop.infra.db.repos.extract_results import ExtractResultRepo
 from octop.infra.db.repos.extract_templates import ExtractTemplateRepo
+from octop.infra.db.repos.feature_overlays import FeatureOverlayRepo
+from octop.infra.db.repos.feature_runs import FeatureRunRepo
+from octop.infra.db.repos.feature_workflow_changes import FeatureChangeRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
@@ -73,6 +76,9 @@ class RepoBundle:
     knowledge_sync_runs_repo: KnowledgeSyncRunRepo
     extract_templates_repo: ExtractTemplateRepo
     extract_results_repo: ExtractResultRepo
+    feature_overlay_repo: FeatureOverlayRepo
+    feature_run_repo: FeatureRunRepo
+    feature_change_repo: FeatureChangeRepo
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
@@ -108,6 +114,9 @@ class RepoBundle:
             knowledge_sync_runs_repo=KnowledgeSyncRunRepo(db),
             extract_templates_repo=ExtractTemplateRepo(db),
             extract_results_repo=ExtractResultRepo(db),
+            feature_overlay_repo=FeatureOverlayRepo(db),
+            feature_run_repo=FeatureRunRepo(db),
+            feature_change_repo=FeatureChangeRepo(db),
         )
 
 
@@ -236,6 +245,18 @@ class SharedServices:
     @property
     def extract_results_repo(self) -> ExtractResultRepo:
         return self.repos.extract_results_repo
+
+    @property
+    def feature_overlay_repo(self) -> FeatureOverlayRepo:
+        return self.repos.feature_overlay_repo
+
+    @property
+    def feature_run_repo(self) -> FeatureRunRepo:
+        return self.repos.feature_run_repo
+
+    @property
+    def feature_change_repo(self) -> FeatureChangeRepo:
+        return self.repos.feature_change_repo
 
 
 def build_shared_services(

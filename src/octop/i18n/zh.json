@@ -428,6 +428,9 @@
     "FEATURE_RUN_NOT_AT_GATE": "这次运行当前不在等待人工批准的状态，无法执行该操作。",
     "FEATURE_RUN_REQUEST_INVALID": "运行请求不合法：{reason}。",
     "FEATURE_STEP_UNSUPPORTED": "该功能有步骤无法执行：{reason}。已拒绝执行，未运行任何步骤。",
+    "WORKFLOW_INVALID": "工作流定义不合法：{reason}。未保存任何内容。",
+    "WORKFLOW_NOT_A_FEATURE": "只有功能才有工作流——这个 agent 是一个专家。",
+    "WORKFLOW_CHANGE_CONFLICT": "这份改动已经不能直接应用：{paths} 在它生成之后被改过。未改动任何内容——请重新生成改动，或先撤销后来的修改。",
     "ORG_UNIT_HAS_CHILDREN": "该部门下还有下级部门，请先处理。",
     "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。"
   },
@@ -742,6 +745,34 @@
       },
       "UnauthorizedOperation": "当前腾讯云账号没有该语音接口的访问权限。",
       "RequestLimitExceeded": "腾讯云请求过于频繁，请稍后再试。"
+    }
+  },
+  "workflow": {
+    "value_yes": "是",
+    "value_no": "否",
+    "uses_skills": "技能：{names}",
+    "uses_subagents": "子智能体：{names}",
+    "uses_tools": "工具：{names}",
+    "overlay": {
+      "title": "## 这位调用者自己的要求（最高优先级）\n与上面功能自身的写法冲突时，以本节为准。"
+    },
+    "block": {
+      "title": "## 功能工作流：{name}",
+      "title_plain": "## 功能工作流",
+      "lead": "本功能按下述固定步骤运行。请按顺序执行：不要跳过任何一步，也不要自行增加步骤。",
+      "inputs_title": "### 本次运行的输入",
+      "inputs_none": "本次消息没有随附输入卡片。若某一步需要的输入没有给出，请向用户索取，不要自行编造。",
+      "attachments_title": "### 本次随消息上传的文件",
+      "steps_title": "### 固定步骤（按顺序）",
+      "steps_none": "本功能没有声明步骤：一次完成即可。",
+      "step_line": "第 {index}/{total} 步：{name}",
+      "step_prompt": "  要求：{prompt}",
+      "step_uses": "  可用：{uses}",
+      "step_depends": "  基于：{steps}",
+      "step_gate_confirm": "  本步完成后停下来：把产出给用户看，等用户确认后再继续。",
+      "rules_title": "### 规则（每一步都适用）",
+      "outputs_title": "### 交付物",
+      "output_line": "- {name}（{form}）"
     }
   }
 }

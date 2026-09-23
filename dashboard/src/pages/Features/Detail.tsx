@@ -10,6 +10,9 @@
  *   - **definition** — the half of the row an expert keeps elsewhere
  *     (``FeatureDefinitionPanel``): what the feature is, its agent, its author,
  *     its model, its welcome and the defaults a call opens with;
+ *   - **workflow** — what a run does (``FeatureWorkflowPanel``): the form it asks
+ *     the caller for, the fixed steps, the deliverables and the rules. An expert
+ *     has no run to declare, so this tab has no counterpart on the expert side;
  *   - **personalization** — the identical stack of capability tabs, one level down
  *     (``FeaturePersonalizationPanel``), where ``PathTabsSegmented`` draws the row
  *     the Personalization page draws in its title.
@@ -35,7 +38,7 @@ import { useCallback, useMemo } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import { Alert, Button, Spin } from "antd";
-import { ArrowLeft, Settings2, UserCog } from "lucide-react";
+import { ArrowLeft, Settings2, UserCog, Workflow } from "lucide-react";
 
 import PageShell from "../../layouts/PageShell";
 import { useAgent } from "../../context/AgentContext";
@@ -45,23 +48,27 @@ import type { PathTabOption } from "../../layouts/PageShell";
 import FeatureScopeBar from "./components/FeatureScopeBar";
 import FeatureDefinitionPanel from "./components/FeatureDefinitionPanel";
 import FeaturePersonalizationPanel from "./components/FeaturePersonalizationPanel";
+import FeatureWorkflowPanel from "./components/FeatureWorkflowPanel";
 import styles from "./index.module.less";
 
-/** The two levels this page offers a feature, in order. */
-type FeatureTab = "definition" | "personalization";
+/** The three levels this page offers a feature, in order. */
+type FeatureTab = "definition" | "workflow" | "personalization";
 
 const FEATURE_TABS = [
   "definition",
+  "workflow",
   "personalization",
 ] as const satisfies readonly FeatureTab[];
 
 const TAB_ICONS = {
   definition: Settings2,
+  workflow: Workflow,
   personalization: UserCog,
 } as const;
 
 const TAB_LABEL_KEYS: Record<FeatureTab, string> = {
   definition: "features.tabDefinition",
+  workflow: "features.tabWorkflow",
   personalization: "features.tabPersonalization",
 };
 
@@ -166,6 +173,22 @@ export default function FeatureDetailPage() {
               feature={feature}
               canWrite={canWrite}
               onSaved={reload}
+            />
+          </div>
+        )}
+
+        {isMounted("workflow") && (
+          <div
+            className={styles.tabPanel}
+            style={{ display: activeTab === "workflow" ? "flex" : "none" }}
+            aria-hidden={activeTab !== "workflow"}
+          >
+            {/* Keyed by the feature: switching features starts from that feature's
+                own document, not the previous one's mode and selected step. */}
+            <FeatureWorkflowPanel
+              key={feature.agent_id}
+              agentId={feature.agent_id}
+              canWrite={canWrite}
             />
           </div>
         )}

@@ -258,6 +258,8 @@ class Gateway:
             gateway=self,
             trajectory_service=self._trajectory_service,
             history_archive=self._history_archive,
+            feature_overlay_repo=self._repos.feature_overlay_repo,
+            feature_run_repo=self._repos.feature_run_repo,
         )
 
         self._channel_manager = ChannelManager(channels={})

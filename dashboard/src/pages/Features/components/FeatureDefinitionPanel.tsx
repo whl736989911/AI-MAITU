@@ -54,7 +54,9 @@ export default function FeatureDefinitionPanel({
    */
   const authorName =
     feature.owner_username ??
-    (feature.is_owner === false ? t("features.unknownAuthor") : t("features.authorIsYou"));
+    (feature.is_owner === false
+      ? t("features.unknownAuthor")
+      : t("features.authorIsYou"));
 
   return (
     <div className={styles.definition}>
@@ -116,9 +118,7 @@ export default function FeatureDefinitionPanel({
           {
             key: "state",
             label: t("features.state"),
-            children: (
-              <Tag>{formatAgentState(feature.state, t)}</Tag>
-            ),
+            children: <Tag>{formatAgentState(feature.state, t)}</Tag>,
           },
           {
             key: "model",
@@ -134,7 +134,8 @@ export default function FeatureDefinitionPanel({
             key: "knowledge",
             label: t("features.knowledgeBases"),
             children:
-              feature.knowledge_base_ids && feature.knowledge_base_ids.length > 0
+              feature.knowledge_base_ids &&
+              feature.knowledge_base_ids.length > 0
                 ? feature.knowledge_base_ids.join(", ")
                 : t("features.notSet"),
           },

@@ -37,6 +37,38 @@
   box-sizing: border-box;
 }
 
+/* The workflow cards sit in the same slot as the ask card — one card or the
+   other is on screen, never both — so they keep the composer's gutters too. */
+.workflowDock {
+  flex-shrink: 0;
+  padding: 0 var(--chat-column-pad-x, 24px) 8px;
+  background: var(--fn-bg-elevated, #fff);
+  box-sizing: border-box;
+  /* A declared form can be long; the composer must stay in reach, so the cards
+     scroll among themselves rather than pushing it off the bottom. */
+  max-height: min(50vh, 460px);
+  overflow-y: auto;
+
+  @media (max-width: 767px) {
+    padding: 0 var(--chat-column-pad-x-narrow, 12px) 6px;
+    max-height: 45vh;
+  }
+}
+
+.workflowDockInner {
+  width: 100%;
+  max-width: var(--chat-column-max, 960px);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+/* The form, and what the run produced under it. */
+.workflowStack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
 .chatInput {
   flex-shrink: 0;
   padding: 16px 24px 20px;

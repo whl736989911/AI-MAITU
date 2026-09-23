@@ -166,6 +166,20 @@ class ErrorCode(StrEnum):
     FEATURE_RUN_NOT_AT_GATE = "FEATURE_RUN_NOT_AT_GATE"
     FEATURE_RUN_REQUEST_INVALID = "FEATURE_RUN_REQUEST_INVALID"
     FEATURE_STEP_UNSUPPORTED = "FEATURE_STEP_UNSUPPORTED"
+    # A feature's workflow: what it asks the caller for, the fixed steps it runs,
+    # what it hands back, and the rules that hold throughout. A refused definition
+    # names every problem at once — the editor puts them on the section they belong
+    # to, and a model writing the document gets one fixable answer instead of a
+    # second round trip — and a workflow is refused on anything that is not a
+    # feature's own agent (``kind = 'feature'``), because an expert has no run to
+    # declare.
+    WORKFLOW_INVALID = "WORKFLOW_INVALID"
+    WORKFLOW_NOT_A_FEATURE = "WORKFLOW_NOT_A_FEATURE"
+    # An improvement is a diff, and a diff can go stale: the value it expected to
+    # find is no longer there because somebody edited that step in the meantime.
+    # Refused whole rather than forced, and the offending paths ride along in
+    # ``details`` so the refusal can name them.
+    WORKFLOW_CHANGE_CONFLICT = "WORKFLOW_CHANGE_CONFLICT"
     # Org units: a refused delete names the department, so the provider codes
     # (whose message reads "provider") cannot carry it.
     ORG_UNIT_HAS_CHILDREN = "ORG_UNIT_HAS_CHILDREN"
@@ -294,6 +308,9 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.FEATURE_RUN_NOT_AT_GATE: 409,
     ErrorCode.FEATURE_RUN_REQUEST_INVALID: 400,
     ErrorCode.FEATURE_STEP_UNSUPPORTED: 501,
+    ErrorCode.WORKFLOW_INVALID: 400,
+    ErrorCode.WORKFLOW_NOT_A_FEATURE: 400,
+    ErrorCode.WORKFLOW_CHANGE_CONFLICT: 409,
     ErrorCode.ORG_UNIT_HAS_CHILDREN: 409,
     ErrorCode.ORG_UNIT_IN_USE: 409,
 }

@@ -73,7 +73,9 @@ export default function FeaturesPage() {
     try {
       await refresh({ silent: true, force: true });
     } catch (err: unknown) {
-      message.error(err instanceof Error ? err.message : t("features.loadFailed"));
+      message.error(
+        err instanceof Error ? err.message : t("features.loadFailed"),
+      );
     } finally {
       setRefreshing(false);
     }
@@ -103,7 +105,10 @@ export default function FeaturesPage() {
         disabled={refreshing}
         type="button"
       >
-        <RefreshCw size={14} className={refreshing ? styles.spinning : undefined} />
+        <RefreshCw
+          size={14}
+          className={refreshing ? styles.spinning : undefined}
+        />
       </button>
     </Tooltip>
   );
@@ -127,7 +132,11 @@ export default function FeaturesPage() {
         <div className={styles.emptyHint}>{t("features.emptyHint")}</div>
         <div className={styles.emptyActions}>
           {refreshButton}
-          <button className={styles.emptyAction} onClick={openCreate} type="button">
+          <button
+            className={styles.emptyAction}
+            onClick={openCreate}
+            type="button"
+          >
             {t("features.create")}
           </button>
         </div>

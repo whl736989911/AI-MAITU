@@ -27,6 +27,9 @@ import {
 import { collectTurnToolMedia } from "../../../utils/collectTurnToolMedia";
 import { collectTurnKnowledgeCitations } from "../../../utils/collectTurnKnowledgeCitations";
 import { KnowledgeCitationsStrip } from "./KnowledgeCitationsStrip";
+import WorkflowChangeCard, {
+  collectWorkflowChanges,
+} from "./WorkflowChangeCard";
 import styles from "../index.module.less";
 
 interface AssistantTurnViewProps {
@@ -78,7 +81,7 @@ export default function AssistantTurnView({
   compactProcess = false,
 }: AssistantTurnViewProps) {
   const { t } = useTranslation();
-  const { activeAgentId } = useAgent();
+  const { activeAgentId, agents } = useAgent();
   const agentId = agentIdProp ?? activeAgentId;
 
   const hitlLayout = useMemo(
@@ -133,6 +136,13 @@ export default function AssistantTurnView({
   const todoItems = useMemo(
     () => collectWriteTodosFromMessages(messages),
     [messages],
+  );
+  const workflowChanges = useMemo(
+    () => collectWorkflowChanges(messages),
+    [messages],
+  );
+  const canUndoWorkflow = agents.some(
+    (agent) => agent.agent_id === agentId && agent.is_owner === true,
   );
   const todoStreaming =
     turnStreaming &&
@@ -247,6 +257,18 @@ export default function AssistantTurnView({
           <KnowledgeCitationsStrip citations={knowledgeCitations} />
         </div>
       ) : null}
+      {agentId && workflowChanges.length > 0 && (
+        <div className={styles.turnInset}>
+          {workflowChanges.map((change) => (
+            <WorkflowChangeCard
+              key={change.change_id}
+              agentId={agentId}
+              change={change}
+              canUndo={canUndoWorkflow || change.target === "overlay"}
+            />
+          ))}
+        </div>
+      )}
       {showOpenBrowser && (
         <div className={styles.turnInset}>
           <button

@@ -22,7 +22,7 @@ from harness_agent.security.models import SecurityPolicy
 
 from octop.i18n.domains.agents import NO_MODELS_CONFIGURED, format_agent_start_error
 from octop.infra.agents.acp_settings import ACPSettingsStore
-from octop.infra.agents.kinds import KIND_AGENT, KINDS
+from octop.infra.agents.kinds import KIND_AGENT, KINDS, is_feature_agent
 from octop.infra.agents.langfuse import LangfuseSettings, LangfuseSettingsStore
 from octop.infra.agents.media_generation import (
     MediaGenerationSettings,
@@ -2939,6 +2939,20 @@ class AgentManager:
 
             cron_tools = build_cronjob_tools(self._cron_manager)
 
+        # A feature's own agent can write its own workflow when its author asks for it
+        # in conversation. Nobody else gets these: the tools refuse a feature the
+        # caller does not own, and they are meaningless on an expert.
+        feature_workflow_tools: list[Any] = []
+        if is_feature_agent(row.kind):
+            from octop.infra.agents.feature_workflow_tools import (  # noqa: PLC0415
+                build_feature_workflow_tools,
+            )
+
+            feature_workflow_tools = build_feature_workflow_tools(
+                registry=self,
+                repos=self._repos,
+            )
+
         from types import SimpleNamespace  # noqa: PLC0415
 
         from octop.infra.knowledge.tools import build_knowledge_tools  # noqa: PLC0415
@@ -3001,7 +3015,12 @@ class AgentManager:
             plugin_tools,
             reserved={
                 str(getattr(t, "name", ""))
-                for t in [*(cron_tools or []), *knowledge_tools, *mobile_tools]
+                for t in [
+                    *(cron_tools or []),
+                    *feature_workflow_tools,
+                    *knowledge_tools,
+                    *mobile_tools,
+                ]
             },
         )
         self._plugin_tool_labels[row.agent_id] = {
@@ -3018,6 +3037,9 @@ class AgentManager:
 
         from octop.infra.agents.middleware.binary_read_guard import BinaryReadGuardMiddleware
         from octop.infra.agents.middleware.browser_profile import BrowserProfileMiddleware
+        from octop.infra.agents.middleware.feature_workflow import (
+            feature_workflow_chain,
+        )
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
         from octop.infra.agents.middleware.shared_memory_freeze import (
             shared_memory_freeze_chain,
@@ -3050,6 +3072,10 @@ class AgentManager:
             # are refused. For every other agent this is ``[]`` and the chain is
             # exactly what it was — see the module's docstring.
             *shared_memory_freeze_chain(agent_id=row.agent_id, kind=row.kind),
+            # A feature's declared workflow — the fixed steps, the rules, and the
+            # calling user's own overlay — rides on this turn's system message.
+            # For every other agent this is ``[]`` and the chain is what it was.
+            *feature_workflow_chain(agent_id=row.agent_id, kind=row.kind),
             TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
             KnowledgeSearchHintMiddleware(),
             BrowserProfileMiddleware(),
@@ -3069,6 +3095,7 @@ class AgentManager:
         merged_tools: list[Any] = []
         if cron_tools:
             merged_tools.extend(cron_tools)
+        merged_tools.extend(feature_workflow_tools)
         merged_tools.extend(knowledge_tools)
         merged_tools.extend(mobile_tools)
         merged_tools.extend(plugin_tools)

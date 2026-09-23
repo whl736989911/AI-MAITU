@@ -64,6 +64,9 @@ def test_run_migrations_creates_tables(db: SqlitePool):
         "knowledge_bases",
         "knowledge_documents",
         "data_sources",
+        "feature_user_overlays",
+        "feature_workflow_runs",
+        "feature_workflow_changes",
         "sso_providers",
         "sso_login_states",
         "trajectory_events",
@@ -76,8 +79,19 @@ def test_run_migrations_creates_tables(db: SqlitePool):
     assert expected.issubset(names)
     assert "knowledge_base_members" not in names
     # Schema v26 drops the deleted feature subsystem's tables: a fresh database
-    # never has them, and one that did (v16-v25) loses them on the way to 26.
-    assert not {name for name in names if name.startswith("feature_")}
+    # never has them, and one that did (v16-v25) loses them on the way to 26. The
+    # check names them instead of matching the ``feature_`` prefix, because a later
+    # table may legitimately carry that prefix — ``feature_user_overlays`` is the
+    # calling user's own text above a feature's declared workflow.
+    assert {
+        "feature_tasks",
+        "feature_cases",
+        "feature_rules",
+        "feature_runs",
+        "feature_step_runs",
+        "feature_step_edits",
+        "feature_step_dispatches",
+    }.isdisjoint(names)
 
 
 def test_run_migrations_idempotent(db: SqlitePool):
