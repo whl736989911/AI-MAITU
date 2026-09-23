@@ -47,6 +47,7 @@
 - 知识库文档状态的三处界面文案此前缺 `discovered` / `unsupported` / `password_required`，界面上会直接显示成 i18n key 原文，现已补齐（中英各两处）
 - 打开 `/chat` 不再对无权限的探测发请求：录制状态（`browser`）、已装插件 UI（`plugins`）、已连接账号（`connectors`）这三个探测此前在页面挂载时无条件发出，零权限账号每次打开都会吃 403——其中录制状态那次的 `.catch` 走 `apiErrorMessage`，命中文案表里的 `apiErrors.FORBIDDEN`，于是把 fallback 顶掉、弹出一条红色「没有权限。」。现在按服务端同一把权限键跳过，控件是**隐藏**而不是发出去再报错
 - 终端页在名下没有专家时给出空态（「还没有专家」+ 去创建专家），不再显示「连接已断开 / 重新连接」：终端挂在某个专家的工作区下，没有专家时本来就没有可连的东西，此前 `useTerminal` 把「没有 agent」当成掉线状态报给页面。真有专家而连接断开时，断线提示与重连不变
+- 对话页的次要文字与图标对比度不足：助手回答下方的时间戳与 token 统计、复制 / 朗读 / 重新生成 / 分叉等操作图标，以及输入框内的占位符、工具图标、上下文环数字、排队消息与附件预览图标，此前用的是 `--fn-text-quaternary`（浅色下 `#d1d5db`，与输入框边框同值）或 `--fn-text-tertiary`（`#9ca3af`），消息元信息行还额外叠了 `opacity: .5`——实际对比度只有 1.2–2.5:1，远低于 WCAG AA 的 4.5:1（图标 3:1）。现统一改用 `--fn-text-secondary`，去掉元信息行的 `opacity: .5` 与模型选择器「· 自动」的 `opacity: .78`，操作图标边框由 `--fn-border-secondary` 提到 `--fn-border-primary`
 
 - 企业功能运行记录新增运行快照：`feature_tasks.agent_id`（本次实际使用的 agent）与 `feature_tasks.injected_rule_ids`（本次注入的已审核规则 id），成功与失败都会写入，用于事后回答「这份草稿是按什么产出的」
 
