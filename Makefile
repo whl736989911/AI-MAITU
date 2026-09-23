@@ -1,7 +1,7 @@
 # Makefile for Octop
 # Usage:
 #   make              - Show this help
-#   make all          - format (BE+FE) + backend lint + typecheck + test (BE+FE) (ship bar)
+#   make all          - format (BE+FE) + lint (BE+FE, formatting checked) + typecheck + test (BE+FE) (ship bar)
 #   make build        - Build frontend + Python wheel
 #   make publish      - Build + upload to PyPI
 #
@@ -200,8 +200,12 @@ run-online:
 
 # ─── Quality (backend) ───────────────────────────────────────────────────────
 
+# The ship bar. Note ``lint-frontend`` (dashboard ESLint + ``prettier --check``)
+# and ``lint`` (ruff check + ``ruff format --check``) both verify formatting, so
+# the writers in ``format-all`` above cannot pass the gate on their own say-so:
+# what they rewrote is checked right after.
 .PHONY: all
-all: format-all lint typecheck test test-frontend
+all: format-all lint lint-frontend typecheck test test-frontend
 
 .PHONY: lint
 lint:

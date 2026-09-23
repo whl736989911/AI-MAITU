@@ -299,6 +299,26 @@ export default function MinimalAgentSessionNav({
     [agents],
   );
 
+  // Both kinds arrive in one list (``selectEnabledExperts`` filters by state,
+  // not by kind), so they are told apart here, the way the chat sidebar tells
+  // them apart: the experts are the group this nav has always listed, and the
+  // features are drawn under a heading of their own — but only when this nav's
+  // own list holds one, so a caller with no feature gets the one group they
+  // have always had. The answer is the whole list's, once.
+  //
+  // Read up here with the rest of the hooks, not next to the markup that uses
+  // them: the empty-list return below skips them otherwise, and the render after
+  // a list arrives would call more hooks than the one before it.
+  const held = useMemo(() => indexAgentsByKind(agents).held, [agents]);
+  const expertAgents = useMemo(
+    () => sortedAgents.filter((agent) => !isFeatureAgent(agent)),
+    [sortedAgents],
+  );
+  const featureAgents = useMemo(
+    () => sortedAgents.filter(isFeatureAgent),
+    [sortedAgents],
+  );
+
   // Ensure the active expert folder stays open.
   useEffect(() => {
     if (!activeAgentId) return;
@@ -531,22 +551,6 @@ export default function MinimalAgentSessionNav({
     );
   }
 
-  // Both kinds arrive in one list (``selectEnabledExperts`` filters by state,
-  // not by kind), so they are told apart here, the way the chat sidebar tells
-  // them apart: the experts are the group this nav has always listed, and the
-  // features are drawn under a heading of their own — but only when this nav's
-  // own list holds one, so a caller with no feature gets the one group they
-  // have always had. The answer is the whole list's, once.
-  const held = useMemo(() => indexAgentsByKind(agents).held, [agents]);
-  const expertAgents = useMemo(
-    () => sortedAgents.filter((agent) => !isFeatureAgent(agent)),
-    [sortedAgents],
-  );
-  const featureAgents = useMemo(
-    () => sortedAgents.filter(isFeatureAgent),
-    [sortedAgents],
-  );
-
   const renderAgentSection = (agent: OctopAgent) => {
     const list = byAgent[agent.agent_id] ?? [];
     const ready = isAgentChatReady(agent.state);
@@ -645,9 +649,7 @@ export default function MinimalAgentSessionNav({
                     session.id === activeId ? activeForkDisabled : undefined
                   }
                   forkDisabledHint={
-                    session.id === activeId
-                      ? activeForkDisabledHint
-                      : undefined
+                    session.id === activeId ? activeForkDisabledHint : undefined
                   }
                 />
               ))

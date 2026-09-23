@@ -16,6 +16,7 @@
 import { render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as PersonalizationPanelsModule from "./components/PersonalizationPanels";
+import type { OctopRole } from "../../../api/modules/auth";
 import type { OctopAgent } from "../../../context/AgentContext";
 import { KIND_FEATURE } from "../../../utils/agentKind";
 import PersonalizationPage from "./index";
@@ -77,6 +78,13 @@ vi.mock("./components/PersonalizationPanels", async (importOriginal) => {
 const held = vi.hoisted(() => ({
   agents: [] as OctopAgent[],
   activeAgentId: null as string | null,
+  role: null as OctopRole | null,
+}));
+
+// The role is the other half of the write rule (``canManageExpert``); null is
+// its own case — "not an administrator".
+vi.mock("../../../hooks/useUserRole", () => ({
+  useUserRole: () => held.role,
 }));
 
 vi.mock("../../../context/AgentContext", () => ({
@@ -133,6 +141,7 @@ describe("PersonalizationPage's subject", () => {
     setActiveAgent.mockClear();
     held.agents = [];
     held.activeAgentId = null;
+    held.role = null;
   });
 
   it("is a feature of the caller's, in the feature's own scope", () => {
@@ -180,5 +189,45 @@ describe("PersonalizationPage's subject", () => {
     expect(panelsProps()).toEqual(
       expect.objectContaining({ agentId: "A1", scope: "expert" }),
     );
+  });
+
+  it("is somebody else's feature, writable, for an administrator", () => {
+    held.agents = [
+      agent("A1"),
+      agent("feat-theirs", KIND_FEATURE, { is_shared: false, is_owner: false }),
+    ];
+    held.activeAgentId = "feat-theirs";
+    held.role = "admin";
+    render(<PersonalizationPage />);
+
+    // ``is_owner`` says "you did not create this" and nothing about whether the
+    // write is allowed: for an administrator the server accepts it
+    // (``assert_agent_owner``), so the panels that write are offered — the same
+    // answer the row's owner gets.
+    expect(panelsProps()).toEqual(
+      expect.objectContaining({
+        agentId: "feat-theirs",
+        scope: "feature",
+        canWrite: true,
+        tabs: expect.arrayContaining(["skills", "files", "memory"]),
+      }),
+    );
+  });
+
+  it("keeps that feature read-only for a caller who is no administrator", () => {
+    held.agents = [
+      agent("A1"),
+      agent("feat-theirs", KIND_FEATURE, { is_shared: false, is_owner: false }),
+    ];
+    held.activeAgentId = "feat-theirs";
+    held.role = "user";
+    render(<PersonalizationPage />);
+
+    const props = panelsProps();
+    expect(props.canWrite).toBe(false);
+    // The tabs that write are not offered at all; what is readable stays.
+    expect(props.tabs).not.toContain("skills");
+    expect(props.tabs).not.toContain("files");
+    expect(props.tabs).toContain("memory");
   });
 });

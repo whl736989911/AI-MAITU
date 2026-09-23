@@ -20,9 +20,8 @@
  * caller's first. A feature the caller owns resolves to itself. The two are not
  * the same list, and a pointer on neither — an agent somebody shared, which
  * ``utils/agentKind`` shows to be either kind — falls back where it always did,
- * to the caller's first own expert: offering the writing panels over an agent
- * that is not the caller's would be offering controls whose only outcome is a
- * refusal.
+ * to the caller's first own expert: a shared agent is read-only for the caller,
+ * so the panels would be offered over something the server refuses to write.
  *
  * A caller who owns no expert of their own and has no feature aimed at is
  * therefore a state the page has to name, not one it can leave to the bar (a bar
@@ -42,7 +41,12 @@ import { useAgent } from "../../../context/AgentContext";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { usePathTabs } from "../../../hooks/usePathTabs";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { ownedExperts, ownedFeatures } from "../../../utils/sharedExpert";
+import { useUserRole } from "../../../hooks/useUserRole";
+import {
+  canManageExpert,
+  ownedExperts,
+  ownedFeatures,
+} from "../../../utils/sharedExpert";
 import { personalizationTabAllowed } from "../../../utils/permissions";
 import PersonalizationPanels, {
   FEATURE_PERSONALIZATION_TABS,
@@ -84,10 +88,14 @@ export default function PersonalizationPage() {
       null,
     [pointedFeature, ownExperts, activeAgentId],
   );
-  // Either way this is an agent of the caller's own — their expert, their
-  // feature — so every panel it offers is theirs to write. The scope says which
-  // kind it is.
-  const canWrite = activeAgent?.is_owner !== false;
+  // Who may write here is the server's rule for an agent — its owner, or an
+  // administrator (``assert_agent_owner``) — and not ownership alone: a
+  // administrator pointed at somebody else's expert gets ``is_owner`` false on
+  // it and would be offered no panel at all, though the server accepts every
+  // write. ``canManageExpert`` is that judgement, the same one the cards use.
+  const role = useUserRole();
+  const canWrite = activeAgent ? canManageExpert(activeAgent, role) : true;
+  // The scope says which kind the agent is.
   const scope: PersonalizationScope = pointedFeature ? "feature" : "expert";
 
   /**
