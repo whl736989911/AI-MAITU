@@ -356,3 +356,88 @@ async def test_unit_admin_may_not_grant_keys_it_does_not_hold(world: SimpleNames
         server=world.server,
     )
     assert kept["permissions"] == ["users", "knowledge_bases"]
+@pytest.mark.asyncio
+async def test_user_creation_requires_department_but_enterprise_admin_does_not(
+    tmp_path: Path,
+) -> None:
+    """Lock unbound enterprise reach and the employee/admin unit binding rules."""
+    from tests.support.app import octop_client
+    from tests.support.auth import TEST_PASSWORD, auth_header, bootstrap_admin
+    from octop.infra.users.scope import scope_for
+
+    async with octop_client(tmp_path) as (client, srv):
+        await bootstrap_admin(client, tmp_path)
+        admin_auth = await auth_header(client)
+        enterprise = await client.post(
+            "/api/users",
+            headers=admin_auth,
+            json={
+                "username": "company_admin",
+                "password": TEST_PASSWORD,
+                "role": "enterprise_admin",
+                "permissions": [],
+            },
+        )
+        assert enterprise.status_code == 201, enterprise.text
+        assert enterprise.json()["org_unit"] is None
+        assert srv.services is not None
+        admin_row = srv.services.user_repo.get_by_username("company_admin")
+        assert admin_row is not None
+        enterprise_scope = scope_for(admin_row, srv.services.org_unit_repo)
+        # Also works in an empty org tree and covers later-added departments.
+        assert enterprise_scope.covers_unit("department-created-later") is True
+        assert enterprise_scope.covers_unit(None) is True
+        assert enterprise_scope.covers_account(user_id=9001, role="user", org_unit=None)
+
+        for role in ("unit_admin", "user"):
+            rejected = await client.post(
+                "/api/users",
+                headers=admin_auth,
+                json={
+                    "username": f"unbound_{role}",
+                    "password": TEST_PASSWORD,
+                    "role": role,
+                    "permissions": [],
+                },
+            )
+            assert rejected.status_code == 403
+
+        srv.services.org_unit_repo.create(
+            key="engineering", label_zh="研发", label_en="Engineering"
+        )
+        assert enterprise_scope.covers_unit("engineering") is True
+        assert enterprise_scope.covers_account(
+            user_id=9002, role="user", org_unit="engineering"
+        )
+        employee = await client.post(
+            "/api/users",
+            headers=admin_auth,
+            json={
+                "username": "bound_employee",
+                "password": TEST_PASSWORD,
+                "role": "user",
+                "org_unit": "engineering",
+                "permissions": [],
+            },
+        )
+        assert employee.status_code == 201, employee.text
+        assert employee.json()["org_unit"] == "engineering"
+        unit_admin = await client.post(
+            "/api/users",
+            headers=admin_auth,
+            json={
+                "username": "bound_unit_admin",
+                "password": TEST_PASSWORD,
+                "role": "unit_admin",
+                "org_unit": "engineering",
+                "permissions": [],
+            },
+        )
+        assert unit_admin.status_code == 201, unit_admin.text
+        for user_id in (employee.json()["id"], unit_admin.json()["id"]):
+            cleared = await client.patch(
+                f"/api/users/{user_id}",
+                headers=admin_auth,
+                json={"org_unit": None},
+            )
+            assert cleared.status_code == 403

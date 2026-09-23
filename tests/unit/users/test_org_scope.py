@@ -106,17 +106,24 @@ def test_plain_employee_and_unknown_roles_reach_nothing(repo: OrgUnitRepo) -> No
         assert scope.covers_account(user_id=99, role=Role.USER, org_unit="acme-ops") is False
 
 
-def test_a_scoped_administrator_without_a_unit_reaches_nothing(repo: OrgUnitRepo) -> None:
-    """No unit ⇒ no enterprise/department to be the admin *of*.
+def test_unbound_enterprise_admin_reaches_every_current_and_future_unit(
+    repo: OrgUnitRepo,
+) -> None:
+    scope = scope_for(_actor(Role.ENTERPRISE_ADMIN, None), repo)
+    assert scope.enterprise == "*"
+    assert scope.units == frozenset()
+    assert scope.covers_unit("globex-ops") is True
+    assert scope.covers_unit(None) is True
+    assert scope.covers_account(user_id=5, role=Role.USER, org_unit=None) is True
+    # Enterprise-wide reach is dynamic: newly-created units need no cached list.
+    repo.create(key="new-dept", label_zh="新部门", label_en="New Department")
+    assert scope.covers_unit("new-dept") is True
 
-    The tree is the only thing that says which branch is someone's, so this is
-    the fail-closed answer rather than "the whole deployment".
-    """
-    for role in (Role.ENTERPRISE_ADMIN, Role.UNIT_ADMIN):
-        scope = scope_for(_actor(role, None), repo)
-        assert scope.units == frozenset()
-        assert scope.covers_unit("acme") is False
 
+def test_unit_admin_without_a_unit_reaches_nothing(repo: OrgUnitRepo) -> None:
+    scope = scope_for(_actor(Role.UNIT_ADMIN, None), repo)
+    assert scope.units == frozenset()
+    assert scope.covers_unit("acme") is False
 
 def test_covers_account_checks_the_role_before_the_department(repo: OrgUnitRepo) -> None:
     scope = scope_for(_actor(Role.UNIT_ADMIN, "acme-ops", user_id=9), repo)

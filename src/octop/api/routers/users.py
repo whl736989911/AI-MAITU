@@ -359,22 +359,24 @@ async def create_user(
 ) -> dict[str, Any]:
     """Create an account inside the actor's own reach (design §4.3 rules 1-4).
 
-    Four checks, in the order design §4.3 lists them: the ``users`` key (the
-    dependency above), the target department, the target role, and the keys
-    handed out. Note what the department rule means for a scoped administrator:
-    the new account must land in one of *its* departments — an account it could
-    not administer afterwards is not one it may create.
+    The department binding is role-specific: employees and department
+    administrators require one, while a system-created enterprise admin is
+    unbound and receives the dynamic enterprise-wide scope.
     """
     _assert_can_assign(request, server, actor, body.permissions)
     scope = _scope(server, actor)
+    role = _require_known_role(body.role)
     if body.org_unit is None:
-        if not scope.is_system_admin:
+        # System admins must bind employees and department admins, but an
+        # enterprise admin is intentionally unbound and receives enterprise-wide
+        # scope. Scoped actors still must create inside their own reach.
+        if role in {Role.USER, Role.UNIT_ADMIN} or not scope.is_system_admin:
             raise OctopError(
                 ErrorCode.FORBIDDEN,
                 "an account you create must be bound to one of your departments",
                 details={
                     "scope_units": sorted(scope.units),
-                    "reason": "an unbound account is outside every department tree",
+                    "reason": "this role requires a department binding",
                 },
             )
     else:
@@ -393,11 +395,8 @@ async def create_user(
         normalize_workspace_root_dir(policy_kwargs["workspace_root_dir"])
     if "token_quota" in policy_kwargs:
         normalize_token_quota(policy_kwargs["token_quota"])
-    role = _require_known_role(body.role)
     # A role named at creation is a role grant, so it is bounded by the same set
-    # that bounds a later role change: without this ``users`` alone mints a fresh
-    # administrator — a victimless route that even comes with a password the
-    # caller chose.
+    # that bounds a later role change.
     assert_assignable_role(actor, role, action="create an account with that role")
     user = await server.user_manager.create(
         username=body.username,
@@ -448,6 +447,19 @@ async def patch_user(
     # refused even when its own value would have been acceptable (design §4.3
     # rule 5/6, and 目标用户是否在创建者可管理范围内).
     assert_may_manage_account(scope, row, action="edit this account")
+    if body.role is not None or "org_unit" in body.model_fields_set:
+        resulting_role = body.role or row.role
+        resulting_unit = (
+            body.org_unit
+            if "org_unit" in body.model_fields_set
+            else getattr(row, "org_unit", None)
+        )
+        if resulting_role in {Role.USER.value, Role.UNIT_ADMIN.value} and resulting_unit is None:
+            raise OctopError(
+                ErrorCode.FORBIDDEN,
+                "this role requires a department binding",
+                details={"reason": "this role requires a department binding"},
+            )
     if body.permissions is not None:
         _assert_can_assign(request, server, actor, body.permissions)
         _assert_not_last_user_manager(

@@ -79,11 +79,10 @@ class OrgScope:
     def covers_unit(self, unit_key: str | None) -> bool:
         """Whether this scope reaches *unit_key*.
 
-        An account or unit with no department is outside every department tree,
-        so no scoped administrator reaches it — design §2.1: 部门管理员 只能管理本
-        部门及所有子部门, and 企业管理员 only 本企业. Only a system administrator does.
+        An unbound enterprise administrator has dynamic enterprise-wide reach;
+        ordinary scoped administrators only reach units in their resolved tree.
         """
-        if self.is_system_admin:
+        if self.is_system_admin or self.enterprise == "*":
             return True
         if unit_key is None:
             return False
@@ -151,21 +150,17 @@ def scope_for(actor: Any, repo: ScopeRepo) -> OrgScope:
     """Resolve *actor*'s reach.
 
     * ``admin`` — everything (design §2.1: 系统管理员 全部企业、部门和用户).
-    * ``enterprise_admin`` — the branch of its own unit's enterprise root
-      (本企业全部部门和用户).
+    * ``enterprise_admin`` — the branch of its own unit's enterprise root, or
+      all enterprise units and accounts when unbound.
     * ``unit_admin`` — its own unit and its sub-departments (本部门及所有子部门).
     * ``user`` — no administrative reach at all (仅自身可用资源), which is also
       where a role outside the four-level model lands.
-
-    An administrator with no org unit assigned reaches nothing: the tree is the
-    only thing that says which enterprise or department is *theirs*, and
-    inventing a fallback (the whole deployment, say) would grant exactly the
-    reach the role exists to bound. The empty result is visible — the account is
-    refused with the reason — rather than silently widened.
     """
     role = resolved_role(actor)
     unit = getattr(actor, "org_unit", None) or None
     actor_id = int(getattr(actor, "id", 0) or 0)
+    enterprise: str | None = None
+    units: frozenset[str] = frozenset()
     if role == Role.ADMIN.value:
         return OrgScope(
             actor_id=actor_id,
@@ -175,12 +170,16 @@ def scope_for(actor: Any, repo: ScopeRepo) -> OrgScope:
             enterprise=None,
             units=frozenset(),
         )
-    enterprise: str | None = None
-    units: frozenset[str] = frozenset()
-    if unit and role == Role.ENTERPRISE_ADMIN.value:
-        enterprise = enterprise_root(repo, unit)
-        if enterprise is not None:
-            units = subtree_keys(repo, enterprise)
+    if role == Role.ENTERPRISE_ADMIN.value:
+        if unit:
+            enterprise = enterprise_root(repo, unit)
+            if enterprise is not None:
+                units = subtree_keys(repo, enterprise)
+        else:
+            # The deployment is one enterprise. Use a dynamic marker rather
+            # than a snapshot of current roots: this also covers an empty tree,
+            # unbound accounts, and departments created later.
+            enterprise = "*"
     elif unit and role == Role.UNIT_ADMIN.value:
         units = subtree_keys(repo, unit)
     return OrgScope(
@@ -196,17 +195,15 @@ def scope_for(actor: Any, repo: ScopeRepo) -> OrgScope:
 def assert_may_manage_unit(scope: OrgScope, unit_key: str | None, *, action: str) -> None:
     """Refuse an action on a department outside *scope* — never silently.
 
-    ``unit_key=None`` (an account with no department) is refused for every
-    scoped administrator, and says so: an unbound account is outside every
-    department tree, and leaving one unbound is how a scoped administrator would
-    otherwise move a user out of its own reach.
+    An unbound account is reachable by a system administrator or an unbound
+    enterprise administrator; other scoped administrators cannot manage it.
     """
     if scope.covers_unit(unit_key):
         return
     if unit_key is None:
         reason = (
-            "an account with no department is outside every department tree; only a "
-            "system administrator administers unbound accounts"
+            "an account with no department is outside your department tree; only a "
+            "system or enterprise-wide administrator administers unbound accounts"
         )
     elif not scope.units:
         reason = "your account administers no department"

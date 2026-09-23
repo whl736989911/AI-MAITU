@@ -134,9 +134,29 @@ async def create_user(
     password: str = TEST_PASSWORD,
     role: str = "user",
     permissions: list[str] | None = None,
+    org_unit: str | None = None,
 ) -> dict[str, str]:
     from octop.infra.users.permissions import BASELINE_PERMISSIONS
 
+    # Employee and department-admin accounts are department-bound by contract.
+    # Keep the shared test helper realistic without coupling unrelated API tests
+    # to their own org-unit fixtures.
+    if role in {"user", "unit_admin"} and org_unit is None:
+        units_response = await client.get("/api/org-units", headers=admin_auth)
+        units_response.raise_for_status()
+        units = units_response.json().get("units", [])
+        if not any(unit["key"] == "test-unit" for unit in units):
+            created = await client.post(
+                "/api/org-units",
+                headers=admin_auth,
+                json={
+                    "key": "test-unit",
+                    "label_zh": "测试部门",
+                    "label_en": "Test department",
+                },
+            )
+            created.raise_for_status()
+        org_unit = "test-unit"
     body: dict[str, object] = {
         "username": username,
         "password": password,
@@ -144,6 +164,7 @@ async def create_user(
         "permissions": (
             list(permissions) if permissions is not None else sorted(BASELINE_PERMISSIONS)
         ),
+        "org_unit": org_unit,
     }
     r = await client.post(
         "/api/users",

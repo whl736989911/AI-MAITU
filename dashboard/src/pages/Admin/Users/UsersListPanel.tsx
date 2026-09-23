@@ -444,12 +444,8 @@ function RolePicker({ value, onChange, options, disabled }: RolePickerProps) {
 }
 
 /**
- * Org-unit scope picker for non-admin roles. The unit drives the resource
- * boundary (and its module grants); leaving it empty means no unit scope.
- *
- * ``required`` is set where the backend refuses an unbound account: an account
- * a scoped administrator creates must land in one of its departments, and an
- * enterprise administrator with no department reaches nothing at all.
+ * Org-unit selector for employees and department administrators. Employees may
+ * receive department module grants; administrators use the same unit as scope.
  */
 function OrgUnitField({
   options,
@@ -1421,16 +1417,14 @@ export default function UsersListPanel() {
           display_name: values.display_name?.trim() || null,
           email: values.email?.trim() || null,
           password: values.password,
-          // Only the roles this actor may hand out are offered (design §2.1), and
-          // the field is unregistered when that set is the implicit ``user``
-          // default — so the fallback names the same role the form would.
-          role: assignableRoleValues.includes(values.role)
-            ? values.role
-            : "user",
-          // A scoped administrator may only create inside one of its departments,
-          // so its unit is sent; the ``admin`` role carries none.
-          org_unit: values.role === "admin" ? null : values.org_unit ?? null,
-          permissions: values.role === "admin" ? [] : values.permissions ?? [],
+          // Administrators have no department; enterprise administrators have
+          // enterprise-wide scope. Unit administrators remain department-bound.
+          org_unit:
+            values.role === "admin" || values.role === "enterprise_admin"
+              ? null
+              : values.org_unit ?? null,
+          permissions:
+            values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
         }),
       });
@@ -1563,9 +1557,12 @@ export default function UsersListPanel() {
     };
     if (assignableRoleValues.length > 0) {
       body.role = values.role;
-      // Only the ``admin`` role carries no department: a scoped administrator is
-      // defined by the department it administers, so its unit is kept.
-      body.org_unit = values.role === "admin" ? null : values.org_unit ?? null;
+      // Enterprise administrators are unbound; legacy bindings are cleared on
+      // edit. Unit administrators remain attached to their managed department.
+      body.org_unit =
+        values.role === "admin" || values.role === "enterprise_admin"
+          ? null
+          : values.org_unit ?? null;
       body.permissions =
         values.role === "admin" ? [] : values.permissions ?? [];
       // Deny is admin-only on the backend, and a PATCH carries it as
@@ -2208,19 +2205,18 @@ export default function UsersListPanel() {
                 }
                 return (
                   <>
-                    {/* A department carries module grants, and a scoped
-                        administrator may only create inside its own branch, so
-                        the picker is shown to both — required where the backend
-                        refuses an unbound account. */}
-                    {(admin || scopedActor) && (
-                      <OrgUnitField
-                        options={orgUnitOptions}
-                        required={
-                          scopedActor ||
-                          getFieldValue("role") === "enterprise_admin"
-                        }
-                      />
-                    )}
+                    {/* Unit administrators and employees are department-bound. */}
+                    {(admin || scopedActor) &&
+                      getFieldValue("role") !== "enterprise_admin" && (
+                        <OrgUnitField
+                          options={orgUnitOptions}
+                          required={
+                            scopedActor ||
+                            getFieldValue("role") === "unit_admin" ||
+                            getFieldValue("role") === "user"
+                          }
+                        />
+                      )}
                     <Form.Item
                       label={t("adminUsers.colPermissions")}
                       name="permissions"
@@ -2370,22 +2366,19 @@ export default function UsersListPanel() {
                     </div>
                   );
                 }
-                if (!admin && !canSubmitPermissions) {
-                  // Target holds module keys this actor may not grant; the
-                  // picker would only produce a 403 on save.
-                  return null;
-                }
                 return (
                   <>
-                    {(admin || scopedActor) && (
-                      <OrgUnitField
-                        options={orgUnitOptions}
-                        required={
-                          scopedActor ||
-                          getFieldValue("role") === "enterprise_admin"
-                        }
-                      />
-                    )}
+                    {(admin || scopedActor) &&
+                      getFieldValue("role") !== "enterprise_admin" && (
+                        <OrgUnitField
+                          options={orgUnitOptions}
+                          required={
+                            scopedActor ||
+                            getFieldValue("role") === "unit_admin" ||
+                            getFieldValue("role") === "user"
+                          }
+                        />
+                      )}
                     <Form.Item
                       noStyle
                       shouldUpdate={(prev, cur) =>

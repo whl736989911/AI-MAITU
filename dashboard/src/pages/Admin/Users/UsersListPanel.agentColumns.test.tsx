@@ -15,7 +15,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { OctopUser } from "../../../api/modules/auth";
 import type { OctopAgent } from "../../../context/AgentContext";
@@ -252,5 +252,70 @@ describe("Admin → Users agent columns", () => {
       await screen.findByRole("button", { name: /^专家\s*1$/ }),
     ).toBeVisible();
     expect(screen.queryByRole("button", { name: /^功能/ })).toBeNull();
+  });
+});
+
+describe("Admin → Users org-unit requirements", () => {
+  it("does not offer an org unit when creating an enterprise administrator", async () => {
+    renderPanel();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "新建用户" }),
+    );
+    const drawer = screen.getByRole("dialog", { name: "新建用户" });
+    const role = within(drawer)
+      .getAllByRole("radio", { name: /^企业管理员/ })
+      .find((candidate) => {
+        const candidateForm = candidate.closest("form");
+        return (
+          candidateForm !== null &&
+          within(candidateForm).queryByRole("textbox", { name: "用户名" }) !==
+            null
+        );
+      });
+    expect(role).toBeDefined();
+    const form = role!.closest("form");
+    expect(form).not.toBeNull();
+    await userEvent.click(role);
+    expect(role).toHaveAttribute("aria-checked", "true");
+
+    expect(
+      within(form as HTMLFormElement).queryByRole("combobox", {
+        name: "所属组织单元",
+      }),
+    ).toBeNull();
+  });
+
+  it("keeps the org unit required for employees and unit administrators", async () => {
+    renderPanel();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "新建用户" }),
+    );
+    const drawer = screen.getByRole("dialog", { name: "新建用户" });
+    const rolePicker = within(drawer)
+      .getAllByRole("radio", { name: /^部门管理员/ })
+      .find((candidate) => {
+        const candidateForm = candidate.closest("form");
+        return (
+          candidateForm !== null &&
+          within(candidateForm).queryByRole("textbox", { name: "用户名" }) !==
+            null
+        );
+      });
+    expect(rolePicker).toBeDefined();
+    const form = rolePicker!.closest("form");
+    expect(form).not.toBeNull();
+    const formQueries = within(form as HTMLFormElement);
+    const orgUnit = formQueries.getByRole("combobox", {
+      name: "所属组织单元",
+    });
+    expect(orgUnit).toHaveAttribute("aria-required", "true");
+
+    await userEvent.click(rolePicker);
+    expect(rolePicker).toHaveAttribute("aria-checked", "true");
+    expect(
+      formQueries.getByRole("combobox", { name: "所属组织单元" }),
+    ).toHaveAttribute("aria-required", "true");
   });
 });
