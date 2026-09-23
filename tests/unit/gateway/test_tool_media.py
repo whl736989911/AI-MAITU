@@ -207,8 +207,9 @@ def test_iter_media_blocks_dict_content() -> None:
 
 @pytest.mark.asyncio
 async def test_enrich_send_file_dict_content() -> None:
-    with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as ext_dir:
-        png = Path(ext_dir) / f"orca-test-send-file-{time.time_ns()}.png"
+    with tempfile.TemporaryDirectory() as ws:
+        png = Path(ws) / "outbound" / "shot.png"
+        png.parent.mkdir()
         png.write_bytes(b"\x89PNG\r\n")
         workspace = _workspace(ws, virtual_mode=True)
         chunk = {
