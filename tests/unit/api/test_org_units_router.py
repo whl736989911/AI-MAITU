@@ -356,6 +356,166 @@ async def test_unit_admin_may_not_grant_keys_it_does_not_hold(world: SimpleNames
         server=world.server,
     )
     assert kept["permissions"] == ["users", "knowledge_bases"]
+
+async def test_enterprise_admin_without_a_unit_can_create_the_first_root(
+    world: SimpleNamespace,
+) -> None:
+    actor = SimpleNamespace(
+        id=9,
+        is_admin=False,
+        role=Role.ENTERPRISE_ADMIN,
+        org_unit=None,
+        permissions=["users"],
+        denied_permissions=[],
+    )
+    created = await create_org_unit(
+        OrgUnitCreateBody(
+            key="acme",
+            label_zh="甲公司",
+            label_en="Acme",
+            parent_key=None,
+        ),
+        actor=actor,
+        server=world.server,
+    )
+    assert created["parent_key"] is None
+
+
+@pytest.mark.parametrize(
+    ("role", "org_unit"),
+    [
+        (Role.ENTERPRISE_ADMIN, "ops"),
+        (Role.UNIT_ADMIN, "ops"),
+        (Role.USER, None),
+    ],
+    ids=["bound-enterprise-admin", "unit-admin", "employee"],
+)
+async def test_only_system_or_unbound_enterprise_admin_can_create_a_root(
+    world: SimpleNamespace, role: Role, org_unit: str | None
+) -> None:
+    actor = SimpleNamespace(
+        id=9,
+        is_admin=False,
+        role=role,
+        org_unit=org_unit,
+        permissions=["users"],
+        denied_permissions=[],
+    )
+    with pytest.raises(OctopError) as exc:
+        await create_org_unit(
+            OrgUnitCreateBody(
+                key="new-root",
+                label_zh="根",
+                label_en="Root",
+                parent_key=None,
+            ),
+            actor=actor,
+            server=world.server,
+        )
+    assert exc.value.code is ErrorCode.FORBIDDEN
+async def test_enterprise_admin_can_manage_units_inside_its_enterprise(
+    world: SimpleNamespace,
+) -> None:
+    """Enterprise-admin unit CRUD and grants cover its own enterprise branch."""
+    await _create(world, "acme")
+    await _create(world, "acme-sales", parent="acme")
+    await _create(world, "globex")
+    actor = SimpleNamespace(
+        id=9,
+        is_admin=False,
+        role=Role.ENTERPRISE_ADMIN,
+        org_unit="acme",
+        permissions=["users", "experts"],
+        denied_permissions=[],
+    )
+
+    with pytest.raises(OctopError) as root_move:
+        await patch_org_unit(
+            "acme",
+            OrgUnitPatchBody(parent_key=None),
+            actor=actor,
+            server=world.server,
+        )
+    assert root_move.value.code is ErrorCode.FORBIDDEN
+
+    created = await create_org_unit(
+        OrgUnitCreateBody(
+            key="acme-ops",
+            label_zh="运维",
+            label_en="Operations",
+            parent_key="acme",
+        ),
+        actor=actor,
+        server=world.server,
+    )
+    assert created["parent_key"] == "acme"
+
+    updated = await patch_org_unit(
+        "acme-ops",
+        OrgUnitPatchBody(label_zh="平台运维", label_en="Platform Ops"),
+        actor=actor,
+        server=world.server,
+    )
+    assert updated["label"] == {"zh": "平台运维", "en": "Platform Ops"}
+
+    grants = await set_org_unit_permissions(
+        "acme-ops",
+        OrgUnitPermissionsBody(permissions=["users", "experts"]),
+        actor=actor,
+        server=world.server,
+    )
+    assert grants["permissions"] == ["users", "experts"]
+    assert await delete_org_unit(
+        "acme-ops", actor=actor, server=world.server
+    ) is None
+    assert world.units.get("acme-ops") is None
+
+    with pytest.raises(OctopError) as exc:
+        await patch_org_unit(
+            "globex",
+            OrgUnitPatchBody(label_en="Other enterprise"),
+            actor=actor,
+            server=world.server,
+        )
+    assert exc.value.code is ErrorCode.FORBIDDEN
+
+
+async def test_unit_admin_cannot_manage_units_outside_its_subtree(
+    world: SimpleNamespace,
+) -> None:
+    await _create(world, "acme")
+    await _create(world, "acme-ops", parent="acme")
+    await _create(world, "acme-ops-night", parent="acme-ops")
+    await _create(world, "acme-sales", parent="acme")
+    actor = SimpleNamespace(
+        id=9,
+        is_admin=False,
+        role=Role.UNIT_ADMIN,
+        org_unit="acme-ops",
+        permissions=["users"],
+        denied_permissions=[],
+    )
+
+    with pytest.raises(OctopError) as exc:
+        await patch_org_unit(
+            "acme-sales",
+            OrgUnitPatchBody(label_en="Out of scope"),
+            actor=actor,
+            server=world.server,
+        )
+    assert exc.value.code is ErrorCode.FORBIDDEN
+
+    await create_org_unit(
+        OrgUnitCreateBody(
+            key="acme-ops-day",
+            label_zh="白班",
+            label_en="Day Shift",
+            parent_key="acme-ops-night",
+        ),
+        actor=actor,
+        server=world.server,
+    )
+
 @pytest.mark.asyncio
 async def test_user_creation_requires_department_but_enterprise_admin_does_not(
     tmp_path: Path,

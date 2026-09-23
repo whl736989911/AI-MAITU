@@ -60,6 +60,7 @@ from octop.api.deps import get_server, require_permission
 from octop.infra.db.repos._base import UNSET
 from octop.infra.db.repos.org_units import OrgUnitRepo, OrgUnitRow
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.identity import Role
 from octop.infra.users.permissions import (
     assert_can_grant,
     unit_permissions,
@@ -205,9 +206,11 @@ async def create_org_unit(
 ) -> dict[str, Any]:
     """Create a unit inside the operator's branch; the key must be free.
 
-    A unit with no parent starts a new enterprise, which is a system
-    administrator's move; anything else hangs off a parent the operator already
-    administers, so nobody can graft a department onto another enterprise.
+    A root begins an enterprise. A system administrator may create roots at any
+    time; an unbound enterprise administrator may create the first root so its
+    enterprise has a department to administer. Bound enterprise administrators
+    create only below their existing enterprise, and department administrators
+    and employees cannot create enterprise roots.
     """
     repo = server.services.repos.org_unit_repo
     scope = scope_for(actor, repo)
@@ -218,7 +221,12 @@ async def create_org_unit(
             details={"unit_key": body.key, "reason": f"org unit {body.key!r} already exists"},
         )
     if body.parent_key is None:
-        if not scope.is_system_admin:
+        may_create_first_enterprise_root = (
+            scope.role == Role.ENTERPRISE_ADMIN.value
+            and scope.unit is None
+            and scope.enterprise == "*"
+        )
+        if not scope.is_system_admin and not may_create_first_enterprise_root:
             raise OctopError(
                 ErrorCode.FORBIDDEN,
                 "admin required to create a root unit",

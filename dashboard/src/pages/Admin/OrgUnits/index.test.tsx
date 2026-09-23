@@ -217,6 +217,29 @@ describe("Admin → Org units: department module grants", () => {
     expect(saved[0].body).toEqual({ permissions: ["channels"] });
   });
 
+  it("shows department management controls to an enterprise administrator", async () => {
+    const enterpriseAdmin: OctopUser = {
+      ...ADMIN,
+      id: 44,
+      username: "enterprise-admin",
+      role: "enterprise_admin",
+    };
+    renderPage(enterpriseAdmin);
+
+    expect(
+      await screen.findByRole("button", { name: "新建部门" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "编辑" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "模块授权" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "删除" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows no grants control to an actor with no department to authorize", async () => {
     renderPage(EMPLOYEE);
 

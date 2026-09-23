@@ -206,6 +206,10 @@ export default function AdminOrgUnitsPage() {
       role === "unit_admin"
     );
   }, [currentUser]);
+
+  const mayCreateRoot =
+    isSystemAdmin(currentUser) ||
+    (currentUser?.role === "enterprise_admin" && !currentUser.org_unit);
   const lang = normalizeUiLocale(i18n.language);
   const [form] = Form.useForm<OrgUnitFormValues>();
 
@@ -281,7 +285,9 @@ export default function AdminOrgUnitsPage() {
       modalMode === "edit" && editTarget
         ? collectSubtreeKeys(units, editTarget.key)
         : undefined;
-    const options = [{ value: ROOT_VALUE, label: t("orgUnits.parentRoot") }];
+    const options = mayCreateRoot
+      ? [{ value: ROOT_VALUE, label: t("orgUnits.parentRoot") }]
+      : [];
     const walk = (nodes: OrgUnitNode[], parentLabel: string | null) => {
       for (const node of nodes) {
         // Skipping the subtree, not just the unit: either choice would make the
@@ -298,7 +304,7 @@ export default function AdminOrgUnitsPage() {
     };
     walk(tree, null);
     return options;
-  }, [tree, units, modalMode, editTarget, t, lang]);
+  }, [tree, units, modalMode, editTarget, t, lang, mayCreateRoot]);
 
   const openCreate = useCallback(() => {
     setModalMode("create");
@@ -321,7 +327,11 @@ export default function AdminOrgUnitsPage() {
     if (!modalOpen) return;
     if (modalMode === "create") {
       form.resetFields();
-      form.setFieldsValue({ parent_key: ROOT_VALUE });
+      form.setFieldsValue({
+        parent_key: mayCreateRoot
+          ? ROOT_VALUE
+          : currentUser?.org_unit ?? ROOT_VALUE,
+      });
       return;
     }
     if (!editTarget) return;
@@ -332,7 +342,7 @@ export default function AdminOrgUnitsPage() {
       parent_key: editTarget.parent_key ?? ROOT_VALUE,
       sort_order: undefined,
     });
-  }, [modalOpen, modalMode, editTarget, form]);
+  }, [modalOpen, modalMode, editTarget, form, mayCreateRoot, currentUser]);
 
   const handleSubmit = async () => {
     let values: OrgUnitFormValues;
