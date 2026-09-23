@@ -40,6 +40,7 @@ def test_host_allowed_for_issuer(host: str, issuer: str, allowed: bool) -> None:
         "http://mcp.notion.com/token",
         "https://127.0.0.1/token",
         "https://10.0.0.1/token",
+        "https://100.64.0.1/token",
         "https://localhost/token",
         "https://169.254.169.254/latest/meta-data",
     ],
@@ -47,6 +48,53 @@ def test_host_allowed_for_issuer(host: str, issuer: str, allowed: bool) -> None:
 def test_validate_https_url_rejects_unsafe_targets(url: str) -> None:
     with pytest.raises(UnsafeOutboundUrl):
         validate_https_url(url, field="token_endpoint")
+
+
+def test_resolved_non_global_ip_is_rejected() -> None:
+    info = (None, None, None, None, ("100.64.0.1", 443))
+    with pytest.raises(UnsafeOutboundUrl):
+        ssrf_guard._validated_ip("public.example", [info])
+
+
+@pytest.mark.asyncio
+async def test_async_backend_refuses_an_unexpected_host_without_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    async def connect_tcp(_self: object, host: str, _port: int, **_kwargs: object) -> str:
+        calls.append(host)
+        return host
+
+    monkeypatch.setattr(ssrf_guard.AutoBackend, "connect_tcp", connect_tcp)
+    backend = ssrf_guard._PinnedNetworkBackend("example.com", "93.184.216.34")
+
+    with pytest.raises(UnsafeOutboundUrl, match="unexpected connection host"):
+        await backend.connect_tcp("other.example", 443)
+    assert calls == []
+
+    assert await backend.connect_tcp("EXAMPLE.COM.", 443) == "93.184.216.34"
+    assert calls == ["93.184.216.34"]
+
+
+def test_sync_backend_refuses_an_unexpected_host_without_connecting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+
+    def connect_tcp(_self: object, host: str, _port: int, **_kwargs: object) -> str:
+        calls.append(host)
+        return host
+
+    monkeypatch.setattr(ssrf_guard.SyncBackend, "connect_tcp", connect_tcp)
+    backend = ssrf_guard._PinnedSyncNetworkBackend("example.com", "93.184.216.34")
+
+    with pytest.raises(UnsafeOutboundUrl, match="unexpected connection host"):
+        backend.connect_tcp("other.example", 443)
+    assert calls == []
+
+    assert backend.connect_tcp("EXAMPLE.COM.", 443) == "93.184.216.34"
+    assert calls == ["93.184.216.34"]
 
 
 def test_validate_https_url_accepts_public_host() -> None:

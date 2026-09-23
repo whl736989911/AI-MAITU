@@ -6,31 +6,22 @@ which is only the harness-gateway ``MediaBackend`` adapter for IM ingress.
 
 Path rule for ``BackendWorkspace``
 ----------------------------------
-Prefer workspace-relative ``outbound/`` / ``inbound/`` keys when present in the
-source. Otherwise pass the original absolute/relative path through unchanged —
-do not rewrite or collapse forms. When BackendWorkspace cannot open a host
-absolute path (notably Windows drive-letter paths), fall back to a guarded
-host ``Path.read_bytes`` for allowlisted locations.
+Workspace-relative ``outbound/`` / ``inbound/`` keys remain relative. Host-
+absolute preview and media file paths are accepted only inside the selected
+agent workspace; temporary and other agents' host paths are never fallback roots.
 """
 
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 import mimetypes
-import os
-import re
-import tempfile
-import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from octop.infra.gateway.media.attachment_hints import is_preview_media_type
-from octop.infra.gateway.media.constants import OUTBOUND_DIR
-from octop.infra.utils.browser_media import legacy_harness_screenshots_dir
 
 if TYPE_CHECKING:
     from harness_agent.backends.workspace import BackendWorkspace
@@ -95,48 +86,10 @@ def is_blocked_host_download_path(raw: str) -> bool:
     return False
 
 
-def is_allowed_host_temp_path(resolved: Path) -> bool:
-    """True when *resolved* is a regular file under an OS temp directory."""
-    try:
-        if not resolved.is_file():
-            return False
-    except OSError:
-        return False
-
-    if os.name == "nt":
-        candidates: list[Path] = []
-        for key in ("TEMP", "TMP"):
-            value = os.environ.get(key, "").strip()
-            if value:
-                candidates.append(Path(value).resolve())
-        local_app = os.environ.get("LOCALAPPDATA", "").strip()
-        if local_app:
-            candidates.append((Path(local_app) / "Temp").resolve())
-        with contextlib.suppress(OSError):
-            candidates.append(Path(tempfile.gettempdir()).resolve())
-        for root in candidates:
-            try:
-                resolved.relative_to(root)
-                return True
-            except ValueError:
-                continue
-        return False
-
-    candidates = []
-    with contextlib.suppress(OSError):
-        candidates.append(Path(tempfile.gettempdir()).resolve())
-    for root in candidates:
-        try:
-            resolved.relative_to(root)
-            return True
-        except ValueError:
-            continue
-    norm = str(resolved).replace("\\", "/")
-    return norm.startswith(("/tmp/", "/private/tmp/"))
-
-
 def file_url_to_abs_path(file_url: str) -> str:
     parsed = urllib.parse.urlparse(file_url)
+    if parsed.netloc and parsed.netloc.lower() != "localhost":
+        raise ValueError("remote file URLs are not supported")
     path = parsed.path
     # file:///C:/… — Windows drive in URL path
     if len(path) >= 3 and path[0] == "/" and path[2] == ":":
@@ -146,15 +99,6 @@ def file_url_to_abs_path(file_url: str) -> str:
     if path.startswith("/"):
         return urllib.parse.unquote(path)
     return str(Path(urllib.parse.unquote(urllib.request.url2pathname(path))))
-
-
-def agent_id_from_workspace_path(path: str) -> str | None:
-    match = re.search(r"/agents/([A-Z0-9]+)/", path, re.IGNORECASE)
-    return match.group(1) if match else None
-
-
-def resolve_media_agent_id(chat_agent_id: str, raw_url: str) -> str:
-    return agent_id_from_workspace_path(raw_url) or chat_agent_id
 
 
 def extract_workspace_rel(path: str) -> str | None:
@@ -194,11 +138,10 @@ def normalize_workspace_download_path(path: str) -> str:
 
 
 def workspace_download_url(agent_id: str, workspace_path: str) -> str:
-    """Build a dashboard download URL for a workspace or host-absolute path.
+    """Build a URL for a workspace key or a caller-validated own-workspace path.
 
-    Absolute / ``file://`` paths are passed through (``from_workspace=false``
-    default treats leading ``/`` as host-absolute). Relative workspace keys
-    are passed without a leading slash so they stay workspace-relative.
+    Relative workspace keys are passed without a leading slash. Absolute paths
+    remain absolute so the authenticated workspace route can enforce containment.
     """
     raw = workspace_path.strip()
     if (
@@ -224,30 +167,32 @@ def media_preview_url(agent_id: str, source: str, mime_hint: str = "") -> str:
 
 
 def backend_workspace_path(source: str) -> str | None:
-    """Single path to pass to ``BackendWorkspace`` for *source*.
+    """Return a path only for local file URLs and workspace-relative candidates.
 
-    Absolute (``/…`` or ``file://…``) → absolute host/workspace path, unchanged.
-    Relative → relative, unchanged (no leading-slash stripping beyond file://).
+    Host-absolute values remain unchanged for callers that also enforce
+    workspace containment. Remote file URLs and home/network paths are rejected.
     """
     raw = (source or "").strip()
-    if not raw:
+    if not raw or raw.startswith("~") or raw.startswith("\\\\") or raw.startswith("//"):
         return None
     if raw.startswith("file://"):
-        return file_url_to_abs_path(raw)
+        try:
+            return file_url_to_abs_path(raw)
+        except ValueError:
+            return None
     return raw
 
 
 def dashboard_media_url(agent_id: str, raw_url: str, mime: str = "") -> str | None:
     """Sync dashboard URL — preserve absolute tool paths as ``file://`` preview sources."""
-    media_agent = resolve_media_agent_id(agent_id, raw_url)
     raw = raw_url.strip()
     if not raw:
         return None
     if raw.startswith("file://"):
-        return media_preview_url(media_agent, raw, mime)
+        return media_preview_url(agent_id, raw, mime)
     if raw.startswith("/"):
-        return media_preview_url(media_agent, f"file://{raw}", mime)
-    return media_preview_url(media_agent, raw, mime)
+        return media_preview_url(agent_id, f"file://{raw}", mime)
+    return media_preview_url(agent_id, raw, mime)
 
 
 async def resolve_dashboard_media_url(
@@ -257,18 +202,10 @@ async def resolve_dashboard_media_url(
     *,
     filename: str = "",
     mime: str = "",
-) -> str:
-    """Import external files when needed; preview URL keeps the original path shape."""
-    media_agent = resolve_media_agent_id(agent_id, raw_url)
-    raw = raw_url.strip()
-    if raw.startswith("file://"):
-        await ensure_workspace_media_path(workspace, raw, filename=filename, mime=mime)
-        return media_preview_url(media_agent, raw, mime)
-    if raw.startswith("/"):
-        file_url = f"file://{raw}"
-        await ensure_workspace_media_path(workspace, file_url, filename=filename, mime=mime)
-        return media_preview_url(media_agent, file_url, mime)
-    return media_preview_url(media_agent, raw, mime)
+) -> str | None:
+    """Preview only an existing file in this agent's workspace."""
+    rel = await ensure_workspace_media_path(workspace, raw_url, filename=filename, mime=mime)
+    return media_preview_url(agent_id, rel, mime) if rel is not None else None
 
 
 def _guess_mime(path: str, hint: str = "") -> str:
@@ -283,92 +220,31 @@ def is_previewable_mime(mime: str) -> bool:
 
 
 def _abs_path_allowed(abs_path: str, *, workspace: Path) -> bool:
+    """Accept only local absolute paths resolving inside this agent workspace."""
+    normalized = abs_path.replace("\\", "/")
+    if normalized.startswith("//"):
+        return False
     try:
         resolved = Path(abs_path).resolve()
+        resolved.relative_to(workspace.resolve())
     except (OSError, ValueError):
         return False
-    if is_allowed_host_temp_path(resolved):
-        return True
-    ws = workspace.resolve()
-    # Any file already inside the agent workspace is previewable (same rule as
-    # host download allowlist). Restricting to outbound/inbound forced a copy
-    # into outbound/ while preview still pointed at the original path.
-    try:
-        resolved.relative_to(ws)
-        return True
-    except ValueError:
-        pass
-    try:
-        resolved.relative_to(legacy_harness_screenshots_dir().resolve())
-        return True
-    except ValueError:
-        return False
-
-
-_DENIED_HOST_DOWNLOAD_PREFIXES = (
-    "/etc/",
-    "/proc/",
-    "/sys/",
-    "/dev/",
-    "/private/etc/",
-)
-_DENIED_WIN_DOWNLOAD_PREFIXES = (
-    "c:/windows/",
-    "c:/program files/",
-    "c:/program files (x86)/",
-)
+    return ".harness-browser" not in str(resolved).lower()
 
 
 def is_allowed_host_download_abs_path(path: str, *, workspace: Path) -> bool:
-    """Allow host-absolute download when under workspace / agents / temp, or
-    non-system user paths (e.g. Desktop tool outputs). Deny OS system roots.
-    """
+    """True only for a local host-absolute path resolving inside this workspace."""
     raw = path.strip()
     if not raw:
         return False
     if raw.startswith("file://"):
-        raw = file_url_to_abs_path(raw)
-        if not raw:
+        try:
+            raw = file_url_to_abs_path(raw)
+        except ValueError:
             return False
-
-    raw_norm = raw.replace("\\", "/")
-    # POSIX-style absolute paths (leading /, not a drive letter) — deny system
-    # roots on every platform; Path.resolve() on Windows maps /etc → C:\etc.
-    if (
-        raw_norm.startswith("/")
-        and not (len(raw_norm) >= 3 and raw_norm[2] == ":")
-        and any(raw_norm.lower().startswith(prefix) for prefix in _DENIED_HOST_DOWNLOAD_PREFIXES)
-    ):
+    if not is_host_absolute_path(raw) or raw.replace("\\", "/").startswith("//"):
         return False
-
-    try:
-        resolved = Path(raw).resolve()
-    except (OSError, ValueError):
-        return False
-
-    norm = str(resolved).replace("\\", "/").lower()
-    if ".harness-browser" in norm:
-        return False
-
-    try:
-        resolved.relative_to(workspace.resolve())
-        return True
-    except ValueError:
-        pass
-
-    if "/.octop/agents/" in norm:
-        return True
-    if is_allowed_host_temp_path(resolved):
-        return True
-
-    if any(norm.startswith(prefix) for prefix in _DENIED_HOST_DOWNLOAD_PREFIXES):
-        return False
-    win_denied = (
-        len(norm) >= 2
-        and norm[1] == ":"
-        and any(norm.startswith(prefix) for prefix in _DENIED_WIN_DOWNLOAD_PREFIXES)
-    )
-    return not win_denied
+    return _abs_path_allowed(raw, workspace=workspace)
 
 
 def is_host_absolute_path(path: str) -> bool:
@@ -415,40 +291,32 @@ async def resolve_preview_payload(
     workspace: BackendWorkspace,
     mime_hint: str = "",
 ) -> tuple[bytes, str] | None:
-    """Return ``(bytes, mime)`` for an allowed image/video preview source.
-
-    Prefer workspace-relative ``outbound/`` / ``inbound/`` keys (reliable on every
-    platform), then the original absolute path via BackendWorkspace, then a
-    guarded host ``Path.read_bytes`` fallback. The host fallback matters on
-    Windows where drive-letter absolutes are not treated as absolute by
-    ``BackendWorkspace.resolve_path`` (``startswith("/")`` only).
-    """
+    """Return preview bytes only for paths contained by this workspace."""
     path = backend_workspace_path(source)
     if path is None:
         return None
 
-    rel = extract_workspace_rel(source)
-    if rel:
-        data = await _download_via_workspace(workspace, rel)
-        if data is not None:
-            mime = _guess_mime(rel, mime_hint)
-            if is_previewable_mime(mime):
-                return data, mime
-
+    root = workspace.workspace_dir.resolve()
     if _is_host_absolute(path):
         if not _abs_path_allowed(path, workspace=workspace.workspace_dir):
             return None
-        data = await _download_via_workspace(workspace, path)
+        resolved = Path(path).resolve()
+        rel = resolved.relative_to(root).as_posix()
+        data = await _download_via_workspace(workspace, rel)
         if data is None:
             data = await _read_host_file_bytes(path)
         used = path
     else:
-        data = await _download_via_workspace(workspace, path)
-        used = path
+        try:
+            (root / path).resolve().relative_to(root)
+        except (OSError, ValueError):
+            return None
+        read_path = extract_workspace_rel(path) or path
+        data = await _download_via_workspace(workspace, read_path)
+        used = read_path
 
     if data is None:
         return None
-
     mime = _guess_mime(used, mime_hint)
     if not is_previewable_mime(mime):
         return None
@@ -462,36 +330,32 @@ async def read_file_url_bytes(
     filename: str = "",
     mime: str = "",
 ) -> bytes | None:
-    """Read bytes for a ``file://`` URL (workspace, import, or host fallback)."""
+    """Read workspace-contained file URLs; reject host paths outside this agent."""
     path = backend_workspace_path(file_url)
     if path is None:
         return None
+    if _is_host_absolute(path):
+        if not _abs_path_allowed(path, workspace=workspace.workspace_dir):
+            return None
+    else:
+        try:
+            (workspace.workspace_dir / path).resolve().relative_to(
+                workspace.workspace_dir.resolve()
+            )
+        except (OSError, ValueError):
+            return None
 
     rel = extract_workspace_rel(file_url)
     if rel:
         data = await _download_via_workspace(workspace, rel)
         if data is not None:
             return data
-
     data = await _download_via_workspace(workspace, path)
     if data is not None:
         return data
-
-    imported = await ensure_workspace_media_path(workspace, file_url, filename=filename, mime=mime)
-    if imported:
-        return await _download_via_workspace(workspace, imported)
-
-    if _is_host_absolute(path) and _abs_path_allowed(path, workspace=workspace.workspace_dir):
+    if _is_host_absolute(path):
         return await _read_host_file_bytes(path)
     return None
-
-
-def _outbound_dest_rel(*, filename: str, abs_path: str, mime: str) -> str:
-    ext = Path(filename or abs_path).suffix
-    if not ext and mime:
-        ext = mimetypes.guess_extension(mime.split(";", 1)[0].strip()) or ""
-    stem = Path(filename or abs_path).stem or "attachment"
-    return f"{OUTBOUND_DIR}/{int(time.time())}_{stem}{ext}"
 
 
 async def ensure_workspace_media_path(
@@ -501,46 +365,35 @@ async def ensure_workspace_media_path(
     filename: str = "",
     mime: str = "",
 ) -> str | None:
-    """Resolve or import a ``file://`` URL into the agent workspace (``outbound/``)."""
-    abs_path = backend_workspace_path(file_url)
-    if abs_path is None:
+    """Return the workspace-relative key for an existing contained media file."""
+    path = backend_workspace_path(file_url)
+    if path is None:
         return None
+    if _is_host_absolute(path):
+        if not _abs_path_allowed(path, workspace=workspace.workspace_dir):
+            return None
+        try:
+            rel = Path(path).resolve().relative_to(workspace.workspace_dir.resolve()).as_posix()
+        except (OSError, ValueError):
+            return None
+    else:
+        try:
+            rel = (
+                (workspace.workspace_dir / path)
+                .resolve()
+                .relative_to(workspace.workspace_dir.resolve())
+                .as_posix()
+            )
+        except (OSError, ValueError):
+            return None
 
     existing = extract_workspace_rel(file_url)
     if existing:
         data = await _download_via_workspace(workspace, existing)
-        if data is None and _is_host_absolute(abs_path):
-            data = await _download_via_workspace(workspace, abs_path)
         if data is not None:
             return existing
-
-    # Already under this agent workspace (e.g. root-level screenshot.png) —
-    # reuse the relative key; do not duplicate into outbound/.
-    if _is_host_absolute(abs_path):
-        try:
-            rel = Path(abs_path).resolve().relative_to(workspace.workspace_dir.resolve())
-            rel_s = rel.as_posix()
-            data = await _download_via_workspace(workspace, rel_s)
-            if data is None:
-                data = await _download_via_workspace(workspace, abs_path)
-            if data is not None:
-                return rel_s
-        except ValueError:
-            pass
-
-    if not _is_host_absolute(abs_path):
-        return existing
-
-    dest = _outbound_dest_rel(filename=filename, abs_path=abs_path, mime=mime)
-    data = await _download_via_workspace(workspace, abs_path)
-    if data is None:
-        # Windows drive-letter paths raise PermissionError inside BackendWorkspace
-        # before the local backend can open them; read the host file directly.
-        data = await _read_host_file_bytes(abs_path)
-    if data is None:
-        return None
-    await workspace.aupload_bytes(dest, data)
-    return dest
+    data = await _download_via_workspace(workspace, rel)
+    return rel if data is not None else None
 
 
 __all__ = [
@@ -550,7 +403,6 @@ __all__ = [
     "extract_workspace_rel",
     "file_url_to_abs_path",
     "is_allowed_host_download_abs_path",
-    "is_allowed_host_temp_path",
     "is_blocked_host_download_path",
     "is_host_absolute_path",
     "is_previewable_mime",
@@ -559,7 +411,6 @@ __all__ = [
     "normalize_workspace_media_path",
     "read_file_url_bytes",
     "resolve_dashboard_media_url",
-    "resolve_media_agent_id",
     "resolve_preview_payload",
     "workspace_download_url",
 ]
