@@ -7,6 +7,11 @@ import SearchablePickerPanel, {
 } from "../../../components/ChatPicker/SearchablePickerPanel";
 import { isFeatureAgent } from "../../../utils/agentKind";
 import { indexAgentsByKind } from "../../../utils/agentKindCounts";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import {
+  emptyAgentAccessFor,
+  emptyAgentAccessPath,
+} from "../utils/emptyAgentAccess";
 import ExpertAgentAvatar, { type ChatAgentOption } from "./ExpertAgentAvatar";
 import styles from "../index.module.less";
 
@@ -27,6 +32,9 @@ export default function ExpertPickerPopover({
 }: ExpertPickerPopoverProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
+  const access = emptyAgentAccessFor(currentUser);
+
 
   const filterFn = useCallback(
     (agent: ChatAgentOption, query: string) =>
@@ -74,10 +82,21 @@ export default function ExpertPickerPopover({
       groupLabelFor={groupLabelFor}
       width="compact"
       footerIcon={<GraduationCap size={15} aria-hidden />}
-      footerLabel={t("chat.expertPickerManage")}
+      footerLabel={
+        access === "none"
+          ? undefined
+          : t(
+              access === "features"
+                ? "chat.featurePickerManage"
+                : access === "both"
+                  ? "chat.agentPickerManage"
+                  : "chat.expertPickerManage",
+            )
+      }
       onFooterClick={() => {
+        if (access === "none") return;
         onNavigateAway?.();
-        navigate("/experts");
+        navigate(emptyAgentAccessPath(access));
       }}
       renderItem={(agent) => {
         const active = selectedAgentIds.includes(agent.agent_id);

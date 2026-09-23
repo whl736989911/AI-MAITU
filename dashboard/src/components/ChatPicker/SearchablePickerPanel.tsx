@@ -21,7 +21,7 @@ interface SearchablePickerPanelProps<T> {
    */
   groupLabelFor?: (item: T) => string | null;
   footerIcon: ReactNode;
-  footerLabel: string;
+  footerLabel?: string;
   onFooterClick: () => void;
 }
 
@@ -77,10 +77,12 @@ export default function SearchablePickerPanel<T>({
         )}
       </div>
 
-      <button type="button" className={styles.footer} onClick={onFooterClick}>
-        {footerIcon}
-        <span>{footerLabel}</span>
-      </button>
+      {footerLabel ? (
+        <button type="button" className={styles.footer} onClick={onFooterClick}>
+          {footerIcon}
+          <span>{footerLabel}</span>
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -22,6 +22,12 @@ import { showConfirmModal } from "../../../utils/confirmModal";
 import { isAgentChatReady } from "../../../utils/agentError";
 import { isFeatureAgent } from "../../../utils/agentKind";
 import { indexAgentsByKind } from "../../../utils/agentKindCounts";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import {
+  emptyAgentAccessFor,
+  emptyAgentAccessKey,
+  emptyAgentAccessPath,
+} from "../utils/emptyAgentAccess";
 import { sortSessions, toSession, type Session } from "../hooks/useSessions";
 import { formatThreadTitle } from "../utils/threadTitle";
 import { onSessionEvent, onStreamEvent } from "../hooks/chatStore";
@@ -279,6 +285,9 @@ export default function MinimalAgentSessionNav({
 }: MinimalAgentSessionNavProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
+  const emptyAgentAccess = emptyAgentAccessFor(currentUser);
+  const emptyAgentAccessKeyName = emptyAgentAccessKey(emptyAgentAccess);
   const [byAgent, setByAgent] = useState<Record<string, Session[]>>({});
   const [workingIds, setWorkingIds] = useState<ReadonlySet<string>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -538,15 +547,17 @@ export default function MinimalAgentSessionNav({
     return (
       <div className={styles.sessionEmptyAgents}>
         <p className={styles.sessionEmptyAgentsText}>
-          {t("chat.noAgentsHint")}
+          {t(`chat.noAgents${emptyAgentAccessKeyName}Hint`)}
         </p>
-        <button
-          type="button"
-          className={styles.sessionEmptyAgentsLink}
-          onClick={() => navigate("/experts")}
-        >
-          {t("chat.createExpert")}
-        </button>
+        {emptyAgentAccess !== "none" ? (
+          <button
+            type="button"
+            className={styles.sessionEmptyAgentsLink}
+            onClick={() => navigate(emptyAgentAccessPath(emptyAgentAccess))}
+          >
+            {t(`chat.noAgents${emptyAgentAccessKeyName}Action`)}
+          </button>
+        ) : null}
       </div>
     );
   }

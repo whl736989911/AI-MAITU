@@ -14,6 +14,12 @@ import {
 } from "lucide-react";
 import type { Session } from "../hooks/useSessions";
 import type { OctopAgent } from "../../../context/AgentContext";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import {
+  emptyAgentAccessFor,
+  emptyAgentAccessKey,
+  emptyAgentAccessPath,
+} from "../utils/emptyAgentAccess";
 import { isAgentChatReady } from "../../../utils/agentError";
 import { isFeatureAgent } from "../../../utils/agentKind";
 import { showConfirmModal } from "../../../utils/confirmModal";
@@ -432,6 +438,9 @@ export default function SessionList({
 }: SessionListProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
+  const emptyAgentAccess = emptyAgentAccessFor(currentUser);
+  const emptyAgentAccessKeyName = emptyAgentAccessKey(emptyAgentAccess);
   const [searchQuery, setSearchQuery] = useState("");
 
   const sortedAgents = useMemo(
@@ -508,15 +517,17 @@ export default function SessionList({
       {agents.length === 0 ? (
         <div className={styles.sessionEmptyAgents}>
           <p className={styles.sessionEmptyAgentsText}>
-            {t("chat.noAgentsHint")}
+            {t(`chat.noAgents${emptyAgentAccessKeyName}Hint`)}
           </p>
-          <button
-            type="button"
-            className={styles.sessionEmptyAgentsLink}
-            onClick={() => navigate("/experts")}
-          >
-            {t("chat.createExpert")}
-          </button>
+          {emptyAgentAccess !== "none" ? (
+            <button
+              type="button"
+              className={styles.sessionEmptyAgentsLink}
+              onClick={() => navigate(emptyAgentAccessPath(emptyAgentAccess))}
+            >
+              {t(`chat.noAgents${emptyAgentAccessKeyName}Action`)}
+            </button>
+          ) : null}
         </div>
       ) : (
         <div className={styles.sessionItems}>

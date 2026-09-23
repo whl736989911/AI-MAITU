@@ -4,6 +4,12 @@ import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { EmptyStateIcon } from "../../../components/EmptyState";
 import type { OctopAgent } from "../../../context/AgentContext";
+import { useCurrentUser } from "../../../hooks/useCurrentUser";
+import {
+  emptyAgentAccessFor,
+  emptyAgentAccessKey,
+  emptyAgentAccessPath,
+} from "../utils/emptyAgentAccess";
 import {
   formatAgentError,
   isAgentModelConfigError,
@@ -23,6 +29,10 @@ export default function AgentNotReadyScreen({
 }: AgentNotReadyScreenProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const currentUser = useCurrentUser();
+
+  const emptyStateVariant = emptyAgentAccessFor(currentUser);
+  const emptyStateKey = emptyAgentAccessKey(emptyStateVariant);
 
   if (loading) {
     return (
@@ -40,16 +50,22 @@ export default function AgentNotReadyScreen({
             <EmptyStateIcon icon={Bot} />
           </div>
           <h1 className={styles.noAgentsEmptyTitle}>
-            {t("chat.noAgentsTitle")}
+            {t(`chat.noAgents${emptyStateKey}Title`)}
           </h1>
-          <p className={styles.noAgentsEmptyHint}>{t("chat.noAgentsHint")}</p>
-          <Button
-            type="primary"
-            size="large"
-            onClick={() => navigate("/experts")}
-          >
-            {t("chat.createExpert")}
-          </Button>
+          <p className={styles.noAgentsEmptyHint}>
+            {t(`chat.noAgents${emptyStateKey}Hint`)}
+          </p>
+          {emptyStateVariant !== "none" ? (
+            <Button
+              type="primary"
+              size="large"
+              onClick={() =>
+                navigate(emptyAgentAccessPath(emptyStateVariant))
+              }
+            >
+              {t(`chat.noAgents${emptyStateKey}Action`)}
+            </Button>
+          ) : null}
         </div>
       </div>
     );
@@ -67,19 +83,22 @@ export default function AgentNotReadyScreen({
   const errorText = formatAgentError(agent.last_error, t);
   const isModelError = isAgentModelConfigError(agent.last_error);
 
-  let title = t("chat.agentNotRunning");
-  let subTitle = t("chat.agentNotRunningHint");
+  const suffix = emptyStateVariant === "experts" ? "" : emptyStateKey;
+  let titleKey = `agentNotRunning${suffix}`;
+  let hintKey = `agentNotRunning${suffix}Hint`;
 
   if (state === "failed") {
-    title = t("chat.agentFailed");
-    subTitle = errorText || t("chat.agentFailedHint");
-  } else if (state === "stopped" || state === "created") {
-    title = t("chat.agentNotRunning");
-    subTitle = t("chat.agentNotRunningHint");
+    titleKey = `agentFailed${suffix}`;
+    hintKey = `agentFailed${suffix}Hint`;
   } else if (state === "starting" || state === "stopping") {
-    title = t("chat.agentStarting");
-    subTitle = t("chat.agentStartingHint");
+    titleKey = `agentStarting${suffix}`;
+    hintKey = `agentStarting${suffix}Hint`;
   }
+  const title = t(`chat.${titleKey}`);
+  const subTitle =
+    state === "failed"
+      ? errorText || t(`chat.${hintKey}`)
+      : t(`chat.${hintKey}`);
 
   return (
     <div className={styles.agentNotReady}>
@@ -102,9 +121,20 @@ export default function AgentNotReadyScreen({
             >
               {t("modelConfig.configureButton")}
             </Button>
-          ) : (
-            <Button type="primary" onClick={() => navigate("/experts")}>
-              {t("chat.goToExperts")}
+          ) : emptyStateVariant === "none" ? null : (
+            <Button
+              type="primary"
+              onClick={() =>
+                navigate(emptyAgentAccessPath(emptyStateVariant))
+              }
+            >
+              {t(
+                emptyStateVariant === "features"
+                  ? "chat.goToFeatures"
+                  : emptyStateVariant === "both"
+                    ? "chat.goToAgents"
+                    : "chat.goToExperts",
+              )}
             </Button>
           )
         }
