@@ -1417,6 +1417,7 @@ export default function UsersListPanel() {
           display_name: values.display_name?.trim() || null,
           email: values.email?.trim() || null,
           password: values.password,
+          role: values.role,
           // Administrators have no department; enterprise administrators have
           // enterprise-wide scope. Unit administrators remain department-bound.
           org_unit:
