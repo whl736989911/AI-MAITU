@@ -46,7 +46,9 @@ describe("<ToolsTabs /> ACP tab", () => {
       locale: "zh",
       permissions: ["acp"],
     });
-    expect(await screen.findByRole("tab", { name: ACP_TAB })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("tab", { name: ACP_TAB }),
+    ).toBeInTheDocument();
   });
 
   it("hides it from an account without the key, the administrator aside", async () => {
@@ -60,7 +62,9 @@ describe("<ToolsTabs /> ACP tab", () => {
     });
     // Wait for the panel behind the default tab to settle before asserting.
     await screen.findByRole("tab", { name: BUILTIN_TAB });
-    expect(screen.queryByRole("tab", { name: ACP_TAB })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: ACP_TAB }),
+    ).not.toBeInTheDocument();
     unmount();
 
     renderTabs({
@@ -71,6 +75,8 @@ describe("<ToolsTabs /> ACP tab", () => {
       locale: "zh",
       permissions: [],
     });
-    expect(await screen.findByRole("tab", { name: ACP_TAB })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("tab", { name: ACP_TAB }),
+    ).toBeInTheDocument();
   });
 });

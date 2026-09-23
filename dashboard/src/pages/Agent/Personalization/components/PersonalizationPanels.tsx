@@ -137,7 +137,10 @@ export const CAPABILITY_POLICY: Record<
       // Applying a type writes this agent's system prompt and nothing in the
       // workspace, and the agent is shared by every caller, so it is said where
       // that is true.
-      note: { tone: "info", message: "personalization.personalizationMbtiNote" },
+      note: {
+        tone: "info",
+        message: "personalization.personalizationMbtiNote",
+      },
     },
     memory: {
       // Nobody writes it. One agent means one MEMORY.md and every caller runs
@@ -360,17 +363,19 @@ export default function PersonalizationPanels({
         </div>
       )}
 
-      {isMounted(FEATURE_ONLY_TAB) && tabs.includes(FEATURE_ONLY_TAB) && agentId !== null && (
-        <div
-          className={styles.panel}
-          style={{
-            display: activeTab === FEATURE_ONLY_TAB ? "flex" : "none",
-          }}
-          aria-hidden={activeTab !== FEATURE_ONLY_TAB}
-        >
-          <AgentPersonaFiles agentId={agentId} />
-        </div>
-      )}
+      {isMounted(FEATURE_ONLY_TAB) &&
+        tabs.includes(FEATURE_ONLY_TAB) &&
+        agentId !== null && (
+          <div
+            className={styles.panel}
+            style={{
+              display: activeTab === FEATURE_ONLY_TAB ? "flex" : "none",
+            }}
+            aria-hidden={activeTab !== FEATURE_ONLY_TAB}
+          >
+            <AgentPersonaFiles agentId={agentId} />
+          </div>
+        )}
     </div>
   );
 }

@@ -31,7 +31,12 @@ vi.mock("../../../api/request", async (importOriginal) => {
 });
 
 vi.mock("@/utils/antdMessage", () => ({
-  message: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  message: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
 }));
 
 vi.mock("../../../hooks/useUserRole", () => ({ useUserRole: () => "user" }));
@@ -183,7 +188,10 @@ describe("Token Usage's per-kind views", () => {
   });
 
   it("offers both views, one donut each, when the deployment has both kinds", async () => {
-    deployment = [agent("assistant", "agent"), agent("weekly-report", "feature")];
+    deployment = [
+      agent("assistant", "agent"),
+      agent("weekly-report", "feature"),
+    ];
     render(<TokenUsagePage />);
 
     expect(await screen.findByText("按专家")).toBeInTheDocument();

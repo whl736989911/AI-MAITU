@@ -29,7 +29,12 @@ vi.mock("../../../api/request", async (importOriginal) => {
 });
 
 vi.mock("@/utils/antdMessage", () => ({
-  message: { success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  message: {
+    success: vi.fn(),
+    error: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
 }));
 
 /** ``t`` as i18next answers it: bundle first, then the key's own fallback. */
@@ -222,10 +227,18 @@ describe("Admin → Users agent columns", () => {
 
     // One tally per kind, per card: alice's, then bob's all-zero pair. Either
     // button opens the one drawer listing that user's agents.
-    expect(await screen.findByRole("button", { name: /^专家\s*1$/ })).toBeVisible();
-    expect(await screen.findByRole("button", { name: /^功能\s*1$/ })).toBeVisible();
-    expect(await screen.findByRole("button", { name: /^专家\s*0$/ })).toBeVisible();
-    expect(await screen.findByRole("button", { name: /^功能\s*0$/ })).toBeVisible();
+    expect(
+      await screen.findByRole("button", { name: /^专家\s*1$/ }),
+    ).toBeVisible();
+    expect(
+      await screen.findByRole("button", { name: /^功能\s*1$/ }),
+    ).toBeVisible();
+    expect(
+      await screen.findByRole("button", { name: /^专家\s*0$/ }),
+    ).toBeVisible();
+    expect(
+      await screen.findByRole("button", { name: /^功能\s*0$/ }),
+    ).toBeVisible();
   });
 
   it("drops a kind's tally from the cards too when the deployment has no such kind", async () => {
@@ -235,7 +248,9 @@ describe("Admin → Users agent columns", () => {
 
     await userEvent.click(screen.getByText("卡片"));
 
-    expect(await screen.findByRole("button", { name: /^专家\s*1$/ })).toBeVisible();
+    expect(
+      await screen.findByRole("button", { name: /^专家\s*1$/ }),
+    ).toBeVisible();
     expect(screen.queryByRole("button", { name: /^功能/ })).toBeNull();
   });
 });

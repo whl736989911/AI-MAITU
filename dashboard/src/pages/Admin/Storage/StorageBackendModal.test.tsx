@@ -133,9 +133,9 @@ describe("<StorageBackendDrawer /> docker config", () => {
     await userEvent.type(textarea, "{{not valid json");
     await save();
 
-    expect(
-      api.mock.calls.some(([, init]) => init?.method === "PATCH"),
-    ).toBe(false);
+    expect(api.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(
+      false,
+    );
     expect(
       await screen.findByText("storage.invalidConfigJson"),
     ).toBeInTheDocument();

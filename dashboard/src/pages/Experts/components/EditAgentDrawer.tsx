@@ -408,9 +408,7 @@ function EditAgentDrawerBody({
       try {
         probe = await probeRootDir(values.root_dir ?? "/");
       } catch (err) {
-        message.error(
-          adminOnlyErrorMessage(err, t("experts.saveFailed"), t),
-        );
+        message.error(adminOnlyErrorMessage(err, t("experts.saveFailed"), t));
         return;
       }
       if (!probe.ok) {

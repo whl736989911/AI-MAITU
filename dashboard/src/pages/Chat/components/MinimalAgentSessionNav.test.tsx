@@ -80,7 +80,10 @@ async function mountNav(
   overrides: Partial<React.ComponentProps<typeof MinimalAgentSessionNav>> = {},
 ) {
   const props = {
-    agents: [agent(ACTIVE_AGENT, 1, "Expert One"), agent(OTHER_AGENT, 2, "Expert Two")],
+    agents: [
+      agent(ACTIVE_AGENT, 1, "Expert One"),
+      agent(OTHER_AGENT, 2, "Expert Two"),
+    ],
     activeId: null,
     activeAgentId: ACTIVE_AGENT,
     activeSessions: [],
@@ -144,7 +147,11 @@ describe("MinimalAgentSessionNav rename / pin against a rejected server write", 
     await waitFor(() => {
       expect(errorToastMock).toHaveBeenCalledTimes(1);
     });
-    expect(renameMock).toHaveBeenCalledWith(OTHER_AGENT, "thr_other", "Renamed elsewhere");
+    expect(renameMock).toHaveBeenCalledWith(
+      OTHER_AGENT,
+      "thr_other",
+      "Renamed elsewhere",
+    );
     expect(screen.getByText("Beta chat")).toBeInTheDocument();
     expect(screen.queryByText("Renamed elsewhere")).not.toBeInTheDocument();
   });
@@ -158,7 +165,9 @@ describe("MinimalAgentSessionNav rename / pin against a rejected server write", 
     await waitFor(() => {
       expect(errorToastMock).toHaveBeenCalledTimes(1);
     });
-    expect(patchMock).toHaveBeenCalledWith(OTHER_AGENT, "thr_other", { pinned: true });
+    expect(patchMock).toHaveBeenCalledWith(OTHER_AGENT, "thr_other", {
+      pinned: true,
+    });
     // The row's pin badge is title={t("chat.unpin")}; the i18n test mock
     // resolves that key to itself, so match on the key.
     expect(document.querySelector('span[title="chat.unpin"]')).toBeNull();
@@ -174,7 +183,10 @@ describe("MinimalAgentSessionNav rename / pin against a rejected server write", 
     fireEvent.keyDown(input, { key: "Enter" });
 
     await waitFor(() => {
-      expect(onRenameActive).toHaveBeenCalledWith("thr_active", "Renamed locally");
+      expect(onRenameActive).toHaveBeenCalledWith(
+        "thr_active",
+        "Renamed locally",
+      );
     });
     // The active path owns its own toast (host handler) and never writes the
     // foreign-agent endpoint; the preview must not show an unstored title.
@@ -253,7 +265,8 @@ describe("MinimalAgentSessionNav kind groups", () => {
     // ``compareDocumentPosition`` answers with a bitmask; the FOLLOWING bit is
     // the one that says the first node is drawn above the second.
     expect(
-      expert.compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING,
+      expert.compareDocumentPosition(heading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
       heading.compareDocumentPosition(feature) &

@@ -107,9 +107,7 @@ describe("<ACPPanel /> runner definitions", () => {
       screen.getByRole("button", { name: "acp.create" }),
     ).toBeInTheDocument();
     expect(screen.queryByText("common.adminRequired")).not.toBeInTheDocument();
-    expect(
-      within(runnerCardTop()).getByRole("switch"),
-    ).toBeInTheDocument();
+    expect(within(runnerCardTop()).getByRole("switch")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("acp.runner_opencode"));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();

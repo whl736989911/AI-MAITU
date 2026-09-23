@@ -100,12 +100,7 @@ interface UsageSummary {
   buckets: UsageBucket[];
 }
 
-type ViewMode =
-  | "summary"
-  | "by_day"
-  | "by_expert"
-  | "by_feature"
-  | "by_model";
+type ViewMode = "summary" | "by_day" | "by_expert" | "by_feature" | "by_model";
 type DimGranularity = Exclude<ViewMode, "summary">;
 
 const CHART_COLORS = [
@@ -1043,7 +1038,12 @@ export default function TokenUsagePage() {
             ? fetchSummary(windowKey, "by_expert", agentFilter, adminUserFilter)
             : Promise.resolve(null),
           kinds.features
-            ? fetchSummary(windowKey, "by_feature", agentFilter, adminUserFilter)
+            ? fetchSummary(
+                windowKey,
+                "by_feature",
+                agentFilter,
+                adminUserFilter,
+              )
             : Promise.resolve(null),
           fetchSummary(windowKey, "by_model", agentFilter, adminUserFilter),
           fetchSummary(windowKey, "by_day", agentFilter, adminUserFilter),
@@ -1053,7 +1053,9 @@ export default function TokenUsagePage() {
           expertRes ? resolveAgentLabels(expertRes.buckets, agentNameById) : [],
         );
         setSummaryFeature(
-          featureRes ? resolveAgentLabels(featureRes.buckets, agentNameById) : [],
+          featureRes
+            ? resolveAgentLabels(featureRes.buckets, agentNameById)
+            : [],
         );
         setSummaryModel(modelRes.buckets);
         setSummaryDay(dayRes.buckets);

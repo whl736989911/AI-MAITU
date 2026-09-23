@@ -42,7 +42,9 @@ describe("ExpertPickerPopover kind groups", () => {
     expect(screen.queryByText("功能")).toBeNull();
     // No fallback given for the expert-only wording: the mock resolves the key
     // to itself, and the point is that the two-kind wording is not used.
-    expect(screen.getByPlaceholderText("chat.expertPickerSearch")).toBeInTheDocument();
+    expect(
+      screen.getByPlaceholderText("chat.expertPickerSearch"),
+    ).toBeInTheDocument();
   });
 
   it("labels the features' group, below the experts, and says so in its words", () => {
@@ -53,9 +55,8 @@ describe("ExpertPickerPopover kind groups", () => {
 
     const heading = screen.getByText("功能");
     expect(
-      screen
-        .getByText("Expert One")
-        .compareDocumentPosition(heading) & Node.DOCUMENT_POSITION_FOLLOWING,
+      screen.getByText("Expert One").compareDocumentPosition(heading) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
       heading.compareDocumentPosition(screen.getByText("Weekly digest")) &

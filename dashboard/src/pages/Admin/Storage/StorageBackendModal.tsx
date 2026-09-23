@@ -47,7 +47,8 @@ function parseConfigObject(raw: string): Record<string, unknown> | null {
   } catch {
     return null;
   }
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
   return { ...(parsed as Record<string, unknown>) };
 }
 
@@ -652,7 +653,9 @@ export function StorageBackendDrawer({
           activeKey={advancedOpen ? ["advanced"] : []}
           onChange={(key) =>
             setAdvancedOpen(
-              Array.isArray(key) ? key.includes("advanced") : key === "advanced",
+              Array.isArray(key)
+                ? key.includes("advanced")
+                : key === "advanced",
             )
           }
           items={[

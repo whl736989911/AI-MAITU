@@ -124,9 +124,9 @@ describe("pathPermissionKeys", () => {
     // A non-administrator holding the key passes the same guard. What stays
     // administrator-only is the runner *definition* write inside the panel —
     // a role-only gate, so it is not expressed here.
-    expect(
-      canAccessPath({ role: "user", permissions: ["acp"] }, "/acp"),
-    ).toBe(true);
+    expect(canAccessPath({ role: "user", permissions: ["acp"] }, "/acp")).toBe(
+      true,
+    );
     expect(
       canAccessPath({ role: "user", permissions: ["terminal"] }, "/acp"),
     ).toBe(false);
@@ -156,10 +156,7 @@ describe("pathPermissionKeys", () => {
     expect(canAccessPath(bare, "/acp")).toBe(false);
     // No bypass, but a granted key is honored — the role is not the gate.
     expect(
-      canAccessPath(
-        { role: "unit_admin", permissions: ["acp"] },
-        "/acp",
-      ),
+      canAccessPath({ role: "unit_admin", permissions: ["acp"] }, "/acp"),
     ).toBe(true);
     expect(
       canAccessPath(
@@ -187,7 +184,9 @@ describe("pathPermissionKeys", () => {
     // fallback — a path no module key owns — is the one left.
     expect(pathPermissionKeys("/admin/unmapped-section")).toBe("admin");
     expect(canAccessPath(wildcard, "/admin/unmapped-section")).toBe(false);
-    expect(canAccessPath({ role: "user", permissions: [] }, "/acp")).toBe(false);
+    expect(canAccessPath({ role: "user", permissions: [] }, "/acp")).toBe(
+      false,
+    );
   });
 });
 
@@ -205,7 +204,9 @@ describe("personalization nav key", () => {
   it("comes from the section prefix, tabs listed in the map or not", () => {
     // ``/personalization/files`` is a feature's tab; the experts' page has no
     // such tab, and the path still highlights the section it is under.
-    expect(resolveSelectedKey("/personalization/files")).toBe("personalization");
+    expect(resolveSelectedKey("/personalization/files")).toBe(
+      "personalization",
+    );
     expect(resolveSelectedKey("/personalization/skills")).toBe(
       "personalization",
     );

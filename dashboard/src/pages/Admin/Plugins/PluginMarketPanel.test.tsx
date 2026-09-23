@@ -19,7 +19,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { OctopUser } from "../../../api/modules/auth";
-import type { MarketPlugin, MarketPluginDetail } from "../../../api/modules/plugins";
+import type {
+  MarketPlugin,
+  MarketPluginDetail,
+} from "../../../api/modules/plugins";
 
 const { marketList, marketGet, marketInstall } = vi.hoisted(() => ({
   marketList: vi.fn(),
@@ -128,17 +131,27 @@ describe("<PluginMarketPanel />", () => {
     marketGet.mockResolvedValue(
       detail({ tools: [{ name: "draw_fortune", description: "Draw" }] }),
     );
-    await userEvent.click(within(alert).getByRole("button", { name: "common.refresh" }));
+    await userEvent.click(
+      within(alert).getByRole("button", { name: "common.refresh" }),
+    );
 
     expect(await screen.findByText("draw_fortune")).toBeInTheDocument();
-    expect(screen.queryByText("market detail unavailable")).not.toBeInTheDocument();
-    expect(screen.queryByText("plugins.marketToolsPending")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("market detail unavailable"),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("plugins.marketToolsPending"),
+    ).not.toBeInTheDocument();
   });
 
   it("does not call a landed install failed when the drawer refresh fails", async () => {
     marketList.mockResolvedValue({ items: [plugin({ installed: false })] });
     marketGet.mockRejectedValue(new Error("market detail unavailable"));
-    marketInstall.mockResolvedValue({ ...plugin(), installed: true, enabled: true });
+    marketInstall.mockResolvedValue({
+      ...plugin(),
+      installed: true,
+      enabled: true,
+    });
 
     renderPanel(ADMIN);
     await userEvent.click(await screen.findByText("plugins.viewDetails"));

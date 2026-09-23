@@ -79,11 +79,7 @@ function entriesToNodes(entries: DirEntry[]): DirTreeNode[] {
  * endpoints are admin-only server-side, so plain users get an input instead
  * of an empty tree plus 403 toasts.
  */
-function ManualRootDirInput({
-  value,
-  onChange,
-  disabled,
-}: RootDirSelectProps) {
+function ManualRootDirInput({ value, onChange, disabled }: RootDirSelectProps) {
   const { t } = useTranslation();
   return (
     <div className={styles.rootDirManual}>

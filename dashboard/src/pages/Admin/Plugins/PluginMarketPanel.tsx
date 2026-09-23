@@ -96,7 +96,9 @@ export function PluginMarketPanel({
       setInstallError(null);
       try {
         await pluginsApi.marketInstall(plugin.id);
-        message.success(t("plugins.marketInstallSuccess", { name: nameOf(plugin, lang) }));
+        message.success(
+          t("plugins.marketInstallSuccess", { name: nameOf(plugin, lang) }),
+        );
         await fetchMarket(keyword);
         onInstalled?.();
       } catch (err) {
@@ -114,7 +116,9 @@ export function PluginMarketPanel({
           setSelected(await pluginsApi.marketGet(plugin.id));
           setDetailError(null);
         } catch (err) {
-          setDetailError(apiErrorMessage(err, t("plugins.marketDetailFailed"), t));
+          setDetailError(
+            apiErrorMessage(err, t("plugins.marketDetailFailed"), t),
+          );
         }
       }
     },
@@ -180,7 +184,10 @@ export function PluginMarketPanel({
           showIcon
           message={errorMessage}
           action={
-            <Button size="small" onClick={() => void fetchMarket(keyword, true)}>
+            <Button
+              size="small"
+              onClick={() => void fetchMarket(keyword, true)}
+            >
               {t("common.refresh")}
             </Button>
           }

@@ -81,7 +81,10 @@ describe("rename / pin failure reporting", () => {
 
     let stored: boolean | undefined;
     await act(async () => {
-      stored = await result.current.handleRenameSession(THREAD, "Renamed locally");
+      stored = await result.current.handleRenameSession(
+        THREAD,
+        "Renamed locally",
+      );
     });
 
     expect(stored).toBe(false);
@@ -111,7 +114,10 @@ describe("rename / pin failure reporting", () => {
     let renamed: boolean | undefined;
     let pinned: boolean | undefined;
     await act(async () => {
-      renamed = await result.current.handleRenameSession(THREAD, "Renamed on server");
+      renamed = await result.current.handleRenameSession(
+        THREAD,
+        "Renamed on server",
+      );
       pinned = await result.current.handlePinSession(THREAD, true);
     });
 

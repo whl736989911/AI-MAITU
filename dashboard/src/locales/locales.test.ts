@@ -99,8 +99,12 @@ describe("locale bundle parity (en / zh)", () => {
     // turning this comparison into a no-op.
     expect(enLeaves.size).toBeGreaterThan(1000);
 
-    const enOnly = [...enLeaves.keys()].filter((key) => !zhLeaves.has(key)).sort();
-    const zhOnly = [...zhLeaves.keys()].filter((key) => !enLeaves.has(key)).sort();
+    const enOnly = [...enLeaves.keys()]
+      .filter((key) => !zhLeaves.has(key))
+      .sort();
+    const zhOnly = [...zhLeaves.keys()]
+      .filter((key) => !enLeaves.has(key))
+      .sort();
 
     expect({ enOnly, zhOnly }, mismatchSummary(enOnly, zhOnly)).toEqual({
       enOnly: [],
@@ -112,8 +116,18 @@ describe("locale bundle parity (en / zh)", () => {
     const enLeaves = flattenLeaves(en as Bundle);
     const zhLeaves = flattenLeaves(zh as Bundle);
     const problems = [
-      ...collectStructureProblems(flattenBranches(en as Bundle), zhLeaves, "en.json", "zh.json"),
-      ...collectStructureProblems(flattenBranches(zh as Bundle), enLeaves, "zh.json", "en.json"),
+      ...collectStructureProblems(
+        flattenBranches(en as Bundle),
+        zhLeaves,
+        "en.json",
+        "zh.json",
+      ),
+      ...collectStructureProblems(
+        flattenBranches(zh as Bundle),
+        enLeaves,
+        "zh.json",
+        "en.json",
+      ),
     ];
 
     expect(problems.sort()).toEqual([]);

@@ -253,10 +253,10 @@ export default function AvatarDropdown({
     role === "admin"
       ? t("account.roleAdmin")
       : role === "enterprise_admin"
-        ? t("roles.enterpriseAdmin")
-        : role === "unit_admin"
-          ? t("account.roleUnitAdmin")
-          : t("account.roleUser");
+      ? t("roles.enterpriseAdmin")
+      : role === "unit_admin"
+      ? t("account.roleUnitAdmin")
+      : t("account.roleUser");
 
   const displayName = user?.display_name || user?.username || "—";
   const initials = (user?.display_name || user?.username || "?")

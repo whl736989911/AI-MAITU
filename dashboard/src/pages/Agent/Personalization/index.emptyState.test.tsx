@@ -31,7 +31,9 @@ vi.mock("../../../layouts/PageShell", () => ({
 }));
 
 vi.mock("../../../hooks/useIsMobile", () => ({ useIsMobile: () => false }));
-vi.mock("../../../hooks/useCurrentUser", () => ({ useCurrentUser: () => null }));
+vi.mock("../../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => null,
+}));
 vi.mock("../../../hooks/usePathTabs", () => ({
   usePathTabs: () => ({
     activeTab: "skills",

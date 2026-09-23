@@ -33,7 +33,10 @@ export interface AgentKindCounts {
 }
 
 /** The tally of an owner with no agents; rows outnumber owners with agents. */
-export const NO_AGENT_KIND_COUNTS: AgentKindCounts = { experts: 0, features: 0 };
+export const NO_AGENT_KIND_COUNTS: AgentKindCounts = {
+  experts: 0,
+  features: 0,
+};
 
 /** The two kinds, as "does this list hold one". */
 export interface AgentKindPresence {

@@ -417,8 +417,8 @@ export default function SharingSettingsDrawer({
               result.status === "pending_approval"
                 ? t("sharing.settings.result.pending")
                 : result.applied
-                  ? t("sharing.settings.result.applied")
-                  : t("sharing.settings.result.superseded")
+                ? t("sharing.settings.result.applied")
+                : t("sharing.settings.result.superseded")
             }
             description={
               <div className={styles.resultMeta}>

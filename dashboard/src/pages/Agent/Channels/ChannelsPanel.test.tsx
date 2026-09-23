@@ -157,9 +157,14 @@ describe("<ChannelsPanel /> create-flow default", () => {
 
 describe("<ChannelsPanel /> channel types the account may use", () => {
   it("offers only the types the account holds a key for", async () => {
-    renderPanel({ ...baselineUser, permissions: ["channels", "channel_feishu"] });
+    renderPanel({
+      ...baselineUser,
+      permissions: ["channels", "channel_feishu"],
+    });
 
-    expect((await screen.findAllByText("channels.label_feishu")).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText("channels.label_feishu")).length,
+    ).toBeGreaterThan(0);
     expect(screen.queryByText("channels.label_wecom")).toBeNull();
     // The collapsed "更多通道" bucket is drawn from the authorized set too.
     expect(
@@ -170,14 +175,18 @@ describe("<ChannelsPanel /> channel types the account may use", () => {
   it("says so when no channel type is authorized at all", async () => {
     renderPanel({ ...baselineUser, permissions: ["channels"] });
 
-    expect((await screen.findAllByText("channels.noAuthorizedTypes")).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText("channels.noAuthorizedTypes")).length,
+    ).toBeGreaterThan(0);
     expect(screen.queryByText("channels.label_feishu")).toBeNull();
   });
 
   it("gives a system administrator every type through the role bypass", async () => {
     renderPanel({ ...baselineUser, role: "admin", permissions: [] });
 
-    expect((await screen.findAllByText("channels.label_feishu")).length).toBeGreaterThan(0);
+    expect(
+      (await screen.findAllByText("channels.label_feishu")).length,
+    ).toBeGreaterThan(0);
     expect(
       await screen.findByRole("button", { name: /channels\.showMoreChannels/ }),
     ).toBeDefined();

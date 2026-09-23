@@ -28,7 +28,10 @@ import { useEffect, useMemo, useState } from "react";
 import { request } from "../api/request";
 import { useAgent } from "../context/AgentContext";
 import { isFeatureAgent } from "../utils/agentKind";
-import { indexAgentsByKind, type AgentKindPresence } from "../utils/agentKindCounts";
+import {
+  indexAgentsByKind,
+  type AgentKindPresence,
+} from "../utils/agentKindCounts";
 
 /** The kinds the deployment holds, as ``GET /agents/kinds`` answers it. */
 interface AgentKindsPayload {
@@ -73,7 +76,10 @@ export function useAgentKindPresence(): AgentKindPresence {
   // One object for as long as the answer behind it is the same one, so a surface
   // may put the answer in a dependency list without re-running every render.
   return useMemo(
-    () => (kinds === null ? indexAgentsByKind(agents).held : presenceFromKinds(kinds)),
+    () =>
+      kinds === null
+        ? indexAgentsByKind(agents).held
+        : presenceFromKinds(kinds),
     [kinds, agents],
   );
 }

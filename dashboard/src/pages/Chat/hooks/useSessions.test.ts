@@ -204,7 +204,10 @@ describe("useSessions rename / pin persistence", () => {
 
     let stored: boolean | undefined;
     await act(async () => {
-      stored = await result.current.renameSession("thr_keep", "Renamed locally");
+      stored = await result.current.renameSession(
+        "thr_keep",
+        "Renamed locally",
+      );
     });
 
     expect(stored).toBe(false);
@@ -250,7 +253,10 @@ describe("useSessions rename / pin persistence", () => {
 
     let stored: boolean | undefined;
     await act(async () => {
-      stored = await result.current.renameSession("thr_keep", "Renamed on server");
+      stored = await result.current.renameSession(
+        "thr_keep",
+        "Renamed on server",
+      );
     });
 
     expect(stored).toBe(true);
