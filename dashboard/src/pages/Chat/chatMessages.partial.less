@@ -1270,7 +1270,7 @@
 /* ---------- Message timestamp & usage ---------- */
 .msgTime {
   font-size: 10px;
-  color: var(--fn-text-quaternary);
+  color: var(--fn-text-secondary);
   margin-top: 0;
   padding: 0;
   user-select: none;
@@ -1291,13 +1291,7 @@
   flex-wrap: wrap;
   margin-top: 6px;
   padding: 0 4px;
-  opacity: 0.5;
   font-size: 10px;
-  transition: opacity 0.2s;
-
-  .messageBubble:hover & {
-    opacity: 0.9;
-  }
 }
 
 .msgMetaRowRight {
@@ -1307,7 +1301,7 @@
 
 .msgUsage {
   font-size: 10px;
-  color: var(--fn-text-quaternary);
+  color: var(--fn-text-secondary);
   user-select: none;
 }
 
@@ -1406,10 +1400,10 @@
   justify-content: center;
   width: 22px;
   height: 22px;
-  border: 1px solid var(--fn-border-secondary);
+  border: 1px solid var(--fn-border-primary);
   border-radius: var(--fn-radius-sm);
   background: var(--fn-bg-primary);
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
   cursor: pointer;
   opacity: 0;
   transition:

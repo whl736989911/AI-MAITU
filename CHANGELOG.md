@@ -45,6 +45,7 @@
 - 预览加密文件或本机无法转换的 `.doc` 此前会返回 `500 internal error`，现在返回 `KNOWLEDGE_PASSWORD_REQUIRED` / `KNOWLEDGE_CONVERSION_FAILED`（409，后者带上转换器自己的原因）；两者都补了中英接口文案
 - 界面把 `.doc` 当作可富预览的格式，但浏览器端的 docx 渲染器读不了旧版二进制 Word，点开只会报「无法加载预览」。现在 `.doc` 与服务端提取文本一致（与 `.ppt` 同样处理），并补上 `.xml` 的文本预览；预览用的扩展名表同时由 `Set` 改为 `Record` + `Object.hasOwn`，`report.constructor` 这类文件名不再命中原型成员
 - 知识库文档状态的三处界面文案此前缺 `discovered` / `unsupported` / `password_required`，界面上会直接显示成 i18n key 原文，现已补齐（中英各两处）
+- 对话页的次要文字与图标对比度不足：助手回答下方的时间戳与 token 统计、复制 / 朗读 / 重新生成 / 分叉等操作图标，以及输入框内的占位符、工具图标、上下文环数字、排队消息与附件预览图标，此前用的是 `--fn-text-quaternary`（浅色下 `#d1d5db`，与输入框边框同值）或 `--fn-text-tertiary`（`#9ca3af`），消息元信息行还额外叠了 `opacity: .5`——实际对比度只有 1.2–2.5:1，远低于 WCAG AA 的 4.5:1（图标 3:1）。现统一改用 `--fn-text-secondary`，去掉元信息行的 `opacity: .5` 与模型选择器「· 自动」的 `opacity: .78`，操作图标边框由 `--fn-border-secondary` 提到 `--fn-border-primary`
 
 - 企业功能运行记录新增运行快照：`feature_tasks.agent_id`（本次实际使用的 agent）与 `feature_tasks.injected_rule_ids`（本次注入的已审核规则 id），成功与失败都会写入，用于事后回答「这份草稿是按什么产出的」
 
