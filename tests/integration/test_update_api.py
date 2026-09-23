@@ -5,41 +5,33 @@ from __future__ import annotations
 from typing import Any
 
 
-async def test_update_status_shape(env_admin_client: Any) -> None:
+async def test_update_status_exposes_installed_version_without_upstream_release(
+    env_admin_client: Any,
+) -> None:
     c, auth = env_admin_client
-    r = await c.get("/api/update/status", headers=auth)
-    assert r.status_code == 200
-    body = r.json()
-    for key in (
-        "current_version",
-        "latest_version",
-        "has_update",
-        "is_editable",
-        "service_mode",
-        "desktop",
-        "error",
-        "last_check_time",
-        "release_notes",
-        "stable_only",
-        "latest_is_prerelease",
-    ):
-        assert key in body
+    response = await c.get("/api/update/status", headers=auth)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["current_version"]
+    assert body["latest_version"] is None
+    assert body["has_update"] is False
+    assert body["service_mode"] in (None, "systemd", "launchd")
+    assert body["source"] is None
 
 
-async def test_update_check_admin_only(env_admin_client: Any) -> None:
+async def test_update_check_does_not_offer_upstream_package(env_admin_client: Any) -> None:
     c, auth = env_admin_client
-    r = await c.post("/api/update/check", headers=auth)
-    assert r.status_code == 200
+    response = await c.post("/api/update/check", headers=auth)
+    assert response.status_code == 200
+    assert response.json()["has_update"] is False
+    assert response.json()["latest_version"] is None
 
 
-async def test_update_settings_stable_only_roundtrip(env_admin_client: Any) -> None:
+async def test_update_upgrade_rejects_upstream_package_install(env_admin_client: Any) -> None:
     c, auth = env_admin_client
-    r = await c.patch("/api/update/settings", json={"stable_only": False}, headers=auth)
-    assert r.status_code == 200
-    assert r.json()["stable_only"] is False
-    status = await c.get("/api/update/status", headers=auth)
-    assert status.status_code == 200
-    assert status.json()["stable_only"] is False
-    r = await c.patch("/api/update/settings", json={"stable_only": True}, headers=auth)
-    assert r.status_code == 200
-    assert r.json()["stable_only"] is True
+    response = await c.post("/api/update/upgrade", json={"version": "9.9.9"}, headers=auth)
+    assert response.status_code == 403
+    assert (
+        response.json()["error"]["details"]["upgrade_url"]
+        == "https://github.com/whl736989911/AI-MAITU"
+    )

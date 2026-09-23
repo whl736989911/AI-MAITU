@@ -15,7 +15,6 @@ import {
   FolderOpen,
   RefreshCw,
   MessageSquare,
-  Workflow,
 } from "lucide-react";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
 import SubagentCatalogDrawer from "./SubagentCatalogDrawer";
@@ -516,6 +515,9 @@ export const AgentCard = memo(function AgentCard({
 
               <AgentMoreActions
                 buttonClassName={styles.agentCard2EditBtn}
+                onWorkflow={
+                  onWorkflow ? () => onWorkflow(agent.agent_id) : undefined
+                }
                 onSkills={() => setSkillCatalogOpen(true)}
                 onSubagents={openSubagentCatalog}
                 onTools={() => setToolSettingsOpen(true)}
@@ -527,18 +529,6 @@ export const AgentCard = memo(function AgentCard({
             </>
           )}
 
-          {onWorkflow && (
-            <Tooltip title={t("features.tabWorkflow")} mouseEnterDelay={0.5}>
-              <button
-                type="button"
-                className={styles.agentCard2EditBtn}
-                onClick={() => onWorkflow(agent.agent_id)}
-                aria-label={t("features.tabWorkflow")}
-              >
-                <Workflow size={13} />
-              </button>
-            </Tooltip>
-          )}
           {chatReady ? (
             <button
               className={styles.agentCard2ChatBtn}

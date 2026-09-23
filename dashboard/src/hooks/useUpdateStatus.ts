@@ -8,7 +8,7 @@ import {
   storeUpdateStatus,
 } from "../utils/updateStatusCache";
 
-/** Shared in-flight probe so Header + Sidebar mounts don't stampede PyPI. */
+/** Shared in-flight request for the current installed version. */
 let inFlight: Promise<UpdateStatus | null> | null = null;
 
 async function probeUpdateStatus(): Promise<UpdateStatus | null> {
@@ -58,7 +58,7 @@ export function useUpdateStatus() {
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshStatus]);
 
-  // Keep checking while the dashboard stays open (cache TTL still gates PyPI).
+  // Refresh the installed version while the dashboard stays open.
   useEffect(() => {
     const id = window.setInterval(() => {
       void refreshStatus(false);
@@ -77,7 +77,5 @@ export function useUpdateStatus() {
       window.removeEventListener(UPDATE_STATUS_CHANGED_EVENT, onChanged);
   }, []);
 
-  const hasUpdate = Boolean(status?.has_update && status?.latest_version);
-
-  return { status, hasUpdate, refreshStatus };
+  return { status, refreshStatus };
 }

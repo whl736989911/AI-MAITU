@@ -254,39 +254,33 @@ def test_build_harness_config_includes_search_knowledge_without_cron(
     assert any(isinstance(item, KnowledgeSearchHintMiddleware) for item in (cfg.middleware or []))
 
 
-def test_build_harness_config_freezes_a_feature_agents_memory(
+def test_build_harness_config_freezes_a_feature_agents_shared_files(
     manager: AgentManager,
 ) -> None:
-    """A feature's agent hands one workspace MEMORY.md to every caller of it.
-
-    Nothing else refuses the write: without the middleware in the built config the
-    agent stores whatever one caller told it, and the next caller's run reads it
-    back — cross-caller pollution, the thing the freeze exists to prevent. The
-    row's ``kind`` is the whole decision, so the author owning it changes nothing.
-    """
-    from octop.infra.agents.middleware.shared_memory_freeze import (
-        SharedMemoryFreezeMiddleware,
+    """A feature's one profile and memory must not absorb a caller's details."""
+    from octop.infra.agents.middleware.shared_workspace_freeze import (
+        SharedWorkspaceFreezeMiddleware,
     )
 
     cfg = manager._build_harness_config(
         _row(agent_id="feat-quote-draft", user_id=7, kind=KIND_FEATURE)
     )
 
-    assert any(isinstance(item, SharedMemoryFreezeMiddleware) for item in (cfg.middleware or []))
+    assert any(isinstance(item, SharedWorkspaceFreezeMiddleware) for item in (cfg.middleware or []))
 
 
 def test_build_harness_config_leaves_an_owned_agents_memory_alone(
     manager: AgentManager,
 ) -> None:
     """An expert's memory is its owner's: no freeze anywhere in its chain."""
-    from octop.infra.agents.middleware.shared_memory_freeze import (
-        SharedMemoryFreezeMiddleware,
+    from octop.infra.agents.middleware.shared_workspace_freeze import (
+        SharedWorkspaceFreezeMiddleware,
     )
 
     cfg = manager._build_harness_config(_row(agent_id="AGT001"))
 
     assert not any(
-        isinstance(item, SharedMemoryFreezeMiddleware) for item in (cfg.middleware or [])
+        isinstance(item, SharedWorkspaceFreezeMiddleware) for item in (cfg.middleware or [])
     )
 
 

@@ -15,10 +15,9 @@
  * that writes. The page adds no gate of its own, so the two cannot disagree.
  *
  * ── Where a feature is configured ───────────────────────────────────────────
- * The card opens the experts' own drawer for its agent definition and the same
- * capability catalogs used by Personalization. Its workflow action opens this
- * page's drawer for the feature-specific run definition; callers can read it,
- * while only its author can write it.
+ * The card opens the experts' own drawer for its agent definition. Its More
+ * menu opens capability catalogs and the workflow editor, all of which can
+ * also be reached from the feature's tabs in Personalization.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -30,6 +29,8 @@ import { message } from "@/utils/antdMessage";
 import PageShell from "../../layouts/PageShell";
 import { useAgent, type OctopAgent } from "../../context/AgentContext";
 import { isFeatureAgent } from "../../utils/agentKind";
+import { useUserRole } from "../../hooks/useUserRole";
+import { canManageExpert } from "../../utils/sharedExpert";
 import { AgentCard } from "../Experts/components/AgentCard";
 import EditAgentDrawer from "../Experts/components/EditAgentDrawer";
 import { EmptyStateIcon } from "../../components/EmptyState";
@@ -56,6 +57,7 @@ function orderFeatures(features: OctopAgent[]): OctopAgent[] {
 export default function FeaturesPage() {
   const { t } = useTranslation();
   const { agents, refresh, loading } = useAgent();
+  const role = useUserRole();
 
   const features = useMemo(
     () => orderFeatures(agents.filter(isFeatureAgent)),
@@ -245,7 +247,7 @@ export default function FeaturesPage() {
           <FeatureWorkflowPanel
             key={workflowFeature.agent_id}
             agentId={workflowFeature.agent_id}
-            canWrite={workflowFeature.is_owner !== false}
+            canWrite={canManageExpert(workflowFeature, role)}
           />
         )}
       </Drawer>

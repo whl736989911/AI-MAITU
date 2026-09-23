@@ -3041,8 +3041,8 @@ class AgentManager:
             feature_workflow_chain,
         )
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
-        from octop.infra.agents.middleware.shared_memory_freeze import (
-            shared_memory_freeze_chain,
+        from octop.infra.agents.middleware.shared_workspace_freeze import (
+            shared_workspace_freeze_chain,
         )
         from octop.infra.agents.middleware.skill_catalog import (
             SkillCatalogRefreshMiddleware,
@@ -3067,15 +3067,16 @@ class AgentManager:
                 usage_repo=self._repos.usage_repo,
             ),
             ReasoningRequestMiddleware(),
-            # A feature's own agent has no owner whose memory its workspace
-            # MEMORY.md could be, and every caller reads the same file: its writes
-            # are refused. For every other agent this is ``[]`` and the chain is
-            # exactly what it was — see the module's docstring.
-            *shared_memory_freeze_chain(agent_id=row.agent_id, kind=row.kind),
-            # A feature's declared workflow — the fixed steps, the rules, and the
-            # calling user's own overlay — rides on this turn's system message.
-            # For every other agent this is ``[]`` and the chain is what it was.
-            *feature_workflow_chain(agent_id=row.agent_id, kind=row.kind),
+            # A feature serves every caller from one workspace: USER.md and
+            # MEMORY.md are readable, but no turn may write either shared file.
+            # Experts keep their own profile and memory behavior.
+            *shared_workspace_freeze_chain(agent_id=row.agent_id, kind=row.kind),
+            # A feature turn knows the product's configuration menu even before
+            # it has a workflow; a declared run follows that guide in the system
+            # message. Experts get neither block.
+            *feature_workflow_chain(
+                agent_id=row.agent_id, kind=row.kind, author_user_id=row.user_id
+            ),
             TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
             KnowledgeSearchHintMiddleware(),
             BrowserProfileMiddleware(),

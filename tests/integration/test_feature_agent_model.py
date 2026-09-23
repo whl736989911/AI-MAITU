@@ -1,11 +1,8 @@
-"""A feature's own agent, end to end: who it belongs to, and what freezes it.
+"""A feature's own agent, end to end: ownership and shared-file boundaries.
 
-The rebuilt model is "a feature *is* an agent": creating a feature creates one
-agent, owned by whoever defined the feature, marked as a feature's own. What that
-marker buys is asserted here on a real server — the workspace memory freeze is
-mounted on that agent and on no other — and so is the capability matrix over
-HTTP: the author configures it, nobody at all writes its memory, and a caller who
-can reach it is read-only.
+Creating a feature creates one agent owned by its author. That agent serves all
+callers from one workspace, so its profile and memory must stay read-only to
+conversational file tools, while its other configuration remains author-owned.
 """
 
 from __future__ import annotations
@@ -15,11 +12,15 @@ from typing import Any
 
 import httpx
 import pytest
+from langchain.agents.middleware import ModelRequest
+from langchain_core.messages import SystemMessage
 
 from octop.infra.agents.feature_agent import feature_agent_id
 from octop.infra.agents.kinds import KIND_AGENT, KIND_FEATURE
-from octop.infra.agents.middleware.shared_memory_freeze import (
-    SharedMemoryFreezeMiddleware,
+from octop.infra.agents.middleware import feature_workflow as workflow_middleware
+from octop.infra.agents.middleware.feature_workflow import FeatureWorkflowMiddleware
+from octop.infra.agents.middleware.shared_workspace_freeze import (
+    SharedWorkspaceFreezeMiddleware,
 )
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.server import OctopServer
@@ -95,8 +96,43 @@ async def test_the_freeze_is_mounted_on_a_feature_agent_and_on_no_other(
     feature_chain = _middleware_chain(srv, feature_row)
     expert_chain = _middleware_chain(srv, expert_row)
 
-    assert any(isinstance(item, SharedMemoryFreezeMiddleware) for item in feature_chain)
-    assert not any(isinstance(item, SharedMemoryFreezeMiddleware) for item in expert_chain)
+    assert any(isinstance(item, SharedWorkspaceFreezeMiddleware) for item in feature_chain)
+    assert not any(isinstance(item, SharedWorkspaceFreezeMiddleware) for item in expert_chain)
+
+
+async def test_a_new_feature_explains_training_before_it_has_a_workflow(
+    env_with_author: tuple[httpx.AsyncClient, OctopServer, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _client, srv, (_admin_auth, _author_auth, author_id, _caller_auth) = env_with_author
+    row = await _create_feature_agent(srv, author_id)
+    middleware = next(
+        item for item in _middleware_chain(srv, row) if isinstance(item, FeatureWorkflowMiddleware)
+    )
+    monkeypatch.setattr(
+        workflow_middleware,
+        "get_config",
+        lambda: {"configurable": {"user": str(author_id), "octop_feature_locale": "zh"}},
+    )
+    received: list[ModelRequest[Any]] = []
+
+    def model_call(request: ModelRequest[Any]) -> str:
+        received.append(request)
+        return "ok"
+
+    request = ModelRequest(
+        model=object(),
+        messages=[],
+        system_message=SystemMessage(content="通用档案模板：先写 USER.md"),
+    )
+    middleware.wrap_model_call(request, model_call)
+
+    assert len(received) == 1
+    content = received[0].system_message.content
+    assert isinstance(content, str)
+    assert content.startswith("通用档案模板")
+    assert content.index("1. 工作流") < content.index("9. 人设文件")
+    assert "不要收集个人身份和偏好写入 USER.md" in content
 
 
 async def test_the_author_configures_the_feature_agent_but_not_its_memory(

@@ -239,7 +239,6 @@
     "embedding": "Embedding",
     "tokenUsage": "Token 统计",
     "checkUpdates": "应用更新",
-    "newVersionBadge": "有新版本",
     "admin": "管理",
     "adminUsers": "用户",
     "adminOrgUnits": "组织架构",
@@ -3591,39 +3590,10 @@
     },
     "update": {
       "title": "版本与更新",
-      "description": "检查最新版本，一键升级麦途智造；右侧可按安装方式查看完整升级说明。",
-      "panelTitle": "版本升级",
-      "panelDesc": "检查是否有新版本，并在支持时一键安装。更新完成后请重启服务。",
-      "stableOnlyLabel": "只更新稳定版",
-      "stableOnlyHint": "自动检查不会提醒测试版（alpha / beta / rc / dev）。仍可手动检查并升级到测试版。",
-      "prereleaseBadge": "测试版",
-      "prereleaseHint": "v{{version}} 是测试版本。",
-      "prereleaseConfirmTitle": "升级到测试版？",
-      "prereleaseConfirmBody": "v{{version}} 是测试版本，可能不稳定。确定要升级吗？",
-      "prereleaseConfirmCancel": "取消",
+      "description": "从本项目 GitHub 源码升级麦途智造；已停用会安装上游 PyPI 包的自动升级。",
+      "panelTitle": "当前安装版本",
+      "panelDesc": "本项目目前尚无 GitHub Release。请从本项目源码更新，不要安装上游 octop 包。",
       "currentVersion": "当前版本",
-      "latestVersion": "最新版本",
-      "checkButton": "检查更新",
-      "upgradeButton": "立即升级",
-      "checking": "正在检查...",
-      "upgrading": "正在升级...",
-      "alreadyLatest": "已是最新版本。",
-      "updateAvailable": "发现新版本",
-      "upgradeSuccess": "升级完成！",
-      "upgradeFailed": "升级失败",
-      "restartHint": "请重启麦途智造使更新生效。",
-      "restartCommand": "重启命令",
-      "editableHint": "检测到开发版安装，请使用 git pull 更新。",
-      "networkError": "无法连接更新服务器，请检查网络。",
-      "mirrorSource": "版本信息来自镜像 {{source}}，可能略滞后于官方源。",
-      "errors": {
-        "pypi_unreachable": "无法连接 PyPI，请检查网络后重试。"
-      },
-      "notChecked": "尚未检查",
-      "stageStarting": "启动中...",
-      "stageDownloading": "下载中...",
-      "stageInstalling": "安装中...",
-      "manualUpgradeHint": "也可手动运行：octop update --verbose",
       "restartServiceBtn": "重启服务",
       "restarting": "正在重启...",
       "restartingHint": "预计需要 1-2 分钟完成，请耐心等待",
@@ -3634,39 +3604,21 @@
       "restartReadyHint": "服务已恢复，页面即将自动刷新。",
       "restartTimeout": "重启超时，请手动执行：octop service restart",
       "restartFailed": "重启请求失败，请检查服务状态后重试",
-      "releaseNotes": "更新说明",
-      "updateModalTitle": "发现新版本",
-      "guideTitle": "按安装方式更新",
-      "guideIntro": "若不能使用左侧一键升级，请按你的安装方式选择下方命令。升级后请重启服务；配置与数据默认保留在 ~/.octop（或 OCTOP_HOME）。",
-      "guideDataNote": "升级不会清空本机数据：用户账号、Agent、对话与记忆、技能、通道与模型配置等均保存在工作目录中，重新安装或更新软件本身即可继续使用。",
+      "guideTitle": "从本项目 GitHub 升级",
+      "guideIntro": "项目地址：",
+      "guideDataNote": "不要使用 pip install -U octop 或旧版一键安装脚本：它们会安装上游项目。请保留原有 ~/.octop（或 OCTOP_HOME）数据目录。",
       "guide": {
-        "ui": {
-          "title": "控制台一键升级",
-          "body": "优先使用左侧「检查更新」与「立即升级」（非源码/可编辑安装）。服务模式可在完成后点「重启服务」。"
-        },
-        "installer": {
-          "title": "一键安装脚本",
-          "body": "若你是用官方安装脚本装的，重新执行同一安装命令即可自动升级到最新版（会复用 ~/.octop 下的环境与数据）。"
-        },
-        "cli": {
-          "title": "CLI：octop update",
-          "body": "若命令行可直接使用 octop（安装脚本或 venv 布局），在终端执行："
-        },
-        "pip": {
-          "title": "pip 安装",
-          "body": "若你是用 pip 装到自己的 Python 环境，可升级包本身："
-        },
         "source": {
-          "title": "源码安装",
-          "body": "从 Git 源码开发/editable 安装时，本页一键升级不可用。请拉取最新代码、构建控制台前端后重新安装到当前环境："
+          "title": "源码目录",
+          "body": "在从本项目克隆的已有目录中，先停止服务，再更新当前分支、依赖和前端构建，最后重新启动："
         },
         "docker": {
           "title": "Docker",
-          "body": "Docker 部署请重新构建并启动镜像，并继续挂载原有数据卷（~/.octop 或 octop-data），避免丢数据："
+          "body": "在原有源码目录中重新构建并启动容器，保留原有数据卷："
         },
         "restart": {
-          "title": "升级后重启",
-          "body": "包更新完成后需要重启进程才生效。任选与你的启动方式匹配的命令："
+          "title": "系统服务",
+          "body": "如果使用系统服务，构建完成后重启它，不要另起一个前台进程："
         }
       }
     }
@@ -3853,9 +3805,6 @@
     },
     "currentVersion": "当前版本 v{{version}}",
     "currentVersionAdmin": "当前版本 v{{version}}，点击查看更新",
-    "versionUpdateAvailable": "当前 v{{current}}，新版本 v{{latest}} 可用，点击前往更新",
-    "versionUpdateAvailableReadonly": "当前 v{{current}}，新版本 v{{latest}} 可用",
-    "newVersionBadge": "有新版本",
     "betaBadge": "Beta",
     "betaTooltip": "当前版本正在内测"
   },
@@ -4351,6 +4300,7 @@
     "createExpert": "去创建专家",
     "pickFeature": "去选一个功能",
     "tabs": {
+      "workflow": "工作流",
       "skills": "技能",
       "tools": "工具",
       "plugins": "插件",

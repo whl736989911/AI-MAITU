@@ -1,8 +1,7 @@
-"""The turn path stamps a feature's workflow onto the run it is about to start.
+"""The turn path supplies a feature's workflow and locale to its model calls.
 
-Read on this side of the turn because it can await (the workspace may be remote),
-and read *only* for an agent whose row says it is a feature's: an expert's turn
-must come out byte-for-byte what it was before the workflow existed.
+The workflow is read asynchronously here; a feature with no workflow still
+passes its locale so the model can explain configuration in the user's language.
 """
 
 from __future__ import annotations
@@ -23,6 +22,7 @@ from octop.infra.agents.feature_workflow import (
     WorkflowRunContext,
     save_workflow,
 )
+from octop.infra.agents.middleware.feature_workflow import CONFIGURABLE_FEATURE_LOCALE_KEY
 from octop.infra.gateway.process import processor as processor_module
 from octop.infra.gateway.process.processor import GlobalProcessor
 from octop.infra.gateway.slash.dispatcher import SlashDispatcher
@@ -316,7 +316,7 @@ async def test_an_expert_turn_carries_no_workflow_even_if_it_has_one(
 
 
 @pytest.mark.asyncio
-async def test_a_feature_without_a_workflow_stamps_nothing(
+async def test_a_feature_without_a_workflow_still_stamps_its_locale(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     root = tmp_path / "ws"
@@ -324,6 +324,7 @@ async def test_a_feature_without_a_workflow_stamps_nothing(
     workspace = BackendWorkspace(LocalShellBackend(root_dir=str(root), virtual_mode=False), root)
     row = SimpleNamespace(kind="feature", name="报价助手", default_model=None)
     processor = _processor(monkeypatch, row, workspace)
+    monkeypatch.setattr(processor_module, "resolve_user_locale", lambda **_kwargs: "zh")
 
     request = await processor._build_dashboard_request(
         _msg(),
@@ -334,4 +335,5 @@ async def test_a_feature_without_a_workflow_stamps_nothing(
         meta={},
     )
 
-    assert CONFIGURABLE_WORKFLOW_KEY not in (request.get("configurable") or {})
+    assert CONFIGURABLE_WORKFLOW_KEY not in request["configurable"]
+    assert request["configurable"][CONFIGURABLE_FEATURE_LOCALE_KEY] == "zh"

@@ -25,9 +25,8 @@
  * editor shows the reason and starts from an empty document, because the broken one
  * is not a document this build can offer to fix in place.
  *
- * Read-only for anyone but the author: a caller may read the active workflow
- * (the run form is built from it) and never write it, so the controls are disabled
- * and the reason is on screen rather than implied by their absence.
+ * Read-only for a caller who cannot manage the feature: the controls are
+ * disabled, while the active workflow remains readable.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -59,7 +58,7 @@ import styles from "./FeatureWorkflowPanel.module.less";
 export interface FeatureWorkflowPanelProps {
   /** The feature's agent id — the definition lives in that agent's workspace. */
   agentId: string;
-  /** Whether the caller may write it, read off the feature row's ``is_owner``. */
+  /** Whether this caller may configure the feature (owner or administrator). */
   canWrite: boolean;
 }
 

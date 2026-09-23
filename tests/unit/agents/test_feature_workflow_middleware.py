@@ -1,10 +1,7 @@
-"""A feature's workflow block reaches the turn's system message — and only there.
+"""Feature turns carry configuration guidance, then any declared workflow.
 
-What this pins is the shape of the injection, because it is where a mistake is
-silent: a block that replaced the system message would drop the feature's persona,
-one appended after the *messages* would be a second user turn the model could
-argue with, and one injected into a turn without a context would apply a workflow
-to an agent that never declared a run.
+The model must see the full feature menu before a workflow exists, without
+replacing its persona; a caller must not be guided to edit shared settings.
 """
 
 from __future__ import annotations
@@ -42,9 +39,17 @@ def _context(**overrides: Any) -> wf.WorkflowRunContext:
     return wf.WorkflowRunContext(**values)
 
 
-def _configure(monkeypatch: Any, context: Any) -> None:
+def _configure(monkeypatch: Any, context: Any, *, user: int = 42, locale: str = "zh") -> None:
     monkeypatch.setattr(
-        mw, "get_config", lambda: {"configurable": {wf.CONFIGURABLE_WORKFLOW_KEY: context}}
+        mw,
+        "get_config",
+        lambda: {
+            "configurable": {
+                "user": str(user),
+                mw.CONFIGURABLE_FEATURE_LOCALE_KEY: locale,
+                wf.CONFIGURABLE_WORKFLOW_KEY: context,
+            }
+        },
     )
 
 
@@ -60,9 +65,12 @@ def _inject(request: ModelRequest[Any]) -> ModelRequest[Any] | None:
         seen["request"] = req
         return "model-response"
 
-    assert mw.FeatureWorkflowMiddleware(agent_id="feat-quote").wrap_model_call(
-        request, handler
-    ) == ("model-response")
+    assert (
+        mw.FeatureWorkflowMiddleware(agent_id="feat-quote", author_user_id=42).wrap_model_call(
+            request, handler
+        )
+        == "model-response"
+    )
     return seen["request"]
 
 
@@ -104,24 +112,51 @@ def test_block_list_content_keeps_its_blocks(monkeypatch: Any) -> None:
     assert isinstance(content, list)
     assert content[0] == original[0]
     assert content[1]["type"] == "text"
-    assert "功能工作流" in content[1]["text"]
+    assert "个性化配置项" in content[1]["text"]
+    assert "功能工作流" in content[2]["text"]
 
 
-def test_a_turn_without_a_context_is_left_exactly_as_it_was(monkeypatch: Any) -> None:
+def test_training_without_a_workflow_still_explains_the_full_feature_menu(
+    monkeypatch: Any,
+) -> None:
     _configure(monkeypatch, None)
-    request = _request(SystemMessage(content="persona"))
+    injected = _inject(_request(SystemMessage(content="通用档案模板")))
 
-    injected = _inject(request)
+    assert injected is not None
+    content = injected.system_message.content
+    assert isinstance(content, str)
+    assert content.startswith("通用档案模板")
+    assert "功能卡片「更多」" in content
+    assert "feature_workflow_get" in content
+    assert "USER.md" in content and "不要收集个人身份" in content
+    choices = ["工作流", "技能", "子智能体", "工具", "插件", "MBTI", "记忆", "通道", "人设文件"]
+    positions = [content.index(choice) for choice in choices]
+    assert positions == sorted(positions)
+    assert "功能工作流：" not in content
 
-    assert injected is request
+
+def test_a_caller_sees_the_menu_but_not_author_editing_advice(monkeypatch: Any) -> None:
+    _configure(monkeypatch, None, user=77)
+    injected = _inject(_request())
+
+    assert injected is not None
+    content = injected.system_message.content
+    assert isinstance(content, str)
+    assert "工作流" in content and "人设文件" in content
+    assert "功能定义由作者维护" in content
+    assert "feature_workflow_save" not in content
 
 
-def test_a_context_that_is_not_one_is_ignored(monkeypatch: Any) -> None:
-    """A ``configurable`` entry another build wrote is not read as a definition."""
-    _configure(monkeypatch, {"definition": {"version": 1}})
-    request = _request()
+def test_feature_guidance_uses_the_turn_locale(monkeypatch: Any) -> None:
+    _configure(monkeypatch, None, locale="en")
+    injected = _inject(_request())
 
-    assert _inject(request) is request
+    assert injected is not None
+    content = injected.system_message.content
+    assert isinstance(content, str)
+    assert "1. Workflow" in content
+    assert "9. Persona files" in content
+    assert "子智能体" not in content
 
 
 def test_the_overlay_is_rendered_last_and_says_it_wins(monkeypatch: Any) -> None:
@@ -145,7 +180,7 @@ def test_a_malformed_definition_never_takes_the_turn_down(monkeypatch: Any) -> N
     monkeypatch.setattr(mw, "render_run_context", boom)
     request = _request(SystemMessage(content="persona"))
 
-    assert _inject(request) is request
+    assert "个性化配置项" in str(_inject(request).system_message.content)
 
 
 def test_run_values_are_rendered_into_the_input_section(monkeypatch: Any) -> None:
@@ -189,16 +224,16 @@ async def test_the_async_hook_injects_the_same_block(monkeypatch: Any) -> None:
         seen["request"] = req
         return "model-response"
 
-    result = await mw.FeatureWorkflowMiddleware(agent_id="feat-quote").awrap_model_call(
-        _request(), handler
-    )
+    result = await mw.FeatureWorkflowMiddleware(
+        agent_id="feat-quote", author_user_id=42
+    ).awrap_model_call(_request(), handler)
 
     assert result == "model-response"
     assert "功能工作流" in str(seen["request"].system_message.content)
 
 
 def test_the_chain_is_a_features_alone() -> None:
-    assert mw.feature_workflow_chain(agent_id="feat-x", kind=KIND_AGENT) == []
-    chain = mw.feature_workflow_chain(agent_id="feat-quote", kind=KIND_FEATURE)
+    assert mw.feature_workflow_chain(agent_id="feat-x", kind=KIND_AGENT, author_user_id=42) == []
+    chain = mw.feature_workflow_chain(agent_id="feat-quote", kind=KIND_FEATURE, author_user_id=42)
     assert len(chain) == 1
     assert isinstance(chain[0], mw.FeatureWorkflowMiddleware)

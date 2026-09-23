@@ -145,7 +145,7 @@ function PageShell({
           marginBottom: agentScoped ? 12 : 24,
         }}
       >
-        <div>
+        <div style={{ minWidth: isMobile ? 0 : 180 }}>
           <Title
             level={4}
             style={{
@@ -167,7 +167,16 @@ function PageShell({
           )}
         </div>
         {titleActions && (
-          <div style={{ flexShrink: 0, paddingTop: 2 }}>{titleActions}</div>
+          <div
+            style={{
+              flexShrink: pathTabs ? 1 : 0,
+              minWidth: 0,
+              overflowX: pathTabs ? "auto" : undefined,
+              paddingTop: 2,
+            }}
+          >
+            {titleActions}
+          </div>
         )}
       </div>
 

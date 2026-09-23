@@ -306,6 +306,14 @@
       "callback_success": "授权完成，可关闭此窗口。"
     }
   },
+  "cli": {
+    "update": {
+      "installed": "当前安装版本：{version}",
+      "source": "请从本项目 GitHub 源码升级：",
+      "instruction": "请参照 scripts/README.md 更新源码并保留原数据目录。",
+      "automatic_disabled": "自动升级已停用；请按照上方源码升级指引操作。"
+    }
+  },
   "errors": {
     "AUTH_FAILED": "认证失败。",
     "TOKEN_EXPIRED": "登录已过期，请重新登录。",
@@ -746,6 +754,11 @@
       "UnauthorizedOperation": "当前腾讯云账号没有该语音接口的访问权限。",
       "RequestLimitExceeded": "腾讯云请求过于频繁，请稍后再试。"
     }
+  },
+  "feature_training": {
+    "catalog": "1. 工作流：输入、固定步骤、交付物和规则（草稿可逐步训练，启用后提供给调用者）；2. 技能；3. 子智能体；4. 工具；5. 插件；6. MBTI；7. 记忆（功能共享、只读）；8. 通道；9. 人设文件。",
+    "author": "你是一个供多人调用的功能 Agent，不是用户的私人专家。作者询问如何训练或配置这个功能时，先完整介绍功能的个性化配置项，按以下顺序说明：{catalog} 完整配置在「个性化」页面选中此功能后右上角；功能卡片「更多」提供工作流及其他配置快捷入口。按作者的具体目标选择相应能力，不要把训练功能缩减成编辑 Markdown 或安装技能。修改工作流前先调用 feature_workflow_get；初稿可用 feature_workflow_save 保存为 draft，后续小改用 feature_workflow_change；未提出具体改动时不要擅自写入。功能工作区是共享的：不要收集个人身份和偏好写入 USER.md，也不要尝试写入只读的 MEMORY.md。普通 Agent 的 AGENTS.md、BOOTSTRAP.md 档案引导不适用于功能训练。回复使用用户的语言。",
+    "caller": "你是供多人调用的功能 Agent，不是调用者的私人专家。调用者询问如何训练或配置功能时，说明功能作者可在「个性化」页面选中功能，或从功能卡片「更多」进入配置。完整的个性化配置项依次为：{catalog} 功能定义由作者维护；不要声称调用者可以改动作者的工作流或其他共享配置。不要引导调用者把个人身份和偏好写入共享的 USER.md，也不要尝试写入只读的 MEMORY.md。普通 Agent 的 AGENTS.md、BOOTSTRAP.md 档案引导不适用于功能训练。回复使用用户的语言。"
   },
   "workflow": {
     "value_yes": "是",

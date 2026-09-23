@@ -8,12 +8,14 @@ import {
   Puzzle,
   Sparkles,
   Waypoints,
+  Workflow,
   Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 interface AgentMoreActionsProps {
   buttonClassName: string;
+  onWorkflow?: () => void;
   onSkills: () => void;
   onSubagents: () => void;
   onTools: () => void;
@@ -23,9 +25,10 @@ interface AgentMoreActionsProps {
   onChannels: () => void;
 }
 
-/** Overflow menu for expert catalog actions (skills / subagents / …). */
+/** Catalog actions shared by experts and features; workflow belongs to features only. */
 export default function AgentMoreActions({
   buttonClassName,
+  onWorkflow,
   onSkills,
   onSubagents,
   onTools,
@@ -37,6 +40,16 @@ export default function AgentMoreActions({
   const { t } = useTranslation();
 
   const items: MenuProps["items"] = [
+    ...(onWorkflow
+      ? [
+          {
+            key: "workflow",
+            icon: <Workflow size={14} />,
+            label: t("features.tabWorkflow"),
+            onClick: onWorkflow,
+          },
+        ]
+      : []),
     {
       key: "skills",
       icon: <Sparkles size={14} />,

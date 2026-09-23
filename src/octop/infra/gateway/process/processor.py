@@ -30,6 +30,7 @@ from octop.infra.agents.feature_workflow import (
     workflow_status,
 )
 from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
+from octop.infra.agents.middleware.feature_workflow import CONFIGURABLE_FEATURE_LOCALE_KEY
 from octop.infra.agents.profile import parse_config_json
 from octop.infra.agents.providers.reasoning import reasoning_request_parameters
 from octop.infra.errors import OctopError
@@ -863,6 +864,7 @@ class GlobalProcessor:
             model=model_ref,
             message_kwargs=message_kwargs,
         )
+        request.setdefault("configurable", {})[CONFIGURABLE_FEATURE_LOCALE_KEY] = locale
         self._attach_turn_knowledge_config(
             request,
             user_id=user_id,
@@ -1323,6 +1325,7 @@ class GlobalProcessor:
             message_kwargs=message_kwargs or None,
             reasoning_overrides=reasoning_overrides,
         )
+        request.setdefault("configurable", {})[CONFIGURABLE_FEATURE_LOCALE_KEY] = locale
         self._attach_turn_knowledge_config(
             request,
             user_id=user_id,

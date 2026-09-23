@@ -306,6 +306,14 @@
       "callback_success": "Authorization complete. You may close this window."
     }
   },
+  "cli": {
+    "update": {
+      "installed": "Installed version: {version}",
+      "source": "Upgrade from this project's GitHub source:",
+      "instruction": "Follow scripts/README.md to update the source and retain your data directory.",
+      "automatic_disabled": "Automatic upgrades are disabled; follow the source upgrade instructions above."
+    }
+  },
   "errors": {
     "AUTH_FAILED": "Authentication failed.",
     "TOKEN_EXPIRED": "Session expired. Please sign in again.",
@@ -746,6 +754,11 @@
       "UnauthorizedOperation": "This Tencent Cloud account is not authorized for this voice API.",
       "RequestLimitExceeded": "Tencent Cloud rate-limited this request. Retry in a moment."
     }
+  },
+  "feature_training": {
+    "catalog": "1. Workflow: inputs, fixed steps, deliverables, and rules (drafts can be trained incrementally; activation makes them available to callers); 2. Skills; 3. Subagents; 4. Tools; 5. Plugins; 6. MBTI; 7. Memory (shared by the feature, read-only); 8. Channels; 9. Persona files.",
+    "author": "You are the agent of a feature used by multiple callers, not the user's private expert. When the author asks how to train or configure this feature, explain its complete personalization menu in order: {catalog} The full menu is at Personalization > select this feature > top-right tabs; the feature card's More menu has shortcuts for Workflow and other settings. Choose the relevant capability for the author's specific goal; do not reduce feature training to Markdown edits or installing Skills. Read the current workflow with feature_workflow_get before editing; save an initial draft with feature_workflow_save (status draft), and use feature_workflow_change for later small edits. Do not write settings when no concrete change was requested. The feature workspace is shared: do not collect personal identity or preferences into USER.md or write to the read-only MEMORY.md. Generic AGENTS.md and BOOTSTRAP.md profile onboarding does not define feature training. Reply in the user's language.",
+    "caller": "You are an agent of a feature used by multiple callers, not a caller's private expert. If a caller asks how to train or configure the feature, explain that its author can select the feature in Personalization or use the feature card's More menu. Its complete personalization menu is: {catalog} The author maintains the feature definition; do not claim a caller can change its workflow or other shared settings. Do not ask a caller to store personal identity or preferences in the shared USER.md or write to the read-only MEMORY.md. Generic AGENTS.md and BOOTSTRAP.md profile onboarding does not define feature training. Reply in the user's language."
   },
   "workflow": {
     "value_yes": "yes",

@@ -38,6 +38,7 @@ import {
   Puzzle,
   Sparkles,
   Waypoints,
+  Workflow,
   Wrench,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -51,9 +52,11 @@ import ChannelsPanel from "../../Channels/ChannelsPanel";
 import MBTISelector from "./MBTISelector";
 import AgentPluginsPanel from "./AgentPluginsPanel";
 import AgentPersonaFiles from "./AgentPersonaFiles";
+import FeatureWorkflowPanel from "../../../Features/components/FeatureWorkflowPanel";
 import styles from "../index.module.less";
 
 export type PersonalizationTab =
+  | "workflow"
   | "skills"
   | "subagents"
   | "tools"
@@ -82,8 +85,9 @@ export const PERSONALIZATION_TABS = [
  */
 export const FEATURE_ONLY_TAB: PersonalizationTab = "files";
 
-/** What a page whose scope is a feature shows: the same set, plus its own files. */
+/** A feature's workflow leads its capability tabs; experts have no workflow. */
 export const FEATURE_PERSONALIZATION_TABS = [
+  "workflow",
   ...PERSONALIZATION_TABS,
   FEATURE_ONLY_TAB,
 ] as const satisfies readonly PersonalizationTab[];
@@ -126,6 +130,7 @@ export const CAPABILITY_POLICY: Record<
     // reads the definition's behaviour by running it, and the panels that write
     // are not offered to them — a control whose only outcome is a refusal is a
     // dead end, not a choice.
+    workflow: { writer: "author" },
     skills: { writer: "author" },
     subagents: { writer: "author" },
     tools: { writer: "author" },
@@ -178,6 +183,7 @@ export function offeredTabs(
 }
 
 export const TAB_ICONS = {
+  workflow: Workflow,
   skills: Sparkles,
   subagents: Bot,
   tools: Wrench,
@@ -243,6 +249,23 @@ export default function PersonalizationPanels({
 
   return (
     <div className={styles.panels}>
+      {isMounted("workflow") &&
+        tabs.includes("workflow") &&
+        agentId !== null && (
+          <div
+            className={styles.panel}
+            style={{ display: activeTab === "workflow" ? "flex" : "none" }}
+            aria-hidden={activeTab !== "workflow"}
+          >
+            <div className={pageShellStyles.fillChild}>
+              <FeatureWorkflowPanel
+                key={agentId}
+                agentId={agentId}
+                canWrite={writesFor(policy.workflow)}
+              />
+            </div>
+          </div>
+        )}
       {isMounted("skills") && tabs.includes("skills") && (
         <div
           className={styles.panel}
