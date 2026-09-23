@@ -6,7 +6,7 @@
 
 项目地址：<https://github.com/whl736989911/AI-MAITU>。
 
-本项目目前没有 GitHub Release。`scripts/install.*` 的默认安装源及
+本项目从 v0.1.0 起在 GitHub 发布 Release；升级仍按下方源码步骤操作。`scripts/install.*` 的默认安装源及
 `pip install -U octop` 指向上游 PyPI 包，**不能用于升级麦途智造**。
 从本项目 GitHub 拉取源码，沿用原有 `OCTOP_HOME` 数据目录：
 

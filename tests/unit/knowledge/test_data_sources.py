@@ -261,22 +261,22 @@ def test_url_sync_after_the_document_is_deleted_ingests_a_fresh_one(
 
 
 @pytest.mark.parametrize(
-    ("url", "reason"),
+    "url",
     [
-        ("http://example.com/handbook", "https"),
-        ("https://localhost/handbook", "localhost"),
-        ("https://127.0.0.1/handbook", "private"),
-        ("https://192.168.1.10/handbook", "private"),
-        ("https://169.254.169.254/latest/meta-data", "private"),
+        "http://example.com/handbook",
+        "https://localhost/handbook",
+        "https://127.0.0.1/handbook",
+        "https://192.168.1.10/handbook",
+        "https://169.254.169.254/latest/meta-data",
     ],
 )
 def test_url_source_creation_refuses_targets_the_guard_rejects(
-    env: SimpleNamespace, people: SimpleNamespace, url: str, reason: str
+    env: SimpleNamespace, people: SimpleNamespace, url: str
 ) -> None:
     """SSRF: an internal or plain-http target never becomes a stored source."""
     base = env.services.knowledge_repo.create_base(owner_user_id=people.owner, name="Docs")
 
-    with pytest.raises(UnsafeOutboundUrl, match=reason):
+    with pytest.raises(UnsafeOutboundUrl):
         env.sources.create(
             base.id, actor_user_id=people.owner, name="SSRF", kind="url", config={"url": url}
         )

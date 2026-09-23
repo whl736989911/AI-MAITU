@@ -47,16 +47,10 @@ def _parse_https_host(url: str) -> tuple[str, int | None]:
     return host.lower().rstrip("."), parsed.port
 
 
-def _check_ip_not_private(ip_str: str) -> None:
+def _check_ip_global(ip_str: str) -> None:
     addr = ipaddress.ip_address(ip_str)
-    if (
-        addr.is_private
-        or addr.is_loopback
-        or addr.is_link_local
-        or addr.is_reserved
-        or addr.is_multicast
-    ):
-        raise UnsafeOutboundUrl("private or reserved IP addresses are not allowed")
+    if not addr.is_global:
+        raise UnsafeOutboundUrl("non-global IP addresses are not allowed")
 
 
 def _check_ip_literal(host: str) -> None:
@@ -64,11 +58,11 @@ def _check_ip_literal(host: str) -> None:
         ipaddress.ip_address(host)
     except ValueError:
         return
-    _check_ip_not_private(host)
+    _check_ip_global(host)
 
 
 def _check_resolved_ip(ip_str: str) -> None:
-    _check_ip_not_private(ip_str)
+    _check_ip_global(ip_str)
 
 
 def issuer_base_domain(issuer: str) -> str:
@@ -89,7 +83,7 @@ def host_allowed_for_issuer(host: str, issuer: str) -> bool:
 
 
 def validate_https_url(url: str, *, field: str = "url") -> str:
-    """Reject non-https URLs and literal private/reserved IPs."""
+    """Reject non-https URLs and literal non-global IP addresses."""
     host, _ = _parse_https_host(url)
     if host == "localhost":
         raise UnsafeOutboundUrl(f"{field}: localhost is not allowed")
@@ -98,18 +92,18 @@ def validate_https_url(url: str, *, field: str = "url") -> str:
 
 
 async def validate_https_url_resolved(url: str, *, field: str = "url") -> str:
-    """Also resolve DNS and reject private/reserved addresses."""
+    """Also resolve DNS and reject non-global addresses."""
     validate_https_url(url, field=field)
     await _resolve_validated_ip(url)
     return url
 
 
 async def _resolve_validated_ip(url: str) -> str:
-    """Resolve ``url`` and return one validated (public) IP.
+    """Resolve ``url`` and return one validated global IP.
 
     Raises :class:`UnsafeOutboundUrl` if the host cannot be resolved or any
-    resolved address is private/reserved.  The caller should pin the returned
-    IP for the actual connection to defeat DNS-rebinding (TOCTOU).
+    resolved address is non-global.  The caller pins the returned IP for the
+    actual connection to defeat DNS-rebinding (TOCTOU).
     """
     host, port = _parse_https_host(url)
     loop = asyncio.get_running_loop()
@@ -150,13 +144,11 @@ def _validated_ip(host: str, infos: typing.Sequence[typing.Any]) -> str:
 
 
 class _PinnedNetworkBackend(AutoBackend):
-    """Resolve the validated host to a fixed IP, while preserving SNI.
+    """Pin the validated host to its resolved IP, preserving TLS SNI.
 
-    Only requests whose host matches ``_target_host`` are pinned to
-    ``_pin_ip``; everything else (e.g. redirects) resolves normally so the
-    helper never breaks legitimate cross-host redirects.  The original
-    hostname is passed to TLS via httpcore's SNI logic, so certificate
-    validation is unaffected by the IP pinning.
+    Host spellings that differ only by case or a trailing dot are equivalent
+    and still pinned. Any other host is rejected, never handed to the backend
+    for a fresh DNS resolution.
     """
 
     def __init__(self, target_host: str, pin_ip: str) -> None:
@@ -172,16 +164,10 @@ class _PinnedNetworkBackend(AutoBackend):
         local_address: str | None = None,
         socket_options: typing.Iterable[SOCKET_OPTION] | None = None,
     ) -> AsyncNetworkStream:
-        if host == self._target_host:
-            return await super().connect_tcp(
-                self._pin_ip,
-                port,
-                timeout=timeout,
-                local_address=local_address,
-                socket_options=socket_options,
-            )
+        if host.lower().rstrip(".") != self._target_host:
+            raise UnsafeOutboundUrl(f"unexpected connection host {host!r}")
         return await super().connect_tcp(
-            host,
+            self._pin_ip,
             port,
             timeout=timeout,
             local_address=local_address,
@@ -203,7 +189,7 @@ class PinnedIPTransport(httpx.AsyncHTTPTransport):
 
 
 class _PinnedSyncNetworkBackend(SyncBackend):
-    """The blocking twin of :class:`_PinnedNetworkBackend` (same contract)."""
+    """Blocking twin of :class:`_PinnedNetworkBackend` (same contract)."""
 
     def __init__(self, target_host: str, pin_ip: str) -> None:
         super().__init__()
@@ -218,16 +204,10 @@ class _PinnedSyncNetworkBackend(SyncBackend):
         local_address: str | None = None,
         socket_options: typing.Iterable[SOCKET_OPTION] | None = None,
     ) -> NetworkStream:
-        if host == self._target_host:
-            return super().connect_tcp(
-                self._pin_ip,
-                port,
-                timeout=timeout,
-                local_address=local_address,
-                socket_options=socket_options,
-            )
+        if host.lower().rstrip(".") != self._target_host:
+            raise UnsafeOutboundUrl(f"unexpected connection host {host!r}")
         return super().connect_tcp(
-            host,
+            self._pin_ip,
             port,
             timeout=timeout,
             local_address=local_address,
@@ -254,10 +234,9 @@ async def safe_request(
 ) -> httpx.Response:
     """Validate, resolve, pin the IP, and perform an outbound HTTPS request.
 
-    URL scheme/host must be https and resolve to a public IP (see
-    :func:`validate_https_url_resolved`).  The connection is then pinned to the
-    validated IP so a malicious DNS change between validation and connection
-    cannot redirect the request to an internal address.
+    URL scheme/host must be https and resolve to a global IP (see
+    :func:`validate_https_url_resolved`). The connection is pinned to that IP,
+    so a DNS change between validation and connection cannot redirect it.
     """
     host, _port = _parse_https_host(url)
     pin_ip = await _resolve_validated_ip(url)

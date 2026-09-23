@@ -32,6 +32,7 @@ from harness_gateway.models import (
 
 from octop.infra.gateway.media.backend_files import (
     dashboard_media_url,
+    ensure_workspace_media_path,
     extract_workspace_rel,
     file_url_to_abs_path,
     media_preview_url,
@@ -419,12 +420,13 @@ async def _enrich_block_with_backend(
 
     raw_url, mime, filename = _block_file_refs(block)
     if btype == "file":
-        # Keep the tool's absolute path as-is — BackendWorkspace reads it
-        # directly. Do not copy into outbound/ or collapse to a relative path.
         path = _file_block_path(block, raw_url)
-        if path:
-            return _slim_file_block(block, rel=path, mime=mime)
-        return enrich_media_block_preview(block, agent_id=agent_id)
+        rel = (
+            await ensure_workspace_media_path(workspace, path, filename=filename, mime=mime)
+            if path
+            else None
+        )
+        return _slim_file_block(block, rel=rel, mime=mime)
 
     if isinstance(block.get("path"), str) and block["path"].startswith(("inbound/", "outbound/")):
         return block
@@ -439,7 +441,7 @@ async def _enrich_block_with_backend(
         filename=filename,
         mime=mime,
     )
-    return _block_with_preview_url(block, url)
+    return _block_with_preview_url(block, url) if url else block
 
 
 def enrich_tool_output_string_sync(output: str, *, agent_id: str) -> str:
@@ -544,6 +546,8 @@ async def _enrich_plain_text_tool_media(
         preview = dashboard_media_url(agent_id, file_url, mime) or media_preview_url(
             agent_id, file_url, mime
         )
+    if preview is None:
+        return output
 
     image_block: dict[str, Any] = {
         "type": "image",
@@ -578,25 +582,29 @@ async def attachment_frames_from_tool_result(
 
     for message in messages:
         for block in iter_media_blocks(extract_message_content(message)):
-            preview_url = block.get("preview_url")
-            if not isinstance(preview_url, str) or not preview_url:
-                raw_url, mime, filename = _block_file_refs(block)
-                if raw_url:
-                    preview_url = await resolve_dashboard_media_url(
-                        workspace,
-                        agent_id,
-                        raw_url,
-                        filename=filename,
-                        mime=mime,
-                    )
-
             btype = str(block.get("type") or "file")
-            # File cards: derive download URL from path (absolute or relative).
-            if btype == "file" and (not isinstance(preview_url, str) or not preview_url):
-                raw_url, _, _ = _block_file_refs(block)
-                file_path = _file_block_path(block, raw_url)
-                if file_path:
-                    preview_url = workspace_download_url(agent_id, file_path)
+            file_path: str | None = None
+            if btype == "file":
+                raw_url, mime, filename = _block_file_refs(block)
+                path = _file_block_path(block, raw_url)
+                file_path = (
+                    await ensure_workspace_media_path(workspace, path, filename=filename, mime=mime)
+                    if path
+                    else None
+                )
+                preview_url = workspace_download_url(agent_id, file_path) if file_path else None
+            else:
+                preview_url = block.get("preview_url")
+                if not isinstance(preview_url, str) or not preview_url:
+                    raw_url, mime, filename = _block_file_refs(block)
+                    if raw_url:
+                        preview_url = await resolve_dashboard_media_url(
+                            workspace,
+                            agent_id,
+                            raw_url,
+                            filename=filename,
+                            mime=mime,
+                        )
 
             if not preview_url:
                 attachment = await _attachment_frame_from_bytes(block, workspace=workspace)
@@ -613,13 +621,8 @@ async def attachment_frames_from_tool_result(
             fn = block.get("filename")
             if isinstance(fn, str) and fn.strip():
                 frame["filename"] = display_name_from_stored(fn.strip())
-            if btype == "file":
-                raw_url, _, _ = _block_file_refs(block)
-                file_path = _file_block_path(block, raw_url) or _resolve_block_workspace_rel(
-                    block, preview_url if isinstance(preview_url, str) else ""
-                )
-                if file_path:
-                    frame["path"] = file_path
+            if file_path:
+                frame["path"] = file_path
             block_mime = (
                 block.get("mime_type")
                 or block.get("media_type")

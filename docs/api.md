@@ -365,6 +365,12 @@ changes nobody else's feature and is not visible to another caller.
 | `DELETE` | `/agents/{aid}/memory/daily/{filename}` | owner | delete one daily memory |
 | `GET`/`POST` | `/memory/...` | user | memory API (dashboard memory tab) |
 
+Workspace path arguments are limited to the authenticated agent's workspace, including
+`file://` URLs and host-absolute paths sent with `from_workspace=false`.
+Set `from_workspace=true` to treat a leading `/` as workspace-relative.
+Tool-generated files outside the workspace must be saved inside it before download
+or preview; other agents' files and shared temporary directories are not accessible.
+
 ## ACP (Agent Client Protocol)
 
 | Method | Path | Auth | Notes |
