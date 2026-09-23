@@ -49,34 +49,42 @@ function knowledgeDocumentExt(filename: string | undefined): string {
   return dot >= 0 ? name.slice(dot + 1) : "";
 }
 
-/** Original-file rich viewers (DocumentPreviewCore). */
-const RICH_PREVIEW_EXTS = new Set([
-  "pdf",
-  "doc",
-  "docx",
-  "pptx",
-  "xls",
-  "xlsx",
-  "xlsm",
-]);
+/** Original-file rich viewers (DocumentPreviewCore), keyed by extension.
+ *
+ * Membership is asked with ``Object.hasOwn`` rather than a truthiness test:
+ * the keys come from a filename, so ``report.constructor`` must not match a
+ * prototype member.
+ */
+const RICH_PREVIEW_EXTS: Record<string, true> = {
+  pdf: true,
+  docx: true,
+  pptx: true,
+  xls: true,
+  xlsx: true,
+  xlsm: true,
+};
 
 /** UTF-8 / extracted-text preview (Markdown or ``<pre>``). */
-const TEXT_PREVIEW_EXTS = new Set([
-  "md",
-  "markdown",
-  "txt",
-  "rst",
-  "html",
-  "htm",
-  "json",
-  "jsonl",
-  "yaml",
-  "yml",
-  "csv",
-  "tsv",
+const TEXT_PREVIEW_EXTS: Record<string, true> = {
+  md: true,
+  markdown: true,
+  txt: true,
+  rst: true,
+  html: true,
+  htm: true,
+  json: true,
+  jsonl: true,
+  xml: true,
+  yaml: true,
+  yml: true,
+  csv: true,
+  tsv: true,
   // Legacy PowerPoint: no in-browser slide renderer — use extracted text.
-  "ppt",
-]);
+  ppt: true,
+  // Legacy Word is a binary container, not a ZIP, so docx-preview cannot read
+  // it; the server converts and extracts it instead (§6.1).
+  doc: true,
+};
 
 /** Whether the Eye action should be enabled for this knowledge document. */
 export function canPreviewKnowledgeDocument(doc: {
@@ -90,8 +98,8 @@ export function canPreviewKnowledgeDocument(doc: {
     return true;
   }
   const ext = knowledgeDocumentExt(doc.filename);
-  if (TEXT_PREVIEW_EXTS.has(ext)) return true;
-  if (RICH_PREVIEW_EXTS.has(ext)) return true;
+  if (Object.hasOwn(TEXT_PREVIEW_EXTS, ext)) return true;
+  if (Object.hasOwn(RICH_PREVIEW_EXTS, ext)) return true;
   return false;
 }
 
@@ -107,10 +115,10 @@ export function canRichPreviewKnowledgeDocument(doc: {
   has_original?: boolean;
 }): boolean {
   if (doc.has_original === false) return false;
-  return RICH_PREVIEW_EXTS.has(knowledgeDocumentExt(doc.filename));
+  return Object.hasOwn(RICH_PREVIEW_EXTS, knowledgeDocumentExt(doc.filename));
 }
 
 /** Extension-only rich gate (unknown original); same set as rich preview. */
 export function isRichPreviewFilename(filename: string | undefined): boolean {
-  return RICH_PREVIEW_EXTS.has(knowledgeDocumentExt(filename));
+  return Object.hasOwn(RICH_PREVIEW_EXTS, knowledgeDocumentExt(filename));
 }

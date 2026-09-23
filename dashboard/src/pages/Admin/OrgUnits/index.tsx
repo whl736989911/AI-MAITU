@@ -18,18 +18,20 @@ import { useCallback, useEffect, useMemo, useState, type Key } from "react";
 import {
   Alert,
   Button,
+  Drawer,
   Form,
   Input,
   InputNumber,
   Modal,
   Popconfirm,
   Select,
+  Spin,
   Tag,
   Tooltip,
 } from "antd";
 import type { ColumnsType } from "antd/es/table";
 import { message } from "@/utils/antdMessage";
-import { Info, Pencil, Plus, Trash2 } from "lucide-react";
+import { Info, Pencil, Plus, ShieldCheck, Trash2 } from "lucide-react";
 import type { TFunction } from "i18next";
 import { useTranslation } from "react-i18next";
 import { brandName } from "../../../brand.generated";
@@ -41,6 +43,11 @@ import { isSystemAdmin } from "../../../utils/permissions";
 import { normalizeUiLocale } from "../../../utils/localePrefs";
 import { pickLocale } from "../../../utils/localizedText";
 import { apiErrorMessage, parseApiError } from "../../../utils/apiError";
+import {
+  PermissionCheckboxPicker,
+  fetchPermissionCatalog,
+  type PermissionCatalogItem,
+} from "../../../components/PermissionPicker";
 import {
   orgUnitsApi,
   type OrgUnit,
@@ -182,7 +189,23 @@ function describeRefusal(
 
 export default function AdminOrgUnitsPage() {
   const { t, i18n } = useTranslation();
-  const canManage = isSystemAdmin(useCurrentUser());
+  const currentUser = useCurrentUser();
+  /**
+   * Who may edit the tree. The backend bounds the *branch* an actor may write
+   * (design §2.1: 企业管理员 本企业, 部门管理员 本部门及子部门) and the API only
+   * lists the units in that branch, so the page shows the controls to an actor
+   * that has any reach at all — a system administrator, an enterprise
+   * administrator or a department administrator. A plain employee with the
+   * ``users`` key administers no department and is still refused server-side.
+   */
+  const canManage = useMemo(() => {
+    const role = currentUser?.role;
+    return (
+      isSystemAdmin(currentUser) ||
+      role === "enterprise_admin" ||
+      role === "unit_admin"
+    );
+  }, [currentUser]);
   const lang = normalizeUiLocale(i18n.language);
   const [form] = Form.useForm<OrgUnitFormValues>();
 
@@ -375,6 +398,82 @@ export default function AdminOrgUnitsPage() {
     }
   };
 
+  /**
+   * ── module grants (design §2.1/§2.3) ──
+   *
+   * A department carries keys of its own, and every member of its subtree gains
+   * them; ``PUT /api/org-units/{key}/permissions`` is that write. This page is
+   * its only caller: without it the API exists and the ability does not.
+   */
+  const [grantsTarget, setGrantsTarget] = useState<OrgUnit | null>(null);
+  const [permCatalog, setPermCatalog] = useState<PermissionCatalogItem[]>([]);
+  const [grantKeys, setGrantKeys] = useState<string[]>([]);
+  const [grantsLoading, setGrantsLoading] = useState(false);
+  const [grantsSaving, setGrantsSaving] = useState(false);
+  const [grantsError, setGrantsError] = useState("");
+
+  /**
+   * The picker's catalog: every key this operator may hand out, plus the keys
+   * the department already holds.
+   *
+   * The second half is what keeps a save from dropping a grant the operator
+   * does not hold itself: the server resolves ``assert_can_grant`` against the
+   * department's own set, so a stored key is accepted — and an untick really
+   * does revoke it. A key no catalog entry describes (a row written by an older
+   * build) is shown too, or the replace would delete what was never displayed.
+   */
+  const grantCatalog = useMemo(() => {
+    const stored = new Set(grantKeys);
+    const known = new Set(permCatalog.map((p) => p.key));
+    const items = permCatalog.filter((p) => p.can_grant || stored.has(p.key));
+    for (const key of stored) {
+      if (!known.has(key)) {
+        items.push({ key, category: "admin", label: key, can_grant: false });
+      }
+    }
+    return items;
+  }, [permCatalog, grantKeys]);
+
+  const openGrants = useCallback(
+    (row: OrgUnit) => {
+      setGrantsTarget(row);
+      setGrantKeys([]);
+      setGrantsError("");
+      setGrantsLoading(true);
+      Promise.all([
+        orgUnitsApi.getPermissions(row.key),
+        permCatalog.length > 0
+          ? Promise.resolve(permCatalog)
+          : fetchPermissionCatalog(),
+      ])
+        .then(([stored, catalog]) => {
+          setPermCatalog(catalog);
+          setGrantKeys(stored.permissions ?? []);
+        })
+        .catch((err) => {
+          // The form stays closed on purpose: an empty picker after a failed
+          // load would read as "this department has no access".
+          setGrantsError(apiErrorMessage(err, t("perms.grantsLoadFailed"), t));
+        })
+        .finally(() => setGrantsLoading(false));
+    },
+    [permCatalog, t],
+  );
+
+  const saveGrants = async () => {
+    if (!grantsTarget) return;
+    setGrantsSaving(true);
+    try {
+      await orgUnitsApi.setPermissions(grantsTarget.key, grantKeys);
+      message.success(t("perms.grantsSaved"));
+      setGrantsTarget(null);
+    } catch (err) {
+      setGrantsError(apiErrorMessage(err, t("orgUnits.actionFailed"), t));
+    } finally {
+      setGrantsSaving(false);
+    }
+  };
+
   const columns = useMemo<ColumnsType<OrgUnitNode>>(() => {
     const cols: ColumnsType<OrgUnitNode> = [
       {
@@ -421,7 +520,7 @@ export default function AdminOrgUnitsPage() {
     cols.push({
       key: "actions",
       title: t("common.actions"),
-      width: 110,
+      width: 150,
       align: "right",
       render: (_, row) => {
         // The server's delete preconditions, mirrored: a unit with children and
@@ -437,6 +536,15 @@ export default function AdminOrgUnitsPage() {
         }
         return (
           <div className={styles.tableActions}>
+            <Tooltip title={t("perms.grantsAction")}>
+              <Button
+                type="text"
+                size="small"
+                icon={<ShieldCheck size={15} />}
+                aria-label={t("perms.grantsAction")}
+                onClick={() => openGrants(row)}
+              />
+            </Tooltip>
             <Button
               type="text"
               size="small"
@@ -484,7 +592,16 @@ export default function AdminOrgUnitsPage() {
       },
     });
     return cols;
-  }, [t, lang, canManage, membersByUnit, parentKeys, deletingKey, openEdit]);
+  }, [
+    t,
+    lang,
+    canManage,
+    membersByUnit,
+    parentKeys,
+    deletingKey,
+    openEdit,
+    openGrants,
+  ]);
 
   // One element, placed in the pane below — or inside the modal while it is
   // open, so a refused create/update is never reported behind the mask.
@@ -680,6 +797,60 @@ export default function AdminOrgUnitsPage() {
             </Form.Item>
           </Form>
         </Modal>
+
+        {canManage ? (
+          <Drawer
+            title={
+              grantsTarget
+                ? t("perms.grantsTitle", {
+                    unit:
+                      pickLocale(grantsTarget.label, lang) || grantsTarget.key,
+                  })
+                : ""
+            }
+            placement="right"
+            open={grantsTarget !== null}
+            onClose={() => setGrantsTarget(null)}
+            width={Math.min(
+              520,
+              typeof window !== "undefined" ? window.innerWidth - 24 : 520,
+            )}
+            footer={
+              <div className={styles.grantsFooter}>
+                <Button onClick={() => setGrantsTarget(null)}>
+                  {t("common.cancel")}
+                </Button>
+                <Button
+                  type="primary"
+                  loading={grantsSaving}
+                  disabled={grantsLoading || grantsError !== ""}
+                  onClick={() => void saveGrants()}
+                >
+                  {t("perms.grantsSave")}
+                </Button>
+              </div>
+            }
+          >
+            <p className={styles.grantsHint}>{t("perms.grantsHint")}</p>
+            <p className={styles.grantsHint}>
+              {t("perms.grantsInheritedNote")}
+            </p>
+            {grantsError ? (
+              <Alert type="error" showIcon message={grantsError} />
+            ) : null}
+            {grantsLoading ? (
+              <Spin />
+            ) : grantsError ? null : grantCatalog.length === 0 ? (
+              <p className={styles.grantsEmpty}>{t("perms.grantsEmpty")}</p>
+            ) : (
+              <PermissionCheckboxPicker
+                catalog={grantCatalog}
+                value={grantKeys}
+                onChange={setGrantKeys}
+              />
+            )}
+          </Drawer>
+        ) : null}
       </div>
     </PageShell>
   );

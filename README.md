@@ -80,8 +80,10 @@ For a local embedding model (knowledge bases), download one from the admin UI â€
 make dev            # backend + dashboard dev servers
 make dev-backend
 make dev-frontend
-make test           # full suite
-make precommit      # format, lint, typecheck, affected tests
+make all            # ship bar: format (BE+FE) + lint + typecheck + test (BE+FE)
+make test           # backend pytest suite
+make test-frontend  # dashboard vitest suite
+make precommit      # format, lint, typecheck, affected tests (BE + FE)
 ```
 
 ## Configuration

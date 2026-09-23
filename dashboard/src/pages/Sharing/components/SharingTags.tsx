@@ -3,8 +3,10 @@ import {
   Building2,
   CheckCircle2,
   Clock,
+  Eye,
   Globe2,
   Lock,
+  Pencil,
   Undo2,
   UserRound,
   XCircle,
@@ -15,11 +17,13 @@ import { BRAND } from "../../../brand.generated";
 import type {
   SharingChangeStatus,
   SharingImpactScope,
+  SharingPermission,
   SharingVisibility,
 } from "../../../api/modules/sharing";
 import {
   IMPACT_LABEL_KEYS,
   IMPACT_SHORT_KEYS,
+  PERMISSION_LABEL_KEYS,
   STATUS_LABEL_KEYS,
   VISIBILITY_LABEL_KEYS,
 } from "../labels";
@@ -39,7 +43,13 @@ export function VisibilityTag({
   const publicReach = visibility === "public";
   return (
     <Tag
-      color={publicReach ? BRAND.color.accent : visibility === "unit" ? "blue" : undefined}
+      color={
+        publicReach
+          ? BRAND.color.accent
+          : visibility === "unit"
+          ? "blue"
+          : undefined
+      }
       icon={
         visibility === "public" ? (
           <Globe2 size={ICON_SIZE} />
@@ -56,13 +66,38 @@ export function VisibilityTag({
   );
 }
 
+/** What a share lets a matching viewer do: reach the resource, or also maintain it. */
+export function PermissionTag({
+  permission,
+}: {
+  permission: SharingPermission;
+}) {
+  const { t } = useTranslation();
+  const writable = permission === "write";
+  return (
+    <Tag
+      color={writable ? "gold" : undefined}
+      icon={writable ? <Pencil size={ICON_SIZE} /> : <Eye size={ICON_SIZE} />}
+      style={{ marginInlineEnd: 0 }}
+    >
+      {t(PERMISSION_LABEL_KEYS[permission])}
+    </Tag>
+  );
+}
+
 /** How far a change reaches; ``org`` is the scope the approval gate exists for. */
 export function ImpactScopeTag({ scope }: { scope: SharingImpactScope }) {
   const { t } = useTranslation();
   return (
     <Tooltip title={t(IMPACT_LABEL_KEYS[scope])}>
       <Tag
-        color={scope === "org" ? BRAND.color.accent : scope === "unit" ? "blue" : undefined}
+        color={
+          scope === "org"
+            ? BRAND.color.accent
+            : scope === "unit"
+            ? "blue"
+            : undefined
+        }
         icon={
           scope === "org" ? (
             <Globe2 size={ICON_SIZE} />

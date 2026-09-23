@@ -1,10 +1,22 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { OctopUser } from "../../../api/modules/auth";
 
 const { listBases, getAcl } = vi.hoisted(() => ({
   listBases: vi.fn(),
   getAcl: vi.fn(),
+}));
+
+/** ``null`` — AuthGuard's ``/auth/me`` has not landed, which is the no-provider case. */
+const held = vi.hoisted(() => ({ user: null as OctopUser | null }));
+
+vi.mock("../../../hooks/useCurrentUser", () => ({
+  useCurrentUser: () => held.user,
+}));
+
+vi.mock("../../../api/request", () => ({
+  request: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../../../api/modules/knowledgeBases", () => ({
@@ -24,7 +36,12 @@ vi.mock("../../../api/modules/sharing", () => ({
 }));
 
 vi.mock("@/utils/antdMessage", () => ({
-  message: { error: vi.fn(), success: vi.fn(), warning: vi.fn(), info: vi.fn() },
+  message: {
+    error: vi.fn(),
+    success: vi.fn(),
+    warning: vi.fn(),
+    info: vi.fn(),
+  },
 }));
 
 import SharingResourcesPanel from "./SharingResourcesPanel";
@@ -32,6 +49,7 @@ import SharingResourcesPanel from "./SharingResourcesPanel";
 describe("<SharingResourcesPanel />", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    held.user = null;
     listBases.mockResolvedValue([
       {
         id: "kb-1",
@@ -75,4 +93,42 @@ describe("<SharingResourcesPanel />", () => {
       await screen.findByText("sharing.settings.notShared"),
     ).toBeInTheDocument();
   });
+
+  it("offers only the catalogs this account may list", async () => {
+    // ``users`` alone: the knowledge-base list is gated on the knowledge page
+    // keys and ``/connector-instances`` on ``connectors``, so both tabs could
+    // only have reported a refusal.
+    held.user = user(["users"]);
+    render(<SharingResourcesPanel />);
+
+    expect(
+      await screen.findByText("sharing.resourceType.agent"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("sharing.resourceType.knowledge_base"),
+    ).toBeNull();
+    expect(screen.queryByText("sharing.resourceType.connector")).toBeNull();
+    expect(listBases).not.toHaveBeenCalled();
+  });
+
+  it("offers the knowledge catalog to an account that holds its key", async () => {
+    held.user = user(["users", "knowledge_settings"]);
+    render(<SharingResourcesPanel />);
+
+    await waitFor(() => expect(listBases).toHaveBeenCalledOnce());
+    expect(
+      screen.getByText("sharing.resourceType.knowledge_base"),
+    ).toBeInTheDocument();
+  });
 });
+
+function user(permissions: string[]): OctopUser {
+  return {
+    id: 7,
+    username: "tuser",
+    role: "user",
+    display_name: null,
+    locale: "zh",
+    permissions,
+  };
+}

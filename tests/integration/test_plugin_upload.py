@@ -7,6 +7,8 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+from tests.support.auth import create_user
+
 _FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "plugins" / "echo-tool"
 
 
@@ -67,13 +69,28 @@ async def test_upload_plugin_rejects_non_zip(env: Any) -> None:
     assert r.status_code == 400, r.text
 
 
-async def test_upload_plugin_requires_admin(env_admin_alice: Any) -> None:
+async def test_upload_plugin_requires_the_plugins_key(env_admin_alice: Any) -> None:
     client, _srv, _admin_auth, alice_auth = env_admin_alice
     r = await client.post("/api/plugins/upload", files=_zip_files(), headers=alice_auth)
     assert r.status_code == 403, r.text
 
 
-async def test_list_plugins_is_available_to_authenticated_users(env_admin_alice: Any) -> None:
-    client, _srv, _admin_auth, alice_auth = env_admin_alice
-    response = await client.get("/api/plugins", headers=alice_auth)
-    assert response.status_code == 200, response.text
+async def test_list_plugins_follows_the_plugins_key(env: Any) -> None:
+    """The listing is the plugins module itself, in both directions (design §4.4).
+
+    It used to be open to any signed-in account while only the mutations were
+    gated; the module key covers the whole surface now, so the list is refused
+    without it — and served, unchanged, to a caller an administrator granted it.
+    """
+    client, _srv, admin_auth = env
+    without_key = await create_user(client, admin_auth, username="plugin_reader")
+    refused = await client.get("/api/plugins", headers=without_key)
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["error"]["details"]["permission"] == "plugins"
+
+    with_key = await create_user(
+        client, admin_auth, username="plugin_operator", permissions=["plugins"]
+    )
+    allowed = await client.get("/api/plugins", headers=with_key)
+    assert allowed.status_code == 200, allowed.text
+    assert isinstance(allowed.json(), list)

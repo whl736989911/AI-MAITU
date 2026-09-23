@@ -14,6 +14,7 @@ import {
   resolveTurnModelRef,
 } from "../utils/chatMessages";
 import { parseSkillSlugsInText } from "../utils/skillSlash";
+import type { FeatureRunPayload } from "../utils/featureRun";
 
 interface UseChatSendParams {
   resolvedAgentId: string | null | undefined;
@@ -40,6 +41,8 @@ interface UseChatSendParams {
     composerContext?: UserComposerContext,
     reasoningMode?: "auto" | "enabled" | "disabled",
     reasoningEffort?: string | null,
+    /** A workflow run this turn carries, as the frame's own ``feature_run`` field. */
+    featureRun?: FeatureRunPayload,
   ) => void;
   createSession: () => { session: Session; resolvedId: Promise<string> };
   renameSession: (id: string, name: string) => void;
@@ -60,6 +63,8 @@ export type ChatSendOverrides = {
   selectedTargetAgents?: string[];
   composerContext?: UserComposerContext;
   modelRef?: string | null;
+  /** A workflow run this turn carries, as the frame's own ``feature_run`` field. */
+  featureRun?: FeatureRunPayload;
   /** Send to this thread instead of the active one (queued flush). */
   threadId?: string | null;
   /** Send as this agent instead of the active one (queued flush). */
@@ -153,6 +158,7 @@ export function useChatSend({
           composerContext,
           composerContext?.reasoningMode ?? reasoningMode,
           composerContext?.reasoningEffort ?? reasoningEffort,
+          overrides?.featureRun,
         );
       };
 
@@ -212,6 +218,7 @@ export function useChatSend({
           targetAgents,
           composerContext?.reasoningMode ?? reasoningMode,
           composerContext?.reasoningEffort ?? reasoningEffort,
+          overrides?.featureRun,
         );
         navigate(`/chat/${agent}/${tid}`, { replace: true });
       });

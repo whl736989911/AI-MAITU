@@ -153,12 +153,12 @@ class ConnectorRepo:
         remember. ``ResourceAclRepo`` mirrors the rules in SQL as well; that
         statement decides nothing here.
         """
-        role, unit_key = self._acl.scope_for_user(user_id)
+        role, unit_keys = self._acl.scope_for_user(user_id)
         allowed = allowed_resource_ids(
             self._acl.list_for_type("connector"),
             user_id=user_id,
             role=role,
-            unit_key=unit_key,
+            unit_keys=unit_keys,
         )
         if not allowed:
             return []

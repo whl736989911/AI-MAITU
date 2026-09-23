@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from tests.support.auth import create_user
+from tests.support.auth import create_user, resolve_user_id
 
 
 @pytest.fixture
@@ -244,3 +244,54 @@ async def test_peer_cannot_rebind_session_to_owner_thread(env) -> None:
         json={"thread_id": owner_thread_id},
     )
     assert response.status_code == 403
+
+
+async def test_a_directed_grant_puts_the_agent_in_the_list(env) -> None:
+    """③: what the sharing API grants appears in the list the dashboard draws.
+
+    The list was "owned ∪ published", so a directed grant, a unit share or a role
+    share opened the agent on a direct ``GET /api/agents/{id}`` (200) and left it
+    out of every list — and the dashboard only draws the list, which is why the
+    grantee saw nothing at all. The rule is now the one that decides opening an
+    agent (``sharing.allowed_resource_ids``), so the two cannot disagree.
+    """
+    client, _srv, admin_auth = env
+    # The ACL endpoints are the user-administration surface (``users``), so the
+    # granter has to hold it — the agent's own owner is who grants here.
+    owner_auth = await create_user(
+        client, admin_auth, username="grant_owner", permissions=["users", "experts"]
+    )
+    peer_auth = await create_user(client, admin_auth, username="grant_peer")
+    stranger_auth = await create_user(client, admin_auth, username="grant_stranger")
+    created = await client.post(
+        "/api/agents/from-expert/default", headers=owner_auth, json={"name": "grantable-bot"}
+    )
+    assert created.status_code == 201, created.text
+    agent_id = created.json()["agent_id"]
+    peer_id = await resolve_user_id(client, admin_auth, "grant_peer")
+
+    async def peer_list() -> set[str]:
+        response = await client.get("/api/agents", headers=peer_auth)
+        assert response.status_code == 200, response.text
+        return {row["agent_id"] for row in response.json()}
+
+    assert agent_id not in await peer_list()
+    assert (await client.get(f"/api/agents/{agent_id}", headers=peer_auth)).status_code == 403
+
+    granted = await client.post(
+        f"/api/sharing/acl/agent/{agent_id}",
+        headers=owner_auth,
+        json={
+            "visibility": "private",
+            "grants": [{"grantee_type": "user", "grantee_id": str(peer_id)}],
+        },
+    )
+    assert granted.status_code == 200, granted.text
+
+    assert (await client.get(f"/api/agents/{agent_id}", headers=peer_auth)).status_code == 200
+    assert agent_id in await peer_list()
+
+    # The grant reaches that one account: nobody else's list grew.
+    stranger_list = await client.get("/api/agents", headers=stranger_auth)
+    assert stranger_list.status_code == 200, stranger_list.text
+    assert agent_id not in {row["agent_id"] for row in stranger_list.json()}

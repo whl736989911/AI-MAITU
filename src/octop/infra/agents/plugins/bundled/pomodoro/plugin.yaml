@@ -2,6 +2,8 @@ id: pomodoro
 version: 0.2.0
 name: 番茄钟
 description: 在聊天中启动番茄钟或倒数日卡片
+name_en: "Pomodoro Timer"
+description_en: "Start a pomodoro or countdown card in chat"
 icon: "🍅"
 kind: tool
 entry: main.py

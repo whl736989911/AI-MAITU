@@ -40,7 +40,11 @@ from typing import Any
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel
 
-from octop.api.common.agent import require_agent_owner_row
+from octop.api.common.agent import (
+    AgentCapability,
+    require_agent_capability_row,
+    require_agent_owner_row,
+)
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.common.workspace import require_running_workspace
 from octop.api.deps import current_user, get_server
@@ -54,9 +58,29 @@ router = APIRouter()
 # --- shared agent resolution -----------------------------------------------
 
 
-def _resolve_runtime(agent_id: str, *, user: Any, as_user: int | None, server: Any) -> Any:
-    """Return the AgentRow for the given agent_id after auth."""
-    return require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+def _resolve_runtime(
+    agent_id: str,
+    *,
+    user: Any,
+    as_user: int | None,
+    server: Any,
+    capability: AgentCapability | None = None,
+) -> Any:
+    """Return the AgentRow for the given agent_id after auth.
+
+    *capability* names the group an endpoint is about to **write**, so the
+    capability matrix decides it (daily memory is memory: a feature's is never
+    written, by anyone); ``None`` is the read path, which stays owner-level.
+    """
+    if capability is None:
+        return require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    return require_agent_capability_row(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=capability,
+    )
 
 
 # --- heartbeat config ------------------------------------------------------
@@ -97,7 +121,13 @@ async def get_heartbeat_config(
 ) -> dict[str, Any]:
     # Resolve runtime first — this enforces user ownership before we
     # peek at the config row.
-    _resolve_runtime(agent_id, user=user, as_user=as_user, server=server)
+    _resolve_runtime(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.CONFIGURATION,
+    )
     cfg = _load_full_config(server, agent_id)
     raw_hb = cfg.get("heartbeat")
     hb = raw_hb if isinstance(raw_hb, dict) else {}
@@ -114,7 +144,13 @@ async def put_heartbeat_config(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    _resolve_runtime(agent_id, user=user, as_user=as_user, server=server)
+    _resolve_runtime(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.CONFIGURATION,
+    )
     cfg = _load_full_config(server, agent_id)
     # Merge — never replace the whole config_json: skills_disabled,
     # backend spec, proactive config etc. live alongside heartbeat in
@@ -208,7 +244,13 @@ async def delete_daily_memory(
     server: Any = Depends(get_server),
 ) -> Response:
     _validate_filename(filename)
-    rt = _resolve_runtime(agent_id, user=user, as_user=as_user, server=server)
+    rt = _resolve_runtime(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.MEMORY,
+    )
     # ``BackendProtocol`` has no delete — fall back to the filesystem
     # path we know lives behind the local_shell / filesystem backends.
     workspace = resolve_agent_workspace_dir(server, rt.agent_id)

@@ -16,8 +16,12 @@ import {
 import type { OctopAgent } from "../../../context/AgentContext";
 import { ExpertIcon } from "../../Experts/components/iconForName";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
+import { apiErrorMessage } from "../../../utils/apiError";
+import { message as antMessage } from "../../../utils/antdMessage";
 import { showConfirmModal } from "../../../utils/confirmModal";
 import { isAgentChatReady } from "../../../utils/agentError";
+import { isFeatureAgent } from "../../../utils/agentKind";
+import { indexAgentsByKind } from "../../../utils/agentKindCounts";
 import { sortSessions, toSession, type Session } from "../hooks/useSessions";
 import { formatThreadTitle } from "../utils/threadTitle";
 import { onSessionEvent, onStreamEvent } from "../hooks/chatStore";
@@ -62,8 +66,10 @@ interface MinimalAgentSessionNavProps {
   /** Start a fresh (unsaved) chat with the given expert. */
   onNewChat: (agentId: string) => void;
   onDeleteActive: (id: string) => void;
-  onRenameActive: (id: string, name: string) => void;
-  onPinActive: (id: string, pinned: boolean) => void;
+  /** Resolves true when the server stored the new title, false when it did not. */
+  onRenameActive: (id: string, name: string) => Promise<boolean>;
+  /** Resolves true when the server stored the new pin state, false when it did not. */
+  onPinActive: (id: string, pinned: boolean) => Promise<boolean>;
   onFork: (id: string, agentId?: string | null) => void;
   activeForkDisabled?: boolean;
   activeForkDisabledHint?: string;
@@ -293,6 +299,26 @@ export default function MinimalAgentSessionNav({
     [agents],
   );
 
+  // Both kinds arrive in one list (``selectEnabledExperts`` filters by state,
+  // not by kind), so they are told apart here, the way the chat sidebar tells
+  // them apart: the experts are the group this nav has always listed, and the
+  // features are drawn under a heading of their own — but only when this nav's
+  // own list holds one, so a caller with no feature gets the one group they
+  // have always had. The answer is the whole list's, once.
+  //
+  // Read up here with the rest of the hooks, not next to the markup that uses
+  // them: the empty-list return below skips them otherwise, and the render after
+  // a list arrives would call more hooks than the one before it.
+  const held = useMemo(() => indexAgentsByKind(agents).held, [agents]);
+  const expertAgents = useMemo(
+    () => sortedAgents.filter((agent) => !isFeatureAgent(agent)),
+    [sortedAgents],
+  );
+  const featureAgents = useMemo(
+    () => sortedAgents.filter(isFeatureAgent),
+    [sortedAgents],
+  );
+
   // Ensure the active expert folder stays open.
   useEffect(() => {
     if (!activeAgentId) return;
@@ -463,35 +489,49 @@ export default function MinimalAgentSessionNav({
   );
 
   const handleRename = useCallback(
-    (agentId: string, sessionId: string, name: string) => {
+    async (agentId: string, sessionId: string, name: string) => {
       const next = formatThreadTitle(name) || name.trim();
       if (!next) return;
+      let stored = false;
       if (agentId === activeAgentId) {
-        onRenameActive(sessionId, next);
+        stored = await onRenameActive(sessionId, next);
       } else {
-        void octopThreadsApi.rename(agentId, sessionId, next).catch(() => {});
+        try {
+          await octopThreadsApi.rename(agentId, sessionId, next);
+          stored = true;
+        } catch (error) {
+          antMessage.error(apiErrorMessage(error, t("chat.renameFailed"), t));
+        }
       }
+      // Mirror the write into the preview only once the server accepted it —
+      // a rejected rename must never keep rendering the new title.
+      if (!stored) return;
       patchLocal(agentId, (prev) =>
         prev.map((s) => (s.id === sessionId ? { ...s, name: next } : s)),
       );
     },
-    [activeAgentId, onRenameActive, patchLocal],
+    [activeAgentId, onRenameActive, patchLocal, t],
   );
 
   const handlePin = useCallback(
-    (agentId: string, sessionId: string, pinned: boolean) => {
+    async (agentId: string, sessionId: string, pinned: boolean) => {
+      let stored = false;
       if (agentId === activeAgentId) {
-        onPinActive(sessionId, pinned);
+        stored = await onPinActive(sessionId, pinned);
       } else {
-        void octopThreadsApi
-          .patch(agentId, sessionId, { pinned })
-          .catch(() => {});
+        try {
+          await octopThreadsApi.patch(agentId, sessionId, { pinned });
+          stored = true;
+        } catch (error) {
+          antMessage.error(apiErrorMessage(error, t("chat.pinFailed"), t));
+        }
       }
+      if (!stored) return;
       patchLocal(agentId, (prev) =>
         prev.map((s) => (s.id === sessionId ? { ...s, pinned } : s)),
       );
     },
-    [activeAgentId, onPinActive, patchLocal],
+    [activeAgentId, onPinActive, patchLocal, t],
   );
 
   if (agents.length === 0) {
@@ -511,118 +551,126 @@ export default function MinimalAgentSessionNav({
     );
   }
 
+  const renderAgentSection = (agent: OctopAgent) => {
+    const list = byAgent[agent.agent_id] ?? [];
+    const ready = isAgentChatReady(agent.state);
+    const expanded = !collapsedFolders.has(agent.agent_id);
+
+    return (
+      <section key={agent.agent_id} className={styles.minimalAgentSection}>
+        <div className={styles.minimalAgentHeader}>
+          <span className={styles.minimalAgentIconSlot}>
+            <span
+              className={styles.minimalAgentAvatar}
+              style={{
+                color: agent.color || "var(--fn-text-tertiary)",
+                background: `${agent.color || "#6366f1"}14`,
+              }}
+              aria-hidden
+            >
+              <ExpertIcon
+                iconUrl={agent.icon_url}
+                iconName={agent.icon_name}
+                size={14}
+              />
+            </span>
+            <button
+              type="button"
+              className={styles.minimalAgentChevronBtn}
+              aria-expanded={expanded}
+              aria-label={
+                expanded ? t("nav.collapseSidebar") : t("nav.expandSidebar")
+              }
+              onClick={() => toggleFolder(agent.agent_id)}
+            >
+              <ChevronRight
+                size={14}
+                strokeWidth={2}
+                className={`${styles.minimalAgentChevron} ${
+                  expanded ? styles.minimalAgentChevronOpen : ""
+                }`}
+                aria-hidden
+              />
+            </button>
+          </span>
+          <button
+            type="button"
+            className={styles.minimalAgentFolderBtn}
+            onClick={() => openFolderAndSelect(agent.agent_id)}
+          >
+            <span className={styles.agentNameCluster}>
+              <span className={styles.minimalAgentName}>{agent.name}</span>
+              <SharedExpertHint agent={agent} />
+            </span>
+            <AgentUnreadBadge count={agent.unread_count ?? 0} />
+          </button>
+          <button
+            type="button"
+            className={styles.minimalAgentNewChatBtn}
+            aria-label={t("chatWelcome.newChat")}
+            title={t("chatWelcome.newChat")}
+            onClick={() => onNewChat(agent.agent_id)}
+          >
+            <Plus size={14} strokeWidth={2} aria-hidden />
+          </button>
+        </div>
+
+        {expanded ? (
+          <div className={styles.minimalAgentSessions}>
+            {!ready ? (
+              <div className={styles.minimalAgentEmpty}>
+                {t("chat.agentNotRunningHint")}
+              </div>
+            ) : loading && list.length === 0 ? (
+              <div className={styles.minimalAgentEmpty}>
+                {t("common.loading")}
+              </div>
+            ) : list.length === 0 ? (
+              <div className={styles.minimalAgentEmpty}>
+                {t("chat.noSessionsYet", "直接发消息即可开始对话")}
+              </div>
+            ) : (
+              list.map((session) => (
+                <PreviewSessionRow
+                  key={session.id}
+                  session={session}
+                  isActive={session.id === activeId}
+                  working={workingIds.has(session.id)}
+                  onSelect={(id) => onSelect(id, agent.agent_id)}
+                  onDelete={(id) => void handleDelete(agent.agent_id, id)}
+                  onRename={(id, name) =>
+                    void handleRename(agent.agent_id, id, name)
+                  }
+                  onPin={(id, pinned) =>
+                    void handlePin(agent.agent_id, id, pinned)
+                  }
+                  onFork={(id) => onFork(id, agent.agent_id)}
+                  forkDisabled={
+                    session.id === activeId ? activeForkDisabled : undefined
+                  }
+                  forkDisabledHint={
+                    session.id === activeId ? activeForkDisabledHint : undefined
+                  }
+                />
+              ))
+            )}
+          </div>
+        ) : null}
+      </section>
+    );
+  };
+
   return (
     <div className={`${styles.sessionList} ${styles.minimalAgentNav}`}>
-      {sortedAgents.map((agent) => {
-        const list = byAgent[agent.agent_id] ?? [];
-        const ready = isAgentChatReady(agent.state);
-        const expanded = !collapsedFolders.has(agent.agent_id);
-
-        return (
-          <section key={agent.agent_id} className={styles.minimalAgentSection}>
-            <div className={styles.minimalAgentHeader}>
-              <span className={styles.minimalAgentIconSlot}>
-                <span
-                  className={styles.minimalAgentAvatar}
-                  style={{
-                    color: agent.color || "var(--fn-text-tertiary)",
-                    background: `${agent.color || "#6366f1"}14`,
-                  }}
-                  aria-hidden
-                >
-                  <ExpertIcon
-                    iconUrl={agent.icon_url}
-                    iconName={agent.icon_name}
-                    size={14}
-                  />
-                </span>
-                <button
-                  type="button"
-                  className={styles.minimalAgentChevronBtn}
-                  aria-expanded={expanded}
-                  aria-label={
-                    expanded ? t("nav.collapseSidebar") : t("nav.expandSidebar")
-                  }
-                  onClick={() => toggleFolder(agent.agent_id)}
-                >
-                  <ChevronRight
-                    size={14}
-                    strokeWidth={2}
-                    className={`${styles.minimalAgentChevron} ${
-                      expanded ? styles.minimalAgentChevronOpen : ""
-                    }`}
-                    aria-hidden
-                  />
-                </button>
-              </span>
-              <button
-                type="button"
-                className={styles.minimalAgentFolderBtn}
-                onClick={() => openFolderAndSelect(agent.agent_id)}
-              >
-                <span className={styles.agentNameCluster}>
-                  <span className={styles.minimalAgentName}>{agent.name}</span>
-                  <SharedExpertHint agent={agent} />
-                </span>
-                <AgentUnreadBadge count={agent.unread_count ?? 0} />
-              </button>
-              <button
-                type="button"
-                className={styles.minimalAgentNewChatBtn}
-                aria-label={t("chatWelcome.newChat")}
-                title={t("chatWelcome.newChat")}
-                onClick={() => onNewChat(agent.agent_id)}
-              >
-                <Plus size={14} strokeWidth={2} aria-hidden />
-              </button>
-            </div>
-
-            {expanded ? (
-              <div className={styles.minimalAgentSessions}>
-                {!ready ? (
-                  <div className={styles.minimalAgentEmpty}>
-                    {t("chat.agentNotRunningHint")}
-                  </div>
-                ) : loading && list.length === 0 ? (
-                  <div className={styles.minimalAgentEmpty}>
-                    {t("common.loading")}
-                  </div>
-                ) : list.length === 0 ? (
-                  <div className={styles.minimalAgentEmpty}>
-                    {t("chat.noSessionsYet", "直接发消息即可开始对话")}
-                  </div>
-                ) : (
-                  list.map((session) => (
-                    <PreviewSessionRow
-                      key={session.id}
-                      session={session}
-                      isActive={session.id === activeId}
-                      working={workingIds.has(session.id)}
-                      onSelect={(id) => onSelect(id, agent.agent_id)}
-                      onDelete={(id) => void handleDelete(agent.agent_id, id)}
-                      onRename={(id, name) =>
-                        handleRename(agent.agent_id, id, name)
-                      }
-                      onPin={(id, pinned) =>
-                        handlePin(agent.agent_id, id, pinned)
-                      }
-                      onFork={(id) => onFork(id, agent.agent_id)}
-                      forkDisabled={
-                        session.id === activeId ? activeForkDisabled : undefined
-                      }
-                      forkDisabledHint={
-                        session.id === activeId
-                          ? activeForkDisabledHint
-                          : undefined
-                      }
-                    />
-                  ))
-                )}
-              </div>
-            ) : null}
-          </section>
-        );
-      })}
+      {expertAgents.map(renderAgentSection)}
+      {held.features ? (
+        <>
+          <div className={styles.sessionGroupLabel}>
+            {t("chat.featuresGroup", "功能")}
+          </div>
+          {featureAgents.map(renderAgentSection)}
+        </>
+      ) : null}
     </div>
   );
 }

@@ -54,7 +54,6 @@ import {
   PanelLeftOpen,
   Pencil,
   PencilLine,
-  Plus,
   RefreshCw,
   Search,
   Settings,
@@ -74,6 +73,7 @@ import {
   type KnowledgeCapability,
   type KnowledgeDocument,
   type KnowledgeOnnxModel,
+  type KnowledgeSearchHit,
 } from "../../api/modules/knowledgeBases";
 import { EmptyStateIcon } from "../../components/EmptyState";
 import DocumentPreviewCore from "../../components/DocumentPreviewCore";
@@ -121,6 +121,7 @@ import TextDocumentEditorModal, {
   type TextDocumentFormat,
 } from "./TextDocumentEditorModal";
 import DataSourcesPanel from "./components/DataSourcesPanel";
+import ExtractTemplatesPanel from "./components/ExtractTemplatesPanel";
 import styles from "./index.module.less";
 
 type BaseFormValues = {
@@ -134,7 +135,7 @@ type DocsViewMode = "card" | "table";
 const DOCS_VIEW_STORAGE_KEY = "octop:knowledge-bases-docs-view";
 
 const BASE_DOCUMENT_TYPES =
-  ".md,.markdown,.txt,.rst,.html,.htm,.json,.jsonl,.yaml,.yml,.csv,.tsv,.pdf,.docx,.pptx,.xls,.xlsx,.xlsm";
+  ".md,.markdown,.txt,.rst,.html,.htm,.json,.jsonl,.xml,.yaml,.yml,.csv,.tsv,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm";
 const OCR_DOCUMENT_TYPES = ".png,.jpg,.jpeg,.webp";
 
 function loadDocsViewMode(): DocsViewMode {
@@ -142,9 +143,24 @@ function loadDocsViewMode(): DocsViewMode {
   return stored === "table" ? "table" : "card";
 }
 
+/**
+ * What opening a preview needs. A document row satisfies it, and so does a
+ * search hit: a result knows which file it came from, not everything about it.
+ */
+type PreviewTarget = Pick<KnowledgeDocument, "id" | "filename"> &
+  Partial<
+    Pick<
+      KnowledgeDocument,
+      "path" | "is_dir" | "content_type" | "has_original" | "title"
+    >
+  >;
+
 function documentStatusColor(status: KnowledgeDocument["status"]) {
   if (status === "ready") return "success";
   if (status === "failed") return "error";
+  // Locked is neither broken nor fine: the file is readable once someone
+  // supplies the password (design §6.1), so it warns rather than errors.
+  if (status === "password_required") return "warning";
   if (status === "processing") return "processing";
   return "default";
 }
@@ -183,7 +199,11 @@ function formatKnowledgeOwner(
     KnowledgeBase,
     "owner_display_name" | "owner_username" | "owner_user_id"
   >,
+  systemLabel: string,
 ): string {
+  // A NULL owner is the system, not a missing value: the enterprise space
+  // belongs to the deployment rather than to a user (schema v27).
+  if (base.owner_user_id === null) return systemLabel;
   const displayName = base.owner_display_name?.trim() || "";
   const username = base.owner_username?.trim() || "";
   return displayName || username || String(base.owner_user_id);
@@ -357,6 +377,14 @@ export default function KnowledgeBasesPage() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewFilename, setPreviewFilename] = useState("");
+  /**
+   * What the document calls itself, when it declares a title (design §6.2).
+   * Kept apart from the file name: the download still needs the real one.
+   */
+  const [previewTitle, setPreviewTitle] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchHits, setSearchHits] = useState<KnowledgeSearchHit[]>([]);
+  const [searchLoading, setSearchLoading] = useState(false);
   const [previewText, setPreviewText] = useState("");
   const [previewKind, setPreviewKind] = useState<DocKind | null>(null);
   const [previewDocId, setPreviewDocId] = useState<string | null>(null);
@@ -690,10 +718,6 @@ export default function KnowledgeBasesPage() {
     ? `${BASE_DOCUMENT_TYPES},${OCR_DOCUMENT_TYPES}`
     : BASE_DOCUMENT_TYPES;
   const limits = capability?.limits ?? DEFAULT_KNOWLEDGE_LIMITS;
-  const ownedBaseCount = user
-    ? bases.filter((base) => base.owner_user_id === user.id).length
-    : 0;
-  const atBaseLimit = ownedBaseCount >= limits.max_bases_per_owner;
   const fileCount = documents.filter((document) => !document.is_dir).length;
   const isAtDocumentLimit =
     fileCount >= (selected?.max_documents ?? limits.max_docs_per_kb);
@@ -969,27 +993,6 @@ export default function KnowledgeBasesPage() {
     if (isMobile) setMobilePane("detail");
   };
 
-  const openCreate = () => {
-    if (atBaseLimit) {
-      message.warning(
-        t("knowledgeBases.baseLimitReached", {
-          count: limits.max_bases_per_owner,
-        }),
-      );
-      return;
-    }
-    baseForm.setFieldsValue({
-      name: "",
-      description: "",
-      icon_name: "book-open",
-      max_documents: 100,
-    });
-    setDefaultOpenChecked(false);
-    setSharedChecked(false);
-    setEditingBaseId(null);
-    setBaseDrawerOpen(true);
-  };
-
   const openEdit = (base: KnowledgeBase) => {
     baseForm.setFieldsValue({
       name: base.name,
@@ -1004,6 +1007,9 @@ export default function KnowledgeBasesPage() {
   };
 
   const saveBase = async () => {
+    // The drawer only ever edits now: a user creating a knowledge base is the
+    // model the design replaced, so this is a real guard and not a defensive one.
+    if (!editingBaseId) return;
     const values = await baseForm.validateFields();
     const payload = {
       ...values,
@@ -1011,16 +1017,12 @@ export default function KnowledgeBasesPage() {
       shared: sharedChecked,
     };
     try {
-      const next = editingBaseId
-        ? await knowledgeBasesApi.update(editingBaseId, payload)
-        : await knowledgeBasesApi.create(payload);
+      const next = await knowledgeBasesApi.update(editingBaseId, payload);
       setBaseDrawerOpen(false);
       await loadBases();
       await loadDetail(next.id);
       if (isMobile) setMobilePane("detail");
-      message.success(
-        t(editingBaseId ? "knowledgeBases.updated" : "knowledgeBases.created"),
-      );
+      message.success(t("knowledgeBases.updated"));
     } catch (error) {
       message.error(apiErrorMessage(error, t("knowledgeBases.saveFailed"), t));
     }
@@ -1479,66 +1481,114 @@ export default function KnowledgeBasesPage() {
     }
   };
 
-  const openDocumentPreview = async (document: KnowledgeDocument) => {
-    if (!selected || document.is_dir) return;
-    if (!canPreviewKnowledgeDocument(document)) return;
-    const rich = canRichPreviewKnowledgeDocument(document);
-    const kind = rich ? getDocKind(document.filename) : null;
-    const asMarkdown = isKnowledgeMarkdownDocument(document);
-    previewTextAbortRef.current?.abort();
-    const abort = new AbortController();
-    previewTextAbortRef.current = abort;
-    setPreviewOpen(true);
-    setPreviewFilename(document.filename);
-    setPreviewKind(kind);
-    setPreviewDocId(document.id);
-    setPreviewHasOriginal(canDownloadKnowledgeOriginal(document));
-    setPreviewAsMarkdown(asMarkdown);
-    setPreviewText("");
-    setMdOutlineOpen(true);
-    setMdActiveOutlineIndex(0);
-    setMdFindOpen(false);
-    setMdFindQuery("");
-    setMdFindIndex(0);
-    setMdFindHitCount(0);
-    if (kind) {
-      setPreviewLoading(false);
-      return;
-    }
-    setPreviewLoading(true);
-    try {
-      // Prefer raw UTF-8 for editable text so markdown preview matches the file.
-      if (asMarkdown || isEditableKnowledgeDocument(document)) {
-        const payload = await knowledgeBasesApi.getTextDocument(
-          selected.id,
-          document.id,
-        );
-        if (abort.signal.aborted) return;
-        setPreviewFilename(payload.filename);
-        setPreviewText(
-          payload.text.trim() ? payload.text : t("knowledgeBases.previewEmpty"),
-        );
-      } else {
-        const preview = await knowledgeBasesApi.previewDocument(
-          selected.id,
-          document.id,
-        );
-        if (abort.signal.aborted) return;
-        setPreviewFilename(preview.filename);
-        setPreviewText(
-          preview.text.trim() ? preview.text : t("knowledgeBases.previewEmpty"),
-        );
+  const openDocumentPreview = useCallback(
+    async (document: PreviewTarget) => {
+      if (!selected || document.is_dir) return;
+      if (!canPreviewKnowledgeDocument(document)) return;
+      const rich = canRichPreviewKnowledgeDocument(document);
+      const kind = rich ? getDocKind(document.filename) : null;
+      const asMarkdown = isKnowledgeMarkdownDocument(document);
+      previewTextAbortRef.current?.abort();
+      const abort = new AbortController();
+      previewTextAbortRef.current = abort;
+      setPreviewOpen(true);
+      setPreviewFilename(document.filename);
+      setPreviewTitle(document.title || "");
+      setPreviewKind(kind);
+      setPreviewDocId(document.id);
+      setPreviewHasOriginal(canDownloadKnowledgeOriginal(document));
+      setPreviewAsMarkdown(asMarkdown);
+      setPreviewText("");
+      setMdOutlineOpen(true);
+      setMdActiveOutlineIndex(0);
+      setMdFindOpen(false);
+      setMdFindQuery("");
+      setMdFindIndex(0);
+      setMdFindHitCount(0);
+      if (kind) {
+        setPreviewLoading(false);
+        return;
       }
-    } catch (error) {
-      if (abort.signal.aborted) return;
-      setPreviewOpen(false);
-      message.error(
-        apiErrorMessage(error, t("knowledgeBases.previewFailed"), t),
-      );
-    } finally {
-      if (!abort.signal.aborted) setPreviewLoading(false);
-    }
-  };
+      setPreviewLoading(true);
+      try {
+        // Prefer raw UTF-8 for editable text so markdown preview matches the file.
+        if (asMarkdown || isEditableKnowledgeDocument(document)) {
+          const payload = await knowledgeBasesApi.getTextDocument(
+            selected.id,
+            document.id,
+          );
+          if (abort.signal.aborted) return;
+          setPreviewFilename(payload.filename);
+          setPreviewTitle(payload.title || document.title || "");
+          setPreviewText(
+            payload.text.trim()
+              ? payload.text
+              : t("knowledgeBases.previewEmpty"),
+          );
+        } else {
+          const preview = await knowledgeBasesApi.previewDocument(
+            selected.id,
+            document.id,
+          );
+          if (abort.signal.aborted) return;
+          setPreviewFilename(preview.filename);
+          setPreviewTitle(preview.title || document.title || "");
+          setPreviewText(
+            preview.text.trim()
+              ? preview.text
+              : t("knowledgeBases.previewEmpty"),
+          );
+        }
+      } catch (error) {
+        if (abort.signal.aborted) return;
+        setPreviewOpen(false);
+        message.error(
+          apiErrorMessage(error, t("knowledgeBases.previewFailed"), t),
+        );
+      } finally {
+        if (!abort.signal.aborted) setPreviewLoading(false);
+      }
+    },
+    [message, selected, t],
+  );
+
+  const runSearch = useCallback(
+    async (raw: string) => {
+      const query = raw.trim();
+      if (!selected || !query) {
+        setSearchHits([]);
+        return;
+      }
+      setSearchLoading(true);
+      try {
+        setSearchHits(
+          await knowledgeBasesApi.searchDocuments(selected.id, query),
+        );
+      } catch (error) {
+        setSearchHits([]);
+        message.error(
+          apiErrorMessage(error, t("knowledgeBases.searchFailed"), t),
+        );
+      } finally {
+        setSearchLoading(false);
+      }
+    },
+    [message, selected, t],
+  );
+
+  const openSearchHit = useCallback(
+    (hit: KnowledgeSearchHit) => {
+      // A hit carries the file it came from, which is all the preview reads.
+      void openDocumentPreview({
+        id: hit.document_id,
+        filename: hit.filename,
+        path: hit.path,
+        is_dir: false,
+        title: hit.title,
+      });
+    },
+    [openDocumentPreview],
+  );
 
   const downloadDocumentOriginal = async (
     documentId: string,
@@ -1934,26 +1984,7 @@ export default function KnowledgeBasesPage() {
             icon={setupIcon}
             title={t("knowledgeBases.emptyGuideTitle")}
             description={t("knowledgeBases.emptyGuideDesc")}
-            steps={[
-              {
-                label: t("knowledgeBases.emptyGuideStepWhat"),
-                detail: t("knowledgeBases.emptyGuideStepWhatDetail"),
-              },
-              {
-                label: t("knowledgeBases.emptyGuideStepHow"),
-                detail: t("knowledgeBases.emptyGuideStepHowDetail"),
-              },
-              {
-                label: t("knowledgeBases.emptyGuideStepShare"),
-                detail: t("knowledgeBases.emptyGuideStepShareDetail"),
-              },
-            ]}
-            primaryAction={{
-              label: t("knowledgeBases.create"),
-              onClick: openCreate,
-              icon: <Plus size={14} />,
-              disabled: atBaseLimit,
-            }}
+            steps={[]}
           />
         </div>
       ) : (
@@ -1987,14 +2018,6 @@ export default function KnowledgeBasesPage() {
                 ) : null}
               </div>
               <div className={styles.listActions}>
-                <Button
-                  type="primary"
-                  icon={<Plus size={15} />}
-                  disabled={!usable || atBaseLimit}
-                  onClick={openCreate}
-                >
-                  {t("knowledgeBases.create")}
-                </Button>
                 <Tooltip title={t("common.refresh")}>
                   <Button
                     icon={<RefreshCw size={15} />}
@@ -2064,8 +2087,17 @@ export default function KnowledgeBasesPage() {
                               count: base.doc_count,
                             })}
                           </Tag>
-                          {base.default_open || base.shared ? (
+                          {base.is_enterprise ||
+                          base.default_open ||
+                          base.shared ? (
                             <div className={styles.listMetaBadges}>
+                              {base.is_enterprise ? (
+                                <span
+                                  className={`${styles.listBadge} ${styles.listBadgeEnterprise}`}
+                                >
+                                  {t("knowledgeBases.enterpriseBadge")}
+                                </span>
+                              ) : null}
                               {base.default_open ? (
                                 <span
                                   className={`${styles.listBadge} ${styles.listBadgeDefaultOpen}`}
@@ -2175,7 +2207,10 @@ export default function KnowledgeBasesPage() {
                         className={styles.detailCreator}
                       >
                         {t("knowledgeBases.createdBy", {
-                          name: formatKnowledgeOwner(selected),
+                          name: formatKnowledgeOwner(
+                            selected,
+                            t("knowledgeBases.systemOwner"),
+                          ),
                         })}
                       </Typography.Text>
                     </div>
@@ -2207,6 +2242,25 @@ export default function KnowledgeBasesPage() {
                         })}
                       </span>
                       <div className={skillStyles.gridToolbarRight}>
+                        <Input
+                          allowClear
+                          value={searchQuery}
+                          placeholder={t("knowledgeBases.searchPlaceholder")}
+                          prefix={<Search size={14} />}
+                          className={styles.searchInput}
+                          onChange={(event) =>
+                            setSearchQuery(event.target.value)
+                          }
+                          onPressEnter={() => void runSearch(searchQuery)}
+                          onBlur={() => {
+                            if (searchQuery.trim()) void runSearch(searchQuery);
+                          }}
+                          onClear={() => {
+                            setSearchQuery("");
+                            setSearchHits([]);
+                          }}
+                          disabled={!selected}
+                        />
                         <Segmented
                           size="small"
                           value={viewMode}
@@ -2368,7 +2422,56 @@ export default function KnowledgeBasesPage() {
                         })}
                       />
                     ) : null}
-                    {folderEntries.length === 0 ? (
+                    {searchQuery.trim() ? (
+                      <div className={styles.searchResults} aria-live="polite">
+                        {searchLoading ? (
+                          <div className={styles.searchLoading}>
+                            <Spin size="small" />
+                          </div>
+                        ) : searchHits.length === 0 ? (
+                          <Typography.Text type="secondary">
+                            {t("knowledgeBases.searchEmpty")}
+                          </Typography.Text>
+                        ) : (
+                          <>
+                            <Typography.Text
+                              type="secondary"
+                              className={styles.searchCount}
+                            >
+                              {t("knowledgeBases.searchCount", {
+                                count: searchHits.length,
+                              })}
+                            </Typography.Text>
+                            <ul className={styles.searchList}>
+                              {searchHits.map((hit) => (
+                                <li
+                                  key={`${hit.document_id}:${hit.ordinal}`}
+                                  className={styles.searchItem}
+                                >
+                                  <button
+                                    type="button"
+                                    className={styles.searchHit}
+                                    onClick={() => openSearchHit(hit)}
+                                  >
+                                    <span className={styles.searchHitHead}>
+                                      <span className={styles.searchHitTitle}>
+                                        {hit.title || hit.filename}
+                                      </span>
+                                      <span className={styles.searchHitPath}>
+                                        {hit.source_path || hit.path}
+                                      </span>
+                                    </span>
+                                    <span className={styles.searchHitSnippet}>
+                                      {hit.snippet}
+                                    </span>
+                                  </button>
+                                </li>
+                              ))}
+                            </ul>
+                          </>
+                        )}
+                      </div>
+                    ) : folderEntries.length === 0 ? (
                       <Empty
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                         description={
@@ -2604,6 +2707,11 @@ export default function KnowledgeBasesPage() {
                         void loadBases();
                       }}
                     />
+                    <ExtractTemplatesPanel
+                      key={`templates-${selected.id}`}
+                      baseId={selected.id}
+                      canWriteBase={canWriteSelected}
+                    />
                   </div>
                 </>
               )}
@@ -2619,7 +2727,9 @@ export default function KnowledgeBasesPage() {
               className={styles.previewModalTitleText}
               title={previewFilename || undefined}
             >
-              {previewFilename || t("knowledgeBases.previewDocument")}
+              {previewTitle ||
+                previewFilename ||
+                t("knowledgeBases.previewDocument")}
             </span>
             {previewNavIndex >= 0 ? (
               <span className={styles.previewModalNav}>
@@ -2988,9 +3098,7 @@ export default function KnowledgeBasesPage() {
       />
 
       <Drawer
-        title={t(
-          editingBaseId ? "knowledgeBases.edit" : "knowledgeBases.create",
-        )}
+        title={t("knowledgeBases.edit")}
         placement="right"
         open={baseDrawerOpen}
         onClose={() => setBaseDrawerOpen(false)}
@@ -3003,7 +3111,7 @@ export default function KnowledgeBasesPage() {
               {t("common.cancel")}
             </Button>
             <Button type="primary" onClick={() => void saveBase()}>
-              {t(editingBaseId ? "common.save" : "common.create")}
+              {t("common.save")}
             </Button>
           </div>
         }

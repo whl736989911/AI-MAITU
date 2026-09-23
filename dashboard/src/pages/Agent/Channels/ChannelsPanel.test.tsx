@@ -14,16 +14,53 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, {
+  PointerEventsCheckLevel,
+  type UserEvent,
+} from "@testing-library/user-event";
+
+/**
+ * Interaction options for jsdom. Same measurement as the other dialog
+ * suites: user-event's default ``pointerEventsCheck`` re-walks the target's
+ * ancestors through ``getComputedStyle`` for every dispatched event, and
+ * jsdom prices each call at ~2 ms against antd's ~1.3k runtime-injected CSS
+ * rules — 20-30 ms once the whole suite is competing for the CPU. The direct
+ * ``userEvent.click``/``type`` API also builds a fresh instance per call, so
+ * nothing is ever cached. ``EachTarget`` keeps the pointer-events guard but
+ * caches it per element, and ``delay: null`` drops the real ``setTimeout``
+ * between events.
+ */
+const userOptions = {
+  pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+  delay: null,
+};
 
 vi.mock("../../../api/request", () => ({
   request: vi.fn(),
 }));
 
 import { request } from "../../../api/request";
+import { CurrentUserProvider } from "../../../hooks/useCurrentUser";
+import type { OctopUser } from "../../../api/modules/auth";
 import ChannelsPanel from "./ChannelsPanel";
 
 const api = vi.mocked(request, true);
+
+/** A baseline holder: every channel type, so the catalogue is the full one. */
+const baselineUser = {
+  id: 2,
+  username: "member",
+  role: "user",
+  permissions: ["channels", "channel_telegram"],
+} as OctopUser;
+
+function renderPanel(user: OctopUser) {
+  return render(
+    <CurrentUserProvider user={user} setUser={() => undefined}>
+      <ChannelsPanel agentId="ag1" />
+    </CurrentUserProvider>,
+  );
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -37,10 +74,10 @@ beforeEach(() => {
 });
 
 describe("<ChannelsPanel /> create-flow default", () => {
-  async function openTelegramCreateDrawer() {
-    render(<ChannelsPanel agentId="ag1" />);
+  async function openTelegramCreateDrawer(user: UserEvent) {
+    renderPanel(baselineUser);
     // Telegram is collapsed behind "更多通道" until expanded.
-    await userEvent.click(
+    await user.click(
       await screen.findByRole("button", {
         name: /channels\.showMoreChannels/,
       }),
@@ -48,11 +85,12 @@ describe("<ChannelsPanel /> create-flow default", () => {
     // telegram has no quick-config path -> clicking its card opens the
     // manual create drawer directly.
     const card = (await screen.findAllByText("channels.label_telegram"))[0];
-    await userEvent.click(card);
+    await user.click(card);
   }
 
   it("opens the create drawer with the enable switch ON", async () => {
-    await openTelegramCreateDrawer();
+    const user = userEvent.setup(userOptions);
+    await openTelegramCreateDrawer(user);
 
     // the drawer's "Enable channel" switch (Form.Item wires label<->control)
     const sw = await screen.findByLabelText("channels.enableChannel");
@@ -60,13 +98,14 @@ describe("<ChannelsPanel /> create-flow default", () => {
   });
 
   it("saves a new channel with a single POST and no follow-up PATCH", async () => {
-    await openTelegramCreateDrawer();
+    const user = userEvent.setup(userOptions);
+    await openTelegramCreateDrawer(user);
 
-    await userEvent.type(
+    await user.type(
       await screen.findByLabelText(/Bot Token/i),
       "123456:ABC-token",
     );
-    await userEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await user.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => {
       const post = api.mock.calls.find(
@@ -93,15 +132,16 @@ describe("<ChannelsPanel /> create-flow default", () => {
   });
 
   it("still honors a deliberate opt-out: unchecking fires the alignment PATCH", async () => {
-    await openTelegramCreateDrawer();
+    const user = userEvent.setup(userOptions);
+    await openTelegramCreateDrawer(user);
 
-    await userEvent.type(
+    await user.type(
       await screen.findByLabelText(/Bot Token/i),
       "123456:ABC-token",
     );
     // user explicitly turns the switch off before saving
-    await userEvent.click(screen.getByLabelText("channels.enableChannel"));
-    await userEvent.click(screen.getByRole("button", { name: "common.save" }));
+    await user.click(screen.getByLabelText("channels.enableChannel"));
+    await user.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => {
       const patch = api.mock.calls.find(
@@ -112,5 +152,43 @@ describe("<ChannelsPanel /> create-flow default", () => {
         JSON.stringify({ enabled: false }),
       );
     });
+  });
+});
+
+describe("<ChannelsPanel /> channel types the account may use", () => {
+  it("offers only the types the account holds a key for", async () => {
+    renderPanel({
+      ...baselineUser,
+      permissions: ["channels", "channel_feishu"],
+    });
+
+    expect(
+      (await screen.findAllByText("channels.label_feishu")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("channels.label_wecom")).toBeNull();
+    // The collapsed "更多通道" bucket is drawn from the authorized set too.
+    expect(
+      screen.queryByRole("button", { name: /channels\.showMoreChannels/ }),
+    ).toBeNull();
+  });
+
+  it("says so when no channel type is authorized at all", async () => {
+    renderPanel({ ...baselineUser, permissions: ["channels"] });
+
+    expect(
+      (await screen.findAllByText("channels.noAuthorizedTypes")).length,
+    ).toBeGreaterThan(0);
+    expect(screen.queryByText("channels.label_feishu")).toBeNull();
+  });
+
+  it("gives a system administrator every type through the role bypass", async () => {
+    renderPanel({ ...baselineUser, role: "admin", permissions: [] });
+
+    expect(
+      (await screen.findAllByText("channels.label_feishu")).length,
+    ).toBeGreaterThan(0);
+    expect(
+      await screen.findByRole("button", { name: /channels\.showMoreChannels/ }),
+    ).toBeDefined();
   });
 });

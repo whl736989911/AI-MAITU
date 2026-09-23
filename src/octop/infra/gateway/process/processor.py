@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -21,6 +21,16 @@ from harness_gateway.models import (
 from langchain_core.messages import AIMessage, HumanMessage
 
 from octop.i18n.domains.stream import format_stream_error
+from octop.infra.agents.feature_workflow import (
+    CONFIGURABLE_WORKFLOW_KEY,
+    FEATURE_RUN_META_KEY,
+    STATUS_ACTIVE,
+    WorkflowRunContext,
+    load_workflow,
+    workflow_status,
+)
+from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
+from octop.infra.agents.middleware.feature_workflow import CONFIGURABLE_FEATURE_LOCALE_KEY
 from octop.infra.agents.profile import parse_config_json
 from octop.infra.agents.providers.reasoning import reasoning_request_parameters
 from octop.infra.errors import OctopError
@@ -122,6 +132,8 @@ class GlobalProcessor:
         hitl: HitlChannelCoordinator | None = None,
         trajectory_service: Any | None = None,
         history_archive: Any | None = None,
+        feature_overlay_repo: Any | None = None,
+        feature_run_repo: Any | None = None,
     ) -> None:
         self._agent_manager = agent_manager
         self._thread_registry = thread_registry
@@ -145,6 +157,14 @@ class GlobalProcessor:
         self._hitl = hitl or HitlChannelCoordinator()
         self._trajectory_service = trajectory_service
         self._history_archive = history_archive
+        # A feature's workflow is the author's; the overlay is the *caller's* own
+        # layer above it, so the run path needs it by (feature, user) — read here,
+        # not in the middleware, for the same reason the definition is.
+        self._feature_overlay_repo = feature_overlay_repo
+        # Every submitted run is written once, as it starts: the evidence an
+        # improvement is judged on later ("this same correction came up three
+        # times") has no other source, since the definition may change afterwards.
+        self._feature_run_repo = feature_run_repo
 
     async def _begin_history(
         self, agent_id: str, thread_id: str, request: dict[str, Any], *, resume: bool = False
@@ -844,6 +864,7 @@ class GlobalProcessor:
             model=model_ref,
             message_kwargs=message_kwargs,
         )
+        request.setdefault("configurable", {})[CONFIGURABLE_FEATURE_LOCALE_KEY] = locale
         self._attach_turn_knowledge_config(
             request,
             user_id=user_id,
@@ -854,6 +875,19 @@ class GlobalProcessor:
         )
         if mcp_servers:
             request["mcp_servers"] = mcp_servers
+
+        # An IM run of a feature follows the same workflow as one started from the
+        # dashboard: the steps are the feature's, not the entry point's.
+        self._stamp_feature_workflow(
+            request,
+            await self._feature_workflow_context(
+                agent_id=agent_id,
+                user_id=user_id,
+                locale=locale,
+                run_payload=None,
+                thread_id=thread_id,
+            ),
+        )
 
         yield MessageEvent.typing()
         stream_ok = False
@@ -1236,6 +1270,12 @@ class GlobalProcessor:
         attachments = meta.get(INBOUND_ATTACHMENTS_KEY)
         if isinstance(attachments, list) and attachments:
             message_kwargs[INBOUND_ATTACHMENTS_KEY] = attachments
+        # The values an input card submitted: the model reads them from the block
+        # this turn's context renders, and the conversation keeps them so the card
+        # can be shown again, read-only, next to what it produced.
+        run_payload = meta.get(FEATURE_RUN_META_KEY)
+        if isinstance(run_payload, Mapping) and run_payload:
+            message_kwargs[FEATURE_RUN_META_KEY] = dict(run_payload)
 
         explicit_mcp = meta.get("mcp_servers")
         # Dashboard always sends mcp_servers (possibly []); trust that list so
@@ -1285,6 +1325,7 @@ class GlobalProcessor:
             message_kwargs=message_kwargs or None,
             reasoning_overrides=reasoning_overrides,
         )
+        request.setdefault("configurable", {})[CONFIGURABLE_FEATURE_LOCALE_KEY] = locale
         self._attach_turn_knowledge_config(
             request,
             user_id=user_id,
@@ -1300,7 +1341,132 @@ class GlobalProcessor:
             request["mcp_servers"] = mcp_servers
         if "skills" in meta:
             request["skills"] = meta["skills"]
+        workflow_context = await self._feature_workflow_context(
+            agent_id=agent_id,
+            user_id=user_id,
+            locale=locale,
+            run_payload=run_payload if isinstance(run_payload, Mapping) else None,
+            thread_id=thread_id,
+        )
+        self._stamp_feature_workflow(request, workflow_context)
         return request
+
+    @staticmethod
+    def _stamp_feature_workflow(
+        request: dict[str, Any],
+        context: WorkflowRunContext | None,
+    ) -> None:
+        """Attach *context* to the turn's ``configurable``, when there is one.
+
+        ``configurable`` is where the harness already reads what a turn carries
+        (``user``, ``mcp_servers``, plugin tool configs), so the block the model
+        runs under travels the same way as the rest of the turn's identity.
+        """
+        if context is None:
+            return
+        configurable = dict(request.get("configurable") or {})
+        configurable[CONFIGURABLE_WORKFLOW_KEY] = context
+        request["configurable"] = configurable
+
+    async def _feature_workflow_context(
+        self,
+        *,
+        agent_id: str,
+        user_id: int,
+        locale: str,
+        run_payload: Mapping[str, Any] | None,
+        thread_id: str | None = None,
+    ) -> WorkflowRunContext | None:
+        """The workflow this turn runs under, or ``None`` when it has none.
+
+        Read on the turn path rather than in the middleware, because this side of
+        the turn can await: the workspace may be remote, and a middleware that read
+        it per model call would pay for the definition on every call of a run.
+
+        A definition that is present but unreadable is logged and dropped — a
+        hand-edited file must not take the conversation down — while a feature with
+        no workflow at all stamps nothing and runs exactly as any other agent does.
+        """
+        row = self._agent_repo.get(agent_id)
+        if row is None or not is_feature_agent(str(getattr(row, "kind", ""))):
+            return None
+        workspace = harness_workspace_for_agent(self._agent_manager, agent_id)
+        if workspace is None:
+            return None
+        loaded = await load_workflow(workspace)
+        if loaded.error is not None:
+            logger.warning("workflow of %s cannot be read: %s", agent_id, loaded.error)
+            return None
+        if loaded.definition is None:
+            return None
+        # A draft belongs to its author for training. Sharing an agent must not
+        # silently publish an unfinished definition to its callers.
+        if workflow_status(loaded.definition) != STATUS_ACTIVE and row.user_id != user_id:
+            return None
+        values = run_payload.get("inputs") if run_payload else None
+        attachments = run_payload.get("attachments") if run_payload else None
+        submitted = dict(values) if isinstance(values, Mapping) else {}
+        if run_payload:
+            self._record_feature_run(
+                agent_id=agent_id,
+                user_id=user_id,
+                thread_id=thread_id,
+                inputs=submitted,
+                definition=loaded.definition,
+            )
+        return WorkflowRunContext(
+            definition=loaded.definition,
+            name=str(getattr(row, "name", "") or ""),
+            locale=locale,
+            values=submitted,
+            attachments=(
+                tuple(str(path) for path in attachments) if isinstance(attachments, list) else ()
+            ),
+            overlay=self._feature_overlay(agent_id=agent_id, user_id=user_id),
+        )
+
+    def _record_feature_run(
+        self,
+        *,
+        agent_id: str,
+        user_id: int,
+        thread_id: str | None,
+        inputs: Mapping[str, Any],
+        definition: Mapping[str, Any],
+    ) -> None:
+        """Write this run's evidence. A store that cannot record must not stop it."""
+        repo = self._feature_run_repo
+        feature_id = feature_id_of_agent(agent_id)
+        if repo is None or feature_id is None:
+            return
+        try:
+            repo.record(
+                feature_id=feature_id,
+                agent_id=agent_id,
+                user_id=user_id,
+                thread_id=thread_id,
+                inputs=inputs,
+                definition=definition,
+            )
+        except Exception:  # pragma: no cover - evidence is never worth failing a run for
+            logger.warning("run of %s could not be recorded", agent_id, exc_info=True)
+
+    def _feature_overlay(self, *, agent_id: str, user_id: int) -> str:
+        """This caller's own text on this feature, or ``""`` when they keep none.
+
+        Absent or unreadable storage answers "no overlay": the caller's own layer
+        is an addition to their run, and a platform that could not read it must not
+        fail the run that was only ever going to get *more* instruction.
+        """
+        repo = self._feature_overlay_repo
+        feature_id = feature_id_of_agent(agent_id)
+        if repo is None or feature_id is None:
+            return ""
+        try:
+            return str(repo.content(feature_id=feature_id, user_id=user_id) or "")
+        except Exception:  # pragma: no cover - a store that cannot answer adds nothing
+            logger.warning("overlay of %s could not be read", agent_id, exc_info=True)
+            return ""
 
     def _attach_turn_knowledge_config(
         self,

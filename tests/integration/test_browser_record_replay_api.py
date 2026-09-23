@@ -25,6 +25,126 @@ async def test_record_replay_status_returns_daemon_status(env: Any) -> None:
     mock_send.assert_awaited_once_with({"command": "status"})
 
 
+async def test_record_status_reports_unresponsive_daemon(env: Any) -> None:
+    """A daemon that is *there* but stopped answering is unknown state.
+
+    It must not be dressed up as ``{"ok": True, "active": None}``: the
+    dashboard reads that as "not recording", which is how a dead recorder
+    stayed invisible.
+    """
+    client, _srv, auth = env
+
+    with patch(
+        "octop.api.routers.browser.record_replay.send_record_request",
+        new=AsyncMock(side_effect=TimeoutError("daemon stalled")),
+    ):
+        r = await client.get("/api/browser/record-replay/status", headers=auth)
+
+    assert r.status_code == 503, r.text
+    assert r.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+async def test_record_status_reports_daemon_error_reply(env: Any) -> None:
+    """An ``ok: False`` reply is a failure, not an empty status."""
+    client, _srv, auth = env
+
+    with patch(
+        "octop.api.routers.browser.record_replay.send_record_request",
+        new=AsyncMock(return_value={"ok": False, "error": "unknown command: status"}),
+    ):
+        r = await client.get("/api/browser/record-replay/status", headers=auth)
+
+    assert r.status_code == 503, r.text
+    assert r.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+async def test_record_status_is_idle_when_no_daemon_can_exist(env: Any) -> None:
+    """No socket ⇒ no session: the recording lives inside the daemon process.
+
+    That is the idle answer (200), so opening the chat page never reports a
+    recorder the user never started.
+    """
+    client, _srv, auth = env
+
+    with (
+        patch(
+            "octop.api.routers.browser.record_replay.send_record_request",
+            new=AsyncMock(side_effect=FileNotFoundError("no daemon socket")),
+        ),
+        patch(
+            "octop.api.routers.browser.record_replay._latest_recording_id",
+            return_value="rec_latest",
+        ),
+    ):
+        r = await client.get("/api/browser/record-replay/status", headers=auth)
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "active": None, "latestRecordingId": "rec_latest"}
+
+
+async def test_record_status_is_idle_without_unix_socket_transport(env: Any) -> None:
+    """Windows' event loop has no ``open_unix_connection`` member at all.
+
+    ``harness_browser``'s daemon cannot run there, so the derived idle answer is
+    the honest one — with the same predictability as a missing socket file.
+    """
+    client, _srv, auth = env
+
+    with (
+        patch(
+            "octop.api.routers.browser.record_replay.send_record_request",
+            new=AsyncMock(
+                side_effect=AttributeError(
+                    "module 'asyncio' has no attribute 'open_unix_connection'"
+                )
+            ),
+        ),
+        patch(
+            "octop.api.routers.browser.record_replay._latest_recording_id",
+            return_value=None,
+        ),
+    ):
+        r = await client.get("/api/browser/record-replay/status", headers=auth)
+
+    assert r.status_code == 200, r.text
+    assert r.json() == {"ok": True, "active": None, "latestRecordingId": None}
+
+
+async def test_record_status_does_not_swallow_unrelated_attribute_error(env: Any) -> None:
+    """Only the missing-transport ``AttributeError`` means "no daemon".
+
+    A plain one (a bug inside the probe) is a failure like any other.
+    """
+    client, _srv, auth = env
+
+    with patch(
+        "octop.api.routers.browser.record_replay.send_record_request",
+        new=AsyncMock(side_effect=AttributeError("'NoneType' object has no attribute 'get'")),
+    ):
+        r = await client.get("/api/browser/record-replay/status", headers=auth)
+
+    assert r.status_code == 503, r.text
+    assert r.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
+async def test_record_stop_reports_unresponsive_daemon(env: Any) -> None:
+    """Stopping without a recording id probes status first.
+
+    An unresponsive daemon must surface as 503, not as "recording not found"
+    (404): the probe failing says nothing about whether a recording exists.
+    """
+    client, _srv, auth = env
+
+    with patch(
+        "octop.api.routers.browser.record_replay.send_record_request",
+        new=AsyncMock(side_effect=TimeoutError("daemon stalled")),
+    ):
+        r = await client.post("/api/browser/record-replay/stop", headers=auth, json={})
+
+    assert r.status_code == 503, r.text
+    assert r.json()["error"]["code"] == "INTERNAL_ERROR"
+
+
 async def test_record_replay_start_ensures_daemon_and_starts_recording(env: Any) -> None:
     client, _srv, auth = env
 

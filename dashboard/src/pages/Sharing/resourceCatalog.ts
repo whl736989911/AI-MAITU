@@ -1,20 +1,16 @@
 import { request } from "../../api/request";
 import { connectorsApi } from "../../api/modules/connectors";
-import { featuresApi } from "../../api/modules/features";
 import { knowledgeBasesApi } from "../../api/modules/knowledgeBases";
 import type { SharingResourceType } from "../../api/modules/sharing";
 import type { OctopAgent } from "../../context/AgentContext";
-import i18n from "../../i18n";
-import { normalizeUiLocale } from "../../utils/localePrefs";
-import { pickLocale } from "../../utils/localizedText";
 
 /**
  * The pickable resources of one type.
  *
  * Each catalog is owned by the module that already lists it for its own page;
- * this file only adapts the four shapes to ``{id, name, hint}``. ``id`` is the
- * key the ACL endpoints address — ``agent_id`` / ``instance_id`` /
- * ``knowledge_base_id`` / feature id, never a database row id.
+ * this file only adapts the shapes to ``{id, name, hint}``. ``id`` is the key
+ * the ACL endpoints address — ``agent_id`` / ``instance_id`` /
+ * ``knowledge_base_id``, never a database row id.
  */
 export interface SharingResourceOption {
   id: string;
@@ -50,11 +46,10 @@ export async function loadSharingResources(
       hint: instance.kind,
     }));
   }
-  const locale = normalizeUiLocale(i18n.language);
-  const { features } = await featuresApi.listFeatures();
-  return features.map((feature) => ({
-    id: feature.id,
-    name: pickLocale(feature.label, locale),
-    hint: pickLocale(feature.description, locale) || null,
-  }));
+  // Every type the picker offers is listed above; a stored row of a kind it no
+  // longer offers has no catalog to build from. Refused as itself rather than
+  // answered with an empty list, which would read as "nothing of that kind".
+  throw new Error(
+    `No resource catalog for sharing resource type "${resourceType}"`,
+  );
 }

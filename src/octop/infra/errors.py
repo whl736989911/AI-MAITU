@@ -91,16 +91,38 @@ class ErrorCode(StrEnum):
     KNOWLEDGE_PREREQUISITES_FAILED = "KNOWLEDGE_PREREQUISITES_FAILED"
     KNOWLEDGE_NOT_FOUND = "KNOWLEDGE_NOT_FOUND"
     KNOWLEDGE_FORBIDDEN = "KNOWLEDGE_FORBIDDEN"
+    # A refusal that is about *changing* a knowledge base its caller may already
+    # read. Read and edit are separate permissions here (design §5.1), so an
+    # actor looking at the base must not be told they have no access to it.
+    KNOWLEDGE_WRITE_FORBIDDEN = "KNOWLEDGE_WRITE_FORBIDDEN"
     KNOWLEDGE_DOC_LIMIT = "KNOWLEDGE_DOC_LIMIT"
     KNOWLEDGE_DOC_TOO_LARGE = "KNOWLEDGE_DOC_TOO_LARGE"
     KNOWLEDGE_BASE_LIMIT = "KNOWLEDGE_BASE_LIMIT"
     KNOWLEDGE_UNSUPPORTED_TYPE = "KNOWLEDGE_UNSUPPORTED_TYPE"
     KNOWLEDGE_NAME_TAKEN = "KNOWLEDGE_NAME_TAKEN"
     KNOWLEDGE_NAME_INVALID = "KNOWLEDGE_NAME_INVALID"
+    # Reading a file the document pipeline found in a source: one that is
+    # encrypted (design §6.1), and one this host cannot convert for reading
+    # (``.doc``/``.ppt`` with no LibreOffice, or a file the converter refused).
+    # Both are states of the file rather than failures of the platform, so
+    # neither may answer with INTERNAL_ERROR.
+    KNOWLEDGE_PASSWORD_REQUIRED = "KNOWLEDGE_PASSWORD_REQUIRED"
+    KNOWLEDGE_CONVERSION_FAILED = "KNOWLEDGE_CONVERSION_FAILED"
+    # Extraction templates (design §7): a template that cannot be carried out is
+    # refused when it is written, and one that is still bound is refused deletion
+    # with the reason, because "in use" is something an administrator can undo.
+    EXTRACT_TEMPLATE_INVALID = "EXTRACT_TEMPLATE_INVALID"
+    EXTRACT_TEMPLATE_IN_USE = "EXTRACT_TEMPLATE_IN_USE"
     # Data sources: a kind whose ingest is not implemented must refuse instead
     # of reporting a success it never performed.
     DATA_SOURCE_INVALID = "DATA_SOURCE_INVALID"
     DATA_SOURCE_SYNC_UNSUPPORTED = "DATA_SOURCE_SYNC_UNSUPPORTED"
+    # A url source that was allowed to sync but whose fetch/response failed.
+    DATA_SOURCE_FETCH_FAILED = "DATA_SOURCE_FETCH_FAILED"
+    # A folder source the platform could not reach or list. Distinct from
+    # DATA_SOURCE_INVALID: the configuration may be fine and the share simply
+    # be down, which is a different thing to tell an administrator.
+    DATA_SOURCE_UNREACHABLE = "DATA_SOURCE_UNREACHABLE"
     AVATAR_INVALID = "AVATAR_INVALID"
     AVATAR_TOO_LARGE = "AVATAR_TOO_LARGE"
     INVITE_INVALID = "INVITE_INVALID"
@@ -125,6 +147,39 @@ class ErrorCode(StrEnum):
     FEATURE_RULE_REVIEWED = "FEATURE_RULE_REVIEWED"
     FEATURE_RULE_NO_SAMPLES = "FEATURE_RULE_NO_SAMPLES"
     FEATURE_RULE_EXTRACTION_FAILED = "FEATURE_RULE_EXTRACTION_FAILED"
+    # Feature definitions authored in the settings UI: a refused definition names
+    # every problem at once (a generic validation code would hide them), and an id
+    # the catalog already serves may not be shadowed by a second definition.
+    FEATURE_INVALID = "FEATURE_INVALID"
+    FEATURE_ALREADY_EXISTS = "FEATURE_ALREADY_EXISTS"
+    # Rule scopes: who may decide a rule is the layer it lives in, so a refusal
+    # has to be its own code (having the module permission is not enough), and a
+    # submit the target layer cannot hold is a bad request rather than a refusal.
+    FEATURE_RULE_SCOPE_FORBIDDEN = "FEATURE_RULE_SCOPE_FORBIDDEN"
+    FEATURE_RULE_SUBMIT_INVALID = "FEATURE_RULE_SUBMIT_INVALID"
+    # Stepped runs: a run that does not exist (or belongs to another feature), an
+    # action that does not fit the state the run is in (approving a check gate that
+    # did not pass, approving a run nobody is waiting on), a request that would put
+    # a value where the definition says it cannot go, and a step declaring a mode
+    # or field this build does not implement — refused, never run as something else.
+    FEATURE_RUN_NOT_FOUND = "FEATURE_RUN_NOT_FOUND"
+    FEATURE_RUN_NOT_AT_GATE = "FEATURE_RUN_NOT_AT_GATE"
+    FEATURE_RUN_REQUEST_INVALID = "FEATURE_RUN_REQUEST_INVALID"
+    FEATURE_STEP_UNSUPPORTED = "FEATURE_STEP_UNSUPPORTED"
+    # A feature's workflow: what it asks the caller for, the fixed steps it runs,
+    # what it hands back, and the rules that hold throughout. A refused definition
+    # names every problem at once — the editor puts them on the section they belong
+    # to, and a model writing the document gets one fixable answer instead of a
+    # second round trip — and a workflow is refused on anything that is not a
+    # feature's own agent (``kind = 'feature'``), because an expert has no run to
+    # declare.
+    WORKFLOW_INVALID = "WORKFLOW_INVALID"
+    WORKFLOW_NOT_A_FEATURE = "WORKFLOW_NOT_A_FEATURE"
+    # An improvement is a diff, and a diff can go stale: the value it expected to
+    # find is no longer there because somebody edited that step in the meantime.
+    # Refused whole rather than forced, and the offending paths ride along in
+    # ``details`` so the refusal can name them.
+    WORKFLOW_CHANGE_CONFLICT = "WORKFLOW_CHANGE_CONFLICT"
     # Org units: a refused delete names the department, so the provider codes
     # (whose message reads "provider") cannot carry it.
     ORG_UNIT_HAS_CHILDREN = "ORG_UNIT_HAS_CHILDREN"
@@ -212,14 +267,21 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_PREREQUISITES_FAILED: 409,
     ErrorCode.KNOWLEDGE_NOT_FOUND: 404,
     ErrorCode.KNOWLEDGE_FORBIDDEN: 403,
+    ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_DOC_LIMIT: 409,
     ErrorCode.KNOWLEDGE_DOC_TOO_LARGE: 413,
     ErrorCode.KNOWLEDGE_BASE_LIMIT: 409,
     ErrorCode.KNOWLEDGE_UNSUPPORTED_TYPE: 400,
     ErrorCode.KNOWLEDGE_NAME_TAKEN: 409,
     ErrorCode.KNOWLEDGE_NAME_INVALID: 400,
+    ErrorCode.KNOWLEDGE_PASSWORD_REQUIRED: 409,
+    ErrorCode.KNOWLEDGE_CONVERSION_FAILED: 409,
+    ErrorCode.EXTRACT_TEMPLATE_INVALID: 400,
+    ErrorCode.EXTRACT_TEMPLATE_IN_USE: 409,
     ErrorCode.DATA_SOURCE_INVALID: 400,
     ErrorCode.DATA_SOURCE_SYNC_UNSUPPORTED: 400,
+    ErrorCode.DATA_SOURCE_FETCH_FAILED: 502,
+    ErrorCode.DATA_SOURCE_UNREACHABLE: 502,
     ErrorCode.AVATAR_INVALID: 400,
     ErrorCode.AVATAR_TOO_LARGE: 413,
     ErrorCode.INVITE_INVALID: 400,
@@ -238,6 +300,17 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.FEATURE_RULE_REVIEWED: 409,
     ErrorCode.FEATURE_RULE_NO_SAMPLES: 409,
     ErrorCode.FEATURE_RULE_EXTRACTION_FAILED: 502,
+    ErrorCode.FEATURE_INVALID: 400,
+    ErrorCode.FEATURE_ALREADY_EXISTS: 409,
+    ErrorCode.FEATURE_RULE_SCOPE_FORBIDDEN: 403,
+    ErrorCode.FEATURE_RULE_SUBMIT_INVALID: 400,
+    ErrorCode.FEATURE_RUN_NOT_FOUND: 404,
+    ErrorCode.FEATURE_RUN_NOT_AT_GATE: 409,
+    ErrorCode.FEATURE_RUN_REQUEST_INVALID: 400,
+    ErrorCode.FEATURE_STEP_UNSUPPORTED: 501,
+    ErrorCode.WORKFLOW_INVALID: 400,
+    ErrorCode.WORKFLOW_NOT_A_FEATURE: 400,
+    ErrorCode.WORKFLOW_CHANGE_CONFLICT: 409,
     ErrorCode.ORG_UNIT_HAS_CHILDREN: 409,
     ErrorCode.ORG_UNIT_IN_USE: 409,
 }

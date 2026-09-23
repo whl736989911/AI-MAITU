@@ -10,6 +10,12 @@ export interface ChatAgentOption {
   is_shared?: boolean;
   is_owner?: boolean;
   owner_username?: string | null;
+  /**
+   * What the row is — see ``utils/agentKind.ts``. Absent means an expert, and
+   * the chat pickers read it from here rather than from the row they no longer
+   * hold: they are handed projections, so the kind has to survive the trip.
+   */
+  kind?: string | null;
 }
 
 interface ExpertAgentAvatarProps {

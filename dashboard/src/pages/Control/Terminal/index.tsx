@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState, useMemo, memo } from "react";
 import { useTranslation } from "react-i18next";
+import { useNavigate } from "react-router-dom";
 import { Button, Dropdown, Tooltip } from "antd";
 import type { MenuProps } from "antd";
 import {
@@ -12,6 +13,7 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { ChromeTabBar } from "../../../components/ChromeTabBar";
+import { EmptyState, EmptyStateIcon } from "../../../components/EmptyState";
 import AiPanel, { type AiPanelLayout } from "./components/AiPanel";
 import TerminalView, {
   type TerminalViewHandle,
@@ -265,9 +267,13 @@ export default function TerminalPage({
   embedded = false,
 }: TerminalPageProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const { isDark } = useTheme();
   const isMobile = useIsMobile();
   const { activeAgentId, agents, loading: agentsLoading, refresh } = useAgent();
+  // A terminal runs under an expert. With none, there is nothing to open and
+  // nothing to fail — say so instead of showing a disconnected terminal.
+  const noExperts = !agentsLoading && agents.length === 0;
   const {
     sessionIds,
     activeId,
@@ -567,23 +573,37 @@ export default function TerminalPage({
             <div className={styles.title}>{t("terminal.title")}</div>
             <p className={styles.description}>{t("terminal.description")}</p>
           </div>
-          <Button
-            type={isPanelOpen ? "primary" : "default"}
-            danger={!isPanelOpen}
-            icon={<Bot size={16} />}
-            className={
-              isPanelOpen ? styles.headerAiBtnActive : styles.headerAiBtn
-            }
-            onClick={() => setIsPanelOpen((v) => !v)}
-          >
-            {t("terminal.ai.togglePanel")}
-          </Button>
+          {/* The AI panel drives an expert's terminal — with no expert there is
+              nothing for it to drive, so the control is hidden, not disabled. */}
+          {!noExperts && (
+            <Button
+              type={isPanelOpen ? "primary" : "default"}
+              danger={!isPanelOpen}
+              icon={<Bot size={16} />}
+              className={
+                isPanelOpen ? styles.headerAiBtnActive : styles.headerAiBtn
+              }
+              onClick={() => setIsPanelOpen((v) => !v)}
+            >
+              {t("terminal.ai.togglePanel")}
+            </Button>
+          )}
         </div>
       )}
 
       <div className={contentAreaClass}>
         <div className={tabsCardClass}>
-          {sessionIds.length === 0 ? (
+          {noExperts ? (
+            <div className={styles.emptyState}>
+              <EmptyState
+                icon={<EmptyStateIcon icon={SquareTerminal} />}
+                title={t("terminal.noExpertsTitle")}
+                description={t("terminal.noExpertsHint")}
+                actionLabel={t("terminal.noExpertsAction")}
+                onAction={() => navigate("/experts")}
+              />
+            </div>
+          ) : sessionIds.length === 0 ? (
             <div className={styles.emptyState}>
               <Button
                 type="primary"
@@ -638,7 +658,7 @@ export default function TerminalPage({
           )}
         </div>
 
-        {isPanelOpen && (
+        {isPanelOpen && !noExperts && (
           <div
             className={
               effectivePanelLayout === "right"

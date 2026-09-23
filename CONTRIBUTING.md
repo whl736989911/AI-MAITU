@@ -11,7 +11,7 @@ git clone https://github.com/TencentCloud/Octop.git octop
 cd octop
 make install          # backend dev dependencies
 make install-hooks    # once per clone: pre-commit runs make all + dashboard build
-make all              # format-all + backend lint + typecheck + test (ship bar)
+make all              # format-all + lint + typecheck + test, backend and dashboard (ship bar)
 ```
 
 For frontend work (separate terminal):
@@ -29,7 +29,8 @@ make check-all        # full stack quality gate
 |---------|-------------|
 | `make install` | Install Python dev dependencies |
 | `make install-hooks` | Point git at `.githooks` (pre-commit: `make all` + dashboard build) |
-| `make all` | `format-all` + backend lint + typecheck + test |
+| `make all` | `format-all` + lint + typecheck + test — backend pytest **and** dashboard vitest |
+| `make test-frontend` | Dashboard vitest suite (`make test` covers the backend only) |
 | `make check-all` | Full stack quality gate |
 | `make dev` | Start frontend + backend dev servers |
 | `make build` | Build dashboard + Python wheel |
@@ -95,13 +96,14 @@ git clone https://github.com/TencentCloud/Octop.git octop
 cd octop
 make install
 make install-hooks    # 每个 clone 执行一次：提交前跑 make all + 前端 build
-make all              # format-all + 后端 lint / typecheck / test
+make all              # format-all + 后端 lint / typecheck / test + 前端 vitest
 ```
 
 前端开发（另开终端）：
 
 ```bash
 make dev-frontend
+make test-frontend    # 前端单测
 make check-all        # 全栈质量门禁
 ```
 

@@ -46,9 +46,6 @@ def test_run_migrations_creates_tables(db: SqlitePool):
         "providers",
         "channels",
         "cron_jobs",
-        "feature_tasks",
-        "feature_cases",
-        "feature_rules",
         "sessions",
         "threads",
         "connectors",
@@ -67,6 +64,9 @@ def test_run_migrations_creates_tables(db: SqlitePool):
         "knowledge_bases",
         "knowledge_documents",
         "data_sources",
+        "feature_user_overlays",
+        "feature_workflow_runs",
+        "feature_workflow_changes",
         "sso_providers",
         "sso_login_states",
         "trajectory_events",
@@ -78,6 +78,20 @@ def test_run_migrations_creates_tables(db: SqlitePool):
     }
     assert expected.issubset(names)
     assert "knowledge_base_members" not in names
+    # Schema v26 drops the deleted feature subsystem's tables: a fresh database
+    # never has them, and one that did (v16-v25) loses them on the way to 26. The
+    # check names them instead of matching the ``feature_`` prefix, because a later
+    # table may legitimately carry that prefix — ``feature_user_overlays`` is the
+    # calling user's own text above a feature's declared workflow.
+    assert {
+        "feature_tasks",
+        "feature_cases",
+        "feature_rules",
+        "feature_runs",
+        "feature_step_runs",
+        "feature_step_edits",
+        "feature_step_dispatches",
+    }.isdisjoint(names)
 
 
 def test_run_migrations_idempotent(db: SqlitePool):
@@ -106,16 +120,7 @@ def test_run_migrations_idempotent(db: SqlitePool):
         sso_indexes = {
             r["name"] for r in conn.execute("PRAGMA index_list(sso_providers)").fetchall()
         }
-        feature_task_cols = {
-            r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()
-        }
-        case_cols = {
-            r["name"] for r in conn.execute("PRAGMA table_info(feature_cases)").fetchall()
-        }
-        rule_cols = {
-            r["name"] for r in conn.execute("PRAGMA table_info(feature_rules)").fetchall()
-        }
-    assert v == 22
+    assert v == 36
     assert "login_failed_count" in cols
     assert "login_locked_until" in cols
     assert "preferences_json" in cols
@@ -156,78 +161,55 @@ def test_run_migrations_idempotent(db: SqlitePool):
     assert "skill_packages" in table_names
     assert "knowledge_base_id" in kb_cols
     assert {"document_id", "path", "is_dir"}.issubset(doc_cols)
-    assert {"diff_json", "finalized_at"}.issubset(feature_task_cols)
-    # Schema v22: the run snapshot (which agent ran it, which rules it injected).
-    assert {"agent_id", "injected_rule_ids"}.issubset(feature_task_cols)
-    assert case_cols == {"task_id", "feature_id", "promoted_by", "promoted_at", "note"}
-    assert rule_cols == {
-        "id",
-        "feature_id",
-        "rule_text",
-        "status",
-        "source_task_ids",
-        "proposed_by",
-        "approved_by",
-        "created_at",
-        "reviewed_at",
-    }
+    # Schema v26: what an agent row *is* — the marker that separates a feature's
+    # own agent from the user's experts, which ownership can no longer express.
+    assert "kind" in agent_cols
 
 
-def test_watermark_at_19_without_capture_schema_is_repaired(tmp_path: Path) -> None:
-    """A DB stamped 19 by a clamp or a parallel build still gets the v19 schema.
+def test_watermark_at_25_gets_agent_kind_and_loses_the_feature_tables(tmp_path: Path) -> None:
+    """A v25 database lands on v26: the marker is added and the old tables go.
 
-    The capture columns and the case/rule tables are written by the self-improvement
-    loop, so a missing one would only surface as a failed finalize at runtime.
+    The column arrives on a database that holds the rows it was introduced for —
+    an app-owned agent, which before v26 could only ever be a feature's own, and
+    an expert — and it is dropped here first, because a row layout without it is
+    the only state the backfill runs in. The feature tables the deleted subsystem
+    wrote to must not survive the upgrade.
     """
-    db_path = tmp_path / "octop.db"
-    pool = SqlitePool(db_path)
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
     with pool.connect() as conn:
-        conn.executescript(
-            (
-                Path(__file__).resolve().parents[3]
-                / "src/octop/infra/db/migrations/001_initial.sql"
-            ).read_text()
+        conn.execute("ALTER TABLE agents DROP COLUMN kind")
+        conn.execute(
+            "INSERT INTO users(id, username, password_hash, role, created_at) "
+            "VALUES (1, 'author', 'x', 'user', 1)"
         )
-        conn.execute("UPDATE _schema_version SET version = 19")
+        conn.execute(
+            "INSERT INTO agents(agent_id, user_id, name, created_at, updated_at) "
+            "VALUES ('feat-legacy', NULL, 'legacy feature', 1, 1)"
+        )
+        conn.execute(
+            "INSERT INTO agents(agent_id, user_id, name, created_at, updated_at) "
+            "VALUES ('expert-legacy', 1, 'legacy expert', 1, 1)"
+        )
+        conn.execute("CREATE TABLE feature_tasks (id TEXT PRIMARY KEY)")
+        conn.execute("UPDATE _schema_version SET version = 25")
 
     run_migrations(pool)
 
     with pool.connect() as conn:
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        task_cols = {
-            r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()
+        kinds = {
+            r["agent_id"]: r["kind"]
+            for r in conn.execute("SELECT agent_id, kind FROM agents").fetchall()
         }
         tables = {
             r["name"]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 22
-    assert {"diff_json", "finalized_at"}.issubset(task_cols)
-    assert {"feature_cases", "feature_rules"}.issubset(tables)
-
-
-def test_watermark_at_21_without_run_snapshot_is_repaired(tmp_path: Path) -> None:
-    """A v21 database still gets the run-snapshot columns.
-
-    ``_schema_version`` is a watermark, not a changelog: a clamp, or a build that
-    stamped 22 without the DDL, leaves a database whose run log cannot record
-    which agent produced a draft. Both outcomes of a run write those columns, so
-    a missing one would only surface as a failed run at runtime.
-    """
-    pool = SqlitePool(tmp_path / "octop.db")
-    run_migrations(pool)
-    with pool.connect() as conn:
-        conn.execute("ALTER TABLE feature_tasks DROP COLUMN injected_rule_ids")
-        conn.execute("ALTER TABLE feature_tasks DROP COLUMN agent_id")
-        conn.execute("UPDATE _schema_version SET version = 21")
-
-    run_migrations(pool)
-
-    with pool.connect() as conn:
-        version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-        task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(feature_tasks)").fetchall()}
-    assert version == 22
-    assert {"agent_id", "injected_rule_ids"}.issubset(task_cols)
+    assert version == 36
+    assert kinds["feat-legacy"] == "feature"
+    assert kinds["expert-legacy"] == "agent"
+    assert "feature_tasks" not in tables
 
 
 def test_watermark_at_20_without_data_sources_is_repaired(tmp_path: Path) -> None:
@@ -256,7 +238,7 @@ def test_watermark_at_20_without_data_sources_is_repaired(tmp_path: Path) -> Non
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(data_sources)").fetchall()}
-    assert version == 22
+    assert version == 36
     assert "data_sources" in tables
     assert {"knowledge_base_id", "kind", "config_json", "sync_status"}.issubset(cols)
 
@@ -297,7 +279,7 @@ def test_migration_002_idempotent_when_column_already_present(tmp_path: Path) ->
     with pool.connect() as conn:
         v = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         cron_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cron_jobs)").fetchall()}
-    assert v == 22
+    assert v == 36
     assert "mcp_servers" in cron_cols
     assert "skill_packages" in {
         r["name"]
@@ -484,7 +466,7 @@ def test_stuck_version_6_without_permissions_column_is_repaired(tmp_path: Path) 
     with pool.connect() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-    assert version == 22
+    assert version == 36
     assert "permissions" in cols
 
 
@@ -509,7 +491,7 @@ def test_schema_v10_without_projection_tables_is_repaired(tmp_path: Path) -> Non
         }
         kb_cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
         cron_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cron_jobs)").fetchall()}
-    assert version == 22
+    assert version == 36
     assert {"thread_messages", "thread_history_projection", "trajectory_events"}.issubset(
         table_names
     )
@@ -544,7 +526,7 @@ def test_ahead_of_max_schema_version_clamps_to_max(tmp_path: Path) -> None:
             r["name"]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 22
+    assert version == 36
     assert "skill_package_id" in pkg_cols
     assert "published_expert_id" in pub_cols
     assert "user_invites" in invite_tables
@@ -577,9 +559,7 @@ def test_current_watermark_repairs_pre_v13_connectors_schema(tmp_path: Path) -> 
 
     with pool.connect() as conn:
         columns = {row["name"] for row in conn.execute("PRAGMA table_info(connectors)").fetchall()}
-        indexes = {
-            row["name"] for row in conn.execute("PRAGMA index_list(connectors)").fetchall()
-        }
+        indexes = {row["name"] for row in conn.execute("PRAGMA index_list(connectors)").fetchall()}
         user_id = conn.execute("SELECT id FROM users WHERE username = 'owner'").fetchone()[0]
         conn.execute(
             "INSERT INTO connectors("
@@ -634,7 +614,7 @@ def test_pre_squash_schema_version_clamped_and_knowledge_tables_filled(
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
-    assert version == 22
+    assert version == 36
     assert "permissions" in user_cols
     assert {
         "published_experts",
@@ -840,7 +820,7 @@ def test_v14_to_v15_adds_sso_provider_kind_without_rebuilding(tmp_path: Path) ->
         bound = conn.execute(
             "SELECT sso_provider_id FROM users WHERE username = 'sso-admin'"
         ).fetchone()[0]
-    assert version == 22
+    assert version == 36
     assert int(row["id"]) == int(provider_id)
     assert row["kind"] == "oidc"
     assert row["extra"] == "{}"

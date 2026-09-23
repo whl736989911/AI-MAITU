@@ -70,7 +70,9 @@ def init(
         if not non_interactive:
             from octop.cli.support import prompts as _prompts
 
-            if not _prompts.confirm(f"Wipe {home}? This deletes ALL MAITU Smart Manufacturing state.", default=False):
+            if not _prompts.confirm(
+                f"Wipe {home}? This deletes ALL MAITU Smart Manufacturing state.", default=False
+            ):
                 click.echo("aborted", err=True)
                 raise SystemExit(1)
         shutil.rmtree(home)

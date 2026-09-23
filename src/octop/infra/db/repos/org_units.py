@@ -58,6 +58,31 @@ class OrgUnitRepo:
             r = conn.execute("SELECT * FROM org_units WHERE key = ?", (key,)).fetchone()
         return OrgUnitRow.from_row(r) if r else None
 
+    def ancestor_keys(self, key: str) -> list[str]:
+        """``key`` and the units above it, nearest first (``[]`` for an unknown key).
+
+        One query for the whole hierarchy plus a walk in Python: the tree is a
+        handful of rows, and a recursive CTE would have to be written twice (the
+        two dialects spell it differently) for no gain.
+
+        The walk carries a visited set because a hierarchy an older release left
+        cyclic must not turn a permission lookup into an infinite loop; the key
+        that closes the cycle is reported once and then stops the walk.
+        """
+        with self._db.connect() as conn:
+            rows = conn.execute("SELECT key, parent_key FROM org_units").fetchall()
+        parents: dict[str, str | None] = {str(r["key"]): r["parent_key"] for r in rows}
+        if key not in parents:
+            return []
+        chain: list[str] = []
+        seen: set[str] = set()
+        current: str | None = key
+        while current is not None and current not in seen:
+            seen.add(current)
+            chain.append(current)
+            current = parents.get(current)
+        return chain
+
     def create(
         self,
         *,

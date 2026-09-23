@@ -1,7 +1,7 @@
 # Makefile for Octop
 # Usage:
 #   make              - Show this help
-#   make all          - format (BE+FE) + backend lint + typecheck + test (ship bar)
+#   make all          - format (BE+FE) + lint (BE+FE, formatting checked) + typecheck + test (BE+FE) (ship bar)
 #   make build        - Build frontend + Python wheel
 #   make publish      - Build + upload to PyPI
 #
@@ -59,8 +59,8 @@ help:
 	@echo "  run-online       Start octop run from .venv-online"
 	@echo ""
 	@echo "Quality targets (ship bar):"
-	@echo "  all              format-all + lint + typecheck + test (backend lint/typecheck/test)"
-	@echo "  precommit        fast change-aware gate for the git pre-commit hook (testmon-scoped tests)"
+	@echo "  all              format-all + lint + typecheck + test + test-frontend (ship bar)"
+	@echo "  precommit        fast change-aware gate for the git pre-commit hook (testmon + vitest --changed)"
 	@echo "  lint             Ruff check + format check (src, tests)"
 	@echo "  format           Ruff auto-fix + format (src, tests)"
 	@echo "  typecheck        mypy --strict src/octop"
@@ -68,6 +68,8 @@ help:
 	@echo "  test-live        pytest -m live"
 	@echo ""
 	@echo "Quality targets (frontend):"
+	@echo "  test-frontend    vitest run (full suite)"
+	@echo "  test-frontend-affected  vitest run --changed (pending changes only)"
 	@echo "  lint-frontend    ESLint + Prettier check"
 	@echo "  format-frontend  Prettier write"
 	@echo "  typecheck-frontend  tsc -b (project references)"
@@ -76,7 +78,7 @@ help:
 	@echo "  lint-all         lint + lint-frontend"
 	@echo "  format-all       format + format-frontend (also first step of make all)"
 	@echo "  typecheck-all    typecheck + typecheck-frontend"
-	@echo "  check-all        lint-all + typecheck-all + test"
+	@echo "  check-all        lint-all + typecheck-all + test + test-frontend"
 	@echo ""
 	@echo "Utility targets:"
 	@echo "  install-hooks    Point git to .githooks (pre-commit: make all + dashboard build)"
@@ -198,8 +200,12 @@ run-online:
 
 # ─── Quality (backend) ───────────────────────────────────────────────────────
 
+# The ship bar. Note ``lint-frontend`` (dashboard ESLint + ``prettier --check``)
+# and ``lint`` (ruff check + ``ruff format --check``) both verify formatting, so
+# the writers in ``format-all`` above cannot pass the gate on their own say-so:
+# what they rewrote is checked right after.
 .PHONY: all
-all: format-all lint typecheck test
+all: format-all lint lint-frontend typecheck test test-frontend
 
 .PHONY: lint
 lint:
@@ -235,11 +241,12 @@ test-live:
 	$(RUN) pytest -m live
 
 # Fast, change-aware gate for the local pre-commit hook. Runs ruff/mypy (cheap
-# and kept full for accuracy) plus only the tests affected by changed files via
-# pytest-testmon. The full suite still runs in CI (`make all`); this is local
-# feedback only, so a missed cross-module impact is caught there.
+# and kept full for accuracy) plus only the tests affected by changed files —
+# pytest-testmon for the backend, `vitest --changed` for the dashboard. The full
+# suites still run in `make all`; this is local feedback only, so a missed
+# cross-module impact is caught there.
 .PHONY: precommit
-precommit: format-all lint typecheck test-affected
+precommit: format-all lint typecheck test-affected test-frontend-affected
 
 # NOTE: do NOT pass `-m` here — pytest-testmon deactivates its affected-test
 # selection whenever a marker expression is present, which would fall back to
@@ -276,6 +283,21 @@ typecheck-frontend:
 	@echo "[typecheck-frontend] tsc..."
 	cd $(DASHBOARD_DIR) && npx tsc -b
 
+# Full dashboard suite (~3.5 min): the authoritative frontend gate, part of `all`.
+.PHONY: test-frontend
+test-frontend:
+	@echo "[test-frontend] vitest run (full)..."
+	cd $(DASHBOARD_DIR) && npx vitest run
+
+# Change-aware counterpart for `precommit`: only the vitest files reachable from
+# pending changes (staged + unstaged, via `--changed` against HEAD). The full
+# suite above is what proves the frontend, so this stays deliberately narrow.
+# `--passWithNoTests` keeps backend-only commits from failing the gate.
+.PHONY: test-frontend-affected
+test-frontend-affected:
+	@echo "[test-frontend-affected] vitest run --changed (tests touched by pending changes)..."
+	cd $(DASHBOARD_DIR) && npx vitest run --changed --passWithNoTests
+
 # ─── Quality (full stack) ────────────────────────────────────────────────────
 
 .PHONY: lint-all
@@ -288,7 +310,7 @@ format-all: format format-frontend
 typecheck-all: typecheck typecheck-frontend
 
 .PHONY: check-all
-check-all: lint-all typecheck-all test
+check-all: lint-all typecheck-all test test-frontend
 
 # ─── Utilities ───────────────────────────────────────────────────────────────
 
@@ -297,7 +319,7 @@ install-hooks:
 	@echo "[install-hooks] Setting core.hooksPath=.githooks"
 	git config core.hooksPath .githooks
 	@chmod +x "$(REPO_ROOT)/.githooks/"* 2>/dev/null || true
-	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + typecheck + testmon-scoped tests), dashboard build"
+	@echo "[install-hooks] Done. Pre-commit will run: make precommit (format-all + lint + typecheck + testmon/vitest-scoped tests), dashboard build"
 	@echo "[install-hooks] Bypass: SKIP_PRECOMMIT=1 git commit …   or   git commit --no-verify"
 
 .PHONY: install install-dev

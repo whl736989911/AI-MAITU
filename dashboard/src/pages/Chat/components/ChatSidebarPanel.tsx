@@ -30,8 +30,9 @@ interface ChatSidebarPanelProps {
   /** Minimal layout only: start a fresh chat from an expert row. */
   onNewChatWithAgent: (agentId: string) => void;
   onDeleteSession: (id: string) => void;
-  onRenameSession: (id: string, name: string) => void;
-  onPinSession: (id: string, pinned: boolean) => void;
+  /** Resolves true when the server stored the change, false when it did not. */
+  onRenameSession: (id: string, name: string) => Promise<boolean>;
+  onPinSession: (id: string, pinned: boolean) => Promise<boolean>;
   onForkSession: (id: string, agentId?: string | null) => void;
   forkDisabled?: boolean;
   forkDisabledHint?: string;

@@ -107,3 +107,7 @@ scripts/lh_image_install_octop_tencentos.sh
 
 # Local dev runtime home (OCTOP_HOME) — never commit
 .runtime/
+
+# Tool scratch directories (session-local, never part of the product)
+.jspace/
+.omx/

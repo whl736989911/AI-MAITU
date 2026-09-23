@@ -2,6 +2,42 @@
 
 Runners are stored globally per user (``settings`` table). Each agent only
 stores ``acp.tool_enabled`` for the ``acp_runner`` built-in tool.
+
+Two questions, two gates (design §4.4)
+--------------------------------------
+A runner *definition* is a **host command line** — ``command`` + ``args`` +
+``env`` for a program Octop spawns on this machine, kept per account and shared
+by every agent of it. So the surface answers to two different levels:
+
+* ``acp`` — may this account use the ACP surface: read the runner definitions,
+  and enable ``acp_runner`` on an agent it owns. The key replaces the fixed
+  administrator check the global entry used to carry.
+* ``acp`` **and** the system administrator role — may it write a runner
+  *definition*. Naming the program this host executes is a system-level
+  operation, which is exactly what design §4.4 keeps the extra check for
+  (涉及系统级危险操作的接口仍可额外要求系统管理员), the same reason
+  ``filesystem.py`` (host paths) and the sharing approval queue stayed on
+  ``require_admin()``.
+
+Per route::
+
+  GET    /api/acp                               acp
+  PUT    /api/acp                               acp + system administrator
+  GET    /api/acp/{runner_name}                 acp
+  PUT    /api/acp/{runner_name}                 acp + system administrator
+  DELETE /api/acp/{runner_name}                 acp + system administrator
+  GET    /api/agents/{agent_id}/acp             acp (+ agent ownership)
+  PUT    /api/agents/{agent_id}/acp             acp (+ ownership); its optional
+                                                ``runners`` leg is a definition
+                                                write → system administrator
+  PUT    /api/agents/{agent_id}/acp/tool        acp (+ agent ownership)
+  GET    /api/agents/{agent_id}/acp/{runner}    acp (+ agent ownership)
+  PUT    /api/agents/{agent_id}/acp/{runner}    acp + system administrator
+  DELETE /api/agents/{agent_id}/acp/{runner}    acp + system administrator
+
+Deleting a *built-in* runner stays refused for everyone (``_BUILTIN_RUNNERS``);
+so does the agent-ownership check, which a system administrator bypasses
+(``api/common/agent.py``).
 """
 
 from __future__ import annotations
@@ -14,7 +50,7 @@ from fastapi import APIRouter, Body, Depends
 from pydantic import BaseModel, Field
 
 from octop.api.common.agent import assert_agent_owner as _assert_agent_owner
-from octop.api.deps import current_user, get_server, require_admin
+from octop.api.deps import get_server, require_admin, require_permission
 from octop.infra.errors import ErrorCode, OctopError
 
 logger = logging.getLogger(__name__)
@@ -145,9 +181,25 @@ def _agent_row(server: Any, agent_id: str, user: Any) -> Any:
     return row
 
 
+def _assert_may_define_runners(user: Any) -> None:
+    """Refuse writing a runner *definition* without the system administrator role.
+
+    The one route that can carry a definition write without being a definition
+    route of its own — ``PUT /agents/{agent_id}/acp`` takes the same ``runners``
+    payload inline — checks it here; everywhere else the ``require_admin()``
+    dependency is the check, so the refusal lands before any work.
+    """
+    if not getattr(user, "is_admin", False):
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            "admin required to define ACP runner commands",
+            details={"reason": "a runner definition is a command this host executes"},
+        )
+
+
 @router.get("/acp", summary="Get global ACP runners")
 async def get_global_acp_runners(
-    user: Any = Depends(require_admin()),
+    user: Any = Depends(require_permission("acp")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return ACP runner definitions shared by all agents for the current user."""
@@ -158,10 +210,15 @@ async def get_global_acp_runners(
 @router.put("/acp", summary="Update global ACP runners")
 async def put_global_acp_runners(
     body: ACPRunnersBody,
-    user: Any = Depends(require_admin()),
+    user: Any = Depends(require_permission("acp")),
+    _admin: Any = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Replace the current user's global ACP runner configuration."""
+    """Replace the current user's global ACP runner configuration.
+
+    A definition write: names the commands this host will execute, so it carries
+    the system administrator check on top of ``acp`` (see the module docstring).
+    """
     registry = _registry(server)
     runners = _runners_payload(body)
     saved = registry.acp_settings.save_runners(user.id, runners)
@@ -172,7 +229,7 @@ async def put_global_acp_runners(
 @router.get("/acp/{runner_name}", summary="Get global ACP runner")
 async def get_global_acp_runner(
     runner_name: str,
-    user: Any = Depends(require_admin()),
+    user: Any = Depends(require_permission("acp")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     registry = _registry(server)
@@ -186,7 +243,8 @@ async def get_global_acp_runner(
 async def put_global_acp_runner(
     runner_name: str,
     body: ACPRunnerBody = Body(...),
-    user: Any = Depends(require_admin()),
+    user: Any = Depends(require_permission("acp")),
+    _admin: Any = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     key = runner_name.strip()
@@ -204,7 +262,8 @@ async def put_global_acp_runner(
 @router.delete("/acp/{runner_name}", status_code=204, summary="Delete global ACP runner")
 async def delete_global_acp_runner(
     runner_name: str,
-    user: Any = Depends(require_admin()),
+    user: Any = Depends(require_permission("acp")),
+    _admin: Any = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> None:
     if runner_name in _BUILTIN_RUNNERS:
@@ -221,7 +280,7 @@ async def delete_global_acp_runner(
 @router.get("/agents/{agent_id}/acp", summary="Get ACP config")
 async def get_acp_config(
     agent_id: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("acp")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return global runners plus per-agent ``acp_runner`` tool toggle."""
@@ -235,13 +294,21 @@ async def get_acp_config(
 async def put_acp_config(
     agent_id: str,
     body: ACPConfigBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("acp")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Update per-agent tool toggle; optional ``runners`` updates global definitions."""
+    """Update per-agent tool toggle; optional ``runners`` updates global definitions.
+
+    Toggling is the ``acp`` key plus ownership. The optional ``runners`` field is
+    a *definition* write like ``PUT /acp``, so it checks the system administrator
+    role itself (``_assert_may_define_runners``) — this route cannot take the
+    ``require_admin()`` dependency, because the toggle it also carries is not a
+    system-level operation.
+    """
     _agent_row(server, agent_id, user)
     registry = _registry(server)
     if body.runners is not None:
+        _assert_may_define_runners(user)
         runners = _runners_payload(ACPRunnersBody(runners=body.runners))
         registry.acp_settings.save_runners(user.id, runners)
         _schedule_reload_user_agents(server, user.id)
@@ -254,7 +321,7 @@ async def put_acp_config(
 async def put_acp_tool_toggle(
     agent_id: str,
     body: ACPAgentToolBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("acp")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Enable or disable the ``acp_runner`` tool for one agent only."""
@@ -269,7 +336,7 @@ async def put_acp_tool_toggle(
 async def get_acp_runner(
     agent_id: str,
     runner_name: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("acp")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     _agent_row(server, agent_id, user)
@@ -281,7 +348,8 @@ async def put_acp_runner(
     agent_id: str,
     runner_name: str,
     body: ACPRunnerBody = Body(...),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("acp")),
+    _admin: Any = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     _agent_row(server, agent_id, user)
@@ -296,7 +364,8 @@ async def put_acp_runner(
 async def delete_acp_runner(
     agent_id: str,
     runner_name: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("acp")),
+    _admin: Any = Depends(require_admin()),
     server: Any = Depends(get_server),
 ) -> None:
     _agent_row(server, agent_id, user)

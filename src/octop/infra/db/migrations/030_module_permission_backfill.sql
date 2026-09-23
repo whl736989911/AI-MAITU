@@ -1,0 +1,37 @@
+-- Schema v30: the accounts that already had these modules keep them.
+--
+-- The catalog in ``infra/users/permissions.py`` gained the functional modules
+-- ``mbti`` / ``experts`` / ``features`` and one key per channel type
+-- (``channel_<kind>``, design §2.3). A key nobody holds is a module that
+-- disappears the moment a route starts checking it, and design §6 is explicit:
+-- 新增权限没有历史数据时，按升级前行为进行安全回填，再由管理员调整.
+--
+-- What "upgrade behaviour" was, per key:
+--
+--   * ``mbti`` / ``experts`` / ``features`` — reachable by every signed-in
+--     account (no gate existed), so every existing non-admin account is granted
+--     them explicitly. Explicitly, because that is also what makes them
+--     revocable afterwards: ``role_default_permissions`` implies keys for
+--     ``admin`` alone.
+--   * ``channel_<kind>`` — channel management was gated by ``channels`` alone,
+--     so every holder of that key gains every type key of this build, and every
+--     department whose grant set carries ``channels`` gains them too (that is
+--     what its members were using).
+--   * ``acp`` deliberately gets nothing: before the catalog its entry was gated
+--     on the ``admin`` role, and a system administrator needs no stored key.
+--   * a key an account already denies stays denied — a deny is an explicit
+--     decision, and writing a grant underneath it would report a permission the
+--     account does not have.
+--
+-- System administrators are skipped entirely: their access is the catalog-wide
+-- bypass, so a stored key would be dead data — and one that outlived a later
+-- demotion, when the pre-upgrade behaviour was to lose the keys with the role.
+--
+-- SQLite boots apply this through migrate.py::_backfill_new_module_permissions
+-- (the read-modify-write of the JSON columns is the same code for both
+-- dialects; ``030_module_permission_backfill.pg.sql`` carries the same change
+-- for PostgreSQL). Like the v26 backfill, the migration's own watermark is what
+-- keeps it once-only: re-running it would hand back a key an administrator had
+-- revoked in the meantime.
+
+UPDATE _schema_version SET version = 30;

@@ -26,10 +26,13 @@ from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.knowledge.scope import may_read_knowledge_base
-from octop.infra.sharing import AclEntry, allowed_resource_ids, can_access, user_scope
+from octop.infra.sharing import AclEntry, allowed_resource_ids, can_access
 
-# Unit that the "deleted-unit" shape snapshots, deleted after seeding.
+# Units the "deleted-unit" shape snapshots, deleted after seeding.
 DELETED_UNIT = "legacy"
+
+# A sub-department of ``sales``: what a unit scope has to inherit to.
+CHILD_UNIT = "sales-cn"
 
 
 @dataclass(frozen=True)
@@ -63,9 +66,9 @@ class World:
     def visible_connectors(self, user_id: int) -> set[str]:
         return {row.instance_id for row in self.connectors.list_visible(user_id)}
 
-    def scope(self, user_id: int) -> tuple[str, str | None]:
-        """The runtime resolution of an actor's scope (``users`` row)."""
-        return user_scope(self.users.get(user_id))
+    def scope(self, user_id: int) -> tuple[str, tuple[str, ...]]:
+        """The runtime resolution of an actor's scope (``users`` row + tree)."""
+        return self.acl.scope_for_user(user_id)
 
 
 @pytest.fixture
@@ -75,11 +78,17 @@ def world(tmp_path: Path) -> World:
     units = OrgUnitRepo(pool)
     units.create(key="sales", label_zh="销售", label_en="Sales")
     units.create(key="eng", label_zh="研发", label_en="Engineering")
+    units.create(key=CHILD_UNIT, label_zh="华东销售", label_en="Sales CN", parent_key="sales")
     units.create(key=DELETED_UNIT, label_zh="旧部门", label_en="Legacy")
 
     users = UserRepo(pool)
     owner = users.create(username="owner", password_hash="h", role="user", org_unit="sales")
-    sales_peer = users.create(username="peer_sales", password_hash="h", role="user", org_unit="sales")
+    sales_peer = users.create(
+        username="peer_sales", password_hash="h", role="user", org_unit="sales"
+    )
+    child_peer = users.create(
+        username="peer_child", password_hash="h", role="user", org_unit=CHILD_UNIT
+    )
     eng_peer = users.create(username="peer_eng", password_hash="h", role="user", org_unit="eng")
     unassigned = users.create(username="peer_none", password_hash="h", role="user")
     admin = users.create(username="admin", password_hash="h", role="admin")
@@ -89,6 +98,7 @@ def world(tmp_path: Path) -> World:
         Shape("public", visibility="public"),
         Shape("unit", visibility="unit", unit_key="sales"),
         Shape("unit-grant", visibility="unit", unit_key="sales", grants=(("unit", "eng"),)),
+        Shape("child-grant", grants=(("unit", CHILD_UNIT),)),
         Shape("user-grant", grants=(("user", str(eng_peer)),)),
         Shape("role-grant", grants=(("role", "user"),)),
         Shape("deleted-unit", visibility="unit", unit_key=DELETED_UNIT),
@@ -132,6 +142,7 @@ def world(tmp_path: Path) -> World:
         viewers={
             "owner": owner,
             "peer_sales": sales_peer,
+            "peer_child": child_peer,
             "peer_eng": eng_peer,
             "peer_none": unassigned,
             "admin": admin,
@@ -145,42 +156,47 @@ def test_connector_list_and_knowledge_base_scope_resolve_the_same_rule(world: Wo
     kb_entries = world.entries("knowledge_base")
 
     for name, user_id in world.viewers.items():
-        role, unit_key = world.scope(user_id)
-        assert world.acl.scope_for_user(user_id) == (role, unit_key)
+        role, unit_keys = world.scope(user_id)
+        assert world.acl.scope_for_user(user_id) == (role, unit_keys)
         visible = world.visible_connectors(user_id)
         # The list is what the rule says, entry by entry — not a second copy of it.
         assert visible == {
             entry.resource_id
             for entry in connector_entries.values()
-            if can_access(entry, user_id=user_id, role=role, unit_key=unit_key)
+            if can_access(entry, user_id=user_id, role=role, unit_keys=unit_keys)
         }, f"connector list disagrees with sharing.can_access for {name}"
 
         kb_allowed = allowed_resource_ids(
-            kb_entries.values(), user_id=user_id, role=role, unit_key=unit_key
+            kb_entries.values(), user_id=user_id, role=role, unit_keys=unit_keys
         )
         for shape in world.shapes:
             seen = world.connector_id(shape.name) in visible
             entry = kb_entries[world.kb_id(shape.name)]
             assert seen == (entry.resource_id in kb_allowed), f"{name} / {shape.name}: kb list"
             assert seen == may_read_knowledge_base(
-                entry, user_id=user_id, role=role, unit_key=unit_key
+                entry, user_id=user_id, role=role, unit_keys=unit_keys
             ), f"{name} / {shape.name}: kb read check"
 
 
 def test_connector_list_is_what_the_rule_permits(world: World) -> None:
     """Named cells, so a rule change has to be a decision here as well."""
-    visible = {
-        name: world.visible_connectors(user_id) for name, user_id in world.viewers.items()
-    }
+    visible = {name: world.visible_connectors(user_id) for name, user_id in world.viewers.items()}
     expected = {
         ("private", "owner"): True,
         ("private", "peer_sales"): False,
         ("private", "admin"): True,
         ("public", "peer_none"): True,
         ("unit", "peer_sales"): True,
+        ("unit", "peer_child"): True,
         ("unit", "peer_eng"): False,
         ("unit", "peer_none"): False,
         ("unit-grant", "peer_eng"): True,
+        # Still scoped to ``sales``, so its sub-department is reached as well.
+        ("unit-grant", "peer_child"): True,
+        # A grant to a sub-department stays inside it: the chain holds the
+        # viewer's ancestors, never its descendants.
+        ("child-grant", "peer_child"): True,
+        ("child-grant", "peer_sales"): False,
         ("user-grant", "peer_eng"): True,
         ("user-grant", "peer_sales"): False,
         ("role-grant", "peer_none"): True,

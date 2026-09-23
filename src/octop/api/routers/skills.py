@@ -44,7 +44,12 @@ import yaml
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from octop.api.common.agent import require_agent_owner_row, require_agent_row
+from octop.api.common.agent import (
+    AgentCapability,
+    require_agent_capability_row,
+    require_agent_owner_row,
+    require_agent_row,
+)
 from octop.api.deps import current_user, get_server, require_permission
 from octop.infra.agents.manager import (
     skill_package_ids_list,
@@ -95,12 +100,26 @@ async def _ctx(
     user: Any,
     as_user: int | None,
     server: Any,
-    owner_only: bool = True,
+    capability: AgentCapability | None = AgentCapability.CONFIGURATION,
 ) -> _AgentCtx:
+    """The caller's context on *agent_id*, checked for *capability*.
+
+    Skills and subagents are one capability group, so the write handlers need not
+    each name it — this is the default — and the read handlers pass ``None``,
+    which asks only that the caller may *use* the agent.
+    """
     assert server.app_runtime is not None
     registry = server.app_runtime.agent_registry
-    require = require_agent_owner_row if owner_only else require_agent_row
-    row = require(agent_id, user=user, as_user=as_user, server=server)
+    if capability is None:
+        row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    else:
+        row = require_agent_capability_row(
+            agent_id,
+            user=user,
+            as_user=as_user,
+            server=server,
+            capability=capability,
+        )
     cfg = registry.get_config(agent_id)
     agent = registry.get_agent(agent_id)
     return _AgentCtx(runtime=row, workspace=agent.workspace, config=cfg)
@@ -423,7 +442,7 @@ async def _enabled_skill_names(
     user: Any,
 ) -> set[str]:
     """Return installed, non-disabled skill names for an agent."""
-    await _ctx(agent_id, user=user, as_user=None, server=server, owner_only=False)
+    await _ctx(agent_id, user=user, as_user=None, server=server, capability=None)
     assert server.app_runtime is not None
     names: set[str] = set()
     for summary in await server.app_runtime.agent_registry.list_skill_summaries(agent_id):
@@ -458,7 +477,7 @@ async def list_skills(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    await _ctx(agent_id, user=user, as_user=as_user, server=server, owner_only=False)
+    await _ctx(agent_id, user=user, as_user=as_user, server=server, capability=None)
     assert server.app_runtime is not None
     return cast(
         list[dict[str, Any]],
@@ -530,7 +549,13 @@ async def replace_skill_package_mounts(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, list[str]]:
-    require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    require_agent_capability_row(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.CONFIGURATION,
+    )
     assert server.app_runtime is not None
     package_ids = skill_package_ids_list({"skill_package_ids": body.package_ids})
     await server.app_runtime.agent_registry.persist_skill_package_ids(agent_id, package_ids)
@@ -600,6 +625,8 @@ async def copy_skill_package_to_workspace(
 
     for slug in copied:
         copied_identity_keys.update(await _skill_disable_keys(ctx, slug))
+    if copied:
+        _note_catalog_changed(server, agent_id)
     disabled = _disabled_set(ctx.config)
     if disabled.intersection(copied_identity_keys):
         disabled.difference_update(copied_identity_keys)
@@ -663,7 +690,7 @@ async def get_skill(
         user=user,
         as_user=as_user,
         server=server,
-        owner_only=False,
+        capability=None,
     )
     resolved = await _resolve_skill(ctx.workspace, name)
     if resolved is None:
@@ -782,6 +809,7 @@ async def create_skill(
     with contextlib.suppress(Exception):
         await ctx.workspace.adelete(f"skills/{name}")
     await _write_skill_files(ctx.workspace, f"skills/{name}", package.files)
+    _note_catalog_changed(server, agent_id)
     # Reinstall after disable/delete must clear skills_disabled (ZIP create
     # always installs as enabled, matching URL import with enable=True).
     disabled = _disabled_set(ctx.config)
@@ -844,6 +872,7 @@ async def update_skill(
         with contextlib.suppress(Exception):
             await ctx.workspace.adelete(f"skills/{slug}")
     await _write_skill_files(ctx.workspace, f"skills/{slug}", package.files)
+    _note_catalog_changed(server, agent_id)
     skill_md = next(
         (content for path, content in package.files if path == "SKILL.md"),
         body.content.encode("utf-8"),
@@ -882,6 +911,7 @@ class _AgentWorkspaceInstallTarget:
         with contextlib.suppress(Exception):
             await self._workspace.adelete(skill_root)
         await _write_skill_files(self._workspace, skill_root, files)
+        _note_catalog_changed(self._server, self._agent_id)
 
     async def after_install(self, slug: str, *, enable: bool | None = None) -> None:
         if not enable:
@@ -1009,6 +1039,7 @@ async def delete_skill(
     err = await _aoverwrite_text(ctx.workspace, target, "---\nremoved: true\n---\n")
     if err:
         raise OctopError(ErrorCode.NOT_FOUND, f"cannot remove {target!r}: {err}")
+    _note_catalog_changed(server, agent_id)
 
 
 # --- enable / disable -------------------------------------------------------
@@ -1018,6 +1049,18 @@ async def _persist_disabled(server: Any, agent_id: str, disabled: set[str]) -> N
     """Write back ``skills_disabled`` and hot-sync the running harness agent."""
     assert server.app_runtime is not None
     await server.app_runtime.agent_registry.persist_skills_disabled(agent_id, disabled)
+
+
+def _note_catalog_changed(server: Any, agent_id: str) -> None:
+    """Tell *agent_id*'s harness graph that its skill catalog moved on disk.
+
+    An agent's thread scans its skill sources once and then reuses them, so a skill
+    written here is invisible to the running graph until its next turn is told to
+    rescan (``SkillCatalogRefreshMiddleware``). Without this the dashboard, the run
+    scope and the model disagree about which skills exist.
+    """
+    assert server.app_runtime is not None
+    server.app_runtime.agent_registry.note_skill_catalog_changed(agent_id)
 
 
 async def _skill_disable_keys(ctx: _AgentCtx, name: str) -> set[str]:
@@ -1287,7 +1330,13 @@ async def hub_rankings(
     """
     from fastapi import HTTPException  # noqa: PLC0415
 
-    require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    require_agent_capability_row(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.CONFIGURATION,
+    )
 
     rtype = type if type in _RANKING_TYPES else "all"
     from octop.infra.skills.skillhub_market import (  # noqa: PLC0415

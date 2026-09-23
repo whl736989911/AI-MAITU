@@ -76,6 +76,11 @@ def agent_row_to_dict(row: Any) -> dict[str, Any]:
         "agent_id": row.agent_id,
         "id": row.agent_id,
         "name": row.name,
+        # What the row *is* (``agents.kind``, see ``octop.infra.agents.kinds``):
+        # a feature's own agent or an ordinary one. Every offline read carries it
+        # for the same reason ``GET /api/agents`` does — a caller that has to tell
+        # the two apart reads this, never the id.
+        "kind": row.kind,
         "template_name": row.template_name,
         "default_model": row.default_model,
         "state": row.last_state or "",

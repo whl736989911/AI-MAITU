@@ -19,6 +19,7 @@ import { showConfirmModal } from "../../../utils/confirmModal";
 import { EmptyStateIcon } from "../../../components/EmptyState";
 import { ResizableTable } from "../../../components/ResizableTable";
 import PageShell from "../../../layouts/PageShell";
+import AgentScopeBars from "../../../components/AgentScopeBars";
 import { useAgent } from "../../../context/AgentContext";
 import { taskExampleColumns } from "./taskExamples";
 import { useTaskExamples } from "./useTaskExamples";
@@ -235,6 +236,12 @@ function CronJobsPage() {
     stickyColumns: !isMobile,
   });
 
+  // The page's scope controls: one row per kind, the shape every page with
+  // content of both kinds draws (``AgentScopeBars``). A feature's agent owns an
+  // automation schedule on the same terms an expert's does; the features' row
+  // renders nothing at all when the caller has no feature.
+  const agentBar = <AgentScopeBars />;
+
   // Shared experts are not a task scope. Non-owners should see the same
   // "pick an agent" empty as if nothing were selected — no shared-expert copy.
   if (!activeAgentId || !canManageJobs) {
@@ -243,6 +250,7 @@ function CronJobsPage() {
         title={t("pageShell.tasks.title")}
         subtitle={t("pageShell.tasks.subtitle")}
         agentScoped
+        agentBar={agentBar}
       >
         <Card>
           <Empty description={t("cronJobs.noAgentSelected")} />
@@ -264,6 +272,7 @@ function CronJobsPage() {
       title={t("pageShell.tasks.title")}
       subtitle={t("pageShell.tasks.subtitle")}
       agentScoped
+      agentBar={agentBar}
     >
       {showToolbar ? (
         <div className={styles.gridToolbar}>

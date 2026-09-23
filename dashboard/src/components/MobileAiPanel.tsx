@@ -3,7 +3,8 @@ import { Button, Spin, Tooltip } from "antd";
 import { Bot, Send, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { OctopAgent } from "../context/AgentContext";
-import AgentSelector from "./AgentSelector";
+import { useAgent } from "../context/AgentContext";
+import AgentSelector, { selectableAgents } from "./AgentSelector";
 import { useAgentThreadChat } from "../hooks/useAgentThreadChat";
 import MessageList from "../pages/Chat/components/MessageList";
 import chatStyles from "../pages/Chat/index.module.less";
@@ -31,6 +32,9 @@ export default function MobileAiPanel({
   layout = "right",
 }: MobileAiPanelProps) {
   const { t } = useTranslation();
+  const { agents } = useAgent();
+  /** Whether the experts' row has anything to offer — see ``selectableAgents``. */
+  const hasExpert = selectableAgents(agents, "experts").length > 0;
   const panelClassName = `${styles.panel}${
     layout === "bottom" ? ` ${styles.panelBottom}` : ""
   }`;
@@ -110,9 +114,11 @@ export default function MobileAiPanel({
               "远程手机右侧助手会复用当前 Agent 的对话能力。连接手机后，Agent 即可操作该设备。",
             )}
           </div>
-          <div className={styles.emptyAgentPicker}>
-            <AgentSelector variant="select" showLabel={false} />
-          </div>
+          {hasExpert && (
+            <div className={styles.emptyAgentPicker}>
+              <AgentSelector variant="select" showLabel={false} />
+            </div>
+          )}
         </div>
       </div>
     );
@@ -140,12 +146,14 @@ export default function MobileAiPanel({
       </div>
 
       <div className={styles.contextSection}>
-        <div className={styles.expertSelectRow}>
-          <span className={styles.contextLabel}>
-            {t("remoteAndroid.ai.expert", "专家")}
-          </span>
-          <AgentSelector variant="select" showLabel={false} />
-        </div>
+        {hasExpert && (
+          <div className={styles.expertSelectRow}>
+            <span className={styles.contextLabel}>
+              {t("remoteAndroid.ai.expert", "专家")}
+            </span>
+            <AgentSelector variant="select" showLabel={false} />
+          </div>
+        )}
         <div className={styles.contextGrid}>
           <span className={styles.contextLabel}>
             {t("remoteAndroid.ai.device", "设备")}

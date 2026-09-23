@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from octop.api.common.agent import require_agent_owner_row, user_owns_agent
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
 from octop.api.common.validators import assert_user_backend_root_dirs
-from octop.api.deps import current_user, get_server
+from octop.api.deps import get_server, require_permission
 from octop.infra.agents.avatar import (
     display_published_expert_icon_url,
     read_snapshot_avatar,
@@ -343,7 +343,7 @@ def _require_published_expert(server: Any, expert_id: str) -> Any:
 
 @router.get("/experts/published", summary="List published expert templates")
 async def list_published_experts(
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     """List expert snapshots published by users and available for private installation."""
@@ -359,7 +359,7 @@ async def list_published_experts(
 )
 async def get_published_expert_avatar(
     expert_id: str,
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> Response:
     """Return the avatar bytes baked into the published snapshot, if any."""
@@ -374,7 +374,7 @@ async def get_published_expert_avatar(
 @router.get("/experts/published/{expert_id}", summary="Get published expert template detail")
 async def get_published_expert(
     expert_id: str,
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return published-expert metadata and a previewable snapshot file inventory."""
@@ -405,7 +405,7 @@ async def get_published_expert(
 async def publish_agent_expert(
     agent_id: str,
     body: PublishExpertBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Snapshot an owned agent workspace into a globally installable expert template."""
@@ -441,7 +441,7 @@ async def publish_agent_expert(
 async def refresh_published_expert(
     expert_id: str,
     body: RefreshPublishedExpertBody | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Replace a published snapshot using its still-owned source agent workspace."""
@@ -485,7 +485,7 @@ async def refresh_published_expert(
 )
 async def unpublish_expert(
     expert_id: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> Response:
     """Remove a published expert's listing and snapshot without deleting installed forks."""
@@ -502,7 +502,7 @@ async def unpublish_expert(
 async def install_published_expert(
     expert_id: str,
     body: InstallPublishedExpertBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Create a private agent and seed it from the immutable published snapshot."""
@@ -544,7 +544,7 @@ async def install_published_expert(
 
 @router.get("/experts")
 async def list_experts(
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     catalog = server.expert_catalog
@@ -561,7 +561,7 @@ async def list_experts(
 async def list_expert_hub(
     q: str = "",
     scene: str = "",
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("experts")),
 ) -> dict[str, Any]:
     """List SkillHub skillsets as market expert cards, optionally filtered by scene."""
     try:
@@ -581,7 +581,7 @@ async def list_expert_hub(
 )
 async def get_expert_hub_item(
     slug: str,
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("experts")),
 ) -> dict[str, Any]:
     """SkillHub market detail, including workflow prompt and default quick prompts."""
     try:
@@ -600,7 +600,7 @@ async def get_expert_hub_item(
 async def install_expert_hub_item(
     slug: str,
     body: FromExpertBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Create an agent from a SkillHub skillset-backed expert template."""
@@ -673,7 +673,7 @@ async def install_expert_hub_item(
 @router.get("/experts/{expert_id}")
 async def get_expert(
     expert_id: str,
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     catalog = server.expert_catalog
@@ -687,7 +687,7 @@ async def get_expert(
 async def create_agent_from_expert(
     expert_id: str,
     body: FromExpertBody,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("experts")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Create an agent with the expert template workspace files."""

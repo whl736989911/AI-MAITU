@@ -388,6 +388,9 @@
 }
 
 .agentCardName {
+  /* A block box — the shared card renders it as a ``<span>`` inside a button,
+     and the ellipsis needs a block to clip in. */
+  display: block;
   font-size: 14px;
   font-weight: 600;
   color: var(--fn-text-primary);
@@ -649,6 +652,16 @@
     background 0.2s,
     transform 0.2s,
     box-shadow 0.2s;
+
+  /* The cards are ``<button>``s (keyboard-operable); peel off the browser's
+     control styling so they lay out exactly like the ``<div>`` ones that share
+     this class. */
+  &:is(button) {
+    align-items: stretch;
+    font: inherit;
+    color: inherit;
+    text-align: start;
+  }
 
   &:hover {
     border-color: var(--expert-accent, var(--fn-color-brand));

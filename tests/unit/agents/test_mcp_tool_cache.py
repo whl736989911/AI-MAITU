@@ -168,8 +168,10 @@ async def test_prepare_chat_mcp_injects_custom_from_cache() -> None:
     )
 
     row = MagicMock()
+    row.user_id = 7
     mgr.get_agent = MagicMock(return_value=agent)
     mgr.get_row = MagicMock(return_value=row)
+    mgr._turn_mcp_tools = {}
     mgr._connector_uid_for = MagicMock(return_value=7)
     mgr._connector_svc = MagicMock()
     mgr._connector_svc.custom_harness_configs.return_value = {
@@ -233,8 +235,11 @@ async def test_prepare_chat_mcp_attaches_gateway_tools_without_reload() -> None:
     mgr._connector_svc.custom_harness_configs.return_value = {}
     mgr._connector_svc.decrypt.return_value = {"email": "a@qq.com", "password": "code"}
     mgr._connector_svc.ensure_fresh_credentials = AsyncMock(return_value={})
+    owner_row = MagicMock()
+    owner_row.user_id = 7
     mgr.get_agent = MagicMock(return_value=agent)
-    mgr.get_row = MagicMock(return_value=MagicMock())
+    mgr.get_row = MagicMock(return_value=owner_row)
+    mgr._turn_mcp_tools = {}
     mgr._connector_uid_for = MagicMock(return_value=7)
     mgr.reload_connectors = AsyncMock()
 

@@ -306,6 +306,14 @@
       "callback_success": "授权完成，可关闭此窗口。"
     }
   },
+  "cli": {
+    "update": {
+      "installed": "当前安装版本：{version}",
+      "source": "请从本项目 GitHub 源码升级：",
+      "instruction": "请参照 scripts/README.md 更新源码并保留原数据目录。",
+      "automatic_disabled": "自动升级已停用；请按照上方源码升级指引操作。"
+    }
+  },
   "errors": {
     "AUTH_FAILED": "认证失败。",
     "TOKEN_EXPIRED": "登录已过期，请重新登录。",
@@ -387,14 +395,21 @@
     "KNOWLEDGE_PREREQUISITES_FAILED": "知识库的向量模型或依赖尚未就绪。",
     "KNOWLEDGE_NOT_FOUND": "未找到知识库或文档。",
     "KNOWLEDGE_FORBIDDEN": "您没有此知识库的访问权限。",
+    "KNOWLEDGE_WRITE_FORBIDDEN": "您可读取此知识库，但没有修改权限。",
     "KNOWLEDGE_DOC_LIMIT": "每个知识库最多可包含 100 个文档。",
     "KNOWLEDGE_DOC_TOO_LARGE": "文档超过 {max_mb} MB 大小限制。",
     "KNOWLEDGE_BASE_LIMIT": "每个用户最多可创建 20 个知识库。",
     "KNOWLEDGE_UNSUPPORTED_TYPE": "知识库不支持此文档类型。",
+    "KNOWLEDGE_PASSWORD_REQUIRED": "此文档已加密，需要密码才能读取。",
+    "EXTRACT_TEMPLATE_INVALID": "提取模板无效:{reason}",
+    "EXTRACT_TEMPLATE_IN_USE": "此模板还有 {bindings} 处绑定，请先清除绑定再删除。",
+    "KNOWLEDGE_CONVERSION_FAILED": "无法转换此文档以供读取:{reason}",
     "KNOWLEDGE_NAME_TAKEN": "您已有同名知识库。",
     "KNOWLEDGE_NAME_INVALID": "名称无效。",
     "DATA_SOURCE_INVALID": "数据源无效：请检查其类型与配置。",
     "DATA_SOURCE_SYNC_UNSUPPORTED": "该类型的数据源暂不支持同步，本次未导入任何内容。",
+    "DATA_SOURCE_FETCH_FAILED": "无法抓取该 URL：{reason}",
+    "DATA_SOURCE_UNREACHABLE": "无法连接到数据源：{reason}",
     "AVATAR_INVALID": "头像须为 PNG、JPEG、WebP 或 GIF 图片。",
     "AVATAR_TOO_LARGE": "头像超过 5 MB 大小限制。",
     "INVITE_INVALID": "邀请码无效。",
@@ -413,6 +428,17 @@
     "FEATURE_RULE_REVIEWED": "该规则已经审核过，审核结论不可更改；如需补充，请重新抽取生成新规则。",
     "FEATURE_RULE_NO_SAMPLES": "暂时没有可供归纳的素材：请先定稿至少一次功能运行结果。",
     "FEATURE_RULE_EXTRACTION_FAILED": "规则抽取失败：模型回复无法解析成规则列表，未保存任何规则，请重试。",
+    "FEATURE_INVALID": "功能定义不合法：{errors}。没有写入任何内容。",
+    "FEATURE_ALREADY_EXISTS": "已存在同 id 的功能，请换一个 id——随应用发布的预置功能不能被覆盖。",
+    "FEATURE_RULE_SCOPE_FORBIDDEN": "这条规则不在你的处理范围内：个人规则由本人处理，部门规则由本部门的管理员处理，全局规则由系统管理员处理。",
+    "FEATURE_RULE_SUBMIT_INVALID": "无法提交这条规则：只能提交个人规则，且提交到部门时你需要先归属一个部门。",
+    "FEATURE_RUN_NOT_FOUND": "未找到这次功能运行。",
+    "FEATURE_RUN_NOT_AT_GATE": "这次运行当前不在等待人工批准的状态，无法执行该操作。",
+    "FEATURE_RUN_REQUEST_INVALID": "运行请求不合法：{reason}。",
+    "FEATURE_STEP_UNSUPPORTED": "该功能有步骤无法执行：{reason}。已拒绝执行，未运行任何步骤。",
+    "WORKFLOW_INVALID": "工作流定义不合法：{reason}。未保存任何内容。",
+    "WORKFLOW_NOT_A_FEATURE": "只有功能才有工作流——这个 agent 是一个专家。",
+    "WORKFLOW_CHANGE_CONFLICT": "这份改动已经不能直接应用：{paths} 在它生成之后被改过。未改动任何内容——请重新生成改动，或先撤销后来的修改。",
     "ORG_UNIT_HAS_CHILDREN": "该部门下还有下级部门，请先处理。",
     "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。"
   },
@@ -554,8 +580,10 @@
     "runtime": {
       "disabled": "频道已停用",
       "unregistered": "未注册",
-      "error": "连接失败"
+      "error": "连接失败",
+      "permission": "无此频道类型权限"
     },
+    "permission_revoked": "该通道已停止：其所有者已不再拥有此通道类型的权限。",
     "probe": {
       "incomplete": "凭据不完整：缺少 {fields}",
       "invalid_credentials": "凭据无效，请检查 App ID 与 App Secret 是否正确",
@@ -671,16 +699,20 @@
   "usage_export": {
     "sheet_detail": "明细",
     "sheet_by_day": "按天",
-    "sheet_by_agent": "按专家",
+    "sheet_by_expert": "按专家",
+    "sheet_by_feature": "按功能",
     "sheet_by_model": "按模型",
     "chart_daily": "每日 Token",
-    "chart_by_agent": "按专家 Token",
+    "chart_by_expert": "按专家 Token",
+    "chart_by_feature": "按功能 Token",
     "chart_by_model": "按模型 Token",
     "col_time": "时间",
     "col_user_id": "用户 ID",
     "col_username": "用户名",
     "col_agent_id": "专家 ID",
     "col_agent_name": "专家名称",
+    "col_feature_id": "功能 ID",
+    "col_feature_name": "功能名称",
     "col_thread_id": "会话 ID",
     "col_model": "模型",
     "col_input_tokens": "输入 tokens",
@@ -721,6 +753,39 @@
       },
       "UnauthorizedOperation": "当前腾讯云账号没有该语音接口的访问权限。",
       "RequestLimitExceeded": "腾讯云请求过于频繁，请稍后再试。"
+    }
+  },
+  "feature_training": {
+    "catalog": "1. 工作流：输入、固定步骤、交付物和规则（草稿可逐步训练，启用后提供给调用者）；2. 技能；3. 子智能体；4. 工具；5. 插件；6. MBTI；7. 记忆（功能共享、只读）；8. 通道；9. 人设文件。",
+    "author": "你是一个供多人调用的功能 Agent，不是用户的私人专家。作者询问如何训练或配置这个功能时，先完整介绍功能的个性化配置项，按以下顺序说明：{catalog} 完整配置在「个性化」页面选中此功能后右上角；功能卡片「更多」提供工作流及其他配置快捷入口。按作者的具体目标选择相应能力，不要把训练功能缩减成编辑 Markdown 或安装技能。修改工作流前先调用 feature_workflow_get；初稿可用 feature_workflow_save 保存为 draft，后续小改用 feature_workflow_change；未提出具体改动时不要擅自写入。功能工作区是共享的：不要收集个人身份和偏好写入 USER.md，也不要尝试写入只读的 MEMORY.md。普通 Agent 的 AGENTS.md、BOOTSTRAP.md 档案引导不适用于功能训练。回复使用用户的语言。",
+    "caller": "你是供多人调用的功能 Agent，不是调用者的私人专家。调用者询问如何训练或配置功能时，说明功能作者可在「个性化」页面选中功能，或从功能卡片「更多」进入配置。完整的个性化配置项依次为：{catalog} 功能定义由作者维护；不要声称调用者可以改动作者的工作流或其他共享配置。不要引导调用者把个人身份和偏好写入共享的 USER.md，也不要尝试写入只读的 MEMORY.md。普通 Agent 的 AGENTS.md、BOOTSTRAP.md 档案引导不适用于功能训练。回复使用用户的语言。"
+  },
+  "workflow": {
+    "value_yes": "是",
+    "value_no": "否",
+    "uses_skills": "技能：{names}",
+    "uses_subagents": "子智能体：{names}",
+    "uses_tools": "工具：{names}",
+    "overlay": {
+      "title": "## 这位调用者自己的要求（最高优先级）\n与上面功能自身的写法冲突时，以本节为准。"
+    },
+    "block": {
+      "title": "## 功能工作流：{name}",
+      "title_plain": "## 功能工作流",
+      "lead": "本功能按下述固定步骤运行。请按顺序执行：不要跳过任何一步，也不要自行增加步骤。",
+      "inputs_title": "### 本次运行的输入",
+      "inputs_none": "本次消息没有随附输入卡片。若某一步需要的输入没有给出，请向用户索取，不要自行编造。",
+      "attachments_title": "### 本次随消息上传的文件",
+      "steps_title": "### 固定步骤（按顺序）",
+      "steps_none": "本功能没有声明步骤：一次完成即可。",
+      "step_line": "第 {index}/{total} 步：{name}",
+      "step_prompt": "  要求：{prompt}",
+      "step_uses": "  可用：{uses}",
+      "step_depends": "  基于：{steps}",
+      "step_gate_confirm": "  本步完成后停下来：把产出给用户看，等用户确认后再继续。",
+      "rules_title": "### 规则（每一步都适用）",
+      "outputs_title": "### 交付物",
+      "output_line": "- {name}（{form}）"
     }
   }
 }

@@ -65,6 +65,13 @@ def _get_cron_manager(server: Any) -> Any:
 
 
 def _user_may_manage_agent_cron(*, agent_row: Any, user: Any) -> bool:
+    """Whether ``user`` owns the agent, i.e. may manage cron on it.
+
+    Ownership, not mere ACL access: a shared agent is openable by grantees who
+    still manage no jobs on it. ``list_cron`` filters on this and answers ``[]``
+    for those callers; the item endpoints raise FORBIDDEN via
+    ``_assert_cron_manage``.
+    """
     return user_owns_agent(agent_row, user)
 
 
@@ -117,7 +124,28 @@ async def list_cron(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    """List scheduled jobs for an agent."""
+    """List the scheduled jobs *this caller* may manage on an agent.
+
+    The answer is a caller-scoped view, not the agent's global job list. A
+    caller the ACL only lets *open* a shared agent manages no cron here, so it
+    gets ``[]`` — the same empty state the dashboard renders for a non-owner,
+    which is why ``useCronJobs`` skips the fetch unless ``is_owner``.
+
+    ``[]`` is deliberate, not a weaker alternative to a 403:
+
+    * Agent access stays enforced one layer up — ``require_agent_row`` already
+      refuses a caller with no ACL entry, so ``[]`` never reaches a stranger;
+      an outsider still gets 403 (see ``test_cross_user_cannot_list_cron``).
+    * For a non-owner who *may* open the agent, "what may I manage here?" has
+      the honest answer "nothing", and it discloses nothing about the owner's
+      jobs (pinned by ``test_shared_agent_hides_owner_cron_from_peer``, which
+      also covers admin).
+
+    The item endpoints (``get_cron`` / ``patch_cron`` / ``delete_cron`` /
+    ``run_now``) answer 403 to that same non-owner because each addresses one
+    specific job or an action on it: there the ACL truth must be stated rather
+    than pretending the id does not exist. *Cannot list* != *cannot operate*.
+    """
     agent_row = require_agent_row(agent_id, user=user, as_user=None, server=server)
     if not _user_may_manage_agent_cron(agent_row=agent_row, user=user):
         return []

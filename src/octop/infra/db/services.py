@@ -14,11 +14,14 @@ from octop.infra.db.repos.channels import ChannelRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
-from octop.infra.db.repos.feature_cases import FeatureCaseRepo
-from octop.infra.db.repos.feature_rules import FeatureRuleRepo
-from octop.infra.db.repos.feature_tasks import FeatureTaskRepo
+from octop.infra.db.repos.extract_results import ExtractResultRepo
+from octop.infra.db.repos.extract_templates import ExtractTemplateRepo
+from octop.infra.db.repos.feature_overlays import FeatureOverlayRepo
+from octop.infra.db.repos.feature_runs import FeatureRunRepo
+from octop.infra.db.repos.feature_workflow_changes import FeatureChangeRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
 from octop.infra.db.repos.providers import ProviderRepo
@@ -51,8 +54,6 @@ class RepoBundle:
     provider_repo: ProviderRepo
     channel_repo: ChannelRepo
     cron_repo: CronJobRepo
-    feature_tasks_repo: FeatureTaskRepo
-    feature_rules_repo: FeatureRuleRepo
     session_repo: SessionRepo
     thread_repo: ThreadRepo
     thread_message_repo: ThreadMessageRepo
@@ -71,8 +72,13 @@ class RepoBundle:
     proactive_care_config_repo: ProactiveCareConfigRepo
     sso_repo: SsoRepo
     resource_acl_repo: ResourceAclRepo
-    feature_cases_repo: FeatureCaseRepo
     data_sources_repo: DataSourceRepo
+    knowledge_sync_runs_repo: KnowledgeSyncRunRepo
+    extract_templates_repo: ExtractTemplateRepo
+    extract_results_repo: ExtractResultRepo
+    feature_overlay_repo: FeatureOverlayRepo
+    feature_run_repo: FeatureRunRepo
+    feature_change_repo: FeatureChangeRepo
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
@@ -86,8 +92,6 @@ class RepoBundle:
             provider_repo=ProviderRepo(db),
             channel_repo=ChannelRepo(db),
             cron_repo=CronJobRepo(db),
-            feature_tasks_repo=FeatureTaskRepo(db),
-            feature_rules_repo=FeatureRuleRepo(db),
             session_repo=SessionRepo(db),
             thread_repo=ThreadRepo(db),
             thread_message_repo=ThreadMessageRepo(db),
@@ -106,8 +110,13 @@ class RepoBundle:
             proactive_care_config_repo=ProactiveCareConfigRepo(db),
             sso_repo=SsoRepo(db),
             resource_acl_repo=ResourceAclRepo(db),
-            feature_cases_repo=FeatureCaseRepo(db),
             data_sources_repo=DataSourceRepo(db),
+            knowledge_sync_runs_repo=KnowledgeSyncRunRepo(db),
+            extract_templates_repo=ExtractTemplateRepo(db),
+            extract_results_repo=ExtractResultRepo(db),
+            feature_overlay_repo=FeatureOverlayRepo(db),
+            feature_run_repo=FeatureRunRepo(db),
+            feature_change_repo=FeatureChangeRepo(db),
         )
 
 
@@ -224,6 +233,30 @@ class SharedServices:
     @property
     def data_sources_repo(self) -> DataSourceRepo:
         return self.repos.data_sources_repo
+
+    @property
+    def knowledge_sync_runs_repo(self) -> KnowledgeSyncRunRepo:
+        return self.repos.knowledge_sync_runs_repo
+
+    @property
+    def extract_templates_repo(self) -> ExtractTemplateRepo:
+        return self.repos.extract_templates_repo
+
+    @property
+    def extract_results_repo(self) -> ExtractResultRepo:
+        return self.repos.extract_results_repo
+
+    @property
+    def feature_overlay_repo(self) -> FeatureOverlayRepo:
+        return self.repos.feature_overlay_repo
+
+    @property
+    def feature_run_repo(self) -> FeatureRunRepo:
+        return self.repos.feature_run_repo
+
+    @property
+    def feature_change_repo(self) -> FeatureChangeRepo:
+        return self.repos.feature_change_repo
 
 
 def build_shared_services(

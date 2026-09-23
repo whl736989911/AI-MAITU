@@ -4,18 +4,44 @@
  * List all users with role/disabled toggles, password reset, delete.
  * Card and table views (default table). The view switcher + refresh +
  * new-user buttons live in a content-area toolbar (mirrors the Experts
- * page layout). Each row/card shows agent count; click opens a drawer
- * with that user's agents.
+ * page layout). Each row/card counts the user's agents by kind — one column,
+ * or one card tally, per kind this deployment actually holds (the experts and
+ * the agents their features run on) — and either one opens a drawer with that
+ * user's agents.
  *
- * Endpoints (all require admin role; backend returns 403 otherwise):
- *   GET    /api/users
- *   POST   /api/users
- *   PATCH  /api/users/{id}
- *   POST   /api/users/{id}/reset-password
- *   DELETE /api/users/{id}
+ * Authorization mirrors ``src/octop/api/routers/users.py``: the ``users``
+ * module key opens the surface, and three further rules bound every write —
+ * the **organization scope** (:mod:`octop.infra.users.scope`) decides which
+ * accounts and departments an actor reaches, the **role level** decides which
+ * roles it may hand out or administer, and the module keys it may grant are
+ * the ones it *effectively* holds (``can_grant`` on the catalog below). Only
+ * the permission **deny list** stays a system administrator's write. A control
+ * the actor may not use is hidden, never disabled.
+ *   GET    /api/users                        ``users``; scope-filtered
+ *   GET    /api/users/{id}                   ``users``; scope
+ *   POST   /api/users                        ``users``; scope; role level;
+ *                                            ``permissions`` within ``can_grant``;
+ *                                            denied_permissions needs admin
+ *   PATCH  /api/users/{id}                   ``users``; scope; role level;
+ *                                            ``permissions`` within ``can_grant``;
+ *                                            denied_permissions needs admin
+ *   POST   /api/users/{id}/reset-password    ``users``; scope
+ *   POST   /api/users/{id}/unlock-login      ``users``; scope
+ *   DELETE /api/users/{id}                   ``users``; scope; never yourself
+ *
+ * The routes are the contract, not this panel's toolbar: the row controls are
+ * still shown to a system administrator only, which is narrower than what the
+ * backend admits (any holder of ``users`` inside its own scope).
+ *
+ * ``denied_permissions`` is the last leg of ``role ∪ unit ∪ grant − deny``
+ * and outranks the other three, so the edit drawer never shows a tick without
+ * saying whether it survives: keys the department grants are tagged, and a
+ * key on the deny list is flagged wherever it appears. On the wire the field
+ * is three-state — omitted keeps the stored list, ``null`` clears it, an
+ * array replaces it — so an untouched picker sends nothing.
  */
 
-import { useEffect, useMemo, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import {
   Button,
   Modal,
@@ -32,16 +58,16 @@ import {
   Tag,
   Segmented,
   Select,
-  Checkbox,
   InputNumber,
 } from "antd";
 import { message } from "@/utils/antdMessage";
 import { ResizableTable } from "@/components/ResizableTable";
+import type { ColumnsType } from "antd/es/table";
 
 import {
+  Ban,
   Bot,
   Building2,
-  Check,
   ChevronRight,
   CircleHelp,
   Clock,
@@ -57,7 +83,9 @@ import {
   RefreshCw,
   Search,
   ShieldCheck,
+  ShieldOff,
   Trash2,
+  TriangleAlert,
   User,
   UserRound,
   Mail,
@@ -65,6 +93,15 @@ import {
 import { useTranslation } from "react-i18next";
 import type { LucideIcon } from "lucide-react";
 import { request } from "../../../api/request";
+import {
+  ChipTagList,
+  PermissionCheckboxPicker,
+  chipSources,
+  fetchPermissionCatalog,
+  groupPermissionCatalog,
+  type PermissionCatalogItem,
+} from "../../../components/PermissionPicker";
+import pickerStyles from "../../../components/PermissionPicker/index.module.less";
 import { authApi } from "../../../api/modules/auth";
 import type { OctopRole } from "../../../api/modules/auth";
 import { normalizeUiLocale } from "../../../utils/localePrefs";
@@ -76,6 +113,12 @@ import { useIsMobile } from "../../../hooks/useIsMobile";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import { formatServerDateTime } from "../../../utils/formatMessageTime";
 import type { OctopAgent } from "../../../context/AgentContext";
+import { isFeatureAgent } from "../../../utils/agentKind";
+import {
+  NO_AGENT_KIND_COUNTS,
+  indexAgentsByKind,
+  type AgentKindIndex,
+} from "../../../utils/agentKindCounts";
 import { AgentCard } from "../../Experts/components/AgentCard";
 import EditAgentDrawer from "../../Experts/components/EditAgentDrawer";
 import InviteDrawer from "./InviteDrawer";
@@ -102,6 +145,12 @@ interface UserRow {
   login_retry_after_seconds?: number;
   created_at?: number;
   permissions?: string[];
+  /**
+   * Keys this account is refused, whoever grants them (``role ∪ unit ∪ grant
+   * − deny``). Admin-writable only; absent from an older backend, in which
+   * case the deny editor simply reads as empty.
+   */
+  denied_permissions?: string[];
   /** Org unit key — non-admin accounts can carry the unit scope. */
   org_unit?: string | null;
   workspace_root_dir?: string | null;
@@ -125,9 +174,17 @@ function fetchOrgUnits(): Promise<OrgUnit[]> {
   );
 }
 
-/** Role → i18n label key. Exhaustive so a new role fails the build here. */
+/**
+ * Role → i18n label key. Exhaustive so a new role fails the build here.
+ *
+ * ``adminUsers.*`` labels predate the fourth role; the one this workstream adds
+ * comes from its own ``roles.*`` namespace (the parallel-workstream convention
+ * reserves ``perms*`` / ``org*`` / ``roles*`` / ``orgUnits*``), so the older keys
+ * are left exactly as they are.
+ */
 const ROLE_LABEL_KEYS: Record<OctopRole, string> = {
   admin: "adminUsers.roleAdmin",
+  enterprise_admin: "roles.enterpriseAdmin",
   unit_admin: "adminUsers.roleUnitAdmin",
   user: "adminUsers.roleUser",
 };
@@ -135,22 +192,10 @@ const ROLE_LABEL_KEYS: Record<OctopRole, string> = {
 /** Role → picker icon, same exhaustive mapping. */
 const ROLE_ICONS: Record<OctopRole, LucideIcon> = {
   admin: ShieldCheck,
+  enterprise_admin: Building2,
   unit_admin: Building2,
   user: UserRound,
 };
-
-interface PermissionCatalogItem {
-  key: string;
-  category: string;
-  label: string;
-  page?: string;
-  page_label?: string;
-}
-
-function permFullLabel(item: PermissionCatalogItem): string {
-  if (item.page_label) return `${item.page_label} / ${item.label}`;
-  return item.label;
-}
 
 interface PolicyFormValues {
   limit_workspace_root?: boolean;
@@ -176,6 +221,8 @@ interface EditValues extends PolicyFormValues {
   role: OctopRole;
   org_unit?: string;
   permissions?: string[];
+  /** Deny list; only sent once the picker was touched (see ``denyTouched``). */
+  denied_permissions?: string[];
 }
 
 interface ResetValues {
@@ -185,6 +232,7 @@ interface ResetValues {
 
 function roleToneClass(role: OctopRole): string {
   if (role === "admin") return styles.roleToneAdmin;
+  if (role === "enterprise_admin") return styles.roleToneUnitAdmin;
   if (role === "unit_admin") return styles.roleToneUnitAdmin;
   return styles.roleToneUser;
 }
@@ -215,7 +263,7 @@ function formatUserTs(ts: number | undefined, timeZone: string): string {
 interface UserCardGridProps {
   rows: UserRow[];
   loading: boolean;
-  agentsByUserId: Map<number, OctopAgent[]>;
+  agentKindIndex: AgentKindIndex;
   agentsLoading: boolean;
   currentUserId: number | null;
   permLabelByKey: Map<string, string>;
@@ -229,6 +277,8 @@ interface UserCardGridProps {
   onResetPassword: (row: UserRow) => void;
   onDelete: (row: UserRow) => Promise<void>;
   onUnlockLogin: (row: UserRow) => Promise<void>;
+  /** Admin-only affordances (enable toggle, reset, delete) are hidden without it. */
+  admin: boolean;
   nowSec: number;
 }
 
@@ -396,11 +446,17 @@ function RolePicker({ value, onChange, options, disabled }: RolePickerProps) {
 /**
  * Org-unit scope picker for non-admin roles. The unit drives the resource
  * boundary (and its module grants); leaving it empty means no unit scope.
+ *
+ * ``required`` is set where the backend refuses an unbound account: an account
+ * a scoped administrator creates must land in one of its departments, and an
+ * enterprise administrator with no department reaches nothing at all.
  */
 function OrgUnitField({
   options,
+  required = false,
 }: {
   options: { value: string; label: string }[];
+  required?: boolean;
 }) {
   const { t } = useTranslation();
   return (
@@ -412,6 +468,11 @@ function OrgUnitField({
         </span>
       }
       name="org_unit"
+      rules={
+        required
+          ? [{ required: true, message: t("orgUnits.required") }]
+          : undefined
+      }
       extra={t("adminUsers.orgUnitHint")}
     >
       <Select
@@ -426,145 +487,118 @@ function OrgUnitField({
   );
 }
 
-interface PermissionCheckboxPickerProps {
+interface PermissionDenyPickerProps {
   value?: string[];
   onChange?: (value: string[]) => void;
   catalog: PermissionCatalogItem[];
-  disabled?: boolean;
+  /** Keys granted to this account itself — a deny here revokes a real grant. */
+  grantedKeys: Set<string>;
+  /** Keys the account's department grants — deny is the per-user way out. */
+  unitGrantedKeys: Set<string>;
 }
 
-function PermissionCheckboxPicker({
+/**
+ * The deny leg of ``role ∪ unit ∪ grant − deny``: same catalog and grouping as
+ * the grant picker, red instead of brand-coloured. Each selected chip names
+ * what the deny actually takes away, because a key can be granted to this
+ * account directly, by its department, or by nothing at all — and in the last
+ * case the deny is still meaningful: it is a standing rule that keeps every
+ * later grant of that key from taking effect.
+ */
+function PermissionDenyPicker({
   value,
   onChange,
   catalog,
-  disabled,
-}: PermissionCheckboxPickerProps) {
+  grantedKeys,
+  unitGrantedKeys,
+}: PermissionDenyPickerProps) {
   const { t } = useTranslation();
-  const selected = value ?? [];
-  const selectedSet = useMemo(() => new Set(selected), [selected]);
+  const denied = value ?? [];
+  const deniedSet = useMemo(() => new Set(denied), [denied]);
 
-  const groups = useMemo(() => {
-    const order = [
-      {
-        category: "settings",
-        label: t("adminUsers.permGroupSettings"),
-      },
-      {
-        category: "control",
-        label: t("adminUsers.permGroupControl"),
-      },
-      {
-        category: "admin",
-        label: t("adminUsers.permGroupAdmin"),
-      },
-    ] as const;
-    return order
-      .map((g) => {
-        const items = catalog.filter((p) => p.category === g.category);
-        const pages: {
-          page: string;
-          label: string;
-          items: PermissionCatalogItem[];
-        }[] = [];
-        const standalone: PermissionCatalogItem[] = [];
-        for (const item of items) {
-          if (!item.page) {
-            standalone.push(item);
-            continue;
-          }
-          const existing = pages.find((p) => p.page === item.page);
-          if (existing) {
-            existing.items.push(item);
-          } else {
-            pages.push({
-              page: item.page,
-              label: item.page_label || item.page,
-              items: [item],
-            });
-          }
-        }
-        return { ...g, items, standalone, pages };
-      })
-      .filter((g) => g.items.length > 0);
-  }, [catalog, t]);
+  const groups = useMemo(
+    () =>
+      groupPermissionCatalog(catalog, {
+        settings: t("perms.groupSettings"),
+        control: t("perms.groupControl"),
+        admin: t("perms.groupAdmin"),
+      }),
+    [catalog, t],
+  );
 
-  const toggle = (key: string, checked: boolean) => {
-    if (disabled) return;
-    if (checked) {
-      onChange?.([...selected, key]);
+  const toggle = (key: string, isDenied: boolean) => {
+    if (isDenied) {
+      onChange?.(denied.filter((k) => k !== key));
       return;
     }
-    onChange?.(selected.filter((k) => k !== key));
-  };
-
-  const setGroup = (keys: string[], checked: boolean) => {
-    if (disabled) return;
-    if (checked) {
-      const next = new Set(selected);
-      for (const k of keys) next.add(k);
-      onChange?.(Array.from(next));
-      return;
-    }
-    const drop = new Set(keys);
-    onChange?.(selected.filter((k) => !drop.has(k)));
+    onChange?.([...denied, key]);
   };
 
   if (catalog.length === 0) {
     return (
-      <div className={styles.permEmpty}>
-        <Text type="secondary">{t("adminUsers.permCatalogEmpty")}</Text>
+      <div className={pickerStyles.permEmpty}>
+        <Text type="secondary">{t("perms.catalogEmpty")}</Text>
       </div>
     );
   }
 
+  const deniedTotal = catalog.filter((p) => deniedSet.has(p.key)).length;
+
   return (
-    <div
-      className={`${styles.permPicker} ${
-        disabled ? styles.permPickerDisabled : ""
-      }`}
-    >
+    <div className={pickerStyles.permPicker}>
+      {deniedTotal > 0 ? (
+        <div className={styles.permDenyCount}>
+          <ShieldOff size={14} strokeWidth={2} />
+          <span>{t("adminUsers.permDenyCount", { count: deniedTotal })}</span>
+        </div>
+      ) : null}
       {groups.map((group) => {
         const keys = group.items.map((i) => i.key);
-        const checkedCount = keys.filter((k) => selectedSet.has(k)).length;
-        const allChecked = checkedCount === keys.length && keys.length > 0;
-        const indeterminate = checkedCount > 0 && !allChecked;
+        const deniedCount = keys.filter((k) => deniedSet.has(k)).length;
         const renderChips = (items: PermissionCatalogItem[]) => (
-          <div className={styles.permGrid} role="group">
+          <div className={pickerStyles.permGrid} role="group">
             {items.map((item) => {
-              const checked = selectedSet.has(item.key);
+              const isDenied = deniedSet.has(item.key);
+              const tags = chipSources(item.key, {
+                ownKeys: grantedKeys,
+                unitGrantedKeys,
+              });
+              const title = isDenied
+                ? tags.includes("unit")
+                  ? t("adminUsers.permDenyUnitNote")
+                  : tags.includes("own")
+                  ? t("adminUsers.permDenyGrantedNote")
+                  : t("adminUsers.permDenyAbsentNote")
+                : undefined;
               return (
                 <button
                   key={`${item.key}:${item.label}`}
                   type="button"
-                  disabled={disabled}
-                  aria-pressed={checked}
-                  className={`${styles.permChip} ${
-                    checked ? styles.permChipSelected : ""
+                  aria-pressed={isDenied}
+                  title={title}
+                  className={`${pickerStyles.permChip} ${
+                    isDenied ? pickerStyles.permChipDenied : ""
                   }`}
-                  onClick={() => toggle(item.key, !checked)}
+                  onClick={() => toggle(item.key, isDenied)}
                 >
-                  <span className={styles.permChipCheck} aria-hidden>
-                    {checked ? <Check size={12} strokeWidth={2.5} /> : null}
+                  <span className={pickerStyles.permChipCheck} aria-hidden>
+                    {isDenied ? <Ban size={12} strokeWidth={2.5} /> : null}
                   </span>
-                  <span className={styles.permChipLabel}>{item.label}</span>
+                  <span className={pickerStyles.permChipLabel}>
+                    {item.label}
+                  </span>
+                  <ChipTagList tags={tags} />
                 </button>
               );
             })}
           </div>
         );
         return (
-          <section key={group.category} className={styles.permGroup}>
-            <div className={styles.permGroupHeader}>
-              <Checkbox
-                checked={allChecked}
-                indeterminate={indeterminate}
-                disabled={disabled}
-                onChange={(e) => setGroup(keys, e.target.checked)}
-              >
-                <span className={styles.permGroupTitle}>{group.label}</span>
-              </Checkbox>
-              <span className={styles.permGroupCount}>
-                {checkedCount}/{keys.length}
+          <section key={group.category} className={pickerStyles.permGroup}>
+            <div className={pickerStyles.permGroupHeader}>
+              <span className={pickerStyles.permGroupTitle}>{group.label}</span>
+              <span className={pickerStyles.permGroupCount}>
+                {deniedCount}/{keys.length}
               </span>
             </div>
             {group.pages.length === 0 ? (
@@ -575,28 +609,17 @@ function PermissionCheckboxPicker({
                   ? renderChips(group.standalone)
                   : null}
                 {group.pages.map((page) => {
-                  const pageKeys = page.items.map((i) => i.key);
-                  const pageChecked = pageKeys.filter((k) =>
-                    selectedSet.has(k),
+                  const pageDenied = page.items.filter((i) =>
+                    deniedSet.has(i.key),
                   ).length;
-                  const pageAll =
-                    pageChecked === pageKeys.length && pageKeys.length > 0;
-                  const pageIndeterminate = pageChecked > 0 && !pageAll;
                   return (
-                    <div key={page.page} className={styles.permPage}>
-                      <div className={styles.permPageHeader}>
-                        <Checkbox
-                          checked={pageAll}
-                          indeterminate={pageIndeterminate}
-                          disabled={disabled}
-                          onChange={(e) => setGroup(pageKeys, e.target.checked)}
-                        >
-                          <span className={styles.permPageTitle}>
-                            {page.label}
-                          </span>
-                        </Checkbox>
-                        <span className={styles.permGroupCount}>
-                          {pageChecked}/{pageKeys.length}
+                    <div key={page.page} className={pickerStyles.permPage}>
+                      <div className={pickerStyles.permPageHeader}>
+                        <span className={pickerStyles.permPageTitle}>
+                          {page.label}
+                        </span>
+                        <span className={pickerStyles.permGroupCount}>
+                          {pageDenied}/{page.items.length}
                         </span>
                       </div>
                       {renderChips(page.items)}
@@ -653,10 +676,66 @@ function RoleLegend() {
   );
 }
 
+/**
+ * One kind's tally on a user card — the card view's half of the table's agent
+ * columns. Drawn once per kind the deployment holds; the button is the way
+ * into the drawer listing that user's agents, both kinds of them.
+ */
+function AgentStatButton({
+  label,
+  count,
+  loading,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button type="button" className={styles.userCardStatBtn} onClick={onClick}>
+      <Bot size={15} />
+      <span>{label}</span>
+      <span className={styles.userCardStatCount}>{loading ? "…" : count}</span>
+      <ChevronRight size={14} />
+    </button>
+  );
+}
+
+/**
+ * One kind's tally in the table: the number, and the same way into the drawer
+ * the card's button is. The cell is the only thing a sighted reader has to go
+ * on between the header and the number, so the kind is named for assistive
+ * tech as well — a bare count is not a name.
+ */
+function AgentCountCell({
+  label,
+  count,
+  loading,
+  onClick,
+}: {
+  label: string;
+  count: number;
+  loading: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={styles.userCellLink}
+      aria-label={loading ? label : `${label} ${count}`}
+      onClick={onClick}
+    >
+      <Bot size={13} />
+      {loading ? "…" : count}
+    </button>
+  );
+}
+
 function UserCardGrid({
   rows,
   loading,
-  agentsByUserId,
+  agentKindIndex,
   agentsLoading,
   currentUserId,
   permLabelByKey,
@@ -667,6 +746,7 @@ function UserCardGrid({
   onResetPassword,
   onDelete,
   onUnlockLogin,
+  admin,
   nowSec,
 }: UserCardGridProps) {
   const { t } = useTranslation();
@@ -684,7 +764,8 @@ function UserCardGrid({
   return (
     <div className={styles.userCardGrid}>
       {rows.map((row) => {
-        const agentCount = agentsByUserId.get(row.id)?.length ?? 0;
+        const counts =
+          agentKindIndex.countsByUserId.get(row.id) ?? NO_AGENT_KIND_COUNTS;
         const isSelf = row.id === currentUserId;
         const displayName = row.display_name?.trim() || row.username;
         const remaining = lockRemainingSeconds(row, nowSec);
@@ -737,15 +818,17 @@ function UserCardGrid({
                   <div className={styles.userCardHandle}>@{row.username}</div>
                 </div>
 
-                <Switch
-                  size="small"
-                  checked={!row.disabled}
-                  onChange={(checked) =>
-                    void onTogglePatch(row, { disabled: !checked })
-                  }
-                  className={styles.userCardSwitch}
-                  aria-label={t("common.enabled")}
-                />
+                {admin && (
+                  <Switch
+                    size="small"
+                    checked={!row.disabled}
+                    onChange={(checked) =>
+                      void onTogglePatch(row, { disabled: !checked })
+                    }
+                    className={styles.userCardSwitch}
+                    aria-label={t("common.enabled")}
+                  />
+                )}
               </div>
 
               <div className={styles.userCardMeta}>
@@ -802,18 +885,22 @@ function UserCardGrid({
               </div>
 
               <div className={styles.userCardStats}>
-                <button
-                  type="button"
-                  className={styles.userCardStatBtn}
-                  onClick={() => onShowAgents(row)}
-                >
-                  <Bot size={15} />
-                  <span>{t("adminUsers.colAgents")}</span>
-                  <span className={styles.userCardStatCount}>
-                    {agentsLoading ? "…" : agentCount}
-                  </span>
-                  <ChevronRight size={14} />
-                </button>
+                {agentKindIndex.held.experts && (
+                  <AgentStatButton
+                    label={t("adminUsers.colAgents")}
+                    count={counts.experts}
+                    loading={agentsLoading}
+                    onClick={() => onShowAgents(row)}
+                  />
+                )}
+                {agentKindIndex.held.features && (
+                  <AgentStatButton
+                    label={t("adminUsers.colFeatures")}
+                    count={counts.features}
+                    loading={agentsLoading}
+                    onClick={() => onShowAgents(row)}
+                  />
+                )}
               </div>
 
               {isLocked && (
@@ -853,43 +940,47 @@ function UserCardGrid({
                   </button>
                 </Tooltip>
 
-                <Tooltip
-                  title={t("adminUsers.resetPassword")}
-                  mouseEnterDelay={0.5}
-                >
-                  <button
-                    type="button"
-                    className={styles.userCardIconBtn}
-                    onClick={() => onResetPassword(row)}
-                    aria-label={t("adminUsers.resetPassword")}
-                  >
-                    <KeyRound size={15} />
-                  </button>
-                </Tooltip>
-
-                <Popconfirm
-                  title={t("adminUsers.deleteConfirm", {
-                    username: row.username,
-                  })}
-                  onConfirm={() => void onDelete(row)}
-                  disabled={isSelf}
-                >
+                {admin && (
                   <Tooltip
-                    title={
-                      isSelf ? t("adminUsers.deleteSelf") : t("common.delete")
-                    }
+                    title={t("adminUsers.resetPassword")}
                     mouseEnterDelay={0.5}
                   >
                     <button
                       type="button"
-                      className={`${styles.userCardIconBtn} ${styles.userCardIconBtnDanger}`}
-                      disabled={isSelf}
-                      aria-label={t("common.delete")}
+                      className={styles.userCardIconBtn}
+                      onClick={() => onResetPassword(row)}
+                      aria-label={t("adminUsers.resetPassword")}
                     >
-                      <Trash2 size={15} />
+                      <KeyRound size={15} />
                     </button>
                   </Tooltip>
-                </Popconfirm>
+                )}
+
+                {admin && (
+                  <Popconfirm
+                    title={t("adminUsers.deleteConfirm", {
+                      username: row.username,
+                    })}
+                    onConfirm={() => void onDelete(row)}
+                    disabled={isSelf}
+                  >
+                    <Tooltip
+                      title={
+                        isSelf ? t("adminUsers.deleteSelf") : t("common.delete")
+                      }
+                      mouseEnterDelay={0.5}
+                    >
+                      <button
+                        type="button"
+                        className={`${styles.userCardIconBtn} ${styles.userCardIconBtnDanger}`}
+                        disabled={isSelf}
+                        aria-label={t("common.delete")}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </Tooltip>
+                  </Popconfirm>
+                )}
 
                 <span className={styles.userCardFooterSpacer} />
 
@@ -968,6 +1059,15 @@ export default function UsersListPanel() {
   const isMobile = useIsMobile();
   const currentUser = useCurrentUser();
   const admin = isSystemAdmin(currentUser);
+  /**
+   * A scoped administrator — enterprise or department — whose creation and
+   * department writes must land inside the branch it administers (design §2.1).
+   * The reach itself is resolved server-side; this only decides which fields the
+   * form shows.
+   */
+  const scopedActor =
+    currentUser?.role === "enterprise_admin" ||
+    currentUser?.role === "unit_admin";
   const [agents, setAgents] = useState<OctopAgent[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [rows, setRows] = useState<UserRow[]>([]);
@@ -988,6 +1088,15 @@ export default function UsersListPanel() {
   const [searchQuery, setSearchQuery] = useState("");
   const { viewMode, setViewMode, showCardView } = useCardTableView("table");
   const [permCatalog, setPermCatalog] = useState<PermissionCatalogItem[]>([]);
+  /** Module keys the department in the edit drawer grants its members. */
+  const [editUnitGrants, setEditUnitGrants] = useState<string[]>([]);
+  /**
+   * Whether the admin touched the deny picker. ``denied_permissions`` is
+   * three-state on the wire (omitted = keep, ``null`` = clear, array = set),
+   * so an untouched drawer omits it instead of rewriting the stored list.
+   */
+  const [denyTouched, setDenyTouched] = useState(false);
+  const unitGrantRequest = useRef<string | null>(null);
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([]);
   const [fsTreeRoot, setFsTreeRoot] = useState(HOST_FS_ROOT);
   const [workspaceRootAllowed, setWorkspaceRootAllowed] = useState(true);
@@ -995,15 +1104,48 @@ export default function UsersListPanel() {
   const permLabelByKey = useMemo(() => {
     const map = new Map<string, string>();
     for (const item of permCatalog) {
-      map.set(item.key, permFullLabel(item));
+      map.set(
+        item.key,
+        item.page_label ? `${item.page_label} / ${item.label}` : item.label,
+      );
     }
     return map;
   }, [permCatalog]);
 
+  /** Short labels for the "deny wins" list, where full paths would bury it. */
+  const permShortLabelByKey = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const item of permCatalog) {
+      map.set(item.key, item.label);
+    }
+    return map;
+  }, [permCatalog]);
+
+  const unitGrantedKeys = useMemo(
+    () => new Set(editUnitGrants),
+    [editUnitGrants],
+  );
+
+  /**
+   * Module keys this actor may hand out — the server's answer, not ours.
+   * ``GET /users/permissions`` marks each key with ``can_grant``, resolved
+   * through ``effective_permissions``: the actor's own
+   * ``role ∪ department ∪ grant − deny`` (design §4.3 rule 4). The write path
+   * (``_assert_can_assign`` → ``assert_can_grant``) applies that same function
+   * to the submitted list, so a key the picker offers is a key the submit
+   * accepts — which is why a key the actor may not hand out is never shown.
+   */
+  const assignableCatalog = useMemo(
+    () => permCatalog.filter((p) => p.can_grant),
+    [permCatalog],
+  );
+
   const baselinePermissions = useMemo(
     () =>
-      permCatalog.filter((p) => p.category === "settings").map((p) => p.key),
-    [permCatalog],
+      assignableCatalog
+        .filter((p) => p.category === "settings")
+        .map((p) => p.key),
+    [assignableCatalog],
   );
 
   const lang = normalizeUiLocale(i18n.language);
@@ -1045,6 +1187,11 @@ export default function UsersListPanel() {
         hint: t("adminUsers.roleUnitAdminHint"),
       },
       {
+        value: "enterprise_admin" as const,
+        label: t("roles.enterpriseAdmin"),
+        hint: t("roles.enterpriseAdminHint"),
+      },
+      {
         value: "admin" as const,
         label: t("adminUsers.roleAdmin"),
         hint: t("adminUsers.roleAdminHint"),
@@ -1053,10 +1200,56 @@ export default function UsersListPanel() {
     [t],
   );
 
+  /**
+   * Roles this actor may hand out (design §2.1): a system administrator every
+   * role, an enterprise administrator the two below it, a department
+   * administrator only employees. The backend enforces the same rule, so this
+   * only keeps the picker from offering a box that would come back 403.
+   */
+  const assignableRoleValues = useMemo<OctopRole[]>(() => {
+    switch (currentUser?.role) {
+      case "admin":
+        return ["admin", "enterprise_admin", "unit_admin", "user"];
+      case "enterprise_admin":
+        return ["unit_admin", "user"];
+      case "unit_admin":
+        return ["user"];
+      default:
+        return [];
+    }
+  }, [currentUser?.role]);
+
+  const assignableRoleOptions = useMemo(
+    () =>
+      createRoleOptions.filter((option) =>
+        assignableRoleValues.includes(option.value),
+      ),
+    [createRoleOptions, assignableRoleValues],
+  );
+
   const isSelfAdmin = useCallback(
     (row: UserRow) => row.id === currentUserId && row.role === "admin",
     [currentUserId],
   );
+
+  /**
+   * Whether the edit drawer may submit ``permissions`` for the target on
+   * screen. Admins grant anything; a non-admin grants only keys the catalog
+   * marks ``can_grant``, and ``_assert_can_assign`` rejects the whole list on a
+   * single key the server would refuse — so a target carrying such a key is
+   * saved without the field (omitted = untouched on both sides) instead of by a
+   * request that would 403 and take the display-name edit down with it.
+   *
+   * A key that is not in the catalog at all (an unknown or legacy key stored on
+   * the row) is *not* grantable: the server answers the same way, since
+   * ``effective_permissions`` only ever holds catalog keys.
+   */
+  const canSubmitPermissions = useMemo(() => {
+    if (admin) return true;
+    if (!editTarget || editTarget.role === "admin") return false;
+    const grantable = new Set(assignableCatalog.map((p) => p.key));
+    return (editTarget.permissions ?? []).every((key) => grantable.has(key));
+  }, [admin, editTarget, assignableCatalog]);
 
   const hasLockedUser = useMemo(
     () => rows.some((row) => row.login_locked),
@@ -1064,6 +1257,7 @@ export default function UsersListPanel() {
   );
   const nowSec = useNowSeconds(hasLockedUser);
 
+  /** The drawer's rows — every agent the drawer's user holds, both kinds. */
   const agentsByUserId = useMemo(() => {
     const map = new Map<number, OctopAgent[]>();
     for (const agent of agents) {
@@ -1074,6 +1268,13 @@ export default function UsersListPanel() {
     }
     return map;
   }, [agents]);
+
+  /**
+   * The same list, counted: a row's experts and features apart, and which of
+   * the two kinds exist anywhere (the columns are drawn from that, so a page
+   * of rows never decides it and paging cannot make a column appear).
+   */
+  const agentKindIndex = useMemo(() => indexAgentsByKind(agents), [agents]);
 
   const drawerAgents = agentDrawerUser
     ? agentsByUserId.get(agentDrawerUser.id) ?? []
@@ -1183,7 +1384,7 @@ export default function UsersListPanel() {
       .me()
       .then((u) => setCurrentUserId(u.id))
       .catch(() => setCurrentUserId(null));
-    request<PermissionCatalogItem[]>("/users/permissions")
+    fetchPermissionCatalog()
       .then(setPermCatalog)
       .catch(() => setPermCatalog([]));
     fetchOrgUnits()
@@ -1220,7 +1421,14 @@ export default function UsersListPanel() {
           display_name: values.display_name?.trim() || null,
           email: values.email?.trim() || null,
           password: values.password,
-          role: values.role,
+          // Only the roles this actor may hand out are offered (design §2.1), and
+          // the field is unregistered when that set is the implicit ``user``
+          // default — so the fallback names the same role the form would.
+          role: assignableRoleValues.includes(values.role)
+            ? values.role
+            : "user",
+          // A scoped administrator may only create inside one of its departments,
+          // so its unit is sent; the ``admin`` role carries none.
           org_unit: values.role === "admin" ? null : values.org_unit ?? null,
           permissions: values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
@@ -1259,14 +1467,43 @@ export default function UsersListPanel() {
     setCreateOpen(true);
   };
 
+  /**
+   * The edit drawer's department grants — what explains a permission the
+   * account holds without a tick of its own, and what a deny would take away.
+   * Reloaded whenever the drawer's department changes, and dropped on a stale
+   * response so a slow request cannot label the next account.
+   */
+  const loadUnitGrants = useCallback((unitKey: string | null | undefined) => {
+    const key = unitKey ?? null;
+    unitGrantRequest.current = key;
+    if (!key) {
+      setEditUnitGrants([]);
+      return;
+    }
+    request<{ unit_key: string; permissions: string[] }>(
+      `/org-units/${encodeURIComponent(key)}/permissions`,
+    )
+      .then((res) => {
+        if (unitGrantRequest.current !== key) return;
+        setEditUnitGrants(res.permissions ?? []);
+      })
+      .catch(() => {
+        if (unitGrantRequest.current !== key) return;
+        setEditUnitGrants([]);
+      });
+  }, []);
+
   const openEdit = (row: UserRow) => {
     setEditTarget(row);
+    setDenyTouched(false);
+    loadUnitGrants(row.org_unit);
     editForm.setFieldsValue({
       display_name: row.display_name ?? "",
       email: row.email ?? "",
       role: row.role,
       org_unit: row.org_unit ?? undefined,
       permissions: [...(row.permissions ?? [])],
+      denied_permissions: [...(row.denied_permissions ?? [])],
       limit_workspace_root: workspaceRootAllowed
         ? Boolean(row.workspace_root_dir)
         : false,
@@ -1309,17 +1546,42 @@ export default function UsersListPanel() {
   const onEditSubmit = async (values: EditValues) => {
     if (!editTarget) return;
     setEditSubmitting(true);
+    // Role, department and module keys carry their own gates on the backend,
+    // and it refuses the *whole* PATCH over one forbidden field — so a field
+    // this actor may not write is left out rather than sent and rejected
+    // (omitted = keep the stored value).
+    const { workspace_root_dir, token_quota } = policyPayload(values, {
+      workspaceRootAllowed,
+    });
+    const body: Record<string, unknown> = {
+      display_name: values.display_name?.trim() || null,
+      email: values.email?.trim() || null,
+      token_quota,
+      // ``/filesystem/defaults`` is admin-only, so a drawer without the
+      // root-dir picker cannot show the value it would clear: keep it.
+      ...(workspaceRootAllowed ? { workspace_root_dir } : {}),
+    };
+    if (assignableRoleValues.length > 0) {
+      body.role = values.role;
+      // Only the ``admin`` role carries no department: a scoped administrator is
+      // defined by the department it administers, so its unit is kept.
+      body.org_unit = values.role === "admin" ? null : values.org_unit ?? null;
+      body.permissions =
+        values.role === "admin" ? [] : values.permissions ?? [];
+      // Deny is admin-only on the backend, and a PATCH carries it as
+      // omit = keep / null = clear / array = set. Only a touched picker sends
+      // it, so saving the display name never rewrites the stored deny list.
+      if (denyTouched) {
+        const denied = values.denied_permissions ?? [];
+        body.denied_permissions = denied.length > 0 ? denied : null;
+      }
+    } else if (canSubmitPermissions) {
+      body.permissions = values.permissions ?? [];
+    }
     try {
       await request(`/users/${editTarget.id}`, {
         method: "PATCH",
-        body: JSON.stringify({
-          display_name: values.display_name?.trim() || null,
-          email: values.email?.trim() || null,
-          role: values.role,
-          org_unit: values.role === "admin" ? null : values.org_unit ?? null,
-          permissions: values.role === "admin" ? [] : values.permissions ?? [],
-          ...policyPayload(values, { workspaceRootAllowed }),
-        }),
+        body: JSON.stringify(body),
       });
       setEditTarget(null);
       editForm.resetFields();
@@ -1376,6 +1638,49 @@ export default function UsersListPanel() {
       );
     }
   };
+
+  /**
+   * The agent columns, one per kind this deployment holds. A kind nobody holds
+   * anywhere draws no column: its header would name agents that do not exist
+   * over a column of zeroes. Whether a kind is held is read off the instance
+   * (``agentKindIndex``), never off the rows on screen — paging must not make
+   * a column come and go.
+   */
+  const agentColumns: ColumnsType<UserRow> = [];
+  if (agentKindIndex.held.experts) {
+    agentColumns.push({
+      title: t("adminUsers.colAgents"),
+      width: 80,
+      render: (_, row) => (
+        <AgentCountCell
+          label={t("adminUsers.colAgents")}
+          count={
+            (agentKindIndex.countsByUserId.get(row.id) ?? NO_AGENT_KIND_COUNTS)
+              .experts
+          }
+          loading={agentsLoading}
+          onClick={() => setAgentDrawerUser(row)}
+        />
+      ),
+    });
+  }
+  if (agentKindIndex.held.features) {
+    agentColumns.push({
+      title: t("adminUsers.colFeatures"),
+      width: 80,
+      render: (_, row) => (
+        <AgentCountCell
+          label={t("adminUsers.colFeatures")}
+          count={
+            (agentKindIndex.countsByUserId.get(row.id) ?? NO_AGENT_KIND_COUNTS)
+              .features
+          }
+          loading={agentsLoading}
+          onClick={() => setAgentDrawerUser(row)}
+        />
+      ),
+    });
+  }
 
   return (
     <>
@@ -1443,7 +1748,7 @@ export default function UsersListPanel() {
         <UserCardGrid
           rows={filteredRows}
           loading={loading}
-          agentsByUserId={agentsByUserId}
+          agentKindIndex={agentKindIndex}
           agentsLoading={agentsLoading}
           currentUserId={currentUserId}
           permLabelByKey={permLabelByKey}
@@ -1457,6 +1762,7 @@ export default function UsersListPanel() {
           }}
           onDelete={onDelete}
           onUnlockLogin={onUnlockLogin}
+          admin={admin}
           nowSec={nowSec}
         />
       ) : (
@@ -1535,23 +1841,7 @@ export default function UsersListPanel() {
                 );
               },
             },
-            {
-              title: t("adminUsers.colAgents"),
-              width: 80,
-              render: (_, row) => {
-                const count = agentsByUserId.get(row.id)?.length ?? 0;
-                return (
-                  <button
-                    type="button"
-                    className={styles.userCellLink}
-                    onClick={() => setAgentDrawerUser(row)}
-                  >
-                    <Bot size={13} />
-                    {agentsLoading ? "…" : count}
-                  </button>
-                );
-              },
-            },
+            ...agentColumns,
             {
               title: t("adminUsers.colRole"),
               width: 112,
@@ -1585,15 +1875,23 @@ export default function UsersListPanel() {
             {
               title: t("common.enabled"),
               width: 72,
-              render: (_, row) => (
-                <Switch
-                  size="small"
-                  checked={!row.disabled}
-                  onChange={(checked) =>
-                    togglePatch(row, { disabled: !checked })
-                  }
-                />
-              ),
+              // Admin-only toggle: everyone else reads the state, no control.
+              render: (_, row) =>
+                admin ? (
+                  <Switch
+                    size="small"
+                    checked={!row.disabled}
+                    onChange={(checked) =>
+                      togglePatch(row, { disabled: !checked })
+                    }
+                  />
+                ) : (
+                  <span className={styles.userCellMuted}>
+                    {row.disabled
+                      ? t("adminUsers.statusDisabled")
+                      : t("adminUsers.statusEnabled")}
+                  </span>
+                ),
             },
             {
               title: t("adminUsers.colCreatedAt"),
@@ -1632,43 +1930,47 @@ export default function UsersListPanel() {
                       <Pencil size={14} />
                     </button>
                   </Tooltip>
-                  <Tooltip title={t("adminUsers.resetPassword")}>
-                    <button
-                      type="button"
-                      className={styles.userCardIconBtn}
-                      onClick={() => {
-                        setResetTarget(row);
-                        resetForm.resetFields();
-                      }}
-                      aria-label={t("adminUsers.resetPassword")}
-                    >
-                      <KeyRound size={14} />
-                    </button>
-                  </Tooltip>
-                  <Popconfirm
-                    title={t("adminUsers.deleteConfirm", {
-                      username: row.username,
-                    })}
-                    onConfirm={() => onDelete(row)}
-                    disabled={row.id === currentUserId}
-                  >
-                    <Tooltip
-                      title={
-                        row.id === currentUserId
-                          ? t("adminUsers.deleteSelf")
-                          : t("common.delete")
-                      }
-                    >
+                  {admin && (
+                    <Tooltip title={t("adminUsers.resetPassword")}>
                       <button
                         type="button"
-                        className={`${styles.userCardIconBtn} ${styles.userCardIconBtnDanger}`}
-                        disabled={row.id === currentUserId}
-                        aria-label={t("common.delete")}
+                        className={styles.userCardIconBtn}
+                        onClick={() => {
+                          setResetTarget(row);
+                          resetForm.resetFields();
+                        }}
+                        aria-label={t("adminUsers.resetPassword")}
                       >
-                        <Trash2 size={14} />
+                        <KeyRound size={14} />
                       </button>
                     </Tooltip>
-                  </Popconfirm>
+                  )}
+                  {admin && (
+                    <Popconfirm
+                      title={t("adminUsers.deleteConfirm", {
+                        username: row.username,
+                      })}
+                      onConfirm={() => onDelete(row)}
+                      disabled={row.id === currentUserId}
+                    >
+                      <Tooltip
+                        title={
+                          row.id === currentUserId
+                            ? t("adminUsers.deleteSelf")
+                            : t("common.delete")
+                        }
+                      >
+                        <button
+                          type="button"
+                          className={`${styles.userCardIconBtn} ${styles.userCardIconBtnDanger}`}
+                          disabled={row.id === currentUserId}
+                          aria-label={t("common.delete")}
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </Tooltip>
+                    </Popconfirm>
+                  )}
                 </Space>
               ),
             },
@@ -1707,6 +2009,14 @@ export default function UsersListPanel() {
                   iconName={agent.icon_name}
                   iconUrl={agent.icon_url}
                   accentColor={agent.color}
+                  // This drawer is every agent the user holds, so it holds features
+                  // too — and the row's kind is what names it: a feature's agent is
+                  // not an expert, so its id row does not say "Expert ID".
+                  idLabelKey={
+                    isFeatureAgent(agent)
+                      ? "features.agentId"
+                      : "experts.agentId"
+                  }
                   onEdit={(id) =>
                     setEditAgent(
                       drawerAgents.find((a) => a.agent_id === id) ?? null,
@@ -1868,14 +2178,20 @@ export default function UsersListPanel() {
               <CircleHelp size={15} strokeWidth={2} />
               <span>{t("adminUsers.permEditHint")}</span>
             </div>
-            <Form.Item
-              label={t("adminUsers.formRole")}
-              name="role"
-              rules={[{ required: true }]}
-              className={styles.createUserRoleItem}
-            >
-              <RolePicker options={createRoleOptions} />
-            </Form.Item>
+            {/* Roles are bounded by the actor's own level (the backend's
+                ``assert_assignable_role``: design §2.1), so the picker offers the
+                subset the server would accept — and stays hidden when that
+                subset is the implicit ``user`` default. */}
+            {assignableRoleOptions.length > 1 && (
+              <Form.Item
+                label={t("adminUsers.formRole")}
+                name="role"
+                rules={[{ required: true }]}
+                className={styles.createUserRoleItem}
+              >
+                <RolePicker options={assignableRoleOptions} />
+              </Form.Item>
+            )}
             <Form.Item
               noStyle
               shouldUpdate={(prev, cur) => prev.role !== cur.role}
@@ -1892,13 +2208,25 @@ export default function UsersListPanel() {
                 }
                 return (
                   <>
-                    <OrgUnitField options={orgUnitOptions} />
+                    {/* A department carries module grants, and a scoped
+                        administrator may only create inside its own branch, so
+                        the picker is shown to both — required where the backend
+                        refuses an unbound account. */}
+                    {(admin || scopedActor) && (
+                      <OrgUnitField
+                        options={orgUnitOptions}
+                        required={
+                          scopedActor ||
+                          getFieldValue("role") === "enterprise_admin"
+                        }
+                      />
+                    )}
                     <Form.Item
                       label={t("adminUsers.colPermissions")}
                       name="permissions"
                       className={styles.createUserPermItem}
                     >
-                      <PermissionCheckboxPicker catalog={permCatalog} />
+                      <PermissionCheckboxPicker catalog={assignableCatalog} />
                     </Form.Item>
                   </>
                 );
@@ -1960,6 +2288,13 @@ export default function UsersListPanel() {
           requiredMark={false}
           onFinish={onEditSubmit}
           className={styles.createUserForm}
+          onValuesChange={(changed) => {
+            // Fires on user edits only (``setFieldsValue`` does not), which is
+            // exactly the "touched" signal the three-state deny field needs.
+            if ("denied_permissions" in changed) setDenyTouched(true);
+            // Rebinding the department changes which keys its grants cover.
+            if ("org_unit" in changed) loadUnitGrants(changed.org_unit);
+          }}
         >
           <div className={styles.createSection}>
             <div className={styles.createSectionTitle}>
@@ -1999,22 +2334,28 @@ export default function UsersListPanel() {
               <CircleHelp size={15} strokeWidth={2} />
               <span>{t("adminUsers.permEditHint")}</span>
             </div>
-            <Form.Item
-              label={t("adminUsers.formRole")}
-              name="role"
-              rules={[{ required: true }]}
-              className={styles.createUserRoleItem}
-              extra={
-                editTarget && isSelfAdmin(editTarget)
-                  ? t("adminUsers.demoteSelf")
-                  : undefined
-              }
-            >
-              <RolePicker
-                options={createRoleOptions}
-                disabled={Boolean(editTarget && isSelfAdmin(editTarget))}
-              />
-            </Form.Item>
+            {/* Role and department edits are bounded by the actor's scope and role
+                level (design §4.2/§4.3), not by the system-administrator role
+                alone; the picker offers what the level allows and the server
+                refuses the rest. */}
+            {assignableRoleOptions.length > 1 && (
+              <Form.Item
+                label={t("adminUsers.formRole")}
+                name="role"
+                rules={[{ required: true }]}
+                className={styles.createUserRoleItem}
+                extra={
+                  editTarget && isSelfAdmin(editTarget)
+                    ? t("adminUsers.demoteSelf")
+                    : undefined
+                }
+              >
+                <RolePicker
+                  options={assignableRoleOptions}
+                  disabled={Boolean(editTarget && isSelfAdmin(editTarget))}
+                />
+              </Form.Item>
+            )}
             <Form.Item
               noStyle
               shouldUpdate={(prev, cur) => prev.role !== cur.role}
@@ -2029,15 +2370,90 @@ export default function UsersListPanel() {
                     </div>
                   );
                 }
+                if (!admin && !canSubmitPermissions) {
+                  // Target holds module keys this actor may not grant; the
+                  // picker would only produce a 403 on save.
+                  return null;
+                }
                 return (
                   <>
-                    <OrgUnitField options={orgUnitOptions} />
+                    {(admin || scopedActor) && (
+                      <OrgUnitField
+                        options={orgUnitOptions}
+                        required={
+                          scopedActor ||
+                          getFieldValue("role") === "enterprise_admin"
+                        }
+                      />
+                    )}
                     <Form.Item
-                      label={t("adminUsers.colPermissions")}
-                      name="permissions"
-                      className={styles.createUserPermItem}
+                      noStyle
+                      shouldUpdate={(prev, cur) =>
+                        prev.permissions !== cur.permissions ||
+                        prev.denied_permissions !== cur.denied_permissions
+                      }
                     >
-                      <PermissionCheckboxPicker catalog={permCatalog} />
+                      {({ getFieldValue }) => {
+                        const granted = new Set<string>(
+                          getFieldValue("permissions") ?? [],
+                        );
+                        const denied: string[] =
+                          getFieldValue("denied_permissions") ?? [];
+                        const deniedSet = new Set(denied);
+                        // A deny outranks role, department and grant, so these
+                        // keys are checked and still off: state it instead of
+                        // leaving a tick that buys nothing on screen.
+                        const beaten = denied.filter(
+                          (key) => granted.has(key) || unitGrantedKeys.has(key),
+                        );
+                        return (
+                          <>
+                            {beaten.length > 0 ? (
+                              <div className={styles.permDenyWarn}>
+                                <TriangleAlert size={15} strokeWidth={2} />
+                                <span>
+                                  {t("adminUsers.permDenyConflict", {
+                                    keys: beaten
+                                      .map(
+                                        (key) =>
+                                          permShortLabelByKey.get(key) ?? key,
+                                      )
+                                      .join("、"),
+                                  })}
+                                </span>
+                              </div>
+                            ) : null}
+                            <Form.Item
+                              label={t("adminUsers.colPermissions")}
+                              name="permissions"
+                              className={styles.createUserPermItem}
+                            >
+                              <PermissionCheckboxPicker
+                                catalog={assignableCatalog}
+                                unitGrantedKeys={unitGrantedKeys}
+                                deniedKeys={deniedSet}
+                              />
+                            </Form.Item>
+                            {/* Deny is admin-only (``_assert_admin`` on the
+                                users router), so it is both hidden without the
+                                role and free of the key-level gate that limits
+                                a non-admin's grants: full catalog. */}
+                            {admin ? (
+                              <Form.Item
+                                label={t("adminUsers.permDenyLabel")}
+                                name="denied_permissions"
+                                extra={t("adminUsers.permDenyHint")}
+                              >
+                                <PermissionDenyPicker
+                                  catalog={permCatalog}
+                                  grantedKeys={granted}
+                                  unitGrantedKeys={unitGrantedKeys}
+                                />
+                              </Form.Item>
+                            ) : null}
+                          </>
+                        );
+                      }}
                     </Form.Item>
                   </>
                 );

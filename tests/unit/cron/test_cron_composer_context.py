@@ -46,6 +46,18 @@ async def _run_locked(_agent_id: str, _session_key: str, operation) -> None:
     await operation()
 
 
+def _repos() -> MagicMock:
+    """Repos for a delivery test whose assertions are about the payload.
+
+    The ACL repo answers the actor's scope the way the real one does —
+    ``(role, unit_keys)`` for the rules in ``sharing.can_access`` — so the
+    knowledge-config step reads a scope instead of unpacking a bare mock.
+    """
+    repos = MagicMock()
+    repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
+    return repos
+
+
 def _command(**overrides: object) -> CronDeliveryCommand:
     values: dict[str, object] = {
         "cron_id": "j1",
@@ -99,7 +111,7 @@ async def test_deliver_agent_stamps_composer_on_human_message() -> None:
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=agent_manager,
-        repos=MagicMock(),
+        repos=_repos(),
     )
     await service.deliver(_command(model="openai/gpt-4o-mini", mcp_servers=("github__1",)))
 
@@ -139,7 +151,7 @@ async def test_deliver_agent_merges_default_open_when_empty() -> None:
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=agent_manager,
-        repos=MagicMock(),
+        repos=_repos(),
     )
     await service.deliver(_command(mcp_servers=()))
 
@@ -176,7 +188,7 @@ async def test_deliver_agent_explicit_mcp_overrides_defaults() -> None:
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=agent_manager,
-        repos=MagicMock(),
+        repos=_repos(),
     )
     await service.deliver(_command(mcp_servers=("picked__1",)))
 
@@ -229,7 +241,9 @@ async def test_deliver_agent_attaches_expert_knowledge_bases() -> None:
     repos.knowledge_repo.list_all.return_value = visible
     repos.user_repo.get.return_value = MagicMock(role="user")
     # The runtime scope is decided by the knowledge bases' ACL entries, not by
-    # a repo list: user 1 owns both, so both are mountable.
+    # a repo list: user 1 owns both, so both are mountable. The actor's scope is
+    # resolved through the same repo, and the entry's owner rule needs no unit.
+    repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
     repos.resource_acl_repo.list_for_type.return_value = [
         AclEntry(
             resource_type="knowledge_base",

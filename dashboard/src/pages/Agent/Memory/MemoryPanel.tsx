@@ -54,6 +54,11 @@ interface TabDef {
   fallback: string;
   icon: LucideIcon;
   showPendingBadge?: boolean;
+  /**
+   * The tab writes what it shows, so it is not offered over a memory the reader
+   * may not write — see ``readOnly``.
+   */
+  writes?: boolean;
 }
 
 const TABS: TabDef[] = [
@@ -87,6 +92,7 @@ const TABS: TabDef[] = [
     fallback: "记忆沉淀",
     showPendingBadge: true,
     icon: Inbox,
+    writes: true,
   },
   {
     key: "journal",
@@ -105,12 +111,14 @@ const TABS: TabDef[] = [
     labelKey: "memory.tabs.proactive",
     fallback: "主动关心",
     icon: Bell,
+    writes: true,
   },
   {
     key: "settings",
     labelKey: "memory.tabs.settings",
     fallback: "设置",
     icon: Settings,
+    writes: true,
   },
 ];
 
@@ -118,11 +126,19 @@ export interface MemoryPanelProps {
   agentId: string | null;
   /** Stretch tabs to fill parent height (desktop PageShell / drawer). */
   fill?: boolean;
+  /**
+   * Show the memory without offering to change it: the tabs that write are not
+   * offered (whatever they hold stays on screen), and so are the entries that
+   * would write from the tabs that remain. Defaults to false, which is every
+   * surface an expert is configured on.
+   */
+  readOnly?: boolean;
 }
 
 export default function MemoryPanel({
   agentId,
   fill = true,
+  readOnly = false,
 }: MemoryPanelProps) {
   const { t } = useTranslation();
 
@@ -208,7 +224,11 @@ export default function MemoryPanel({
       </div>
     );
 
-    return TABS.map((tab) => {
+    // A read-only panel still shows what it holds: the tabs that write are the
+    // ones nobody may use here, and leaving them out is how "no" is said.
+    const offered = readOnly ? TABS.filter((tab) => !tab.writes) : TABS;
+
+    return offered.map((tab) => {
       const showBadge = tab.showPendingBadge && pendingCount > 0;
       const label = (
         <TabLabel icon={tab.icon}>
@@ -225,9 +245,17 @@ export default function MemoryPanel({
           children = (
             <Overview
               agentId={agentId}
+              readOnly={readOnly}
               onViewConversations={() => setActiveTab("conversations")}
-              onReviewCandidates={() => setActiveTab("candidates")}
-              onOpenSettings={() => setActiveTab("settings")}
+              // ``undefined`` rather than a handler into a tab that is not
+              // offered: the panel hides the entry when it has nowhere to go,
+              // and a button whose only outcome is a refusal is not an entry.
+              onReviewCandidates={
+                readOnly ? undefined : () => setActiveTab("candidates")
+              }
+              onOpenSettings={
+                readOnly ? undefined : () => setActiveTab("settings")
+              }
             />
           );
           break;
@@ -235,7 +263,7 @@ export default function MemoryPanel({
           children = (
             <ProfileOverview
               agentId={agentId}
-              onReview={() => setActiveTab("candidates")}
+              onReview={readOnly ? undefined : () => setActiveTab("candidates")}
               onViewAll={(entityId) => {
                 setExpandEntityId(entityId);
                 setExpandKey((k) => k + 1);
@@ -275,7 +303,15 @@ export default function MemoryPanel({
 
       return { key: tab.key, label, children };
     });
-  }, [agentId, expandEntityId, expandKey, libraryView, pendingCount, t]);
+  }, [
+    agentId,
+    expandEntityId,
+    expandKey,
+    libraryView,
+    pendingCount,
+    readOnly,
+    t,
+  ]);
 
   if (!agentId) {
     return (

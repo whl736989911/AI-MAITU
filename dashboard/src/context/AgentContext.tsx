@@ -25,6 +25,13 @@ export interface OctopAgent {
   id: number;
   /** Public agent id used in API paths and ``X-Octop-Agent-Id``. */
   agent_id: string;
+  /**
+   * What this row is, from the model's own vocabulary
+   * (``utils/agentKind.ts``): ``"agent"`` for an expert, ``"feature"`` for the
+   * agent a feature runs on. Absent means an ordinary agent — it is what every
+   * row was before the column existed.
+   */
+  kind?: string | null;
   /** Owning user id (present on list responses). */
   user_id?: number | null;
   /** Resolved username for admin list view. */
@@ -55,6 +62,11 @@ export interface OctopAgent {
   knowledge_base_ids?: string[];
   /** Connectors opened by default in new chats with this expert. */
   mcp_servers?: string[];
+  /**
+   * What a conversation with this agent opens with, if anything — the greeting
+   * shown before the first message. ``null`` when none is set.
+   */
+  welcome_message?: string | null;
   /** Aggregated unread count across all sessions for this agent (current user). */
   unread_count?: number;
   /** True while BOOTSTRAP.md onboarding has not written ``.bootstrapped`` yet. */
@@ -133,6 +145,7 @@ export function projectChatAgentOption(agent: OctopAgent): {
   is_shared: boolean;
   is_owner: boolean;
   owner_username: string | null;
+  kind: string | null;
 } {
   return {
     agent_id: agent.agent_id,
@@ -143,6 +156,10 @@ export function projectChatAgentOption(agent: OctopAgent): {
     is_shared: Boolean(agent.is_shared),
     is_owner: Boolean(agent.is_owner),
     owner_username: agent.owner_username ?? null,
+    // Kept, not dropped: the pickers are handed projections, and a picker that
+    // has to tell the two kinds apart groups by what the row says it is
+    // (``utils/agentKind``) rather than by looking the row up again.
+    kind: agent.kind ?? null,
   };
 }
 

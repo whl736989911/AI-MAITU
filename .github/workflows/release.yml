@@ -1,18 +1,12 @@
 name: Release
 
-# 版本标签 v* → 测包、发 PyPI、建 GitHub Release，再级联：
-#   - Sync Main Into Develop
-#   - Build Octop FPK（复用本 Release 的 wheel；等待 docker-publish 的 GHCR 镜像）
-#
-# 与 docker-publish.yml / octop-desktop.yml 并行（由 Auto Tag 同时 dispatch，
-# 或人工 push v* tag 同时触发）。桌面产物由 Desktop Package 挂到同一 GitHub Release。
+# 版本标签 v* → 测包、构建 wheel、创建本项目 GitHub Release，再触发 main → develop 同步。
+# 不向上游占用的 octop PyPI 包名发布此分叉版本；GHCR 镜像由 docker-publish.yml 并行发布。
 
 on:
   push:
     tags:
       - "v*"
-  # Allow Auto Tag On Release Merge to cascade after a GITHUB_TOKEN tag push
-  # (token-authored pushes do not retrigger push workflows).
   workflow_dispatch:
 
 permissions:
@@ -62,26 +56,9 @@ jobs:
           name: dist
           path: dist/
 
-  publish:
-    name: Publish to PyPI
-    needs: build
-    runs-on: ubuntu-latest
-    environment: pypi
-    steps:
-      - name: Download distributions
-        uses: actions/download-artifact@v4
-        with:
-          name: dist
-          path: dist/
-
-      - name: Publish package
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          password: ${{ secrets.PYPI_API_TOKEN }}
-
   github-release:
     name: Create GitHub Release
-    needs: publish
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -115,11 +92,10 @@ jobs:
                 git log --oneline --no-decorate | head -20
               fi
               echo ""
-              echo "## Install"
+              echo "## Install from this repository"
               echo ""
-              echo '```bash'
-              echo "pip install octop==$version"
-              echo '```'
+              echo "Download the wheel from https://github.com/${GITHUB_REPOSITORY}/releases/tag/${GITHUB_REF_NAME}, or update an existing source checkout."
+              echo "Do not install the upstream octop PyPI package."
             } > .release-notes.md
           fi
           if ! grep -q '^## Downloads' .release-notes.md; then
@@ -153,18 +129,3 @@ jobs:
             --ref main \
             -f version="${{ github.ref_name }}"
 
-  # FnOS FPK：复用本 Release 的 wheel + docker-publish 的 GHCR 镜像。
-  # 与 sync-develop 并行。Dispatch 失败必须让本 workflow 变红（PyPI 已发布仍如此）。
-  trigger-fnos:
-    name: Trigger FnOS FPK build
-    needs: github-release
-    runs-on: ubuntu-latest
-    steps:
-      - name: Dispatch Build Octop FPK
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          # --ref 用版本 tag，保证 FPK 打在与 PyPI / 镜像相同的 commit 上
-          gh workflow run fnos-build-fpk.yml \
-            --repo "${{ github.repository }}" \
-            --ref "${{ github.ref_name }}"

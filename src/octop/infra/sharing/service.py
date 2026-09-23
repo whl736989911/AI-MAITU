@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
+from octop.infra.agents.kinds import feature_agent_id_for
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import now_ts
+from octop.infra.db.repos.agents import AgentRepo
 from octop.infra.db.repos.resource_acl import (
     CHANGE_APPLIED,
     CHANGE_PENDING,
@@ -61,6 +63,7 @@ class SharingService:
         self._db = db
         self._repo = ResourceAclRepo(db)
         self._users = UserRepo(db)
+        self._agents = AgentRepo(db)
 
     # ------------------------------------------------------------------
     # Change pipeline
@@ -89,7 +92,9 @@ class SharingService:
             before = AclEntry(
                 resource_type=resource_type,
                 resource_id=resource_id,
-                owner_user_id=new_entry.owner_user_id,
+                owner_user_id=self._first_owner(
+                    resource_type, resource_id, new_entry.owner_user_id
+                ),
                 visibility=VISIBILITY_PRIVATE,
                 unit_key=None,
                 version=0,
@@ -215,6 +220,29 @@ class SharingService:
     # ------------------------------------------------------------------
     # Internals
     # ------------------------------------------------------------------
+
+    def _first_owner(
+        self, resource_type: str, resource_id: str, requested: int | None
+    ) -> int | None:
+        """Who owns a resource that has no ACL row of its own yet.
+
+        Every resource the ACL can hold is given its row when it is created, so
+        this is the first-share case: the request's own owner is the answer, which
+        is how a resource with no entry at all gets its first one.
+
+        ``feature`` is the exception, and the reason this is a method. A feature's
+        entry is filed under the *feature* id while a feature *is* its agent
+        (``feat-<feature_id>``), so its owner is on that agent's row and nowhere
+        the ACL table can see. Without reading it there, whoever asked first would
+        own the entry — and because the entry decides the feature's agent, that is
+        a grant of somebody else's feature to the asker. A feature with no agent
+        row (or one whose author is gone) resolves to no owner, which only an
+        admin may then change.
+        """
+        if resource_type != "feature":
+            return requested
+        row = self._agents.get(feature_agent_id_for(resource_id))
+        return None if row is None else row.user_id
 
     def _require_resource_type(self, resource_type: str) -> None:
         if resource_type not in RESOURCE_TYPES:

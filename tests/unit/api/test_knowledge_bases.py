@@ -149,60 +149,33 @@ async def test_enabling_reindexes_documents_when_model_changes(
 
 
 @pytest.mark.asyncio
-async def test_create_base_maps_disabled_feature_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    from octop.api.routers import knowledge_bases
-
-    server = SimpleNamespace(services=_services())
-    user = SimpleNamespace(id=1, is_admin=False)
-
-    def fail(*_args: object, **_kwargs: object) -> None:
-        raise RuntimeError("knowledge feature is disabled")
-
-    monkeypatch.setattr(knowledge_bases, "assert_knowledge_usable", fail)
-
-    with pytest.raises(OctopError) as raised:
-        await knowledge_bases.create_base(
-            knowledge_bases.CreateBaseBody(name="Docs"),
-            request=_request(),
-            server=server,
-            user=user,
-        )
-
-    assert raised.value.code == ErrorCode.KNOWLEDGE_FEATURE_DISABLED
-
-
-@pytest.mark.asyncio
-async def test_create_base_uses_selected_model_when_usable(
+async def test_enterprise_space_route_returns_the_seeded_space(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The one knowledge base a deployment has, read-checked like any other.
+
+    The check is the part worth pinning: the route exists so the dashboard can
+    find the space, not so it can bypass the rule that decides who may read it.
+    """
     from octop.api.routers import knowledge_bases
 
-    created: dict[str, object] = {}
-    service = SimpleNamespace(
-        create_base=lambda **kwargs: created.update(kwargs) or _Base(),
-    )
+    space = _Base(owner_user_id=None, name="Enterprise")
+    seen: dict[str, object] = {}
+
+    def readable(kb_id: str, **kwargs: object) -> _Base:
+        seen.update({"kb_id": kb_id, **kwargs})
+        return space
+
+    service = SimpleNamespace(enterprise_space=lambda: space, get_readable_base=readable)
     server = SimpleNamespace(services=_services())
     user = SimpleNamespace(id=1, is_admin=False)
-    monkeypatch.setattr(knowledge_bases, "assert_knowledge_usable", lambda *_a, **_k: None)
     monkeypatch.setattr(knowledge_bases, "_knowledge_service", lambda _server: service)
 
-    response = await knowledge_bases.create_base(
-        knowledge_bases.CreateBaseBody(name="Docs"),
-        request=_request(),
-        server=server,
-        user=user,
-    )
+    payload = await knowledge_bases.enterprise_space(request=_request(), server=server, user=user)
 
-    assert response["id"] == "kb-1"
-    assert created == {
-        "owner_user_id": 1,
-        "name": "Docs",
-        "description": "",
-        "default_open": False,
-        "shared": False,
-        "icon_name": "",
-        "max_documents": 100,
-    }
+    assert seen == {"kb_id": "kb-1", "actor_user_id": 1, "is_admin": False}
+    assert payload["knowledge_base_id"] == "kb-1"
+    assert payload["owner_username"] is None
 
 
 @pytest.mark.asyncio
@@ -732,3 +705,53 @@ def test_map_knowledge_error_prerequisites_distinguished() -> None:
     )
     assert err_model.code == ErrorCode.KNOWLEDGE_PREREQUISITES_FAILED
     assert err_model.status == 409
+
+
+def test_map_knowledge_error_tells_a_write_refusal_from_a_read_one() -> None:
+    """④: a refusal that is about *changing* a readable base says so.
+
+    Read and edit are separate permissions (design §5.1). Mapping every
+    ``PermissionError`` to ``KNOWLEDGE_FORBIDDEN`` told an actor who was looking
+    at the base that they had no access to it, which is the one thing that was
+    demonstrably untrue of them.
+    """
+    from octop.api.routers.knowledge_bases import _map_knowledge_error
+    from octop.infra.knowledge.service import (
+        ACCESS_READ,
+        ACCESS_WRITE,
+        KnowledgeAccessDenied,
+    )
+
+    refused_write = _map_knowledge_error(
+        KnowledgeAccessDenied("knowledge base write access is required", access=ACCESS_WRITE),
+        locale="zh",
+    )
+    assert refused_write.code == ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN
+    assert refused_write.status == 403
+
+    # The owner-only refusal is a write refusal too: it is raised by the routes
+    # that change a base, never by the ones that read it.
+    refused_owner = _map_knowledge_error(
+        KnowledgeAccessDenied("knowledge base owner access is required", access=ACCESS_WRITE),
+        locale="zh",
+    )
+    assert refused_owner.code == ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN
+
+    refused_read = _map_knowledge_error(
+        KnowledgeAccessDenied("knowledge base read access is required", access=ACCESS_READ),
+        locale="zh",
+    )
+    assert refused_read.code == ErrorCode.KNOWLEDGE_FORBIDDEN
+    assert refused_read.status == 403
+
+    # Two codes, two sentences: what the client shows cannot be the same line.
+    assert refused_write.localized_message("zh") != refused_read.localized_message("zh")
+
+    # A bare ``PermissionError`` (anything that never learned the distinction)
+    # keeps the access wording rather than claiming a write was refused.
+    assert (
+        _map_knowledge_error(
+            PermissionError("knowledge base read access is required"), locale="zh"
+        ).code
+        is ErrorCode.KNOWLEDGE_FORBIDDEN
+    )

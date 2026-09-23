@@ -2,6 +2,8 @@ id: hot-topics
 version: 0.2.0
 name: 热榜
 description: 查看微博、知乎与 Hacker News 热榜，在聊天中展示可点击列表
+name_en: "Trending Topics"
+description_en: "Browse Weibo, Zhihu and Hacker News trending lists as clickable cards in chat"
 icon: "🔥"
 kind: tool
 entry: main.py

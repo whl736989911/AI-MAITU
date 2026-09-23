@@ -8,13 +8,17 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import time
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
+from octop.infra.agents.kinds import KIND_FEATURE
+from octop.infra.agents.profile import dump_id_list, parse_id_list_json
 from octop.infra.db.pool import DatabasePool
-from octop.infra.utils.ulid import new_ulid
+from octop.infra.users.permissions import CHANNEL_PERMISSION_KEYS
+from octop.infra.utils.ulid import new_short_id, new_ulid
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
 _SQL_STMT_RE = re.compile(r";\s*\n")
@@ -914,111 +918,170 @@ def _ensure_user_sso_identities_schema(db: DatabasePool) -> None:
         )
 
 
-def _ensure_feature_tasks_schema(db: DatabasePool) -> None:
-    """Create the feature task log (schema v16) when missing (clamp / repair paths)."""
-    if _table_exists(db, "feature_tasks") or not _table_exists(db, "users"):
-        return
-    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
-    with db.connect() as conn:
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS feature_tasks (
-              id TEXT PRIMARY KEY,
-              feature_id TEXT NOT NULL,
-              user_id {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              inputs TEXT NOT NULL,
-              draft TEXT,
-              final TEXT,
-              status TEXT NOT NULL,
-              error TEXT,
-              created_at {int_type} NOT NULL,
-              diff_json TEXT,
-              finalized_at {int_type},
-              agent_id TEXT,
-              injected_rule_ids TEXT
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_tasks_user_created "
-            "ON feature_tasks (user_id, created_at)"
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_tasks_feature_id "
-            "ON feature_tasks (feature_id)"
-        )
+_DROPPED_FEATURE_TABLES = (
+    "feature_step_dispatches",
+    "feature_step_edits",
+    "feature_step_runs",
+    "feature_runs",
+    "feature_cases",
+    "feature_rules",
+    "feature_tasks",
+)
+"""The deleted feature subsystem's tables (schema v16-v25), children first.
+
+Schema v26 drops them: nothing reads them any more — ``src/octop/infra/features``
+and its router are gone — and they are not a shape the rebuilt model keeps, where
+a feature *is* an agent.
+"""
+
+_DROPPED_FEATURE_TABLE_VERSIONS = frozenset({16, 19, 22, 23, 24, 25})
+"""Versions whose only DDL built those tables (see ``_apply_sqlite_migration``)."""
+
+_DEFAULT_AGENT_KIND = "agent"
+"""What ``agents.kind`` reads as on a row that is nobody's feature."""
 
 
-def _ensure_feature_learning_schema(db: DatabasePool) -> None:
-    """Add the capture columns (schema v19) and create the case/rule tables.
+def _ensure_agent_kind_column(db: DatabasePool) -> None:
+    """Add ``agents.kind`` (schema v26) and mark the rows it was introduced for.
 
-    Runs on every boot, like the v18 helper: databases whose watermark skipped
-    19 — a clamp, or a build that stamped the version without the DDL — still
-    get the columns and tables the self-improvement loop writes to.
+    The backfill runs in the one moment the column is added, which is what makes
+    it a historical fact rather than a rule. Before v26 an app-owned agent
+    (``user_id IS NULL``) could only ever be a feature's own — the feature
+    subsystem was the only creation path that left the owner NULL — and its
+    memory was frozen on exactly that ownership. Marking those rows keeps every
+    one of them behaving as it did; re-running the UPDATE on a later boot would
+    relabel an app-owned row created afterwards.
     """
+    if not _table_exists(db, "agents") or "kind" in _table_columns(db, "agents"):
+        return
+    _ensure_column(db, "agents", "kind", f"TEXT NOT NULL DEFAULT '{_DEFAULT_AGENT_KIND}'")
+    with db.connect() as conn:
+        conn.execute(f"UPDATE agents SET kind = '{KIND_FEATURE}' WHERE user_id IS NULL")
+
+
+#: Module keys schema v30 hands to every existing non-admin account.
+#:
+#: ``mbti`` / ``experts`` / ``features`` were reachable by every signed-in account
+#: before they were catalogued: the catalog is what turns them into grantable
+#: keys, and a key nobody holds is a module that disappears the moment a route
+#: starts checking it (design §6: 新增权限没有历史数据时，按升级前行为进行安全回填).
+#: Naming them here, instead of deriving them from today's catalog, is what keeps
+#: this a historical record — a key added later gets its own migration rather than
+#: appearing retroactively in this one.
+_BACKFILLED_MODULE_KEYS = ("experts", "features", "mbti")
+
+
+def _parse_backfill_keys(raw: object) -> list[str] | None:
+    """Permission keys out of a JSON column; ``None`` when it is not JSON at all.
+
+    The two dialects hand the column back differently (``TEXT`` / ``JSONB``, and
+    a driver may have decoded it already), so every shape is accepted. A value
+    that parses as nothing is *not* an empty list: the row was hand-edited, and
+    rewriting it would erase what it says instead of backfilling it.
+    """
+    if raw is None:
+        return []
+    if isinstance(raw, (list, tuple)):
+        return [str(v) for v in raw]
+    try:
+        parsed = json.loads(str(raw))
+    except ValueError:
+        return None
+    return [str(v) for v in parsed] if isinstance(parsed, list) else None
+
+
+def _backfill_new_module_permissions(db: DatabasePool) -> None:
+    """Grant the newly catalogued module keys to existing accounts (schema v30).
+
+    Two historical equivalences are preserved, and nothing else is touched:
+
+    * an account could always reach MBTI, the expert catalog and the feature
+      pages, so it is granted those keys explicitly (design §6: 已有用户的显式权限
+      不直接清空);
+    * channel *types* were gated by ``channels`` alone, so every holder of that
+      key gains every ``channel_<kind>`` this build knows, and so does every
+      department whose grant set carries ``channels`` — that is what its members
+      were using.
+
+    Deliberately unchanged:
+
+    * ``acp`` — before the catalog its entry was gated on the ``admin`` role, and
+      a system administrator needs no stored key;
+    * keys an account already denies — a deny is an explicit decision, and
+      writing a grant underneath it would report a permission the account does
+      not have;
+    * system administrators, which are skipped entirely: their access is the
+      catalog-wide bypass, so a stored key would be dead data that outlived a
+      later demotion.
+
+    Runs for both dialects (the SQLite and PostgreSQL watermarks each call it)
+    so the two grant exactly the same keys, and its own migration watermark is
+    what keeps it once-only: re-running it would hand back a key an administrator
+    had revoked in the meantime.
+    """
+    channel_keys = list(CHANNEL_PERMISSION_KEYS)
     if not _table_exists(db, "users"):
         return
-    # Creates ``feature_tasks`` (already carrying the v19 capture and v22
-    # run-snapshot columns) on the clamp/repair paths that never ran 016.
-    _ensure_feature_tasks_schema(db)
-    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
-    if _table_exists(db, "feature_tasks"):
-        _ensure_column(db, "feature_tasks", "diff_json", "TEXT")
-        _ensure_column(db, "feature_tasks", "finalized_at", int_type)
-    with db.connect() as conn:
-        # A promoted case is a *reference* to the task: inputs/final stay in
-        # feature_tasks so the two copies cannot drift.
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS feature_cases (
-              task_id     TEXT PRIMARY KEY REFERENCES feature_tasks(id) ON DELETE CASCADE,
-              feature_id  TEXT NOT NULL,
-              promoted_by {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-              promoted_at {int_type} NOT NULL,
-              note        TEXT
+    with db.transaction() as conn:
+        rows = conn.execute(
+            "SELECT id, role, permissions, denied_permissions FROM users"
+        ).fetchall()
+        for row in rows:
+            if str(row["role"]) == "admin":
+                continue
+            permissions = _parse_backfill_keys(row["permissions"])
+            if permissions is None:
+                continue
+            denied = _parse_backfill_keys(row["denied_permissions"]) or []
+            wanted = list(_BACKFILLED_MODULE_KEYS)
+            if "channels" in permissions and "channels" not in denied:
+                # A denied ``channels`` means the account has no channel access
+                # at all — the deny outranks the grant — so its type keys would
+                # be keys for a surface it cannot open.
+                wanted += channel_keys
+            missing = [key for key in wanted if key not in permissions and key not in denied]
+            if not missing:
+                continue
+            conn.execute(
+                "UPDATE users SET permissions = ? WHERE id = ?",
+                (json.dumps(permissions + missing, ensure_ascii=False), int(row["id"])),
             )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_cases_feature "
-            "ON feature_cases (feature_id, promoted_at)"
-        )
-        # Rules are per-feature: the quote-draft rules must not reach meeting
-        # notes. ``source_task_ids`` is required so every rule can be traced
-        # back to the diffs it was induced from; injection filters on
-        # (feature_id, status).
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS feature_rules (
-              id              TEXT PRIMARY KEY,
-              feature_id      TEXT NOT NULL,
-              rule_text       TEXT NOT NULL,
-              status          TEXT NOT NULL,
-              source_task_ids TEXT NOT NULL,
-              proposed_by     TEXT NOT NULL,
-              approved_by     {int_type} REFERENCES users(id) ON DELETE SET NULL,
-              created_at      {int_type} NOT NULL,
-              reviewed_at     {int_type}
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_feature_rules_feature_status "
-            "ON feature_rules (feature_id, status, created_at)"
-        )
+
+        if not _table_exists(db, "org_unit_permissions"):
+            return
+        granted_units = conn.execute(
+            "SELECT unit_key FROM org_unit_permissions WHERE permission_key = 'channels'"
+        ).fetchall()
+        for unit_row in granted_units:
+            unit_key = str(unit_row["unit_key"])
+            have = {
+                str(existing["permission_key"])
+                for existing in conn.execute(
+                    "SELECT permission_key FROM org_unit_permissions WHERE unit_key = ?",
+                    (unit_key,),
+                ).fetchall()
+            }
+            for key in channel_keys:
+                if key in have:
+                    continue
+                conn.execute(
+                    "INSERT INTO org_unit_permissions(unit_key, permission_key) VALUES (?, ?)",
+                    (unit_key, key),
+                )
 
 
-def _ensure_feature_task_snapshot_schema(db: DatabasePool) -> None:
-    """Add the run-snapshot columns (schema v22) to ``feature_tasks``.
+def _drop_feature_tables(db: DatabasePool) -> None:
+    """Drop the deleted feature subsystem's tables (schema v26).
 
-    Runs on every boot, like the v18/v19/v20 helpers: databases whose watermark
-    skipped 22 — a clamp, or a build that stamped the version without the DDL —
-    still get the columns the run log writes on both outcomes.
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers: a
+    database whose watermark skipped 26 must not keep tables nothing reads.
+    Children first, so no dialect needs ``CASCADE`` to resolve the references.
     """
-    if not _table_exists(db, "feature_tasks"):
-        return
-    _ensure_column(db, "feature_tasks", "agent_id", "TEXT")
-    _ensure_column(db, "feature_tasks", "injected_rule_ids", "TEXT")
+    for table in _DROPPED_FEATURE_TABLES:
+        if not _table_exists(db, table):
+            continue
+        with db.connect() as conn:
+            conn.execute(f"DROP TABLE {table}")
 
 
 def _ensure_data_sources_schema(db: DatabasePool) -> None:
@@ -1055,6 +1118,627 @@ def _ensure_data_sources_schema(db: DatabasePool) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_data_sources_kb "
             "ON data_sources (knowledge_base_id, name)"
+        )
+
+
+_ENTERPRISE_SPACE_NAME = "企业知识库"
+"""Display name seeded for the enterprise knowledge space.
+
+The dashboard renders a localized label for the singleton, so this is what an
+API consumer sees rather than the copy a reader does. Seeding never updates an
+existing row, so an administrator who renames the space keeps the new name.
+"""
+
+_KNOWLEDGE_BASES_V27_DDL = """
+CREATE TABLE knowledge_bases (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  knowledge_base_id TEXT NOT NULL UNIQUE,
+  owner_user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  name              TEXT NOT NULL,
+  description       TEXT NOT NULL DEFAULT '',
+  default_open      INTEGER NOT NULL DEFAULT 0,
+  icon_name         TEXT NOT NULL DEFAULT '',
+  embedding_model   TEXT NOT NULL DEFAULT '',
+  embedding_dim     INTEGER NOT NULL DEFAULT 0,
+  doc_count         INTEGER NOT NULL DEFAULT 0,
+  created_at        INTEGER NOT NULL,
+  updated_at        INTEGER NOT NULL,
+  max_documents     INTEGER NOT NULL DEFAULT 100,
+  is_enterprise     INTEGER NOT NULL DEFAULT 0
+)
+"""
+"""``knowledge_bases`` as v27 declares it: nullable owner, plus the flag."""
+
+_KNOWLEDGE_BASES_V27_COLUMNS = (
+    "id",
+    "knowledge_base_id",
+    "owner_user_id",
+    "name",
+    "description",
+    "default_open",
+    "icon_name",
+    "embedding_model",
+    "embedding_dim",
+    "doc_count",
+    "created_at",
+    "updated_at",
+    "max_documents",
+)
+
+_KNOWLEDGE_BASES_V27_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_knowledge_bases_owner ON knowledge_bases(owner_user_id)",
+    "CREATE UNIQUE INDEX IF NOT EXISTS idx_knowledge_bases_enterprise "
+    "ON knowledge_bases(is_enterprise) WHERE is_enterprise = 1",
+)
+
+
+def _ensure_enterprise_knowledge_space(db: DatabasePool) -> None:
+    """Make ``knowledge_bases`` the deployment's one enterprise space (v27).
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers: a
+    database whose watermark skipped 27 still has to end up with a nullable
+    owner, the ``is_enterprise`` flag and the single row phase 1 is about.
+
+    The SQLite rebuild is guarded by the flag's absence, which is exactly the
+    one boot that needs it — every later boot finds the column and goes
+    straight to the (also guarded) row seed. Rows that predate v27 keep their
+    owner and are copied across untouched, so nothing about an existing
+    knowledge base's reach changes here.
+    """
+    if not _table_exists(db, "knowledge_bases"):
+        return
+    if db.dialect == "postgresql":
+        with db.connect() as conn:
+            conn.execute("ALTER TABLE knowledge_bases ALTER COLUMN owner_user_id DROP NOT NULL")
+        _ensure_column(db, "knowledge_bases", "is_enterprise", "INTEGER NOT NULL DEFAULT 0")
+    elif "is_enterprise" not in _table_columns(db, "knowledge_bases"):
+        _rebuild_sqlite_table(
+            db,
+            "knowledge_bases",
+            ddl=_KNOWLEDGE_BASES_V27_DDL,
+            columns=_KNOWLEDGE_BASES_V27_COLUMNS,
+            indexes=_KNOWLEDGE_BASES_V27_INDEXES,
+        )
+    # Unconditionally, on both dialects and both branches: a rebuild of this
+    # table recreates it without its indexes, so the one that says "at most one
+    # enterprise space" would otherwise be lost on the boot that rebuilt it.
+    with db.connect() as conn:
+        for statement in _KNOWLEDGE_BASES_V27_INDEXES:
+            conn.execute(statement)
+    _seed_enterprise_knowledge_space(db)
+
+
+def _seed_enterprise_knowledge_space(db: DatabasePool) -> None:
+    """Insert the enterprise space row and its ACL row, each when missing.
+
+    Two independent guards, because the two can go missing independently. Every
+    table carries its own history: a database whose ``resource_acl`` tables were
+    rebuilt goes through the generic backfill, which describes every knowledge
+    base by its legacy ``shared`` flag — and the space has none, so it lands
+    there as private. Turning only the knowledge row into a guard would leave
+    that database's space readable by administrators alone.
+
+    Creating a *missing* ACL row and never overwriting a present one is what
+    keeps this from fighting the product: an administrator who narrows the
+    space through the sharing pipeline keeps the narrowing.
+
+    The ACL row matters as much as the knowledge row: access is granted by a
+    row and never by its absence. ``owner_user_id`` is NULL — system-owned — and
+    the visibility is ``public``, which is how this codebase already spells the
+    enterprise-wide audience (design §5.1). Narrowing it to folders and files is
+    what the design's phase 8 adds; until then the space is one audience.
+    """
+    if not _table_exists(db, "knowledge_bases") or not _table_exists(db, "resource_acl"):
+        return
+    ts = int(time.time())
+    with db.connect() as conn:
+        existing = conn.execute(
+            "SELECT knowledge_base_id FROM knowledge_bases WHERE is_enterprise = 1"
+        ).fetchone()
+        if existing is None:
+            kb_id = new_short_id()
+            conn.execute(
+                "INSERT INTO knowledge_bases("
+                "knowledge_base_id, owner_user_id, name, description, default_open, "
+                "icon_name, embedding_model, embedding_dim, doc_count, created_at, "
+                "updated_at, is_enterprise"
+                ") VALUES (?, NULL, ?, '', 0, '', '', 0, 0, ?, ?, 1)",
+                (kb_id, _ENTERPRISE_SPACE_NAME, ts, ts),
+            )
+        else:
+            kb_id = str(existing["knowledge_base_id"])
+        conn.execute(
+            "INSERT INTO resource_acl("
+            "resource_type, resource_id, owner_user_id, visibility, unit_key, version, updated_at"
+            ") VALUES ('knowledge_base', ?, NULL, 'public', NULL, 1, ?) "
+            "ON CONFLICT (resource_type, resource_id) DO NOTHING",
+            (kb_id, ts),
+        )
+
+
+def _merge_legacy_knowledge_bases(db: DatabasePool) -> None:
+    """Fold every legacy user knowledge base into the enterprise space (v35).
+
+    design §13: the deployment has one logical knowledge base, so a base that
+    predates the space does not survive as a second one. Its documents move into
+    the space, their files move with them, its data sources come along, and the
+    base's own audience is written onto each document as a file-level entry
+    *before* the base stops being the answer.
+
+    That order is the whole point. The space is readable by everyone — v27 seeds
+    it ``public`` — so a document that only some people could read has to carry
+    the narrower rule itself; skipping this step would hand out access rather
+    than migrate it, which is what design §14 forbids. A base with no ACL row is
+    the same problem in its sharpest form ("no row" means administrators only),
+    so its documents get an explicit system-owned private entry instead of
+    silently inheriting the space.
+
+    Bindings move too: an agent that named a legacy base names the space
+    afterwards, because that is where the documents it was reading went. Leaving
+    the old id behind would answer a live reference with a dead one.
+
+    Idempotent — each step is guarded on the state it creates, so reaching 35
+    twice moves nothing twice — but deliberately *not* in the every-boot repair
+    list the schema helpers live in: this one deletes rows, and that belongs to
+    the single boot that crosses this version rather than to every boot after it.
+    """
+    if not _table_exists(db, "knowledge_bases"):
+        return
+    with db.connect() as conn:
+        space = conn.execute(
+            "SELECT knowledge_base_id FROM knowledge_bases WHERE is_enterprise = 1"
+        ).fetchone()
+        legacy = [
+            str(row["knowledge_base_id"])
+            for row in conn.execute(
+                "SELECT knowledge_base_id FROM knowledge_bases WHERE is_enterprise = 0"
+            ).fetchall()
+        ]
+    if space is None or not legacy:
+        return
+    space_id = str(space["knowledge_base_id"])
+    ts = int(time.time())
+    for kb_id in legacy:
+        _carry_base_audience_onto_its_documents(db, kb_id, ts)
+        _move_base_contents(db, kb_id, space_id, ts)
+    _repoint_agent_knowledge_bindings(db, legacy, space_id)
+    _drop_emptied_legacy_bases(db, legacy)
+
+
+def _carry_base_audience_onto_its_documents(db: DatabasePool, kb_id: str, ts: int) -> None:
+    """Write *kb_id*'s audience onto every document it still holds.
+
+    A document that already wears an entry of its own keeps it: whoever wrote
+    that rule meant it, and this migration is not the place to overrule them.
+    """
+    with db.connect() as conn:
+        entry = conn.execute(
+            "SELECT owner_user_id, visibility, unit_key, version FROM resource_acl "
+            "WHERE resource_type = 'knowledge_base' AND resource_id = ?",
+            (kb_id,),
+        ).fetchone()
+        grants = conn.execute(
+            "SELECT grantee_type, grantee_id FROM resource_acl_grants "
+            "WHERE resource_type = 'knowledge_base' AND resource_id = ?",
+            (kb_id,),
+        ).fetchall()
+        documents = [
+            str(row["document_id"])
+            for row in conn.execute(
+                # ``document_id`` is the public identifier the ACL rows are
+                # keyed by; ``id`` is this table's integer primary key.
+                "SELECT document_id FROM knowledge_documents WHERE kb_id = ?",
+                (kb_id,),
+            ).fetchall()
+        ]
+        for document_id in documents:
+            present = conn.execute(
+                "SELECT 1 FROM resource_acl WHERE resource_type = 'knowledge_document' "
+                "AND resource_id = ?",
+                (document_id,),
+            ).fetchone()
+            if present is not None:
+                continue
+            if entry is None:
+                # "No row" is administrators only, and the space says otherwise:
+                # the narrower rule has to be written down, not inherited.
+                conn.execute(
+                    "INSERT INTO resource_acl("
+                    "resource_type, resource_id, owner_user_id, visibility, unit_key, "
+                    "version, updated_at"
+                    ") VALUES ('knowledge_document', ?, NULL, 'private', NULL, 1, ?) "
+                    "ON CONFLICT (resource_type, resource_id) DO NOTHING",
+                    (document_id, ts),
+                )
+                continue
+            conn.execute(
+                "INSERT INTO resource_acl("
+                "resource_type, resource_id, owner_user_id, visibility, unit_key, "
+                "version, updated_at"
+                ") VALUES ('knowledge_document', ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (resource_type, resource_id) DO NOTHING",
+                (
+                    document_id,
+                    entry["owner_user_id"],
+                    entry["visibility"],
+                    entry["unit_key"],
+                    int(entry["version"]),
+                    ts,
+                ),
+            )
+            for grant in grants:
+                conn.execute(
+                    "INSERT INTO resource_acl_grants("
+                    "resource_type, resource_id, grantee_type, grantee_id"
+                    ") VALUES ('knowledge_document', ?, ?, ?) ON CONFLICT DO NOTHING",
+                    (document_id, grant["grantee_type"], grant["grantee_id"]),
+                )
+
+
+def _move_base_contents(db: DatabasePool, kb_id: str, space_id: str, ts: int) -> None:
+    """Move *kb_id*'s documents, their files, and its data sources into the space.
+
+    The stored path is derived from the base a document belongs to, so the bytes
+    have to follow the row: a row that moved without its file would be a document
+    the space lists and cannot open.
+    """
+    from octop.infra.knowledge.files import (
+        delete_knowledge_base_files,
+        document_path,
+        documents_dir,
+    )
+    from octop.infra.knowledge.index import KnowledgeIndex
+
+    with db.connect() as conn:
+        documents = conn.execute(
+            # ``document_id``, not ``id``: the stored file is named after the
+            # public identifier (:func:`document_path`).
+            "SELECT document_id, filename FROM knowledge_documents WHERE kb_id = ?",
+            (kb_id,),
+        ).fetchall()
+        conn.execute(
+            "UPDATE knowledge_documents SET kb_id = ?, updated_at = ? WHERE kb_id = ?",
+            (space_id, ts, kb_id),
+        )
+        conn.execute(
+            "UPDATE data_sources SET knowledge_base_id = ? WHERE knowledge_base_id = ?",
+            (space_id, kb_id),
+        )
+    # The chunks live in a per-base sidecar file (``<base>/index.sqlite``), so
+    # they have to move too: a document whose row moved but whose chunks did not
+    # is a document the space lists and cannot find.
+    source_index = KnowledgeIndex(kb_id)
+    target_index = KnowledgeIndex(space_id)
+    for row in documents:
+        document_id = str(row["document_id"])
+        chunks = source_index.doc_chunks(document_id)
+        if chunks:
+            target_index.replace_doc_chunks(
+                document_id,
+                [text for text, _vector, _meta in chunks],
+                [vector for _text, vector, _meta in chunks],
+                metadata=[meta for _text, _vector, meta in chunks],
+            )
+    documents_dir(space_id).mkdir(parents=True, exist_ok=True)
+    for row in documents:
+        document_id = str(row["document_id"])
+        filename = str(row["filename"])
+        source = document_path(kb_id, document_id, filename)
+        if not source.is_file():
+            # Folders keep no bytes, and a file that is already gone was moved
+            # by an earlier run of this same step.
+            continue
+        target = document_path(space_id, document_id, filename)
+        if target.exists():
+            source.unlink()
+            continue
+        shutil.move(str(source), str(target))
+    delete_knowledge_base_files(kb_id)
+
+
+def _repoint_agent_knowledge_bindings(db: DatabasePool, legacy: list[str], space_id: str) -> None:
+    """Every agent that named a legacy base names the space afterwards."""
+    with db.connect() as conn:
+        rows = conn.execute(
+            "SELECT id, knowledge_base_ids FROM agents WHERE knowledge_base_ids IS NOT NULL"
+        ).fetchall()
+        for row in rows:
+            repointed = repointed_knowledge_ids(str(row["knowledge_base_ids"]), legacy, space_id)
+            if repointed is None:
+                continue
+            conn.execute(
+                "UPDATE agents SET knowledge_base_ids = ? WHERE id = ?",
+                (repointed, row["id"]),
+            )
+
+
+def repointed_knowledge_ids(value: str, legacy: list[str], space_id: str) -> str | None:
+    """*value* with legacy base ids replaced by *space_id*, or ``None``.
+
+    ``None`` means "leave it alone": either the stored value is not the JSON
+    array this column holds everywhere else, or it names none of the legacy
+    bases. Both are complete answers — a value that names no base has nothing to
+    repoint — so neither is an error to report. Reading and writing go through
+    the same two helpers the composer uses, so a repointed list is byte-for-byte
+    what :meth:`persist_knowledge_base_ids` would have written.
+    """
+    ids = parse_id_list_json(value)
+    if ids is None:
+        return None
+    mapped = [space_id if item in legacy else item for item in ids]
+    deduped = list(dict.fromkeys(mapped))
+    if deduped == ids:
+        return None
+    return dump_id_list(deduped)
+
+
+def _drop_emptied_legacy_bases(db: DatabasePool, legacy: list[str]) -> None:
+    """Delete the bases whose contents have moved, and recount the space.
+
+    design §1 is one logical knowledge base per enterprise, and an emptied base
+    is not a second library — it is a name, a description and an ACL row for
+    documents that now live in the space. Its audience moved with them
+    (:func:`_carry_base_audience_onto_its_documents`), so the row is dropped and
+    the space's ``doc_count`` is recomputed from what it actually holds.
+    """
+    with db.connect() as conn:
+        for kb_id in legacy:
+            conn.execute(
+                "DELETE FROM resource_acl_grants "
+                "WHERE resource_type = 'knowledge_base' AND resource_id = ?",
+                (kb_id,),
+            )
+            conn.execute(
+                "DELETE FROM resource_acl "
+                "WHERE resource_type = 'knowledge_base' AND resource_id = ?",
+                (kb_id,),
+            )
+            conn.execute(
+                "DELETE FROM knowledge_bases WHERE knowledge_base_id = ? AND is_enterprise = 0",
+                (kb_id,),
+            )
+        conn.execute(
+            "UPDATE knowledge_bases SET doc_count = ("
+            "SELECT COUNT(*) FROM knowledge_documents d "
+            "WHERE d.kb_id = knowledge_bases.knowledge_base_id AND d.is_dir = 0"
+            ") WHERE is_enterprise = 1"
+        )
+
+
+def _ensure_data_sources_connection_schema(db: DatabasePool) -> None:
+    """Add the folder-source columns to ``data_sources`` (schema v27).
+
+    ``config_json`` keeps carrying the per-kind payload it always did; these
+    columns are the ones a query filters on (a connection status, a scan
+    interval) or that must never travel through JSON — the connecting user's
+    secret, which lives encrypted in ``credentials_enc`` and is only ever
+    reported as present.
+    """
+    if not _table_exists(db, "data_sources"):
+        return
+    blob_type = "BYTEA" if db.dialect == "postgresql" else "BLOB"
+    columns = (
+        ("server", "TEXT NOT NULL DEFAULT ''"),
+        ("share", "TEXT NOT NULL DEFAULT ''"),
+        ("root_path", "TEXT NOT NULL DEFAULT ''"),
+        ("username", "TEXT NOT NULL DEFAULT ''"),
+        ("credentials_enc", blob_type),
+        ("read_only", "INTEGER NOT NULL DEFAULT 1"),
+        ("include_globs", "TEXT NOT NULL DEFAULT ''"),
+        ("exclude_globs", "TEXT NOT NULL DEFAULT ''"),
+        ("scan_interval_seconds", "INTEGER NOT NULL DEFAULT 0"),
+        ("connection_status", "TEXT NOT NULL DEFAULT 'unknown'"),
+        ("connection_error", "TEXT"),
+        ("last_scan_at", "INTEGER"),
+        ("last_scan_ok_at", "INTEGER"),
+    )
+    for column, definition in columns:
+        _ensure_column(db, "data_sources", column, definition)
+
+
+_KNOWLEDGE_FILE_INDEX_COLUMNS = (
+    ("data_source_id", "TEXT REFERENCES data_sources(id) ON DELETE CASCADE"),
+    ("source_path", "TEXT NOT NULL DEFAULT ''"),
+    ("source_size", "INTEGER NOT NULL DEFAULT 0"),
+    ("source_modified_at", "INTEGER"),
+    ("obs_size", "INTEGER"),
+    ("obs_modified_at", "INTEGER"),
+    ("obs_at", "INTEGER"),
+    ("delete_pending_since", "INTEGER"),
+)
+"""What a scan adds to the file index (schema v28).
+
+``data_source_id`` cascades so a source's index dies with it; ``obs_*`` is the
+previous scan's observation, which is what makes the debounce in design §8.3
+possible — a file still being copied differs between two consecutive scans.
+"""
+
+
+def _ensure_knowledge_file_index_schema(db: DatabasePool) -> None:
+    """Give ``knowledge_documents`` the columns a scan needs (schema v28)."""
+    if not _table_exists(db, "knowledge_documents") or not _table_exists(db, "data_sources"):
+        # The foreign key below targets ``data_sources``, and a database old or
+        # partial enough to be missing it has no external source to index.
+        return
+    for column, definition in _KNOWLEDGE_FILE_INDEX_COLUMNS:
+        _ensure_column(db, "knowledge_documents", column, definition)
+    with db.connect() as conn:
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_documents_source "
+            "ON knowledge_documents (data_source_id, source_path)"
+        )
+
+
+def _ensure_knowledge_sync_runs_schema(db: DatabasePool) -> None:
+    """Create the scan's task table (schema v28).
+
+    One row per scan, with its counts and its stop reason: design §8.4 wants
+    every extraction to be a traceable task, and the per-file outcome stays on
+    the document row so a run is a summary rather than the only record.
+    """
+    if not _table_exists(db, "data_sources"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_sync_runs (
+              id             TEXT PRIMARY KEY,
+              data_source_id TEXT NOT NULL
+                             REFERENCES data_sources(id) ON DELETE CASCADE,
+              trigger        TEXT NOT NULL,
+              status         TEXT NOT NULL,
+              started_at     {int_type} NOT NULL,
+              finished_at    {int_type},
+              scanned        INTEGER NOT NULL DEFAULT 0,
+              added          INTEGER NOT NULL DEFAULT 0,
+              updated        INTEGER NOT NULL DEFAULT 0,
+              removed        INTEGER NOT NULL DEFAULT 0,
+              deferred       INTEGER NOT NULL DEFAULT 0,
+              failed         INTEGER NOT NULL DEFAULT 0,
+              error          TEXT
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_sync_runs_source "
+            "ON knowledge_sync_runs (data_source_id, started_at)"
+        )
+
+
+def _ensure_knowledge_derived_schema(db: DatabasePool) -> None:
+    """Give ``knowledge_documents`` the parsed structure it derives (schema v29).
+
+    Emptiness is meaningful: ``''`` says "this file has not been parsed since
+    the structure started being stored", which is what a re-derivation keys off.
+
+    The column holds the *structure* (design §6.2) and not the text: the chunk
+    table already holds the text, and what the text cannot express — which
+    sheet a table came from, which heading a paragraph sits under — is the
+    reason to store it at all.
+    """
+    if not _table_exists(db, "knowledge_documents"):
+        return
+    _ensure_column(db, "knowledge_documents", "derived_json", "TEXT NOT NULL DEFAULT ''")
+
+
+def _ensure_extract_templates_schema(db: DatabasePool) -> None:
+    """Create extraction templates, their versions, and their bindings (v33).
+
+    Design §7: a template is an enterprise resource, editing one writes a new
+    version rather than overwriting it, and a binding names where it applies
+    (the whole source, a folder, or one file) through its path alone.
+    """
+    if not _table_exists(db, "users") or not _table_exists(db, "data_sources"):
+        # The three tables reference both; a database old enough to be missing
+        # them has no source to bind a template to.
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_extract_templates (
+              id              TEXT PRIMARY KEY,
+              name            TEXT NOT NULL,
+              description     TEXT NOT NULL DEFAULT '',
+              status          TEXT NOT NULL DEFAULT 'active',
+              current_version INTEGER NOT NULL DEFAULT 0,
+              created_by      {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              created_at      {int_type} NOT NULL,
+              updated_at      {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_extract_template_versions (
+              id            TEXT PRIMARY KEY,
+              template_id   TEXT NOT NULL
+                            REFERENCES knowledge_extract_templates(id) ON DELETE CASCADE,
+              version       INTEGER NOT NULL,
+              fields_json   TEXT NOT NULL DEFAULT '[]',
+              instruction   TEXT NOT NULL DEFAULT '',
+              applies_to    TEXT NOT NULL DEFAULT '',
+              note          TEXT NOT NULL DEFAULT '',
+              created_by    {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              created_at    {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_extract_template_versions_unique "
+            "ON knowledge_extract_template_versions (template_id, version)"
+        )
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_extract_bindings (
+              id             TEXT PRIMARY KEY,
+              template_id    TEXT NOT NULL
+                             REFERENCES knowledge_extract_templates(id) ON DELETE CASCADE,
+              data_source_id TEXT NOT NULL
+                             REFERENCES data_sources(id) ON DELETE CASCADE,
+              path           TEXT NOT NULL DEFAULT '',
+              extension      TEXT NOT NULL DEFAULT '',
+              mime_type      TEXT NOT NULL DEFAULT '',
+              name_pattern   TEXT NOT NULL DEFAULT '',
+              match_regex    TEXT NOT NULL DEFAULT '',
+              created_by     {int_type} REFERENCES users(id) ON DELETE SET NULL,
+              created_at     {int_type} NOT NULL,
+              updated_at     {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_extract_bindings_source "
+            "ON knowledge_extract_bindings (data_source_id, path)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_extract_bindings_template "
+            "ON knowledge_extract_bindings (template_id)"
+        )
+
+
+def _ensure_extract_results_schema(db: DatabasePool) -> None:
+    """Create the table that records what a template produced (schema v34).
+
+    One row per document and template, replaced on a re-run. The unique index is
+    the point: a template applied twice to one file is not two answers, and the
+    design's "新结果成功后原子替换" (§8.3) needs one row to replace.
+    """
+    if not _table_exists(db, "knowledge_extract_templates") or not _table_exists(
+        db, "knowledge_documents"
+    ):
+        # Both are foreign keys of this table.
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_extract_results (
+              id               TEXT PRIMARY KEY,
+              document_id      TEXT NOT NULL
+                               REFERENCES knowledge_documents(document_id) ON DELETE CASCADE,
+              template_id      TEXT NOT NULL
+                               REFERENCES knowledge_extract_templates(id) ON DELETE CASCADE,
+              template_version {int_type} NOT NULL,
+              status           TEXT NOT NULL DEFAULT 'pending',
+              fields_json      TEXT NOT NULL DEFAULT '{{}}',
+              error            TEXT,
+              model            TEXT NOT NULL DEFAULT '',
+              parser_version   TEXT NOT NULL DEFAULT '',
+              content_hash     TEXT NOT NULL DEFAULT '',
+              created_at       {int_type} NOT NULL,
+              updated_at       {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_extract_results_document_template "
+            "ON knowledge_extract_results (document_id, template_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_extract_results_template "
+            "ON knowledge_extract_results (template_id, status)"
         )
 
 
@@ -1104,6 +1788,135 @@ _RESOURCE_ACL_BACKFILL_SOURCES = (
     ("connector", "connectors", "instance_id", "user_id", "shared"),
     ("knowledge_base", "knowledge_bases", "knowledge_base_id", "owner_user_id", "shared"),
 )
+
+
+def _ensure_acl_permission_level(db: DatabasePool) -> None:
+    """Add ``resource_acl.permission`` (schema v36): read | write.
+
+    The level a share carries, defaulted to ``read`` so every row that predates
+    it keeps its reach and gains nothing: ``sharing.can_write`` reads a
+    ``read`` entry as "may reach it, may not maintain it", which is what every
+    share meant before the column existed — the enterprise space's own
+    ``public`` row included.
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers, so
+    a database whose watermark skipped 36 still gets the column — and so does a
+    fresh one built by the v18 create path.
+    """
+    if not _table_exists(db, "resource_acl"):
+        return
+    _ensure_column(db, "resource_acl", "permission", "TEXT NOT NULL DEFAULT 'read'")
+
+
+def _ensure_feature_overlay_schema(db: DatabasePool) -> None:
+    """Create ``feature_user_overlays`` (schema v36) — one caller's own text.
+
+    A feature's workflow is declared once, by its author, for everybody. This table
+    is the layer above it: a caller's own wording — written by them, or summarised
+    out of their own runs — which is injected *after* the definition and says it
+    wins where the two disagree. It is keyed by ``(feature_id, user_id)`` because
+    that is what it is: one person's standing instruction on one feature, never the
+    feature's own configuration, and never visible to another caller.
+
+    ``feature_id`` is the feature's public id (the one the ACL uses), not the
+    ``feat-`` agent id: the feature is the resource, and its agent is how it is
+    reached.
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers, so a
+    database whose watermark skipped 36 — or a fresh one built by the v18 create
+    path — still gets the table.
+    """
+    if not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_user_overlays (
+              feature_id TEXT NOT NULL,
+              user_id    {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              content    TEXT NOT NULL,
+              updated_at {int_type} NOT NULL,
+              PRIMARY KEY (feature_id, user_id)
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_user_overlays_user "
+            "ON feature_user_overlays(user_id)"
+        )
+
+
+def _ensure_feature_run_schema(db: DatabasePool) -> None:
+    """Create ``feature_workflow_runs`` (schema v36) — the evidence layer.
+
+    A feature's runs are read afterwards for one reason: to answer *what was this
+    run given, and what did it run under*. The submitted values live here because
+    nothing else keeps them — the card's message text is a rendering, and the
+    definition may have been edited since — and the definition is stored as a
+    snapshot for the same reason, so an edit never rewrites what an earlier run
+    was measured against.
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers.
+    """
+    if not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_workflow_runs (
+              id         TEXT PRIMARY KEY,
+              feature_id TEXT NOT NULL,
+              agent_id   TEXT NOT NULL,
+              user_id    {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              thread_id  TEXT,
+              inputs     TEXT NOT NULL,
+              definition TEXT NOT NULL,
+              created_at {int_type} NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_workflow_runs_feature_user "
+            "ON feature_workflow_runs(feature_id, user_id, created_at)"
+        )
+
+
+def _ensure_feature_change_schema(db: DatabasePool) -> None:
+    """Create ``feature_workflow_changes`` (schema v36) — improvements and undo.
+
+    Every applied improvement is a row here, which is what makes "默认生效 + 撤销"
+    honest rather than hopeful: the change carries its own way back (each item's
+    ``before``), so undo is the same list in reverse and needs no rule that knows
+    how to reverse a particular kind of edit.
+
+    Idempotent and re-run on every boot, like the other v18+ ensure helpers.
+    """
+    if not _table_exists(db, "users"):
+        return
+    int_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS feature_workflow_changes (
+              id          TEXT PRIMARY KEY,
+              feature_id  TEXT NOT NULL,
+              user_id     {int_type} NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+              run_id      TEXT,
+              target      TEXT NOT NULL,
+              summary     TEXT NOT NULL,
+              items       TEXT NOT NULL,
+              status      TEXT NOT NULL,
+              created_at  {int_type} NOT NULL,
+              reverted_at {int_type}
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_feature_workflow_changes_feature "
+            "ON feature_workflow_changes(feature_id, created_at)"
+        )
 
 
 def _ensure_resource_acl_schema(db: DatabasePool) -> None:
@@ -1166,9 +1979,7 @@ def _ensure_resource_acl_schema(db: DatabasePool) -> None:
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_resource_acl_owner ON resource_acl (owner_user_id)"
         )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_resource_acl_unit ON resource_acl (unit_key)"
-        )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_resource_acl_unit ON resource_acl (unit_key)")
         conn.execute(
             "CREATE INDEX IF NOT EXISTS idx_resource_acl_grants_grantee "
             "ON resource_acl_grants (grantee_type, grantee_id)"
@@ -1340,7 +2151,7 @@ _LEGACY_SHARE_COLUMNS = (
         CREATE TABLE knowledge_bases (
           id                INTEGER PRIMARY KEY AUTOINCREMENT,
           knowledge_base_id TEXT NOT NULL UNIQUE,
-          owner_user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          owner_user_id     INTEGER REFERENCES users(id) ON DELETE CASCADE,
           name              TEXT NOT NULL,
           description       TEXT NOT NULL DEFAULT '',
           default_open      INTEGER NOT NULL DEFAULT 0,
@@ -1351,6 +2162,7 @@ _LEGACY_SHARE_COLUMNS = (
           created_at        INTEGER NOT NULL,
           updated_at        INTEGER NOT NULL,
           max_documents     INTEGER NOT NULL DEFAULT 100,
+          is_enterprise     INTEGER NOT NULL DEFAULT 0,
           UNIQUE(owner_user_id, name)
         )
         """,
@@ -1368,6 +2180,7 @@ _LEGACY_SHARE_COLUMNS = (
             "created_at",
             "updated_at",
             "max_documents",
+            "is_enterprise",
         ),
         ("CREATE INDEX IF NOT EXISTS idx_knowledge_bases_owner ON knowledge_bases(owner_user_id)",),
     ),
@@ -1387,6 +2200,13 @@ def _drop_legacy_share_columns(db: DatabasePool) -> None:
 
     Idempotent: a table whose flag is already gone is skipped, so a boot that
     lands between the PostgreSQL and SQLite paths converges.
+
+    The SQLite DDL is each table's *current* shape, not its v20 one, because
+    this helper is re-run on every boot rather than once: a later migration that
+    changes one of these tables is reflected in ``_LEGACY_SHARE_COLUMNS`` too.
+    ``_live_columns`` then keeps the copy to the columns the live table has, so
+    a column that migration has not added yet takes the DDL's default rather
+    than failing the INSERT.
     """
     if not _table_exists(db, "users"):
         return
@@ -1398,10 +2218,29 @@ def _drop_legacy_share_columns(db: DatabasePool) -> None:
             # ``DROP COLUMN`` takes the partial flag index with it.
             _drop_column(db, table, column)
             continue
-        _rebuild_sqlite_without_legacy_share(db, table, ddl=ddl, columns=columns, indexes=indexes)
+        _rebuild_sqlite_table(
+            db,
+            table,
+            ddl=ddl,
+            columns=_live_columns(db, table, columns),
+            indexes=indexes,
+        )
 
 
-def _rebuild_sqlite_without_legacy_share(
+def _live_columns(db: DatabasePool, table: str, columns: tuple[str, ...]) -> tuple[str, ...]:
+    """*columns* narrowed to the ones the table actually has right now.
+
+    The rebuild DDL describes each table's *current* shape, because the helper
+    that runs it is re-run on every boot rather than once — while ``columns``
+    also lists what later migrations added to the same table. Naming a column
+    the live table lacks would fail the copy instead of letting the DDL's
+    default stand, so the two lists are reconciled here.
+    """
+    live = _table_columns(db, table)
+    return tuple(name for name in columns if name in live)
+
+
+def _rebuild_sqlite_table(
     db: DatabasePool,
     table: str,
     *,
@@ -1409,7 +2248,13 @@ def _rebuild_sqlite_without_legacy_share(
     columns: tuple[str, ...],
     indexes: tuple[str, ...],
 ) -> None:
-    """Rebuild *table* from *columns*, leaving the legacy flag behind."""
+    """Rebuild *table* from *columns*, keeping the rows and dropping the rest.
+
+    SQLite cannot drop a constraint (a ``NOT NULL``) or a column that an index
+    covers, so both callers go through a rename/copy/drop cycle. Any column
+    *ddl* declares but *columns* omits is created empty, taking its declared
+    default.
+    """
     legacy = f"{table}_legacy"
     column_list = ", ".join(columns)
     with db.connect() as conn:
@@ -2045,11 +2890,12 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_knowledge_bases_schema(db)
         # SSO rebuild recreates ``users``; ensure permissions after that path.
         _ensure_column(db, "users", "permissions", "TEXT NOT NULL DEFAULT '[]'")
-        _ensure_feature_tasks_schema(db)
         _ensure_resource_acl_schema(db)
-        _ensure_feature_learning_schema(db)
+        _ensure_acl_permission_level(db)
+        _ensure_feature_overlay_schema(db)
+        _ensure_feature_run_schema(db)
+        _ensure_feature_change_schema(db)
         _ensure_data_sources_schema(db)
-        _ensure_feature_task_snapshot_schema(db)
 
 
 def _max_discovered_version(dialect: str) -> int:
@@ -2170,8 +3016,6 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     Version 14 adds per-user named policy rows.
     Version 15 adds pluggable SSO provider ``kind`` / ``extra`` and
     multi-identity ``user_sso_identities``.
-    Version 16 adds the enterprise feature task log (idempotent ``CREATE TABLE
-    IF NOT EXISTS`` file, so no helper branch is needed).
     Version 17 adds org units, unit permission grants, and the
     ``users.org_unit`` / ``users.denied_permissions`` scope columns. SQLite
     ``ALTER TABLE ADD COLUMN`` is not idempotent and ``_repair_legacy_schema``
@@ -2179,18 +3023,31 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     Version 18 adds the unified resource ACL tables and mirrors the legacy
     ``is_shared`` / ``shared`` booleans. The backfill must also reach databases
     whose watermark already passed 18, so this branch calls the ensure helper.
-    Version 19 adds the feature capture columns (``feature_tasks.diff_json`` /
-    ``finalized_at``) and the ``feature_cases`` / ``feature_rules`` tables.
-    ``ALTER TABLE ADD COLUMN`` is not idempotent, so this branch calls the
-    ensure helper instead of executing the SQL file.
     Version 20 adds ``data_sources``. The table must also reach databases whose
     watermark already passed 20, so this branch calls the ensure helper.
     Version 21 drops the three legacy global share booleans. The drop is a table
     rebuild on SQLite and runs through the ensure helper so the legacy flags are
     mirrored into ``resource_acl`` one last time first.
-    Version 22 adds the feature run snapshot (``feature_tasks.agent_id`` /
-    ``injected_rule_ids``). ``ALTER TABLE ADD COLUMN`` is not idempotent, so this
-    branch calls the ensure helper instead of executing the SQL file.
+    Versions 16-25 built the deleted feature subsystem's tables
+    (``_DROPPED_FEATURE_TABLE_VERSIONS``). They only move the watermark: v26
+    drops what they would create, and their DDL is not re-runnable.
+    Version 26 adds ``agents.kind`` — marking the app-owned rows the old model
+    froze as the feature agents they were — and drops those tables.
+    Version 27 makes ``knowledge_bases`` the single enterprise space (nullable
+    owner, ``is_enterprise``, one seeded row) and gives ``data_sources`` the
+    folder-connection columns. Both must also reach databases whose watermark
+    already passed 27, so this branch calls the ensure helpers.
+    Version 28 gives ``knowledge_documents`` the columns a file scan needs and
+    creates ``knowledge_sync_runs``. Same reason: the ensure helpers must also
+    reach databases whose watermark already passed 28.
+    Version 30 backfills the module keys this build added to the catalog
+    (``mbti`` / ``experts`` / ``features`` and the channel types), so an upgrade
+    does not take a module away from an account that could already use it.
+    Version 35 folds the legacy user knowledge bases into the enterprise space.
+    It is a *data* migration — documents, their files, their audience and the
+    agent bindings that named them — so it runs through the helper in both
+    dialects; see ``_merge_legacy_knowledge_bases`` for why the files make SQL
+    alone impossible and why running it twice changes nothing.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -2306,8 +3163,14 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
-    if version == 19:
-        _ensure_feature_learning_schema(db)
+    if version in _DROPPED_FEATURE_TABLE_VERSIONS:
+        # 16-25 built the feature tables that v26 drops again, and nothing else.
+        # Their DDL is not re-runnable here — ``ALTER TABLE ADD COLUMN`` refuses
+        # a column that is already there, which is why these versions called
+        # ensure helpers until v26 — and running it would only build tables this
+        # same boot deletes again. The watermark is the whole of what they still
+        # owe a database. PostgreSQL runs their ``.pg.sql`` files (idempotent
+        # throughout) and drops them in 026.
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
@@ -2321,8 +3184,56 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
-    if version == 22:
-        _ensure_feature_task_snapshot_schema(db)
+    if version == 26:
+        _ensure_agent_kind_column(db)
+        _drop_feature_tables(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 27:
+        _ensure_enterprise_knowledge_space(db)
+        _ensure_data_sources_connection_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 28:
+        _ensure_knowledge_file_index_schema(db)
+        _ensure_knowledge_sync_runs_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 29:
+        _ensure_knowledge_derived_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 30:
+        _backfill_new_module_permissions(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 33:
+        _ensure_extract_templates_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 34:
+        _ensure_extract_results_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 35:
+        _merge_legacy_knowledge_bases(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 36:
+        # ``036_acl_permission_level.sql`` is the readable record; SQLite boots
+        # run the helpers, each of which applies its DDL only when it is missing.
+        _ensure_acl_permission_level(db)
+        _ensure_feature_overlay_schema(db)
+        _ensure_feature_run_schema(db)
+        _ensure_feature_change_schema(db)
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
@@ -2354,6 +3265,33 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_published_experts_schema(db)
             if version == 10:
                 _ensure_knowledge_bases_schema(db)
+            if version == 27:
+                _ensure_enterprise_knowledge_space(db)
+                _ensure_data_sources_connection_schema(db)
+            if version == 28:
+                _ensure_knowledge_file_index_schema(db)
+                _ensure_knowledge_sync_runs_schema(db)
+            if version == 29:
+                _ensure_knowledge_derived_schema(db)
+            if version == 30:
+                # The pair's watermark lives in ``030_*.pg.sql``; the backfill
+                # itself is the same Python the SQLite branch runs, so both
+                # dialects grant exactly the same keys.
+                _backfill_new_module_permissions(db)
+            if version == 33:
+                _ensure_extract_templates_schema(db)
+            if version == 34:
+                _ensure_extract_results_schema(db)
+            if version == 35:
+                _merge_legacy_knowledge_bases(db)
+            if version == 36:
+                # ``036_*.pg.sql`` already ran; these keep the recorded-version
+                # path equivalent to it (a clamp or a build that stamped 36
+                # without the DDL still converges).
+                _ensure_acl_permission_level(db)
+                _ensure_feature_overlay_schema(db)
+                _ensure_feature_run_schema(db)
+                _ensure_feature_change_schema(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)
@@ -2371,7 +3309,18 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_sso_provider_kind_schema(db)
     _ensure_org_units_schema(db)
     _ensure_resource_acl_schema(db)
+    _ensure_acl_permission_level(db)
+    _ensure_feature_overlay_schema(db)
+    _ensure_feature_run_schema(db)
+    _ensure_feature_change_schema(db)
     _drop_legacy_share_columns(db)
-    _ensure_feature_learning_schema(db)
     _ensure_data_sources_schema(db)
-    _ensure_feature_task_snapshot_schema(db)
+    _ensure_agent_kind_column(db)
+    _drop_feature_tables(db)
+    _ensure_enterprise_knowledge_space(db)
+    _ensure_data_sources_connection_schema(db)
+    _ensure_knowledge_file_index_schema(db)
+    _ensure_knowledge_sync_runs_schema(db)
+    _ensure_knowledge_derived_schema(db)
+    _ensure_extract_templates_schema(db)
+    _ensure_extract_results_schema(db)

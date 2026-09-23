@@ -1,3 +1,9 @@
+// The Preview tab renders <LazyMarkdown>, i.e. a React.lazy chunk. Its first
+// import costs ~12 s in jsdom (react-markdown + shiki + mermaid module init),
+// far past waitFor's 1 s default, so every Preview assertion below timed out.
+// Importing the chunk statically here warms the module registry; the lazy
+// resolution inside the component then settles in ~0.3 s.
+import "../../../components/Markdown/index";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { TrajectoryEvent } from "../../../api/modules/trajectory";

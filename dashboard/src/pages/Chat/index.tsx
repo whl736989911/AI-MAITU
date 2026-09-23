@@ -19,7 +19,11 @@ import { useIsMobile } from "../../hooks/useIsMobile";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { userCan } from "../../utils/permissions";
 import { useChat } from "./hooks/useChat";
-import { useSessions, fetchAndSyncSessionArtifacts } from "./hooks/useSessions";
+import {
+  useSessions,
+  fetchAndSyncSessionArtifacts,
+  isPendingThread,
+} from "./hooks/useSessions";
 import * as chatStore from "./hooks/chatStore";
 import { formatRunUsage, assistantTurnsFromEnd } from "./utils/chatMessages";
 import { useChatSidebarState } from "./hooks/useChatSidebarState";
@@ -63,6 +67,7 @@ import {
   selectEnabledExperts,
   projectChatAgentOption,
 } from "../../context/AgentContext";
+import { isFeatureAgent } from "../../utils/agentKind";
 import { useLayoutMode } from "../../context/LayoutModeContext";
 import { useBrowserSessionState } from "../../hooks/useBrowserSessionState";
 import { prefetchVoiceConfig } from "../../hooks/useVoiceConfig";
@@ -80,6 +85,7 @@ import {
 import ChatSidebarPanel from "./components/ChatSidebarPanel";
 import ChatTitleBar from "./components/ChatTitleBar";
 import ChatComposerChrome from "./components/ChatComposerChrome";
+import WorkflowRunCards from "./components/WorkflowRunCards";
 import AskQuestionCard from "./components/AskQuestionCard";
 import { findPendingAsk, hasPendingHitl } from "./utils/pendingHitl";
 import { isAgentChatReady } from "../../utils/agentError";
@@ -110,12 +116,17 @@ function ChatPageInner() {
     agentId?: string;
     threadId?: string;
   }>();
+  const user = useCurrentUser();
+  // Installed plugin UIs are read from a ``plugins``-gated endpoint, so an
+  // account without the key can never render them: skip the probe rather than
+  // have it come back 403 ("a control the actor may not use is hidden, never
+  // disabled" — UsersListPanel).
   usePluginToolUis({
     agentId: routeAgentId ?? null,
     threadId: threadId ?? null,
+    enabled: userCan(user, "plugins"),
   });
   const isMobile = useIsMobile();
-  const user = useCurrentUser();
   const { layoutMode } = useLayoutMode();
   const isMinimalLayout = layoutMode === "minimal";
   const canTerminal = userCan(user, "terminal");
@@ -524,13 +535,20 @@ function ChatPageInner() {
   // Subset for the chat-side *pickers* (`@` button popover, `@` mention menu).
   // Only running experts — picking a stopped one would dispatch into an
   // unloaded harness and silently fail.
-  const chatAgentOptionsPickable = useMemo(
-    () =>
-      selectEnabledExperts(agents, null, { pinActive: false }).map(
-        projectChatAgentOption,
-      ),
-    [agents],
-  );
+  //
+  // Both kinds arrive here, and each picker draws them as two sections, so the
+  // list is handed over with each kind's rows contiguous (experts first, the
+  // order the sidebar and the features' own list use): a kind's picks are then
+  // one run under one heading rather than alternating. The experts keep the
+  // order they have always had — a caller with no feature gets this list
+  // unchanged.
+  const chatAgentOptionsPickable = useMemo(() => {
+    const pickable = selectEnabledExperts(agents, null, { pinActive: false });
+    return [
+      ...pickable.filter((agent) => !isFeatureAgent(agent)),
+      ...pickable.filter(isFeatureAgent),
+    ].map(projectChatAgentOption);
+  }, [agents]);
 
   const composerLookups = useMemo(
     () => ({
@@ -682,6 +700,8 @@ function ChatPageInner() {
     handleSelectSession,
     navigateToAgent,
     handleDeleteSession,
+    handleRenameSession,
+    handlePinSession,
   } = useChatSessionActions({
     resolvedAgentId,
     activeThreadId,
@@ -692,6 +712,8 @@ function ChatPageInner() {
     setSelectedModel,
     setHasBrowserTool,
     deleteSession,
+    renameSession,
+    pinSession,
     clearMessages,
     resetNavForAgentSwitch,
     markInitialNavDone,
@@ -754,7 +776,12 @@ function ChatPageInner() {
     [resumeHitl, activeThreadId, t],
   );
 
+  const canRecordBrowser = userCan(user, "browser");
   useEffect(() => {
+    // ``/browser/record-replay/status`` is ``browser``-gated: without the key
+    // the probe can only come back 403 and toast "no permission" over a
+    // feature this account cannot use, so it is not sent at all.
+    if (!canRecordBrowser) return;
     let cancelled = false;
     browserApi
       .recordReplayStatus()
@@ -766,11 +793,18 @@ function ChatPageInner() {
           setBrowserLastRecordingId(status.latestRecordingId);
         }
       })
-      .catch(() => undefined);
+      .catch((error: unknown) => {
+        // A failed probe leaves the recording state unknown: say so instead of
+        // reading it as "not recording" and hiding a broken recorder.
+        if (cancelled) return;
+        antMessage.error(
+          apiErrorMessage(error, t("remoteBrowser.checkFailed"), t),
+        );
+      });
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [t, canRecordBrowser]);
 
   // Regenerate: re-send the last user message before this assistant message
   const handleRegenerate = useCallback(
@@ -991,8 +1025,8 @@ function ChatPageInner() {
         handleNewChatWithAgent(agentId);
       }}
       onDeleteSession={handleDeleteSession}
-      onRenameSession={renameSession}
-      onPinSession={pinSession}
+      onRenameSession={handleRenameSession}
+      onPinSession={handlePinSession}
       onForkSession={handleForkSession}
       forkDisabled={sessionForkDisabled}
       forkDisabledHint={sessionForkDisabledHint}
@@ -1093,8 +1127,8 @@ function ChatPageInner() {
               <ChatTitleBar
                 session={activeSession}
                 title={activeSessionTitle}
-                onRename={renameSession}
-                onPin={pinSession}
+                onRename={handleRenameSession}
+                onPin={handlePinSession}
                 onFork={handleForkSession}
                 onDelete={handleDeleteSession}
                 forkDisabled={sessionForkDisabled}
@@ -1387,6 +1421,25 @@ function ChatPageInner() {
                 </div>
               </div>
             ) : null}
+            {/* A feature's declared inputs, and what its run produced. Nothing
+                renders for an expert or for a feature without a workflow. */}
+            <WorkflowRunCards
+              agentId={resolvedAgentId}
+              agentKind={activeAgent?.kind}
+              threadId={activeThreadId}
+              featureName={activeAgent?.name}
+              busy={
+                isStreaming ||
+                !agentChatReady ||
+                isPendingThread(activeThreadId ?? "") ||
+                Boolean(pendingAsk) ||
+                hasPendingHitlPause
+              }
+              isStreaming={isStreaming}
+              onRun={(text, attachments, payload) =>
+                wrappedHandleSend(text, attachments, { featureRun: payload })
+              }
+            />
             <ChatInput
               ref={chatInputRef}
               onSend={wrappedHandleSend}

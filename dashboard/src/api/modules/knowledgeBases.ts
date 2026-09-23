@@ -1,7 +1,6 @@
 import { request, requestBlob, requestUpload } from "../request";
 
 export interface KnowledgeLimits {
-  max_bases_per_owner: number;
   max_docs_per_kb: number;
   max_document_bytes: number;
 }
@@ -38,13 +37,16 @@ export interface KnowledgeBase {
   id: string;
   knowledge_base_id?: string;
   pk?: number;
-  owner_user_id: number;
+  /** null for the enterprise space, which is system-owned. */
+  owner_user_id: number | null;
   owner_username?: string | null;
   owner_display_name?: string | null;
   name: string;
   description: string;
   default_open: boolean;
   shared: boolean;
+  /** The deployment's one logical knowledge base (design §1). */
+  is_enterprise: boolean;
   icon_name: string;
   embedding_model: string;
   embedding_dim: number;
@@ -64,9 +66,27 @@ export interface KnowledgeDocument {
   content_type: string;
   byte_size: number;
   content_hash: string;
-  status: "pending" | "processing" | "ready" | "failed";
+  /**
+   * Lifecycle of a knowledge document. The last three are the scan's own
+   * states and appear on files inside a data source (design §8.2): a file the
+   * scan has seen but not yet settled, a type this build cannot read, and one
+   * that is locked (design §6.1).
+   */
+  status:
+    | "pending"
+    | "processing"
+    | "ready"
+    | "failed"
+    | "discovered"
+    | "unsupported"
+    | "password_required";
   error_message: string;
   chunk_count: number;
+  /**
+   * What the document calls itself (design §6.2), from the structure the
+   * parser stored. Empty until the file has been indexed.
+   */
+  title?: string;
   created_at: number;
   updated_at: number;
   /** True when the uploaded original still exists on disk. */
@@ -108,10 +128,26 @@ export interface KnowledgeOnnxDownloadState {
 }
 
 export const DEFAULT_KNOWLEDGE_LIMITS: KnowledgeLimits = {
-  max_bases_per_owner: 20,
   max_docs_per_kb: 100,
   max_document_bytes: 100 * 1024 * 1024,
 };
+
+export interface KnowledgeSearchHit {
+  kb_id: string;
+  base_name: string;
+  document_id: string;
+  filename: string;
+  /** The document's path in the base — what a citation points at. */
+  path: string;
+  /** Where the file sits inside its source, when it came from one. */
+  source_path: string;
+  /** What the document calls itself (design §6.2), else its file name. */
+  title: string;
+  /** Which chunk of the document matched; the position half of a citation. */
+  ordinal: number;
+  snippet: string;
+  score: number;
+}
 
 export const knowledgeBasesApi = {
   getCapability: () =>
@@ -176,18 +212,13 @@ export const knowledgeBasesApi = {
 
   get: (id: string) => request<KnowledgeBase>(`/knowledge-bases/${id}`),
 
-  create: (body: {
-    name: string;
-    description?: string;
-    default_open?: boolean;
-    shared?: boolean;
-    icon_name?: string;
-    max_documents?: number;
-  }) =>
-    request<KnowledgeBase>("/knowledge-bases", {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
+  /**
+   * The deployment's one enterprise knowledge space.
+   *
+   * There is no `create` beside this on purpose: a user creating a knowledge
+   * base is the model the design replaced.
+   */
+  getEnterprise: () => request<KnowledgeBase>("/knowledge-bases/enterprise"),
 
   update: (
     id: string,
@@ -242,6 +273,8 @@ export const knowledgeBasesApi = {
       id: string;
       filename: string;
       content_type: string;
+      /** The title the parser stored, empty until the file has been indexed. */
+      title: string;
       text: string;
     }>(`/knowledge-bases/${id}/documents/${documentId}/content`),
 
@@ -282,10 +315,26 @@ export const knowledgeBasesApi = {
       { method: "POST" },
     ),
 
-  previewDocument: (id: string, documentId: string) =>
-    request<{ id: string; filename: string; text: string }>(
-      `/knowledge-bases/${id}/documents/${documentId}/preview`,
+  /** Keyword and full-text search over what this base may show (design §9). */
+  searchDocuments: (id: string, query: string, limit = 20) =>
+    request<KnowledgeSearchHit[]>(
+      `/knowledge-bases/${id}/search?${new URLSearchParams({
+        q: query,
+        limit: String(limit),
+      }).toString()}`,
     ),
+
+  previewDocument: (id: string, documentId: string) =>
+    request<{
+      id: string;
+      filename: string;
+      /** What the document calls itself (design §6.2), else its file name. */
+      title: string;
+      /** Page count when the format declares one (PDF pages, slides). */
+      pages: number | null;
+      sections: string[];
+      text: string;
+    }>(`/knowledge-bases/${id}/documents/${documentId}/preview`),
 
   /** Authenticated original-file bytes (download or preview). */
   fetchDocumentFile: (

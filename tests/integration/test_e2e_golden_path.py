@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from octop.infra.users.permissions import BASELINE_PERMISSIONS
 from tests.support.auth import bootstrap_admin
 from tests.support.http import ws_chat_turn
 
@@ -139,10 +140,19 @@ async def test_expert_to_chat_golden_path(env: Any) -> None:
     assert r.status_code == 201
 
     # 2) create user + login
+    # With the settings-group keys the dashboard's create form pre-checks: an
+    # account whose key list is left empty holds nothing at all, so this journey
+    # through ``/api/experts`` needs the ``experts`` key said out loud.
     await c.post(
         "/api/users",
         headers=admin_auth,
-        json={"username": "bob", "password": "TestPass12", "role": "user", "display_name": "Bob"},
+        json={
+            "username": "bob",
+            "password": "TestPass12",
+            "role": "user",
+            "display_name": "Bob",
+            "permissions": sorted(BASELINE_PERMISSIONS),
+        },
     )
     r = await c.post("/api/auth/login", json={"username": "bob", "password": "TestPass12"})
     bob_auth = {"Authorization": f"Bearer {r.json()['access_token']}"}

@@ -1,171 +1,268 @@
 /**
- * Feature catalog — every ``feature.json`` on disk, grouped by organization
- * unit. Cards are the entry point into the schema-driven run form.
+ * Features — the caller's own list, and what a card on it can do.
+ *
+ * A feature *is* an agent (``utils/agentKind.ts``): this page is the same grid the
+ * Experts page shows its own experts in, built from the same card
+ * (``AgentCard``), reading the same ``/agents`` list and filtering it by ``kind``.
+ * Nothing here is a second rendering of an agent — a feature that looked like
+ * anything but an agent on this page would be a claim the model does not make.
+ *
+ * What the card offers a reader is the card's own answer, which is already the
+ * matrix: its author reaches the start switch, the workspace, the reload, the edit
+ * and the catalogs, an administrator reaches them on any feature in front of them
+ * (``canManageExpert`` in ``utils/sharedExpert``, the server's own "the owner, or
+ * an administrator"), and a caller of one reaches the conversation and nothing
+ * that writes. The page adds no gate of its own, so the two cannot disagree.
+ *
+ * ── Where a feature is configured ───────────────────────────────────────────
+ * The card opens the experts' own drawer for its agent definition. Its More
+ * menu opens capability catalogs and the workflow editor, all of which can
+ * also be reached from the feature's tabs in Personalization.
  */
 
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useState,
-  type CSSProperties,
-} from "react";
-import { useNavigate } from "react-router-dom";
-import { Button, Spin } from "antd";
-import { RefreshCw } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import {
-  featuresApi,
-  type FeatureSummary,
-  type FeatureUnit,
-} from "../../api/modules/features";
-import { BRAND, brandName } from "../../brand.generated";
-import { EmptyState } from "../../components/EmptyState";
+import { Drawer, Spin, Tooltip } from "antd";
+import { LayoutGrid, Plus, RefreshCw } from "lucide-react";
+import { message } from "@/utils/antdMessage";
+
 import PageShell from "../../layouts/PageShell";
-import { apiErrorMessage } from "../../utils/apiError";
-import { normalizeUiLocale } from "../../utils/localePrefs";
-import { FeatureIcon } from "./components/FeatureIcon";
-import { localizedText } from "./components/SchemaForm";
-import styles from "./index.module.less";
+import { useAgent, type OctopAgent } from "../../context/AgentContext";
+import { isFeatureAgent } from "../../utils/agentKind";
+import { useUserRole } from "../../hooks/useUserRole";
+import { canManageExpert } from "../../utils/sharedExpert";
+import { AgentCard } from "../Experts/components/AgentCard";
+import EditAgentDrawer from "../Experts/components/EditAgentDrawer";
+import { EmptyStateIcon } from "../../components/EmptyState";
+import FeatureCreateDrawer from "./components/FeatureCreateDrawer";
+import FeatureWorkflowPanel from "./components/FeatureWorkflowPanel";
+// The experts' own grid, toolbar and empty-state styles: a feature's list is the
+// same list, so it is the same stylesheet rather than a look-alike of it.
+import styles from "../Experts/index.module.less";
 
-interface FeatureGroup {
-  key: string;
-  items: FeatureSummary[];
-}
-
-/** Group features by ``unit``, ordered by the API's unit list then first sight. */
-function groupByUnit(
-  features: FeatureSummary[],
-  units: FeatureUnit[],
-): FeatureGroup[] {
-  const byUnit = new Map<string, FeatureSummary[]>();
-  for (const feature of features) {
-    const bucket = byUnit.get(feature.unit);
-    if (bucket) bucket.push(feature);
-    else byUnit.set(feature.unit, [feature]);
-  }
-
-  const groups: FeatureGroup[] = [];
-  for (const unit of units) {
-    const items = byUnit.get(unit.key);
-    if (items) {
-      groups.push({ key: unit.key, items });
-      byUnit.delete(unit.key);
-    }
-  }
-  for (const [key, items] of byUnit) groups.push({ key, items });
-  return groups;
+/**
+ * The features in front of the caller, the ones they defined first.
+ *
+ * Order is what makes the two roles readable at a glance — "mine" is the list the
+ * page is for, and a feature somebody else defined is next to it with the card's
+ * own ``fromOwner`` tag.
+ */
+function orderFeatures(features: OctopAgent[]): OctopAgent[] {
+  return [...features].sort((a, b) => {
+    const mine = (agent: OctopAgent) => (agent.is_owner === false ? 1 : 0);
+    return mine(a) - mine(b) || a.name.localeCompare(b.name);
+  });
 }
 
 export default function FeaturesPage() {
-  const { t, i18n } = useTranslation();
-  const navigate = useNavigate();
-  const lang = normalizeUiLocale(i18n.language);
+  const { t } = useTranslation();
+  const { agents, refresh, loading } = useAgent();
+  const role = useUserRole();
 
-  const [features, setFeatures] = useState<FeatureSummary[]>([]);
-  const [units, setUnits] = useState<FeatureUnit[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const data = await featuresApi.listFeatures();
-      setFeatures(data.features ?? []);
-      setUnits(data.units ?? []);
-      setError(null);
-    } catch (err) {
-      setFeatures([]);
-      setUnits([]);
-      setError(apiErrorMessage(err, t("features.loadFailed"), t));
-    } finally {
-      setLoading(false);
-    }
-  }, [t]);
+  const features = useMemo(
+    () => orderFeatures(agents.filter(isFeatureAgent)),
+    [agents],
+  );
+  /** Local copy so start/stop and delete land without waiting for a refetch. */
+  const [localFeatures, setLocalFeatures] = useState<OctopAgent[]>(features);
+  const [refreshing, setRefreshing] = useState(false);
+  const [createOpen, setCreateOpen] = useState(false);
+  /** The feature the card's pencil was pressed on — the drawer's row, or none. */
+  const [editFeature, setEditFeature] = useState<OctopAgent | null>(null);
+  const [workflowFeature, setWorkflowFeature] = useState<OctopAgent | null>(
+    null,
+  );
 
   useEffect(() => {
-    void load();
-  }, [load]);
+    setLocalFeatures(features);
+  }, [features]);
 
-  const groups = useMemo(
-    () => groupByUnit(features, units),
-    [features, units],
+  const handleRefresh = useCallback(async () => {
+    setRefreshing(true);
+    try {
+      await refresh({ silent: true, force: true });
+    } catch (err: unknown) {
+      message.error(
+        err instanceof Error ? err.message : t("features.loadFailed"),
+      );
+    } finally {
+      setRefreshing(false);
+    }
+  }, [refresh, t]);
+
+  const handleStateChange = useCallback((agentId: string, newState: string) => {
+    setLocalFeatures((prev) =>
+      prev.map((a) => (a.agent_id === agentId ? { ...a, state: newState } : a)),
+    );
+  }, []);
+
+  const handleDeleted = useCallback(
+    (agentId: string) => {
+      setLocalFeatures((prev) => prev.filter((a) => a.agent_id !== agentId));
+      void refresh({ silent: true, force: true });
+    },
+    [refresh],
   );
+
+  const openCreate = useCallback(() => setCreateOpen(true), []);
+
+  /**
+   * What the drawer hands back is the row it wrote, so the card follows the
+   * server's copy of it without re-reading the whole list — the same handling
+   * the Experts page gives the same drawer.
+   */
+  const handleEditSaved = useCallback(
+    (
+      updated: Pick<
+        OctopAgent,
+        | "agent_id"
+        | "name"
+        | "description"
+        | "default_model"
+        | "is_shared"
+        | "color"
+        | "icon_url"
+      >,
+    ) => {
+      setEditFeature(null);
+      setLocalFeatures((prev) =>
+        prev.map((a) =>
+          a.agent_id === updated.agent_id ? { ...a, ...updated } : a,
+        ),
+      );
+    },
+    [],
+  );
+
+  const refreshButton = (
+    <Tooltip title={t("common.refresh")}>
+      <button
+        className={styles.toolbarIconBtn}
+        onClick={() => void handleRefresh()}
+        disabled={refreshing}
+        type="button"
+      >
+        <RefreshCw
+          size={14}
+          className={refreshing ? styles.spinning : undefined}
+        />
+      </button>
+    </Tooltip>
+  );
+
+  const createButton = (
+    <button className={styles.toolbarBtn} onClick={openCreate} type="button">
+      <Plus size={14} />
+      {t("features.create")}
+    </button>
+  );
+
+  const content =
+    loading && localFeatures.length === 0 ? (
+      <div className={styles.loadingState}>
+        <Spin />
+      </div>
+    ) : localFeatures.length === 0 ? (
+      <div className={styles.emptyState}>
+        <EmptyStateIcon icon={LayoutGrid} />
+        <div className={styles.emptyTitle}>{t("features.empty")}</div>
+        <div className={styles.emptyHint}>{t("features.emptyHint")}</div>
+        <div className={styles.emptyActions}>
+          {refreshButton}
+          <button
+            className={styles.emptyAction}
+            onClick={openCreate}
+            type="button"
+          >
+            {t("features.create")}
+          </button>
+        </div>
+      </div>
+    ) : (
+      <>
+        <div className={styles.gridToolbar}>
+          <span className={styles.gridCount}>
+            {t("features.total", { count: localFeatures.length })}
+          </span>
+          <div className={styles.gridToolbarRight}>
+            {refreshButton}
+            {createButton}
+          </div>
+        </div>
+        <div className={styles.cardGrid}>
+          {localFeatures.map((feature) => (
+            <AgentCard
+              key={feature.agent_id}
+              agent={feature}
+              iconName={feature.icon_name}
+              iconUrl={feature.icon_url}
+              accentColor={feature.color}
+              // The card's own id row, labelled as what it holds here: a
+              // feature's agent id, not an expert's.
+              idLabelKey="features.agentId"
+              // A feature is edited where an expert is: the experts' own drawer,
+              // opened here over the feature's row (``EditAgentDrawer``).
+              onEdit={(agentId) =>
+                setEditFeature(
+                  localFeatures.find((a) => a.agent_id === agentId) ?? null,
+                )
+              }
+              onWorkflow={(agentId) =>
+                setWorkflowFeature(
+                  localFeatures.find((a) => a.agent_id === agentId) ?? null,
+                )
+              }
+              onDeleted={handleDeleted}
+              onStateChange={handleStateChange}
+            />
+          ))}
+        </div>
+      </>
+    );
 
   return (
     <PageShell
-      title={t("features.title")}
-      subtitle={t("features.subtitle")}
-      actions={
-        <Button
-          icon={<RefreshCw size={14} />}
-          loading={loading}
-          onClick={() => void load()}
-        >
-          {t("common.refresh")}
-        </Button>
-      }
+      title={t("pageShell.features.title")}
+      subtitle={t("pageShell.features.subtitle")}
     >
-      {loading && features.length === 0 && (
-        <div className={styles.loading}>
-          <Spin />
-        </div>
-      )}
+      {content}
 
-      {!loading && error && (
-        <EmptyState
-          variant="error"
-          title={t("features.loadFailed")}
-          description={error}
-          actionLabel={t("common.refresh")}
-          onAction={() => void load()}
-        />
-      )}
+      {/* The experts' own editor, mounted at the page's level the way the Experts
+          page mounts it: the card's pencil opens it over the list. */}
+      <EditAgentDrawer
+        open={!!editFeature}
+        agent={editFeature}
+        titleKey="features.editDefinition"
+        onClose={() => setEditFeature(null)}
+        onSaved={handleEditSaved}
+      />
+      <Drawer
+        open={workflowFeature !== null}
+        title={`${workflowFeature?.name ?? ""} · ${t("features.tabWorkflow")}`}
+        width="min(960px, 100vw)"
+        onClose={() => setWorkflowFeature(null)}
+        destroyOnHidden
+      >
+        {workflowFeature && (
+          <FeatureWorkflowPanel
+            key={workflowFeature.agent_id}
+            agentId={workflowFeature.agent_id}
+            canWrite={canManageExpert(workflowFeature, role)}
+          />
+        )}
+      </Drawer>
 
-      {!loading && !error && groups.length === 0 && (
-        <EmptyState
-          title={t("features.empty")}
-          description={t("features.emptyHint", {
-            brand: brandName(i18n.language),
-          })}
-        />
-      )}
-
-      {groups.map((group) => (
-        <section className={styles.group} key={group.key}>
-          <div className={styles.groupHead}>
-            <h2 className={styles.groupTitle}>{group.key}</h2>
-            <span className={styles.groupCount}>{group.items.length}</span>
-          </div>
-          <div className={styles.grid}>
-            {group.items.map((feature) => (
-              <button
-                key={feature.id}
-                type="button"
-                className={styles.card}
-                style={
-                  {
-                    "--feature-tint": feature.color || BRAND.color.accent,
-                  } as CSSProperties
-                }
-                onClick={() => navigate(`/features/${feature.id}`)}
-              >
-                <span className={styles.cardIcon}>
-                  <FeatureIcon name={feature.icon_name} size={20} />
-                </span>
-                <span className={styles.cardBody}>
-                  <span className={styles.cardTitle}>
-                    {localizedText(feature.label, lang)}
-                  </span>
-                  <span className={styles.cardDesc}>
-                    {localizedText(feature.description, lang)}
-                  </span>
-                </span>
-              </button>
-            ))}
-          </div>
-        </section>
-      ))}
+      <FeatureCreateDrawer
+        open={createOpen}
+        onClose={() => setCreateOpen(false)}
+        // A new feature lands on this list, next to the ones already here: the
+        // drawer's own toast has named it, the refetch puts its card in the grid,
+        // and that card is where it is configured (see this file's own header).
+        onCreated={() => {
+          setCreateOpen(false);
+          void refresh({ silent: true, force: true });
+        }}
+      />
     </PageShell>
   );
 }

@@ -3,12 +3,23 @@
 from __future__ import annotations
 
 import io
+import os
+import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
 import pytest
 
-from octop.infra.knowledge.parse import parse_document
+from octop.infra.knowledge.legacy_office import (
+    LegacyConversionFailed,
+    LegacyConversionUnavailable,
+)
+from octop.infra.knowledge.parse import (
+    PasswordRequiredError,
+    failure_status,
+    parse_document,
+)
 
 _DOCX_NAMESPACES = (
     'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" '
@@ -68,8 +79,8 @@ def test_parse_plain_text_and_markdown(tmp_path: Path) -> None:
     text.write_text("plain notes", encoding="utf-8")
     markdown.write_text("# Heading\n\nbody", encoding="utf-8")
 
-    assert parse_document(text) == "plain notes"
-    assert parse_document(markdown) == "# Heading\n\nbody"
+    assert parse_document(text).text == "plain notes"
+    assert parse_document(markdown).text == "# Heading\n\nbody"
 
 
 def test_parse_pdf_docx_and_pptx(tmp_path: Path) -> None:
@@ -93,9 +104,9 @@ def test_parse_pdf_docx_and_pptx(tmp_path: Path) -> None:
     presentation.slides.add_slide(presentation.slide_layouts[0]).shapes.title.text = "Slide title"
     presentation.save(pptx)
 
-    assert parse_document(pdf) == ""
-    assert parse_document(docx) == "Word notes"
-    assert parse_document(pptx) == "Slide title"
+    assert parse_document(pdf).text == ""
+    assert parse_document(docx).text == "Word notes"
+    assert parse_document(pptx).text == "# Slide 1\nSlide title"
 
 
 def test_parse_docx_reads_tables_content_controls_and_revisions(tmp_path: Path) -> None:
@@ -109,7 +120,9 @@ def test_parse_docx_reads_tables_content_controls_and_revisions(tmp_path: Path) 
     )
     path = _docx_with_body(tmp_path / "nested.docx", body)
 
-    assert parse_document(path) == "发布说明\n\n第一章 总则\n第一条 为了规范\n第二条 本办法适用于"
+    assert (
+        parse_document(path).text == "发布说明\n\n第一章 总则\n第一条 为了规范\n第二条 本办法适用于"
+    )
 
 
 def test_parse_docx_reads_text_box_once(tmp_path: Path) -> None:
@@ -122,7 +135,7 @@ def test_parse_docx_reads_text_box_once(tmp_path: Path) -> None:
     )
     path = _docx_with_body(tmp_path / "textbox.docx", body)
 
-    assert parse_document(path) == "正文段落\n\n文本框内容"
+    assert parse_document(path).text == "正文段落\n\n文本框内容"
 
 
 def test_parse_docx_expands_html_alt_chunk(tmp_path: Path) -> None:
@@ -133,7 +146,7 @@ def test_parse_docx_expands_html_alt_chunk(tmp_path: Path) -> None:
         alt_chunk=("chunk.xhtml", "application/xhtml+xml", chunk),
     )
 
-    assert parse_document(path) == "发布说明\n第一章 总则\n第一条 为了规范"
+    assert parse_document(path).text == "发布说明\n第一章 总则\n第一条 为了规范"
 
 
 def test_parse_docx_expands_word_alt_chunk(tmp_path: Path) -> None:
@@ -144,7 +157,7 @@ def test_parse_docx_expands_word_alt_chunk(tmp_path: Path) -> None:
         alt_chunk=("chunk.docx", _DOCX_MAIN_TYPE, nested.read_bytes()),
     )
 
-    assert parse_document(path) == "发布说明\n嵌套正文"
+    assert parse_document(path).text == "发布说明\n嵌套正文"
 
 
 def test_parse_csv_xlsx_and_xls(tmp_path: Path) -> None:
@@ -182,11 +195,11 @@ def test_parse_csv_xlsx_and_xls(tmp_path: Path) -> None:
     book.save(str(xls))
 
     expected_xlsx = "# Q1\nitem\tqty\napple\t2\n\n# Q2\nitem\tqty\npear\t3"
-    assert parse_document(csv_path) == "# sales\nitem\tqty\napple\t2"
-    assert parse_document(tsv_path) == "# sales\nitem\tqty\napple\t2"
-    assert parse_document(xlsx) == expected_xlsx
-    assert parse_document(xlsm) == expected_xlsx
-    assert parse_document(xls) == "# Q1\nitem\tqty\napple\t2"
+    assert parse_document(csv_path).text == "# sales\nitem\tqty\napple\t2"
+    assert parse_document(tsv_path).text == "# sales\nitem\tqty\napple\t2"
+    assert parse_document(xlsx).text == expected_xlsx
+    assert parse_document(xlsm).text == expected_xlsx
+    assert parse_document(xls).text == "# Q1\nitem\tqty\napple\t2"
 
 
 def test_parse_html_json_and_plain_variants(tmp_path: Path) -> None:
@@ -208,12 +221,142 @@ def test_parse_html_json_and_plain_variants(tmp_path: Path) -> None:
     jsonl = tmp_path / "rows.jsonl"
     jsonl.write_text('{"a":1}\n{"b":2}\n', encoding="utf-8")
 
-    assert parse_document(html) == "Title\nHello world"
-    assert parse_document(markdown) == "# Heading\n\nbody"
-    assert parse_document(rst) == "Heading\n=======\n\nbody"
-    assert parse_document(yaml_path) == "name: octop\n"
-    assert parse_document(json_path) == '{\n  "name": "octop",\n  "ok": true\n}'
-    assert parse_document(jsonl) == '{"a":1}\n{"b":2}\n'
+    assert parse_document(html).text == "Title\nHello world"
+    assert parse_document(markdown).text == "# Heading\n\nbody"
+    assert parse_document(rst).text == "Heading\n=======\n\nbody"
+    assert parse_document(yaml_path).text == "name: octop\n"
+    assert parse_document(json_path).text == '{\n  "name": "octop",\n  "ok": true\n}'
+    assert parse_document(jsonl).text == '{"a":1}\n{"b":2}\n'
+
+
+def test_parse_markdown_reports_its_headings_as_sections(tmp_path: Path) -> None:
+    """design §6.2: ``sections`` are the document's own headings."""
+    path = tmp_path / "guide.md"
+    path.write_text(
+        "# 采购合同\n\ntext\n\n```sh\n# not a heading\n```\n\n## 付款条款\nmore\n",
+        encoding="utf-8",
+    )
+
+    parsed = parse_document(path)
+
+    assert parsed.title == "采购合同"
+    assert parsed.sections == ("采购合同", "付款条款")
+
+
+def test_parse_html_reports_the_title_and_headings(tmp_path: Path) -> None:
+    """The document's own title is a different claim from its first heading."""
+    path = tmp_path / "page.html"
+    path.write_text(
+        "<html><head><title>Refund policy</title></head>"
+        "<body><h1>Refunds</h1><p>Five days.</p><h2>Exceptions</h2></body></html>",
+        encoding="utf-8",
+    )
+
+    parsed = parse_document(path)
+
+    assert parsed.title == "Refund policy"
+    assert parsed.sections == ("Refunds", "Exceptions")
+    assert parsed.text == "Refund policy\nRefunds\nFive days.\nExceptions"
+
+
+def test_parse_docx_reports_headings_and_tables(tmp_path: Path) -> None:
+    """design §6.2: a Word table keeps its rows instead of becoming one line."""
+    from docx import Document
+
+    document = Document()
+    document.add_heading("采购合同", level=1)
+    document.add_paragraph("第一条 为了规范")
+    table = document.add_table(rows=2, cols=2)
+    table.cell(0, 0).text = "item"
+    table.cell(0, 1).text = "qty"
+    table.cell(1, 0).text = "apple"
+    table.cell(1, 1).text = "2"
+    path = tmp_path / "contract.docx"
+    document.save(path)
+
+    parsed = parse_document(path)
+
+    assert parsed.sections == ("采购合同",)
+    assert [(t.location, t.header, t.rows) for t in parsed.tables] == [
+        ("Table 1", ("item", "qty"), (("apple", "2"),))
+    ]
+    # The searchable text keeps the form it always had (a table's cell
+    # paragraphs are lines), so retrieval behaviour does not move; the row
+    # structure is what ``tables`` adds — design §6.2's "保留表头、行列关系".
+    assert parsed.text == "采购合同\n第一条 为了规范\nitem\nqty\napple\n2"
+
+
+def test_parse_xlsx_reports_one_table_per_sheet(tmp_path: Path) -> None:
+    """The sheet a table came from is design §3.3's "工作表" locator."""
+    from openpyxl import Workbook
+
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet.title = "Q1"
+    sheet.append(["item", "qty"])
+    sheet.append(["apple", 2])
+    workbook.create_sheet("Empty")
+    path = tmp_path / "sales.xlsx"
+    workbook.save(path)
+
+    parsed = parse_document(path)
+
+    assert [(t.location, t.header, t.rows) for t in parsed.tables] == [
+        ("Q1", ("item", "qty"), (("apple", "2"),))
+    ]
+    assert parsed.text == "# Q1\nitem\tqty\napple\t2"
+
+
+def test_parse_pptx_reports_slides_as_sections_and_pages(tmp_path: Path) -> None:
+    from pptx import Presentation
+
+    presentation = Presentation()
+    for title in ("Intro", "Detail"):
+        presentation.slides.add_slide(presentation.slide_layouts[0]).shapes.title.text = title
+    path = tmp_path / "deck.pptx"
+    presentation.save(path)
+
+    parsed = parse_document(path)
+
+    assert parsed.sections == ("Intro", "Detail")
+    assert parsed.pages == 2
+
+
+def test_parse_pdf_reports_its_page_count(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.add_blank_page(width=72, height=72)
+    path = tmp_path / "two.pdf"
+    with path.open("wb") as handle:
+        writer.write(handle)
+
+    assert parse_document(path).pages == 2
+
+
+def test_the_structure_names_the_source_and_not_the_staged_copy(tmp_path: Path) -> None:
+    """A scan parses a copy, so it has to be told which file this really is."""
+    staged = tmp_path / "octop-kbsrc-abc.md"
+    staged.write_text("# 采购合同\n", encoding="utf-8")
+
+    parsed = parse_document(staged, source_path="合同/采购合同.md")
+
+    assert parsed.source_path == "合同/采购合同.md"
+    assert parsed.filename == "采购合同.md"
+
+
+def test_derived_leaves_the_text_out(tmp_path: Path) -> None:
+    """The chunks hold the text; the stored structure holds what it cannot."""
+    path = tmp_path / "notes.md"
+    path.write_text("# Title\nbody\n", encoding="utf-8")
+
+    derived = parse_document(path).derived()
+
+    assert "text" not in derived
+    assert derived["title"] == "Title"
+    assert derived["sections"] == ["Title"]
 
 
 def test_parse_rejects_unsupported_extension(tmp_path: Path) -> None:
@@ -221,4 +364,202 @@ def test_parse_rejects_unsupported_extension(tmp_path: Path) -> None:
     path.write_bytes(b"not a document")
 
     with pytest.raises(ValueError, match="unsupported"):
+        parse_document(path)
+
+
+_CFB_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+"""The OLE compound-file magic: what an encrypted OOXML file starts with."""
+
+_FAKE_CONVERTER = """
+import sys
+from pathlib import Path
+
+args = sys.argv[1:]
+outdir = Path(args[args.index("--outdir") + 1])
+target = args[args.index("--convert-to") + 1]
+source = Path(args[-1])
+
+from docx import Document
+
+document = Document()
+document.add_paragraph(f"converted {source.name}")
+document.save(outdir / f"{source.stem}.{target}")
+"""
+
+_FAKE_FAILING_CONVERTER = """
+import sys
+
+sys.stderr.write("Error: source file could not be loaded\\n")
+raise SystemExit(1)
+"""
+
+
+def _fake_libreoffice(tmp_path: Path, body: str = _FAKE_CONVERTER) -> Path:
+    """A stand-in for the ``soffice`` binary, so the conversion can be tested.
+
+    It honours the arguments the module depends on (``--convert-to`` and
+    ``--outdir``) and writes a real ``.docx``, which is what exercises the
+    dispatch, the temporary directory, and the parse of the converted output on
+    a host that has no LibreOffice.
+    """
+    script = tmp_path / "fake_soffice.py"
+    script.write_text(body, encoding="utf-8")
+    if os.name == "nt":
+        launcher = tmp_path / "fake_soffice.cmd"
+        launcher.write_text(f'@echo off\r\n"{sys.executable}" "{script}" %*\r\n', encoding="utf-8")
+        return launcher
+    launcher = tmp_path / "fake_soffice"
+    launcher.write_text(f"#!{sys.executable}\n{body}", encoding="utf-8")
+    launcher.chmod(0o755)
+    return launcher
+
+
+def _add_zip_entry(path: Path, name: str, blob: bytes) -> None:
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr(name, blob)
+
+
+def test_parse_xml_keeps_field_paths(tmp_path: Path) -> None:
+    """design §6: XML yields field paths and values, not the raw markup."""
+    path = tmp_path / "order.xml"
+    path.write_text(
+        '<?xml version="1.0"?><order id="7"><item sku="A-1">Widget</item>'
+        "<note>  two   words </note></order>",
+        encoding="utf-8",
+    )
+
+    assert parse_document(path).text == (
+        "/order@id = 7\n/order/item@sku = A-1\n/order/item = Widget\n/order/note = two words"
+    )
+
+
+def test_parse_xml_falls_back_to_the_raw_text(tmp_path: Path) -> None:
+    """A file that is XML-shaped but malformed is still worth indexing."""
+    path = tmp_path / "broken.xml"
+    path.write_text("<order><item>oops", encoding="utf-8")
+
+    assert parse_document(path).text == "<order><item>oops"
+
+
+def test_parse_docx_reads_comments(tmp_path: Path) -> None:
+    """design §6 lists a DOCX's comments among what it yields."""
+    path = _docx_with_body(tmp_path / "commented.docx", _docx_paragraph("正文"))
+    _add_zip_entry(
+        path,
+        "word/comments.xml",
+        (
+            '<?xml version="1.0"?><w:comments '
+            'xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">'
+            '<w:comment w:id="1"><w:p><w:r><w:t>请复核</w:t></w:r></w:p></w:comment>'
+            "</w:comments>"
+        ).encode(),
+    )
+
+    assert parse_document(path).text == "正文\n# Comments\n请复核"
+
+
+def test_parse_pptx_reads_table_cells_and_speaker_notes(tmp_path: Path) -> None:
+    """design §6: a deck yields slide text, table cells, and notes."""
+    from pptx import Presentation
+
+    presentation = Presentation()
+    slide = presentation.slides.add_slide(presentation.slide_layouts[5])
+    slide.shapes.title.text = "Slide title"
+    table = slide.shapes.add_table(2, 2, 0, 0, 100, 100).table
+    table.cell(0, 0).text = "name"
+    table.cell(0, 1).text = "qty"
+    table.cell(1, 0).text = "apple"
+    table.cell(1, 1).text = "2"
+    slide.notes_slide.notes_text_frame.text = "speaker note"
+    path = tmp_path / "deck.pptx"
+    presentation.save(path)
+
+    assert parse_document(path).text == (
+        "# Slide 1\nSlide title\nname\tqty\napple\t2\n# Notes\nspeaker note"
+    )
+
+
+def test_parse_pptx_leaves_a_deck_without_notes_untouched(tmp_path: Path) -> None:
+    """``notes_slide`` creates the part it is asked for, so it is never asked."""
+    from pptx import Presentation
+
+    presentation = Presentation()
+    presentation.slides.add_slide(presentation.slide_layouts[0]).shapes.title.text = "Only"
+    path = tmp_path / "plain.pptx"
+    presentation.save(path)
+    with zipfile.ZipFile(path) as archive:
+        before = sorted(archive.namelist())
+
+    assert parse_document(path).text == "# Slide 1\nOnly"
+
+    with zipfile.ZipFile(path) as archive:
+        assert sorted(archive.namelist()) == before
+
+
+def test_parse_refuses_a_locked_ooxml_document(tmp_path: Path) -> None:
+    """An encrypted OOXML file is an OLE container, not a ZIP (design §6.1)."""
+    path = tmp_path / "locked.docx"
+    path.write_bytes(_CFB_MAGIC + b"\x00" * 64)
+
+    with pytest.raises(PasswordRequiredError, match="password"):
+        parse_document(path)
+
+
+def test_parse_refuses_a_locked_pdf(tmp_path: Path) -> None:
+    from pypdf import PdfWriter
+
+    path = tmp_path / "locked.pdf"
+    writer = PdfWriter()
+    writer.add_blank_page(width=72, height=72)
+    writer.encrypt("secret")
+    with path.open("wb") as output:
+        writer.write(output)
+
+    with pytest.raises(PasswordRequiredError, match="password"):
+        parse_document(path)
+
+
+def test_a_locked_file_gets_its_own_document_status() -> None:
+    """design §14 keeps a password-protected file distinguishable from a failure."""
+    assert failure_status(PasswordRequiredError("locked")) == "password_required"
+    assert failure_status(ValueError("malformed")) == "failed"
+
+
+def test_legacy_word_is_converted_and_the_original_is_left_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """design §6.1: convert in a temporary directory, never modify the source."""
+    monkeypatch.setenv("OCTOP_LIBREOFFICE_PATH", str(_fake_libreoffice(tmp_path)))
+    path = tmp_path / "old.doc"
+    path.write_bytes(_CFB_MAGIC + b"binary payload")
+    before = (path.read_bytes(), path.stat().st_mtime_ns)
+
+    assert parse_document(path).text == "converted old.doc"
+
+    assert (path.read_bytes(), path.stat().st_mtime_ns) == before
+    assert list(Path(tempfile.gettempdir()).glob("octop-legacy-*")) == []
+
+
+def test_legacy_word_without_libreoffice_says_what_to_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOP_LIBREOFFICE_PATH", str(tmp_path / "no-such-soffice"))
+    path = tmp_path / "old.doc"
+    path.write_bytes(_CFB_MAGIC)
+
+    with pytest.raises(LegacyConversionUnavailable, match="OCTOP_LIBREOFFICE_PATH points at"):
+        parse_document(path)
+
+
+def test_a_conversion_that_writes_nothing_reports_what_the_converter_said(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reason lands on the file's row, so it quotes the converter."""
+    monkeypatch.setenv(
+        "OCTOP_LIBREOFFICE_PATH", str(_fake_libreoffice(tmp_path, _FAKE_FAILING_CONVERTER))
+    )
+    path = tmp_path / "old.doc"
+    path.write_bytes(_CFB_MAGIC)
+
+    with pytest.raises(LegacyConversionFailed, match="source file could not be loaded"):
         parse_document(path)

@@ -526,6 +526,22 @@ class PluginManager:
                     details=exc.details,
                 ) from exc
 
+    def install_bundled(self, plugin_id: str) -> dict[str, Any]:
+        """Install and enable a plugin shipped in the wheel catalog.
+
+        Restores a shipped plugin the user uninstalled — seeding never re-copies
+        an id it already recorded — and enables one that is present but globally
+        off. ``force`` is limited to a half-written directory: an intact plugin
+        dir keeps whatever the user has in it. Returns the refreshed installed row.
+        """
+        from octop.infra.agents.plugins.catalog import get_catalog_plugin
+
+        entry = get_catalog_plugin(plugin_id)
+        dest = self._plugins_dir / entry.id
+        if not (dest / "plugin.yaml").is_file():
+            self.install_path(entry.source_dir, force=dest.exists())
+        return self.set_enabled(entry.id, True)
+
     def uninstall(self, plugin_id: str) -> None:
         unload_plugin(plugin_id)
         self._tool_catalog.pop(plugin_id, None)

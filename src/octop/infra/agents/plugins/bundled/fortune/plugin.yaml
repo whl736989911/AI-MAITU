@@ -2,6 +2,8 @@ id: fortune
 version: 0.2.0
 name: 抽签运势
 description: 掷骰子、今日运势与抽签，在聊天中展示结果卡片
+name_en: "Fortune Draw"
+description_en: "Roll dice, draw today's fortune and lots — shown as a result card in chat"
 icon: "🔮"
 kind: tool
 entry: main.py

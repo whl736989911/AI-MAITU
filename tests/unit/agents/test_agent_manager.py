@@ -15,6 +15,7 @@ import pytest
 from octop.config import OctopConfig
 from octop.i18n.domains.agents import NO_MODELS_CONFIGURED, format_agent_start_error
 from octop.infra.agents.experts.catalog import default_library_root
+from octop.infra.agents.kinds import KIND_AGENT, KIND_FEATURE
 from octop.infra.agents.manager import AgentManager, _memory_extract_settings
 from octop.infra.backend.resolver import default_agent_backend_spec
 from octop.infra.db.migrate import run_migrations
@@ -74,11 +75,14 @@ def _row(
     agent_id: str = "01AGENT",
     config_json: str | None = None,
     default_model: str | None = None,
+    user_id: int | None = 1,
+    kind: str = KIND_AGENT,
 ) -> AgentRow:
     return AgentRow(
         id=1,
         agent_id=agent_id,
-        user_id=1,
+        user_id=user_id,
+        kind=kind,
         name="bot",
         description=None,
         persona_mbti=None,
@@ -250,20 +254,34 @@ def test_build_harness_config_includes_search_knowledge_without_cron(
     assert any(isinstance(item, KnowledgeSearchHintMiddleware) for item in (cfg.middleware or []))
 
 
-def test_build_harness_config_mounts_the_feature_prompt_middleware(
+def test_build_harness_config_freezes_a_feature_agents_shared_files(
     manager: AgentManager,
 ) -> None:
-    """A feature run's system prompt needs this hook on every agent.
+    """A feature's one profile and memory must not absorb a caller's details."""
+    from octop.infra.agents.middleware.shared_workspace_freeze import (
+        SharedWorkspaceFreezeMiddleware,
+    )
 
-    The router stamps the prompt onto the request; without the middleware in the
-    built config nothing reads it, and every feature run silently falls back to
-    the agent's own prompt — the exact bug the stamp exists to fix.
-    """
-    from octop.infra.agents.middleware.feature_prompt import FeatureSystemPromptMiddleware
+    cfg = manager._build_harness_config(
+        _row(agent_id="feat-quote-draft", user_id=7, kind=KIND_FEATURE)
+    )
+
+    assert any(isinstance(item, SharedWorkspaceFreezeMiddleware) for item in (cfg.middleware or []))
+
+
+def test_build_harness_config_leaves_an_owned_agents_memory_alone(
+    manager: AgentManager,
+) -> None:
+    """An expert's memory is its owner's: no freeze anywhere in its chain."""
+    from octop.infra.agents.middleware.shared_workspace_freeze import (
+        SharedWorkspaceFreezeMiddleware,
+    )
 
     cfg = manager._build_harness_config(_row(agent_id="AGT001"))
 
-    assert any(isinstance(item, FeatureSystemPromptMiddleware) for item in (cfg.middleware or []))
+    assert not any(
+        isinstance(item, SharedWorkspaceFreezeMiddleware) for item in (cfg.middleware or [])
+    )
 
 
 def test_build_harness_config_defaults_local_shell_backend(manager: AgentManager) -> None:

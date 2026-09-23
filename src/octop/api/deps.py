@@ -10,7 +10,7 @@ import jwt
 from fastapi import Depends, Header, Query, Request
 
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.users.permissions import PERMISSIONS, user_has_permission
+from octop.infra.users.permissions import PERMISSIONS, unit_permissions, user_has_permission
 
 if TYPE_CHECKING:
     from octop.infra.server import OctopServer
@@ -178,18 +178,18 @@ _UNIT_GRANTS_ATTR = "octop_unit_grants"
 
 
 def unit_grants_for(server: OctopServer, user: User) -> set[str]:
-    """Module keys granted by ``user.org_unit``.
+    """Module keys granted to ``user.org_unit`` — its own grants and its parents'.
 
-    A user with no org unit gets the empty set and costs no query. A user that
-    *does* belong to a unit is resolved through the control-plane repo: an
-    unresolvable unit raises instead of silently dropping the grants, which would
-    look like permissions mysteriously disappearing.
+    A department includes its sub-departments (design §2.1), so the grants of
+    every unit above the user's own reach it too; :func:`unit_permissions` owns
+    that rule and this is only its call site. A user with no org unit gets the
+    empty set and costs no query.
     """
     unit = getattr(user, "org_unit", None)
     if not unit:
         return set()
     assert server.services is not None
-    return server.services.repos.org_unit_repo.grants_for_units([unit])
+    return unit_permissions(unit, server.services.repos.org_unit_repo)
 
 
 def request_unit_grants(request: Request, server: OctopServer, user: User) -> set[str]:
@@ -259,6 +259,41 @@ def require_permission(key: str) -> Callable[..., Awaitable[User]]:
                 ErrorCode.FORBIDDEN,
                 "permission required",
                 details={"permission": key},
+            )
+        return user
+
+    return _dep
+
+
+def require_any_permission(*keys: str) -> Callable[..., Awaitable[User]]:
+    """Dependency factory: require *one* of the module permissions ``keys``.
+
+    The any-of form of :func:`require_permission`, and the backend half of the
+    dashboard's ``userCanAny`` (``dashboard/src/utils/permissions.ts``): a page
+    can be reachable through more than one key — ``/knowledge-bases`` is
+    ``knowledge_bases`` *or* ``knowledge_settings`` — and the endpoints that
+    serve that page must accept exactly the keys that open it. Gating them on a
+    single key is what left the page rendering while its own reads answered 403.
+
+    Unknown keys fail fast at construction, like the single-key form.
+    """
+    if not keys:
+        raise RuntimeError("require_any_permission needs at least one key")
+    unknown = [key for key in keys if key not in PERMISSIONS]
+    if unknown:
+        raise RuntimeError(f"unknown permission key: {unknown[0]}")
+
+    async def _dep(
+        request: Request,
+        user: User = Depends(current_user),
+        server: Any = Depends(get_server),
+    ) -> User:
+        grants = request_unit_grants(request, server, user)
+        if not any(user_has_permission(user, key, unit_grants=grants) for key in keys):
+            raise OctopError(
+                ErrorCode.FORBIDDEN,
+                "permission required",
+                details={"permission": list(keys)},
             )
         return user
 

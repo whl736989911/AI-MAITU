@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 
 from octop.api.common.content_disposition import content_disposition
 from octop.api.common.upload_limit import read_upload_capped
-from octop.api.deps import current_user, get_server, require_permission
+from octop.api.deps import get_server, require_any_permission, require_permission
 from octop.config import DEFAULT_MAX_UPLOAD_MB, MAX_MAX_UPLOAD_MB, upload_mb_to_bytes
 from octop.infra.agents.providers.model_flags import (
     is_chat_eligible_model,
@@ -44,16 +44,23 @@ from octop.infra.knowledge.gate import (
     set_feature_enabled,
 )
 from octop.infra.knowledge.jobs import enqueue_index_document, reindex_all_documents
+from octop.infra.knowledge.legacy_office import (
+    LegacyConversionFailed,
+    LegacyConversionUnavailable,
+)
 from octop.infra.knowledge.ocr import (
     ensure_ocr_deps_async,
     get_ocr_capability,
     set_ocr_settings,
     validate_ocr_settings,
 )
+from octop.infra.knowledge.parse import PasswordRequiredError
+from octop.infra.knowledge.search import DEFAULT_SEARCH_K
 from octop.infra.knowledge.service import (
-    MAX_BASES_PER_OWNER,
+    ACCESS_WRITE,
     MAX_DOCS_PER_KB,
     MAX_DOCUMENT_BYTES,
+    KnowledgeAccessDenied,
     KnowledgeService,
 )
 from octop.infra.server import OctopServer
@@ -62,6 +69,18 @@ from octop.infra.utils.locale import resolve_request_locale
 
 router = APIRouter(prefix="/knowledge-bases")
 logger = logging.getLogger(__name__)
+
+#: Module keys that open the knowledge-base page, in the dashboard's own order.
+#: The page's route gate is the same pair (``PERM.knowledgeBasesPage``,
+#: ``dashboard/src/utils/permissions.ts``): ``knowledge_bases`` reaches the module
+#: itself and ``knowledge_settings`` reaches it as the knowledge tab of the app
+#: settings, so both render the page. Every read the page makes therefore accepts
+#: either — gating them on ``knowledge_bases`` alone is what let
+#: ``knowledge_settings`` render the page and then get 403 from the page's own
+#: list and search. Writes are narrower and keep their single key
+#: (``knowledge_bases`` for the base and its documents, ``knowledge_settings`` for
+#: the embedding/OCR settings).
+KNOWLEDGE_PAGE_KEYS = ("knowledge_bases", "knowledge_settings")
 
 _TEXT_DOC_MAX_LENGTH = upload_mb_to_bytes(MAX_MAX_UPLOAD_MB)
 
@@ -85,20 +104,6 @@ class FeatureBody(BaseModel):
 
 class OnnxDownloadBody(BaseModel):
     model: str = Field(min_length=1, description="Catalog ONNX embedding model id to download.")
-
-
-class CreateBaseBody(BaseModel):
-    name: str = Field(min_length=1, max_length=200)
-    description: str = Field(default="", max_length=2000)
-    default_open: bool = False
-    shared: bool = False
-    icon_name: str = Field(default="", max_length=64)
-    max_documents: int | None = Field(
-        default=None,
-        ge=0,
-        le=10_000,
-        description="Per-base document limit. 0 = unlimited, default 100.",
-    )
 
 
 class CreateFolderBody(BaseModel):
@@ -148,7 +153,12 @@ def _knowledge_service(server: OctopServer) -> KnowledgeService:
 
 def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any]:
     payload = asdict(row)
+    # The stored structure (design §3.4) is a cache, not an API value: shipping
+    # it raw would send every table twice — the text already carries them — so
+    # the row reports the one field of it a reader asks for.
+    payload.pop("derived_json", None)
     payload["document_id"] = row.id
+    payload["title"] = getattr(row, "title", "")
     if has_original is None:
         if getattr(row, "is_dir", False):
             has_original = False
@@ -158,7 +168,14 @@ def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any
     return payload
 
 
-def _owner_fields(server: OctopServer, owner_user_id: int) -> dict[str, str | None]:
+def _owner_fields(server: OctopServer, owner_user_id: int | None) -> dict[str, str | None]:
+    """Owner display fields; a NULL owner is the system, which has no name.
+
+    The enterprise space is system-owned (schema v27), so this is a real case
+    and not a defensive branch: ``None`` is nobody's user id.
+    """
+    if owner_user_id is None:
+        return {"owner_username": None, "owner_display_name": None}
     if server.services is None:
         return {"owner_username": None, "owner_display_name": None}
     user_repo = getattr(server.services, "user_repo", None)
@@ -224,8 +241,29 @@ def _map_knowledge_error(
         return exc
     if isinstance(exc, (LookupError, FileNotFoundError)):
         return OctopError.localized(ErrorCode.KNOWLEDGE_NOT_FOUND, locale)
+    if isinstance(exc, KnowledgeAccessDenied):
+        # Read and edit are separate permissions (design §5.1): an actor who may
+        # already open the base must not be told they have *no access* to it when
+        # what they lack is the right to change it.
+        return OctopError.localized(
+            ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN
+            if exc.access == ACCESS_WRITE
+            else ErrorCode.KNOWLEDGE_FORBIDDEN,
+            locale,
+        )
     if isinstance(exc, PermissionError):
         return OctopError.localized(ErrorCode.KNOWLEDGE_FORBIDDEN, locale)
+    # Checked before the RuntimeError text heuristics below: the conversion
+    # messages say "install", which would otherwise be read as an embedding
+    # prerequisite and tell an administrator to configure the wrong thing.
+    if isinstance(exc, PasswordRequiredError):
+        return OctopError.localized(ErrorCode.KNOWLEDGE_PASSWORD_REQUIRED, locale)
+    if isinstance(exc, (LegacyConversionUnavailable, LegacyConversionFailed)):
+        return OctopError.localized(
+            ErrorCode.KNOWLEDGE_CONVERSION_FAILED,
+            locale,
+            details={"reason": str(exc)},
+        )
     text = str(exc).lower()
     if isinstance(exc, RuntimeError):
         if "disabled" in text:
@@ -319,7 +357,6 @@ def _capability_payload(server: OctopServer) -> dict[str, Any]:
         server.services.settings_repo.get, server.services.provider_repo
     )
     payload["limits"] = {
-        "max_bases_per_owner": MAX_BASES_PER_OWNER,
         "max_docs_per_kb": MAX_DOCS_PER_KB,
         "max_document_bytes": _max_upload_bytes(server),
     }
@@ -329,7 +366,7 @@ def _capability_payload(server: OctopServer) -> dict[str, Any]:
 @router.get("/capability", summary="Get knowledge-base feature capability")
 async def capability(
     server: OctopServer = Depends(get_server),
-    _user: User = Depends(current_user),
+    _user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
     return _capability_payload(server)
 
@@ -537,41 +574,43 @@ async def test_onnx_model(
 @router.get("", summary="List visible knowledge bases")
 async def list_bases(
     server: OctopServer = Depends(get_server),
-    user: User = Depends(current_user),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> list[dict[str, Any]]:
     bases = _knowledge_service(server).list_visible_bases(actor_user_id=user.id)
     public_ids = _public_base_ids(server, [base.id for base in bases])
     return [_base_payload(server, base, public_ids=public_ids) for base in bases]
 
 
-@router.post("", status_code=status.HTTP_201_CREATED, summary="Create a knowledge base")
-async def create_base(
-    body: CreateBaseBody,
+@router.get("/enterprise", summary="Get the enterprise knowledge space")
+async def enterprise_space(
     request: Request,
     server: OctopServer = Depends(get_server),
-    user: User = Depends(require_permission("knowledge_bases")),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
-    locale = resolve_request_locale(request)
+    """The deployment's one logical knowledge base (design §1, §11).
+
+    There is no create route beside this one on purpose: a user creating a
+    knowledge base is the model the design replaced. The space is read-checked
+    like any other base, so which callers may see it stays a rule rather than a
+    property of this route.
+    """
+    service = _knowledge_service(server)
     try:
-        _require_usable(server, request)
-        base = _knowledge_service(server).create_base(
-            owner_user_id=user.id,
-            name=body.name.strip(),
-            description=body.description.strip(),
-            default_open=body.default_open,
-            shared=body.shared,
-            icon_name=body.icon_name.strip(),
-            max_documents=body.max_documents if body.max_documents is not None else MAX_DOCS_PER_KB,
+        space = service.enterprise_space()
+        return _base_payload(
+            server,
+            service.get_readable_base(space.id, actor_user_id=user.id, is_admin=_is_admin(user)),
         )
-        return _base_payload(server, base)
     except Exception as exc:
-        raise _map_knowledge_error(exc, locale=locale, server=server) from exc
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
 
 
 @router.get("/default-open", summary="List current user's default-open knowledge-base IDs")
 async def default_open_bases(
     server: OctopServer = Depends(get_server),
-    user: User = Depends(current_user),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, list[str]]:
     bases = _knowledge_service(server).list_visible_bases(actor_user_id=user.id)
     return {
@@ -588,7 +627,7 @@ async def get_base(
     kb_id: str,
     request: Request,
     server: OctopServer = Depends(get_server),
-    user: User = Depends(current_user),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
     try:
         return _base_payload(
@@ -660,7 +699,7 @@ async def list_documents(
         description="When set, only immediate children of this relative folder path.",
     ),
     server: OctopServer = Depends(get_server),
-    user: User = Depends(current_user),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> list[dict[str, Any]]:
     try:
         return [
@@ -735,7 +774,14 @@ async def create_text_document(
 async def upload_document(
     kb_id: str,
     request: Request,
-    upload: UploadFile = File(..., description="A supported text, PDF, DOCX, or PPTX document."),
+    upload: UploadFile = File(
+        ...,
+        description=(
+            "A document this build can read: text and markup (TXT, MD, RST, HTML, JSON, "
+            "XML, YAML, CSV, TSV), Office (DOC, DOCX, PPT, PPTX, XLS, XLSX), PDF, or an "
+            "image when OCR is enabled. Legacy DOC/PPT are converted by LibreOffice."
+        ),
+    ),
     path: str | None = Form(
         default=None,
         description="Optional relative path including filename (for nested folders).",
@@ -768,6 +814,42 @@ async def upload_document(
 
 
 @router.get(
+    "/{kb_id}/search",
+    summary="Search this knowledge base's indexed content",
+)
+async def search_documents(
+    kb_id: str,
+    request: Request,
+    q: str = Query(min_length=1, max_length=200, description="What to look for."),
+    limit: int = Query(
+        default=DEFAULT_SEARCH_K, ge=1, le=50, description="Maximum hits to return."
+    ),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> list[dict[str, Any]]:
+    """Keyword and full-text search (design §9), scoped to what the caller may read.
+
+    Only ``ready`` documents are searched, so a file that is still indexing, one
+    that failed, and one the caller may not open cannot come back as a result.
+    Each hit carries the document's path and the chunk's position, which is what
+    a citation points at.
+    """
+    try:
+        hits = _knowledge_service(server).search(
+            kb_id=kb_id,
+            actor_user_id=user.id,
+            query=q,
+            limit=limit,
+            is_admin=_is_admin(user),
+        )
+        return [asdict(hit) for hit in hits]
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.get(
     "/{kb_id}/documents/{doc_id}/preview",
     summary="Preview extracted document text",
 )
@@ -776,7 +858,7 @@ async def preview_document(
     doc_id: str,
     request: Request,
     server: OctopServer = Depends(get_server),
-    user: User = Depends(current_user),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
     try:
         return _knowledge_service(server).preview_document(
@@ -803,7 +885,7 @@ async def download_document_file(
         description="Content-Disposition type: attachment (download) or inline (preview).",
     ),
     server: OctopServer = Depends(get_server),
-    user: User = Depends(current_user),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> FileResponse:
     try:
         path, filename, content_type = _knowledge_service(server).resolve_document_file(
@@ -829,7 +911,7 @@ async def get_text_document(
     doc_id: str,
     request: Request,
     server: OctopServer = Depends(get_server),
-    user: User = Depends(require_permission("knowledge_bases")),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
     try:
         return _knowledge_service(server).read_text_document(

@@ -1,41 +1,31 @@
 import type { TFunction } from "i18next";
 import { Tooltip } from "antd";
-import type { OctopRole } from "../api/modules/auth";
 import { prefetchRoute } from "../routes/prefetch";
 import { COLLAPSED_WIDTH, type NavItem } from "./sidebarNav";
-import styles from "./Sidebar.module.less";
 
 export default function SidebarCollapsedIconNav({
   items,
   selectedKey,
   onNavigate,
-  role,
-  hasUpdate,
   t,
 }: {
   items: NavItem[];
   selectedKey: string;
   onNavigate: (path: string) => void;
-  role: OctopRole | null;
-  hasUpdate: boolean;
   t: TFunction<"translation", undefined>;
 }) {
   return (
     <>
       {items.map((item) => {
         const active = selectedKey === item.key;
-        const showUpdateBadge =
-          item.key === "admin-advanced" && role === "admin" && hasUpdate;
         return (
           <Tooltip
             key={item.key}
-            title={`${t(item.labelKey)}${
-              showUpdateBadge
-                ? ` (${t("nav.newVersionBadge", "有新版本")})`
-                : item.badge
-                ? ` (${item.badge})`
-                : ""
-            }`}
+            title={
+              item.badge
+                ? `${t(item.labelKey)} (${item.badge})`
+                : t(item.labelKey)
+            }
             placement="right"
             mouseEnterDelay={0.2}
           >
@@ -76,13 +66,6 @@ export default function SidebarCollapsedIconNav({
               }}
             >
               {item.icon}
-              {showUpdateBadge ? (
-                <span
-                  className={`${styles.navUpdateBadge} ${styles.navUpdateBadgeCollapsed}`}
-                >
-                  新
-                </span>
-              ) : null}
               {item.badge && (
                 <span
                   className="nav-badge-new nav-badge-new--collapsed"

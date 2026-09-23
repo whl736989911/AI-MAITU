@@ -521,6 +521,37 @@ class UserManager:
             payload=",".join(keys),
         )
 
+    async def set_denied_permissions(
+        self, username: str, denied: builtins.list[str] | None
+    ) -> None:
+        """Set the account's explicit denies (``None``/empty clears them).
+
+        A deny outranks role defaults, unit grants and stored grants, so it is
+        the one write that changes the effective set without touching any of the
+        three lists it overrides. The cached ``User`` is refreshed in the same
+        step for the same reason as ``set_org_unit``: every permission check
+        reads ``user.denied_permissions``, and a stale cache would keep serving
+        the key the operator just took away until the process restarted.
+        """
+        row = self._services.user_repo.get_by_username(username)
+        if row is None:
+            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+        try:
+            keys = validate_permission_keys(denied or [])
+        except ValueError as exc:
+            raise OctopError(ErrorCode.FORBIDDEN, str(exc), status=400) from exc
+        self._services.user_repo.set_denied_permissions(row.id, keys)
+        async with self._lock:
+            current = self._users.get(username)
+            if current is not None:
+                current.denied_permissions = list(keys)
+        self._services.audit_repo.write(
+            actor=ACTOR_ADMIN,
+            action="user.set_denied_permissions",
+            target=username,
+            payload=",".join(keys),
+        )
+
     async def set_resource_policy(
         self,
         username: str,
@@ -585,6 +616,29 @@ class UserManager:
             action="user.set_role",
             target=username,
             payload=role.value,
+        )
+
+    async def set_org_unit(self, username: str, unit_key: str | None) -> None:
+        """Bind the account to an org unit (``None`` clears the binding).
+
+        The cached ``User`` is updated in the same step: unit grants are resolved
+        from ``user.org_unit`` on every permission check, so a stale cache would
+        keep serving the previous unit's grants (or none) for the rest of the
+        process life — the editor's save would look like it did nothing.
+        """
+        row = self._services.user_repo.get_by_username(username)
+        if row is None:
+            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+        self._services.user_repo.set_org_unit(row.id, unit_key)
+        async with self._lock:
+            current = self._users.get(username)
+            if current is not None:
+                current.org_unit = unit_key
+        self._services.audit_repo.write(
+            actor=ACTOR_ADMIN,
+            action="user.set_org_unit",
+            target=username,
+            payload=unit_key or "",
         )
 
     async def set_display_name(self, username: str, display_name: str | None) -> None:

@@ -22,6 +22,7 @@ import type {
   SharingGranteeType,
   SharingGrant,
   SharingOrgUnit,
+  SharingPermission,
   SharingResourceType,
   SharingVisibility,
 } from "../../../api/modules/sharing";
@@ -31,17 +32,25 @@ import { normalizeUiLocale } from "../../../utils/localePrefs";
 import { pickLocale } from "../../../utils/localizedText";
 import {
   GRANTEE_TYPE_LABEL_KEYS,
+  PERMISSION_HINT_KEYS,
+  PERMISSION_LABEL_KEYS,
   RESOURCE_TYPE_LABEL_KEYS,
   VISIBILITY_HINT_KEYS,
   VISIBILITY_LABEL_KEYS,
 } from "../labels";
-import { ImpactScopeTag, VisibilityTag } from "./SharingTags";
+import { ImpactScopeTag, PermissionTag, VisibilityTag } from "./SharingTags";
 import styles from "../index.module.less";
 
 const { Text } = Typography;
 
-const VISIBILITIES: readonly SharingVisibility[] = ["private", "unit", "public"];
+const VISIBILITIES: readonly SharingVisibility[] = [
+  "private",
+  "unit",
+  "public",
+];
 const GRANTEE_TYPES: readonly SharingGranteeType[] = ["user", "unit", "role"];
+/** Read first: it is the default and the narrower of the two. */
+const PERMISSIONS: readonly SharingPermission[] = ["read", "write"];
 
 export interface SharingSettingsDrawerProps {
   open: boolean;
@@ -78,6 +87,7 @@ export default function SharingSettingsDrawer({
   const [saving, setSaving] = useState(false);
   const [entry, setEntry] = useState<SharingAclEntry | null>(null);
   const [visibility, setVisibility] = useState<SharingVisibility>("private");
+  const [permission, setPermission] = useState<SharingPermission>("read");
   const [unitKey, setUnitKey] = useState<string | null>(null);
   const [grants, setGrants] = useState<SharingGrant[]>([]);
   const [reason, setReason] = useState("");
@@ -98,6 +108,7 @@ export default function SharingSettingsDrawer({
         if (cancelled) return;
         setEntry(res.entry);
         setVisibility(res.entry?.visibility ?? "private");
+        setPermission(res.entry?.permission ?? "read");
         setUnitKey(res.entry?.unit_key ?? null);
         setGrants(res.entry?.grants ?? []);
         setEntryError(null);
@@ -152,6 +163,7 @@ export default function SharingSettingsDrawer({
       const outcome = await sharingApi.changeAcl(resourceType, resourceId, {
         visibility,
         unit_key: visibility === "unit" ? unitKey : null,
+        permission,
         grants: nextGrants,
         reason: reason.trim() ? reason.trim() : null,
       });
@@ -168,7 +180,9 @@ export default function SharingSettingsDrawer({
       }
       onSubmitted?.(outcome);
     } catch (error) {
-      message.error(apiErrorMessage(error, t("sharing.settings.result.failed"), t));
+      message.error(
+        apiErrorMessage(error, t("sharing.settings.result.failed"), t),
+      );
     } finally {
       setSaving(false);
     }
@@ -209,11 +223,14 @@ export default function SharingSettingsDrawer({
         </div>
 
         <div className={styles.drawerSection}>
-          <Text type="secondary">{t("sharing.settings.currentVisibility")}</Text>
+          <Text type="secondary">
+            {t("sharing.settings.currentVisibility")}
+          </Text>
           <div className={styles.currentRow}>
             {entry ? (
               <>
                 <VisibilityTag visibility={entry.visibility} />
+                <PermissionTag permission={entry.permission} />
                 <Text type="secondary" className={styles.metaText}>
                   {t("sharing.settings.version", { version: entry.version })}
                 </Text>
@@ -249,10 +266,16 @@ export default function SharingSettingsDrawer({
           <Radio.Group
             className={styles.visibilityGroup}
             value={visibility}
-            onChange={(event) => setVisibility(event.target.value as SharingVisibility)}
+            onChange={(event) =>
+              setVisibility(event.target.value as SharingVisibility)
+            }
           >
             {VISIBILITIES.map((option) => (
-              <Radio key={option} value={option} className={styles.visibilityOption}>
+              <Radio
+                key={option}
+                value={option}
+                className={styles.visibilityOption}
+              >
                 <span className={styles.visibilityOptionTitle}>
                   {t(VISIBILITY_LABEL_KEYS[option])}
                 </span>
@@ -262,6 +285,35 @@ export default function SharingSettingsDrawer({
               </Radio>
             ))}
           </Radio.Group>
+        </div>
+
+        <div className={styles.drawerSection}>
+          <Text strong>{t("sharing.settings.permissionLabel")}</Text>
+          <Radio.Group
+            className={styles.visibilityGroup}
+            value={permission}
+            onChange={(event) =>
+              setPermission(event.target.value as SharingPermission)
+            }
+          >
+            {PERMISSIONS.map((option) => (
+              <Radio
+                key={option}
+                value={option}
+                className={styles.visibilityOption}
+              >
+                <span className={styles.visibilityOptionTitle}>
+                  {t(PERMISSION_LABEL_KEYS[option])}
+                </span>
+                <span className={styles.visibilityOptionHint}>
+                  {t(PERMISSION_HINT_KEYS[option])}
+                </span>
+              </Radio>
+            ))}
+          </Radio.Group>
+          <Text type="secondary" className={styles.metaText}>
+            {t("sharing.settings.permissionHint")}
+          </Text>
         </div>
 
         {visibility === "unit" && (
@@ -311,7 +363,9 @@ export default function SharingSettingsDrawer({
                 onChange={(event) =>
                   setGrants((current) =>
                     current.map((item, i) =>
-                      i === index ? { ...item, grantee_id: event.target.value } : item,
+                      i === index
+                        ? { ...item, grantee_id: event.target.value }
+                        : item,
                     ),
                   )
                 }
@@ -321,7 +375,9 @@ export default function SharingSettingsDrawer({
                 <Button
                   icon={<Trash2 size={14} />}
                   onClick={() =>
-                    setGrants((current) => current.filter((_, i) => i !== index))
+                    setGrants((current) =>
+                      current.filter((_, i) => i !== index),
+                    )
                   }
                 />
               </Tooltip>
@@ -361,8 +417,8 @@ export default function SharingSettingsDrawer({
               result.status === "pending_approval"
                 ? t("sharing.settings.result.pending")
                 : result.applied
-                  ? t("sharing.settings.result.applied")
-                  : t("sharing.settings.result.superseded")
+                ? t("sharing.settings.result.applied")
+                : t("sharing.settings.result.superseded")
             }
             description={
               <div className={styles.resultMeta}>
@@ -387,7 +443,10 @@ export default function SharingSettingsDrawer({
           type="primary"
           loading={saving}
           disabled={loading}
-          style={{ background: BRAND.color.accent, borderColor: BRAND.color.accent }}
+          style={{
+            background: BRAND.color.accent,
+            borderColor: BRAND.color.accent,
+          }}
           onClick={() => void submit()}
         >
           {t("sharing.settings.submit")}

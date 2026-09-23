@@ -14,8 +14,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from octop.api.common.agent import assert_agent_owner
-from octop.api.deps import current_user, get_server
+from octop.api.common.agent import (
+    AgentCapability,
+    assert_agent_capability_write,
+    assert_agent_owner,
+)
+from octop.api.deps import get_server, require_permission
 from octop.infra.agents.mbti_profiles import (
     MBTIProfile,
     get_all_profiles,
@@ -33,13 +37,27 @@ router = APIRouter(prefix="/mbti", tags=["mbti"])
 # ---------------------------------------------------------------------------
 
 
-def _resolve_agent_row(server: Any, user: Any, agent_id: str) -> Any:
-    """Look up the agent row by id via AgentManager."""
+def _resolve_agent_row(
+    server: Any,
+    user: Any,
+    agent_id: str,
+    *,
+    capability: AgentCapability | None = None,
+) -> Any:
+    """Look up the agent row by id via AgentManager.
+
+    *capability* names the group an endpoint is about to **write** (applying a
+    type rewrites the agent's persona), so the row carries the capability
+    matrix's own rule for it; ``None`` is the read path, which stays owner-level.
+    """
     assert server.app_runtime is not None
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id} not found")
-    assert_agent_owner(row, user)
+    if capability is None:
+        assert_agent_owner(row, user)
+    else:
+        assert_agent_capability_write(row, user, capability)
     return row
 
 
@@ -151,7 +169,7 @@ class CurrentMBTIResponse(BaseModel):
 @router.get("/current", response_model=CurrentMBTIResponse)
 async def get_current_mbti(
     x_octop_agent_id: str = Header(..., alias="X-Octop-Agent-Id"),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
     server: Any = Depends(get_server),
 ) -> CurrentMBTIResponse:
     """Read the current MBTI type from the active agent's persisted config."""
@@ -173,7 +191,7 @@ async def get_current_mbti(
 
 @router.get("/types", response_model=list[MBTITypeResponse])
 async def list_types(
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
 ) -> list[MBTITypeResponse]:
     """List all 16 MBTI types."""
     return [_profile_to_response(p) for p in get_all_profiles()]
@@ -187,7 +205,7 @@ async def list_types(
 @router.get("/types/{code}", response_model=MBTITypeResponse)
 async def get_type(
     code: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
 ) -> MBTITypeResponse:
     """Get details for a single MBTI type."""
     profile = get_profile(code)
@@ -204,7 +222,7 @@ async def get_type(
 @router.get("/preview/{code}")
 async def get_persona_preview(
     code: str,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
 ) -> dict[str, Any]:
     """Render a persona markdown preview with the current user substituted."""
     from octop.infra.agents.persona import PersonaLoader
@@ -588,7 +606,7 @@ _QUESTIONS: list[TestQuestion] = [
 
 @router.get("/test/questions", response_model=list[TestQuestion])
 async def get_test_questions(
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
 ) -> list[TestQuestion]:
     """Return all 28 test questions."""
     return _QUESTIONS
@@ -677,7 +695,7 @@ def _score_answers(answers: dict[str, str]) -> tuple[str, dict[str, Any]]:
 async def submit_test(
     req: TestSubmitRequest,
     x_octop_agent_id: str | None = Header(None, alias="X-Octop-Agent-Id"),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
     server: Any = Depends(get_server),
 ) -> TestResultResponse:
     """Score test answers and return the MBTI result.
@@ -700,7 +718,9 @@ async def submit_test(
                 status_code=400,
                 detail="X-Octop-Agent-Id header required when auto_apply is true",
             )
-        row = _resolve_agent_row(server, user, x_octop_agent_id)
+        row = _resolve_agent_row(
+            server, user, x_octop_agent_id, capability=AgentCapability.CONFIGURATION
+        )
         try:
             await _persist_persona(server, x_octop_agent_id, row, code)
             applied = True
@@ -743,7 +763,7 @@ class ApplyResponse(BaseModel):
 async def apply_type(
     req: ApplyRequest,
     x_octop_agent_id: str = Header(..., alias="X-Octop-Agent-Id"),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("mbti")),
     server: Any = Depends(get_server),
 ) -> ApplyResponse:
     """Apply a specific MBTI type to the active agent's persona."""
@@ -752,7 +772,9 @@ async def apply_type(
     if profile is None:
         raise HTTPException(status_code=404, detail=f"Unknown MBTI type: {code}")
 
-    row = _resolve_agent_row(server, user, x_octop_agent_id)
+    row = _resolve_agent_row(
+        server, user, x_octop_agent_id, capability=AgentCapability.CONFIGURATION
+    )
     try:
         await _persist_persona(server, x_octop_agent_id, row, code)
     except Exception as exc:

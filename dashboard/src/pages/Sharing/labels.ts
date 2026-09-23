@@ -2,6 +2,7 @@ import type {
   SharingChangeStatus,
   SharingGranteeType,
   SharingImpactScope,
+  SharingPermission,
   SharingResourceType,
   SharingVisibility,
 } from "../../api/modules/sharing";
@@ -11,14 +12,19 @@ import type {
  * place so the queue, the drawer, and the tags can never drift apart.
  */
 
-/** Resource-type picker order; knowledge bases first — they are the entry point. */
+/**
+ * Resource-type picker order; knowledge bases first — they are the entry point.
+ *
+ * Only the types this page can list are here; a stored change of another type
+ * still renders its label below.
+ */
 export const SHARING_RESOURCE_TYPE_ORDER: readonly SharingResourceType[] = [
   "knowledge_base",
   "agent",
   "connector",
-  "feature",
 ];
 
+/** Every type the ACL table holds — the picker's subset plus any it no longer offers. */
 export const RESOURCE_TYPE_LABEL_KEYS: Record<SharingResourceType, string> = {
   agent: "sharing.resourceType.agent",
   connector: "sharing.resourceType.connector",
@@ -37,6 +43,17 @@ export const VISIBILITY_HINT_KEYS: Record<SharingVisibility, string> = {
   private: "sharing.visibilityHint.private",
   unit: "sharing.visibilityHint.unit",
   public: "sharing.visibilityHint.public",
+};
+
+export const PERMISSION_LABEL_KEYS: Record<SharingPermission, string> = {
+  read: "sharing.permission.read",
+  write: "sharing.permission.write",
+};
+
+/** Longer copy for the permission radio cards. */
+export const PERMISSION_HINT_KEYS: Record<SharingPermission, string> = {
+  read: "sharing.permissionHint.read",
+  write: "sharing.permissionHint.write",
 };
 
 export const IMPACT_LABEL_KEYS: Record<SharingImpactScope, string> = {

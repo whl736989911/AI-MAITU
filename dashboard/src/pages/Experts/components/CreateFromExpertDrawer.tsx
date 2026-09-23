@@ -315,9 +315,7 @@ export default function CreateFromExpertDrawer({
       try {
         probe = await probeRootDir(values.root_dir ?? "/");
       } catch (err) {
-        message.error(
-          adminOnlyErrorMessage(err, t("experts.createFailed"), t),
-        );
+        message.error(adminOnlyErrorMessage(err, t("experts.createFailed"), t));
         return;
       }
       if (!probe.ok) {

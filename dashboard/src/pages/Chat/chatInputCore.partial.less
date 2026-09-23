@@ -9,7 +9,7 @@
   align-items: center;
   gap: 6px;
   font-size: 10px;
-  color: var(--fn-text-quaternary);
+  color: var(--fn-text-secondary);
   user-select: none;
   flex-shrink: 0;
 
@@ -35,6 +35,38 @@
   max-width: var(--chat-column-max, 960px);
   margin: 0 auto;
   box-sizing: border-box;
+}
+
+/* The workflow cards sit in the same slot as the ask card — one card or the
+   other is on screen, never both — so they keep the composer's gutters too. */
+.workflowDock {
+  flex-shrink: 0;
+  padding: 0 var(--chat-column-pad-x, 24px) 8px;
+  background: var(--fn-bg-elevated, #fff);
+  box-sizing: border-box;
+  /* A declared form can be long; the composer must stay in reach, so the cards
+     scroll among themselves rather than pushing it off the bottom. */
+  max-height: min(50vh, 460px);
+  overflow-y: auto;
+
+  @media (max-width: 767px) {
+    padding: 0 var(--chat-column-pad-x-narrow, 12px) 6px;
+    max-height: 45vh;
+  }
+}
+
+.workflowDockInner {
+  width: 100%;
+  max-width: var(--chat-column-max, 960px);
+  margin: 0 auto;
+  box-sizing: border-box;
+}
+
+/* The form, and what the run produced under it. */
+.workflowStack {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
 
 .chatInput {
@@ -154,7 +186,7 @@
   transition: height 0.15s ease;
 
   &::placeholder {
-    color: var(--fn-text-placeholder);
+    color: var(--fn-text-secondary);
   }
 
   @media (max-width: 767px) {
@@ -179,7 +211,7 @@
   border-radius: var(--fn-radius-full);
   border: none;
   background: transparent;
-  color: var(--fn-text-quaternary);
+  color: var(--fn-text-secondary);
   cursor: pointer;
   transition:
     color var(--fn-transition-fast),
@@ -310,7 +342,7 @@
   border-radius: var(--fn-radius-full);
   border: none;
   background: transparent;
-  color: var(--fn-text-quaternary);
+  color: var(--fn-text-secondary);
   cursor: pointer;
   transition:
     color var(--fn-transition-fast),
@@ -475,7 +507,7 @@
   justify-content: center;
   font-size: 9px;
   font-weight: 600;
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
   line-height: 1;
   pointer-events: none;
 }
@@ -585,7 +617,7 @@
   justify-content: center;
   font-size: 10px;
   font-weight: 600;
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
   background: var(--fn-bg-elevated, #fff);
   border: 1px solid var(--fn-border-secondary);
 }
@@ -625,7 +657,7 @@
   align-items: center;
   gap: 3px;
   font-size: 11px;
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
 }
 
 .queuedMessageRemove {
@@ -638,7 +670,7 @@
   border: none;
   border-radius: var(--fn-radius-full);
   background: transparent;
-  color: var(--fn-text-quaternary);
+  color: var(--fn-text-secondary);
   cursor: pointer;
 
   &:hover {
@@ -707,7 +739,7 @@
 }
 
 .attachmentPreviewIcon {
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
   flex-shrink: 0;
 }
 

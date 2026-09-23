@@ -18,6 +18,7 @@ from harness_gateway.models import (
 from octop.api.common.agent import require_agent_row
 from octop.api.common.validators import validate_chat_mcp_servers, validate_chat_skills
 from octop.api.routers.chat.models import ChatTurnBody
+from octop.infra.agents.feature_workflow import FEATURE_RUN_META_KEY
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.media.attachment_hints import (
     inbound_attachments_from_parts,
@@ -336,6 +337,11 @@ def build_dashboard_inbound(
         metadata[COMPOSER_CTX_KEY] = prepared.composer_context
     if prepared.inbound_attachments:
         metadata[INBOUND_ATTACHMENTS_KEY] = prepared.inbound_attachments
+    if turn.feature_run is not None:
+        # A submitted run: the platform records it and injects its values into this
+        # turn (see ``infra.agents.feature_workflow``). It travels as metadata so the
+        # processor reads it the same way it reads the composer's own context.
+        metadata[FEATURE_RUN_META_KEY] = turn.feature_run.model_dump()
     merge_turn_target_agents(turn, metadata)
 
     return InboundMessage(

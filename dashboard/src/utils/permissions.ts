@@ -13,6 +13,12 @@ export const ALL_PERMISSIONS_KEY = "*";
 export type PermissionKeys = readonly string[] | "admin";
 
 export const PERM = {
+  /** The functional modules of design §2.2. Baseline keys: every signed-in
+   *  account holds them until an administrator edits it, so hiding a nav entry
+   *  or refusing a route here only ever affects an explicit deny. */
+  mbti: ["mbti"],
+  experts: ["experts"],
+  features: ["features"],
   channels: ["channels"],
   connectors: ["connectors"],
   skillPackages: ["skill_packages"],
@@ -24,6 +30,9 @@ export const PERM = {
   terminal: ["terminal"],
   desktop: ["desktop"],
   mobile: ["mobile"],
+  /** ACP: the key gates the entry, the route and the runner *list*; the global
+   *  runner definitions are a system-administrator write on top of it (§4.4). */
+  acp: ["acp"],
   usersPage: ["users", "sso"],
   /** Org-unit directory: the backend mounts ``/api/org-units`` on ``users``. */
   orgUnits: ["users"],
@@ -36,6 +45,8 @@ export const PERM = {
 
 /** Sidebar item key → permission keys. Shared with path guards. */
 export const NAV_PERMISSIONS = {
+  features: PERM.features,
+  experts: PERM.experts,
   channels: PERM.channels,
   connectors: PERM.connectors,
   "skill-packages": PERM.skillPackages,
@@ -43,7 +54,7 @@ export const NAV_PERMISSIONS = {
   workbench: PERM.workbench,
   "remote-desktop": ["desktop", "mobile"],
   "remote-phone": PERM.mobile,
-  acp: "admin",
+  acp: PERM.acp,
   "admin-users": PERM.usersPage,
   "admin-org-units": PERM.orgUnits,
   models: PERM.modelsPage,
@@ -54,6 +65,33 @@ export const NAV_PERMISSIONS = {
 } as const satisfies Record<string, PermissionKeys>;
 
 export type NavPermissionKey = keyof typeof NAV_PERMISSIONS;
+
+/**
+ * The personalization tabs a module key gates (design §2.4: an unauthorized
+ * tab is not shown). A tab absent from this table is gated by nothing here —
+ * the expert/feature capability rule (`agents.kind`) decides who may write it,
+ * which is a different question and stays where it is.
+ *
+ * `channels` was the first of these and used to be filtered inline in the
+ * page; the table is what the users', advanced and security pages already use
+ * for the same job, so it is the one place to read.
+ */
+export const PERSONALIZATION_TAB_PERMISSIONS = {
+  channels: PERM.channels,
+  plugins: PERM.plugins,
+  mbti: PERM.mbti,
+} as const satisfies Record<string, readonly string[]>;
+
+/** True when the module keys attached to personalization tab `tab` allow it. */
+export function personalizationTabAllowed(
+  user: PermissionHolder | null | undefined,
+  tab: string,
+): boolean {
+  const keys = (
+    PERSONALIZATION_TAB_PERMISSIONS as Record<string, readonly string[]>
+  )[tab];
+  return keys === undefined || userCanKey(user, keys);
+}
 
 export const USERS_TAB_PERMISSIONS = {
   local: "users",
@@ -82,21 +120,9 @@ export const SECURITY_TAB_PERMISSIONS = {
 } as const;
 
 /**
- * True when the holder bypasses every module gate: the ``admin`` role, or an
- * explicit ``*`` grant. ``unit_admin`` is deliberately excluded — its power is
- * the org-unit resource scope, not extra module keys.
- */
-export function hasFullPermission(
-  user: PermissionHolder | null | undefined,
-): boolean {
-  if (!user) return false;
-  if (user.role === "admin") return true;
-  return (user.permissions ?? []).includes(ALL_PERMISSIONS_KEY);
-}
-
-/**
  * True when the holder has the ``admin`` role itself. Mirrors the backend
- * ``require_admin`` gate (role only — a ``*`` grant does not qualify).
+ * ``require_admin`` gate (role only — a ``*`` grant does not qualify) and is
+ * the only predicate a role-only gate may use.
  */
 export function isSystemAdmin(
   user: PermissionHolder | null | undefined,
@@ -110,8 +136,9 @@ export function userCan(
   key: string,
 ): boolean {
   if (!user) return false;
-  if (hasFullPermission(user)) return true;
-  return (user.permissions ?? []).includes(key);
+  if (isSystemAdmin(user)) return true;
+  const held = user.permissions ?? [];
+  return held.includes(key) || held.includes(ALL_PERMISSIONS_KEY);
 }
 
 /** True when the user holds any of the given keys (admin bypasses). */
@@ -120,16 +147,16 @@ export function userCanAny(
   keys: readonly string[],
 ): boolean {
   if (!user) return false;
-  if (hasFullPermission(user)) return true;
+  if (isSystemAdmin(user)) return true;
   const held = new Set(user.permissions ?? []);
-  return keys.some((k) => held.has(k));
+  return held.has(ALL_PERMISSIONS_KEY) || keys.some((k) => held.has(k));
 }
 
 export function canAccessKeys(
   user: PermissionHolder | null | undefined,
   keys: PermissionKeys,
 ): boolean {
-  if (keys === "admin") return hasFullPermission(user);
+  if (keys === "admin") return isSystemAdmin(user);
   return userCanAny(user, keys);
 }
 
@@ -138,6 +165,23 @@ export function navAllowed(
   navKey: NavPermissionKey,
 ): boolean {
   return canAccessKeys(user, NAV_PERMISSIONS[navKey]);
+}
+
+/**
+ * The channel types out of ``kinds`` this holder may use, in the order given.
+ *
+ * Design §2.3 makes ``channel_<kind>`` (the key the backend catalog derives from
+ * the gateway's own kind list) the unit of channel authorization, and §5.2/§8
+ * make the type selector show the authorized types only. Exported because the
+ * grid, the create drawer's kind and the row count must read one array rather
+ * than each filtering for itself — and because a page that lists a type the
+ * backend will refuse is the inconsistency §5.1 forbids.
+ */
+export function allowedChannelKinds<T extends string>(
+  user: PermissionHolder | null | undefined,
+  kinds: readonly T[],
+): T[] {
+  return kinds.filter((kind) => userCan(user, `channel_${kind}`));
 }
 
 export function userCanKey(
@@ -149,10 +193,18 @@ export function userCanKey(
 
 /**
  * Permissions that unlock a dashboard path (any-of).
- * ``"admin"`` means role===admin only (no module key this round).
- * ``null`` means no special gate.
+ * ``"admin"`` means role===admin only — the ``/admin/*`` fallback, for paths
+ * without a module key. ``null`` means no special gate.
  */
 export function pathPermissionKeys(pathname: string): PermissionKeys | null {
+  // The two module surfaces of design §5.2. The nav entry and the route read
+  // the same key, so "hidden" and "refused" cannot disagree.
+  if (pathname === "/features" || pathname.startsWith("/features/")) {
+    return PERM.features;
+  }
+  if (pathname === "/experts" || pathname.startsWith("/experts/")) {
+    return PERM.experts;
+  }
   if (pathname.startsWith("/admin/users") || pathname === "/admin/sso") {
     return PERM.usersPage;
   }
@@ -242,9 +294,10 @@ export function pathPermissionKeys(pathname: string): PermissionKeys | null {
   if (pathname === "/workbench" || pathname.startsWith("/workbench/")) {
     return PERM.workbench;
   }
-  // ACP: no module key this round — admin role only.
+  // ACP: the nav entry and this route read the same module key. The global
+  // runner definitions inside are still a system-administrator write.
   if (pathname === "/acp" || pathname.startsWith("/acp/")) {
-    return "admin";
+    return PERM.acp;
   }
   return null;
 }

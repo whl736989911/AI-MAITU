@@ -1,10 +1,22 @@
 /**
  * Token Usage — account-level analytics.
  *
- * Views (peer Segmented): summary | by day | by expert | by model.
+ * Views (peer Segmented): summary | by day | by expert | by feature | by model.
  * Summary composes totals + donut/pie charts from existing
- * ``GET /api/usage/summary`` granularities (no backend changes).
- * Dimension views: stacked bar + sortable table.
+ * ``GET /api/usage/summary`` granularities. Dimension views: stacked bar +
+ * sortable table.
+ *
+ * **By expert and by feature are two views of the same rows, one kind each.**
+ * The server groups them apart by ``agents.kind`` (``by_expert`` / ``by_feature``
+ * in ``infra/db/repos/usage.py``), so neither has to mix the other in, and the
+ * pair appears only where its kind does: a deployment with no features has no
+ * "by feature" to offer, and one with no ordinary agents has no "by expert". The
+ * question is asked once, of the agents this deployment holds — never of the
+ * rows currently in scope, which move with the user and date filters
+ * (``hooks/useAgentKindPresence.ts``).
+ *
+ * The roll-up above every view stays the whole scope either way: these pick what
+ * is listed, not what is counted.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -40,6 +52,8 @@ import PageShell from "../../../layouts/PageShell";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { UsageStats, type UsageStatItem } from "./UsageStats";
 import { useUserRole } from "../../../hooks/useUserRole";
+import { useAgentKindPresence } from "../../../hooks/useAgentKindPresence";
+import type { AgentKindPresence } from "../../../utils/agentKindCounts";
 import { request, requestBlob } from "../../../api/request";
 import { useAgent } from "../../../context/AgentContext";
 import { useTheme } from "../../../context/ThemeContext";
@@ -86,7 +100,7 @@ interface UsageSummary {
   buckets: UsageBucket[];
 }
 
-type ViewMode = "summary" | "by_day" | "by_agent" | "by_model";
+type ViewMode = "summary" | "by_day" | "by_expert" | "by_feature" | "by_model";
 type DimGranularity = Exclude<ViewMode, "summary">;
 
 const CHART_COLORS = [
@@ -281,7 +295,8 @@ function bucketColumnTitle(
   t: (key: string) => string,
 ): string {
   if (granularity === "by_day") return t("tokenUsage.date");
-  if (granularity === "by_agent") return t("tokenUsage.expert");
+  if (granularity === "by_expert") return t("tokenUsage.expert");
+  if (granularity === "by_feature") return t("tokenUsage.feature");
   return t("tokenUsage.model");
 }
 
@@ -558,14 +573,19 @@ function DonutCard({
 function SummaryView({
   totals,
   byExpert,
+  byFeature,
   byModel,
   byDay,
+  kinds,
   isMobile,
 }: {
   totals: UsageSummary;
   byExpert: UsageBucket[];
+  byFeature: UsageBucket[];
   byModel: UsageBucket[];
   byDay: UsageBucket[];
+  /** Which kinds this deployment holds — which breakdowns there are to draw. */
+  kinds: AgentKindPresence;
   isMobile: boolean;
 }) {
   const { t } = useTranslation();
@@ -579,8 +599,11 @@ function SummaryView({
   );
 
   const expertPie = useMemo(() => toPieData(byExpert), [byExpert]);
+  const featurePie = useMemo(() => toPieData(byFeature), [byFeature]);
   const modelPie = useMemo(() => toPieData(byModel), [byModel]);
   const dayBars = useMemo(() => [...byDay].reverse().slice(-14), [byDay]);
+  /** Input/output, then one donut per kind that exists, then models. */
+  const donutCount = 2 + (kinds.experts ? 1 : 0) + (kinds.features ? 1 : 0);
 
   return (
     <div className={styles.summaryBody}>
@@ -592,7 +615,9 @@ function SummaryView({
       <div
         className={styles.pieGrid}
         style={{
-          gridTemplateColumns: isMobile ? "1fr" : "repeat(3, minmax(0, 1fr))",
+          gridTemplateColumns: isMobile
+            ? "1fr"
+            : `repeat(${donutCount}, minmax(0, 1fr))`,
         }}
       >
         <DonutCard
@@ -604,11 +629,20 @@ function SummaryView({
             [t("tokenUsage.output")]: IO_COLORS.output,
           }}
         />
-        <DonutCard
-          title={t("tokenUsage.expertBreakdown")}
-          data={expertPie}
-          emptyText={t("tokenUsage.noRecordsInRange")}
-        />
+        {kinds.experts && (
+          <DonutCard
+            title={t("tokenUsage.expertBreakdown")}
+            data={expertPie}
+            emptyText={t("tokenUsage.noRecordsInRange")}
+          />
+        )}
+        {kinds.features && (
+          <DonutCard
+            title={t("tokenUsage.featureBreakdown")}
+            data={featurePie}
+            emptyText={t("tokenUsage.noRecordsInRange")}
+          />
+        )}
         <DonutCard
           title={t("tokenUsage.modelBreakdown")}
           data={modelPie}
@@ -694,8 +728,10 @@ function DimensionView({
         >
           <DonutCard
             title={
-              granularity === "by_agent"
+              granularity === "by_expert"
                 ? t("tokenUsage.expertBreakdown")
+                : granularity === "by_feature"
+                ? t("tokenUsage.featureBreakdown")
                 : t("tokenUsage.modelBreakdown")
             }
             data={pieData}
@@ -832,6 +868,8 @@ export default function TokenUsagePage() {
   const role = useUserRole();
   const isAdmin = role === "admin";
   const isMobile = useIsMobile();
+  /** Which kinds this deployment holds — which views there are to offer. */
+  const kinds = useAgentKindPresence();
   const [dateRange, setDateRange] = useState<[Dayjs, Dayjs] | null>(() =>
     defaultLast30dRange(),
   );
@@ -844,6 +882,7 @@ export default function TokenUsagePage() {
   const [totals, setTotals] = useState<UsageSummary | null>(null);
   const [dimBuckets, setDimBuckets] = useState<UsageBucket[]>([]);
   const [summaryExpert, setSummaryExpert] = useState<UsageBucket[]>([]);
+  const [summaryFeature, setSummaryFeature] = useState<UsageBucket[]>([]);
   const [summaryModel, setSummaryModel] = useState<UsageBucket[]>([]);
   const [summaryDay, setSummaryDay] = useState<UsageBucket[]>([]);
 
@@ -916,23 +955,53 @@ export default function TokenUsagePage() {
     [users, t],
   );
 
+  /**
+   * The kind-neutral half of the filter. "All experts" names the whole list a
+   * deployment with no features has; once features exist the list holds both
+   * kinds and the one label has to say so rather than name half of it.
+   */
+  const allAgentsLabel = kinds.experts
+    ? kinds.features
+      ? t("tokenUsage.allAgents")
+      : t("tokenUsage.allExperts")
+    : t("tokenUsage.allFeatures");
+
   const agentOptions = useMemo(
     () => [
-      { value: "all", label: t("tokenUsage.allExperts") },
+      { value: "all", label: allAgentsLabel },
       ...agents.map((a) => ({ value: a.agent_id, label: a.name })),
     ],
-    [agents, t],
+    [agents, allAgentsLabel],
   );
 
+  /**
+   * The two kind views, each offered only where its kind is. A deployment with
+   * no features has no "by feature" to break down, and drawing the option anyway
+   * would promise a view that is empty by construction — the presence is read
+   * from the deployment's agents, so which options exist does not move with the
+   * date or user filter.
+   */
   const viewOptions = useMemo(
     () => [
       { value: "summary", label: t("tokenUsage.summary") },
       { value: "by_day", label: t("tokenUsage.byDay") },
-      { value: "by_agent", label: t("tokenUsage.byExpert") },
+      ...(kinds.experts
+        ? [{ value: "by_expert", label: t("tokenUsage.byExpert") }]
+        : []),
+      ...(kinds.features
+        ? [{ value: "by_feature", label: t("tokenUsage.byFeature") }]
+        : []),
       { value: "by_model", label: t("tokenUsage.byModel") },
     ],
-    [t],
+    [t, kinds.experts, kinds.features],
   );
+
+  // A view whose kind is gone is not left selected behind a missing option: the
+  // pairing of the two is the one thing that must not disagree.
+  useEffect(() => {
+    if (view === "by_expert" && !kinds.experts) setView("summary");
+    if (view === "by_feature" && !kinds.features) setView("summary");
+  }, [view, kinds.experts, kinds.features]);
 
   useEffect(() => {
     if (!isAdmin) {
@@ -960,13 +1029,34 @@ export default function TokenUsagePage() {
     setError(null);
     try {
       if (view === "summary") {
-        const [expertRes, modelRes, dayRes] = await Promise.all([
-          fetchSummary(windowKey, "by_agent", agentFilter, adminUserFilter),
+        // One request per kind that exists, plus the kind-free views. The
+        // roll-up is the same number whichever granularity carries it, so it is
+        // read off whichever one was asked for — and a kind that does not exist
+        // is not asked about at all.
+        const [expertRes, featureRes, modelRes, dayRes] = await Promise.all([
+          kinds.experts
+            ? fetchSummary(windowKey, "by_expert", agentFilter, adminUserFilter)
+            : Promise.resolve(null),
+          kinds.features
+            ? fetchSummary(
+                windowKey,
+                "by_feature",
+                agentFilter,
+                adminUserFilter,
+              )
+            : Promise.resolve(null),
           fetchSummary(windowKey, "by_model", agentFilter, adminUserFilter),
           fetchSummary(windowKey, "by_day", agentFilter, adminUserFilter),
         ]);
-        setTotals(expertRes);
-        setSummaryExpert(resolveAgentLabels(expertRes.buckets, agentNameById));
+        setTotals(expertRes ?? featureRes ?? dayRes);
+        setSummaryExpert(
+          expertRes ? resolveAgentLabels(expertRes.buckets, agentNameById) : [],
+        );
+        setSummaryFeature(
+          featureRes
+            ? resolveAgentLabels(featureRes.buckets, agentNameById)
+            : [],
+        );
         setSummaryModel(modelRes.buckets);
         setSummaryDay(dayRes.buckets);
         setDimBuckets([]);
@@ -978,8 +1068,10 @@ export default function TokenUsagePage() {
           adminUserFilter,
         );
         setTotals(res);
+        // Both per-agent views bucket by ``agent_id``, and the server has
+        // already narrowed each to its own kind.
         const buckets =
-          view === "by_agent"
+          view === "by_expert" || view === "by_feature"
             ? resolveAgentLabels(res.buckets, agentNameById)
             : res.buckets;
         setDimBuckets(buckets);
@@ -989,7 +1081,16 @@ export default function TokenUsagePage() {
     } finally {
       setLoading(false);
     }
-  }, [view, windowKey, agentFilter, adminUserFilter, agentNameById, role]);
+  }, [
+    view,
+    windowKey,
+    agentFilter,
+    adminUserFilter,
+    agentNameById,
+    role,
+    kinds.experts,
+    kinds.features,
+  ]);
 
   useEffect(() => {
     void refresh();
@@ -1111,8 +1212,10 @@ export default function TokenUsagePage() {
               <SummaryView
                 totals={totals}
                 byExpert={summaryExpert}
+                byFeature={summaryFeature}
                 byModel={summaryModel}
                 byDay={summaryDay}
+                kinds={kinds}
                 isMobile={isMobile}
               />
             ) : (

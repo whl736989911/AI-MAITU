@@ -69,9 +69,61 @@ export interface AgentPlugin {
   tools: InstalledPlugin["tools"];
 }
 
+/** Localized text as the market endpoints return it (``{zh, en}``). */
+export interface LocalizedText {
+  zh?: string;
+  en?: string;
+}
+
+/** One shipped plugin as Admin → Plugins → Market renders it. */
+export interface MarketPlugin {
+  id: string;
+  version: string;
+  name: LocalizedText;
+  description: LocalizedText;
+  icon?: string | null;
+  kind: string;
+  requires: string[];
+  installed: boolean;
+  enabled: boolean;
+}
+
+export interface MarketPluginDetail extends MarketPlugin {
+  tools: InstalledPlugin["tools"];
+}
+
+export interface PluginMarketResponse {
+  items: MarketPlugin[];
+}
+
 export const pluginsApi = {
   list(): Promise<InstalledPlugin[]> {
     return request<InstalledPlugin[]>("/plugins");
+  },
+
+  /** Shipped plugin catalog with per-plugin install state. */
+  marketList(query = ""): Promise<PluginMarketResponse> {
+    const params = new URLSearchParams();
+    const q = query.trim();
+    if (q) params.set("q", q);
+    const qs = params.toString();
+    return request<PluginMarketResponse>(
+      qs ? `/plugins/market?${qs}` : "/plugins/market",
+    );
+  },
+
+  marketGet(pluginId: string): Promise<MarketPluginDetail> {
+    return request<MarketPluginDetail>(
+      `/plugins/market/${encodeURIComponent(pluginId)}`,
+    );
+  },
+
+  /** Install (and enable) one shipped plugin. Idempotent. */
+  marketInstall(pluginId: string): Promise<MarketPlugin> {
+    return request<MarketPlugin>(
+      `/plugins/market/${encodeURIComponent(pluginId)}/install`,
+      { method: "POST" },
+    );
   },
 
   install(

@@ -326,8 +326,6 @@ describe("<RootDirSelect /> mkdir + rename", () => {
 
     // The admin-only /filesystem endpoints must stay untouched.
     expect(mockedRequest).not.toHaveBeenCalled();
-    expect(
-      screen.queryByRole("combobox"),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 });

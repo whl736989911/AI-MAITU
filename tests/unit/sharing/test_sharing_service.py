@@ -341,24 +341,24 @@ def test_unit_snapshot_survives_the_owner_changing_departments(
     assert "a1" not in visible_to(world, world.other)
     shared = world.acl.get("agent", "a1")
     assert shared is not None and shared.unit_key == "sales"
-    assert can_access(shared, user_id=world.other, role="user", unit_key="eng") is False
+    assert can_access(shared, user_id=world.other, role="user", unit_keys=("eng",)) is False
 
 
 @pytest.mark.parametrize(
-    ("viewer", "role", "unit_key"),
+    ("viewer", "role", "unit_keys"),
     [
-        ("owner", "user", "sales"),
-        ("owner", "user", "eng"),
-        ("member", "user", "sales"),
-        ("other", "user", "eng"),
-        ("other", "user", None),
-        ("other", "auditor", "eng"),
-        ("admin", "admin", None),
-        ("ghost", "user", "sales"),
+        ("owner", "user", ("sales",)),
+        ("owner", "user", ("eng",)),
+        ("member", "user", ("sales",)),
+        ("other", "user", ("eng",)),
+        ("other", "user", ()),
+        ("other", "auditor", ("eng",)),
+        ("admin", "admin", ()),
+        ("ghost", "user", ("sales",)),
     ],
 )
 def test_visible_ids_match_can_access(
-    world: World, viewer: str, role: str, unit_key: str | None
+    world: World, viewer: str, role: str, unit_keys: tuple[str, ...]
 ) -> None:
     def acl_row(
         resource_id: str,
@@ -391,11 +391,11 @@ def test_visible_ids_match_can_access(
     expected = {
         e.resource_id
         for e in stored
-        if e is not None and can_access(e, user_id=viewer_id, role=role, unit_key=unit_key)
+        if e is not None and can_access(e, user_id=viewer_id, role=role, unit_keys=unit_keys)
     }
 
     got = world.acl.list_visible_resource_ids(
-        "agent", user_id=viewer_id, role=role, unit_key=unit_key
+        "agent", user_id=viewer_id, role=role, unit_keys=unit_keys
     )
 
     assert got == expected

@@ -11,7 +11,8 @@ import { message as antMessage } from "@/utils/antdMessage";
 import { Bot, X, Square, Play, Loader2, Send } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { OctopAgent } from "../context/AgentContext";
-import AgentSelector from "../components/AgentSelector";
+import { useAgent } from "../context/AgentContext";
+import AgentSelector, { selectableAgents } from "../components/AgentSelector";
 import { useAgentThreadChat } from "../hooks/useAgentThreadChat";
 import { browserApi } from "../api/modules/browser";
 import { request } from "../api/request";
@@ -82,6 +83,9 @@ export default function BrowserAiPanel({
   onSkillNameSet,
 }: BrowserAiPanelProps) {
   const { t } = useTranslation();
+  const { agents } = useAgent();
+  /** Whether the experts' row has anything to offer — see ``selectableAgents``. */
+  const hasExpert = selectableAgents(agents, "experts").length > 0;
   const panelClassName = `${styles.panel}${
     layout === "bottom" ? ` ${styles.panelBottom}` : ""
   }`;
@@ -567,9 +571,11 @@ export default function BrowserAiPanel({
               "浏览器右侧助手会复用当前 Agent 的对话能力。",
             )}
           </div>
-          <div className={styles.emptyAgentPicker}>
-            <AgentSelector variant="select" showLabel={false} />
-          </div>
+          {hasExpert && (
+            <div className={styles.emptyAgentPicker}>
+              <AgentSelector variant="select" showLabel={false} />
+            </div>
+          )}
         </div>
       </div>
     );
@@ -603,12 +609,14 @@ export default function BrowserAiPanel({
       </div>
 
       <div className={styles.contextSection}>
-        <div className={styles.expertSelectRow}>
-          <span className={styles.contextLabel}>
-            {t("remoteBrowser.ai.expert", "专家")}
-          </span>
-          <AgentSelector variant="select" showLabel={false} />
-        </div>
+        {hasExpert && (
+          <div className={styles.expertSelectRow}>
+            <span className={styles.contextLabel}>
+              {t("remoteBrowser.ai.expert", "专家")}
+            </span>
+            <AgentSelector variant="select" showLabel={false} />
+          </div>
+        )}
         <div className={styles.contextGrid}>
           <span className={styles.contextLabel}>
             {t("remoteBrowser.ai.profile", "Profile")}

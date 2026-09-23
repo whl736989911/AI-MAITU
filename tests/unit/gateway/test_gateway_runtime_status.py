@@ -11,6 +11,7 @@ from octop.config import OctopConfig
 from octop.infra.agents.manager import AgentManager
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos.users import UserRepo
 from octop.infra.db.services import build_shared_services
 from octop.infra.gateway.gateway import Gateway
 from octop.infra.utils.paths import PathLayout
@@ -20,6 +21,10 @@ def _make_gateway(tmp_path: Path) -> Gateway:
     db = SqlitePool(tmp_path / "octop.db")
     run_migrations(db)
     services = build_shared_services(db=db, paths=PathLayout(tmp_path), config=OctopConfig())
+    # Every channel is registered for the account that owns it, and only while
+    # that account holds its type key (design §2.3/§4.5) — so the rows below
+    # need a real owner, and an ``admin`` one so no key has to be stored.
+    UserRepo(db).create(username="owner", password_hash="h", role="admin")
     registry = AgentManager(
         repos=services.repos,
         paths=services.paths,
@@ -32,11 +37,22 @@ def _fake_row(channel_id: str = "ch1") -> MagicMock:
     row = MagicMock()
     row.channel_id = channel_id
     row.agent_id = "agent1"
+    row.user_id = 1
     row.kind = "feishu"
     row.name = "main"
     row.config_json = '{"app_id":"x","app_secret":"y"}'
     row.enabled = 1
     return row
+
+
+def _wrapped_processor(gw: Gateway) -> object:
+    """The processor under the permission gate handed to ``add_channel``.
+
+    Every registered channel processor is wrapped in the gate (design §4.5), so
+    a test that is about the composition *below* it has to say so once.
+    """
+    registered = gw._channel_manager.add_channel.await_args.kwargs["processor"]
+    return registered.inner
 
 
 @pytest.mark.asyncio
@@ -70,7 +86,10 @@ async def test_register_stream_mode_uses_original_processor(tmp_path: Path) -> N
     await gw._register_channel(row)
 
     assert gw._channel_manager.add_channel.await_args is not None
-    assert gw._channel_manager.add_channel.await_args.kwargs["processor"] is gw._processor
+    # What is registered is the permission gate (design §4.5) and what it wraps
+    # is the mode composition — which is the layer this test is about, and the
+    # one ``test_response_mode.py`` pins directly.
+    assert _wrapped_processor(gw) is gw._processor
 
 
 @pytest.mark.asyncio
@@ -87,7 +106,7 @@ async def test_register_qq_defaults_to_stream_processor(tmp_path: Path) -> None:
     await gw._register_channel(row)
 
     assert gw._channel_manager.add_channel.await_args is not None
-    assert gw._channel_manager.add_channel.await_args.kwargs["processor"] is gw._processor
+    assert _wrapped_processor(gw) is gw._processor
 
 
 @pytest.mark.asyncio
@@ -104,7 +123,7 @@ async def test_register_qq_invoke_when_c2c_streaming_is_off(tmp_path: Path) -> N
     await gw._register_channel(row)
 
     assert gw._channel_manager.add_channel.await_args is not None
-    assert gw._channel_manager.add_channel.await_args.kwargs["processor"] is not gw._processor
+    assert _wrapped_processor(gw) is not gw._processor
 
 
 @pytest.mark.asyncio

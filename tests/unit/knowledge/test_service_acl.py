@@ -37,11 +37,11 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> KnowledgeService
     return KnowledgeService(services)
 
 
-def test_create_base_allows_shared_with_default_open(service: KnowledgeService) -> None:
+def test_repo_create_base_allows_shared_with_default_open(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
 
-    kb = service.create_base(
+    kb = service._services.knowledge_repo.create_base(
         owner_user_id=owner,
         name="Docs",
         shared=True,
@@ -57,7 +57,9 @@ def test_update_base_allows_enabling_both_shared_and_default_open(
 ) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
-    kb = service.create_base(owner_user_id=owner, name="Docs", shared=False, default_open=True)
+    kb = service._services.knowledge_repo.create_base(
+        owner_user_id=owner, name="Docs", shared=False, default_open=True
+    )
 
     updated = service.update_base(kb.id, actor_user_id=owner, shared=True)
     entry = service._services.knowledge_repo.acl_entry(kb.id)
@@ -97,6 +99,62 @@ def test_shared_reader_cannot_upload(service: KnowledgeService) -> None:
     assert service._services.knowledge_repo.get_base(kb.id).doc_count == 0
 
 
+def test_shared_writer_can_upload_and_maintain(service: KnowledgeService) -> None:
+    """A grant that carries ``write`` is what makes a share maintainable.
+
+    The level is a property of the share, not of the request that made it: the
+    row keeps it, and the same grant narrowed back to ``read`` reaches the
+    viewer without letting them write.
+    """
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    writer = users.create(username="writer", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
+    sharing = SharingService(service._services.db)
+
+    def share(permission: str) -> None:
+        sharing.apply_change(
+            owner,
+            "knowledge_base",
+            kb.id,
+            AclEntry(
+                resource_type="knowledge_base",
+                resource_id=kb.id,
+                owner_user_id=owner,
+                visibility="private",
+                unit_key=None,
+                version=0,
+                grants=(("user", str(writer)),),
+                permission=permission,
+            ),
+        )
+
+    share("write")
+    doc = service.upload_document(
+        kb.id,
+        actor_user_id=writer,
+        filename="by-the-grantee.md",
+        content_type="text/markdown",
+        content=b"# written by the grantee",
+    )
+    assert doc.filename == "by-the-grantee.md"
+    entry = service._services.knowledge_repo.acl_entry(kb.id)
+    assert entry is not None and entry.permission == "write"
+
+    service.delete_document(kb.id, doc.id, actor_user_id=writer)
+
+    share("read")
+    assert service.get_readable_base(kb.id, actor_user_id=writer).id == kb.id
+    with pytest.raises(PermissionError, match="write"):
+        service.upload_document(
+            kb.id,
+            actor_user_id=writer,
+            filename="blocked-again.md",
+            content_type="text/markdown",
+            content=b"# blocked",
+        )
+
+
 def test_shared_reader_can_preview_document_text(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
@@ -118,22 +176,10 @@ def test_shared_reader_can_preview_document_text(service: KnowledgeService) -> N
     assert "Body text." in preview["text"]
 
 
-def test_create_base_enforces_owner_limit(service: KnowledgeService) -> None:
-    from octop.infra.knowledge.service import MAX_BASES_PER_OWNER
-
-    users = service._services.user_repo
-    owner = users.create(username="owner", password_hash="h", role="user")
-    for ordinal in range(MAX_BASES_PER_OWNER):
-        service.create_base(owner_user_id=owner, name=f"kb-{ordinal}")
-
-    with pytest.raises(ValueError, match="knowledge bases"):
-        service.create_base(owner_user_id=owner, name="one-too-many")
-
-
 def test_upload_enforces_document_byte_limit(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
-    kb = service.create_base(owner_user_id=owner, name="Docs")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
     service._services.config = SimpleNamespace(max_upload_bytes=1024, max_upload_mb=1)
 
     with pytest.raises(ValueError, match="document size"):
@@ -149,7 +195,7 @@ def test_upload_enforces_document_byte_limit(service: KnowledgeService) -> None:
 def test_delete_document_works_when_feature_disabled(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
-    kb = service.create_base(owner_user_id=owner, name="Docs")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
     doc = service.upload_document(
         kb.id,
         actor_user_id=owner,
@@ -198,7 +244,7 @@ def test_upload_enforces_document_limit(service: KnowledgeService) -> None:
 def test_rename_folder_rewrites_descendant_paths(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
-    kb = service.create_base(owner_user_id=owner, name="Docs")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
     folder = service.create_folder(kb.id, actor_user_id=owner, path="notes/law")
     doc = service.upload_document(
         kb.id,
@@ -218,7 +264,7 @@ def test_rename_folder_rewrites_descendant_paths(service: KnowledgeService) -> N
 def test_rename_rejects_name_collision(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
-    kb = service.create_base(owner_user_id=owner, name="Docs")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
     repo = service._services.knowledge_repo
     repo.ensure_folder(kb.id, "a")
     repo.ensure_folder(kb.id, "b")
@@ -235,7 +281,7 @@ def test_rename_rejects_name_collision(service: KnowledgeService) -> None:
 def test_rename_rejects_name_with_separator(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
-    kb = service.create_base(owner_user_id=owner, name="Docs")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
     folder = service.create_folder(kb.id, actor_user_id=owner, path="a")
 
     with pytest.raises(ValueError, match="invalid knowledge document name"):
@@ -245,7 +291,7 @@ def test_rename_rejects_name_with_separator(service: KnowledgeService) -> None:
 def test_rename_same_name_is_idempotent(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="owner", password_hash="h", role="user")
-    kb = service.create_base(owner_user_id=owner, name="Docs")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
     folder = service.create_folder(kb.id, actor_user_id=owner, path="a")
 
     result = service.rename_document(kb.id, folder.id, actor_user_id=owner, new_name="a")
@@ -268,7 +314,7 @@ def test_shared_reader_cannot_rename(service: KnowledgeService) -> None:
 def test_update_base_validates_max_documents_range(service: KnowledgeService) -> None:
     users = service._services.user_repo
     owner = users.create(username="ow", password_hash="h", role="user")
-    kb = service.create_base(owner_user_id=owner, name="Docs")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
     # In range
     service.update_base(kb.id, actor_user_id=owner, max_documents=0)
     assert service.get_readable_base(kb.id, actor_user_id=owner).max_documents == 0
@@ -305,8 +351,10 @@ def test_list_visible_bases_is_the_rule_for_every_viewer(service: KnowledgeServi
 
     repo = service._services.knowledge_repo
     sharing = SharingService(db)
-    private = service.create_base(owner_user_id=owner, name="Private")
-    published = service.create_base(owner_user_id=owner, name="Published", shared=True)
+    private = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Private")
+    published = service._services.knowledge_repo.create_base(
+        owner_user_id=owner, name="Published", shared=True
+    )
     unit = repo.create_base(owner_user_id=owner, name="Unit", shared=False)
     granted = repo.create_base(owner_user_id=owner, name="Granted", shared=False)
     for kb, entry in (
@@ -328,18 +376,22 @@ def test_list_visible_bases_is_the_rule_for_every_viewer(service: KnowledgeServi
 
     acl = ResourceAclRepo(db)
     entries = {row.resource_id: row for row in acl.list_for_type("knowledge_base")}
-    assert set(entries) == {private.id, published.id, unit.id, granted.id}
+    # The v27 enterprise space is an entry like any other, and it is seeded
+    # public: every viewer below sees it, the admin included.
+    space = repo.get_enterprise_space()
+    assert space is not None
+    assert set(entries) == {private.id, published.id, unit.id, granted.id, space.id}
     viewers = {"owner": owner, "peer_sales": peer, "outsider_eng": outsider, "admin": admin}
     for name, user_id in viewers.items():
-        role, unit_key = acl.scope_for_user(user_id)
+        role, unit_keys = acl.scope_for_user(user_id)
         allowed = {
             resource_id
             for resource_id, entry_row in entries.items()
-            if can_access(entry_row, user_id=user_id, role=role, unit_key=unit_key)
+            if can_access(entry_row, user_id=user_id, role=role, unit_keys=unit_keys)
         }
-        assert {
-            base.id for base in service.list_visible_bases(actor_user_id=user_id)
-        } == allowed, f"list/{name}"
+        assert {base.id for base in service.list_visible_bases(actor_user_id=user_id)} == allowed, (
+            f"list/{name}"
+        )
 
     # The property the deleted ``list_all()`` branch provided, kept explicit.
     assert {base.id for base in service.list_visible_bases(actor_user_id=admin)} == set(entries)
@@ -386,3 +438,83 @@ def test_read_access_follows_the_acl_not_the_legacy_shared_column(
     other_unit = users.create(username="other", password_hash="h", role="user", org_unit="eng")
     with pytest.raises(PermissionError):
         service.get_readable_base(kb.id, actor_user_id=other_unit)
+
+
+def _file_entry(service: KnowledgeService, doc_id: str, *, visibility: str = "private") -> None:
+    """Give one document an access row of its own."""
+    ResourceAclRepo(service._services.db).upsert(
+        AclEntry(
+            resource_type="knowledge_document",
+            resource_id=doc_id,
+            owner_user_id=None,
+            visibility=visibility,
+            unit_key=None,
+            version=1,
+            grants=(),
+        )
+    )
+
+
+def test_a_file_level_entry_narrows_what_its_base_allows(service: KnowledgeService) -> None:
+    """design §5.2 and §14: the file rule, the listing and the download agree."""
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    viewer = users.create(username="viewer", password_hash="h", role="user")
+    admin = users.create(username="root", password_hash="h", role="admin")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs", shared=True)
+    doc = service.upload_document(
+        kb.id,
+        actor_user_id=owner,
+        filename="minutes.md",
+        content_type="text/markdown",
+        content=b"# Board minutes\n\nConfidential.",
+    )
+    # Published to the whole organization, so anyone reads it...
+    assert [row.id for row in service.list_documents(kb.id, actor_user_id=viewer)] == [doc.id]
+
+    # ...until the file says otherwise. "System-owned and private" is how this
+    # codebase spells an entry only an administrator reaches.
+    _file_entry(service, doc.id)
+
+    assert service.list_documents(kb.id, actor_user_id=viewer) == []
+    with pytest.raises(PermissionError, match="document read"):
+        service.preview_document(kb.id, doc.id, actor_user_id=viewer)
+    with pytest.raises(PermissionError, match="document read"):
+        service.resolve_document_file(kb.id, doc.id, actor_user_id=viewer)
+    with pytest.raises(PermissionError, match="document read"):
+        service.read_text_document(kb.id, doc.id, actor_user_id=viewer)
+    # The base's owner is not an administrator: the rule is about the file.
+    with pytest.raises(PermissionError, match="document read"):
+        service.preview_document(kb.id, doc.id, actor_user_id=owner)
+    # An administrator still reaches it — rule 1 of ``can_access``, not a branch.
+    assert (
+        service.preview_document(kb.id, doc.id, actor_user_id=admin, is_admin=True)["id"] == doc.id
+    )
+    assert [
+        row.id for row in service.list_documents(kb.id, actor_user_id=admin, is_admin=True)
+    ] == [doc.id]
+
+
+def test_a_file_level_entry_that_reaches_the_actor_keeps_it_readable(
+    service: KnowledgeService,
+) -> None:
+    """The other half: an entry permits as well as narrows."""
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    viewer = users.create(username="viewer", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs", shared=True)
+    doc = service.upload_document(
+        kb.id,
+        actor_user_id=owner,
+        filename="notes.md",
+        content_type="text/markdown",
+        content=b"# Notes\n\nShared with everyone.",
+    )
+
+    _file_entry(service, doc.id, visibility="public")
+
+    assert [row.id for row in service.list_documents(kb.id, actor_user_id=viewer)] == [doc.id]
+    assert (
+        "Shared with everyone."
+        in service.preview_document(kb.id, doc.id, actor_user_id=viewer)["text"]
+    )

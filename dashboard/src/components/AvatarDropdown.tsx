@@ -246,12 +246,17 @@ export default function AvatarDropdown({
   };
 
   const currentLang = i18n.language?.startsWith("zh") ? "zh" : "en";
+  // Four levels, four labels (design §2.1). ``enterprise_admin`` gets its own key
+  // from the org/permissions namespace; without a branch it fell through to
+  // "user", which is how a new role becomes invisible in the UI.
   const roleLabel =
     role === "admin"
       ? t("account.roleAdmin")
+      : role === "enterprise_admin"
+      ? t("roles.enterpriseAdmin")
       : role === "unit_admin"
-        ? t("account.roleUnitAdmin")
-        : t("account.roleUser");
+      ? t("account.roleUnitAdmin")
+      : t("account.roleUser");
 
   const displayName = user?.display_name || user?.username || "—";
   const initials = (user?.display_name || user?.username || "?")

@@ -9,17 +9,26 @@ import {
 } from "./useSessions";
 
 const listMock = vi.fn();
+const patchMock = vi.fn();
+const renameMock = vi.fn();
 
 vi.mock("../../../api/modules/octopThreads", () => ({
   octopThreadsApi: {
     list: (...args: unknown[]) => listMock(...args),
     create: vi.fn(),
     delete: vi.fn(),
-    patch: vi.fn(),
-    rename: vi.fn(),
+    patch: (...args: unknown[]) => patchMock(...args),
+    rename: (...args: unknown[]) => renameMock(...args),
     rebind: vi.fn(),
   },
 }));
+
+/** Same shape ``request()`` throws for a rejected PATCH on a stale thread id. */
+function threadNotFoundError() {
+  return new Error(
+    'Request failed: 404 Not Found - {"error":{"code":"NOT_FOUND","message":"thread not found"}}',
+  );
+}
 
 function threadRow(threadId: string, agentExtra?: Partial<{ title: string }>) {
   return {
@@ -165,5 +174,105 @@ describe("useSessions agent switch", () => {
     });
     expect(probe).toBe("found");
     expect(listMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("useSessions rename / pin persistence", () => {
+  beforeEach(() => {
+    resetSessionStoreForTests();
+    listMock.mockReset();
+    patchMock.mockReset();
+    renameMock.mockReset();
+    listMock.mockResolvedValue([threadRow("thr_keep", { title: "Keep me" })]);
+  });
+
+  afterEach(() => {
+    resetSessionStoreForTests();
+  });
+
+  async function mountWithThread() {
+    const { result } = renderHook(() => useSessions("agent-a"));
+    await waitFor(() => {
+      expect(result.current.sessions.map((s) => s.id)).toEqual(["thr_keep"]);
+    });
+    return result;
+  }
+
+  it("reports a rejected rename as not stored", async () => {
+    renameMock.mockRejectedValue(threadNotFoundError());
+    const result = await mountWithThread();
+
+    let stored: boolean | undefined;
+    await act(async () => {
+      stored = await result.current.renameSession(
+        "thr_keep",
+        "Renamed locally",
+      );
+    });
+
+    expect(stored).toBe(false);
+  });
+
+  it("drops a rejected rename from the list", async () => {
+    renameMock.mockRejectedValue(threadNotFoundError());
+    const result = await mountWithThread();
+
+    await act(async () => {
+      await result.current.renameSession("thr_keep", "Renamed locally");
+    });
+
+    expect(result.current.sessions[0].name).toBe("Keep me");
+  });
+
+  it("reports a rejected pin as not stored", async () => {
+    patchMock.mockRejectedValue(threadNotFoundError());
+    const result = await mountWithThread();
+
+    let stored: boolean | undefined;
+    await act(async () => {
+      stored = await result.current.pinSession("thr_keep", true);
+    });
+
+    expect(stored).toBe(false);
+  });
+
+  it("drops a rejected pin from the list", async () => {
+    patchMock.mockRejectedValue(threadNotFoundError());
+    const result = await mountWithThread();
+
+    await act(async () => {
+      await result.current.pinSession("thr_keep", true);
+    });
+
+    expect(result.current.sessions[0].pinned).toBe(false);
+  });
+
+  it("keeps a rename the server stored", async () => {
+    renameMock.mockResolvedValue({});
+    const result = await mountWithThread();
+
+    let stored: boolean | undefined;
+    await act(async () => {
+      stored = await result.current.renameSession(
+        "thr_keep",
+        "Renamed on server",
+      );
+    });
+
+    expect(stored).toBe(true);
+    expect(result.current.sessions[0].name).toBe("Renamed on server");
+  });
+
+  it("keeps a pin the server stored", async () => {
+    patchMock.mockResolvedValue({});
+    const result = await mountWithThread();
+
+    let stored: boolean | undefined;
+    await act(async () => {
+      stored = await result.current.pinSession("thr_keep", true);
+    });
+
+    expect(stored).toBe(true);
+    expect(result.current.sessions[0].pinned).toBe(true);
   });
 });

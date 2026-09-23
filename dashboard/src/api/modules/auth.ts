@@ -43,10 +43,15 @@ export interface SsoIdentity {
 }
 
 /**
- * Dashboard role. ``admin`` bypasses every gate; ``unit_admin`` keeps the
- * baseline module set and is scoped by its org unit instead of extra keys.
+ * Dashboard role — the four-level administrator model (design §2.1).
+ *
+ * ``admin`` (系统管理员) bypasses every gate. ``enterprise_admin`` (企业管理员) and
+ * ``unit_admin`` (部门管理员) are *scoped*: they keep the keys they were granted
+ * and are bounded by the org tree instead (their reach is resolved server-side,
+ * so this type only describes what the account is, never what it may do).
+ * ``user`` (企业员工) reaches its own account and resources.
  */
-export type OctopRole = "admin" | "unit_admin" | "user";
+export type OctopRole = "admin" | "enterprise_admin" | "unit_admin" | "user";
 
 export interface OctopUser {
   id: number;

@@ -29,14 +29,17 @@ async def env(env_usage):
     yield env_usage
 
 
-def _seed_usage_agents(srv: Any, agent_ids: list[str], *, user_id: int) -> None:
+def _seed_usage_agents(
+    srv: Any, agent_ids: list[str], *, user_id: int, kind: str = "agent"
+) -> None:
     with srv.services.db.connect() as conn:
         now = int(time.time())
         for aid in agent_ids:
             conn.execute(
-                "INSERT OR IGNORE INTO agents (agent_id, user_id, name, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (aid, user_id, aid, now, now),
+                "INSERT OR IGNORE INTO agents "
+                "(agent_id, user_id, name, kind, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (aid, user_id, aid, kind, now, now),
             )
 
 
@@ -85,6 +88,78 @@ async def test_repo_summary_by_agent(env: Any) -> None:
     by_id = {b["key"]: b for b in result["buckets"]}
     assert by_id["agt-a"]["total_tokens"] == 45
     assert by_id["agt-b"]["total_tokens"] == 7
+
+
+async def test_repo_summary_by_feature_reports_only_feature_agents(env: Any) -> None:
+    """``by_feature`` is the feature half of ``by_agent`` — the kind says which."""
+    c, srv, _admin_auth, alice_auth, ctx = env
+    _seed_usage_agents(srv, ["agt-feature"], user_id=ctx["alice_id"], kind="feature")
+    _seed_usage_agents(srv, ["agt-expert"], user_id=ctx["alice_id"])
+    repo = srv.services.usage_repo
+    repo.record(
+        agent_id="agt-feature",
+        user_id=ctx["alice_id"],
+        input_tokens=10,
+        output_tokens=5,
+    )
+    repo.record(
+        agent_id="agt-expert",
+        user_id=ctx["alice_id"],
+        input_tokens=20,
+        output_tokens=10,
+    )
+
+    by_feature = repo.summary(user_id=ctx["alice_id"], window="last_30d", granularity="by_feature")
+    assert [b["key"] for b in by_feature["buckets"]] == ["agt-feature"]
+    assert by_feature["buckets"][0]["total_tokens"] == 15
+    # The roll-up is the whole scope either way: the view picks what is listed,
+    # not what is counted.
+    assert by_feature["total_tokens"] == 45
+
+    # The experts' own view is untouched by the new one.
+    by_agent = repo.summary(user_id=ctx["alice_id"], window="last_30d", granularity="by_agent")
+    assert {b["key"] for b in by_agent["buckets"]} == {"agt-feature", "agt-expert"}
+
+    r = await c.get(
+        "/api/usage/summary?granularity=by_feature&window=last_30d",
+        headers=alice_auth,
+    )
+    assert r.status_code == 200
+    assert [b["key"] for b in r.json()["buckets"]] == ["agt-feature"]
+
+
+async def test_repo_summary_by_expert_reports_only_ordinary_agents(env: Any) -> None:
+    """``by_expert`` is the other half: the same rows, the other kind."""
+    c, srv, _admin_auth, alice_auth, ctx = env
+    _seed_usage_agents(srv, ["agt-feature"], user_id=ctx["alice_id"], kind="feature")
+    _seed_usage_agents(srv, ["agt-expert"], user_id=ctx["alice_id"])
+    repo = srv.services.usage_repo
+    repo.record(
+        agent_id="agt-feature",
+        user_id=ctx["alice_id"],
+        input_tokens=10,
+        output_tokens=5,
+    )
+    repo.record(
+        agent_id="agt-expert",
+        user_id=ctx["alice_id"],
+        input_tokens=20,
+        output_tokens=10,
+    )
+
+    by_expert = repo.summary(user_id=ctx["alice_id"], window="last_30d", granularity="by_expert")
+    assert [b["key"] for b in by_expert["buckets"]] == ["agt-expert"]
+    assert by_expert["buckets"][0]["total_tokens"] == 30
+    # The roll-up is the whole scope either way: the view picks what is listed,
+    # not what is counted.
+    assert by_expert["total_tokens"] == 45
+
+    r = await c.get(
+        "/api/usage/summary?granularity=by_expert&window=last_30d",
+        headers=alice_auth,
+    )
+    assert r.status_code == 200
+    assert [b["key"] for b in r.json()["buckets"]] == ["agt-expert"]
 
 
 async def test_repo_summary_by_model(env: Any) -> None:
@@ -254,6 +329,7 @@ async def test_user_export_xlsx(env: Any) -> None:
     assert "明细" in wb.sheetnames
     assert "按天" in wb.sheetnames
     assert "按专家" in wb.sheetnames
+    assert "按功能" in wb.sheetnames
     assert "按模型" in wb.sheetnames
     detail = wb["明细"]
     headers = [cell.value for cell in detail[1]]
@@ -281,6 +357,100 @@ async def test_user_export_xlsx(env: Any) -> None:
     assert wb["按天"]._charts
     assert wb["按专家"]._charts
     assert wb["按模型"]._charts
+
+
+async def test_export_summary_sheets_count_one_kind_each(env: Any) -> None:
+    """「按专家」 holds the experts and 「按功能」 the features — nothing of either in the other."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    c, srv, _admin_auth, alice_auth, ctx = env
+    _seed_usage_agents(srv, ["export-expert"], user_id=ctx["alice_id"])
+    _seed_usage_agents(srv, ["export-feature"], user_id=ctx["alice_id"], kind="feature")
+    with srv.services.db.connect() as conn:
+        conn.execute(
+            "UPDATE agents SET name = ? WHERE agent_id = ?",
+            ("Export Expert", "export-expert"),
+        )
+        conn.execute(
+            "UPDATE agents SET name = ? WHERE agent_id = ?",
+            ("Export Feature", "export-feature"),
+        )
+    repo = srv.services.usage_repo
+    repo.record(
+        agent_id="export-expert",
+        user_id=ctx["alice_id"],
+        input_tokens=20,
+        output_tokens=10,
+    )
+    repo.record(
+        agent_id="export-feature",
+        user_id=ctx["alice_id"],
+        input_tokens=4,
+        output_tokens=2,
+    )
+
+    r = await c.get(
+        "/api/usage/export.xlsx?window=all",
+        headers={**alice_auth, "Accept-Language": "zh"},
+    )
+    assert r.status_code == 200
+    wb = load_workbook(BytesIO(r.content))
+
+    def rows_of(sheet_name: str) -> list[list[Any]]:
+        sheet = wb[sheet_name]
+        assert sheet.cell(sheet.max_row, 1).value == "合计"
+        return [
+            [cell.value for cell in row]
+            for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row - 2)
+        ]
+
+    experts = rows_of("按专家")
+    assert [row[1] for row in experts] == ["export-expert"]
+    assert experts[0][0] == "Export Expert"
+    assert experts[0][4] == 30
+    assert wb["按专家"]._charts
+
+    features = rows_of("按功能")
+    assert [row[1] for row in features] == ["export-feature"]
+    assert features[0][0] == "Export Feature"
+    assert features[0][4] == 6
+    assert wb["按功能"]._charts
+
+    # The two sheets are one partition: what each kind spent is in exactly one of
+    # them, so nothing an agent did is missing from the summary.
+    expert_total = sum(row[4] for row in experts)
+    feature_total = sum(row[4] for row in features)
+    assert (expert_total, feature_total) == (30, 6)
+    assert expert_total + feature_total == 36
+
+
+async def test_export_summary_feature_sheet_is_empty_without_features(env: Any) -> None:
+    """A window with no feature usage still has the sheet, and it is empty of rows."""
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    c, srv, _admin_auth, alice_auth, ctx = env
+    _seed_usage_agents(srv, ["export-only-expert"], user_id=ctx["alice_id"])
+    srv.services.usage_repo.record(
+        agent_id="export-only-expert",
+        user_id=ctx["alice_id"],
+        input_tokens=7,
+        output_tokens=3,
+    )
+
+    r = await c.get(
+        "/api/usage/export.xlsx?window=all",
+        headers={**alice_auth, "Accept-Language": "zh"},
+    )
+    assert r.status_code == 200
+    wb = load_workbook(BytesIO(r.content))
+    feature_sheet = wb["按功能"]
+    assert [cell.value for cell in feature_sheet[1]][:2] == ["功能名称", "功能 ID"]
+    assert feature_sheet.max_row == 1
+    assert wb["按专家"].cell(2, 5).value == 10
 
 
 async def test_admin_export_requires_admin(env: Any) -> None:

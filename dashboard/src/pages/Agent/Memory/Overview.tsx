@@ -42,6 +42,12 @@ import styles from "./Overview.module.less";
 
 interface Props {
   agentId: string;
+  /**
+   * Show the numbers without offering to move anything in or out: exporting and
+   * importing a memory package both write it. Defaults to false, which is every
+   * surface an expert is configured on.
+   */
+  readOnly?: boolean;
   onViewConversations?: () => void;
   onReviewCandidates?: () => void;
   onOpenSettings?: () => void;
@@ -74,6 +80,7 @@ const KIND_COLOR_BASE: Record<string, string> = {
 
 export default function Overview({
   agentId,
+  readOnly = false,
   onViewConversations,
   onReviewCandidates,
   onOpenSettings,
@@ -167,7 +174,7 @@ export default function Overview({
               disabled={state.refreshing}
             />
           </Tooltip>
-          <MigrateMemory agentId={agentId} />
+          {readOnly ? null : <MigrateMemory agentId={agentId} />}
         </div>
       </header>
 

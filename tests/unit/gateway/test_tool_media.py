@@ -72,18 +72,9 @@ def test_iter_media_blocks_supports_workbuddy_generation_envelopes() -> None:
 
 
 @pytest.mark.asyncio
-async def test_workspace_roundtrip() -> None:
-    with tempfile.TemporaryDirectory() as ws:
-        workspace = _workspace(ws)
-        await workspace.aupload_bytes(f"{OUTBOUND_DIR}/a.png", b"PNG")
-        data = await workspace.adownload_bytes(f"{OUTBOUND_DIR}/a.png")
-        assert data == b"PNG"
-
-
-@pytest.mark.asyncio
-async def test_import_external_file_via_workspace() -> None:
-    with tempfile.TemporaryDirectory() as ws:
-        external = Path(tempfile.mkdtemp()) / "shot.png"
+async def test_import_external_file_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as foreign_dir:
+        external = Path(foreign_dir) / "shot.png"
         external.write_bytes(b"\x89PNG\r\n")
         workspace = _workspace(ws)
         rel = await ensure_workspace_media_path(
@@ -92,16 +83,14 @@ async def test_import_external_file_via_workspace() -> None:
             filename="shot.png",
             mime="image/png",
         )
-        assert rel is not None
-        assert rel.startswith(f"{OUTBOUND_DIR}/")
-        data = await workspace.adownload_bytes(rel)
-        assert data == b"\x89PNG\r\n"
+        assert rel is None
+        assert not (Path(ws) / OUTBOUND_DIR).exists()
 
 
 @pytest.mark.asyncio
-async def test_import_external_file_virtual_mode() -> None:
-    with tempfile.TemporaryDirectory() as ws:
-        external = Path(tempfile.mkdtemp()) / "harness-browser.png"
+async def test_import_external_file_virtual_mode_is_rejected() -> None:
+    with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as foreign_dir:
+        external = Path(foreign_dir) / "harness-browser.png"
         external.write_bytes(b"\x89PNG\r\n")
         workspace = _default_virtual_workspace(ws)
         rel = await ensure_workspace_media_path(
@@ -110,16 +99,14 @@ async def test_import_external_file_virtual_mode() -> None:
             filename="harness-browser.png",
             mime="image/png",
         )
-        assert rel is not None
-        assert rel.startswith(f"{OUTBOUND_DIR}/")
-        data = await workspace.adownload_bytes(rel)
-        assert data == b"\x89PNG\r\n"
+        assert rel is None
+        assert not (Path(ws) / OUTBOUND_DIR).exists()
 
 
 @pytest.mark.asyncio
-async def test_attachment_frame_virtual_mode_uses_download_url() -> None:
-    with tempfile.TemporaryDirectory() as ws:
-        external = Path(tempfile.mkdtemp()) / "harness.png"
+async def test_attachment_frame_rejects_external_host_media() -> None:
+    with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as foreign_dir:
+        external = Path(foreign_dir) / "harness.png"
         external.write_bytes(b"IMG")
         workspace = _workspace(ws, virtual_mode=True)
         chunk = {
@@ -147,13 +134,7 @@ async def test_attachment_frame_virtual_mode_uses_download_url() -> None:
         )
         content = enriched["messages"][0]["content"]
         parsed = json.loads(content)
-        assert parsed["preview_url"].startswith("/api/agents/agent-1/media/preview")
-        assert parsed["source"]["url"] == parsed["preview_url"]
-        assert parsed.get("path") in (None, "outbound") or (
-            isinstance(parsed.get("path"), str) and parsed["path"].startswith("outbound/")
-        )
-        assert "/home/" not in json.dumps(parsed)
-        assert not str(parsed.get("path") or "").startswith("/api/")
+        assert "preview_url" not in parsed
         frames = [
             f
             async for f in attachment_frames_from_tool_result(
@@ -162,15 +143,14 @@ async def test_attachment_frame_virtual_mode_uses_download_url() -> None:
                 workspace=workspace,
             )
         ]
-        assert len(frames) == 1
-        assert "data" not in frames[0]
-        assert frames[0]["preview_url"] == parsed["preview_url"]
+        assert frames == []
 
 
 @pytest.mark.asyncio
-async def test_attachment_frame_uses_workspace_download_url() -> None:
+async def test_attachment_frame_uses_workspace_media_preview() -> None:
     with tempfile.TemporaryDirectory() as ws:
-        external = Path(tempfile.mkdtemp()) / "harness.png"
+        external = Path(ws) / "outbound" / "harness.png"
+        external.parent.mkdir()
         external.write_bytes(b"IMG")
         workspace = _workspace(ws, virtual_mode=False)
         chunk = {
@@ -227,8 +207,9 @@ def test_iter_media_blocks_dict_content() -> None:
 
 @pytest.mark.asyncio
 async def test_enrich_send_file_dict_content() -> None:
-    with tempfile.TemporaryDirectory() as ws, tempfile.TemporaryDirectory() as ext_dir:
-        png = Path(ext_dir) / f"orca-test-send-file-{time.time_ns()}.png"
+    with tempfile.TemporaryDirectory() as ws:
+        png = Path(ws) / "outbound" / "shot.png"
+        png.parent.mkdir()
         png.write_bytes(b"\x89PNG\r\n")
         workspace = _workspace(ws, virtual_mode=True)
         chunk = {
@@ -302,12 +283,8 @@ def testenrich_media_block_preview_outbound() -> None:
 
 
 @pytest.mark.asyncio
-async def test_enrich_send_file_keeps_absolute_path_without_copy() -> None:
-    """send_file with a host-absolute path must keep that path (no outbound copy).
-
-    Dashboard download already passes ``file://`` to BackendWorkspace, which
-    can read absolute paths directly.
-    """
+async def test_enrich_send_file_normalizes_owned_absolute_path() -> None:
+    """An owned absolute file path becomes a workspace key without copying."""
     with tempfile.TemporaryDirectory() as ws:
         workspace = _workspace(ws, virtual_mode=False)
         generated = Path(ws) / "generated" / "water-ppt"
@@ -342,7 +319,7 @@ async def test_enrich_send_file_keeps_absolute_path_without_copy() -> None:
         content = enriched["messages"][0]["content"]
         assert isinstance(content, dict)
         assert content["type"] == "file"
-        assert content.get("path") == abs_path
+        assert content.get("path") == "generated/water-ppt/保护地球节约用水.pptx"
         assert content["filename"] == "保护地球节约用水.pptx"
         assert "preview_url" not in content
         assert "source" not in content
@@ -395,13 +372,13 @@ async def test_enrich_send_file_rewrites_path_to_dashboard_api() -> None:
         assert not str(content["path"]).startswith("/api/")
 
 
-def test_dashboard_media_url_uses_path_agent_id() -> None:
+def test_dashboard_media_url_keeps_authenticated_agent_id() -> None:
     from octop.infra.gateway.media.backend_files import dashboard_media_url
 
     path = "file:///Users/me/.octop/agents/W4MFVJ/outbound/screenshots/harness.png"
     url = dashboard_media_url("6X3Z7C", path)
     assert url is not None
-    assert url.startswith("/api/agents/W4MFVJ/media/preview?")
+    assert url.startswith("/api/agents/6X3Z7C/media/preview?")
     assert "file%" in url or "source=" in url
 
 

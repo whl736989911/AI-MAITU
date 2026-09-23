@@ -22,8 +22,6 @@ from octop.infra.cron.manager import CronManager
 from octop.infra.db.factory import open_database, should_defer_control_plane_db
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.services import SharedServices, build_shared_services
-from octop.infra.features import FeatureCatalog
-from octop.infra.features import default_library_root as feature_library_root
 from octop.infra.gateway.gateway import Gateway
 from octop.infra.mobile.config_probe import ensure_mobile_capabilities_probed
 from octop.infra.proactive.scheduler import ProactiveCareScheduler
@@ -249,7 +247,6 @@ class OctopServer:
         self.services: SharedServices | None = None
         self.app_runtime: AppRuntime | None = None
         self.expert_catalog: ExpertCatalog | None = None
-        self.feature_catalog: FeatureCatalog | None = None
         self.subagent_catalog: SubagentCatalog | None = None
         self.plugin_manager: PluginManager | None = None
         self.wizard_tokens = WizardTokenStore(ttl_seconds=300)
@@ -302,8 +299,6 @@ class OctopServer:
             extra_roots=[self.paths.expert_market_dir],
         )
         self.expert_catalog.refresh()
-        self.feature_catalog = FeatureCatalog(feature_library_root())
-        self.feature_catalog.reload()
         self.subagent_catalog = SubagentCatalog(default_package_root())
         self.subagent_catalog.refresh()
 

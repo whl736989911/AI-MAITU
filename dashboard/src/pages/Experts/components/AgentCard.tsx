@@ -36,7 +36,12 @@ import {
   isAgentModelConfigError,
 } from "../../../utils/agentError";
 import styles from "../index.module.less";
-import { isSharedExpertViewer } from "../../../utils/sharedExpert";
+import {
+  canManageExpert,
+  isSharedExpertViewer,
+} from "../../../utils/sharedExpert";
+import { isFeatureAgent } from "../../../utils/agentKind";
+import { useUserRole } from "../../../hooks/useUserRole";
 import type { PublishedExpert } from "../../../api/modules/publishedExperts";
 import PublishTemplateButton from "./PublishTemplateButton";
 import AgentMoreActions from "./AgentMoreActions";
@@ -59,6 +64,24 @@ function getStateMeta(state: string) {
 
 const TRANSIENT = new Set(["starting", "stopping"]);
 
+/**
+ * The card's own words about the row it is showing, keyed by kind.
+ *
+ * A feature's agent is not an expert (``utils/agentKind``), and a card that names it
+ * one is making a claim the model does not: its "shared expert · from …" tag and its
+ * "click to copy expert ID" tooltip are wrong for a feature's agent in *both*
+ * languages. The set is closed and lives here so "which of this card's words depend
+ * on what the row is" is one place to read, not something to re-derive per fragment.
+ *
+ * A row that does not say it is a feature keeps the experts' own key, so nothing an
+ * expert's card shows changes — these are the only two words that differ, and both
+ * are answered from the row's kind.
+ */
+const FEATURE_WORDS: Record<string, string> = {
+  "experts.share.fromOwner": "features.share.fromOwner",
+  "experts.copyAgentId": "features.copyAgentId",
+};
+
 export interface AgentCardProps {
   agent: OctopAgent;
   iconName?: string | null;
@@ -67,10 +90,18 @@ export interface AgentCardProps {
   publishedExpert?: PublishedExpert | null;
   onPublishedChange?: () => void;
   onEdit: (agentId: string) => void;
+  onWorkflow?: (agentId: string) => void;
   onDeleted: (agentId: string) => void;
   onStateChange: (agentId: string, newState: string) => void;
   /** Called when a start/stop poll settles (e.g. admin views another user's agents). */
   onPollSettled?: () => void;
+  /**
+   * The i18n key the id row's label is read from. Defaults to the experts' own
+   * (``experts.agentId``), which is what every expert surface shows; a caller that
+   * shows the card for an agent that is not an expert names it itself, so the row
+   * does not label a feature's agent as an expert's.
+   */
+  idLabelKey?: string;
 }
 
 export const AgentCard = memo(function AgentCard({
@@ -81,13 +112,21 @@ export const AgentCard = memo(function AgentCard({
   publishedExpert = null,
   onPublishedChange,
   onEdit,
+  onWorkflow,
   onDeleted,
   onStateChange,
   onPollSettled,
+  idLabelKey = "experts.agentId",
 }: AgentCardProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const { setActiveAgent, refresh: refreshAgents } = useAgent();
+
+  /** The key one of this card's own words about the row is read from — see FEATURE_WORDS. */
+  const rowKey = (expertKey: string): string => {
+    if (!isFeatureAgent(agent)) return expertKey;
+    return FEATURE_WORDS[expertKey] ?? expertKey;
+  };
 
   const [localState, setLocalState] = useState(agent.state);
   const [localError, setLocalError] = useState(agent.last_error);
@@ -276,7 +315,10 @@ export const AgentCard = memo(function AgentCard({
   const friendlyError = formatAgentError(localError, t);
   const chatReady = isAgentChatReady(localState);
   const sharedViewer = isSharedExpertViewer(agent);
-  const isOwner = agent.is_owner !== false;
+  // Who may write it is the server's rule — the owner, or an administrator — and
+  // not this card's guess from ownership alone. See ``canManageExpert``.
+  const role = useUserRole();
+  const canManage = canManageExpert(agent, role);
 
   return (
     <>
@@ -306,7 +348,7 @@ export const AgentCard = memo(function AgentCard({
               {agent.is_shared && (
                 <Tag color="blue">
                   {sharedViewer
-                    ? t("experts.share.fromOwner", {
+                    ? t(rowKey("experts.share.fromOwner"), {
                         name: agent.owner_username,
                       })
                     : t("experts.share.badge")}
@@ -314,14 +356,14 @@ export const AgentCard = memo(function AgentCard({
               )}
             </div>
             <div className={styles.agentCardIdRow}>
-              <Tooltip title={t("experts.copyAgentId")}>
+              <Tooltip title={t(rowKey("experts.copyAgentId"))}>
                 <button
                   type="button"
                   className={styles.agentCardId}
                   onClick={() => void copyAgentId()}
                 >
                   <span className={styles.agentCardIdLabel}>
-                    {t("experts.agentId")}
+                    {t(idLabelKey)}
                   </span>
                   <span className={styles.agentCardIdValue}>
                     {agent.agent_id}
@@ -346,12 +388,12 @@ export const AgentCard = memo(function AgentCard({
               )}
               <MbtiPersonaTag
                 value={agent.persona_mbti}
-                onClick={isOwner ? () => setMbtiCatalogOpen(true) : undefined}
+                onClick={canManage ? () => setMbtiCatalogOpen(true) : undefined}
               />
             </div>
           </div>
 
-          {isOwner && (
+          {canManage && (
             <div className={styles.agentCard2HeaderActions}>
               <Switch
                 size="small"
@@ -396,7 +438,7 @@ export const AgentCard = memo(function AgentCard({
 
         {/* Footer actions */}
         <div className={styles.agentCard2Footer}>
-          {isOwner && (
+          {canManage && (
             <>
               <Tooltip
                 title={
@@ -473,6 +515,9 @@ export const AgentCard = memo(function AgentCard({
 
               <AgentMoreActions
                 buttonClassName={styles.agentCard2EditBtn}
+                onWorkflow={
+                  onWorkflow ? () => onWorkflow(agent.agent_id) : undefined
+                }
                 onSkills={() => setSkillCatalogOpen(true)}
                 onSubagents={openSubagentCatalog}
                 onTools={() => setToolSettingsOpen(true)}
@@ -494,7 +539,7 @@ export const AgentCard = memo(function AgentCard({
               {t("experts.openChat", "对话")}
               <ChevronRight size={13} />
             </button>
-          ) : isOwner &&
+          ) : canManage &&
             (localState === "failed" ||
               localState === "stopped" ||
               localState === "created") ? (
@@ -551,6 +596,9 @@ export const AgentCard = memo(function AgentCard({
         agentId={agent.agent_id}
         open={memoryCatalogOpen}
         onClose={() => setMemoryCatalogOpen(false)}
+        // A feature's memory is written by nobody, so over one the panel is
+        // shown read-only rather than offered and refused.
+        readOnly={isFeatureAgent(agent)}
       />
       <MbtiCatalogDrawer
         open={mbtiCatalogOpen}

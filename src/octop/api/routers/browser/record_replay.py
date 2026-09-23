@@ -7,8 +7,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
-from octop.api.deps import current_user
+from octop.api.deps import require_permission
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.identity import User
 from octop.infra.utils.browser_media import user_browser_profile
 
 router = APIRouter()
@@ -128,6 +129,21 @@ def _active_for_profile(data: dict[str, Any], profile: str) -> Any:
     return active
 
 
+def _daemon_unreachable(exc: BaseException) -> bool:
+    """True when *exc* proves no daemon can hold a recording for this host.
+
+    ``harness_browser`` runs the recording inside its daemon process, so a
+    socket that was never created (``FileNotFoundError``), a refused/reset
+    connection, or a host whose event loop has no unix-socket transport at all
+    (Windows raises ``AttributeError`` for ``open_unix_connection``) all mean
+    "no session exists". Anything else — a daemon that stopped answering, a
+    malformed reply — is unknown state and must not be read as idle.
+    """
+    if isinstance(exc, (FileNotFoundError, ConnectionError)):
+        return True
+    return isinstance(exc, AttributeError) and "open_unix_connection" in str(exc)
+
+
 def _raise_if_not_ok(data: dict[str, Any], *, status: int = 500) -> None:
     if data.get("ok", True):
         return
@@ -139,13 +155,32 @@ def _raise_if_not_ok(data: dict[str, Any], *, status: int = 500) -> None:
     )
 
 
-@router.get("/browser/record-replay/status")
-async def record_status(user: Any = Depends(current_user)) -> dict[str, Any]:
-    profile = user_browser_profile(user.id)
+async def _record_status_payload() -> dict[str, Any]:
+    """The daemon's ``status`` envelope, or an idle one when no daemon exists.
+
+    Raises ``OctopError`` (503) when the daemon *is* there but did not answer —
+    a hung or half-broken daemon leaves the state unknown, so reading it as
+    "not recording" would be a guess dressed as an answer.
+    """
     try:
         data = await send_record_request({"command": "status"})
-    except Exception:
-        data = {"ok": True, "active": None}
+    except Exception as exc:
+        if not _daemon_unreachable(exc):
+            raise OctopError(
+                ErrorCode.INTERNAL_ERROR,
+                f"record daemon did not answer: {exc}",
+                status=503,
+            ) from exc
+        return {"ok": True, "active": None}
+    _raise_if_not_ok(data, status=503)
+    return data
+
+
+@router.get("/browser/record-replay/status")
+async def record_status(user: User = Depends(require_permission("browser"))) -> dict[str, Any]:
+    """Report whether the caller has a recording running."""
+    profile = user_browser_profile(user.id)
+    data = await _record_status_payload()
     data["active"] = _active_for_profile(data, profile)
     data["latestRecordingId"] = _latest_recording_id(profile)
     return data
@@ -154,7 +189,7 @@ async def record_status(user: Any = Depends(current_user)) -> dict[str, Any]:
 @router.post("/browser/record-replay/start")
 async def record_start(
     body: RecordStartBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     daemon = await ensure_record_daemon()
     _raise_if_not_ok(daemon, status=503)
@@ -174,18 +209,15 @@ async def record_start(
 @router.post("/browser/record-replay/stop")
 async def record_stop(
     body: RecordStopBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     profile = user_browser_profile(user.id)
     recording_id = body.recording_id
     if recording_id:
         _require_owned_recording(recording_id, profile)
     else:
-        try:
-            status = await send_record_request({"command": "status"})
-        except Exception:
-            status = {}
-        if _active_for_profile(status if isinstance(status, dict) else {}, profile) is None:
+        active = _active_for_profile(await _record_status_payload(), profile)
+        if active is None:
             raise OctopError(ErrorCode.NOT_FOUND, "recording not found")
     data = await send_record_request(
         {
@@ -202,7 +234,7 @@ async def record_stop(
 @router.post("/browser/record-replay/stop-and-generate-skill")
 async def record_stop_and_generate_skill(
     body: RecordStopAndGenerateSkillBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     """Stop recording, generate steps + skill draft, and return the skill content.
 
@@ -215,11 +247,8 @@ async def record_stop_and_generate_skill(
     if recording_id:
         _require_owned_recording(recording_id, profile)
     else:
-        try:
-            status = await send_record_request({"command": "status"})
-        except Exception:
-            status = {}
-        if _active_for_profile(status if isinstance(status, dict) else {}, profile) is None:
+        active = _active_for_profile(await _record_status_payload(), profile)
+        if active is None:
             raise OctopError(ErrorCode.NOT_FOUND, "recording not found")
 
     # 1) Stop the recording
@@ -282,7 +311,7 @@ async def record_stop_and_generate_skill(
 @router.post("/browser/record-replay/skill-content")
 async def get_skill_content(
     body: SkillContentBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     """Read the generated skill content (draft.skill.md) for a given recording."""
     skill_content = None
@@ -312,7 +341,7 @@ async def get_skill_content(
 @router.post("/browser/record-replay/replay")
 async def replay_recording(
     body: ReplayBody,
-    user: Any = Depends(current_user),
+    user: User = Depends(require_permission("browser")),
 ) -> dict[str, Any]:
     profile = user_browser_profile(user.id)
     _require_owned_recording(body.recording_id, profile)

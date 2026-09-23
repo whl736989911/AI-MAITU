@@ -1,0 +1,170 @@
+.panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex-shrink: 0;
+  margin: 16px 0;
+  padding-top: 16px;
+  border-top: 1px solid var(--fn-border-secondary);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.headerTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: var(--fn-text-primary);
+}
+
+.countTag {
+  margin-inline-end: 0;
+  font-weight: 500;
+}
+
+.hint {
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.loading {
+  display: flex;
+  justify-content: center;
+  padding: 24px 0;
+}
+
+.nameCell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.templateName,
+.templateDetail {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.templateName {
+  color: var(--fn-text-primary);
+}
+
+.templateDetail {
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+.rowActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.actionSlot {
+  display: inline-flex;
+}
+
+/* The field editor: one row per field, each column a control. */
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.fieldsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--fn-text-primary);
+}
+
+.fieldRow {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 1fr) 120px 96px minmax(120px, 1fr) minmax(140px, 1.4fr)
+    32px;
+  align-items: start;
+  gap: 8px;
+}
+
+.fieldRow :global(.ant-form-item) {
+  margin-bottom: 0;
+}
+
+/* Bindings: a compact list above the form that adds one. */
+.bindingList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 0;
+  list-style: none;
+}
+
+.bindingItem {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: 6px;
+}
+
+.bindingName {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fn-text-primary);
+}
+
+.bindingDetail {
+  flex-shrink: 0;
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+.bindingForm {
+  padding-top: 12px;
+  border-top: 1px solid var(--fn-border-secondary);
+}
+
+.verdict {
+  display: block;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--fn-text-secondary);
+}
+
+.conflict {
+  display: block;
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--fn-color-warning);
+}
+
+@media (max-width: 767px) {
+  .fieldRow {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  }
+
+  .panel {
+    margin: 12px 0;
+    padding-top: 12px;
+  }
+}

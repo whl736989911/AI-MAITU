@@ -6,7 +6,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from harness_agent.backends.workspace import BackendWorkspace
 
-from octop.api.common.agent import require_agent_owner_row, require_agent_row
+from octop.api.common.agent import (
+    AgentCapability,
+    require_agent_capability_row,
+    require_agent_owner_row,
+    require_agent_row,
+)
 from octop.infra.errors import ErrorCode, OctopError
 
 if TYPE_CHECKING:
@@ -34,6 +39,37 @@ def require_running_agent(server: Any, agent_id: str) -> HarnessAgent:
     return cast("HarnessAgent", server.app_runtime.agent_registry.get_agent(agent_id))
 
 
+def _row_for(
+    agent_id: str,
+    *,
+    user: Any,
+    as_user: int | None,
+    server: Any,
+    owner_only: bool,
+    capability: AgentCapability | None,
+) -> Any:
+    """The agent row, checked the way this module's callers declare it.
+
+    *capability* names the group a **mutating** endpoint is about to write, and
+    carries the matrix's rule for it (:func:`agent_capability_refusal`). It is the
+    way to ask for a workspace write, so ``owner_only`` stays what it always was —
+    a check on the agent itself — and is not passed together with a capability.
+    """
+    if capability is not None:
+        if owner_only:
+            raise ValueError("pass capability or owner_only, not both")
+        return require_agent_capability_row(
+            agent_id,
+            user=user,
+            as_user=as_user,
+            server=server,
+            capability=capability,
+        )
+    if owner_only:
+        return require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    return require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+
+
 async def require_running_workspace(
     agent_id: str,
     *,
@@ -41,6 +77,7 @@ async def require_running_workspace(
     as_user: int | None,
     server: Any,
     owner_only: bool = False,
+    capability: AgentCapability | None = None,
 ) -> BackendWorkspace:
     """Auth-checked :class:`BackendWorkspace` for a running agent.
 
@@ -51,8 +88,14 @@ async def require_running_workspace(
     Stopped / failed agents still raise — the fallback is only for the
     rebuild gap, not a way to edit a stopped workspace through this helper.
     """
-    checker = require_agent_owner_row if owner_only else require_agent_row
-    row = checker(agent_id, user=user, as_user=as_user, server=server)
+    row = _row_for(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        owner_only=owner_only,
+        capability=capability,
+    )
     try:
         return require_running_agent(server, agent_id).workspace
     except OctopError as exc:
@@ -74,14 +117,21 @@ async def require_agent_workspace(
     user: Any,
     server: Any,
     owner_only: bool = False,
+    capability: AgentCapability | None = None,
 ) -> BackendWorkspace:
     """Auth-checked workspace even when the agent is stopped.
 
     Used for display files (e.g. expert avatar) that must work from the
     experts list without requiring a running harness handle.
     """
-    checker = require_agent_owner_row if owner_only else require_agent_row
-    checker(agent_id, user=user, as_user=None, server=server)
+    _row_for(
+        agent_id,
+        user=user,
+        as_user=None,
+        server=server,
+        owner_only=owner_only,
+        capability=capability,
+    )
     assert server.app_runtime is not None
     workspace = server.app_runtime.agent_registry.workspace_for_agent(agent_id)
     if workspace is None:

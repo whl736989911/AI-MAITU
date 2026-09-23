@@ -6,6 +6,7 @@ from octop.i18n.loader import lookup, tr
 from octop.infra.utils.locale import Locale
 
 __all__ = [
+    "channel_permission_revoked",
     "channel_probe_field_label",
     "channel_probe_incomplete",
     "channel_runtime_reason",
@@ -39,3 +40,13 @@ def channel_runtime_reason(reason: str, locale: str | Locale = "en") -> str:
     """Localized label for a runtime-status reason code (``disabled``/``error``/…)."""
     label = lookup(f"channel.runtime.{reason}", locale)
     return label if isinstance(label, str) else reason
+
+
+def channel_permission_revoked(locale: str | Locale = "en") -> str:
+    """Line an IM user gets when the channel's owner lost its ``channel_<kind>``.
+
+    Design §4.5: 通道权限撤销后，通道消费者停止接收消息. The message is refused —
+    and the refusal is spoken, because a bot that goes silent mid-conversation
+    reads as a broken bot, not as a revoked authorization.
+    """
+    return tr("channel.permission_revoked", locale)

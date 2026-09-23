@@ -6,7 +6,9 @@ through ``agent.workspace`` backed by ``local_shell`` on the agent dir.
 
 from __future__ import annotations
 
+import tempfile
 from io import BytesIO
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -35,7 +37,7 @@ async def env(env_with_agent):
 
 async def test_tree_returns_empty_for_fresh_workspace(env: Any) -> None:
     c, _srv, auth, aid = env
-    r = await c.get(f"/api/agents/{aid}/workspace/tree?from_workspace=true", headers=auth)
+    r = await c.get(f"/api/agents/{aid}/workspace/tree", headers=auth)
     assert r.status_code == 200, r.text
     rows = r.json()
     assert isinstance(rows, list)
@@ -143,7 +145,6 @@ async def test_upload_then_download_binary(env: Any) -> None:
     files = {"file": ("logo.png", blob, "image/png")}
     r = await c.post(
         f"/api/agents/{aid}/workspace/upload",
-        params={**FROM_WORKSPACE},
         headers=auth,
         files=files,
     )
@@ -215,6 +216,12 @@ async def test_glob_after_seeding(env: Any) -> None:
         params={**FROM_WORKSPACE, "pattern": "*.md", "path": "/"},
         headers=auth,
     )
+    traversal = await c.get(
+        f"/api/agents/{aid}/workspace/glob",
+        params={**FROM_WORKSPACE, "path": "/", "pattern": "../*.txt"},
+        headers=auth,
+    )
+    assert traversal.status_code == 403
     assert r.status_code == 200, r.text
     paths = {row["path"] for row in r.json()}
     # Glob may return absolute or relative paths depending on backend.
@@ -528,3 +535,126 @@ async def test_doc_write_invalid_content_400(env: Any) -> None:
         headers=auth,
     )
     assert r.status_code == 400
+
+
+async def test_workspace_routes_reject_foreign_host_paths(env: Any, tmp_path: Path) -> None:
+    c, srv, auth, aid = env
+    foreign = tmp_path / "other-agent"
+    foreign.mkdir()
+    outside_text = foreign / "secret.txt"
+    outside_text.write_text("secret", encoding="utf-8")
+    outside_doc = foreign / "secret.docx"
+    outside_doc.write_bytes(_sample_docx_bytes())
+    outside_image = foreign / "secret.png"
+    outside_image.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+    agent = srv.app_runtime.agent_registry.get_agent(aid)
+    own_file = Path(agent.workspace.workspace_dir) / "own.txt"
+    own_file.write_text("own", encoding="utf-8")
+    own_read = await c.get(
+        f"/api/agents/{aid}/workspace/file",
+        params={"path": str(own_file)},
+        headers=auth,
+    )
+    assert own_read.status_code == 200, own_read.text
+    assert own_read.json()["content"] == "own"
+
+    for route, params in (
+        ("tree", {"path": str(foreign)}),
+        ("file", {"path": str(outside_text)}),
+        ("download", {"path": str(outside_text)}),
+        ("doc", {"path": str(outside_doc)}),
+        ("glob", {"path": str(foreign), "pattern": "*.txt"}),
+        ("grep", {"path": str(outside_text), "pattern": "secret"}),
+        ("file", {"path": "~/.octop/agents/other/secret.txt"}),
+        ("file", {"path": r"\\server\share\secret.txt"}),
+        ("file", {"path": "file://server/share/secret.txt"}),
+    ):
+        response = await c.get(
+            f"/api/agents/{aid}/workspace/{route}",
+            params=params,
+            headers=auth,
+        )
+        assert response.status_code == 403, f"{route}: {response.status_code} {response.text}"
+
+    preview = await c.get(
+        f"/api/agents/{aid}/media/preview",
+        params={"source": outside_image.as_uri(), "mime_type": "image/png"},
+        headers=auth,
+    )
+    assert preview.status_code == 403
+
+    write = await c.put(
+        f"/api/agents/{aid}/workspace/file",
+        params={"path": str(outside_text)},
+        headers=auth,
+        json={"content": "overwritten"},
+    )
+    assert write.status_code == 403
+    upload = await c.post(
+        f"/api/agents/{aid}/workspace/upload",
+        params={"path": str(foreign / "uploaded.bin")},
+        headers=auth,
+        files={"file": ("upload.bin", b"payload", "application/octet-stream")},
+    )
+    assert upload.status_code == 403
+    assert outside_text.read_text(encoding="utf-8") == "secret"
+    assert not (foreign / "uploaded.bin").exists()
+
+    with tempfile.TemporaryDirectory() as temp_dir:
+        temp_image = Path(temp_dir) / "temp.png"
+        temp_image.write_bytes(b"\x89PNG\r\n\x1a\n")
+        temp_preview = await c.get(
+            f"/api/agents/{aid}/media/preview",
+            params={"source": temp_image.as_uri(), "mime_type": "image/png"},
+            headers=auth,
+        )
+        assert temp_preview.status_code == 403
+
+
+async def test_workspace_routes_reject_symlink_escape(env: Any, tmp_path: Path) -> None:
+    c, srv, auth, aid = env
+    agent = srv.app_runtime.agent_registry.get_agent(aid)
+    workspace = Path(agent.workspace.workspace_dir)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("secret", encoding="utf-8")
+    link = workspace / "escape.txt"
+    try:
+        link.symlink_to(outside)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+    outside_image = tmp_path / "outside.png"
+    outside_image.write_bytes(b"\x89PNG\r\n\x1a\n")
+    image_link = workspace / "escape.png"
+    try:
+        image_link.symlink_to(outside_image)
+    except OSError:
+        pytest.skip("symlink creation is unavailable")
+
+    read = await c.get(
+        f"/api/agents/{aid}/workspace/file",
+        params={**FROM_WORKSPACE, "path": "/escape.txt"},
+        headers=auth,
+    )
+    assert read.status_code == 403
+    preview = await c.get(
+        f"/api/agents/{aid}/media/preview",
+        params={"source": image_link.as_uri(), "mime_type": "image/png"},
+        headers=auth,
+    )
+    assert preview.status_code == 403
+    write = await c.put(
+        f"/api/agents/{aid}/workspace/file",
+        params={**FROM_WORKSPACE, "path": "/escape.txt"},
+        headers=auth,
+        json={"content": "overwritten"},
+    )
+    assert write.status_code == 403
+    upload = await c.post(
+        f"/api/agents/{aid}/workspace/upload",
+        params={**FROM_WORKSPACE, "path": "/escape.txt"},
+        headers=auth,
+        files={"file": ("escape.txt", b"payload", "text/plain")},
+    )
+    assert upload.status_code == 403
+    assert outside.read_text(encoding="utf-8") == "secret"

@@ -39,6 +39,9 @@ def _request(grants: dict[str, list[str]] | None = None) -> SimpleNamespace:
     repo = SimpleNamespace(
         grants_for_units=_grants_for_units,
         list_unit_permissions=lambda unit: list(mapping.get(unit, [])),
+        # A flat tree: every unit is its own root, so the ancestor chain a grant
+        # lookup walks is just the unit itself.
+        ancestor_keys=lambda unit: [unit] if unit in mapping else [],
     )
     server = SimpleNamespace(
         _started=True,

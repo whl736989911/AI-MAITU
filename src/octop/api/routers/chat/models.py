@@ -13,6 +13,26 @@ _MAX_DECISIONS = 16
 _MAX_DECISION_MESSAGE_CHARS = 8000
 
 
+class FeatureRunBody(BaseModel):
+    """What an input card submitted for one run of a feature's workflow.
+
+    A typed frame field rather than an entry in a free-form metadata bag: the same
+    turn also carries keys the server decides (``user_is_admin``, the resolved
+    model), and a client that could write into that bag would be writing its own
+    permissions. Two keys are enough — the values the caller filled in, and the
+    workspace paths of the files they attached.
+    """
+
+    inputs: dict[str, Any] = Field(
+        default_factory=dict,
+        description="The feature's declared input fields, as the caller filled them in.",
+    )
+    attachments: list[str] = Field(
+        default_factory=list,
+        description="Workspace paths of the files this run was given.",
+    )
+
+
 class ChatTurnBody(BaseModel):
     """User turn payload — same fields for WebSocket ``user_turn`` and legacy HTTP bodies."""
 
@@ -55,6 +75,13 @@ class ChatTurnBody(BaseModel):
         description="Deprecated — locale is read from the user profile. Ignored when set.",
     )
     text: str | None = Field(default=None, description="Plain-text user message (WS shorthand).")
+    feature_run: FeatureRunBody | None = Field(
+        default=None,
+        description=(
+            "Set when this turn is a run of a feature's workflow, submitted from its "
+            "input card — the run is recorded and its values are injected into the turn."
+        ),
+    )
 
     @classmethod
     def from_ws_payload(cls, payload: dict[str, Any]) -> ChatTurnBody:
@@ -93,6 +120,9 @@ class ChatTurnBody(BaseModel):
                 else None
             ),
             text=text or None,
+            feature_run=payload.get("feature_run")
+            if isinstance(payload.get("feature_run"), dict)
+            else None,
         )
 
 
@@ -112,6 +142,7 @@ class UserTurnWsFrame(BaseModel):
     skills: list[str] | None = None
     messages: list[dict[str, Any]] | None = None
     target_agent_ids: list[str] | None = None
+    feature_run: FeatureRunBody | None = None
 
     def to_turn_body(self) -> ChatTurnBody:
         return ChatTurnBody.from_ws_payload(self.model_dump(exclude_none=True))

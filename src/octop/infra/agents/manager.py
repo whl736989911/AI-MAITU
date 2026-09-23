@@ -14,6 +14,7 @@ from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field, fields, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
+from uuid import uuid4
 
 from harness_agent import HarnessAgent, HarnessAgentConfig, HarnessAgentManager
 from harness_agent.registry import AgentEntry
@@ -21,6 +22,7 @@ from harness_agent.security.models import SecurityPolicy
 
 from octop.i18n.domains.agents import NO_MODELS_CONFIGURED, format_agent_start_error
 from octop.infra.agents.acp_settings import ACPSettingsStore
+from octop.infra.agents.kinds import KIND_AGENT, KINDS, is_feature_agent
 from octop.infra.agents.langfuse import LangfuseSettings, LangfuseSettingsStore
 from octop.infra.agents.media_generation import (
     MediaGenerationSettings,
@@ -42,6 +44,7 @@ from octop.infra.agents.runtime_limits import (
     AGENT_RUNTIME_CONFIG_KEYS,
     apply_agent_runtime_to_stream_request,
     merge_agent_runtime_values,
+    runtime_overrides_from_configurable,
 )
 from octop.infra.agents.runtime_limits import (
     resolve_context_max_tokens as config_context_max_tokens,
@@ -64,7 +67,7 @@ from octop.infra.connectors.builder import (
 from octop.infra.connectors.service import ConnectorService
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.sharing import allowed_resource_ids, user_scope
+from octop.infra.sharing import allowed_resource_ids
 from octop.infra.skills.presentation import apply_skill_presentation, localize_skill_summary
 from octop.infra.skills.skill_package_store import SkillPackageStore
 from octop.infra.skills.workspace_catalog import (
@@ -94,6 +97,11 @@ _PROVIDER_RELOAD_CONCURRENCY = 6
 _MEMORY_NS_PREFIX = "agent_"
 
 _AGENT_STATES_NEEDING_MODEL_RELOAD = frozenset({"failed", "created"})
+
+# Skill catalog revisions start from a per-process value: a thread's scanned
+# revision is only meaningful within the process that recorded it, and a fresh
+# process must not mistake yesterday's record for a current one.
+_SKILL_CATALOG_EPOCH = int(uuid4().int % (1 << 31))
 
 _HARNESS_AGENT_CONFIG_FIELDS = frozenset(item.name for item in fields(HarnessAgentConfig))
 
@@ -297,6 +305,9 @@ class AgentCreateSpec:
     welcome_message: str | None = None
     knowledge_base_ids: list[str] | None = None
     mcp_servers: list[str] | None = None
+    kind: str = KIND_AGENT
+    """What the new row is — :data:`~octop.infra.agents.kinds.KIND_AGENT` unless the
+    caller is creating a feature's own agent. Fixed at creation; never updated."""
     runtime_config: dict[str, Any] = field(default_factory=dict)
     config: dict[str, Any] = field(default_factory=dict)
 
@@ -356,6 +367,9 @@ class AgentManager:
         self._reload_dirty: set[str] = set()
         self._reload_worker_running: dict[str, bool] = {}
         self._bootstrap_graph_refresh_pending: set[str] = set()
+        # Skill catalog revisions — a thread's model-visible skills are scanned once
+        # per thread, so only a moved revision makes the next turn rescan them.
+        self._skill_catalog_revisions: dict[str, int] = {}
         # Chat user id used to resolve connectors when agent.user_id is NULL (shared agents).
         self._connector_user_override: dict[str, int] = {}
         self._langfuse = LangfuseSettingsStore(
@@ -385,6 +399,10 @@ class AgentManager:
         self._mcp_tool_cache: dict[tuple[int, str, str], list[Any]] = {}
         self._mcp_tool_cache_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._mcp_tool_cache_guard = asyncio.Lock()
+        # MCP tools resolved for one caller on somebody else's agent:
+        # (agent_id, user_id) -> {server_name: tools}. These carry the caller's
+        # credentials, so they never reach the agent — see ``prepare_chat_mcp``.
+        self._turn_mcp_tools: dict[tuple[str, int], dict[str, list[Any]]] = {}
         # Sanitized plugin tool name → original label (per agent, rebuilt on reload).
         self._plugin_tool_labels: dict[str, dict[str, str]] = {}
 
@@ -512,6 +530,10 @@ class AgentManager:
     ) -> AgentRow:
         """Create a new agent, persist to DB, and register with harness."""
         async with self._lock:
+            if spec.kind not in KINDS:
+                # A spec is built in-process, so an unknown kind is a bug: name the
+                # value that is not part of the row's vocabulary instead of storing it.
+                raise ValueError(f"unknown agent kind {spec.kind!r}; expected one of {KINDS}")
             self._assert_agent_name_available(spec.user_id, spec.name)
             if spec.agent_id:
                 validate_custom_agent_id(spec.agent_id)
@@ -594,6 +616,7 @@ class AgentManager:
                 ),
                 knowledge_base_ids=knowledge_ids_json,
                 mcp_servers=mcp_servers_json,
+                kind=spec.kind,
             )
             row = self._repos.agent_repo.get(agent_id)
             assert row is not None
@@ -732,6 +755,7 @@ class AgentManager:
             await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
             await self._harness_manager.aremove_agent(agent_id)  # type: ignore[union-attr]
         self._plugin_tool_labels.pop(agent_id, None)
+        self.forget_turn_mcp_tools(agent_id)
         try:
             if await asyncio.to_thread(workspace_dir.exists):
                 await asyncio.to_thread(shutil.rmtree, workspace_dir)
@@ -758,6 +782,7 @@ class AgentManager:
                 raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
             await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
             await self._harness_manager.aremove_agent(agent_id)  # type: ignore[union-attr]
+            self.forget_turn_mcp_tools(agent_id)
             self._repos.agent_repo.set_state(agent_id, "stopped", error=None)
 
     def _quiesce_harness_memory(self, agent_id: str) -> None:
@@ -1265,11 +1290,15 @@ class AgentManager:
         if user_id is None:
             self._mcp_tool_cache.clear()
             self._mcp_tool_cache_locks.clear()
+            self._turn_mcp_tools.clear()
             return
         for cache_key in [k for k in self._mcp_tool_cache if k[0] == user_id]:
             del self._mcp_tool_cache[cache_key]
         for lock_key in [k for k in self._mcp_tool_cache_locks if k[0] == user_id]:
             del self._mcp_tool_cache_locks[lock_key]
+        # Turn-scoped tools come from that cache: they are as stale as it is.
+        for turn_key in [k for k in self._turn_mcp_tools if k[1] == user_id]:
+            del self._turn_mcp_tools[turn_key]
 
     def mcp_server_labels_for_user(self, user_id: int) -> dict[str, str]:
         labels: dict[str, str] = {}
@@ -1413,6 +1442,12 @@ class AgentManager:
         Custom MCP tools are loaded on demand and shared via a user-level cache.
         Built-in connectors still use reload_connectors when missing.
 
+        On somebody else's agent (a shared expert) the caller's tools are kept
+        off the agent entirely: they carry the caller's credentials, and the
+        agent is used by more than one user. They go to the per-turn registry
+        :class:`~octop.infra.agents.middleware.turn_mcp.TurnMcpToolsMiddleware`
+        serves from instead.
+
         Returns server names that still have no loaded tools after reload/retry.
         """
         if not names:
@@ -1422,6 +1457,15 @@ class AgentManager:
         uid = self._connector_uid_for(row, connector_user_id=connector_user_id) if row else None
         if uid is None and connector_user_id is not None:
             uid = connector_user_id
+        if row is not None and uid is not None and row.user_id != uid:
+            logger.info(
+                "prepare_chat_mcp agent=%s owner=%s caller=%s requested=%s: turn-scoped tools",
+                agent_id,
+                row.user_id,
+                uid,
+                names,
+            )
+            return await self._prepare_turn_mcp_tools(agent_id, uid, names)
 
         tool_set: frozenset[str] = getattr(agent, "_mcp_tool_name_set", frozenset())
         missing_tools = [n for n in names if not any(t.startswith(f"{n}_") for t in tool_set)]
@@ -1573,6 +1617,142 @@ class AgentManager:
                 still_missing,
             )
         return still_missing
+
+    async def _prepare_turn_mcp_tools(
+        self,
+        agent_id: str,
+        user_id: int,
+        names: Sequence[str],
+    ) -> list[str]:
+        """Resolve *user_id*'s own MCP tools for one turn on somebody else's agent.
+
+        The tools stay in :attr:`_turn_mcp_tools` and are never written to the
+        agent: they hold the caller's credentials, and the agent belongs to (and
+        is used by) somebody else. Returns the servers this user has no connector
+        for — the caller reports that as unavailable rather than reaching for the
+        owner's tools.
+        """
+        tools = await self._turn_tools_for_user(user_id, names)
+        key = (agent_id, user_id)
+        if tools:
+            self._turn_mcp_tools[key] = tools
+        else:
+            self._turn_mcp_tools.pop(key, None)
+        still_missing = sorted(name for name in dict.fromkeys(names) if name not in tools)
+        if still_missing:
+            logger.warning(
+                "prepare_chat_mcp agent=%s caller=%s: no connector tools for %s",
+                agent_id,
+                user_id,
+                still_missing,
+            )
+        return still_missing
+
+    async def _turn_tools_for_user(
+        self,
+        user_id: int,
+        names: Sequence[str],
+    ) -> dict[str, list[Any]]:
+        """One user's own tools for *names*, loaded without touching an agent.
+
+        Three sources, exactly as the agent-bound path has them: custom MCP
+        servers through the per-user tool cache, gateway connectors built from
+        the user's decrypted credentials, and HTTP MCP connectors loaded from the
+        user's own spec.
+        """
+        custom_configs = self._connector_svc.custom_harness_configs(user_id)
+        tools: dict[str, list[Any]] = {}
+        for name in dict.fromkeys(names):
+            spec = custom_configs.get(name)
+            if isinstance(spec, dict) and spec.get("transport"):
+                loaded = await self._get_or_load_mcp_tools(user_id, name, spec)
+            else:
+                loaded = await self._load_connector_tools_for_user(user_id, name)
+            if loaded:
+                tools[name] = loaded
+        return tools
+
+    async def _load_connector_tools_for_user(self, user_id: int, server_name: str) -> list[Any]:
+        """Tools of one built-in connector instance *user_id* may use, or ``[]``."""
+        from harness_agent.mcp import aload_mcp_tools
+
+        from octop.infra.connectors.builder import build_http_mcp_spec
+        from octop.infra.connectors.catalog import get_catalog_entry
+        from octop.infra.connectors.gateway.langchain import build_gateway_langchain_tools
+        from octop.infra.utils.env_file import (  # noqa: PLC0415
+            env_file_path,
+            load_env_file,
+            overlay_stdio_mcp_configs,
+        )
+
+        svc = self._connector_svc
+        global_env: dict[str, str] | None = None
+        tools: list[Any] = []
+        for inst in self._repos.connector_repo.list_visible(user_id):
+            if inst.status != "active" or inst.mcp_server_name != server_name:
+                continue
+            entry = get_catalog_entry(inst.kind)
+            if entry is None:
+                continue
+            try:
+                await svc.ensure_fresh_credentials(inst.instance_id, inst.kind)
+            except Exception:
+                logger.exception(
+                    "turn-scoped MCP: credential refresh failed for %s", inst.mcp_server_name
+                )
+                continue
+            creds = svc.decrypt(inst.instance_id)
+            if not creds:
+                continue
+            if entry.mcp_mode == "gateway":
+                tools.extend(
+                    build_gateway_langchain_tools(
+                        entry=entry,
+                        instance_id=inst.instance_id,
+                        mcp_server_name=server_name,
+                        creds=creds,
+                    )
+                )
+                continue
+            try:
+                spec = build_http_mcp_spec(
+                    entry=entry,
+                    instance_id=inst.instance_id,
+                    creds=creds,
+                    config=self._config,
+                )
+            except Exception:
+                logger.exception(
+                    "turn-scoped MCP: could not build spec for %s", inst.mcp_server_name
+                )
+                continue
+            if global_env is None:
+                global_env = load_env_file(env_file_path(self._paths.root))
+            loaded = await aload_mcp_tools(
+                overlay_stdio_mcp_configs({server_name: spec}, global_env)
+            )
+            tools.extend(loaded)
+        return tools
+
+    def turn_mcp_tools(
+        self,
+        agent_id: str,
+        user_id: int,
+        servers: Sequence[str],
+    ) -> dict[str, list[Any]]:
+        """Turn-scoped MCP tools of one user on one agent (empty when none)."""
+        entry = self._turn_mcp_tools.get((agent_id, user_id))
+        if not entry:
+            return {}
+        return {name: entry[name] for name in servers if name in entry}
+
+    def forget_turn_mcp_tools(self, agent_id: str, user_id: int | None = None) -> None:
+        """Drop turn-scoped MCP tools for one agent, or one user of it."""
+        if user_id is None:
+            for key in [key for key in self._turn_mcp_tools if key[0] == agent_id]:
+                del self._turn_mcp_tools[key]
+            return
+        self._turn_mcp_tools.pop((agent_id, user_id), None)
 
     async def _attach_gateway_tools(
         self,
@@ -1834,6 +2014,7 @@ class AgentManager:
 
     def sync_skill_package_dirs(self, agent_id: str) -> None:
         """Hot-update ``skills_dir`` on the running harness agent (no rebuild)."""
+        self.note_skill_catalog_changed(agent_id)
         try:
             agent = self.get_agent(agent_id)
         except OctopError:
@@ -1912,12 +2093,12 @@ class AgentManager:
             return []
         # Same scope rule as the cron mount path (``infra.knowledge.scope``), so a
         # base rejected here is exactly one the runtime would refuse to load.
-        role, unit_key = user_scope(self._repos.user_repo.get(user_id))
+        role, unit_keys = self._repos.resource_acl_repo.scope_for_user(user_id)
         visible = allowed_resource_ids(
             self._repos.resource_acl_repo.list_for_type("knowledge_base", resource_ids=normalized),
             user_id=user_id,
             role=role,
-            unit_key=unit_key,
+            unit_keys=unit_keys,
         )
         unknown = [kb_id for kb_id in normalized if kb_id not in visible]
         if unknown:
@@ -2154,6 +2335,29 @@ class AgentManager:
     def sync_skills_disabled(self, agent_id: str, disabled: set[str]) -> None:
         """Push ``skills_disabled`` to the running harness agent (hot update)."""
         self.get_agent(agent_id).set_skills_disabled(disabled)
+
+    def skill_catalog_revision(self, agent_id: str) -> int:
+        """The revision *agent_id*'s model-visible skill catalog stands at.
+
+        A thread records the revision it scanned under, and a later revision makes
+        its next turn rescan (:class:`SkillCatalogRefreshMiddleware`). A process
+        start reseeds the count, so a thread that ran before a restart looks stale
+        once and refreshes — nothing in this process knows what changed while it
+        was down, and a new thread scans anyway.
+        """
+        return self._skill_catalog_revisions.get(agent_id, _SKILL_CATALOG_EPOCH)
+
+    def note_skill_catalog_changed(self, agent_id: str) -> None:
+        """Record that *agent_id*'s skill catalog changed on disk.
+
+        Every Octop write into an agent's skill catalog calls this — the ``/skills``
+        API, skill-package mounts, imports. Without it the harness keeps serving the
+        catalog it scanned the thread's first turn with, while the platform's own
+        listing (``list_skill_summaries``) already reports the new skill: a run
+        whose scope allows that skill would stamp it and the harness would drop it
+        as unknown.
+        """
+        self._skill_catalog_revisions[agent_id] = self.skill_catalog_revision(agent_id) + 1
 
     def sync_tools_disabled(self, agent_id: str, disabled: set[str]) -> None:
         """Push ``tools_disabled`` to the running harness agent (hot update).
@@ -2519,6 +2723,8 @@ class AgentManager:
     async def _reload_agent(self, agent_id: str) -> None:
         assert self._harness_manager is not None
         self._bootstrap_graph_refresh_pending.discard(agent_id)
+        # A rebuilt agent gets a fresh middleware; the tools it was serving are stale.
+        self.forget_turn_mcp_tools(agent_id)
         row = self._repos.agent_repo.get(agent_id)
         if not row or not row.enabled or row.last_state == "stopped":
             await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
@@ -2687,7 +2893,13 @@ class AgentManager:
             configurable = dict(req.get("configurable") or {})
             configurable["plugin_tool_configs"] = tool_configs
             req["configurable"] = configurable
-        return apply_agent_runtime_to_stream_request(req, agent_cfg)
+        # A run may carry its own runtime knobs (a feature's declared model
+        # settings, budget, context cap). They outrank the agent's stored config
+        # for this request only — the agent is never rewritten, so every other
+        # turn it serves keeps the settings its owner chose.
+        overrides = runtime_overrides_from_configurable(req.get("configurable"))
+        runtime_cfg = merge_agent_runtime_values(agent_cfg, overrides) if overrides else agent_cfg
+        return apply_agent_runtime_to_stream_request(req, runtime_cfg)
 
     def _build_harness_config(self, row: AgentRow) -> HarnessAgentConfig:
         """Convert an AgentRow into a HarnessAgentConfig."""
@@ -2726,6 +2938,20 @@ class AgentManager:
             from octop.infra.cron.tools import build_cronjob_tools  # noqa: PLC0415
 
             cron_tools = build_cronjob_tools(self._cron_manager)
+
+        # A feature's own agent can write its own workflow when its author asks for it
+        # in conversation. Nobody else gets these: the tools refuse a feature the
+        # caller does not own, and they are meaningless on an expert.
+        feature_workflow_tools: list[Any] = []
+        if is_feature_agent(row.kind):
+            from octop.infra.agents.feature_workflow_tools import (  # noqa: PLC0415
+                build_feature_workflow_tools,
+            )
+
+            feature_workflow_tools = build_feature_workflow_tools(
+                registry=self,
+                repos=self._repos,
+            )
 
         from types import SimpleNamespace  # noqa: PLC0415
 
@@ -2789,7 +3015,12 @@ class AgentManager:
             plugin_tools,
             reserved={
                 str(getattr(t, "name", ""))
-                for t in [*(cron_tools or []), *knowledge_tools, *mobile_tools]
+                for t in [
+                    *(cron_tools or []),
+                    *feature_workflow_tools,
+                    *knowledge_tools,
+                    *mobile_tools,
+                ]
             },
         )
         self._plugin_tool_labels[row.agent_id] = {
@@ -2806,12 +3037,19 @@ class AgentManager:
 
         from octop.infra.agents.middleware.binary_read_guard import BinaryReadGuardMiddleware
         from octop.infra.agents.middleware.browser_profile import BrowserProfileMiddleware
-        from octop.infra.agents.middleware.feature_prompt import (
-            FeatureSystemPromptMiddleware,
+        from octop.infra.agents.middleware.feature_workflow import (
+            feature_workflow_chain,
         )
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
+        from octop.infra.agents.middleware.shared_workspace_freeze import (
+            shared_workspace_freeze_chain,
+        )
+        from octop.infra.agents.middleware.skill_catalog import (
+            SkillCatalogRefreshMiddleware,
+        )
         from octop.infra.agents.middleware.thread_artifacts import ThreadArtifactsMiddleware
         from octop.infra.agents.middleware.token_quota import TokenQuotaMiddleware
+        from octop.infra.agents.middleware.turn_mcp import TurnMcpToolsMiddleware
         from octop.infra.agents.middleware.workspace_image import (
             WorkspaceImageMaterializeMiddleware,
         )
@@ -2821,6 +3059,7 @@ class AgentManager:
         # BinaryReadGuard stays Octop-specific (inbound/attachment product policy).
         # ThreadArtifacts writes workspace paths onto threads after successful tools.
         # WorkspaceImageMaterialize expands path-only vision refs at model-call time.
+        # TurnMcpTools serves a caller's own MCP tools on an agent they are not on.
         agent_middleware: list[Any] = [
             *plugin_middleware,
             TokenQuotaMiddleware(
@@ -2828,7 +3067,17 @@ class AgentManager:
                 usage_repo=self._repos.usage_repo,
             ),
             ReasoningRequestMiddleware(),
-            FeatureSystemPromptMiddleware(),
+            # A feature serves every caller from one workspace: USER.md and
+            # MEMORY.md are readable, but no turn may write either shared file.
+            # Experts keep their own profile and memory behavior.
+            *shared_workspace_freeze_chain(agent_id=row.agent_id, kind=row.kind),
+            # A feature turn knows the product's configuration menu even before
+            # it has a workflow; a declared run follows that guide in the system
+            # message. Experts get neither block.
+            *feature_workflow_chain(
+                agent_id=row.agent_id, kind=row.kind, author_user_id=row.user_id
+            ),
+            TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
             KnowledgeSearchHintMiddleware(),
             BrowserProfileMiddleware(),
             BinaryReadGuardMiddleware(),
@@ -2837,11 +3086,17 @@ class AgentManager:
                 thread_repo=self._repos.thread_repo,
                 workspace_dir=harness_workspace,
             ),
+            # After every other writer: a skill installed (or mounted) after this
+            # agent's thread first scanned its sources is invisible to that thread
+            # until the state is refreshed. Reuses the harness's own scan, and only
+            # when the catalog actually moved — see the middleware's docstring.
+            SkillCatalogRefreshMiddleware(registry=self, agent_id=row.agent_id),
         ]
 
         merged_tools: list[Any] = []
         if cron_tools:
             merged_tools.extend(cron_tools)
+        merged_tools.extend(feature_workflow_tools)
         merged_tools.extend(knowledge_tools)
         merged_tools.extend(mobile_tools)
         merged_tools.extend(plugin_tools)

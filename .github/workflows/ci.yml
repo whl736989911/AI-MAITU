@@ -45,6 +45,18 @@ jobs:
     name: Windows / Python 3.12
     runs-on: windows-latest
     if: ${{ !startsWith(github.head_ref, 'chore/sync-develop-after-') }}
+    # Report-only: Windows takes ~2.6x as long as Linux (30min vs 12min) and
+    # currently carries one flaky failure of its own, so it must not gate a
+    # merge. The job still runs and its result stays visible here.
+    #
+    # tests/unit/auth/test_captcha_verify.py::test_mocked_success_passes fails
+    # on Windows only. The test does not reach the network: its own fixture
+    # serves siteverify from a local ThreadingHTTPServer. It passes on Linux,
+    # and on Windows it passes locally but intermittently takes ~33s instead
+    # of ~2s, which is the shape of a connect timeout. Root cause is not yet
+    # established, so it is tracked separately rather than papered over with a
+    # retry or by relaxing the assertion. Remove this flag once that lands.
+    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 

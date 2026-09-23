@@ -11,6 +11,10 @@ import { getApiUrl } from "../../../api/config";
 import { getAuthToken } from "../../../api/request";
 import type { TokenUsage } from "../../../api/types";
 import { buildDashboardChatWsUrl } from "../../../api/modules/wsChat";
+import {
+  FEATURE_RUN_FRAME_KEY,
+  type FeatureRunPayload,
+} from "../utils/featureRun";
 import { generateId } from "../../../utils/messageParser";
 import type {
   ChatAttachment,
@@ -1851,6 +1855,7 @@ async function sendTurnWebSocket(
   onStreamEnd?: () => void,
   reasoningMode?: "auto" | "enabled" | "disabled",
   reasoningEffort?: string | null,
+  featureRun?: FeatureRunPayload,
 ): Promise<boolean> {
   const state = getOrCreate(sessionId);
   const resolvedThreadId = (threadId || sessionId).trim();
@@ -1928,6 +1933,11 @@ async function sendTurnWebSocket(
       }
       if (reasoningMode) payload.reasoning_mode = reasoningMode;
       if (reasoningEffort) payload.reasoning_effort = reasoningEffort;
+      // A submitted run of a feature's workflow: the frame's own typed field, which
+      // the server copies onto the turn's inbound metadata (``octop_feature_run``)
+      // for the processor to read — the run is recorded and its values are injected
+      // into this very turn.
+      if (featureRun) payload[FEATURE_RUN_FRAME_KEY] = featureRun;
       ws.send(JSON.stringify(payload));
     };
 
@@ -2052,6 +2062,7 @@ export async function sendTurn(
   targetAgentIds?: string[] | null,
   reasoningMode?: "auto" | "enabled" | "disabled",
   reasoningEffort?: string | null,
+  featureRun?: FeatureRunPayload,
 ): Promise<void> {
   const state = getOrCreate(sessionId);
 
@@ -2123,6 +2134,7 @@ export async function sendTurn(
     onStreamEnd,
     reasoningMode,
     reasoningEffort,
+    featureRun,
   );
   if (!wsOk) {
     state.messages = [

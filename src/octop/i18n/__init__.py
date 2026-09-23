@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from octop.i18n.domains.channel import (
+    channel_permission_revoked,
     channel_probe_field_label,
     channel_probe_incomplete,
     channel_runtime_reason,
@@ -29,6 +30,7 @@ __all__ = [
     "all_skill_labels",
     "all_tool_labels",
     "hitl_tool_catalog",
+    "channel_permission_revoked",
     "channel_probe_field_label",
     "channel_probe_incomplete",
     "channel_runtime_reason",

@@ -29,14 +29,29 @@ interface PageShellProps {
    * desktop → title-row actions; mobile → full-width bar above content.
    */
   pathTabs?: PathTabsConfig;
-  /** Render agent picker below the title row, outside the scrollable content card. */
+  /**
+   * Render agent picker below the title row, outside the scrollable content card.
+   * The row is drawn only when the slot holds something: a bar whose control has
+   * no agent to offer renders nothing, and an empty frame is not left behind
+   * (``PageShell.module.less``).
+   */
   agentScoped?: boolean;
+  /**
+   * What the agent bar holds. Defaults to the ``AgentSelector``; a page whose
+   * scope is not always "one of my own experts" supplies its own bar instead.
+   */
+  agentBar?: React.ReactNode;
   /** When true, the content area does not scroll; children fill remaining height. */
   fill?: boolean;
   children: React.ReactNode;
 }
 
-function PathTabsSegmented({
+/**
+ * The path-tab bar itself. Exported because a page whose tab row is already in
+ * the title row (a feature's own page) still has one level left to show, and it
+ * has to be the same control rather than a look-alike.
+ */
+export function PathTabsSegmented({
   pathTabs,
   isMobile,
 }: {
@@ -87,6 +102,7 @@ function PageShell({
   actions,
   pathTabs,
   agentScoped,
+  agentBar,
   fill,
   children,
 }: PageShellProps) {
@@ -129,7 +145,7 @@ function PageShell({
           marginBottom: agentScoped ? 12 : 24,
         }}
       >
-        <div>
+        <div style={{ minWidth: isMobile ? 0 : 180 }}>
           <Title
             level={4}
             style={{
@@ -151,14 +167,21 @@ function PageShell({
           )}
         </div>
         {titleActions && (
-          <div style={{ flexShrink: 0, paddingTop: 2 }}>{titleActions}</div>
+          <div
+            style={{
+              flexShrink: pathTabs ? 1 : 0,
+              minWidth: 0,
+              overflowX: pathTabs ? "auto" : undefined,
+              paddingTop: 2,
+            }}
+          >
+            {titleActions}
+          </div>
         )}
       </div>
 
       {agentScoped && (
-        <div className={styles.agentBar}>
-          <AgentSelector />
-        </div>
+        <div className={styles.agentBar}>{agentBar ?? <AgentSelector />}</div>
       )}
 
       {/* Content — scrolls internally. Tighter side padding on mobile so

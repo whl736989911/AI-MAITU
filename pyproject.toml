@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "octop"
-version = "1.0.1"
+version = "0.1.0"
 description = "Smarter self-hosted AI assistant for multiple users and agents, built on harness-agent"
 readme = "README.md"
 license = { text = "MIT" }
@@ -75,6 +75,16 @@ knowledge-ocr = [
     "onnxruntime>=1.17",
     "pymupdf>=1.24",
 ]
+# NOTE (knowledge sources, WIP): SMB sources are implemented in
+# ``octop.infra.knowledge.sources.smb`` against ``smbprotocol``, but the extra
+# below is NOT declared yet: this development machine cannot reach PyPI, so
+# ``uv lock`` cannot resolve it and a lock file out of step with pyproject.toml
+# would break ``uv sync`` for everyone. Add when resolved:
+#
+#   knowledge-smb = ["smbprotocol>=1.13"]
+#
+# Until then an SMB source fails with an actionable "install smbprotocol"
+# message instead of silently indexing nothing.
 
 [dependency-groups]
 # PEP 735 dev group — installed by default on `uv sync`. Mirrors the

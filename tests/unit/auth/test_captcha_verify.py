@@ -54,9 +54,14 @@ class _Siteverify(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_POST(self) -> None:
+        # Always drain the request body, even when it is not inspected: this
+        # handler closes the connection after replying (HTTP/1.0), and closing
+        # with unread bytes still queued makes Windows abort the connection
+        # instead of delivering the response the client is waiting for.
         length = int(self.headers.get("Content-Length") or 0)
-        if length and (self.headers.get("Content-Type") or "").startswith("application/json"):
-            type(self).last_body = json.loads(self.rfile.read(length))
+        body = self.rfile.read(length) if length else b""
+        if body and (self.headers.get("Content-Type") or "").startswith("application/json"):
+            type(self).last_body = json.loads(body)
         self._reply()
 
     def do_GET(self) -> None:

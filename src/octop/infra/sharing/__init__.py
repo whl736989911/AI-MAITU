@@ -5,21 +5,38 @@ Replaces the three ad-hoc global booleans (``agents.is_shared``,
 extra grants, and classifies how widely a change lands so the caller can decide
 whether it needs approval.
 
-Everything here is pure: the caller resolves the user's role and org unit and
-passes them in, so the rules stay unit-testable and IO-free.
+An entry answers two questions, from the same row: :func:`can_access` — may this
+user reach the resource at all — and :func:`can_write` — may they maintain it.
+Both read the entry's ``permission`` level (``read`` | ``write``), so "share it"
+and "share it read-only" are one table and one rule set.
+
+Everything here is pure: the caller resolves the user's role and org scope and
+passes them in, so the rules stay unit-testable and IO-free. The org scope is
+the caller's *unit chain* — their unit and the units above it, as
+``OrgUnitRepo.ancestor_keys`` builds it — which is what makes a grant to a
+department reach its sub-departments; module grants inherit through the same
+chain (``users.permissions.unit_permissions``), so both levels inherit by one
+mechanism.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Collection, Iterable
 from dataclasses import dataclass
-from typing import Any
 
-RESOURCE_TYPES = ("agent", "connector", "knowledge_base", "feature")
+RESOURCE_TYPES = ("agent", "connector", "knowledge_base", "feature", "knowledge_document")
 
 VISIBILITY_PRIVATE = "private"
 VISIBILITY_UNIT = "unit"
 VISIBILITY_PUBLIC = "public"
+
+#: What a matching entry lets the viewer do. ``read`` is the default and what
+#: every row that predates the level carries — including the ``public`` row an
+#: enterprise knowledge space is seeded with, so "everyone can reach it" means
+#: "everyone can read it", never "everyone can write it".
+PERMISSION_READ = "read"
+PERMISSION_WRITE = "write"
+PERMISSIONS = (PERMISSION_READ, PERMISSION_WRITE)
 
 IMPACT_SELF = "self"
 IMPACT_UNIT = "unit"
@@ -29,6 +46,9 @@ __all__ = [
     "IMPACT_ORG",
     "IMPACT_SELF",
     "IMPACT_UNIT",
+    "PERMISSIONS",
+    "PERMISSION_READ",
+    "PERMISSION_WRITE",
     "RESOURCE_TYPES",
     "VISIBILITY_PRIVATE",
     "VISIBILITY_PUBLIC",
@@ -36,9 +56,9 @@ __all__ = [
     "AclEntry",
     "allowed_resource_ids",
     "can_access",
+    "can_write",
     "impact_scope",
     "requires_approval",
-    "user_scope",
 ]
 
 
@@ -52,7 +72,11 @@ class AclEntry:
 
     ``unit_key`` snapshots the owner's org unit at share time, so an owner who
     later moves to another unit does not silently re-scope what they shared.
-    ``grants`` only ever widen access — there is no resource-level deny.
+    ``grants`` only ever widen access — there is no resource-level deny, and
+    ``permission`` is what the whole entry lets a matching viewer *do*:
+    ``read`` reaches the resource, ``write`` also maintains it (see
+    :func:`can_write`). It trails the list it sits beside so the tuple's
+    existing positional shape is unchanged.
     """
 
     resource_type: str
@@ -62,6 +86,7 @@ class AclEntry:
     unit_key: str | None
     version: int
     grants: tuple[tuple[str, str], ...] = ()  # ((grantee_type, grantee_id), ...)
+    permission: str = PERMISSION_READ  # read | write
 
 
 def _grants(entry: AclEntry) -> set[tuple[str, str]]:
@@ -75,9 +100,17 @@ def impact_scope(before: AclEntry, after: AclEntry) -> str:
     Branches are ordered by priority: widening to ``public`` outranks
     everything, then ``private`` -> ``unit``, then newly added unit/role
     grants. Everything else — including narrowing — stays private to the actor.
+
+    A public row that *gains* ``write`` is org-wide too: it hands the whole
+    organization the right to maintain the resource, which is the reach the
+    approval gate exists for. Reaching everyone to read was already approved
+    when the row was published, so only the escalation waits.
     """
-    if after.visibility == VISIBILITY_PUBLIC and before.visibility != VISIBILITY_PUBLIC:
-        return IMPACT_ORG
+    if after.visibility == VISIBILITY_PUBLIC:
+        if before.visibility != VISIBILITY_PUBLIC:
+            return IMPACT_ORG
+        if after.permission == PERMISSION_WRITE and before.permission != PERMISSION_WRITE:
+            return IMPACT_ORG
     if after.visibility == VISIBILITY_UNIT and before.visibility == VISIBILITY_PRIVATE:
         return IMPACT_UNIT
     added = _grants(after) - _grants(before)
@@ -91,27 +124,21 @@ def requires_approval(before: AclEntry, after: AclEntry) -> bool:
     return impact_scope(before, after) == IMPACT_ORG
 
 
-def user_scope(user: Any) -> tuple[str, str | None]:
-    """``(role, unit_key)`` for :func:`can_access` from a user object or row.
-
-    The API's ``User`` carries a ``Role`` enum while a persisted ``users`` row
-    carries the plain string; both must resolve to the same scope or the rules
-    would see two different callers and answer differently.
-    """
-    role = getattr(user, "role", "")
-    return (str(getattr(role, "value", role) or ""), getattr(user, "org_unit", None) or None)
-
-
 def can_access(
     entry: AclEntry,
     *,
     user_id: int,
     role: str,
-    unit_key: str | None,
+    unit_keys: Collection[str],
 ) -> bool:
     """Whether this user may use the resource. Rules apply in order.
 
-    ``unit_key`` is the caller's resolved org unit (``None`` when unassigned).
+    ``unit_keys`` is the caller's resolved org scope: their own unit and the
+    units above it, nearest first (``()`` when they have none). Passing the
+    chain rather than one key is what makes a unit scope inherit: an entry
+    scoped to a department reaches the members of its sub-departments, and the
+    reverse direction cannot match, because the chain holds a viewer's
+    *ancestors* and never its descendants.
     """
     if role == "admin":
         return True
@@ -124,18 +151,37 @@ def can_access(
     # Unit scope compares against the entry's snapshot. ``unit_key`` is NULL
     # when the unit was deleted (``ON DELETE SET NULL``); such an entry falls
     # back to owner-only rather than matching every unassigned user.
-    if (
-        entry.visibility == VISIBILITY_UNIT
-        and unit_key is not None
-        and unit_key == entry.unit_key
-    ):
+    if entry.visibility == VISIBILITY_UNIT and entry.unit_key in unit_keys:
         return True
     grants = _grants(entry)
     if ("user", str(user_id)) in grants:
         return True
-    if unit_key is not None and ("unit", unit_key) in grants:
+    if any(("unit", unit) in grants for unit in unit_keys):
         return True
     return ("role", role) in grants
+
+
+def can_write(
+    entry: AclEntry,
+    *,
+    user_id: int,
+    role: str,
+    unit_keys: Collection[str],
+) -> bool:
+    """Whether this user may maintain the resource — add, change, remove content.
+
+    ``write`` is the owner's and an administrator's, always, and otherwise only
+    where the entry says so: a matching viewer of a ``write`` entry may
+    maintain what they can reach, and a ``read`` entry keeps exactly the reach
+    it had before the level existed — access, no maintenance. Every row that
+    predates the level, the ``public`` enterprise row included, reads as
+    ``read``.
+    """
+    if role == "admin" or user_id == entry.owner_user_id:
+        return True
+    return entry.permission == PERMISSION_WRITE and can_access(
+        entry, user_id=user_id, role=role, unit_keys=unit_keys
+    )
 
 
 def allowed_resource_ids(
@@ -143,7 +189,7 @@ def allowed_resource_ids(
     *,
     user_id: int,
     role: str,
-    unit_key: str | None,
+    unit_keys: Collection[str],
 ) -> set[str]:
     """Ids the actor may use, out of those resources' ACL entries.
 
@@ -162,5 +208,5 @@ def allowed_resource_ids(
     return {
         entry.resource_id
         for entry in entries
-        if can_access(entry, user_id=user_id, role=role, unit_key=unit_key)
+        if can_access(entry, user_id=user_id, role=role, unit_keys=unit_keys)
     }

@@ -11,12 +11,21 @@ from fastapi import APIRouter, Depends, File, Form, UploadFile
 from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, Field
 
+from octop.api.common.agent import (
+    AgentCapability,
+    assert_agent_capability_write,
+)
 from octop.api.common.agent import assert_agent_owner as _assert_agent_owner
-from octop.api.deps import current_user, get_server, require_permission
+from octop.api.deps import get_server, require_permission
 from octop.infra.agents.plugin_tool_defaults import (
     agent_plugin_enabled,
     merge_plugins_enabled_settings,
     merge_plugins_tool_settings,
+)
+from octop.infra.agents.plugins.catalog import (
+    CatalogPlugin,
+    get_catalog_plugin,
+    list_catalog_plugins,
 )
 from octop.infra.agents.plugins.manager import PluginManager
 from octop.infra.errors import ErrorCode, OctopError
@@ -97,12 +106,12 @@ def _plugin_manager(server: OctopServer) -> PluginManager:
 @router.get("", summary="List installed plugins")
 async def list_plugins(
     server: OctopServer = Depends(get_server),
-    _user: Any = Depends(current_user),
+    _user: Any = Depends(require_permission("plugins")),
 ) -> list[dict[str, Any]]:
     return _plugin_manager(server).list_installed()
 
 
-@router.post("/reload", summary="Reload plugins from disk (admin)")
+@router.post("/reload", summary="Reload plugins from disk")
 async def reload_plugins(
     server: OctopServer = Depends(get_server),
     _user: Any = Depends(require_permission("plugins")),
@@ -129,7 +138,7 @@ async def reload_plugins(
     }
 
 
-@router.post("/install", summary="Install plugin from URL (admin)")
+@router.post("/install", summary="Install plugin from URL")
 async def install_plugin(
     body: PluginInstallBody,
     server: OctopServer = Depends(get_server),
@@ -157,7 +166,7 @@ async def install_plugin(
     }
 
 
-@router.post("/upload", summary="Install plugin from an uploaded ZIP (admin)")
+@router.post("/upload", summary="Install plugin from an uploaded ZIP")
 async def upload_plugin(
     file: UploadFile = File(...),
     force: bool = Form(default=False),
@@ -199,11 +208,153 @@ async def upload_plugin(
     }
 
 
+class LocalizedText(BaseModel):
+    zh: str = ""
+    en: str = ""
+
+
+class MarketPluginItem(BaseModel):
+    """One shipped plugin as the market renders it."""
+
+    id: str
+    version: str
+    name: LocalizedText
+    description: LocalizedText
+    icon: str | None = None
+    kind: str
+    requires: list[str] = Field(default_factory=list)
+    installed: bool = False
+    enabled: bool = False
+
+
+class MarketPluginListResponse(BaseModel):
+    items: list[MarketPluginItem]
+
+
+class MarketPluginDetail(MarketPluginItem):
+    """Market card plus the tools this plugin registers once installed."""
+
+    tools: list[PluginToolMeta] = Field(default_factory=list)
+
+
+def _installed_by_id(server: OctopServer) -> dict[str, dict[str, Any]]:
+    """Installed plugins by id; broken rows are skipped (nothing to enable)."""
+    return {
+        str(row["id"]): row
+        for row in _plugin_manager(server).list_installed()
+        if not row.get("error")
+    }
+
+
+def _market_card(entry: CatalogPlugin, installed: dict[str, Any] | None) -> MarketPluginItem:
+    return MarketPluginItem(
+        id=entry.id,
+        version=entry.version,
+        name=LocalizedText(**entry.label()),
+        description=LocalizedText(**entry.summary()),
+        icon=entry.icon,
+        kind=entry.kind,
+        requires=list(entry.requires),
+        installed=installed is not None,
+        enabled=bool(installed and installed.get("enabled", True) is not False),
+    )
+
+
+def _market_card_by_id(server: OctopServer, plugin_id: str) -> MarketPluginItem:
+    entry = get_catalog_plugin(plugin_id)
+    return _market_card(entry, _installed_by_id(server).get(entry.id))
+
+
+def _market_matches(card: MarketPluginItem, needle: str) -> bool:
+    haystack = " ".join(
+        (
+            card.id,
+            card.name.zh,
+            card.name.en,
+            card.description.zh,
+            card.description.en,
+        )
+    ).lower()
+    return needle in haystack
+
+
+@router.get(
+    "/market",
+    response_model=MarketPluginListResponse,
+    summary="List shipped plugin market cards",
+)
+async def list_plugin_market(
+    q: str = "",
+    server: OctopServer = Depends(get_server),
+    _user: Any = Depends(require_permission("plugins")),
+) -> MarketPluginListResponse:
+    """Shipped plugins with their install state, optionally filtered by ``q``."""
+    installed = _installed_by_id(server)
+    needle = q.strip().lower()
+    items = [_market_card(entry, installed.get(entry.id)) for entry in list_catalog_plugins()]
+    if needle:
+        items = [card for card in items if _market_matches(card, needle)]
+    return MarketPluginListResponse(items=items)
+
+
+@router.get(
+    "/market/{plugin_id}",
+    response_model=MarketPluginDetail,
+    summary="Get a shipped plugin market card",
+)
+async def get_plugin_market_item(
+    plugin_id: str,
+    server: OctopServer = Depends(get_server),
+    _user: Any = Depends(require_permission("plugins")),
+) -> MarketPluginDetail:
+    """Card detail; ``tools`` are filled in once the plugin is installed."""
+    entry = get_catalog_plugin(plugin_id)
+    installed = _installed_by_id(server).get(entry.id)
+    return MarketPluginDetail(
+        **_market_card(entry, installed).model_dump(),
+        tools=[
+            PluginToolMeta.model_validate(tool) for tool in (installed or {}).get("tools") or []
+        ],
+    )
+
+
+@router.post(
+    "/market/{plugin_id}/install",
+    status_code=201,
+    response_model=MarketPluginItem,
+    summary="Install a shipped plugin from the market",
+)
+async def install_plugin_market_item(
+    plugin_id: str,
+    server: OctopServer = Depends(get_server),
+    _user: Any = Depends(require_permission("plugins")),
+) -> MarketPluginItem:
+    """Install and enable a shipped plugin, then reload agents.
+
+    Idempotent: a plugin already on disk is enabled rather than overwritten.
+    """
+    mgr = _plugin_manager(server)
+    try:
+        mgr.install_bundled(plugin_id)
+    except OctopError:
+        raise
+    except Exception as exc:
+        raise OctopError(
+            ErrorCode.PLUGIN_INSTALL_FAILED,
+            f"plugin install failed: {exc}",
+            details={"reason": str(exc)},
+        ) from exc
+    if server.app_runtime is not None:
+        mgr.load_installed(install_deps=False)
+        await server.app_runtime.agent_registry.reload_all()
+    return _market_card_by_id(server, plugin_id)
+
+
 class PluginPatchBody(BaseModel):
     enabled: bool = Field(..., description="Global enable switch for this plugin")
 
 
-@router.patch("/{plugin_id}", summary="Update plugin settings (admin)")
+@router.patch("/{plugin_id}", summary="Update plugin settings")
 async def patch_plugin(
     plugin_id: str,
     body: PluginPatchBody,
@@ -222,7 +373,7 @@ async def patch_plugin(
     return item
 
 
-@router.delete("/{plugin_id}", summary="Uninstall plugin (admin)")
+@router.delete("/{plugin_id}", summary="Uninstall plugin")
 async def uninstall_plugin(
     plugin_id: str,
     server: OctopServer = Depends(get_server),
@@ -243,11 +394,13 @@ async def get_plugin_ui_asset(
     plugin_id: str,
     file_path: str,
     server: OctopServer = Depends(get_server),
-    _user: Any = Depends(current_user),
+    _user: Any = Depends(require_permission("plugins")),
 ) -> Response:
     """Read-only static files from ``~/.octop/plugins/<id>/`` (typically ``ui/dist/``).
 
-    Authenticated users only. Paths are traversal-checked in ``PluginManager``.
+    The ``plugins`` key, like every other route here: the bundle is the plugin's
+    own payload, and a caller the key refuses does not run its UI either
+    (design §2.2, §2.4). Paths are traversal-checked in ``PluginManager``.
     """
     target = _plugin_manager(server).resolve_ui_file(plugin_id, file_path)
     suffix = target.suffix.lower()
@@ -314,7 +467,7 @@ def _agent_plugins_response(
 async def list_agent_plugins(
     agent_id: str,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("plugins")),
 ) -> AgentPluginsResponse:
     """List global and per-agent plugin state. Missing agent switches default on."""
     _, cfg = _agent_row_and_config(server, agent_id, user)
@@ -330,7 +483,7 @@ async def patch_agent_plugins(
     agent_id: str,
     body: AgentPluginsPatch,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("plugins")),
 ) -> AgentPluginsResponse:
     """Merge plugin switches, preserve tool settings, and reload only this agent."""
     _, cfg = _agent_row_and_config(server, agent_id, user)
@@ -359,7 +512,7 @@ async def patch_agent_plugins(
 async def list_agent_plugin_tools(
     agent_id: str,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("plugins")),
 ) -> dict[str, Any]:
     assert server.app_runtime is not None
     row = server.app_runtime.agent_registry.get_row(agent_id)
@@ -411,7 +564,7 @@ async def patch_agent_plugin_tools(
     agent_id: str,
     body: AgentPluginToolsPatch,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("plugins")),
 ) -> dict[str, str]:
     """Persist per-agent plugin tool enable flags and hot-sync the denylist.
 
@@ -422,7 +575,7 @@ async def patch_agent_plugin_tools(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION)
     registry = server.app_runtime.agent_registry
     cfg = registry.get_config(agent_id)
     merged = merge_plugins_tool_settings(cfg.get("plugins"), body.plugins)

@@ -55,12 +55,16 @@ export default function SharingPage() {
         items={[
           {
             key: "queue",
-            label: <TabLabel icon={ListChecks}>{t("sharing.tabQueue")}</TabLabel>,
+            label: (
+              <TabLabel icon={ListChecks}>{t("sharing.tabQueue")}</TabLabel>
+            ),
             children: <ApprovalQueue />,
           },
           {
             key: "settings",
-            label: <TabLabel icon={Share2}>{t("sharing.tabSettings")}</TabLabel>,
+            label: (
+              <TabLabel icon={Share2}>{t("sharing.tabSettings")}</TabLabel>
+            ),
             children: <SharingResourcesPanel />,
           },
         ]}

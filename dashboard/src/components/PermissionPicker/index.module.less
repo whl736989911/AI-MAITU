@@ -1,0 +1,197 @@
+/*
+ * Chip chrome for the module-permission picker. Moved here from the users
+ * page's stylesheet when the picker became a shared component: the org-units
+ * grants editor draws the same chips, and a second copy of these rules would
+ * drift from this one.
+ */
+
+.permEmpty {
+  padding: 12px 0;
+}
+
+.permPicker {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.permPickerDisabled {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.permGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.permGroupHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 28px;
+}
+
+.permGroupTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.permGroupCount {
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--fn-text-tertiary);
+}
+
+.permPage {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px 10px;
+  border-radius: var(--fn-radius-md, 8px);
+  background: var(--fn-bg-secondary, var(--fn-bg-elevated));
+}
+
+.permPageHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.permPageTitle {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fn-text-secondary);
+}
+
+.permGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+
+  @media (max-width: 480px) {
+    grid-template-columns: 1fr;
+  }
+}
+
+.permChip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  text-align: left;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: var(--fn-radius-md, 8px);
+  background: var(--fn-bg-elevated, var(--fn-bg-primary));
+  color: var(--fn-text-primary);
+  cursor: pointer;
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease,
+    box-shadow 0.15s ease;
+
+  &:hover:not(:disabled) {
+    border-color: var(--fn-border-strong, var(--fn-border-primary));
+    background: var(--fn-bg-secondary, var(--fn-bg-elevated));
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+  }
+}
+
+.permChipSelected {
+  border-color: var(
+    --fn-color-brand-border,
+    color-mix(in srgb, var(--fn-color-brand) 45%, transparent)
+  );
+  background: var(
+    --fn-color-brand-bg,
+    color-mix(in srgb, var(--fn-color-brand) 8%, transparent)
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--fn-color-brand) 18%, transparent);
+  color: var(--fn-color-brand);
+}
+
+.permChipCheck {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  border-radius: 4px;
+  border: 1px solid var(--fn-border-primary);
+  background: var(--fn-bg-primary);
+  color: var(--fn-color-on-brand, #fff);
+}
+
+.permChipSelected .permChipCheck {
+  border-color: var(--fn-color-brand);
+  background: var(--fn-color-brand);
+}
+
+.permChipLabel {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.3;
+}
+
+/* Chip that is on the deny list. Red, never brand-coloured: it reads as the
+   opposite of ``permChipSelected`` and must not be mistaken for a grant. */
+.permChipDenied {
+  border-color: color-mix(
+    in srgb,
+    var(--fn-color-danger, #ef4444) 45%,
+    transparent
+  );
+  background: color-mix(
+    in srgb,
+    var(--fn-color-danger, #ef4444) 8%,
+    transparent
+  );
+  box-shadow: inset 0 0 0 1px
+    color-mix(in srgb, var(--fn-color-danger, #ef4444) 18%, transparent);
+  color: var(--fn-color-danger, #ef4444);
+}
+
+.permChipDenied .permChipCheck {
+  border-color: var(--fn-color-danger, #ef4444);
+  background: var(--fn-color-danger, #ef4444);
+}
+
+/* Provenance tags ("Department" / "Direct") on a chip. */
+.permChipTags {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.permChipTag {
+  padding: 0 5px;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 4px;
+  background: var(--fn-bg-secondary, var(--fn-bg-elevated));
+  color: var(--fn-text-tertiary);
+  font-size: 11px;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+.permChipTagDenied {
+  border-color: color-mix(
+    in srgb,
+    var(--fn-color-danger, #ef4444) 45%,
+    transparent
+  );
+  color: var(--fn-color-danger, #ef4444);
+}

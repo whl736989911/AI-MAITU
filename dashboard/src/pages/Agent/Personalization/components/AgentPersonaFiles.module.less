@@ -1,0 +1,109 @@
+/* The persona file cards: a grid of workspace documents, each opening the
+   experts' markdown editor. Colour-coded badges come from ``metaForFile``, so
+   only the card chrome lives here. */
+
+.personaFiles {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.personaGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 12px;
+}
+
+.personaCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px;
+  text-align: left;
+  cursor: pointer;
+  background: var(--fn-bg-secondary);
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  transition:
+    border-color 0.15s ease,
+    background 0.15s ease;
+
+  &:hover {
+    border-color: var(--fn-border-primary);
+    background: var(--fn-bg-tertiary);
+  }
+}
+
+.personaCardIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 36px;
+  height: 36px;
+  border-radius: var(--fn-radius-sm);
+}
+
+.personaCardBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.personaCardLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.personaCardDesc {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--fn-text-tertiary);
+}
+
+.personaCardFoot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--fn-text-quaternary);
+}
+
+.personaCardPath {
+  font-family: var(--fn-font-mono);
+}
+
+/* "Not created yet" is a fact about the workspace, not an error. */
+.personaCardState {
+  color: var(--fn-color-warning-text, var(--fn-color-warning));
+}
+
+/* The bootstrap file: editable, folded away until asked for. */
+.personaBootstrap {
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+}
+
+.personaBootstrapLabel {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.personaBootstrapDesc {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--fn-text-tertiary);
+}
+
+/* Spinner row while the workspace listing is in flight. */
+.status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 24px 0;
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}

@@ -30,6 +30,8 @@ def _server(
         unit_key=None,
         version=1,
     )
+    # The rules resolve the caller's role and unit chain through the repo.
+    acl.scope_for_user.return_value = ("user", ())
     return SimpleNamespace(
         app_runtime=SimpleNamespace(agent_registry=registry),
         services=SimpleNamespace(repos=SimpleNamespace(resource_acl_repo=acl)),
@@ -39,7 +41,9 @@ def _server(
 @pytest.mark.asyncio
 async def test_require_running_workspace_uses_live_handle() -> None:
     live_ws = object()
-    row = SimpleNamespace(agent_id="A1", user_id=1, is_shared=0, enabled=True, last_state="running")
+    row = SimpleNamespace(
+        agent_id="A1", kind="agent", user_id=1, is_shared=0, enabled=True, last_state="running"
+    )
     user = SimpleNamespace(id=1, is_admin=False)
     agent = SimpleNamespace(workspace=live_ws)
     server = _server(row=row, get_agent=lambda _aid: agent)
@@ -52,7 +56,9 @@ async def test_require_running_workspace_uses_live_handle() -> None:
 @pytest.mark.asyncio
 async def test_require_running_workspace_falls_back_during_rebuild() -> None:
     fallback_ws = object()
-    row = SimpleNamespace(agent_id="A1", user_id=1, is_shared=0, enabled=True, last_state="running")
+    row = SimpleNamespace(
+        agent_id="A1", kind="agent", user_id=1, is_shared=0, enabled=True, last_state="running"
+    )
     user = SimpleNamespace(id=1, is_admin=False)
     server = _server(
         row=row,
@@ -67,7 +73,9 @@ async def test_require_running_workspace_falls_back_during_rebuild() -> None:
 
 @pytest.mark.asyncio
 async def test_require_running_workspace_still_raises_when_stopped() -> None:
-    row = SimpleNamespace(agent_id="A1", user_id=1, is_shared=0, enabled=True, last_state="stopped")
+    row = SimpleNamespace(
+        agent_id="A1", kind="agent", user_id=1, is_shared=0, enabled=True, last_state="stopped"
+    )
     user = SimpleNamespace(id=1, is_admin=False)
     server = _server(
         row=row,
@@ -83,7 +91,9 @@ async def test_require_running_workspace_still_raises_when_stopped() -> None:
 
 @pytest.mark.asyncio
 async def test_require_running_workspace_reraises_when_fallback_missing() -> None:
-    row = SimpleNamespace(agent_id="A1", user_id=1, is_shared=0, enabled=True, last_state="running")
+    row = SimpleNamespace(
+        agent_id="A1", kind="agent", user_id=1, is_shared=0, enabled=True, last_state="running"
+    )
     user = SimpleNamespace(id=1, is_admin=False)
     server = _server(
         row=row,
@@ -99,7 +109,9 @@ async def test_require_running_workspace_reraises_when_fallback_missing() -> Non
 
 @pytest.mark.asyncio
 async def test_require_running_workspace_does_not_mask_failed_agent() -> None:
-    row = SimpleNamespace(agent_id="A1", user_id=1, is_shared=0, enabled=True, last_state="failed")
+    row = SimpleNamespace(
+        agent_id="A1", kind="agent", user_id=1, is_shared=0, enabled=True, last_state="failed"
+    )
     user = SimpleNamespace(id=1, is_admin=False)
     server = _server(
         row=row,

@@ -14,6 +14,12 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
+from starlette.websockets import WebSocketDisconnect
+
+from tests.support.auth import create_user
+from tests.support.http import ws_connect, ws_token
+
 # --- env-status -------------------------------------------------------------
 
 
@@ -238,3 +244,44 @@ async def test_install_returns_pid(env: Any) -> None:
     ):
         r = await c.post("/api/browser/install", headers=auth)
     assert r.status_code in (200, 202)
+
+
+# --- the module gate (design §4.4) ------------------------------------------
+
+
+async def test_browser_surface_needs_the_key(env: Any) -> None:
+    """Every route of the surface answers to ``browser``, and so does the socket.
+
+    The admin (``env``) is the bypass and is covered by the cases above; what is
+    asserted here is the account that does *not* hold the key, which used to be
+    served: ``env-status``, the harness listing and the record/replay routes were
+    signed-in-only, and ``/api/browser-stream/ws`` checked no key at all, so the
+    socket was a stream of a capability the page was refusing (§2.4).
+    """
+    c, _srv, admin_auth = env
+    outsider_auth = await create_user(c, admin_auth, username="browser_outsider")
+
+    refused = (
+        ("get", "/api/browser/env-status", None),
+        ("get", "/api/browser/harness-sessions", None),
+        ("post", "/api/browser/shutdown", None),
+        ("get", "/api/browser/record-replay/status", None),
+        ("post", "/api/browser/record-replay/start", {}),
+    )
+    for method, path, body in refused:
+        call = getattr(c, method)
+        r = await (
+            call(path, headers=outsider_auth, json=body)
+            if body is not None
+            else call(path, headers=outsider_auth)
+        )
+        assert r.status_code == 403, f"{method.upper()} {path}: {r.status_code} {r.text}"
+        assert r.json()["error"]["details"]["permission"] == "browser"
+
+    app = c._octop_app  # type: ignore[attr-defined]
+    session = ws_connect(app, f"/api/browser-stream/ws?token={ws_token(outsider_auth)}")
+    with pytest.raises(WebSocketDisconnect) as refused_handshake:
+        async with session:
+            await session.connect()
+    assert refused_handshake.value.code == 4003
+    assert refused_handshake.value.reason == "permission required"

@@ -1,0 +1,179 @@
+# 并行开发约定：知识库与组织权限两条线
+
+两条工作流**在两个不同的机器上并行开发**，最后合回同一条基线。这份文件是它们的**分工契约** ——
+开工前先读，改到"共享文件"之前先查这张表。
+
+设计依据（都已在本仓库里）：
+
+| 工作流 | 设计文档 | 分支 |
+|---|---|---|
+| **企业知识库与外部文件夹数据源** | `docs/enterprise-knowledge-and-storage-design.md`（702 行） | `feat/knowledge-sources` |
+| **定制化权限与组织管理** | `docs/customized-permissions-and-org-management.md`（362 行） | `feat/org-permissions` |
+
+**共同基线**：`develop` @ 本文件所在提交（推送后为准）。
+
+---
+
+## 1. 迁移编号：**预分配，不许越界**
+
+当前最大编号是 **`035_merge_legacy_knowledge_bases`**（知识库线）。
+两条线各占一段，**在自己的区间内递增**：
+
+| 工作流 | 可用编号 |
+|---|---|
+| **知识库 / 数据源** | **`027` – `029`** |
+| **权限 / 组织** | **`030` – `032`** |
+| **知识库 / 数据源（扩展区间，2026-09-22 申请）** | **`033` – `039`** |
+
+> **扩展区间申请（知识库线 → 用户已批准）**：`027–029` 三个编号不足以覆盖
+> 企业知识空间 + 数据源扩展 + 文件索引 + 提取模板/版本/绑定 + 同步与提取任务表。
+> 已申请 **`033–039`** 作为后续区间。
+> **不申请 `030–032`** —— 那是权限/组织的原区间，占用即为越界。
+> 若 `033–039` 仍不够，**再次在本文件申请，不自行顺延**。
+
+规矩：
+
+- **迁移必须成对**：`00N_description.sql`（SQLite）**和** `00N_description.pg.sql`（PostgreSQL）。
+- **每加一个迁移，都要把下面这些文件里的版本断言改到自己的 N** ——
+  版本断言不止一处，`grep -rn "== <当前最大编号>" tests/` 是唯一的可靠做法：
+  - `tests/unit/db/test_db_pool.py`
+  - `tests/unit/db/test_resource_acl_migration.py`
+  - `tests/unit/db/test_agent_profile_columns.py`、`test_clip_thread_title.py`、
+    `test_data_sources_repo.py`、`test_published_experts_repo.py`、
+    `test_repo_knowledge.py`、`test_skill_packages_repo.py`、`test_skill_package_icons.py`
+  - `tests/unit/backup/test_system_archive.py`（`runtime_schema_version`）
+  - `tests/integration/test_postgresql_control_plane.py`
+  - ⚠️ **这里是两条线【必然】撞的地方** ⇒ **合并时取较大值**（都是同一行的数字）。
+- **数据库升级路径上的数据迁移**：`035` 把旧的用户知识库并进企业空间（design §13），
+  它同时搬磁盘文件、也改 `agents.knowledge_base_ids` 的指向。权限线若要跑
+  旧库数据，注意该迁移**会删掉 `is_enterprise = 0` 的知识库行**
+  （文档、文件、可见范围、绑定都已先转到企业空间）。
+- 区间用尽 → **先在约定文档里申请新区间，再写迁移**（不要自己接着往后占）。
+
+## 2. i18n：**按命名空间分**
+
+`dashboard/src/locales/{en,zh}.json` 是两条线都会碰的文件。**按命名空间切开，各改各的**：
+
+| 工作流 | 自己的命名空间 |
+|---|---|
+| **知识库 / 数据源** | `knowledge*` · `sources*` · `dataSource*` · `extractTemplate*` |
+| **权限 / 组织** | `perms*` · `org*` · `roles*` · `orgUnits*` |
+
+**后端 i18n 同样是共享文件**（容易被忘掉）：`src/octop/i18n/en.json` + `src/octop/i18n/zh.json`
+（用户可见的服务端文案、错误消息、工具名都走这里 ✓ 见 `AGENTS.md` 的 i18n 章节）。
+
+| 工作流 | 自己的后端命名空间 |
+|---|---|
+| **知识库 / 数据源** | `knowledge.*` · `sources.*` · `dataSource.*` · `extractTemplate.*` |
+| **权限 / 组织** | `perms.*` · `org.*` · `roles.*` · `orgUnits.*`（以及既有的 `channel.*` 若要改） |
+
+规矩：
+
+- **两个文件集都要遵守**：`dashboard/src/locales/{en,zh}.json` **和** `src/octop/i18n/{en,zh}.json`。
+- **只 append 自己的 key，不重排、不改动别人的区域**（避免污染式 diff）。
+- **en 与 zh 两边都要加，且自己核对。**
+- 改完**立刻提交**，不要长期占着工作区。
+- 后端 i18n 有 key 一致性测试（`uv run pytest tests/unit/i18n -q` ✓）—— **两边都缺时它也会通过，别指望它兜底** ⚠️
+
+## 3. 权限 key：**知识库侧"声明"，权限侧"实现"**
+
+`infra/users/permissions.py`（权限目录）**由权限那条线独占**。
+`api/common/agent.py`（能力/权限判据）同理。
+
+**知识库侧不得直接改这两个文件** —— 它需要的权限 key 在这里声明，由权限侧统一加：
+
+| 需要的 key（语义） | 类别 | 说明 |
+|---|---|---|
+| 查看/搜索知识库文件 | 读 | 设计 §5.2「是否可以在对话中使用检索结果」 |
+| 查看摘要与关键词 | 读 | |
+| 查看结构化字段 | 读 | |
+| 查看/下载原文件 | 读 | |
+| 管理数据源（增删） | 编辑 | |
+| 修改目录权限 | 编辑 | |
+| 绑定提取模板 | 编辑 | |
+| 触发同步 / 重新提取 | 编辑 | |
+| 管理提取模板 | 编辑 | |
+| 配置数据源连接（含凭据） | 编辑 | 【追加 2026-09-22】设计 §4 连接配置；**不含**凭据明文回读 |
+| 测试数据源连接 | 编辑 | 【追加 2026-09-22】设计 §4「连接测试」 |
+| 查看同步 / 提取任务与失败记录 | 读 | 【追加 2026-09-22】设计 §8.4 |
+
+**知识库侧需要的其他权限**（例如"数据源连接配置"）**照此追加到本表，由权限侧实现。**
+
+> **落地前的过渡**（知识库线说明）：上表 key 尚未由权限侧实现期间，知识库线**不自行添加 key**，
+> 而是用**既有**模块键 `knowledge_bases` / `knowledge_settings` 做门禁，接口按最终语义预留；
+> 待权限侧 key 落地后切换。**不引入第二套权限判据。**
+
+> **注意**：设计 §5.3 明确 **"底层 SMB/NFS 凭据权限与平台内部业务权限是两套，必须分别校验"** ——
+> 平台权限 key **不能**替代文件系统侧凭据校验。
+
+## 4. 其余共享文件：**一律追加式**
+
+| 文件 | 约定 |
+|---|---|
+| `src/octop/api/app.py` | 各加自己的路由注册一行 |
+| `src/octop/infra/db/services.py`（`RepoBundle`） | 各加自己的 repo 字段 |
+| `dashboard/src/routes/index.tsx` | 各加自己的路由 |
+| `dashboard/src/layouts/sidebarNav.tsx` | 各加自己的导航项 |
+| `dashboard/src/api/modules/*` | **各建自己的模块文件**（不要共用一个） |
+
+**追加式 = 冲突可机械解决** ✓；**改写式（重排/抽取/重命名）才会产生真冲突** —— 想重构共享文件，**先在这里记一笔，并在群里说**。
+
+## 4.1 共享文件的追加式改动记录（知识库线）
+
+按 §4 的约定，这些是**追加**而不是改写，但列在这里以便权限线核对：
+
+| 文件 | 追加了什么 |
+|---|---|
+| `src/octop/infra/sharing/__init__.py` | `RESOURCE_TYPES` 增加 **`knowledge_document`** —— 知识空间里的"单个文件"这一级授权主体（design §5 的文件/目录权限）。这是一个**新的资源类型**：任何按类型白名单校验的调用方（sharing service、ACL 列表、权限相关 UI）都需要知道它存在，否则文件级授权会被判为未知类型。 |
+| `src/octop/infra/knowledge/scope.py` | 新增 `may_read_document` / `readable_documents`（纯规则，基于 `sharing.can_access`，不复制规则）。 |
+| `src/octop/infra/knowledge/retrieve.py` | 检索候选集多了一层文件级过滤（引用与预览/下载同源）。 |
+| `dashboard/src/pages/Sharing/labels.ts` | **未改动**，但需要权限线知道：`RESOURCE_TYPE_LABEL_KEYS` 目前没有 `knowledge_document` 的映射，i18n 里也没有 `sharing.resourceType.knowledge_document`。今天不会露出问题——知识库这条线写文件级授权走的是直接写 ACL 行，不产生 `resource_acl_changes` 记录，前端的选择器也是固定列表；但**如果权限线把「按文件共享」加进共享界面**，这两处（映射 + en/zh 键）要一起补，否则队列行会显示成原始键。
+
+## 5. 合并规则
+
+1. **顺序**：**先合权限，后合知识库**（知识库依赖权限提供的 key）。
+2. **节奏**：**每完成一个阶段就合回基线** —— **不要憋到最后**（憋到最后 = 一次巨型冲突）。
+3. **归属**：**后合并者负责解决冲突**。
+4. **合并前**：各自跑自己的定向测试；**基线合并后**由主分支的负责方跑全量（`make all` 那条）。
+
+## 6. 每台机器上的第一步（**必做**）
+
+**先只读盘点"这份设计里的哪些已经实现进代码"** —— 之前已有若干切片动过
+组织/权限/存储（`OrgSchema` · `OrgUnitAPI` · `PermResolve` · `PermWiring` · `StorageConfigResume` …），
+**不盘点就会重做已经有了的东西**。
+
+盘点产出：**设计条目 → 已实现 / 部分实现 / 未实现**，附代码位置。
+
+## 7. 知识库线工作记录（`feat/knowledge-sources`）
+
+### 7.1 盘点结论（已完成，2026-09-22）
+
+现状是**「用户多知识库 + 平台内上传 + 整库级共享」**，设计目标是**「企业单一知识库 +
+外部文件夹数据源索引 + 目录/文件级权限 + 提取模板」**——**两套语义**。完整盘点见对话记录。
+
+**可直接复用、不要重做**：`resource_acl` 三表 + `sharing` 规则与审批、权限键目录、
+`org_units`、`parse.py` 解析矩阵、`ocr.py`、`chunk/embed/index` 向量链、KB 级检索前过滤、
+`data_sources` 骨架、存储后端、对话引用链路。
+
+### 7.2 已确认的产品决策（用户拍板）
+
+1. **本轮范围 = 设计 §12 阶段 1–3**：企业知识空间 + 数据源（local/SMB/NFS）+ 扫描/变化检测/任务。
+2. **企业模型 = 单企业部署即企业**：**不建** `enterprise` 表，企业知识库为**单例**。
+3. **强制单库**：禁止再新建知识库，旧库合并/迁移进唯一企业知识库。
+4. **迁移编号**：先申请扩展区间（见 §1）。
+
+### 7.3 共享文件备注（**重构前先记录**，按 §4 要求）
+
+| 文件 | 计划动作 | 性质 |
+|---|---|---|
+| `infra/sharing/__init__.py` · `RESOURCE_TYPES` | **追加** `knowledge_source`（可能含 folder/file） | 追加式 ✓ |
+| `infra/sharing/__init__.py` · `can_access` | 拟支持**部门含子部门**（设计 §5.1/§5.3） | ⚠️ **规则改写 —— 与权限线的真冲突点**，动手前在本表升级为待协调 |
+| `dashboard/src/locales/{en,zh}.json` | 只 append `knowledge*`/`sources*`/`dataSource*`/`extractTemplate*` | 追加式 ✓ |
+| `infra/db/migrations/` | `027` 起，成对 `.sql` + `.pg.sql` | 见 §1 |
+| `tests/unit/db/test_db_pool.py` | 版本断言**实为 9 处**（`035` 落地后）；两条线必然撞的是 **11 个文件、共 22 处** | 契约说的"一行"已按 §1 的 11 个文件清单修正 |
+
+### 7.4 待决策阻塞项（**已上报用户**）
+
+- **NFS 直连不可行**：无纯 Python NFS 客户端；`libnfs` 需原生库（本机 Windows 不可用）。
+- **强制单库的合并顺序**：旧库各自的 ACL 粒度止于"整库"，**文件级 ACL 属阶段 8**；
+  本阶段物理合并会**扩大可见范围**或需要提前做阶段 8。已上报待决策。

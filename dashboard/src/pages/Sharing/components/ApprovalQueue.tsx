@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Card, Input, Modal, Popconfirm, Segmented, Space, Spin, Tag, Typography } from "antd";
-import { message } from "@/utils/antdMessage";
 import {
-  ArrowRight,
-  Check,
-  Globe2,
-  RefreshCw,
-  Undo2,
-  X,
-} from "lucide-react";
+  Alert,
+  Button,
+  Card,
+  Input,
+  Modal,
+  Popconfirm,
+  Segmented,
+  Space,
+  Spin,
+  Tag,
+  Typography,
+} from "antd";
+import { message } from "@/utils/antdMessage";
+import { ArrowRight, Check, Globe2, RefreshCw, Undo2, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { BRAND } from "../../../brand.generated";
 import { request } from "../../../api/request";
@@ -18,7 +23,10 @@ import type {
   SharingChangeStatus,
 } from "../../../api/modules/sharing";
 import { sharingApi } from "../../../api/modules/sharing";
-import { adminOnlyErrorMessage, apiErrorMessage } from "../../../utils/apiError";
+import {
+  adminOnlyErrorMessage,
+  apiErrorMessage,
+} from "../../../utils/apiError";
 import { formatServerDateTime } from "../../../utils/formatMessageTime";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
@@ -30,7 +38,12 @@ import {
   STATUS_LABEL_KEYS,
   STATUS_NOTE_KEYS,
 } from "../labels";
-import { ImpactScopeTag, StatusTag, VisibilityTag } from "./SharingTags";
+import {
+  ImpactScopeTag,
+  PermissionTag,
+  StatusTag,
+  VisibilityTag,
+} from "./SharingTags";
 import styles from "../index.module.less";
 
 const { Text } = Typography;
@@ -48,7 +61,11 @@ interface UserRow {
   display_name: string | null;
 }
 
-/** One side of the before/after pair. */
+/**
+ * One side of the before/after pair. Reach *and* level are both rendered: a
+ * change moves either one, and a ``read`` → ``write`` escalation is invisible
+ * to the reviewer when only the visibility is shown.
+ */
 function ChangeSide({
   label,
   entry,
@@ -64,6 +81,7 @@ function ChangeSide({
       </Text>
       <Space size={4} wrap>
         <VisibilityTag visibility={entry.visibility} />
+        <PermissionTag permission={entry.permission} />
         {entry.unit_key && <Text code>{entry.unit_key}</Text>}
       </Space>
       <div className={styles.grantList}>
@@ -72,7 +90,9 @@ function ChangeSide({
         ) : (
           entry.grants.map((grant) => (
             <Tag key={`${grant.grantee_type}:${grant.grantee_id}`}>
-              {`${t(GRANTEE_TYPE_LABEL_KEYS[grant.grantee_type])}: ${grant.grantee_id}`}
+              {`${t(GRANTEE_TYPE_LABEL_KEYS[grant.grantee_type])}: ${
+                grant.grantee_id
+              }`}
             </Tag>
           ))
         )}
@@ -96,8 +116,7 @@ export default function ApprovalQueue() {
   const currentUser = useCurrentUser();
   const admin = isSystemAdmin(currentUser);
   const timeZone = useServerTimezone();
-  const [status, setStatus] =
-    useState<SharingChangeStatus>("pending_approval");
+  const [status, setStatus] = useState<SharingChangeStatus>("pending_approval");
   const [changes, setChanges] = useState<SharingChange[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<unknown>(null);
@@ -200,11 +219,7 @@ export default function ApprovalQueue() {
       setReloadToken((n) => n + 1);
     } catch (error) {
       message.error(
-        adminOnlyErrorMessage(
-          error,
-          t("sharing.queue.rejectFailed"),
-          t,
-        ),
+        adminOnlyErrorMessage(error, t("sharing.queue.rejectFailed"), t),
       );
     } finally {
       setBusyId(null);
@@ -274,7 +289,9 @@ export default function ApprovalQueue() {
                 >
                   <div className={styles.changeHeader}>
                     <Space size={6} wrap>
-                      <Tag>{t(RESOURCE_TYPE_LABEL_KEYS[change.resource_type])}</Tag>
+                      <Tag>
+                        {t(RESOURCE_TYPE_LABEL_KEYS[change.resource_type])}
+                      </Tag>
                       <Text strong>{resourceName}</Text>
                       <Text code type="secondary">
                         {change.resource_id}
