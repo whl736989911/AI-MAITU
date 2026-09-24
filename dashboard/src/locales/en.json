@@ -365,6 +365,7 @@
     "documentLimitReached": "This knowledge base already contains the maximum of {{count}} documents.",
     "maxDocuments": "Document limit",
     "maxDocumentsHint": "Maximum number of files in this knowledge base. 0 = unlimited, default 100.",
+    "maxDocumentsSaveFailed": "Could not save the document limit. Confirm that you can manage this knowledge base.",
     "documentTooLarge": "Each document must be at most {{sizeMb}} MB.",
     "uploadHint": "Supports text (md / txt / rst / html / json / yaml, …), spreadsheets (csv / tsv / xls / xlsx / xlsm), and pdf / docx / pptx. Max {{sizeMb}} MB per file. Drag and drop onto this page to upload.",
     "uploadHintOcr": "Also supports png / jpg / webp images and OCR fallback for scanned PDFs. Max {{sizeMb}} MB per file. Drag and drop onto this page to upload.",

@@ -365,6 +365,7 @@
     "documentLimitReached": "此知识库已达到 {{count}} 个文档的上限。",
     "maxDocuments": "文档数量上限",
     "maxDocumentsHint": "本知识库可容纳的最大文档数，0 表示不限制，默认为 100。",
+    "maxDocumentsSaveFailed": "保存文档数量上限失败，请确认你有权管理该知识库。",
     "documentTooLarge": "单个文档不能超过 {{sizeMb}} MB。",
     "uploadHint": "支持文本（md / txt / rst / html / json / yaml 等）、表格（csv / tsv / xls / xlsx / xlsm）、pdf / docx / pptx，单文件不超过 {{sizeMb}} MB。可直接拖到本页上传。",
     "uploadHintOcr": "另支持 png / jpg / webp 图片及扫描 PDF OCR，单文件不超过 {{sizeMb}} MB。可直接拖到本页上传。",

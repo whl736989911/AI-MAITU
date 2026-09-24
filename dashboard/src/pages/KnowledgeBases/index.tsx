@@ -128,7 +128,6 @@ type BaseFormValues = {
   name: string;
   description?: string;
   icon_name?: string;
-  max_documents?: number;
 };
 
 type DocsViewMode = "card" | "table";
@@ -344,6 +343,7 @@ export default function KnowledgeBasesPage() {
   const [mobilePane, setMobilePane] = useState<"list" | "detail">("list");
   const [baseDrawerOpen, setBaseDrawerOpen] = useState(false);
   const [editingBaseId, setEditingBaseId] = useState<string | null>(null);
+  const [maxDocumentsDraft, setMaxDocumentsDraft] = useState(0);
   const [featureModalOpen, setFeatureModalOpen] = useState(false);
   const [onnxProbe, setOnnxProbe] = useState<{
     ok: boolean;
@@ -718,6 +718,7 @@ export default function KnowledgeBasesPage() {
     ? `${BASE_DOCUMENT_TYPES},${OCR_DOCUMENT_TYPES}`
     : BASE_DOCUMENT_TYPES;
   const limits = capability?.limits ?? DEFAULT_KNOWLEDGE_LIMITS;
+  const enterpriseBase = bases.find((base) => base.owner_user_id === null);
   const fileCount = documents.filter((document) => !document.is_dir).length;
   const isAtDocumentLimit =
     fileCount >= (selected?.max_documents ?? limits.max_docs_per_kb);
@@ -994,11 +995,11 @@ export default function KnowledgeBasesPage() {
   };
 
   const openEdit = (base: KnowledgeBase) => {
+    baseForm.resetFields();
     baseForm.setFieldsValue({
       name: base.name,
       description: base.description,
       icon_name: base.icon_name || undefined,
-      max_documents: base.max_documents,
     });
     setDefaultOpenChecked(base.default_open);
     setSharedChecked(base.shared);
@@ -1134,11 +1135,39 @@ export default function KnowledgeBasesPage() {
     }
   };
 
+  const saveMaxDocumentsIfChanged = async () => {
+    if (
+      !enterpriseBase ||
+      !canManageKnowledgeBase(enterpriseBase, user) ||
+      maxDocumentsDraft === (enterpriseBase.max_documents ?? 100)
+    ) {
+      return true;
+    }
+    try {
+      const updated = await knowledgeBasesApi.update(enterpriseBase.id, {
+        max_documents: maxDocumentsDraft,
+      });
+      setBases((current) =>
+        current.map((base) => (base.id === updated.id ? updated : base)),
+      );
+      setSelected((current) =>
+        current?.id === updated.id ? updated : current,
+      );
+      return true;
+    } catch (error) {
+      message.error(
+        apiErrorMessage(error, t("knowledgeBases.maxDocumentsSaveFailed"), t),
+      );
+      return false;
+    }
+  };
+
   const saveFeature = async (confirmed = false) => {
     if (!featureEnabledDraft) {
       setFeatureSaving(true);
       try {
         setCapability(await knowledgeBasesApi.setFeature({ enabled: false }));
+        if (!(await saveMaxDocumentsIfChanged())) return;
         setFeatureModalOpen(false);
         message.success(t("knowledgeBases.featureDisabled"));
       } catch (error) {
@@ -1202,6 +1231,7 @@ export default function KnowledgeBasesPage() {
         ocr_model: ocrBackend === "remote" ? ocrModel : "rapidocr",
         ocr_provider_id: ocrBackend === "remote" ? ocrProviderId : "",
       });
+      if (!(await saveMaxDocumentsIfChanged())) return;
       setCapability(next);
       setFeatureModalOpen(false);
       message.success(t("knowledgeBases.featureEnabled"));
@@ -1226,6 +1256,7 @@ export default function KnowledgeBasesPage() {
     setOcrEnabledDraft(Boolean(capability?.ocr?.enabled));
     setOcrBackend(capability?.ocr?.backend ?? "onnx");
     setOcrModel(capability?.ocr?.model || "rapidocr");
+    setMaxDocumentsDraft(enterpriseBase?.max_documents ?? 100);
     setOcrProviderId(capability?.ocr?.provider_id || undefined);
     setFeatureModalOpen(true);
     void (async () => {
@@ -3142,19 +3173,6 @@ export default function KnowledgeBasesPage() {
               showCount
             />
           </Form.Item>
-          <Form.Item
-            name="max_documents"
-            label={t("knowledgeBases.maxDocuments")}
-            extra={t("knowledgeBases.maxDocumentsHint")}
-          >
-            <InputNumber
-              min={0}
-              max={10000}
-              step={1}
-              precision={0}
-              style={{ width: "100%" }}
-            />
-          </Form.Item>
           <Form.Item name="icon_name" label={t("knowledgeBases.icon")}>
             <KnowledgeIconPicker />
           </Form.Item>
@@ -3249,6 +3267,29 @@ export default function KnowledgeBasesPage() {
             />
           </div>
         </div>
+        {enterpriseBase && canManageKnowledgeBase(enterpriseBase, user) ? (
+          <div className={styles.settingsBody}>
+            <div className={styles.settingsFieldLabel}>
+              {t("knowledgeBases.maxDocuments")}
+            </div>
+            <Typography.Text type="secondary">
+              {t("knowledgeBases.maxDocumentsHint")}
+            </Typography.Text>
+            <InputNumber
+              min={0}
+              max={10000}
+              step={1}
+              precision={0}
+              value={maxDocumentsDraft}
+              onChange={(value) =>
+                setMaxDocumentsDraft(
+                  typeof value === "number" ? value : 0,
+                )
+              }
+              style={{ width: "100%", marginTop: 8 }}
+            />
+          </div>
+        ) : null}
 
         {featureEnabledDraft ? (
           <Spin spinning={featureOptionsLoading}>
