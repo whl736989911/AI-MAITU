@@ -547,6 +547,22 @@ async def load_workflow(workspace: BackendWorkspace) -> WorkflowLoad:
     return WorkflowLoad(definition=dict(raw))
 
 
+async def feature_memory_stage(workspace: BackendWorkspace) -> str:
+    """Return the authoritative feature-memory stage, refusing an unreadable definition.
+
+    No workflow is a draft. An invalid workflow cannot silently unlock writes to
+    shared memory: its author must repair the definition first.
+    """
+    loaded = await load_workflow(workspace)
+    if loaded.error is not None:
+        raise OctopError(
+            ErrorCode.WORKFLOW_INVALID,
+            loaded.error,
+            details={"reason": loaded.error},
+        )
+    return workflow_status(loaded.definition)
+
+
 async def save_workflow(workspace: BackendWorkspace, raw: Any) -> dict[str, Any]:
     """Validate *raw* and write it as the definition; returns what was stored."""
     definition = parse_workflow(raw)
@@ -882,6 +898,7 @@ __all__ = [
     "WorkflowRunContext",
     "apply_placeholders",
     "clear_workflow",
+    "feature_memory_stage",
     "fill_step_ids",
     "input_fields",
     "load_workflow",

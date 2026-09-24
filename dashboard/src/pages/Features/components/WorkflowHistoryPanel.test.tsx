@@ -3,10 +3,8 @@ import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 const api = vi.hoisted(() => ({
-  overlay: vi.fn(),
   runs: vi.fn(),
   changes: vi.fn(),
-  putOverlay: vi.fn(),
   revertChange: vi.fn(),
 }));
 vi.mock("../../../api/modules/featureWorkflow", () => ({
@@ -31,7 +29,6 @@ const change = {
 
 describe("<WorkflowHistoryPanel />", () => {
   it("shows only this caller's data and undoes an authorized change", async () => {
-    api.overlay.mockResolvedValue({ overlay: "Use metric units" });
     api.runs.mockResolvedValue({
       runs: [
         {
@@ -52,9 +49,9 @@ describe("<WorkflowHistoryPanel />", () => {
     render(<WorkflowHistoryPanel agentId="feat-demo" canWrite />);
 
     expect(
-      await screen.findByDisplayValue("Use metric units"),
-    ).toBeInTheDocument();
-    expect(screen.getByText(/"unit":"kg"/)).toBeInTheDocument();
+      screen.queryByDisplayValue("Use metric units"),
+    ).not.toBeInTheDocument();
+    expect(await screen.findByText(/"unit":"kg"/)).toBeInTheDocument();
     expect(screen.getByText(/thread-1/)).toBeInTheDocument();
     expect(screen.getByText("Require review")).toBeInTheDocument();
     await user.click(
@@ -71,7 +68,6 @@ describe("<WorkflowHistoryPanel />", () => {
   });
 
   it("does not offer a shared definition's undo to a caller", async () => {
-    api.overlay.mockResolvedValue({ overlay: null });
     api.runs.mockResolvedValue({ runs: [] });
     api.changes.mockResolvedValue({ changes: [change] });
     render(<WorkflowHistoryPanel agentId="feat-demo" canWrite={false} />);

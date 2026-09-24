@@ -330,9 +330,10 @@ on an expert with `WORKFLOW_NOT_A_FEATURE`.
 | `GET`    | `/agents/{aid}/workflow/overlay` | agent access | the caller's own overlay text: `{overlay}` or `null` |
 | `PUT`    | `/agents/{aid}/workflow/overlay` | agent access | body `{overlay}` (at most 4000 chars); blank or `null` removes it |
 
-An **overlay** is the calling user's own layer above the definition: it is injected
-after it, and the run is told to follow it where the two disagree. Keeping one
-changes nobody else's feature and is not visible to another caller.
+An **overlay** is explicitly written by the calling user, never generated from
+memory. It is injected after the feature definition and takes precedence over
+both that definition and retrieved memories. It changes nobody else's feature
+and is not visible to another caller.
 
 ## Workspace, skills, subagents, memory, files
 
@@ -360,10 +361,18 @@ changes nobody else's feature and is not visible to another caller.
 | `POST`   | `/agents/{aid}/subagents` | owner | install a bundled subagent |
 | `GET`    | `/agents/{aid}/heartbeat-config` | owner | read heartbeat YAML |
 | `PUT`    | `/agents/{aid}/heartbeat-config` | owner | write heartbeat YAML |
-| `GET`    | `/agents/{aid}/memory/daily` | owner | list daily memory files |
-| `GET`    | `/agents/{aid}/memory/daily/{filename}` | owner | read one daily memory |
-| `DELETE` | `/agents/{aid}/memory/daily/{filename}` | owner | delete one daily memory |
-| `GET`/`POST` | `/memory/...` | user | memory API (dashboard memory tab) |
+| `GET`    | `/agents/{aid}/memory/access` | agent access | `{stage, default_scope, shared_writable, private_writable}` for the current caller |
+| `GET`    | `/agents/{aid}/memory/daily` | owner, or active-feature caller | list shared daily memory files |
+| `GET`    | `/agents/{aid}/memory/daily/{filename}` | owner, or active-feature caller | read one shared daily memory |
+| `DELETE` | `/agents/{aid}/memory/daily/{filename}` | owner, draft only for features | delete one daily memory |
+| `GET`/`POST` | `/agents/{aid}/memory/...` | agent access | scoped memory API; `scope=shared|private` on memory operations, with omitted scope defaulting to shared in draft and private when active |
+
+For a feature, its author may edit shared memory while the workflow is a draft.
+After publication, shared memory (including workspace files and the SQLite store)
+is read-only to everyone. Each authenticated caller has a separate writable private
+memory; automatic capture and extraction deposit only there, never into shared
+memory. Shared-feature callers can edit their private memory and overlay from
+Personalization without permission to manage the feature itself.
 
 Workspace path arguments are limited to the authenticated agent's workspace, including
 `file://` URLs and host-absolute paths sent with `from_workspace=false`.

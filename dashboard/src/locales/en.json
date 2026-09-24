@@ -1345,7 +1345,7 @@
       "changesEmpty": "No improvements yet.",
       "historyLoading": "Loading…",
       "overlayTitle": "My instruction",
-      "overlayHint": "Only you see this instruction. It takes precedence over the feature's rules during your runs.",
+      "overlayHint": "Only you see this instruction. It takes precedence over the feature's rules and memories during your runs.",
       "overlayPlaceholder": "How should this feature work for you?",
       "overlaySaved": "Your instruction was saved",
       "overlaySaveFailed": "Could not save your instruction"
@@ -4047,6 +4047,15 @@
     "deleteSuccess": "Memory deleted successfully",
     "deleteFailed": "Failed to delete memory",
     "noAgentSelected": "Pick an agent in the top switcher first",
+    "scope": {
+      "shared": "Shared memory",
+      "private": "My private memory",
+      "loading": "Loading feature memory access…",
+      "loadFailed": "Could not load feature memory access.",
+      "draftShared": "Draft feature memory is shared and editable by its author.",
+      "sharedReadOnly": "Shared memory is read-only for active features.",
+      "privateDescription": "Private memory is visible and editable only to you."
+    },
     "tabs": {
       "overview": "Overview",
       "profile": "Profile",
@@ -4369,9 +4378,16 @@
     "title": "Personalization",
     "description": "Configure this agent's skills, tools, plugins, subagents, channels, personality, and memory.",
     "noExpertTitle": "No expert of yours to configure yet",
-    "noExpertHint": "These panels configure your own experts. A feature's panels configure the feature's own agent — and for anyone but its author they are read-only.",
+    "noExpertHint": "These panels configure your own experts. Feature definition panels are author-only; the feature's memory has stage-aware shared and per-caller private scopes.",
     "createExpert": "Create an expert",
     "pickFeature": "Pick a feature",
+    "myPersonalization": "My personalization",
+    "overlayTitle": "My private instruction",
+    "overlayHint": "Only you see this instruction. It takes precedence over the feature's rules and memories during your runs; memory never writes or overrides it.",
+    "overlayPlaceholder": "Write any extra guidance you want this feature to follow…",
+    "overlaySaved": "Saved",
+    "overlayError": "Could not load or save your private instruction.",
+    "memorySourceTitle": "Feature memories",
     "tabs": {
       "workflow": "Workflow",
       "skills": "Skills",
@@ -4442,7 +4458,7 @@
     "personalizationMbtiNote": "Applying an MBTI type rewrites this agent's system prompt — the workspace persona files (SOUL.md among them) are left as they are, so a soul you wrote by hand is not overwritten. The type is stored on this shared agent, so it shapes every caller's runs.",
     "filesFailed": "Could not list the persona files",
     "filesMissing": "Not created yet — saving creates it",
-    "memorySharedNote": "This memory belongs to the feature's own agent: every caller shares one copy, and it never changes — not written by a run, and not written by a person. Every caller reads the same MEMORY.md."
+    "memorySharedNote": "Feature memory depends on its stage: the author may edit shared memory in drafts; active shared memory is read-only, and each caller has a separate private memory. Conversation capture never writes to shared memory."
   },
   "consoleBubble": {
     "title": "New Message"

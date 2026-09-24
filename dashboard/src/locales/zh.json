@@ -1345,7 +1345,7 @@
       "changesEmpty": "还没有改进记录。",
       "historyLoading": "读取中…",
       "overlayTitle": "我的个性化指令",
-      "overlayHint": "只有你能看到这段指令；运行时它优先于功能的规则。",
+      "overlayHint": "只有你能看到这段指令；运行时它优先于功能规则与记忆。",
       "overlayPlaceholder": "希望这个功能怎样为你工作？",
       "overlaySaved": "个性化指令已保存",
       "overlaySaveFailed": "保存个性化指令失败"
@@ -4047,6 +4047,15 @@
     "deleteSuccess": "已删除",
     "deleteFailed": "删除失败，请稍后再试",
     "noAgentSelected": "请先在顶部选择一个麦途智造",
+    "scope": {
+      "shared": "共享记忆",
+      "private": "我的私有记忆",
+      "loading": "正在加载功能记忆权限…",
+      "loadFailed": "无法加载功能记忆权限。",
+      "draftShared": "草稿功能的记忆由作者编辑，并与所有调用者共享。",
+      "sharedReadOnly": "功能激活后，共享记忆为只读。",
+      "privateDescription": "私有记忆仅对你可见并可编辑。"
+    },
     "tabs": {
       "overview": "概览",
       "profile": "用户画像",
@@ -4369,9 +4378,16 @@
     "title": "个性化",
     "description": "配置当前智能体的技能、工具、插件、子智能体、通道、人格与记忆。",
     "noExpertTitle": "还没有你自己的专家可配置",
-    "noExpertHint": "这些面板配置的是你自己的专家。功能的面板配置功能自己的 agent，且对作者以外的人只读。",
+    "noExpertHint": "这些面板配置的是你自己的专家。功能定义由作者维护；功能记忆按阶段区分共享记忆与每位调用者的私有记忆。",
     "createExpert": "去创建专家",
     "pickFeature": "去选一个功能",
+    "myPersonalization": "我的个性化",
+    "overlayTitle": "我的专属指令",
+    "overlayHint": "只影响你自己的功能调用，运行时优先于功能规则与记忆；记忆不会自动生成或覆盖这段指令。",
+    "overlayPlaceholder": "写下你希望这个功能额外遵循的要求……",
+    "overlaySaved": "已保存",
+    "overlayError": "专属指令加载或保存失败。",
+    "memorySourceTitle": "功能记忆",
     "tabs": {
       "workflow": "工作流",
       "skills": "技能",
@@ -4442,7 +4458,7 @@
     "personalizationMbtiNote": "应用 MBTI 人格重写的是这个 agent 的系统提示词——工作区里的人设文件（SOUL.md 等）原样保留，手写的灵魂设定不会被覆盖。人格记在这个共用 agent 上，对所有调用者生效。",
     "filesFailed": "读取人设文件列表失败",
     "filesMissing": "尚未创建，保存时会新建",
-    "memorySharedNote": "这份记忆属于功能自己的 agent，全体调用者共用一份，而且不会更新：运行不写入，人也不能写入——每个调用者读到的，始终是同一份 MEMORY.md。"
+    "memorySharedNote": "功能记忆按阶段区分：草稿阶段作者可编辑共享记忆；启用后共享记忆只读，每位调用者另有独立私有记忆。对话自动捕获不会写入共享记忆。"
   },
   "consoleBubble": {
     "title": "消息来了"

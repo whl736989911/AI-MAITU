@@ -12,15 +12,18 @@ import i18n from "@/i18n";
 import {
   memoryDashboardApi,
   type AtomItem,
+  type MemoryScope,
 } from "../../../../api/modules/memoryDashboard";
 
 export function confirmDeprecateAtom({
   agentId,
   atom,
+  scope,
   onSuccess,
 }: {
   agentId: string;
   atom: AtomItem;
+  scope?: MemoryScope;
   /** Callback after successful deprecation, usually to close drawer and refresh list. */
   onSuccess?: () => void;
 }) {
@@ -46,9 +49,14 @@ export function confirmDeprecateAtom({
     cancelText: i18n.t("common.cancel"),
     onOk: async () => {
       try {
-        await memoryDashboardApi.deprecateAtom(agentId, atom.id, {
-          reason: reason || undefined,
-        });
+        await memoryDashboardApi.deprecateAtom(
+          agentId,
+          atom.id,
+          {
+            reason: reason || undefined,
+          },
+          scope,
+        );
         message.success(i18n.t("memory.deprecate.success"));
         onSuccess?.();
       } catch (e) {

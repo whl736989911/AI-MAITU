@@ -201,4 +201,26 @@ describe("<CandidatesReview />", () => {
     expect(promoteBtn).toBeDisabled();
     expect(rejectBtn).toBeDisabled();
   });
+  it("keeps shared candidates readable without offering private mutations", async () => {
+    api.listCandidates.mockResolvedValue(
+      listCandidatesResp([
+        makeCandidate({ id: "cand-shared", title: "共享候选" }),
+      ]),
+    );
+
+    render(<CandidatesReview agentId="ZYWZTD" scope="shared" readOnly />);
+
+    expect(await screen.findByText("共享候选")).toBeInTheDocument();
+    expect(api.listCandidates).toHaveBeenCalledWith(
+      "ZYWZTD",
+      { offset: 0, limit: 20 },
+      "shared",
+    );
+    expect(
+      screen.queryByRole("button", { name: /采\s*纳/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /忽\s*略/ }),
+    ).not.toBeInTheDocument();
+  });
 });
