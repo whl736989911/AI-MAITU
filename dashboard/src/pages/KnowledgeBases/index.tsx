@@ -2223,6 +2223,15 @@ export default function KnowledgeBasesPage() {
                           {selected.name}
                         </Typography.Title>
                       </div>
+                      {canManageSelected ? (
+                        <Button
+                          size="small"
+                          icon={<Pencil size={14} />}
+                          onClick={() => openEdit(selected)}
+                        >
+                          {t("common.edit")}
+                        </Button>
+                      ) : null}
                     </div>
                     <Typography.Paragraph
                       type="secondary"
