@@ -20,7 +20,7 @@
 
 import { useRef, useState } from "react";
 import { Button, Input, Popconfirm, Radio, Select, Tooltip } from "antd";
-import { ChevronDown, Copy, Plus, Trash2 } from "lucide-react";
+import { Copy, Plus, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -55,9 +55,8 @@ export default function WorkflowStepsSection({
   readOnly,
   onChange,
 }: WorkflowStepsSectionProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [selected, setSelected] = useState(0);
-  const [collapsed, setCollapsed] = useState<readonly number[]>([]);
   const [dragging, setDragging] = useState<number | null>(null);
   const [dropTarget, setDropTarget] = useState<number | null>(null);
   const promptRef = useRef<HTMLTextAreaElement | null>(null);
@@ -100,14 +99,6 @@ export default function WorkflowStepsSection({
     if (index < 0) return;
     onChange(steps.filter((_, position) => position !== index));
     setSelected(Math.max(0, index - 1));
-  };
-
-  const toggleCollapsed = (position: number) => {
-    setCollapsed((previous) =>
-      previous.includes(position)
-        ? previous.filter((item) => item !== position)
-        : [...previous, position],
-    );
   };
 
   const handleDrop = (position: number) => {
@@ -162,7 +153,6 @@ export default function WorkflowStepsSection({
           ) : (
             steps.map((item, position) => {
               const rowProblems = stepProblems(problems, position);
-              const isCollapsed = collapsed.includes(position);
               const isDropTarget =
                 dragging !== null &&
                 dropTarget === position &&
@@ -208,18 +198,18 @@ export default function WorkflowStepsSection({
                       {item.name.trim() ||
                         t("features.workflow.steps.untitled")}
                     </span>
-                    {isCollapsed ? null : (
+                    {item.depends_on && item.depends_on.length > 0 ? (
                       <span className={styles.stepMeta}>
-                        {item.id
-                          ? `#${item.id}`
-                          : t("features.workflow.steps.noId")}
-                        {item.depends_on && item.depends_on.length > 0
-                          ? ` · ${t(
-                              "features.workflow.steps.after",
-                            )} ${item.depends_on.join(", ")}`
-                          : ""}
+                        {t("features.workflow.steps.after")}{" "}
+                        {item.depends_on
+                          .map(
+                            (id) =>
+                              steps.find((earlier) => earlier.id === id)
+                                ?.name || id,
+                          )
+                          .join(i18n.language?.startsWith("zh") ? "、" : ", ")}
                       </span>
-                    )}
+                    ) : null}
                   </div>
                   {item.gate === "confirm" ? (
                     <span className={styles.stepGate}>
@@ -241,27 +231,6 @@ export default function WorkflowStepsSection({
                       </span>
                     </Tooltip>
                   ) : null}
-                  <button
-                    type="button"
-                    className={styles.stepToggle}
-                    aria-expanded={!isCollapsed}
-                    aria-label={
-                      isCollapsed
-                        ? t("features.workflow.steps.expand")
-                        : t("features.workflow.steps.collapse")
-                    }
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      toggleCollapsed(position);
-                    }}
-                  >
-                    <ChevronDown
-                      size={14}
-                      className={
-                        isCollapsed ? styles.stepToggleClosed : undefined
-                      }
-                    />
-                  </button>
                 </div>
               );
             })
@@ -325,63 +294,12 @@ export default function WorkflowStepsSection({
                 />
               </label>
 
-              <label className={styles.field}>
-                <span className={styles.fieldLabel}>
-                  {t("features.workflow.steps.id")}
-                  {active ? (
-                    <span className={styles.requiredMark}> *</span>
-                  ) : null}
-                </span>
-                <span className={styles.fieldRow}>
-                  <Input
-                    className={styles.grow}
-                    value={step.id ?? ""}
-                    disabled={readOnly}
-                    placeholder="extract"
-                    onChange={(event) => updateStep({ id: event.target.value })}
-                  />
-                  <Button
-                    size="small"
-                    disabled={readOnly}
-                    onClick={() =>
-                      updateStep({
-                        id: uniqueStepId(
-                          slugifyStepId(step.name, index + 1),
-                          usedIds,
-                        ),
-                      })
-                    }
-                  >
-                    {t("features.workflow.steps.generateId")}
-                  </Button>
-                </span>
-                <span className={styles.fieldHint}>
-                  {t("features.workflow.steps.idHint")}
-                </span>
-              </label>
-
               <div className={styles.field}>
                 <span className={styles.fieldLabel}>
                   {t("features.workflow.steps.prompt")}
                   {active ? (
                     <span className={styles.requiredMark}> *</span>
                   ) : null}
-                </span>
-                <span className={styles.promptTools}>
-                  <Button
-                    size="small"
-                    disabled={readOnly}
-                    onClick={() => insertPlaceholder("{{inputs}}")}
-                  >
-                    {t("features.workflow.steps.insertInputs")}
-                  </Button>
-                  <Button
-                    size="small"
-                    disabled={readOnly}
-                    onClick={() => insertPlaceholder("{{inputs_json}}")}
-                  >
-                    {t("features.workflow.steps.insertInputsJson")}
-                  </Button>
                 </span>
                 <textarea
                   ref={promptRef}
@@ -399,57 +317,6 @@ export default function WorkflowStepsSection({
                   {t("features.workflow.steps.promptHint")}
                 </span>
               </div>
-
-              <label className={styles.field}>
-                <span className={styles.fieldLabel}>
-                  {t("features.workflow.steps.dependsOn")}
-                </span>
-                <Select
-                  mode="multiple"
-                  allowClear
-                  value={step.depends_on ?? []}
-                  disabled={readOnly}
-                  placeholder={t(
-                    "features.workflow.steps.dependsOnPlaceholder",
-                  )}
-                  options={steps
-                    .slice(0, index)
-                    .map((earlier, position) => ({
-                      value: earlier.id ?? "",
-                      label: `${position + 1}. ${
-                        earlier.name.trim() || earlier.id || ""
-                      }`,
-                    }))
-                    .filter((option) => option.value !== "")}
-                  onChange={(values) => updateStep({ depends_on: values })}
-                />
-                <span className={styles.fieldHint}>
-                  {t("features.workflow.steps.dependsOnHint")}
-                </span>
-              </label>
-
-              {(
-                [
-                  ["skills", t("features.workflow.steps.skills")],
-                  ["subagents", t("features.workflow.steps.subagents")],
-                  ["tools", t("features.workflow.steps.tools")],
-                ] as const
-              ).map(([key, label]) => (
-                <label className={styles.field} key={key}>
-                  <span className={styles.fieldLabel}>{label}</span>
-                  <Select
-                    mode="tags"
-                    allowClear
-                    value={step[key] ?? []}
-                    disabled={readOnly}
-                    tokenSeparators={[",", " "]}
-                    placeholder={t(
-                      "features.workflow.steps.nameListPlaceholder",
-                    )}
-                    onChange={(values) => updateStep({ [key]: values })}
-                  />
-                </label>
-              ))}
 
               <div className={styles.field}>
                 <span className={styles.fieldLabel}>
@@ -473,6 +340,125 @@ export default function WorkflowStepsSection({
                   {t("features.workflow.steps.gateHint")}
                 </span>
               </div>
+
+              <details className={styles.advancedSettings}>
+                <summary className={styles.advancedSummary}>
+                  {t("features.workflow.steps.advanced")}
+                  {step.depends_on?.length ||
+                  step.skills?.length ||
+                  step.subagents?.length ||
+                  step.tools?.length
+                    ? ` · ${t("features.workflow.steps.advancedConfigured")}`
+                    : ""}
+                </summary>
+                <div className={styles.previewDetailsBody}>
+                  <label className={styles.field}>
+                    <span className={styles.fieldLabel}>
+                      {t("features.workflow.steps.id")}
+                    </span>
+                    <span className={styles.fieldRow}>
+                      <Input
+                        className={styles.grow}
+                        value={step.id ?? ""}
+                        disabled={readOnly}
+                        placeholder="extract"
+                        onChange={(event) =>
+                          updateStep({ id: event.target.value })
+                        }
+                      />
+                      <Button
+                        size="small"
+                        disabled={readOnly}
+                        onClick={() =>
+                          updateStep({
+                            id: uniqueStepId(
+                              slugifyStepId(step.name, index + 1),
+                              usedIds,
+                            ),
+                          })
+                        }
+                      >
+                        {t("features.workflow.steps.generateId")}
+                      </Button>
+                    </span>
+                    <span className={styles.fieldHint}>
+                      {t("features.workflow.steps.idHint")}
+                    </span>
+                  </label>
+
+                  <label className={styles.field}>
+                    <span className={styles.fieldLabel}>
+                      {t("features.workflow.steps.dependsOn")}
+                    </span>
+                    <Select
+                      mode="multiple"
+                      allowClear
+                      value={step.depends_on ?? []}
+                      disabled={readOnly}
+                      placeholder={t(
+                        "features.workflow.steps.dependsOnPlaceholder",
+                      )}
+                      options={steps
+                        .slice(0, index)
+                        .map((earlier, position) => ({
+                          value: earlier.id ?? "",
+                          label: `${position + 1}. ${
+                            earlier.name.trim() || earlier.id || ""
+                          }`,
+                        }))
+                        .filter((option) => option.value !== "")}
+                      onChange={(values) => updateStep({ depends_on: values })}
+                    />
+                    <span className={styles.fieldHint}>
+                      {t("features.workflow.steps.dependsOnHint")}
+                    </span>
+                  </label>
+
+                  {(
+                    [
+                      ["skills", t("features.workflow.steps.skills")],
+                      ["subagents", t("features.workflow.steps.subagents")],
+                      ["tools", t("features.workflow.steps.tools")],
+                    ] as const
+                  ).map(([key, label]) => (
+                    <label className={styles.field} key={key}>
+                      <span className={styles.fieldLabel}>{label}</span>
+                      <Select
+                        mode="tags"
+                        allowClear
+                        value={step[key] ?? []}
+                        disabled={readOnly}
+                        tokenSeparators={[",", " "]}
+                        placeholder={t(
+                          "features.workflow.steps.nameListPlaceholder",
+                        )}
+                        onChange={(values) => updateStep({ [key]: values })}
+                      />
+                    </label>
+                  ))}
+                  <div className={styles.field}>
+                    <span className={styles.fieldLabel}>
+                      {t("features.workflow.steps.advancedHint")}
+                    </span>
+                    <span className={styles.promptTools}>
+                      <Button
+                        size="small"
+                        disabled={readOnly}
+                        onClick={() => insertPlaceholder("{{inputs}}")}
+                      >
+                        {t("features.workflow.steps.insertInputs")}
+                      </Button>
+                      <Button
+                        size="small"
+                        disabled={readOnly}
+                        onClick={() => insertPlaceholder("{{inputs_json}}")}
+                      >
+                        {t("features.workflow.steps.insertInputsJson")}
+                      </Button>
+                    </span>
+                  </div>
+                </div>
+              </details>
             </>
           )}
         </div>

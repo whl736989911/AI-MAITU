@@ -180,4 +180,28 @@ describe("<FeatureWorkflowPanel /> refusal", () => {
     });
     await waitFor(() => expect(sentSaves()).toHaveLength(1));
   });
+
+  it("keeps a new chat question readable in both locales without extra setup", async () => {
+    api.mockResolvedValueOnce({ workflow: DRAFT, error: null });
+    await renderLoaded();
+    const user = userEvent.setup();
+
+    await user.click(
+      screen.getByRole("button", { name: "features.workflow.inputs.add" }),
+    );
+    await user.type(
+      screen.getByLabelText("features.workflow.inputs.titleZh"),
+      "客户名称",
+    );
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => expect(sentSaves()).toHaveLength(1));
+    const saved = JSON.parse(String(sentSaves()[0]?.[1]?.body)) as {
+      workflow: FeatureWorkflow;
+    };
+    expect(saved.workflow.inputs?.properties.field_1.title).toEqual({
+      zh: "客户名称",
+      en: "客户名称",
+    });
+  });
 });
