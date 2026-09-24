@@ -1857,7 +1857,11 @@
       "selectPlaceholder": "Select a value",
       "arrayPlaceholder": "Type a value, then press Enter",
       "outputTitle": "Outputs",
-      "outputCount": "{{count}} file(s)"
+      "outputCount": "{{count}} file(s)",
+      "expandInputs": "Show",
+      "collapseInputs": "Hide",
+      "expandOutputs": "Show files",
+      "collapseOutputs": "Hide files"
     },
     "openBrowser": "View browser",
     "openBrowserHint": "Agent is browsing the web",

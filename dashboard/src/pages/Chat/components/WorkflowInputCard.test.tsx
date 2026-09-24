@@ -94,7 +94,8 @@ describe("<WorkflowInputCard />", () => {
     });
   });
 
-  it("is read-only once the thread has run, and asks nothing more", () => {
+  it("keeps submitted values in a compact summary and makes every value reachable", async () => {
+    const user = userEvent.setup();
     render(
       <WorkflowInputCard
         inputs={INPUTS}
@@ -109,6 +110,9 @@ describe("<WorkflowInputCard />", () => {
       />,
     );
 
+    expect(screen.getByText(/ACME/)).toBeInTheDocument();
+    expect(screen.queryByText("3")).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "chat.workflow.expandInputs" }));
     expect(screen.getByText("ACME")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
     expect(

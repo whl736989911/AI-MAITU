@@ -1857,7 +1857,11 @@
       "selectPlaceholder": "请选择",
       "arrayPlaceholder": "输入内容后回车添加",
       "outputTitle": "输出",
-      "outputCount": "{{count}} 个文件"
+      "outputCount": "{{count}} 个文件",
+      "expandInputs": "展开",
+      "collapseInputs": "收起",
+      "expandOutputs": "查看文件",
+      "collapseOutputs": "收起文件"
     },
     "openBrowser": "查看浏览器",
     "openBrowserHint": "Agent 正在网页中操作",

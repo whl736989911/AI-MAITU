@@ -21,7 +21,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Input, InputNumber, Select, Switch, Tooltip } from "antd";
 import type { TFunction } from "i18next";
-import { Paperclip, Play, Trash2 } from "lucide-react";
+import { ChevronDown, Paperclip, Play, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type {
@@ -109,13 +109,16 @@ export default function WorkflowInputCard({
   );
   const [files, setFiles] = useState<Record<string, ChatAttachment[]>>({});
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
+  const [expanded, setExpanded] = useState(run === null);
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
-
   // The form is a fresh one whenever the definition it asks changes.
   useEffect(() => {
     setDraft(emptyInputDraft(inputs));
     setFiles({});
   }, [inputs]);
+  useEffect(() => {
+    if (run) setExpanded(false);
+  }, [run?.id]);
 
   const fields = useMemo(() => Object.entries(inputs.properties), [inputs]);
   const missing = useMemo(
@@ -124,6 +127,12 @@ export default function WorkflowInputCard({
   );
   const uploadingAny = Object.values(uploading).some(Boolean);
   const readOnly = run !== null;
+  const summary = fields
+    .slice(0, 2)
+    .map(([name, field]) =>
+      `${fieldLabel(field, locale)}: ${displayValue(field, run?.inputs[name], t)}`,
+    )
+    .join(" · ");
 
   const setValue = (name: string, value: WorkflowInputValue) => {
     setDraft((current) => ({ ...current, [name]: value }));
@@ -201,15 +210,41 @@ export default function WorkflowInputCard({
   };
 
   return (
-    <section className={styles.card} aria-label={t("chat.workflow.inputTitle")}>
+    <section
+      className={`${styles.card} ${readOnly && !expanded ? styles.collapsed : ""}`}
+      aria-label={t("chat.workflow.inputTitle")}
+    >
       <div className={styles.header}>
         <span className={styles.title}>{t("chat.workflow.inputTitle")}</span>
         {readOnly ? (
-          <span className={styles.badge}>{t("chat.workflow.submitted")}</span>
+          <>
+            <span className={styles.badge}>{t("chat.workflow.submitted")}</span>
+            <span className={styles.summary} title={summary}>
+              {summary}
+              {fields.length > 2 ? ` · +${fields.length - 2}` : ""}
+            </span>
+            <button
+              type="button"
+              className={styles.toggle}
+              aria-expanded={expanded}
+              onClick={() => setExpanded((value) => !value)}
+            >
+              {t(
+                expanded
+                  ? "chat.workflow.collapseInputs"
+                  : "chat.workflow.expandInputs",
+              )}
+              <ChevronDown
+                className={expanded ? styles.chevronExpanded : ""}
+                size={14}
+                aria-hidden="true"
+              />
+            </button>
+          </>
         ) : null}
       </div>
 
-      <div className={styles.fields}>
+      {(!readOnly || expanded) && <div className={styles.fields}>
         {fields.map(([name, field]) => {
           const required = (inputs.required ?? []).includes(name);
           return (
@@ -298,7 +333,7 @@ export default function WorkflowInputCard({
             </div>
           );
         })}
-      </div>
+      </div>}
 
       {readOnly ? null : (
         <div className={styles.actions}>

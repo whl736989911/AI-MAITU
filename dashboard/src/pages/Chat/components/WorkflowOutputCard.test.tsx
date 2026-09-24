@@ -47,19 +47,20 @@ function renderCard(
 }
 
 describe("<WorkflowOutputCard />", () => {
-  it("shows the produced files, declared ones under their declared name", () => {
+  it("keeps files reachable from a compact output summary", async () => {
+    const user = userEvent.setup();
     renderCard([QUOTE, NOTES]);
 
-    // The declared deliverable is read by the name the caller asked for, and the
-    // file it came from is still visible — it has to be findable in the workspace.
+    expect(screen.getByText("chat.workflow.outputCount")).toBeInTheDocument();
+    expect(screen.queryByText(QUOTE)).not.toBeInTheDocument();
+    await user.click(
+      screen.getByRole("button", { name: "chat.workflow.expandOutputs" }),
+    );
+
     expect(screen.getByText("报价单")).toBeInTheDocument();
     expect(screen.getByText(QUOTE)).toBeInTheDocument();
     expect(screen.getByText("给客户的报价")).toBeInTheDocument();
-
-    // A file nothing declared keeps its own name, and the card counts what it shows.
     expect(screen.getByText("notes.txt")).toBeInTheDocument();
-    expect(screen.getByText("chat.workflow.outputCount")).toBeInTheDocument();
-
     expect(
       screen.getAllByRole("button", { name: "common.preview" }),
     ).toHaveLength(2);
@@ -67,14 +68,16 @@ describe("<WorkflowOutputCard />", () => {
       screen.getAllByRole("button", { name: "common.download" }),
     ).toHaveLength(2);
   });
-
   it("opens a produced file in the chat's file panel", async () => {
     const user = userEvent.setup();
     const onPreview = vi.fn();
     renderCard([QUOTE, NOTES], onPreview);
 
     await user.click(
-      screen.getAllByRole("button", { name: "common.preview" })[0],
+      screen.getByRole("button", { name: "chat.workflow.expandOutputs" }),
+    );
+    await user.click(
+      (await screen.findAllByRole("button", { name: "common.preview" }))[0],
     );
 
     // The path is the workspace one the panel and the download use — not the

@@ -18,7 +18,7 @@
 
 import { useCallback, useMemo, useState } from "react";
 import { Button, Tooltip } from "antd";
-import { Download, Eye, FileText } from "lucide-react";
+import { ChevronDown, Download, Eye, FileText } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { WorkflowOutput } from "../../../api/modules/featureWorkflow";
@@ -139,6 +139,7 @@ export default function WorkflowOutputCard({
 }: WorkflowOutputCardProps) {
   const { t, i18n } = useTranslation();
   const locale: UiLocale = i18n.language?.startsWith("zh") ? "zh" : "en";
+  const [expanded, setExpanded] = useState(false);
   const entries = useMemo(
     () => labelRunOutputs(files, outputs),
     [files, outputs],
@@ -148,7 +149,7 @@ export default function WorkflowOutputCard({
 
   return (
     <section
-      className={styles.card}
+      className={`${styles.card} ${expanded ? "" : styles.collapsed}`}
       aria-label={t("chat.workflow.outputTitle")}
     >
       <div className={styles.header}>
@@ -156,17 +157,36 @@ export default function WorkflowOutputCard({
         <span className={styles.count}>
           {t("chat.workflow.outputCount", { count: entries.length })}
         </span>
-      </div>
-      <ul className={styles.fileList}>
-        {entries.map((entry) => (
-          <RunFileRow
-            key={entry.path}
-            entry={entry}
-            agentId={agentId}
-            locale={locale}
+        <button
+          type="button"
+          className={styles.toggle}
+          aria-expanded={expanded}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          {t(
+            expanded
+              ? "chat.workflow.collapseOutputs"
+              : "chat.workflow.expandOutputs",
+          )}
+          <ChevronDown
+            className={expanded ? styles.chevronExpanded : ""}
+            size={14}
+            aria-hidden="true"
           />
-        ))}
-      </ul>
+        </button>
+      </div>
+      {expanded ? (
+        <ul className={styles.fileList}>
+          {entries.map((entry) => (
+            <RunFileRow
+              key={entry.path}
+              entry={entry}
+              agentId={agentId}
+              locale={locale}
+            />
+          ))}
+        </ul>
+      ) : null}
     </section>
   );
 }
