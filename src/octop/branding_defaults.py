@@ -1,0 +1,3 @@
+"""Generated runtime defaults from brand.config.json; do not edit by hand."""
+
+DEFAULTS = {'name': {'zh': '麦途智造', 'en': 'MAITU Smart Manufacturing'}, 'full_name': {'zh': '苏州麦途', 'en': 'Suzhou Maitou'}, 'short_name': {'zh': '麦途智造', 'en': 'MAITU'}, 'description': {'zh': '麦途智造 · 面向制造企业的 AI 工作平台', 'en': 'MAITU Smart Manufacturing · AI workspace for manufacturers'}, 'colors': {'brand': '#FE0000', 'accent': '#E5484D'}, 'pwa': {'theme_color': '#ffffff', 'background_color': '#0f1117'}, 'logos': {'mark': '/brand/mark-512.png', 'wordmark_light': '/brand/wordmark-light.png', 'wordmark_dark': '/brand/wordmark-dark.png', 'favicon': '/brand/favicon.png', 'apple_touch_icon': '/brand/apple-touch-icon.png', 'pwa_192': '/brand/pwa-192.png', 'pwa_512': '/brand/pwa-512.png'}}

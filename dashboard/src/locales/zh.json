@@ -224,6 +224,7 @@
     "backupRestore": "备份与恢复",
     "environments": "环境变量",
     "loginCaptcha": "登录验证码",
+    "branding": "品牌",
     "search": "AI 搜索",
     "collapseSidebar": "收起",
     "expandSidebar": "展开",
@@ -6272,5 +6273,44 @@
     "grantsLoadFailed": "部门授权加载失败",
     "grantsEmpty": "没有可授予的模块",
     "grantsInheritedNote": "该部门同时继承上级部门的授权；这里只显示并修改它自己的一份。"
+  },
+  "branding": {
+    "title": "品牌设置",
+    "description": "在运行时自定义公司的品牌名称、标志与颜色。",
+    "loadFailed": "无法加载品牌设置",
+    "saved": "品牌设置已保存",
+    "saveFailed": "无法保存品牌设置",
+    "save": "保存",
+    "reset": "恢复出厂品牌",
+    "resetDone": "已恢复出厂品牌",
+    "resetFailed": "恢复品牌失败",
+    "logos": "品牌标志",
+    "logoUploaded": "标志已上传",
+    "logoUploadFailed": "标志上传失败",
+    "colors": "品牌颜色与 PWA",
+    "brandColor": "品牌色",
+    "accentColor": "强调色",
+    "themeColor": "PWA 主题色",
+    "backgroundColor": "PWA 背景色",
+    "preview": "实时预览",
+    "previewButton": "主要操作",
+    "previewNote": "此处为品牌颜色与公司名称预览。保存后，应用界面会立即更新。",
+    "fields": {
+      "name": "公司名称",
+      "full_name": "公司全称",
+      "short_name": "公司简称",
+      "description": "公司简介"
+    },
+    "chinese": "中文",
+    "english": "English",
+    "logoSlots": {
+      "mark": "方形标志",
+      "wordmark_light": "浅色背景字标",
+      "wordmark_dark": "深色背景字标",
+      "favicon": "浏览器图标",
+      "apple_touch_icon": "Apple 图标",
+      "pwa_192": "PWA 图标 192",
+      "pwa_512": "PWA 图标 512"
+    }
   }
 }

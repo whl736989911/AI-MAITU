@@ -5,10 +5,7 @@ export const BRAND = {
   name: { zh: "麦途智造", en: "MAITU Smart Manufacturing" },
   fullName: { zh: "苏州麦途", en: "Suzhou Maitou" },
   shortName: { zh: "麦途智造", en: "MAITU" },
-  description: {
-    zh: "麦途智造 · 面向制造企业的 AI 工作平台",
-    en: "MAITU Smart Manufacturing · AI workspace for manufacturers",
-  },
+  description: { zh: "麦途智造 · 面向制造企业的 AI 工作平台", en: "MAITU Smart Manufacturing · AI workspace for manufacturers" },
   logo: {
     mark: "/brand/mark-512.png",
     wordmarkLight: "/brand/wordmark-light.png",

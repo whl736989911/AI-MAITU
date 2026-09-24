@@ -1,5 +1,5 @@
 import { useTranslation } from "react-i18next";
-import { BRAND } from "../../../brand.generated";
+import { useBranding } from "../../../context/BrandingContext";
 import { useElapsedSince } from "../../../hooks/useElapsedSeconds";
 import styles from "../index.module.less";
 
@@ -13,13 +13,14 @@ export default function ThinkingBubble({
   startedAt,
 }: ThinkingBubbleProps) {
   const { t } = useTranslation();
+  const brand = useBranding();
   const elapsed = useElapsedSince(startedAt);
 
   return (
     <div className={styles.thinkingBubble}>
       <div className={styles.avatarCol}>
         <div className={styles.botAvatar}>
-          <img src={BRAND.logo.mark} alt="" aria-hidden draggable={false} />
+          <img src={brand.logos.mark} alt="" aria-hidden draggable={false} />
         </div>
       </div>
       <div className={styles.thinkingContent}>

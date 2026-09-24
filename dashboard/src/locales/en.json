@@ -224,6 +224,7 @@
     "backupRestore": "Backup & Restore",
     "environments": "Environments",
     "loginCaptcha": "Login captcha",
+    "branding": "Brand",
     "search": "AI Search",
     "collapseSidebar": "Collapse",
     "expandSidebar": "Expand",
@@ -6272,5 +6273,44 @@
     "grantsLoadFailed": "Could not load the department's access",
     "grantsEmpty": "No modules can be granted",
     "grantsInheritedNote": "This department also inherits its parent's access; only its own set is shown and edited here."
+  },
+  "branding": {
+    "title": "Brand settings",
+    "description": "Customize company branding at runtime: names, logos, and colors.",
+    "loadFailed": "Could not load brand settings",
+    "saved": "Brand settings saved",
+    "saveFailed": "Could not save brand settings",
+    "save": "Save",
+    "reset": "Restore factory brand",
+    "resetDone": "Factory brand restored",
+    "resetFailed": "Could not restore brand",
+    "logos": "Brand logos",
+    "logoUploaded": "Logo uploaded",
+    "logoUploadFailed": "Could not upload logo",
+    "colors": "Brand colors and PWA",
+    "brandColor": "Brand color",
+    "accentColor": "Accent color",
+    "themeColor": "PWA theme color",
+    "backgroundColor": "PWA background color",
+    "preview": "Live preview",
+    "previewButton": "Primary action",
+    "previewNote": "This previews the company name and brand colors. Saving updates the application immediately.",
+    "fields": {
+      "name": "Company name",
+      "full_name": "Full company name",
+      "short_name": "Short company name",
+      "description": "Company description"
+    },
+    "chinese": "Chinese",
+    "english": "English",
+    "logoSlots": {
+      "mark": "Square mark",
+      "wordmark_light": "Wordmark on light background",
+      "wordmark_dark": "Wordmark on dark background",
+      "favicon": "Browser icon",
+      "apple_touch_icon": "Apple icon",
+      "pwa_192": "PWA icon 192",
+      "pwa_512": "PWA icon 512"
+    }
   }
 }

@@ -87,7 +87,7 @@ def fetch_document(
         max_bytes=max_bytes,
         timeout=timeout,
         headers={
-            "user-agent": "Octop-Knowledge/1.0 (knowledge-base data source)",
+            "user-agent": "MAITU Smart Manufacturing-Knowledge/1.0 (knowledge-base data source)",
             "accept": "text/html,application/xhtml+xml,text/plain,application/pdf;q=0.9,*/*;q=0.8",
         },
     )

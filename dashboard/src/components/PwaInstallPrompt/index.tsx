@@ -8,7 +8,7 @@ import {
   triggerInstall,
   waitForInstallPrompt,
 } from "../../pwa-prompt";
-import { BRAND } from "../../brand.generated";
+import { useBranding } from "../../context/BrandingContext";
 import styles from "./index.module.less";
 
 const DISMISSED_KEY = "pwa:install-dismissed";
@@ -33,6 +33,7 @@ function isStandalone(): boolean {
 // ─── iOS guide sheet ──────────────────────────────────────────────────────────
 
 export function IosGuide({ onClose }: { onClose: () => void }) {
+  const brand = useBranding();
   return createPortal(
     <div
       className={styles.iosOverlay}
@@ -53,7 +54,7 @@ export function IosGuide({ onClose }: { onClose: () => void }) {
         </button>
         <div className={styles.guideTitle}>添加到主屏幕</div>
         <p className={styles.guideDesc}>
-          将 {BRAND.name.zh} 安装为 App，随时一键打开。
+          将 {brand.name.zh} 安装为 App，随时一键打开。
         </p>
         <ol className={styles.guideList}>
           <li>
@@ -83,6 +84,7 @@ export function IosGuide({ onClose }: { onClose: () => void }) {
 
 export function DesktopInstallGuide({ onClose }: { onClose: () => void }) {
   const isEdge = /edg/i.test(navigator.userAgent);
+  const brand = useBranding();
   return createPortal(
     <div
       className={styles.desktopOverlay}
@@ -118,8 +120,8 @@ export function DesktopInstallGuide({ onClose }: { onClose: () => void }) {
           <li>
             <span className={styles.guideStep}>2</span>
             <span>
-              或打开浏览器菜单，选择「{isEdge ? "应用" : "安装"} {BRAND.name.zh}
-              」/ Install {BRAND.shortName.en}
+              或打开浏览器菜单，选择「{isEdge ? "应用" : "安装"} {brand.name.zh}
+              」/ Install {brand.short_name.en}
             </span>
           </li>
           <li>
