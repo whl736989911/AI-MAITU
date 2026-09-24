@@ -157,6 +157,8 @@ const SessionItem = memo(function SessionItem({
       }}
       role="button"
       tabIndex={0}
+      title={session.name}
+      aria-label={session.name}
       onKeyDown={(e) => {
         if (e.key === "Enter" && !isEditing) onSelect(session.id);
       }}

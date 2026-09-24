@@ -13,17 +13,97 @@
   background: var(--fn-bg-sidebar, var(--fn-bg-elevated, #fff));
 
   &.sidebarWrapperCollapsed {
-    /* No reserved strip — share the nav rail divider (avoids a double-line gap). */
-    padding: 0;
-    width: 0;
-    min-width: 0;
+    /* Keep a narrow, icon-only thread rail instead of removing it entirely. */
+    padding: 0 6px;
+    width: 60px;
+    min-width: 60px;
+    box-sizing: border-box;
     overflow: visible;
   }
 
   .sidebar {
     height: 100%;
-    /* Vertical line drawn by RailEdgeControl */
     border-right: none;
+  }
+}
+
+.sidebarWrapperCollapsed {
+  width: 60px;
+  min-width: 60px;
+  padding: 0 6px;
+  box-sizing: border-box;
+  justify-content: center;
+  .sidebar {
+    width: 48px;
+    min-width: 48px;
+    opacity: 1;
+  }
+
+  .sessionList {
+    padding: 8px 2px;
+  }
+
+  .sessionHeader {
+    align-items: center;
+    padding: 0 0 8px;
+  }
+
+  .sessionTitle,
+  .sessionSearchWrap,
+  .sessionGroupLabel,
+  .sessionName,
+  .sessionRowTitle,
+  .sessionRowMore,
+  .sessionRowPinIndicator,
+  .sessionNameInput,
+  .sessionDeleteBtn,
+  .sessionEditBtn,
+  .sessionMoreBtn,
+  .sessionEmpty {
+    display: none;
+  }
+
+  .sessionAddBtn,
+  .sessionItem,
+  .sessionCreateBtn {
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    padding: 0;
+    justify-content: center;
+    margin-inline: auto;
+  }
+
+  .sessionCreateBtnText {
+    display: none;
+  }
+
+  .sessionRow {
+    justify-content: center;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+    margin-inline: auto;
+    padding: 0;
+  }
+
+  .sessionRowIcon {
+    width: 18px;
+    height: 18px;
+  }
+
+  .sessionItems {
+    padding: 0;
+  }
+
+  .sessionIcon {
+    width: 18px;
+    height: 18px;
+    opacity: 1;
+  }
+
+  @media (max-width: 767px) {
+    display: none;
   }
 }
 
@@ -646,11 +726,12 @@
 .chatInput {
   position: relative;
   z-index: 1;
-  padding: 10px 20px 18px;
+  padding: 8px 20px 8px;
   background: var(--fn-bg-elevated, #fff);
 
   @media (max-width: 767px) {
-    padding: 6px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    padding: 8px 12px
+      calc(8px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px));
   }
 }
 
@@ -659,8 +740,8 @@
   z-index: 1;
   max-width: 960px;
   width: calc(100% - 48px);
-  margin: 0 auto 8px;
-  font-size: 12px;
+  margin: 0 auto 3px;
+  font-size: 10px;
   box-sizing: border-box;
 }
 
@@ -670,15 +751,15 @@
   margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
-  border-radius: 24px;
-  padding: 10px 12px 10px 16px;
+  border-radius: 16px;
+  padding: 4px 8px 4px 12px;
   background: var(--fn-bg-primary);
   border: 1px solid var(--fn-assistant-bubble-border);
   box-shadow: 0 3px 10px rgba(15, 23, 42, 0.05);
 
   @media (max-width: 767px) {
-    padding: 6px 10px 6px 14px;
-    border-radius: 20px;
+    padding: 4px 8px;
+    border-radius: 16px;
   }
 }
 
@@ -690,31 +771,30 @@
 }
 
 .textarea {
-  min-height: 64px;
+  min-height: 34px;
   font-size: 14px;
   line-height: 1.6;
 
   @media (max-width: 767px) {
-    min-height: 40px;
+    min-height: 34px;
   }
 }
 
 .actionsRow {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--fn-color-brand-glow);
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 
   @media (max-width: 767px) {
-    margin-top: 4px;
-    padding-top: 4px;
+    margin-top: 0;
+    padding-top: 0;
   }
 }
 
 .secondaryBtn,
 .newChatBtn {
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--fn-color-brand-glow);
+  width: 32px;
+  height: 32px;
   background: var(--fn-bg-secondary);
 }
 
@@ -724,8 +804,8 @@
 }
 
 .sendBtn {
-  width: 38px;
-  height: 38px;
+  width: 34px;
+  height: 34px;
   border-radius: 12px;
   box-shadow: var(--fn-shadow-brand);
 }
@@ -740,7 +820,7 @@
 
 .aiDisclaimer {
   max-width: 960px;
-  margin: 8px auto 0;
+  margin: 4px auto 0;
   width: calc(100% - 48px);
 }
 
@@ -785,7 +865,6 @@
   /* Minimum font size uplift: 10px → 12px on mobile */
   .msgTime,
   .msgUsage,
-  .runUsageBar,
   .aiDisclaimer,
   .shortcutCmd,
   .slashMenuCmd,

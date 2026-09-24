@@ -1,18 +1,18 @@
 /**
- * The two cards a feature's workflow needs in a chat thread, in one dock.
+ * A feature's workflow inputs and results for a chat thread.
  *
- * A feature that declares inputs asks for them here, right above the composer —
- * the same slot the ask card uses, because either one is something the caller has
- * to fill in before the thread goes on. Once the run is submitted the form turns
- * read-only and what the run produced appears beneath it: the values a
- * conversation ran under, next to what they produced.
+ * The pending input form stays in the composer dock. After submission its
+ * compact, expandable summary moves to the chat header; produced files remain
+ * in the dock below the conversation.
  *
  * Nothing renders for an expert, for a feature that declares no workflow, or for
  * one whose workflow declares no inputs — those threads look exactly as they did
  * before the card existed.
  */
 
+import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
+import { createPortal } from "react-dom";
 
 import type { ChatAttachment } from "../hooks/useChat";
 import { useRunArtifacts, useWorkflowRun } from "../hooks/useWorkflowRun";
@@ -48,6 +48,13 @@ export default function WorkflowRunCards({
   isStreaming,
   onRun,
 }: WorkflowRunCardsProps) {
+  const [summaryContainer, setSummaryContainer] =
+    useState<HTMLElement | null>(null);
+  useEffect(() => {
+    setSummaryContainer(
+      document.querySelector<HTMLElement>("[data-workflow-input-summary]"),
+    );
+  }, []);
   const { t } = useTranslation();
   const { inputs, definition, run, loading, markSubmitted } = useWorkflowRun({
     agentId,
@@ -79,25 +86,47 @@ export default function WorkflowRunCards({
   };
 
   return (
-    <div className={styles.workflowDock}>
-      <div className={styles.workflowDockInner}>
-        <div className={styles.workflowStack}>
-          <WorkflowInputCard
-            inputs={inputs}
-            run={run}
-            agentId={agentId ?? ""}
-            busy={busy}
-            onRun={({ attachments, payload }) => submit(attachments, payload)}
-          />
-          {run ? (
-            <WorkflowOutputCard
-              agentId={agentId ?? ""}
-              files={artifacts}
-              outputs={definition?.outputs}
-            />
-          ) : null}
+    <>
+      {run && summaryContainer
+        ? createPortal(
+            <div className={styles.workflowInputSummary}>
+              <WorkflowInputCard
+                inputs={inputs}
+                run={run}
+                agentId={agentId ?? ""}
+                busy={busy}
+                onRun={({ attachments, payload }) =>
+                  submit(attachments, payload)
+                }
+              />
+            </div>,
+            summaryContainer,
+          )
+        : null}
+      <div className={styles.workflowDock}>
+        <div className={styles.workflowDockInner}>
+          <div className={styles.workflowStack}>
+            {!run ? (
+              <WorkflowInputCard
+                inputs={inputs}
+                run={null}
+                agentId={agentId ?? ""}
+                busy={busy}
+                onRun={({ attachments, payload }) =>
+                  submit(attachments, payload)
+                }
+              />
+            ) : null}
+            {run ? (
+              <WorkflowOutputCard
+                agentId={agentId ?? ""}
+                files={artifacts}
+                outputs={definition?.outputs}
+              />
+            ) : null}
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

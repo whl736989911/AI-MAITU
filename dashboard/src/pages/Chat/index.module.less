@@ -94,10 +94,10 @@
   gap: 8px;
   box-sizing: border-box;
   position: relative;
-  flex: 0 0 var(--fn-chat-chrome-height, 57px);
-  height: var(--fn-chat-chrome-height, 57px);
-  min-height: var(--fn-chat-chrome-height, 57px);
-  max-height: var(--fn-chat-chrome-height, 57px);
+  flex: 0 0 48px;
+  height: 48px;
+  min-height: 48px;
+  max-height: 48px;
   /* Match .chatInput gutters on the left; the right pad mirrors the title pad. */
   --chat-title-pad-x: var(--chat-column-pad-x);
   padding: 0 var(--chat-title-pad-x);
@@ -147,6 +147,20 @@
   justify-content: flex-start;
   gap: 8px;
   box-sizing: border-box;
+}
+
+.workflowInputSummary {
+  flex: 0 0 auto;
+  max-height: min(32vh, 280px);
+  padding: 6px var(--chat-column-pad-x, 24px);
+  overflow: auto;
+  background: var(--fn-bg-elevated, #fff);
+  border-bottom: 1px solid var(--fn-border-secondary);
+  box-sizing: border-box;
+
+  @media (max-width: 767px) {
+    padding-inline: var(--chat-column-pad-x-narrow, 12px);
+  }
 }
 
 .chatTitleLeadingIcon {
