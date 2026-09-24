@@ -10,8 +10,10 @@ interface RailEdgeControlProps {
    * ``start`` — edge sits where a collapsed panel was (expand btn to the right).
    */
   side?: "end" | "start";
-  /** Optional aria / tooltip label override. */
+  /** Optional accessible label / tooltip override. */
   label?: string;
+  /** Keep the collapsed control visible and prominent for hard-to-discover rails. */
+  persistentWhenCollapsed?: boolean;
   className?: string;
   /**
    * When false, keep the hover hit-target / button but do not paint a divider
@@ -54,6 +56,7 @@ export default function RailEdgeControl({
   onToggle,
   side = "end",
   label,
+  persistentWhenCollapsed = false,
   className,
   showLine = true,
 }: RailEdgeControlProps) {
@@ -69,8 +72,8 @@ export default function RailEdgeControl({
       className={`${styles.edge} ${
         side === "start" ? styles.edgeStart : styles.edgeEnd
       } ${expanded ? styles.edgeExpanded : styles.edgeCollapsed} ${
-        className ?? ""
-      }`}
+        persistentWhenCollapsed && !expanded ? styles.edgePersistent : ""
+      } ${className ?? ""}`}
     >
       {showLine ? <div className={styles.line} aria-hidden /> : null}
       <button

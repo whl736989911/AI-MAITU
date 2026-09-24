@@ -220,6 +220,7 @@ export default function MainLayout() {
                 expanded={!collapsed}
                 onToggle={handleNavRailToggle}
                 side="end"
+                persistentWhenCollapsed={isChatRoute}
               />
             )}
           </div>

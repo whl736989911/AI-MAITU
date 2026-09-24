@@ -1083,7 +1083,16 @@ function ChatPageInner() {
                     }
                     setSidebarOpen(!sidebarOpen);
                   }}
-                  title={t("nav.chatHistory") || "会话列表"}
+                  title={t(
+                    sidebarOpen
+                      ? "chat.collapseHistorySidebar"
+                      : "chat.expandHistorySidebar",
+                  )}
+                  aria-label={t(
+                    sidebarOpen
+                      ? "chat.collapseHistorySidebar"
+                      : "chat.expandHistorySidebar",
+                  )}
                 >
                   <PanelLeftOpen size={18} strokeWidth={1.8} />
                 </button>
