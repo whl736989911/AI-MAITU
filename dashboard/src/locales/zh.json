@@ -363,6 +363,7 @@
     "documents": "文档",
     "documentLimit": "{{count}} / {{max}} 个文档",
     "documentLimitReached": "此知识库已达到 {{count}} 个文档的上限。",
+    "documentLimitUnlimited": "{{count}} 个文档（不限制）",
     "maxDocuments": "文档数量上限",
     "maxDocumentsHint": "本知识库可容纳的最大文档数，0 表示不限制，默认为 100。",
     "maxDocumentsSaveFailed": "保存文档数量上限失败，请确认你有权管理该知识库。",

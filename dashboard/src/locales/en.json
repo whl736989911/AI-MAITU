@@ -363,6 +363,7 @@
     "documents": "Documents",
     "documentLimit": "{{count}} / {{max}} documents",
     "documentLimitReached": "This knowledge base already contains the maximum of {{count}} documents.",
+    "documentLimitUnlimited": "{{count}} documents (no limit)",
     "maxDocuments": "Document limit",
     "maxDocumentsHint": "Maximum number of files in this knowledge base. 0 = unlimited, default 100.",
     "maxDocumentsSaveFailed": "Could not save the document limit. Confirm that you can manage this knowledge base.",
