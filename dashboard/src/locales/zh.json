@@ -1726,6 +1726,8 @@
     "skillPickerSearch": "搜索技能",
     "skillPickerEmpty": "暂无可用技能",
     "expertPicker": "选择专家",
+    "featurePicker": "选择功能",
+    "agentPicker": "选择专家与功能",
     "expertPickerSearch": "搜索专家",
     "expertPickerEmpty": "暂无其他专家",
     "expertPickerManage": "管理专家",

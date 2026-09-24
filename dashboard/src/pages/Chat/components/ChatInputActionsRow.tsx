@@ -35,6 +35,7 @@ import {
   modelOptionValue,
   modelShortLabel,
 } from "../../../utils/modelOptions";
+import { indexAgentsByKind } from "../../../utils/agentKindCounts";
 import ContextWindowRing from "./ContextWindowRing";
 import SkillPickerPopover from "./SkillPickerPopover";
 import ExpertPickerPopover from "./ExpertPickerPopover";
@@ -241,6 +242,17 @@ export default function ChatInputActionsRow({
       onInsertSubagentMention &&
       availableSubagents.length > 0,
   );
+  const offeredKinds = useMemo(
+    () => indexAgentsByKind(availableExperts ?? []).held,
+    [availableExperts],
+  );
+  const expertPickerLabel = t(
+    offeredKinds.features
+      ? offeredKinds.experts
+        ? "chat.agentPicker"
+        : "chat.featurePicker"
+      : "chat.expertPicker",
+  );
   const mentionedExperts = mentionedExpertIds(text, availableExperts ?? []);
   const mentionedSubagents = mentionedSubagentSlugs(
     text,
@@ -299,7 +311,7 @@ export default function ChatInputActionsRow({
     connector: t("connectors.chatPicker"),
     knowledge: t("chat.knowledgePicker"),
     skill: t("chat.skillPicker"),
-    expert: t("chat.expertPicker"),
+    expert: expertPickerLabel,
     subagent: t("chat.subagentPicker"),
     shortcut: t("shortcut.title", "快捷指令"),
   };
@@ -605,7 +617,7 @@ export default function ChatInputActionsRow({
         >
           <span className={styles.mobileOverflowItemMain}>
             <GraduationCap size={18} />
-            <span>{t("chat.expertPicker")}</span>
+            <span>{expertPickerLabel}</span>
           </span>
           <span className={styles.mobileOverflowItemMeta}>
             {mentionedExperts.length > 0 && (
@@ -1027,7 +1039,7 @@ export default function ChatInputActionsRow({
               />
             }
           >
-            <Tooltip title={t("chat.expertPicker")} mouseEnterDelay={0.4}>
+            <Tooltip title={expertPickerLabel} mouseEnterDelay={0.4}>
               <button
                 className={`${styles.secondaryBtn} ${
                   mentionedExperts.length > 0

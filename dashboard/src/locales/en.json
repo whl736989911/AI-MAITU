@@ -1726,6 +1726,8 @@
     "skillPickerSearch": "Search skills",
     "skillPickerEmpty": "No skills available",
     "expertPicker": "Select experts",
+    "featurePicker": "Select features",
+    "agentPicker": "Select experts and features",
     "expertPickerSearch": "Search experts",
     "expertPickerEmpty": "No other experts available",
     "expertPickerManage": "Manage experts",

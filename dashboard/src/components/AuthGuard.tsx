@@ -90,6 +90,26 @@ export default function AuthGuard({ children }: AuthGuardProps) {
     };
   }, [navigate]);
 
+  // A permission change made by an administrator must reach an already-open tab
+  // when the account returns to it; the initial /auth/me is not enough.
+  useEffect(() => {
+    if (!authed) return;
+    let cancelled = false;
+    const refreshUser = () => {
+      void authApi
+        .me()
+        .then((me) => {
+          if (!cancelled) setUser(me);
+        })
+        .catch(() => undefined);
+    };
+    window.addEventListener("focus", refreshUser);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("focus", refreshUser);
+    };
+  }, [authed]);
+
   if (checking || !authed) {
     return (
       <div

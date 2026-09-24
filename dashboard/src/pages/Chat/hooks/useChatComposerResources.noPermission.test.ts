@@ -11,6 +11,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { OctopUser } from "../../../api/modules/auth";
+import type { ConnectorInstance } from "../../../api/modules/connectors";
 import { useChatComposerResources } from "./useChatComposerResources";
 
 /**
@@ -22,7 +23,7 @@ function neverSettles<T>(): Promise<T> {
   return Promise.withResolvers<T>().promise;
 }
 
-const listInstances = vi.fn(async () => []);
+const listInstances = vi.fn(async (): Promise<ConnectorInstance[]> => []);
 const getKnowledgeCapability = vi.fn(() => neverSettles<never>());
 const listKnowledgeBases = vi.fn(() => neverSettles<never[]>());
 
@@ -105,6 +106,42 @@ describe("useChatComposerResources without the connectors permission", () => {
     await act(async () => {
       await call?.value;
     });
+  });
+
+  it("drops the picker and selected connector when access is revoked", async () => {
+    held.user = user(["connectors"]);
+    listInstances.mockResolvedValueOnce([
+      {
+        instance_id: "instance-1",
+        kind: "feishu",
+        display_name: "My Feishu",
+        status: "active",
+        mcp_server_name: "feishu-1",
+        has_credentials: true,
+        shared: false,
+        owner_user_id: 7,
+        can_manage: true,
+        created_at: 1,
+        updated_at: 1,
+      },
+    ]);
+    const { result, rerender } = renderHook(() =>
+      useChatComposerResources("a1", null),
+    );
+    await act(async () => {
+      await listInstances.mock.results[0]?.value;
+    });
+    expect(
+      result.current.chatConnectors?.map((item) => item.mcp_server_name),
+    ).toEqual(["feishu-1"]);
+    act(() => result.current.handleConnectorsChange?.(["feishu-1"]));
+    expect(result.current.selectedConnectors).toEqual(["feishu-1"]);
+
+    held.user = user([]);
+    rerender();
+    expect(result.current.chatConnectors).toBeUndefined();
+    expect(result.current.selectedConnectors).toEqual([]);
+    expect(result.current.handleConnectorsChange).toBeUndefined();
   });
 });
 
