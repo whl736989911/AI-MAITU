@@ -17,7 +17,7 @@ from langgraph.config import get_config
 from octop.infra.agents.feature_agent import feature_agent_id
 from octop.infra.agents.kinds import KIND_FEATURE, is_feature_agent
 from octop.infra.agents.manager import AgentCreateSpec
-from octop.infra.users.permissions import user_has_permission, unit_permissions
+from octop.infra.users.permissions import unit_permissions, user_has_permission
 
 MAX_ARCHIVE_ENTRIES = 500
 MAX_ARCHIVE_FILE_BYTES = 20 * 1024 * 1024
@@ -140,18 +140,24 @@ def build_feature_creation_tools(*, registry: Any, repos: Any) -> list[Structure
             if user is None:
                 raise ValueError("The current user no longer exists.")
             unit_repo = getattr(repos, "org_unit_repo", None)
-            grants = unit_permissions(getattr(user, "org_unit", None), unit_repo) if unit_repo else set()
+            grants = (
+                unit_permissions(getattr(user, "org_unit", None), unit_repo) if unit_repo else set()
+            )
             if not user_has_permission(user, "features", unit_grants=grants):
                 raise ValueError("The current user does not have the 'features' permission.")
             cleaned_name = name.strip()
             if not cleaned_name:
                 raise ValueError("Feature name must not be empty.")
-            public_id = feature_id.strip() or re.sub(r"[^a-z0-9]+", "-", cleaned_name.lower()).strip("-")
+            public_id = feature_id.strip() or re.sub(
+                r"[^a-z0-9]+", "-", cleaned_name.lower()
+            ).strip("-")
             if not public_id:
                 raise ValueError("Could not derive a feature id; provide feature_id explicitly.")
             agent_id = feature_agent_id(public_id)
             if agent_id is None:
-                raise ValueError("feature_id cannot be used as an agent id; use a short lowercase id with letters, digits, and hyphens.")
+                raise ValueError(
+                    "feature_id cannot be used as an agent id; use a short lowercase id with letters, digits, and hyphens."
+                )
             created = await registry.create(
                 AgentCreateSpec(
                     agent_id=agent_id,
@@ -190,18 +196,26 @@ def build_feature_creation_tools(*, registry: Any, repos: Any) -> list[Structure
                 raise ValueError("ZIP archives must be uploaded under inbound/.")
             if not source.lower().endswith(".zip"):
                 raise ValueError("Only .zip archives are supported.")
-            dest = _safe_workspace_relative(destination, what="destination") if destination else source[:-4]
+            dest = (
+                _safe_workspace_relative(destination, what="destination")
+                if destination
+                else source[:-4]
+            )
             if dest == "inbound" or not dest.startswith("inbound/"):
                 raise ValueError("Extraction destination must be a directory under inbound/.")
             data = await workspace.adownload_bytes(source)
             if data is None:
-                raise ValueError(f"Cannot read {source!r}; confirm the ZIP was uploaded to this agent's inbound/ directory.")
+                raise ValueError(
+                    f"Cannot read {source!r}; confirm the ZIP was uploaded to this agent's inbound/ directory."
+                )
             planned = _validate_archive(data)
             paths: list[str] = []
             total_written = 0
             with zipfile.ZipFile(BytesIO(data)) as archive:
                 for name, info in planned:
-                    target = f"{dest}/{name.rstrip('/')}" if name.endswith("/") else f"{dest}/{name}"
+                    target = (
+                        f"{dest}/{name.rstrip('/')}" if name.endswith("/") else f"{dest}/{name}"
+                    )
                     if info.is_dir() or name.endswith("/"):
                         await workspace.amkdir(target)
                         paths.append(target + "/")
@@ -216,9 +230,13 @@ def build_feature_creation_tools(*, registry: Any, repos: Any) -> list[Structure
                             size += len(chunk)
                             total_written += len(chunk)
                             if size > MAX_ARCHIVE_FILE_BYTES:
-                                raise ValueError(f"ZIP entry {name!r} exceeded the per-file extraction limit while reading.")
+                                raise ValueError(
+                                    f"ZIP entry {name!r} exceeded the per-file extraction limit while reading."
+                                )
                             if total_written > MAX_ARCHIVE_TOTAL_BYTES:
-                                raise ValueError("ZIP expanded beyond the total extraction limit while reading.")
+                                raise ValueError(
+                                    "ZIP expanded beyond the total extraction limit while reading."
+                                )
                             chunks.append(chunk)
                         payload = b"".join(chunks)
                     if len(payload) != info.file_size:

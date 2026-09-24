@@ -944,7 +944,8 @@ asyncio.run(main())
         [sys.executable, "-c", script, str(archive.messages._db.path), str(archive.store.path)],
         capture_output=True,
         text=True,
-        timeout=20,
+        # Windows interpreter imports can exceed 20s under parallel test load.
+        timeout=60,
     )
     assert result.returncode == 0, result.stderr
     assert "survives immediate exit" in json.dumps(_committed_messages(archive))

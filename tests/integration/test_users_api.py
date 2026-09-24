@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
+from tests.support.auth import ensure_test_org_unit
+
 
 async def test_create_list_get_delete(env):
     c, srv, auth = env
+    await ensure_test_org_unit(c, auth)
     r = await c.post(
         "/api/users",
         headers=auth,
-        json={"username": "alice", "password": "TestPass12", "role": "user"},
+        json={
+            "username": "alice",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "test-unit",
+        },
     )
     assert r.status_code == 201
     uid = r.json()["id"]
@@ -36,10 +44,11 @@ async def test_create_list_get_delete(env):
 async def test_non_admin_gets_403(env):
     c, srv, _ = env
     admin_auth = env[2]
+    await ensure_test_org_unit(c, admin_auth)
     await c.post(
         "/api/users",
         headers=admin_auth,
-        json={"username": "bob", "password": "TestPass12", "role": "user"},
+        json={"username": "bob", "password": "TestPass12", "role": "user", "org_unit": "test-unit"},
     )
     tok = (
         await c.post("/api/auth/login", json={"username": "bob", "password": "TestPass12"})
@@ -65,10 +74,16 @@ async def test_admin_cannot_demote_self(env):
 
 async def test_admin_can_enable_disabled_user(env):
     c, srv, auth = env
+    await ensure_test_org_unit(c, auth)
     r = await c.post(
         "/api/users",
         headers=auth,
-        json={"username": "disabled_user", "password": "TestPass12", "role": "user"},
+        json={
+            "username": "disabled_user",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "test-unit",
+        },
     )
     assert r.status_code == 201
     uid = r.json()["id"]
@@ -84,10 +99,16 @@ async def test_admin_can_enable_disabled_user(env):
 
 async def test_admin_can_unlock_login(env):
     c, srv, auth = env
+    await ensure_test_org_unit(c, auth)
     r = await c.post(
         "/api/users",
         headers=auth,
-        json={"username": "lock_user", "password": "TestPass12", "role": "user"},
+        json={
+            "username": "lock_user",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "test-unit",
+        },
     )
     uid = r.json()["id"]
     max_attempts = srv.services.config.login_max_attempts
@@ -108,6 +129,7 @@ async def test_admin_can_unlock_login(env):
 async def test_admin_can_create_user_with_resource_policy(env, tmp_path, monkeypatch):
     monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
     c, _srv, auth = env
+    await ensure_test_org_unit(c, auth)
     jail = tmp_path / "jail"
     jail.mkdir()
 
@@ -118,6 +140,7 @@ async def test_admin_can_create_user_with_resource_policy(env, tmp_path, monkeyp
             "username": "policy_create",
             "password": "TestPass12",
             "role": "user",
+            "org_unit": "test-unit",
             "workspace_root_dir": jail.as_posix(),
             "token_quota": 2000,
         },
@@ -136,6 +159,7 @@ async def test_admin_can_create_user_with_resource_policy(env, tmp_path, monkeyp
 async def test_create_user_rejects_workspace_root_in_container(env, tmp_path, monkeypatch):
     monkeypatch.setenv("OCTOP_IN_CONTAINER", "1")
     c, _srv, auth = env
+    await ensure_test_org_unit(c, auth)
     jail = tmp_path / "jail"
     jail.mkdir()
 
@@ -146,6 +170,7 @@ async def test_create_user_rejects_workspace_root_in_container(env, tmp_path, mo
             "username": "policy_container",
             "password": "TestPass12",
             "role": "user",
+            "org_unit": "test-unit",
             "workspace_root_dir": jail.as_posix(),
         },
     )
@@ -158,6 +183,7 @@ async def test_create_user_rejects_workspace_root_in_container(env, tmp_path, mo
 async def test_create_user_rejects_invalid_workspace_root(env, tmp_path, monkeypatch):
     monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
     c, _srv, auth = env
+    await ensure_test_org_unit(c, auth)
     missing = tmp_path / "no-such-dir"
 
     r = await c.post(
@@ -167,6 +193,7 @@ async def test_create_user_rejects_invalid_workspace_root(env, tmp_path, monkeyp
             "username": "bad_root",
             "password": "TestPass12",
             "role": "user",
+            "org_unit": "test-unit",
             "workspace_root_dir": missing.as_posix(),
         },
     )
@@ -256,11 +283,17 @@ async def test_user_org_unit_roundtrip(env):
         json={"key": "sales", "label_zh": "销售部", "label_en": "Sales"},
     )
     assert created.status_code == 201, created.text
+    await ensure_test_org_unit(c, auth)
     uid = (
         await c.post(
             "/api/users",
             headers=auth,
-            json={"username": "alice", "password": "TestPass12", "role": "user"},
+            json={
+                "username": "alice",
+                "password": "TestPass12",
+                "role": "user",
+                "org_unit": "test-unit",
+            },
         )
     ).json()["id"]
 
@@ -272,11 +305,12 @@ async def test_user_org_unit_roundtrip(env):
     assert next(u for u in listed if u["id"] == uid)["org_unit"] == "sales"
     assert (await c.get(f"/api/users/{uid}", headers=auth)).json()["org_unit"] == "sales"
 
-    # An omitted field keeps the binding; an explicit null clears it.
+    # An omitted field keeps the binding; employees cannot be unbound.
     kept = await c.patch(f"/api/users/{uid}", headers=auth, json={"display_name": "Alice"})
     assert kept.json()["org_unit"] == "sales"
     cleared = await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": None})
-    assert cleared.json()["org_unit"] is None
+    assert cleared.status_code == 403
+    assert (await c.get(f"/api/users/{uid}", headers=auth)).json()["org_unit"] == "sales"
 
 
 async def test_create_user_with_org_unit_and_unknown_unit_refused(env):
@@ -326,11 +360,17 @@ async def test_create_user_with_org_unit_and_unknown_unit_refused(env):
 async def test_user_write_rejects_unknown_body_field(env):
     """A field the API does not write must fail, not disappear."""
     c, _srv, auth = env
+    await ensure_test_org_unit(c, auth)
     uid = (
         await c.post(
             "/api/users",
             headers=auth,
-            json={"username": "dave", "password": "TestPass12", "role": "user"},
+            json={
+                "username": "dave",
+                "password": "TestPass12",
+                "role": "user",
+                "org_unit": "test-unit",
+            },
         )
     ).json()["id"]
 
@@ -343,6 +383,7 @@ async def test_user_write_rejects_unknown_body_field(env):
         json={
             "username": "erin",
             "password": "TestPass12",
+            "org_unit": "test-unit",
             "role": "user",
             "not_a_field": 1,
         },
@@ -362,7 +403,12 @@ async def test_department_grant_reaches_members(env):
         await c.post(
             "/api/users",
             headers=auth,
-            json={"username": "alice", "password": "TestPass12", "role": "user"},
+            json={
+                "username": "alice",
+                "password": "TestPass12",
+                "role": "user",
+                "org_unit": "sales",
+            },
         )
     ).json()["id"]
     await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "sales"})
@@ -383,8 +429,11 @@ async def test_department_grant_reaches_members(env):
     # The module really opens up for the member, not just on the profile payload.
     assert (await c.get("/api/users", headers=alice)).status_code == 200
 
-    # Leaving the department drops the grant again.
-    await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": None})
+    # Revoking the department grant removes it from every bound member.
+    revoked = await c.put(
+        "/api/org-units/sales/permissions", headers=auth, json={"permissions": []}
+    )
+    assert revoked.status_code == 200, revoked.text
     assert "users" not in (await c.get("/api/auth/me", headers=alice)).json()["permissions"]
     assert (await c.get("/api/users", headers=alice)).status_code == 403
 
@@ -406,7 +455,7 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
         json={"key": "ops", "label_zh": "运维", "label_en": "Operations"},
     )
     support = await create_user(c, auth, username="helpdesk", permissions=["users"])
-    await create_user(c, auth, username="victim")
+    await create_user(c, auth, username="victim", org_unit="ops")
     rows = (await c.get("/api/users", headers=auth)).json()
     victim_id = next(u["id"] for u in rows if u["username"] == "victim")
     me = (await c.get("/api/auth/me", headers=support)).json()
@@ -549,7 +598,7 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
     victim = (await c.get(f"/api/users/{victim_id}", headers=auth)).json()
     assert victim["role"] == "user"
     assert victim["disabled"] is False
-    assert victim["org_unit"] is None
+    assert victim["org_unit"] == "ops"
     usernames = [u["username"] for u in (await c.get("/api/users", headers=auth)).json()]
     assert "planted" not in usernames
     assert "planted_admin" not in usernames
@@ -621,7 +670,12 @@ async def test_admin_can_still_administer_accounts(env):
         made = await c.post(
             "/api/users",
             headers=auth,
-            json={"username": f"made_{role}", "password": TEST_PASSWORD, "role": role},
+            json={
+                "username": f"made_{role}",
+                "password": TEST_PASSWORD,
+                "role": role,
+                "org_unit": "ops" if role == "unit_admin" else None,
+            },
         )
         assert made.status_code == 201, made.text
         assert made.json()["role"] == role
@@ -641,6 +695,7 @@ async def test_denied_permissions_roundtrip_and_tristate(env):
     from tests.support.auth import TEST_PASSWORD
 
     c, _srv, auth = env
+    await ensure_test_org_unit(c, auth)
     created = await c.post(
         "/api/users",
         headers=auth,
@@ -648,6 +703,7 @@ async def test_denied_permissions_roundtrip_and_tristate(env):
             "username": "alice",
             "password": TEST_PASSWORD,
             "role": "user",
+            "org_unit": "test-unit",
             "permissions": ["browser"],
             "denied_permissions": ["browser"],
         },
@@ -746,6 +802,7 @@ async def test_deny_rejects_unknown_key_and_stores_nothing(env):
     from tests.support.auth import TEST_PASSWORD
 
     c, _srv, auth = env
+    await ensure_test_org_unit(c, auth)
     uid = (
         await c.post(
             "/api/users",
@@ -754,6 +811,7 @@ async def test_deny_rejects_unknown_key_and_stores_nothing(env):
                 "username": "alice",
                 "password": TEST_PASSWORD,
                 "role": "user",
+                "org_unit": "test-unit",
                 "denied_permissions": ["browser"],
             },
         )
@@ -775,6 +833,7 @@ async def test_deny_rejects_unknown_key_and_stores_nothing(env):
             "username": "bob",
             "password": TEST_PASSWORD,
             "role": "user",
+            "org_unit": "test-unit",
             "denied_permissions": ["not_a_key"],
         },
     )

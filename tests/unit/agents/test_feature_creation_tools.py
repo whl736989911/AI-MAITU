@@ -14,9 +14,7 @@ from harness_agent.backends.workspace import BackendWorkspace
 
 from octop.infra.agents import feature_creation_tools as module
 from octop.infra.agents.feature_creation_tools import (
-    MAX_ARCHIVE_ENTRIES,
     MAX_ARCHIVE_FILE_BYTES,
-    MAX_ARCHIVE_TOTAL_BYTES,
     _validate_archive,
     build_feature_creation_tools,
 )
@@ -72,13 +70,19 @@ def _setup(
         is_admin=False,
         disabled=0,
     )
-    repos = SimpleNamespace(user_repo=SimpleNamespace(get=lambda user_id: user if user_id == 7 else None))
+    repos = SimpleNamespace(
+        user_repo=SimpleNamespace(get=lambda user_id: user if user_id == 7 else None)
+    )
     monkeypatch.setattr(
         module,
         "get_config",
         lambda: {"configurable": {"agent_id": "personal", "user": "7"}},
     )
-    return {tool.name: tool for tool in build_feature_creation_tools(registry=registry, repos=repos)}, ws, created
+    return (
+        {tool.name: tool for tool in build_feature_creation_tools(registry=registry, repos=repos)},
+        ws,
+        created,
+    )
 
 
 @pytest.mark.asyncio
@@ -106,9 +110,7 @@ async def test_feature_create_refuses_missing_features_permission(
 
 
 @pytest.mark.asyncio
-async def test_feature_agent_cannot_create_nested_feature(
-    tmp_path: Path, monkeypatch: Any
-) -> None:
+async def test_feature_agent_cannot_create_nested_feature(tmp_path: Path, monkeypatch: Any) -> None:
     tools, _ws, created = _setup(monkeypatch, tmp_path, kind="feature")
     result = json.loads(await tools["feature_create"].ainvoke({"name": "Nested"}))
     assert "cannot create another feature" in result["error"]
@@ -121,7 +123,9 @@ async def test_archive_extract_refuses_another_users_workspace(
 ) -> None:
     tools, ws, _created = _setup(monkeypatch, tmp_path, owner=99)
     await ws.aupload_bytes("inbound/source.zip", _zip([("file.txt", b"x", None)]))
-    result = json.loads(await tools["archive_extract"].ainvoke({"archive_path": "inbound/source.zip"}))
+    result = json.loads(
+        await tools["archive_extract"].ainvoke({"archive_path": "inbound/source.zip"})
+    )
     assert "owned by the current user" in result["error"]
     assert not (ws.workspace_dir / "inbound/source/file.txt").exists()
 
@@ -141,15 +145,32 @@ async def test_archive_extract_writes_only_to_inbound_and_returns_tree(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     tools, ws, _created = _setup(monkeypatch, tmp_path)
-    await ws.aupload_bytes("inbound/source.zip", _zip([("project/README.md", b"read me", None), ("project/src/main.py", b"pass", None)]))
-    result = json.loads(await tools["archive_extract"].ainvoke({"archive_path": "inbound/source.zip"}))
+    await ws.aupload_bytes(
+        "inbound/source.zip",
+        _zip([("project/README.md", b"read me", None), ("project/src/main.py", b"pass", None)]),
+    )
+    result = json.loads(
+        await tools["archive_extract"].ainvoke({"archive_path": "inbound/source.zip"})
+    )
     assert result["extracted_to"] == "inbound/source"
-    assert result["files"] == ["inbound/source/project/README.md", "inbound/source/project/src/main.py"]
+    assert result["files"] == [
+        "inbound/source/project/README.md",
+        "inbound/source/project/src/main.py",
+    ]
     assert (ws.workspace_dir / "inbound/source/project/README.md").read_text() == "read me"
     assert "feature_workflow_save" in result["next"]
 
 
-@pytest.mark.parametrize("name", ["../outside.txt", "nested/../../outside.txt", "/outside.txt", "C:/outside.txt", "\\\\server\\share\\x"])
+@pytest.mark.parametrize(
+    "name",
+    [
+        "../outside.txt",
+        "nested/../../outside.txt",
+        "/outside.txt",
+        "C:/outside.txt",
+        "\\\\server\\share\\x",
+    ],
+)
 def test_validate_archive_rejects_traversal_and_absolute_paths(name: str) -> None:
     with pytest.raises(ValueError, match="unsafe path|absolute path"):
         _validate_archive(_zip([(name, b"x", None)]))
@@ -181,6 +202,7 @@ def test_validate_archive_rejects_oversized_total_uncompressed_size(monkeypatch:
     with pytest.raises(ValueError, match="total limit"):
         _validate_archive(_zip(entries))
 
+
 @pytest.mark.asyncio
 async def test_archive_extract_rejects_non_zip_and_workspace_escape(
     tmp_path: Path, monkeypatch: Any
@@ -189,7 +211,9 @@ async def test_archive_extract_rejects_non_zip_and_workspace_escape(
     await ws.aupload_bytes("inbound/not.zip", b"not a zip")
     result = json.loads(await tools["archive_extract"].ainvoke({"archive_path": "inbound/not.zip"}))
     assert "readable ZIP" in result["error"]
-    result = json.loads(await tools["archive_extract"].ainvoke({"archive_path": "../inbound/not.zip"}))
+    result = json.loads(
+        await tools["archive_extract"].ainvoke({"archive_path": "../inbound/not.zip"})
+    )
     assert "unsafe path" in result["error"]
     assert not (ws.workspace_dir.parent / "outside.txt").exists()
 

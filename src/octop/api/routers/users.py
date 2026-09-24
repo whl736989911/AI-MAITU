@@ -450,9 +450,7 @@ async def patch_user(
     if body.role is not None or "org_unit" in body.model_fields_set:
         resulting_role = body.role or row.role
         resulting_unit = (
-            body.org_unit
-            if "org_unit" in body.model_fields_set
-            else getattr(row, "org_unit", None)
+            body.org_unit if "org_unit" in body.model_fields_set else getattr(row, "org_unit", None)
         )
         if resulting_role in {Role.USER.value, Role.UNIT_ADMIN.value} and resulting_unit is None:
             raise OctopError(

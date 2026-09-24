@@ -126,6 +126,26 @@ async def create_agent(
     return data.get("agent_id") or data["id"]
 
 
+TEST_ORG_UNIT = "test-unit"
+
+
+async def ensure_test_org_unit(
+    client: httpx.AsyncClient,
+    admin_auth: dict[str, str],
+) -> str:
+    """Ensure the shared ungranted department used by user-creation test helpers."""
+    response = await client.get("/api/org-units", headers=admin_auth)
+    response.raise_for_status()
+    if not any(unit["key"] == TEST_ORG_UNIT for unit in response.json()["units"]):
+        response = await client.post(
+            "/api/org-units",
+            headers=admin_auth,
+            json={"key": TEST_ORG_UNIT, "label_zh": "测试部门", "label_en": "Test Department"},
+        )
+        response.raise_for_status()
+    return TEST_ORG_UNIT
+
+
 async def create_user(
     client: httpx.AsyncClient,
     admin_auth: dict[str, str],
@@ -142,21 +162,7 @@ async def create_user(
     # Keep the shared test helper realistic without coupling unrelated API tests
     # to their own org-unit fixtures.
     if role in {"user", "unit_admin"} and org_unit is None:
-        units_response = await client.get("/api/org-units", headers=admin_auth)
-        units_response.raise_for_status()
-        units = units_response.json().get("units", [])
-        if not any(unit["key"] == "test-unit" for unit in units):
-            created = await client.post(
-                "/api/org-units",
-                headers=admin_auth,
-                json={
-                    "key": "test-unit",
-                    "label_zh": "测试部门",
-                    "label_en": "Test department",
-                },
-            )
-            created.raise_for_status()
-        org_unit = "test-unit"
+        org_unit = await ensure_test_org_unit(client, admin_auth)
     body: dict[str, object] = {
         "username": username,
         "password": password,

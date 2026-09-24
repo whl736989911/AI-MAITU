@@ -125,6 +125,7 @@ def test_unit_admin_without_a_unit_reaches_nothing(repo: OrgUnitRepo) -> None:
     assert scope.units == frozenset()
     assert scope.covers_unit("acme") is False
 
+
 def test_covers_account_checks_the_role_before_the_department(repo: OrgUnitRepo) -> None:
     scope = scope_for(_actor(Role.UNIT_ADMIN, "acme-ops", user_id=9), repo)
     # Inside the department, but not below the actor: a peer or a senior is out

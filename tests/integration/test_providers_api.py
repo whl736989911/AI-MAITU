@@ -35,10 +35,18 @@ async def test_admin_creates_provider(env):
 async def test_regular_user_cannot_create_provider(env):
     """POST /admin/providers is admin-only."""
     c, _, admin_auth = env
+    from tests.support.auth import ensure_test_org_unit
+
+    await ensure_test_org_unit(c, admin_auth)
     await c.post(
         "/api/users",
         headers=admin_auth,
-        json={"username": "regular", "password": "TestPass12", "role": "user"},
+        json={
+            "username": "regular",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "test-unit",
+        },
     )
     tok = (
         await c.post("/api/auth/login", json={"username": "regular", "password": "TestPass12"})

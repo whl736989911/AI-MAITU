@@ -338,10 +338,13 @@ async def test_admin_captcha_get_put_and_null_delete(env: Any) -> None:
 
 async def test_admin_captcha_forbidden_without_permission(env: Any) -> None:
     c, _srv, admin_auth = env
+    from tests.support.auth import ensure_test_org_unit
+
+    await ensure_test_org_unit(c, admin_auth)
     await c.post(
         "/api/users",
         headers=admin_auth,
-        json={"username": "bob", "password": "TestPass12", "role": "user"},
+        json={"username": "bob", "password": "TestPass12", "role": "user", "org_unit": "test-unit"},
     )
     bob_tok = (
         await c.post("/api/auth/login", json={"username": "bob", "password": "TestPass12"})

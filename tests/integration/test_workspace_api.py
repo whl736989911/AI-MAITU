@@ -254,10 +254,13 @@ async def test_grep_after_seeding(env: Any) -> None:
 async def test_non_owner_cannot_access_workspace(env: Any) -> None:
     """Non-owners cannot read another user's agent workspace."""
     c, _srv, admin_auth, _aid = env
+    from tests.support.auth import ensure_test_org_unit
+
+    await ensure_test_org_unit(c, admin_auth)
     await c.post(
         "/api/users",
         headers=admin_auth,
-        json={"username": "bob", "password": "TestPass12", "role": "user"},
+        json={"username": "bob", "password": "TestPass12", "role": "user", "org_unit": "test-unit"},
     )
     bob_tok = (
         await c.post(

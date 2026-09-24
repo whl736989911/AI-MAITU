@@ -78,10 +78,13 @@ async def test_envs_redacts_captcha_secret_and_put_keeps_sentinel(env: Any) -> N
 
 async def test_envs_non_admin_forbidden(env: Any) -> None:
     c, _srv, admin_auth = env
+    from tests.support.auth import ensure_test_org_unit
+
+    await ensure_test_org_unit(c, admin_auth)
     await c.post(
         "/api/users",
         headers=admin_auth,
-        json={"username": "bob", "password": "TestPass12", "role": "user"},
+        json={"username": "bob", "password": "TestPass12", "role": "user", "org_unit": "test-unit"},
     )
     bob_tok = (
         await c.post("/api/auth/login", json={"username": "bob", "password": "TestPass12"})

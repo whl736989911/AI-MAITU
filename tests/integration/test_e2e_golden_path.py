@@ -34,6 +34,9 @@ async def test_full_golden_path(env: Any) -> None:
     assert r.status_code == 200
     tok = r.json()["access_token"]
     auth = {"Authorization": f"Bearer {tok}"}
+    from tests.support.auth import ensure_test_org_unit
+
+    await ensure_test_org_unit(c, auth)
 
     # 3) admin creates a regular user
     r = await c.post(
@@ -43,6 +46,7 @@ async def test_full_golden_path(env: Any) -> None:
             "username": "alice",
             "password": "TestPass12",
             "role": "user",
+            "org_unit": "test-unit",
             "display_name": "Alice",
         },
     )
@@ -124,6 +128,9 @@ async def test_expert_to_chat_golden_path(env: Any) -> None:
     await bootstrap_admin(c, home)
     r = await c.post("/api/auth/login", json={"username": "admin", "password": "TestPass12"})
     admin_auth = {"Authorization": f"Bearer {r.json()['access_token']}"}
+    from tests.support.auth import ensure_test_org_unit
+
+    await ensure_test_org_unit(c, admin_auth)
 
     # Admin creates provider with explicit model list so /providers/resolved returns something
     r = await c.post(
@@ -150,6 +157,7 @@ async def test_expert_to_chat_golden_path(env: Any) -> None:
             "username": "bob",
             "password": "TestPass12",
             "role": "user",
+            "org_unit": "test-unit",
             "display_name": "Bob",
             "permissions": sorted(BASELINE_PERMISSIONS),
         },

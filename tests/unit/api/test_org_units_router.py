@@ -357,6 +357,7 @@ async def test_unit_admin_may_not_grant_keys_it_does_not_hold(world: SimpleNames
     )
     assert kept["permissions"] == ["users", "knowledge_bases"]
 
+
 async def test_enterprise_admin_without_a_unit_can_create_the_first_root(
     world: SimpleNamespace,
 ) -> None:
@@ -413,6 +414,8 @@ async def test_only_system_or_unbound_enterprise_admin_can_create_a_root(
             server=world.server,
         )
     assert exc.value.code is ErrorCode.FORBIDDEN
+
+
 async def test_enterprise_admin_can_manage_units_inside_its_enterprise(
     world: SimpleNamespace,
 ) -> None:
@@ -465,9 +468,7 @@ async def test_enterprise_admin_can_manage_units_inside_its_enterprise(
         server=world.server,
     )
     assert grants["permissions"] == ["users", "experts"]
-    assert await delete_org_unit(
-        "acme-ops", actor=actor, server=world.server
-    ) is None
+    assert await delete_org_unit("acme-ops", actor=actor, server=world.server) is None
     assert world.units.get("acme-ops") is None
 
     with pytest.raises(OctopError) as exc:
@@ -516,6 +517,7 @@ async def test_unit_admin_cannot_manage_units_outside_its_subtree(
         server=world.server,
     )
 
+
 @pytest.mark.asyncio
 async def test_user_creation_requires_department_but_enterprise_admin_does_not(
     tmp_path: Path,
@@ -523,6 +525,7 @@ async def test_user_creation_requires_department_but_enterprise_admin_does_not(
     """Lock unbound enterprise reach and the employee/admin unit binding rules."""
     from tests.support.app import octop_client
     from tests.support.auth import TEST_PASSWORD, auth_header, bootstrap_admin
+
     from octop.infra.users.scope import scope_for
 
     async with octop_client(tmp_path) as (client, srv):
@@ -566,9 +569,7 @@ async def test_user_creation_requires_department_but_enterprise_admin_does_not(
             key="engineering", label_zh="研发", label_en="Engineering"
         )
         assert enterprise_scope.covers_unit("engineering") is True
-        assert enterprise_scope.covers_account(
-            user_id=9002, role="user", org_unit="engineering"
-        )
+        assert enterprise_scope.covers_account(user_id=9002, role="user", org_unit="engineering")
         employee = await client.post(
             "/api/users",
             headers=admin_auth,

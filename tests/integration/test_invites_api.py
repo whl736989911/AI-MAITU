@@ -109,10 +109,18 @@ async def test_invite_revoke(env) -> None:
 
 async def test_invite_admin_requires_users_permission(env) -> None:
     c, _srv, auth = env
+    from tests.support.auth import ensure_test_org_unit
+
+    await ensure_test_org_unit(c, auth)
     r = await c.post(
         "/api/users",
         headers=auth,
-        json={"username": "normie", "password": "TestPass12", "role": "user"},
+        json={
+            "username": "normie",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "test-unit",
+        },
     )
     assert r.status_code == 201
     tok = (
