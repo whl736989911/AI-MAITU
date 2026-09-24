@@ -8,7 +8,7 @@ import type { OctopAgent } from "../../../context/AgentContext";
 import RailEdgeControl from "../../../components/RailEdgeControl";
 import styles from "../index.module.less";
 
-/** Dispatched when the chat history rail expand control is clicked. */
+/** Dispatched by the navigation quick action to open chat history. */
 export const EXPAND_CHAT_RAIL_EVENT = "octop:expand-chat-rail";
 
 interface ChatSidebarPanelProps {
@@ -78,13 +78,7 @@ export default function ChatSidebarPanel({
   const { t } = useTranslation();
 
   const handleRailToggle = useCallback(() => {
-    if (sidebarOpen) {
-      onSidebarOpenChange(false);
-      return;
-    }
-    // MainLayout may also expand the nav when both rails were collapsed.
-    window.dispatchEvent(new Event(EXPAND_CHAT_RAIL_EVENT));
-    onSidebarOpenChange(true);
+    onSidebarOpenChange(!sidebarOpen);
   }, [sidebarOpen, onSidebarOpenChange]);
 
   const sessionList = navEmbedded ? (
@@ -174,18 +168,13 @@ export default function ChatSidebarPanel({
         <RailEdgeControl
           expanded={sidebarOpen}
           onToggle={handleRailToggle}
-          side={sidebarOpen ? "end" : "start"}
+          side="end"
           label={t(
             sidebarOpen
               ? "chat.collapseHistorySidebar"
               : "chat.expandHistorySidebar",
           )}
-          persistentWhenCollapsed
-          /* Collapsed: share the nav rail divider — avoid a second gapped line. */
-          showLine={sidebarOpen}
-          className={
-            sidebarOpen ? styles.chatRailEdgeOpen : styles.chatRailEdgeClosed
-          }
+          showLine
         />
       )}
     </div>

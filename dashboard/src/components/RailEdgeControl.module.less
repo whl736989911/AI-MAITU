@@ -31,8 +31,8 @@
 }
 
 .edgeCollapsed {
-  /* Keep a hit target when the panel is gone */
-  width: 12px;
+  /* Keep the rail hit target aligned with its expanded position. */
+  width: 16px;
 }
 
 .line {
@@ -89,42 +89,9 @@
   flex-shrink: 0;
 }
 
-/* Expanded: collapse button sits to the left of the vertical line */
-.edgeExpanded .btn {
+/* The right edge controls its panel on the left, in either state. */
+.edgeExpanded .btn,
+.edgeCollapsed .btn {
   right: calc(50% + 1px);
   left: auto;
-}
-
-/* Collapsed: expand button sits to the right of the vertical line */
-.edgeCollapsed .btn {
-  left: calc(50% + 1px);
-  right: auto;
-}
-.edgePersistent {
-  top: 8px;
-  right: 0;
-  bottom: auto;
-  left: 0;
-  width: 100%;
-  height: 44px;
-  align-items: flex-start;
-
-  .btn {
-    top: 0;
-    left: 50%;
-    right: auto;
-    width: 40px;
-    height: 40px;
-    border-radius: 10px;
-    background: var(--fn-bg-elevated, #fff);
-    color: var(--fn-text-primary);
-    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.14);
-    opacity: 1;
-    transform: translateX(-50%);
-  }
-
-  &:hover .btn {
-    transform: translateX(-50%) scale(1.04);
-    background: var(--fn-bg-hover, #f3f4f6);
-  }
 }

@@ -67,7 +67,7 @@ export default function MainLayout() {
   const onWorkbench = isWorkbenchPath(currentPath);
 
   const [collapsed, setCollapsed] = useState(() => getSavedCollapsed());
-  const [chatSidebarOpen, setChatSidebarOpen] = useChatSidebarOpen();
+  const [, setChatSidebarOpen] = useChatSidebarOpen();
   const [workbenchMounted, setWorkbenchMounted] = useState(() => onWorkbench);
 
   useEffect(() => {
@@ -90,28 +90,6 @@ export default function MainLayout() {
     persistNavCollapsed(!collapsed);
   }, [collapsed, persistNavCollapsed]);
 
-  /**
-   * Desktop nav rail edge:
-   * - expand: open nav; if classic chat history is also closed, open both
-   * - collapse: collapse nav only
-   */
-  const handleNavRailToggle = useCallback(() => {
-    if (collapsed) {
-      persistNavCollapsed(false);
-      if (!isMinimalLayout && isChatPath(currentPath) && !chatSidebarOpen) {
-        setChatSidebarOpen(true);
-      }
-      return;
-    }
-    persistNavCollapsed(true);
-  }, [
-    collapsed,
-    chatSidebarOpen,
-    currentPath,
-    isMinimalLayout,
-    persistNavCollapsed,
-    setChatSidebarOpen,
-  ]);
 
   // When switching to mobile, always collapse; restore saved preference on desktop
   useEffect(() => {
@@ -137,19 +115,14 @@ export default function MainLayout() {
     return () => window.removeEventListener("octop:toggle-nav", handler);
   }, []);
 
-  // Chat history rail expand: if nav is also collapsed, open both rails.
-  // Minimal layout has no second rail — Sidebar handles records pane itself.
+  // Sidebar quick action: expand chat history without changing nav state.
+  // Minimal layout handles its records pane directly in Sidebar.
   useEffect(() => {
     if (isMinimalLayout) return;
-    const handler = () => {
-      setChatSidebarOpen(true);
-      if (collapsed) {
-        persistNavCollapsed(false);
-      }
-    };
+    const handler = () => setChatSidebarOpen(true);
     window.addEventListener(EXPAND_CHAT_RAIL_EVENT, handler);
     return () => window.removeEventListener(EXPAND_CHAT_RAIL_EVENT, handler);
-  }, [collapsed, isMinimalLayout, persistNavCollapsed, setChatSidebarOpen]);
+  }, [isMinimalLayout, setChatSidebarOpen]);
 
   const routes = (
     <Suspense fallback={<PageLoading />}>
@@ -218,9 +191,8 @@ export default function MainLayout() {
             {!isMobile && (
               <RailEdgeControl
                 expanded={!collapsed}
-                onToggle={handleNavRailToggle}
+                onToggle={toggleCollapsed}
                 side="end"
-                persistentWhenCollapsed={isChatRoute}
               />
             )}
           </div>
