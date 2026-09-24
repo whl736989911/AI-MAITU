@@ -13,8 +13,15 @@
  * document (``normalizeWorkflow``) rather than refused.
  */
 
-import { Button, Checkbox, Input, Select } from "antd";
-import { ArrowDown, ArrowUp, Plus, Trash2 } from "lucide-react";
+import { Button, Checkbox, Input, InputNumber, Select, Switch } from "antd";
+import {
+  ArrowDown,
+  ArrowUp,
+  Paperclip,
+  Play,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import {
@@ -31,6 +38,7 @@ import {
   sectionProblems,
 } from "../utils/workflowDocument";
 import WorkflowSectionHeader from "./WorkflowSectionHeader";
+import chatStyles from "../../Chat/components/WorkflowInputCard.module.less";
 import styles from "./FeatureWorkflowPanel.module.less";
 
 export interface WorkflowInputsSectionProps {
@@ -55,10 +63,11 @@ export default function WorkflowInputsSection({
   readOnly,
   onChange,
 }: WorkflowInputsSectionProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
+  const language = i18n.language?.startsWith("zh") ? "zh" : "en";
+  const otherLanguage = language === "zh" ? "en" : "zh";
   const fields = Object.entries(inputs.properties);
   const requiredNames = inputs.required ?? [];
-  const sectionProblemList = sectionProblems(problems, "inputs");
 
   const setField = (name: string, patch: Partial<WorkflowInputField>) => {
     const current = inputs.properties[name];
@@ -73,8 +82,6 @@ export default function WorkflowInputsSection({
     onChange({
       ...inputs,
       properties: renameInputField(inputs.properties, from, to),
-      // The required list names fields, so it follows a rename rather than
-      // quietly going on about a field that is no longer there.
       required: requiredNames.map((name) => (name === from ? to : name)),
     });
   };
@@ -121,7 +128,7 @@ export default function WorkflowInputsSection({
       <WorkflowSectionHeader
         title={t("features.workflow.inputs.title")}
         hint={t("features.workflow.inputs.hint")}
-        problems={sectionProblemList}
+        problems={sectionProblems(problems, "inputs")}
         action={
           readOnly ? undefined : (
             <Button
@@ -135,252 +142,382 @@ export default function WorkflowInputsSection({
           )
         }
       />
-
-      {fields.length === 0 ? (
-        <p className={styles.sectionEmpty}>
-          {t("features.workflow.inputs.empty")}
-        </p>
-      ) : (
-        <div className={styles.cardList}>
-          {fields.map(([name, field], index) => (
-            // Keyed by position, not by name: renaming a field rewrites the key it
-            // is keyed by, which would remount the row and drop the caret mid-word.
-            <div className={styles.card} key={index}>
-              <div className={styles.cardHeader}>
-                <span className={styles.cardIndex}>{index + 1}</span>
-                <Input
-                  className={styles.grow}
-                  value={name}
-                  disabled={readOnly}
-                  aria-label={t("features.workflow.inputs.name", {
-                    index: index + 1,
-                  })}
-                  placeholder={t("features.workflow.inputs.namePlaceholder")}
-                  onChange={(event) => renameField(name, event.target.value)}
-                />
-                <Select
-                  className={styles.typeSelect}
-                  value={field.type}
-                  disabled={readOnly}
-                  aria-label={t("features.workflow.inputs.type", {
-                    index: index + 1,
-                  })}
-                  options={WORKFLOW_INPUT_TYPES.map((type) => ({
-                    value: type,
-                    label: type,
-                  }))}
-                  onChange={(type) =>
-                    setField(name, {
-                      type,
-                      ...(type === "array"
-                        ? { items: { type: field.items?.type ?? "string" } }
-                        : {}),
-                    })
-                  }
-                />
-                <Checkbox
-                  checked={requiredNames.includes(name)}
-                  disabled={readOnly}
-                  onChange={(event) =>
-                    toggleRequired(name, event.target.checked)
-                  }
-                >
-                  {t("features.workflow.inputs.required")}
-                </Checkbox>
-                {readOnly ? null : (
-                  <>
-                    <Button
-                      type="text"
+      <p className={styles.previewCardCaption}>
+        {t("features.workflow.inputs.preview")}
+      </p>
+      <div className={chatStyles.card}>
+        <div className={chatStyles.header}>
+          <span className={chatStyles.title}>
+            {t("chat.workflow.inputTitle")}
+          </span>
+        </div>
+        {fields.length === 0 ? (
+          <p className={styles.sectionEmpty}>
+            {t("features.workflow.inputs.empty")}
+          </p>
+        ) : (
+          <div className={chatStyles.fields}>
+            {fields.map(([name, field], index) => {
+              const required = requiredNames.includes(name);
+              return (
+                <div className={styles.previewField} key={index}>
+                  <div className={styles.previewFieldHeader}>
+                    <span className={styles.cardIndex}>{index + 1}</span>
+                    <Select
+                      className={styles.grow}
                       size="small"
-                      icon={<ArrowUp size={13} />}
-                      disabled={index === 0}
-                      aria-label={t("features.workflow.moveUp", {
+                      value={field.type}
+                      disabled={readOnly}
+                      aria-label={t("features.workflow.inputs.type", {
                         index: index + 1,
                       })}
-                      onClick={() => moveField(index, index - 1)}
-                    />
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<ArrowDown size={13} />}
-                      disabled={index === fields.length - 1}
-                      aria-label={t("features.workflow.moveDown", {
-                        index: index + 1,
-                      })}
-                      onClick={() => moveField(index, index + 1)}
-                    />
-                    <Button
-                      type="text"
-                      size="small"
-                      danger
-                      icon={<Trash2 size={13} />}
-                      aria-label={t("features.workflow.inputs.remove", {
-                        index: index + 1,
-                      })}
-                      onClick={() => removeField(name)}
-                    />
-                  </>
-                )}
-              </div>
-
-              <div className={styles.fieldRow}>
-                <label className={styles.field}>
-                  <span className={styles.fieldLabel}>
-                    {t("features.workflow.inputs.titleZh")}
-                  </span>
-                  <Input
-                    value={field.title.zh}
-                    disabled={readOnly}
-                    onChange={(event) =>
-                      setField(name, {
-                        title: { ...field.title, zh: event.target.value },
-                      })
-                    }
-                  />
-                </label>
-                <label className={styles.field}>
-                  <span className={styles.fieldLabel}>
-                    {t("features.workflow.inputs.titleEn")}
-                  </span>
-                  <Input
-                    value={field.title.en}
-                    disabled={readOnly}
-                    onChange={(event) =>
-                      setField(name, {
-                        title: { ...field.title, en: event.target.value },
-                      })
-                    }
-                  />
-                </label>
-              </div>
-
-              <div className={styles.fieldRow}>
-                <label className={styles.field}>
-                  <span className={styles.fieldLabel}>
-                    {t("features.workflow.inputs.descZh")}
-                  </span>
-                  <Input
-                    value={field.description?.zh ?? ""}
-                    disabled={readOnly}
-                    onChange={(event) =>
-                      setField(name, {
-                        description: {
-                          zh: event.target.value,
-                          en: field.description?.en ?? "",
-                        },
-                      })
-                    }
-                  />
-                </label>
-                <label className={styles.field}>
-                  <span className={styles.fieldLabel}>
-                    {t("features.workflow.inputs.descEn")}
-                  </span>
-                  <Input
-                    value={field.description?.en ?? ""}
-                    disabled={readOnly}
-                    onChange={(event) =>
-                      setField(name, {
-                        description: {
-                          zh: field.description?.zh ?? "",
-                          en: event.target.value,
-                        },
-                      })
-                    }
-                  />
-                </label>
-              </div>
-
-              {field.type === "string" ? (
-                <div className={styles.fieldRow}>
-                  <label className={styles.field}>
-                    <span className={styles.fieldLabel}>
-                      {t("features.workflow.inputs.format")}
-                    </span>
-                    <Select
-                      allowClear
-                      value={field.format}
-                      disabled={readOnly}
-                      placeholder="text"
-                      options={WORKFLOW_STRING_FORMATS.map((format) => ({
-                        value: format,
-                        label: format,
-                      }))}
-                      onChange={(format) => setField(name, { format })}
-                    />
-                  </label>
-                  <label className={styles.field}>
-                    <span className={styles.fieldLabel}>
-                      {t("features.workflow.inputs.enum")}
-                    </span>
-                    <Select
-                      mode="tags"
-                      value={field.enum ?? []}
-                      disabled={readOnly}
-                      tokenSeparators={[","]}
-                      placeholder={t(
-                        "features.workflow.inputs.enumPlaceholder",
-                      )}
-                      onChange={(values) => setField(name, { enum: values })}
-                    />
-                  </label>
-                </div>
-              ) : null}
-
-              {field.type === "array" ? (
-                <div className={styles.fieldRow}>
-                  <label className={styles.field}>
-                    <span className={styles.fieldLabel}>
-                      {t("features.workflow.inputs.itemType")}
-                    </span>
-                    <Select
-                      value={field.items?.type ?? "string"}
-                      disabled={readOnly}
-                      options={WORKFLOW_ITEM_TYPES.map((type) => ({
+                      options={WORKFLOW_INPUT_TYPES.map((type) => ({
                         value: type,
-                        label: type,
+                        label: t(
+                          `features.workflow.inputs.typeOptions.${type}`,
+                        ),
                       }))}
-                      onChange={(type) => setField(name, { items: { type } })}
+                      onChange={(type) =>
+                        setField(name, {
+                          type,
+                          ...(type === "array"
+                            ? { items: { type: field.items?.type ?? "string" } }
+                            : {}),
+                        })
+                      }
                     />
-                  </label>
-                </div>
-              ) : null}
+                    {readOnly ? null : (
+                      <span className={styles.previewFieldActions}>
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<ArrowUp size={13} />}
+                          disabled={index === 0}
+                          aria-label={t("features.workflow.moveUp", {
+                            index: index + 1,
+                          })}
+                          onClick={() => moveField(index, index - 1)}
+                        />
+                        <Button
+                          type="text"
+                          size="small"
+                          icon={<ArrowDown size={13} />}
+                          disabled={index === fields.length - 1}
+                          aria-label={t("features.workflow.moveDown", {
+                            index: index + 1,
+                          })}
+                          onClick={() => moveField(index, index + 1)}
+                        />
+                        <Button
+                          type="text"
+                          size="small"
+                          danger
+                          icon={<Trash2 size={13} />}
+                          aria-label={t("features.workflow.inputs.remove", {
+                            index: index + 1,
+                          })}
+                          onClick={() => removeField(name)}
+                        />
+                      </span>
+                    )}
+                  </div>
 
-              {field.type === "file" ? (
-                <div className={styles.fieldRow}>
-                  <label className={styles.field}>
-                    <span className={styles.fieldLabel}>
-                      {t("features.workflow.inputs.accept")}
+                  <label className={chatStyles.field}>
+                    <span className={chatStyles.fieldLabel}>
+                      {t(
+                        language === "zh"
+                          ? "features.workflow.inputs.titleZh"
+                          : "features.workflow.inputs.titleEn",
+                      )}
+                      {required ? (
+                        <span className={styles.previewRequired}> *</span>
+                      ) : null}
                     </span>
                     <Input
-                      value={field.accept ?? ""}
+                      value={field.title[language]}
                       disabled={readOnly}
-                      placeholder=".pdf,.docx"
+                      placeholder={t(
+                        "features.workflow.inputs.fieldPlaceholder",
+                      )}
                       onChange={(event) =>
-                        setField(name, { accept: event.target.value })
+                        setField(name, {
+                          title: {
+                            ...field.title,
+                            [language]: event.target.value,
+                            [otherLanguage]:
+                              field.title[otherLanguage] ===
+                              field.title[language]
+                                ? event.target.value
+                                : field.title[otherLanguage],
+                          },
+                        })
                       }
                     />
                   </label>
-                  <label className={styles.field}>
-                    <span className={styles.fieldLabel}>
-                      {t("features.workflow.inputs.multiple")}
+                  <label className={chatStyles.field}>
+                    <span className={chatStyles.fieldLabel}>
+                      {t(
+                        language === "zh"
+                          ? "features.workflow.inputs.descZh"
+                          : "features.workflow.inputs.descEn",
+                      )}
                     </span>
-                    <Checkbox
-                      checked={field.multiple === true}
+                    <Input
+                      value={field.description?.[language] ?? ""}
                       disabled={readOnly}
                       onChange={(event) =>
-                        setField(name, { multiple: event.target.checked })
+                        setField(name, {
+                          description: {
+                            zh: field.description?.zh ?? "",
+                            en: field.description?.en ?? "",
+                            [language]: event.target.value,
+                            [otherLanguage]:
+                              (field.description?.[otherLanguage] ?? "") ===
+                              (field.description?.[language] ?? "")
+                                ? event.target.value
+                                : field.description?.[otherLanguage] ?? "",
+                          },
+                        })
                       }
-                    >
-                      {t("features.workflow.inputs.multipleHint")}
-                    </Checkbox>
+                    />
                   </label>
+
+                  <div
+                    className={styles.previewFieldControl}
+                    aria-hidden="true"
+                  >
+                    <PreviewInputControl field={field} />
+                  </div>
+                  <Checkbox
+                    checked={required}
+                    disabled={readOnly}
+                    onChange={(event) =>
+                      toggleRequired(name, event.target.checked)
+                    }
+                  >
+                    {t("features.workflow.inputs.required")}
+                  </Checkbox>
+
+                  <details className={styles.previewDetails}>
+                    <summary className={styles.previewDetailsSummary}>
+                      {t("features.workflow.inputs.details")}
+                    </summary>
+                    <div className={styles.previewDetailsBody}>
+                      <label className={styles.field}>
+                        <span className={styles.fieldLabel}>
+                          {t("features.workflow.inputs.name", {
+                            index: index + 1,
+                          })}
+                        </span>
+                        <Input
+                          value={name}
+                          disabled={readOnly}
+                          placeholder={t(
+                            "features.workflow.inputs.namePlaceholder",
+                          )}
+                          onChange={(event) =>
+                            renameField(name, event.target.value)
+                          }
+                        />
+                      </label>
+                      <label className={styles.field}>
+                        <span className={styles.fieldLabel}>
+                          {t(
+                            otherLanguage === "zh"
+                              ? "features.workflow.inputs.titleZh"
+                              : "features.workflow.inputs.titleEn",
+                          )}
+                        </span>
+                        <Input
+                          value={field.title[otherLanguage]}
+                          disabled={readOnly}
+                          onChange={(event) =>
+                            setField(name, {
+                              title: {
+                                ...field.title,
+                                [otherLanguage]: event.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                      <label className={styles.field}>
+                        <span className={styles.fieldLabel}>
+                          {t(
+                            otherLanguage === "zh"
+                              ? "features.workflow.inputs.descZh"
+                              : "features.workflow.inputs.descEn",
+                          )}
+                        </span>
+                        <Input
+                          value={field.description?.[otherLanguage] ?? ""}
+                          disabled={readOnly}
+                          onChange={(event) =>
+                            setField(name, {
+                              description: {
+                                zh: field.description?.zh ?? "",
+                                en: field.description?.en ?? "",
+                                [otherLanguage]: event.target.value,
+                              },
+                            })
+                          }
+                        />
+                      </label>
+                      {field.type === "string" ? (
+                        <div className={styles.fieldRow}>
+                          <label className={styles.field}>
+                            <span className={styles.fieldLabel}>
+                              {t("features.workflow.inputs.format")}
+                            </span>
+                            <Select
+                              allowClear
+                              value={field.format}
+                              disabled={readOnly}
+                              options={WORKFLOW_STRING_FORMATS.map(
+                                (format) => ({
+                                  value: format,
+                                  label: t(
+                                    `features.workflow.inputs.formatOptions.${format}`,
+                                  ),
+                                }),
+                              )}
+                              onChange={(format) => setField(name, { format })}
+                            />
+                          </label>
+                          <label className={styles.field}>
+                            <span className={styles.fieldLabel}>
+                              {t("features.workflow.inputs.enum")}
+                            </span>
+                            <Select
+                              mode="tags"
+                              value={field.enum ?? []}
+                              disabled={readOnly}
+                              tokenSeparators={[","]}
+                              placeholder={t(
+                                "features.workflow.inputs.enumPlaceholder",
+                              )}
+                              onChange={(values) =>
+                                setField(name, { enum: values })
+                              }
+                            />
+                          </label>
+                        </div>
+                      ) : null}
+                      {field.type === "array" ? (
+                        <label className={styles.field}>
+                          <span className={styles.fieldLabel}>
+                            {t("features.workflow.inputs.itemType")}
+                          </span>
+                          <Select
+                            value={field.items?.type ?? "string"}
+                            disabled={readOnly}
+                            options={WORKFLOW_ITEM_TYPES.map((type) => ({
+                              value: type,
+                              label: t(
+                                `features.workflow.inputs.itemTypeOptions.${type}`,
+                              ),
+                            }))}
+                            onChange={(type) =>
+                              setField(name, { items: { type } })
+                            }
+                          />
+                        </label>
+                      ) : null}
+                      {field.type === "file" ? (
+                        <>
+                          <label className={styles.field}>
+                            <span className={styles.fieldLabel}>
+                              {t("features.workflow.inputs.accept")}
+                            </span>
+                            <Input
+                              value={field.accept ?? ""}
+                              disabled={readOnly}
+                              placeholder=".pdf,.docx"
+                              onChange={(event) =>
+                                setField(name, { accept: event.target.value })
+                              }
+                            />
+                          </label>
+                          <Checkbox
+                            checked={field.multiple === true}
+                            disabled={readOnly}
+                            onChange={(event) =>
+                              setField(name, { multiple: event.target.checked })
+                            }
+                          >
+                            {t("features.workflow.inputs.multipleHint")}
+                          </Checkbox>
+                        </>
+                      ) : null}
+                    </div>
+                  </details>
                 </div>
-              ) : null}
-            </div>
-          ))}
-        </div>
-      )}
+              );
+            })}
+          </div>
+        )}
+        {fields.length > 0 ? (
+          <div className={chatStyles.actions}>
+            <Button type="primary" icon={<Play size={13} />} disabled>
+              {t("chat.workflow.run")}
+            </Button>
+          </div>
+        ) : null}
+      </div>
     </section>
+  );
+}
+
+/** An inert preview: author edits the question, never submits a run here. */
+function PreviewInputControl({ field }: { field: WorkflowInputField }) {
+  const { t } = useTranslation();
+  if (field.type === "file") {
+    return (
+      <Button size="small" icon={<Paperclip size={13} />} disabled>
+        {t("chat.workflow.chooseFile")}
+      </Button>
+    );
+  }
+  if (field.type === "boolean") return <Switch disabled />;
+  if (field.type === "number" || field.type === "integer") {
+    return <InputNumber className={chatStyles.numberInput} disabled />;
+  }
+  if (field.type === "array") {
+    return (
+      <Select
+        mode="tags"
+        className={chatStyles.wide}
+        disabled
+        placeholder={t("chat.workflow.arrayPlaceholder")}
+      />
+    );
+  }
+  if (field.enum?.length) {
+    return (
+      <Select
+        className={chatStyles.wide}
+        disabled
+        placeholder={t("chat.workflow.selectPlaceholder")}
+        options={field.enum.map((option) => ({
+          value: option,
+          label: option,
+        }))}
+      />
+    );
+  }
+  if (field.format === "textarea") {
+    return <Input.TextArea disabled autoSize={{ minRows: 2, maxRows: 2 }} />;
+  }
+  return (
+    <Input
+      disabled
+      type={
+        field.format === "email"
+          ? "email"
+          : field.format === "date"
+          ? "date"
+          : "text"
+      }
+    />
   );
 }

@@ -62,7 +62,10 @@ export default function WorkflowRulesSection({
         <div className={styles.ruleList}>
           {rules.map((rule, index) => (
             <div className={styles.ruleRow} key={index}>
-              <Input
+              <span className={styles.cardIndex}>{index + 1}</span>
+              <Input.TextArea
+                className={styles.grow}
+                autoSize={{ minRows: 2, maxRows: 4 }}
                 value={rule}
                 disabled={readOnly}
                 aria-label={t("features.workflow.rules.rule", {

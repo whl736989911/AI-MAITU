@@ -136,30 +136,6 @@
   line-height: 1.7;
 }
 
-/* A list of cards: the form's fields, the deliverables. */
-.cardList {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-}
-
-.card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 12px 14px;
-  border: 1px solid var(--fn-border-secondary);
-  border-radius: var(--fn-radius-md);
-  background: var(--fn-bg-secondary);
-}
-
-.cardHeader {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
 .cardIndex {
   display: inline-flex;
   align-items: center;
@@ -178,9 +154,96 @@
   min-width: 120px;
 }
 
-.typeSelect {
-  width: 110px;
-  flex-shrink: 0;
+/* The author edits the same card shape the caller sees in a chat. */
+.previewCardCaption {
+  margin: 0;
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+}
+
+.previewField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  min-width: 0;
+}
+
+.previewFieldHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.previewFieldActions {
+  display: inline-flex;
+  align-items: center;
+  margin-left: auto;
+  gap: 2px;
+}
+
+.previewFieldControl {
+  width: 100%;
+  pointer-events: none;
+}
+
+.previewDetails {
+  border-top: 1px solid var(--fn-border-secondary);
+  padding-top: 8px;
+}
+
+.previewDetailsSummary,
+.advancedSummary {
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.previewDetailsBody {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.previewOutputRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--fn-border-secondary);
+
+  &:last-child {
+    border-bottom: 0;
+  }
+}
+
+.previewOutputMain {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+}
+
+.previewOutputMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+}
+
+.previewRequired {
+  color: var(--fn-color-danger);
+}
+
+.advancedSettings {
+  padding-top: 10px;
+  border-top: 1px solid var(--fn-border-secondary);
 }
 
 /* One field: a label above the control it names. */
@@ -326,30 +389,6 @@
   flex-shrink: 0;
 }
 
-.stepToggle {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  padding: 0;
-  border: none;
-  border-radius: var(--fn-radius-sm);
-  background: transparent;
-  color: var(--fn-text-tertiary);
-  cursor: pointer;
-  flex-shrink: 0;
-
-  &:hover {
-    background: var(--fn-bg-hover);
-    color: var(--fn-text-primary);
-  }
-}
-
-.stepToggleClosed {
-  transform: rotate(-90deg);
-}
-
 .stepEditor {
   display: flex;
   flex-direction: column;
@@ -424,8 +463,9 @@
 
 .ruleRow {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 /* The JSON tab: the document itself, and the room to read it. */
@@ -467,6 +507,22 @@
 }
 
 @media (max-width: 768px) {
+  .previewOutputRow {
+    flex-wrap: wrap;
+  }
+
+  .previewOutputRow > .previewFieldActions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .ruleRow > .grow {
+    flex-basis: calc(100% - 32px);
+  }
+
+  .ruleRow > button:first-of-type {
+    margin-left: auto;
+  }
+
   .steps {
     flex-direction: column;
   }
