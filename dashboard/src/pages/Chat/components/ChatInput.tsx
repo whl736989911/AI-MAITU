@@ -333,7 +333,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
     }, [text, agentId, threadId]);
     const submitRef = useRef<() => void>(() => {});
 
-    const MIN_TEXTAREA_HEIGHT = 34;
+    const MIN_TEXTAREA_HEIGHT = isMobile ? 42 : 78;
+    const EMPTY_TEXTAREA_HEIGHT = isMobile ? 42 : 56;
 
     const {
       slashMenuOpen,
@@ -456,13 +457,14 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         onComposerCleared?.();
         requestAnimationFrame(() => {
           const ta = textareaRef.current;
-          if (ta && prevHeight > MIN_TEXTAREA_HEIGHT) {
+          if (ta && prevHeight > EMPTY_TEXTAREA_HEIGHT) {
             ta.style.transition = "none";
             ta.style.height = `${prevHeight}px`;
             // eslint-disable-next-line @typescript-eslint/no-unused-expressions
             ta.offsetHeight;
             ta.style.transition = "";
-            ta.style.height = `${MIN_TEXTAREA_HEIGHT}px`;
+            ta.style.minHeight = `${EMPTY_TEXTAREA_HEIGHT}px`;
+            ta.style.height = `${EMPTY_TEXTAREA_HEIGHT}px`;
           }
         });
       },
@@ -470,7 +472,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         agentId,
         threadId,
         clearAttachments,
-        MIN_TEXTAREA_HEIGHT,
+        EMPTY_TEXTAREA_HEIGHT,
         initialText,
         onComposerCleared,
       ],
@@ -626,6 +628,8 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       // larger viewport and the clamp STICKS after the height is restored —
       // while a reply streams, follow-pins then snap the list back down, i.e.
       // the per-keystroke up/down jitter. A clone never touches live layout.
+      const isEmpty = ta.value.length === 0;
+      ta.style.minHeight = isEmpty ? `${EMPTY_TEXTAREA_HEIGHT}px` : "";
       const target = (() => {
         const clone = ta.cloneNode(false) as HTMLTextAreaElement;
         clone.value = ta.value;
@@ -644,7 +648,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         document.body.appendChild(clone);
         const h = clone.scrollHeight;
         document.body.removeChild(clone);
-        return Math.max(Math.min(h, 160), MIN_TEXTAREA_HEIGHT);
+        return Math.max(
+          Math.min(h, 160),
+          isEmpty ? EMPTY_TEXTAREA_HEIGHT : MIN_TEXTAREA_HEIGHT,
+        );
       })();
       const current = ta.getBoundingClientRect().height;
       if (Math.abs(target - current) < 0.5) return; // height unchanged
@@ -654,7 +661,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       // eslint-disable-next-line @typescript-eslint/no-unused-expressions
       ta.offsetHeight; // force reflow
       ta.style.transition = "";
-    }, [MIN_TEXTAREA_HEIGHT]);
+    }, [EMPTY_TEXTAREA_HEIGHT, MIN_TEXTAREA_HEIGHT]);
 
     useEffect(() => {
       adjustHeight();

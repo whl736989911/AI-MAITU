@@ -726,12 +726,11 @@
 .chatInput {
   position: relative;
   z-index: 1;
-  padding: 8px 20px 8px;
+  padding: 10px 20px 18px;
   background: var(--fn-bg-elevated, #fff);
 
   @media (max-width: 767px) {
-    padding: 8px 12px
-      calc(8px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px));
+    padding: 6px 12px calc(10px + env(safe-area-inset-bottom, 0px));
   }
 }
 
@@ -740,8 +739,8 @@
   z-index: 1;
   max-width: 960px;
   width: calc(100% - 48px);
-  margin: 0 auto 3px;
-  font-size: 10px;
+  margin: 0 auto 8px;
+  font-size: 12px;
   box-sizing: border-box;
 }
 
@@ -751,15 +750,15 @@
   margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
-  border-radius: 16px;
-  padding: 4px 8px 4px 12px;
+  border-radius: 24px;
+  padding: 10px 12px 10px 16px;
   background: var(--fn-bg-primary);
   border: 1px solid var(--fn-assistant-bubble-border);
   box-shadow: 0 3px 10px rgba(15, 23, 42, 0.05);
 
   @media (max-width: 767px) {
-    padding: 4px 8px;
-    border-radius: 16px;
+    padding: 6px 10px 6px 14px;
+    border-radius: 20px;
   }
 }
 
@@ -771,30 +770,31 @@
 }
 
 .textarea {
-  min-height: 34px;
+  min-height: 64px;
   font-size: 14px;
   line-height: 1.6;
 
   @media (max-width: 767px) {
-    min-height: 34px;
+    min-height: 40px;
   }
 }
 
 .actionsRow {
-  margin-top: 0;
-  padding-top: 0;
-  border-top: 0;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--fn-color-brand-glow);
 
   @media (max-width: 767px) {
-    margin-top: 0;
-    padding-top: 0;
+    margin-top: 4px;
+    padding-top: 4px;
   }
 }
 
 .secondaryBtn,
 .newChatBtn {
-  width: 32px;
-  height: 32px;
+  width: 36px;
+  height: 36px;
+  border: 1px solid var(--fn-color-brand-glow);
   background: var(--fn-bg-secondary);
 }
 
@@ -804,8 +804,8 @@
 }
 
 .sendBtn {
-  width: 34px;
-  height: 34px;
+  width: 38px;
+  height: 38px;
   border-radius: 12px;
   box-shadow: var(--fn-shadow-brand);
 }
@@ -820,7 +820,7 @@
 
 .aiDisclaimer {
   max-width: 960px;
-  margin: 4px auto 0;
+  margin: 8px auto 0;
   width: calc(100% - 48px);
 }
 
@@ -865,6 +865,7 @@
   /* Minimum font size uplift: 10px → 12px on mobile */
   .msgTime,
   .msgUsage,
+  .runUsageBar,
   .aiDisclaimer,
   .shortcutCmd,
   .slashMenuCmd,

@@ -3,7 +3,7 @@
 .runUsageBar {
   max-width: var(--chat-column-max, 960px);
   width: calc(100% - 48px);
-  margin: 0 auto 3px;
+  margin: 0 auto 6px;
   padding: 0 2px;
   display: flex;
   align-items: center;
@@ -21,7 +21,7 @@
 .askQuestionDock {
   flex-shrink: 0;
   /* Match .chatInput horizontal gutters so the card lines up with the composer. */
-  padding: 0 var(--chat-column-pad-x, 24px) 4px;
+  padding: 0 var(--chat-column-pad-x, 24px) 8px;
   background: var(--fn-bg-elevated, #fff);
   box-sizing: border-box;
 
@@ -41,7 +41,7 @@
    other is on screen, never both — so they keep the composer's gutters too. */
 .workflowDock {
   flex-shrink: 0;
-  padding: 0 var(--chat-column-pad-x, 24px) 4px;
+  padding: 0 var(--chat-column-pad-x, 24px) 8px;
   background: var(--fn-bg-elevated, #fff);
   box-sizing: border-box;
   /* A declared form can be long; the composer must stay in reach, so the cards
@@ -71,21 +71,24 @@
 
 .chatInput {
   flex-shrink: 0;
-  padding: 8px 20px 10px;
+  padding: 16px 24px 20px;
   background: var(--fn-bg-elevated, #fff);
 
   @media (max-width: 767px) {
-    padding: 8px 12px calc(
-      8px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px)
+    padding: 12px 12px calc(14px + env(safe-area-inset-bottom, 0px));
+    /* In PWA standalone mode the layout viewport does not shrink when the
+       soft keyboard opens. --keyboard-offset is set by the useKeyboardOffset
+       hook (visualViewport API) so we nudge the input area above the keyboard. */
+    padding-bottom: calc(
+      14px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px)
     );
     transition: padding-bottom 0.15s ease;
   }
 }
 
-
 .aiDisclaimer {
   max-width: var(--chat-column-max, 960px);
-  margin: 4px auto 0;
+  margin: 8px auto 0;
   padding: 0;
   font-size: 10px;
   color: var(--fn-text-quaternary);
@@ -97,14 +100,12 @@
   max-width: var(--chat-column-max, 960px);
   min-width: 280px;
   margin: 0 auto;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  column-gap: 8px;
+  display: flex;
+  flex-direction: column;
   background: var(--fn-bg-primary);
   border: 1px solid var(--fn-border-primary);
-  border-radius: 16px;
-  padding: 4px 8px 4px 12px;
+  border-radius: 20px;
+  padding: 8px 10px 8px 16px;
   transition:
     border-color var(--fn-transition-fast),
     box-shadow var(--fn-transition-fast);
@@ -115,30 +116,23 @@
   }
 
   @media (max-width: 767px) {
-    padding: 4px 8px;
+    padding: 8px 8px 6px 14px;
   }
 }
 
 .inputRow {
-  grid-column: 1;
-  grid-row: 2;
-  min-width: 0;
   display: flex;
-  align-items: center;
-  gap: 6px;
+  align-items: flex-end;
+  gap: 8px;
 }
 
 .actionsRow {
-  grid-column: 2;
-  grid-row: 2;
-  width: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 6px;
-  padding-top: 0;
-  border-top: 0;
-  margin-top: 0;
+  padding-top: 6px;
+  border-top: 1px solid var(--fn-border-secondary);
+  margin-top: 4px;
   overflow: visible;
 }
 
@@ -148,7 +142,8 @@
   gap: 8px;
   min-width: 0;
   flex: 1;
-  padding-top: 0;
+  padding-top: 4px;
+  padding-right: 2px;
 }
 
 @media (max-width: 767px) {
@@ -184,9 +179,19 @@
   font-size: 14px;
   line-height: 1.6;
   resize: none;
-  min-height: 34px;
+  min-height: 64px;
   max-height: 160px;
   padding: 4px 0;
+  font-family: inherit;
+  transition: height 0.15s ease;
+
+  &::placeholder {
+    color: var(--fn-text-secondary);
+  }
+
+  @media (max-width: 767px) {
+    min-height: 56px;
+  }
 }
 
 .inputActions {
@@ -683,11 +688,9 @@
 
 /* ---------- Image upload & preview ---------- */
 .imagePreviewBar {
-  grid-column: 1 / -1;
-  grid-row: 1;
   display: flex;
   gap: 8px;
-  padding: 4px 0 0;
+  padding: 8px 0 4px;
   overflow-x: auto;
   flex-shrink: 0;
 
