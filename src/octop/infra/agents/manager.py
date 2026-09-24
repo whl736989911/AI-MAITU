@@ -2938,6 +2938,16 @@ class AgentManager:
             from octop.infra.cron.tools import build_cronjob_tools  # noqa: PLC0415
 
             cron_tools = build_cronjob_tools(self._cron_manager)
+        feature_creation_tools: list[Any] = []
+        if row.user_id is not None:
+            from octop.infra.agents.feature_creation_tools import (  # noqa: PLC0415
+                build_feature_creation_tools,
+            )
+
+            feature_creation_tools = build_feature_creation_tools(
+                registry=self,
+                repos=self._repos,
+            )
 
         # A feature's own agent can write its own workflow when its author asks for it
         # in conversation. Nobody else gets these: the tools refuse a feature the
@@ -3018,6 +3028,7 @@ class AgentManager:
                 for t in [
                     *(cron_tools or []),
                     *feature_workflow_tools,
+                    *feature_creation_tools,
                     *knowledge_tools,
                     *mobile_tools,
                 ]
@@ -3096,6 +3107,7 @@ class AgentManager:
         merged_tools: list[Any] = []
         if cron_tools:
             merged_tools.extend(cron_tools)
+        merged_tools.extend(feature_creation_tools)
         merged_tools.extend(feature_workflow_tools)
         merged_tools.extend(knowledge_tools)
         merged_tools.extend(mobile_tools)

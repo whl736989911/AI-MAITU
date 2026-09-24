@@ -1987,6 +1987,8 @@
     "cronjob_update": "Update cron job",
     "cronjob_delete": "Delete cron job",
     "cronjob_run_now": "Run cron job now",
+    "feature_create": "Create feature agent",
+    "archive_extract": "Extract ZIP archive",
     "search_knowledge": "Search knowledge base",
     "agent_list": "List agents",
     "ask_agent": "Ask agent",

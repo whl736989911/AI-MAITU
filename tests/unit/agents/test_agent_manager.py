@@ -240,6 +240,8 @@ def test_build_harness_config_includes_cronjob_tools_when_cron_manager_set(
         "cronjob_delete",
         "cronjob_run_now",
         "search_knowledge",
+        "feature_create",
+        "archive_extract",
     }
 
 
@@ -250,7 +252,11 @@ def test_build_harness_config_includes_search_knowledge_without_cron(
 
     cfg = manager._build_harness_config(_row(agent_id="AGT001"))
     assert cfg.tools is not None
-    assert {t.name for t in cfg.tools} == {"search_knowledge"}
+    assert {t.name for t in cfg.tools} == {
+        "search_knowledge",
+        "feature_create",
+        "archive_extract",
+    }
     assert any(isinstance(item, KnowledgeSearchHintMiddleware) for item in (cfg.middleware or []))
 
 
@@ -265,6 +271,16 @@ def test_build_harness_config_freezes_a_feature_agents_shared_files(
     cfg = manager._build_harness_config(
         _row(agent_id="feat-quote-draft", user_id=7, kind=KIND_FEATURE)
     )
+    assert cfg.tools is not None
+    names = {tool.name for tool in cfg.tools}
+    assert {"feature_create", "archive_extract"}.issubset(names)
+    assert {
+        "feature_workflow_get",
+        "feature_workflow_save",
+        "feature_workflow_change",
+        "feature_workflow_revert",
+        "feature_workflow_runs",
+    }.issubset(names)
 
     assert any(isinstance(item, SharedWorkspaceFreezeMiddleware) for item in (cfg.middleware or []))
 

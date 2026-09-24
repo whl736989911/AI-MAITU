@@ -86,6 +86,8 @@ BUILTIN_TOOL_CATALOG: tuple[BuiltinToolEntry, ...] = (
     BuiltinToolEntry("cronjob_update", "cron"),
     BuiltinToolEntry("cronjob_delete", "cron"),
     BuiltinToolEntry("cronjob_run_now", "cron"),
+    BuiltinToolEntry("feature_create", "features"),
+    BuiltinToolEntry("archive_extract", "filesystem"),
     BuiltinToolEntry("search_knowledge", "knowledge"),
     BuiltinToolEntry("mobile_screenshot", "mobile"),
     BuiltinToolEntry("mobile_tap", "mobile"),
