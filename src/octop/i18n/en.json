@@ -40,6 +40,22 @@
       "usage": "Usage: /cron list",
       "empty": "No active cron jobs."
     },
+    "memory": {
+      "trusted_chat": "Memory maintenance is available only in authenticated dashboard or CLI conversations.",
+      "usage": "Usage: /memory status | /memory slim [--all] [--confirm]",
+      "preview": "Memory maintenance will run for {count} agent(s):",
+      "confirm_hint": "To start, send `{command}`.",
+      "accepted": "Memory maintenance started for {count} agent(s). Use /memory status to check progress.",
+      "idle": "No recent memory maintenance for this agent.",
+      "summary": "Memory maintenance: {completed}/{total} complete.",
+      "queued": "Queued",
+      "skipped": "Skipped",
+      "failure_hint": "Check the dashboard for the failure details."
+    },
+    "mode": {
+      "usage": "Usage: /mode [ask|plan|craft]",
+      "current": "Conversation mode: {mode}"
+    },
     "new": {
       "started": "Started a new conversation ({short})."
     },
@@ -214,6 +230,10 @@
         "label": "Model",
         "description": "Show, set, or reset the model override for this thread"
       },
+      "mode": {
+        "label": "Conversation mode",
+        "description": "Switch Ask mode (read-only), Plan mode (write plans/*.md), or Craft mode"
+      },
       "new": {
         "label": "New chat",
         "description": "Clear context and start a new conversation thread"
@@ -221,6 +241,10 @@
       "compact": {
         "label": "Compact memory",
         "description": "Summarize and offload older context to free the window (same thread)"
+      },
+      "memory": {
+        "label": "Maintain memory",
+        "description": "Preview, run, and check live memory maintenance"
       },
       "stop": {
         "label": "Stop generation",
@@ -296,6 +320,39 @@
       }
     }
   },
+  "memory_slim": {
+    "not_ready": "The agent runtime is not ready for memory maintenance.",
+    "upgrade": "Memory maintenance requires an updated harness-memory installation.",
+    "agent_not_running": "Start the agent before maintaining its memory.",
+    "memory_disabled": "Memory is disabled for this agent.",
+    "postgres_unsupported": "Live memory maintenance is not supported for {backend}.",
+    "backend_unsupported": "Live memory maintenance is not supported for backend {backend}.",
+    "incompatible": "This agent's checkpoint store does not support live memory maintenance.",
+    "busy": "Another memory maintenance operation is already running.",
+    "forbidden": "You cannot maintain this agent's memory.",
+    "no_agents": "No eligible running agents were found.",
+    "wait_timeout": "Timed out waiting for the agent's history backfill to finish.",
+    "interrupted": "Memory maintenance was interrupted.",
+    "error_detail": "Memory maintenance failed: {detail}",
+    "waiting": "Waiting for the agent",
+    "backing_up": "Backing up memory",
+    "deduplicating": "Deduplicating checkpoints",
+    "compacting": "Compacting memory",
+    "done": "Completed",
+    "failed": "Failed",
+    "elapsed": "({seconds}s)",
+    "scanned": "{scanned}/{total} scanned",
+    "result": "Memory size: {before} MiB → {after} MiB; backup: {backup}",
+    "agents": "Eligible running agents:",
+    "unavailable": "Memory maintenance is unavailable: {detail}",
+    "agent_required": "Select an agent with --agent or choose from the list.",
+    "choose": "Agent number",
+    "target": "Maintaining memory for {agent_id}",
+    "all_conflict": "--all cannot be combined with --agent or a pinned agent.",
+    "batch_target": "[{index}/{total}] {name} ({agent_id})",
+    "batch_stopped": "Stopped at {agent_id}: {detail}. Completed {completed}; remaining {remaining}.",
+    "batch_done": "Memory maintenance completed for {total} agent(s)."
+  },
   "connector": {
     "oauth": {
       "callback_auth_failed": "Authorization failed: {error}",
@@ -313,6 +370,20 @@
       "instruction": "Follow scripts/README.md to update the source and retain your data directory.",
       "automatic_disabled": "Automatic upgrades are disabled; follow the source upgrade instructions above."
     }
+  },
+  "teams": {
+    "peer_thread_title": "From team {name}",
+    "followup_done": "[system wake-up, not a new user question]\nTeam member {name} finished. Their answer is already on the group timeline.\nTask: {task}\n\nDo not restate their answer. Do not say you have assigned someone or ask the user to wait. Do not call ask_agent for the same task again. If more work is needed, dispatch the next member. If the team is done, write at most three short wrap-up sentences.",
+    "followup_failed": "[system wake-up, not a new user question]\nTeam member {name} failed.\nTask: {task}\nError: {error}\n\nBriefly tell the user it failed and either dispatch someone else or close the turn. Do not announce another assignment. Do not invent a substitute answer.",
+    "speaker_user": "User",
+    "channel_line": "{name}: {text}",
+    "host_briefing": "[Host dispatch — do not do the work yourself]\nUser messages arrive here first. Digest intent, scope, constraints, and the deliverable; ask one clarifying question if a key fact is missing. For real work, rewrite a self-contained assignment for that member before ask_agent: goal, scope, delivery format, and needed context. Never paste the user's wording unchanged. Tailor each member's task. Answer greetings or clarifications yourself in one or two sentences. After ask_agent returns, do not repeat that you assigned someone. If this turn is a member-finished wake-up, wrap up or reassign per that notice — do not repeat the same task.",
+    "member_briefing": "[Team assignment, not a direct user question]\nYou are a member of this expert team. The host has already processed the user's request and assigned you this task. Do the work and deliver the result. Do not treat the user's original wording as a one-to-one question to you, and do not speak as the host.",
+    "member_briefing_with_history": "[Team assignment, not a direct user question]\nYou are a member of this expert team. The host has already processed the user's request and assigned you this task. Do the work and deliver the result. Do not treat the user's original wording as a one-to-one question to you, and do not speak as the host. The group transcript below is background only.\n\n{history}"
+  },
+  "conversation_mode": {
+    "plan_ready": "Plan saved at `{path}`. Reply “execute the plan” to run it, or keep editing in Plan mode.",
+    "execute": "Execute {path}"
   },
   "errors": {
     "AUTH_FAILED": "Authentication failed.",
@@ -379,6 +450,7 @@
     "SKILL_PACKAGE_NOT_FOUND": "Skill package not found.",
     "SKILL_PACKAGE_NAME_TAKEN": "Skill package {name} already exists.",
     "SKILL_PACKAGE_BACKEND_UNSUPPORTED": "Skill packages currently support only “Full local environment (filesystem + shell)” or “Local filesystem (no shell commands)”, with storage root / (POSIX) or the agent workspace root (Windows default).",
+    "ACP_BACKEND_UNSUPPORTED": "This agent has a sandbox enabled, so external runners can’t be used. Connecting via IDE / octop acp is unaffected.",
     "PUBLISHED_EXPERT_SLUG_TAKEN": "Published expert slug {slug} already exists.",
     "PUBLISHED_EXPERT_ALREADY_EXISTS": "This agent is already published as “{name}”. Refresh the published template instead.",
     "OIDC_BAD_REQUEST": "Invalid OIDC request: {detail}",
@@ -439,6 +511,11 @@
     "WORKFLOW_INVALID": "This workflow definition is not valid: {reason}. Nothing was saved.",
     "WORKFLOW_NOT_A_FEATURE": "Only a feature has a workflow — this agent is an expert.",
     "WORKFLOW_CHANGE_CONFLICT": "This change no longer applies: {paths} was edited after it was prepared. Nothing was changed — regenerate the change, or undo the later edit first.",
+    "TEAM_NOT_FOUND": "Team not found.",
+    "TEAM_MEMBERS_TOO_FEW": "A team needs at least two members.",
+    "TEAM_MEMBER_INVALID": "The selected roster is not valid.",
+    "TEAM_MEMBER_BUSY": "This expert has an in-flight team job. Wait until it finishes.",
+    "TEAM_NOT_SHAREABLE": "Teams cannot be shared in this version.",
     "ORG_UNIT_HAS_CHILDREN": "This department still has sub-departments; move or delete them first.",
     "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first."
   },
@@ -602,7 +679,13 @@
         "sk": "SK",
         "agent_id": "Agent ID",
         "host": "Broker Host"
-      }
+      },
+      "discord_invalid_token": "Discord rejected the Bot Token. Reset it on the Bot page and update the configuration.",
+      "discord_intents_required": "Enable Message Content Intent on the Discord application Bot page.",
+      "discord_connect_timeout": "Discord connection timed out. Check the network and HTTP proxy settings.",
+      "discord_connection_failed": "Discord connection failed. Check the network, proxy and bot configuration.",
+      "discord_disconnected": "Discord is disconnected or reconnecting.",
+      "discord_proxy_auth_invalid": "Proxy authentication must use user:password."
     }
   },
   "threads": {

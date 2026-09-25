@@ -227,6 +227,9 @@ export default function LoginPage() {
         justifyContent: "center",
         background: "var(--fn-bg-layout)",
         transition: "background var(--fn-transition)",
+        boxSizing: "border-box",
+        padding:
+          "max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))",
       }}
     >
       <div
@@ -314,6 +317,23 @@ export default function LoginPage() {
         >
           {t("login.submit")}
         </Button>
+
+        <p
+          data-testid="login-forgot-password"
+          style={{
+            margin: 0,
+            fontSize: 13,
+            lineHeight: 1.6,
+            color: "var(--fn-text-tertiary)",
+            textAlign: "center",
+            width: "100%",
+          }}
+        >
+          {t(
+            "login.forgotPasswordHint",
+            "Forgot the password? On the Octop host run octop user passwd <username>, or ask an administrator to reset it.",
+          )}
+        </p>
 
         {providers.length > 0 && (
           <>

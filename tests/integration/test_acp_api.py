@@ -107,6 +107,34 @@ async def test_acp_builtin_runner_cannot_delete(env) -> None:
     assert r.status_code == 403
 
 
+async def test_acp_tool_rejected_for_directory_sandbox(env, tmp_path) -> None:
+    c, _srv, auth, _agent_id = env
+    scoped_root = tmp_path / "scoped"
+    scoped_root.mkdir()
+    agent_id = await create_agent(
+        c,
+        auth,
+        name="acp-scoped",
+        config={
+            "backend": {
+                "type": "local_shell",
+                "root_dir": str(scoped_root),
+                "virtual_mode": True,
+            }
+        },
+    )
+
+    response = await c.put(
+        f"/api/agents/{agent_id}/acp/tool",
+        headers=auth,
+        json={"tool_enabled": True},
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "ACP_BACKEND_UNSUPPORTED"
+    saved = await c.get(f"/api/agents/{agent_id}/acp", headers=auth)
+    assert saved.json()["tool_enabled"] is False
+
+
 # --- the surface's gates (design §4.4) --------------------------------------
 #
 # Two levels, and the tests below pin both: ``acp`` reads the runner list and

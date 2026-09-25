@@ -13,7 +13,9 @@ vi.mock("../hooks/useWorkflowRun", () => ({
 
 vi.mock("./WorkflowInputCard", () => ({
   default: ({ run }: { run: unknown }) => (
-    <div data-testid={run ? "submitted-workflow-input" : "workflow-input-form"} />
+    <div
+      data-testid={run ? "submitted-workflow-input" : "workflow-input-form"}
+    />
   ),
 }));
 

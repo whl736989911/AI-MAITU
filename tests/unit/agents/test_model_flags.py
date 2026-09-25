@@ -71,6 +71,31 @@ def test_is_local_runtime_provider() -> None:
     )
 
 
+def test_ollama_url_heuristic_distinguishes_local_and_cloud() -> None:
+    from octop.infra.agents.providers.model_flags import is_ollama_local_provider
+
+    for url in (
+        "http://127.0.0.1:11434",
+        "http://localhost",
+        "http://ollama",
+        "http://host.docker.internal",
+        "http://service.local",
+        "http://192.168.1.10",
+        "https://remote.example:11434",
+    ):
+        assert is_ollama_local_provider(provider_base_url=url), url
+
+    for url in (
+        "https://ollama.com/v1",
+        "https://www.ollama.com/v1",
+        "https://registry.ollama.com",
+        "https://api.openai.com/v1",
+        "https://proxy.example/v1",
+        "https://example.com/path/11434",
+    ):
+        assert not is_ollama_local_provider(provider_base_url=url), url
+
+
 def test_chat_eligible_excludes_embedding() -> None:
     assert is_chat_eligible_model({"id": "gpt", "enabled": True})
     assert not is_chat_eligible_model({"id": "emb", "enabled": True, "embedding": True})

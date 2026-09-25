@@ -15,8 +15,8 @@ visible in ownership any more. So it is stated, once, here — and everything th
 must treat a feature's agent differently reads this column, never an id prefix
 and never a guess about a row.
 
-The set is closed: a row is created with exactly one of :data:`KINDS`, and the
-kind never changes afterwards (there is no update path for it).
+The kinds share one persisted column. Features are protected separately by
+``is_feature_agent``; adding team hosts must not weaken that boundary.
 """
 
 from __future__ import annotations
@@ -27,7 +27,10 @@ KIND_AGENT = "agent"
 KIND_FEATURE = "feature"
 """A feature's own agent: created with the feature, owned by its author."""
 
-KINDS = (KIND_AGENT, KIND_FEATURE)
+KIND_TEAM = "team"
+"""A team host; its member roster lives in the team's workspace manifest."""
+
+KINDS = (KIND_AGENT, KIND_FEATURE, KIND_TEAM)
 
 FEATURE_AGENT_ID_PREFIX = "feat-"
 """Prefix of a feature's own agent id — never a user's, whose ids are minted ULIDs.
@@ -80,6 +83,7 @@ __all__ = [
     "FEATURE_AGENT_ID_PREFIX",
     "KIND_AGENT",
     "KIND_FEATURE",
+    "KIND_TEAM",
     "KINDS",
     "feature_agent_id_for",
     "feature_id_of_agent",

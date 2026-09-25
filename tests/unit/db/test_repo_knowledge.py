@@ -228,6 +228,38 @@ def test_knowledge_folders_and_nested_documents(repo: KnowledgeRepo, owner_id: i
     assert repo.count_documents(kb.id) == 0
 
 
+@pytest.mark.parametrize(
+    ("folder_name", "neighbor_name"),
+    [("a_b", "axb"), ("a%b", "axxb"), ("Docs", "docs")],
+)
+def test_delete_folder_only_removes_exact_case_sensitive_prefix(
+    repo: KnowledgeRepo, owner_id: int, folder_name: str, neighbor_name: str
+) -> None:
+    kb = repo.create_base(owner_user_id=owner_id, name="Adjacent folders")
+    target = repo.ensure_folder(kb.id, folder_name)
+    repo.create_document(
+        kb_id=kb.id,
+        filename="inside.txt",
+        path=f"{folder_name}/inside.txt",
+        content_type="text/plain",
+        byte_size=1,
+    )
+    repo.ensure_folder(kb.id, neighbor_name)
+    survivor = repo.create_document(
+        kb_id=kb.id,
+        filename="outside.txt",
+        path=f"{neighbor_name}/outside.txt",
+        content_type="text/plain",
+        byte_size=1,
+    )
+
+    removed = repo.delete_document(target.id)
+
+    assert {row.path for row in removed} == {folder_name, f"{folder_name}/inside.txt"}
+    assert repo.get_document(survivor.id) is not None
+    assert repo.count_documents(kb.id) == 1
+
+
 def test_knowledge_document_crud(repo: KnowledgeRepo, owner_id: int) -> None:
     kb = repo.create_base(owner_user_id=owner_id, name="Docs")
     doc = repo.create_document(

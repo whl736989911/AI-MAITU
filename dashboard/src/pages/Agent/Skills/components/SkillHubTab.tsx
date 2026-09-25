@@ -19,11 +19,20 @@ import {
 } from "./skillInstallTarget";
 import styles from "../index.module.less";
 
+export interface HubInstallPresentation {
+  label?: { zh?: string; en?: string };
+  summary?: { zh?: string; en?: string };
+}
+
 interface SkillHubTabProps {
   /** Install destination: agent workspace or global skill package. */
   target: SkillInstallTarget | null;
   /** Called after a successful install (e.g. refresh package detail). */
   onInstalled?: () => void;
+  /** Select a hub skill instead of installing it. */
+  onPick?: (skill: SkillHubSkill) => void;
+  /** Slugs already selected by the caller. */
+  pickedSlugs?: ReadonlySet<string>;
 }
 
 type RankingType = "recommended" | "trending" | "hot" | "newest";
@@ -67,10 +76,9 @@ function localizedPair(
   return Object.keys(pair).length > 0 ? pair : undefined;
 }
 
-function hubInstallPresentation(skill: SkillHubSkill): {
-  label?: { zh?: string; en?: string };
-  summary?: { zh?: string; en?: string };
-} {
+export function hubInstallPresentation(
+  skill: SkillHubSkill,
+): HubInstallPresentation {
   const raw = skill as SkillHubSkill & Record<string, unknown>;
   return {
     label: localizedPair(
@@ -97,7 +105,12 @@ function normalizeHubSkill(raw: Record<string, unknown>): SkillHubSkill {
   };
 }
 
-export default function SkillHubTab({ target, onInstalled }: SkillHubTabProps) {
+export default function SkillHubTab({
+  target,
+  onInstalled,
+  onPick,
+  pickedSlugs,
+}: SkillHubTabProps) {
   const { t } = useTranslation();
   const [hubSkills, setHubSkills] = useState<SkillHubSkill[]>([]);
   const [rankings, setRankings] = useState<Record<string, SkillHubSkill[]>>(
@@ -123,13 +136,7 @@ export default function SkillHubTab({ target, onInstalled }: SkillHubTabProps) {
   const agentId = target?.type === "agent" ? target.agentId : undefined;
   const packageId = target?.type === "package" ? target.packageId : undefined;
 
-  const browseTarget = useMemo<SkillInstallTarget>(() => {
-    if (target?.type === "package" && packageId) {
-      return { type: "package", packageId };
-    }
-    return { type: "agent", agentId: agentId ?? "_" };
-  }, [target?.type, agentId, packageId]);
-
+  const browseTarget = target;
   const installTarget = useMemo<SkillInstallTarget | null>(() => {
     if (target?.type === "package" && packageId) {
       return { type: "package", packageId };
@@ -254,6 +261,11 @@ export default function SkillHubTab({ target, onInstalled }: SkillHubTabProps) {
   const handleInstall = useCallback(
     async (skill: SkillHubSkill) => {
       if (installingSlug) return;
+      if (onPick) {
+        if (!pickedSlugs?.has(skill.slug)) onPick(skill);
+        setDrawerOpen(false);
+        return;
+      }
       if (!installTarget) {
         message.warning(t("skills.noAgentSelected"));
         return;
@@ -292,7 +304,7 @@ export default function SkillHubTab({ target, onInstalled }: SkillHubTabProps) {
         setInstallingSlug(null);
       }
     },
-    [installTarget, installingSlug, onInstalled, t],
+    [installTarget, installingSlug, onInstalled, onPick, pickedSlugs, t],
   );
 
   const displaySkills = useMemo(() => {
@@ -458,9 +470,14 @@ export default function SkillHubTab({ target, onInstalled }: SkillHubTabProps) {
                 )}
                 <Button
                   size="small"
-                  type={isInstalled(skill.slug) ? "default" : "primary"}
+                  type={pickedSlugs?.has(skill.slug) ? "default" : "primary"}
+                  disabled={pickedSlugs?.has(skill.slug)}
                   icon={
-                    isInstalled(skill.slug) ? (
+                    pickedSlugs?.has(skill.slug) ? (
+                      <CircleCheck size={14} />
+                    ) : onPick ? (
+                      <Zap size={14} />
+                    ) : isInstalled(skill.slug) ? (
                       <RefreshCw size={14} />
                     ) : (
                       <Download size={14} />
@@ -472,7 +489,11 @@ export default function SkillHubTab({ target, onInstalled }: SkillHubTabProps) {
                     void handleInstall(skill);
                   }}
                 >
-                  {isInstalled(skill.slug)
+                  {pickedSlugs?.has(skill.slug)
+                    ? t("experts.pickSkill")
+                    : onPick
+                    ? t("experts.pickSkill")
+                    : isInstalled(skill.slug)
                     ? t("skills.reinstall")
                     : t("skills.install")}
                 </Button>

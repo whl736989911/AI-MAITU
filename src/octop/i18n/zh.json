@@ -40,6 +40,22 @@
       "usage": "用法：/cron list",
       "empty": "暂无活跃的定时任务。"
     },
+    "memory": {
+      "trusted_chat": "记忆维护仅可在已认证的控制台或 CLI 对话中执行。",
+      "usage": "用法：/memory status | /memory slim [--all] [--confirm]",
+      "preview": "即将维护 {count} 个智能体的记忆：",
+      "confirm_hint": "确认后发送 `{command}` 开始。",
+      "accepted": "已为 {count} 个智能体启动记忆维护。可用 /memory status 查看进度。",
+      "idle": "该智能体暂无近期记忆维护记录。",
+      "summary": "记忆维护：已完成 {completed}/{total}。",
+      "queued": "排队中",
+      "skipped": "已跳过",
+      "failure_hint": "请在控制台查看失败详情。"
+    },
+    "mode": {
+      "usage": "用法：/mode [ask|plan|craft]",
+      "current": "对话模式：{mode}"
+    },
     "new": {
       "started": "已开始新对话（{short}）。"
     },
@@ -214,6 +230,10 @@
         "label": "切换模型",
         "description": "查看、设置或重置当前话题的模型覆盖"
       },
+      "mode": {
+        "label": "对话模式",
+        "description": "切换 Ask 模式（只读）、Plan 模式（写入 plans/*.md）或 Craft 模式"
+      },
       "new": {
         "label": "新对话",
         "description": "清空上下文并开始新的对话线程"
@@ -221,6 +241,10 @@
       "compact": {
         "label": "压缩记忆",
         "description": "总结并卸载较早上下文，释放窗口（不新建话题）"
+      },
+      "memory": {
+        "label": "记忆维护",
+        "description": "预览、执行并查看在线记忆维护进度"
       },
       "stop": {
         "label": "停止生成",
@@ -296,6 +320,39 @@
       }
     }
   },
+  "memory_slim": {
+    "not_ready": "智能体运行时尚未就绪，无法维护记忆。",
+    "upgrade": "记忆维护需要更新 harness-memory。",
+    "agent_not_running": "请先启动智能体，再维护其记忆。",
+    "memory_disabled": "该智能体未启用记忆。",
+    "postgres_unsupported": "暂不支持对 {backend} 执行在线记忆维护。",
+    "backend_unsupported": "暂不支持对 {backend} 后端执行在线记忆维护。",
+    "incompatible": "该智能体的检查点存储不支持在线记忆维护。",
+    "busy": "已有记忆维护任务正在运行。",
+    "forbidden": "您无权维护该智能体的记忆。",
+    "no_agents": "未找到符合条件且正在运行的智能体。",
+    "wait_timeout": "等待智能体历史回填结束超时。",
+    "interrupted": "记忆维护已中断。",
+    "error_detail": "记忆维护失败：{detail}",
+    "waiting": "等待智能体",
+    "backing_up": "正在备份记忆",
+    "deduplicating": "正在清理重复检查点",
+    "compacting": "正在压缩记忆",
+    "done": "已完成",
+    "failed": "失败",
+    "elapsed": "（{seconds} 秒）",
+    "scanned": "已扫描 {scanned}/{total}",
+    "result": "记忆占用：{before} MiB → {after} MiB；备份：{backup}",
+    "agents": "符合条件且正在运行的智能体：",
+    "unavailable": "记忆维护不可用：{detail}",
+    "agent_required": "请用 --agent 指定智能体，或从列表中选择。",
+    "choose": "智能体序号",
+    "target": "正在维护 {agent_id} 的记忆",
+    "all_conflict": "--all 不可与 --agent 或已固定的智能体同时使用。",
+    "batch_target": "[{index}/{total}] {name}（{agent_id}）",
+    "batch_stopped": "在 {agent_id} 停止：{detail}。已完成 {completed} 个，剩余 {remaining} 个。",
+    "batch_done": "已完成 {total} 个智能体的记忆维护。"
+  },
   "connector": {
     "oauth": {
       "callback_auth_failed": "授权失败：{error}",
@@ -313,6 +370,20 @@
       "instruction": "请参照 scripts/README.md 更新源码并保留原数据目录。",
       "automatic_disabled": "自动升级已停用；请按照上方源码升级指引操作。"
     }
+  },
+  "teams": {
+    "peer_thread_title": "来自团队 {name}",
+    "followup_done": "[系统唤醒，不是新的用户问题]\n团队成员 {name} 已完成。对方正文已经出现在群聊时间线上。\n任务：{task}\n\n不要复述成员全文。不要再说「已安排 / 稍等片刻 / 交给谁来回答」，不要再次 ask_agent 同一任务。若还要继续，再派下一位；若可以收工，最多三句短总结。",
+    "followup_failed": "[系统唤醒，不是新的用户问题]\n团队成员 {name} 失败。\n任务：{task}\n错误：{error}\n\n简要告知用户失败，并决定改派别人或收工。不要再说「已安排 / 稍等」，不要编造替代答案。",
+    "speaker_user": "用户",
+    "channel_line": "{name}: {text}",
+    "host_briefing": "[主持人调度，不是让你代答]\n用户消息先到你这里。先消化意图、范围、约束和交付物；缺关键信息就先问一句，不要空派。专业工作必须改写成给该成员的任务说明书后再 ask_agent：写清目标、范围、交付格式和必要上下文，禁止原样转发用户原话。不同成员给不同任务。寒暄或澄清自己短答。ask_agent 返回后不要重复「已安排 / 稍等」。若当前是成员完成或失败的系统唤醒，按唤醒说明收口或改派，不要重复同一任务。",
+    "member_briefing": "[团队派工，不是用户在直接问你]\n你是这个专家团队的成员。主持人已消化用户问题，并为你分配了本次任务。请按任务执行并直接给出成果；不要把用户原话当成对你的一对一提问，也不要复述或扮演主持人。",
+    "member_briefing_with_history": "[团队派工，不是用户在直接问你]\n你是这个专家团队的成员。主持人已消化用户问题，并为你分配了本次任务。请按任务执行并直接给出成果；不要把用户原话当成对你的一对一提问，也不要复述或扮演主持人。下面的群聊记录只作背景。\n\n{history}"
+  },
+  "conversation_mode": {
+    "plan_ready": "计划已写入 `{path}`。回复「按计划执行」开始执行，或继续改计划。",
+    "execute": "请按 {path} 执行"
   },
   "errors": {
     "AUTH_FAILED": "认证失败。",
@@ -379,6 +450,7 @@
     "SKILL_PACKAGE_NOT_FOUND": "未找到技能包。",
     "SKILL_PACKAGE_NAME_TAKEN": "技能包 {name} 已存在。",
     "SKILL_PACKAGE_BACKEND_UNSUPPORTED": "技能包目前仅支持「本地完整环境（文件系统+指令执行）」或「本地文件系统（不能执行指令）」，且存储根目录须为 /（POSIX）或专家的工作区根目录（Windows 默认）。",
+    "ACP_BACKEND_UNSUPPORTED": "此专家启用了沙箱，无法使用对外委派的 Runner；IDE / octop acp 接入不受影响。",
     "PUBLISHED_EXPERT_SLUG_TAKEN": "已存在发布专家 slug：{slug}。",
     "PUBLISHED_EXPERT_ALREADY_EXISTS": "该专家已发布为「{name}」，请改为刷新已发布模板。",
     "OIDC_BAD_REQUEST": "OIDC 请求无效：{detail}",
@@ -439,6 +511,11 @@
     "WORKFLOW_INVALID": "工作流定义不合法：{reason}。未保存任何内容。",
     "WORKFLOW_NOT_A_FEATURE": "只有功能才有工作流——这个 agent 是一个专家。",
     "WORKFLOW_CHANGE_CONFLICT": "这份改动已经不能直接应用：{paths} 在它生成之后被改过。未改动任何内容——请重新生成改动，或先撤销后来的修改。",
+    "TEAM_NOT_FOUND": "未找到该团队。",
+    "TEAM_MEMBERS_TOO_FEW": "团队至少需要两名成员。",
+    "TEAM_MEMBER_INVALID": "当前选中的编制无效。",
+    "TEAM_MEMBER_BUSY": "该专家有进行中的团队任务，请等结束后再改编制或删除。",
+    "TEAM_NOT_SHAREABLE": "当前版本不支持分享团队。",
     "ORG_UNIT_HAS_CHILDREN": "该部门下还有下级部门，请先处理。",
     "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。"
   },
@@ -602,7 +679,13 @@
         "sk": "SK",
         "agent_id": "Agent ID",
         "host": "Broker Host"
-      }
+      },
+      "discord_invalid_token": "Discord Bot Token 无效，请在 Bot 页面重新生成并更新。",
+      "discord_intents_required": "请在 Discord 应用的 Bot 页面开启 Message Content Intent。",
+      "discord_connect_timeout": "Discord 连接超时，请检查网络与 HTTP 代理设置。",
+      "discord_connection_failed": "Discord 连接失败，请检查网络、代理和机器人配置。",
+      "discord_disconnected": "Discord 尚未连接或正在重连。",
+      "discord_proxy_auth_invalid": "代理认证格式应为 user:password。"
     }
   },
   "threads": {

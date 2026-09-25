@@ -833,6 +833,7 @@ export function useChat(
       reasoningMode?: "auto" | "enabled" | "disabled",
       reasoningEffort?: string | null,
       featureRun?: FeatureRunPayload,
+      conversationMode?: "ask" | "plan" | "craft",
     ) => {
       const key = storeKey || stableSessionId;
 
@@ -866,6 +867,7 @@ export function useChat(
         reasoningMode,
         reasoningEffort,
         featureRun,
+        conversationMode,
       );
     },
     [stableSessionId],

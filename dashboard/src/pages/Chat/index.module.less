@@ -383,3 +383,40 @@
   line-height: 1.6;
   color: var(--fn-text-secondary);
 }
+
+.modeMenu {
+  width: min(320px, calc(100vw - 32px));
+  display: grid;
+  gap: 4px;
+}
+
+.modeMenuItem {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--fn-text-primary);
+  text-align: left;
+  cursor: pointer;
+}
+
+.modeMenuItem:hover,
+.modeMenuItemActive {
+  background: var(--fn-bg-hover, rgba(0, 0, 0, 0.05));
+}
+
+.modeMenuTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.modeMenuHint {
+  padding-left: 24px;
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  line-height: 1.4;
+}

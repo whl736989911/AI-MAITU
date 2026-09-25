@@ -178,10 +178,14 @@ export function PermissionCheckboxPicker({
   const toggle = (key: string, checked: boolean) => {
     if (disabled) return;
     if (checked) {
-      onChange?.([...selected, key]);
+      const next = new Set(selected);
+      next.add(key);
+      if (key === "teams") next.add("experts");
+      onChange?.(Array.from(next));
       return;
     }
-    onChange?.(selected.filter((k) => k !== key));
+    const next = selected.filter((k) => k !== key);
+    onChange?.(key === "experts" ? next.filter((k) => k !== "teams") : next);
   };
 
   const setGroup = (keys: string[], checked: boolean) => {
@@ -189,11 +193,15 @@ export function PermissionCheckboxPicker({
     if (checked) {
       const next = new Set(selected);
       for (const k of keys) next.add(k);
+      if (next.has("teams")) next.add("experts");
       onChange?.(Array.from(next));
       return;
     }
     const drop = new Set(keys);
-    onChange?.(selected.filter((k) => !drop.has(k)));
+    const next = selected.filter((k) => !drop.has(k));
+    onChange?.(
+      next.includes("experts") ? next : next.filter((k) => k !== "teams"),
+    );
   };
 
   if (catalog.length === 0) {
@@ -225,11 +233,14 @@ export function PermissionCheckboxPicker({
               });
               // Explains the tick that lies: a department grant survives an
               // untick, a deny survives a tick.
-              const title = tags.includes("deny")
-                ? t("perms.grantDeniedNote")
-                : tags.includes("unit")
-                ? t("perms.grantUnitNote")
-                : undefined;
+              const title =
+                item.key === "teams" && deniedKeys?.has("experts")
+                  ? t("perms.teamsExpertDeniedNote")
+                  : tags.includes("deny")
+                  ? t("perms.grantDeniedNote")
+                  : tags.includes("unit")
+                  ? t("perms.grantUnitNote")
+                  : undefined;
               return (
                 <button
                   key={`${item.key}:${item.label}`}

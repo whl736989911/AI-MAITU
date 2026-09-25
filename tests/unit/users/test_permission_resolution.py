@@ -135,6 +135,37 @@ def test_resolve_permissions_deny_outranks_unit_grant() -> None:
     assert "desktop" in resolved
 
 
+def test_teams_permission_requires_effective_experts_across_grant_sources() -> None:
+    def resolve(
+        *,
+        permissions: list[str] | None = None,
+        denied: list[str] | None = None,
+        unit_grants: set[str] | None = None,
+    ) -> set[str]:
+        return resolve_permissions(
+            role=Role.USER,
+            permissions=permissions,
+            denied=denied,
+            unit_grants=unit_grants,
+        )
+
+    assert "teams" not in resolve(permissions=["experts"])
+    assert "teams" not in resolve(permissions=["teams"])
+    assert {"experts", "teams"} <= resolve(permissions=["experts", "teams"])
+    # Either grant source can supply the expert prerequisite.
+    assert {"experts", "teams"} <= resolve(permissions=["experts"], unit_grants={"teams"})
+    assert {"experts", "teams"} <= resolve(permissions=["teams"], unit_grants={"experts"})
+    # An explicit deny removes the prerequisite after every grant source and
+    # therefore makes teams ineffective as well.
+    resolved = resolve(
+        permissions=["experts", "teams"],
+        denied=["experts"],
+        unit_grants={"experts"},
+    )
+    assert "experts" not in resolved
+    assert "teams" not in resolved
+
+
 def test_resolve_permissions_deny_outranks_baseline_grant() -> None:
     resolved = resolve_permissions(
         role=Role.USER,

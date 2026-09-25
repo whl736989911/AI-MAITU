@@ -77,6 +77,7 @@ class AgentPluginItem(BaseModel):
     kind: str | None = None
     description: str | None = None
     icon: str | None = None
+    group: str | None = None
     loaded: bool = False
     global_enabled: bool = True
     agent_enabled: bool = True
@@ -220,8 +221,9 @@ class MarketPluginItem(BaseModel):
     version: str
     name: LocalizedText
     description: LocalizedText
-    icon: str | None = None
     kind: str
+    icon: str | None = None
+    group: str | None = None
     requires: list[str] = Field(default_factory=list)
     installed: bool = False
     enabled: bool = False
@@ -254,6 +256,7 @@ def _market_card(entry: CatalogPlugin, installed: dict[str, Any] | None) -> Mark
         description=LocalizedText(**entry.summary()),
         icon=entry.icon,
         kind=entry.kind,
+        group=entry.group,
         requires=list(entry.requires),
         installed=installed is not None,
         enabled=bool(installed and installed.get("enabled", True) is not False),
@@ -269,6 +272,7 @@ def _market_matches(card: MarketPluginItem, needle: str) -> bool:
     haystack = " ".join(
         (
             card.id,
+            card.group or "",
             card.name.zh,
             card.name.en,
             card.description.zh,
@@ -348,6 +352,29 @@ async def install_plugin_market_item(
         mgr.load_installed(install_deps=False)
         await server.app_runtime.agent_registry.reload_all()
     return _market_card_by_id(server, plugin_id)
+
+
+@router.get(
+    "/market/{plugin_id}/ui/{file_path:path}",
+    summary="Serve a shipped plugin market image asset",
+    response_model=None,
+)
+async def get_market_plugin_ui_asset(
+    plugin_id: str,
+    file_path: str,
+    server: OctopServer = Depends(get_server),
+    _user: Any = Depends(require_permission("plugins")),
+) -> Response:
+    """Serve image files from the shipped catalog before a plugin is installed."""
+    target = _plugin_manager(server).resolve_market_ui_file(plugin_id, file_path)
+    suffix = target.suffix.lower()
+    media_type = _UI_CONTENT_TYPES.get(suffix) or mimetypes.guess_type(target.name)[0]
+    return FileResponse(
+        path=target,
+        media_type=media_type or "application/octet-stream",
+        filename=target.name,
+        content_disposition_type="inline",
+    )
 
 
 class PluginPatchBody(BaseModel):
@@ -446,10 +473,9 @@ def _agent_plugins_response(
                 id=plugin_id,
                 version=plugin.get("version"),
                 name=plugin.get("name"),
-                kind=plugin.get("kind"),
                 description=plugin.get("description"),
                 icon=plugin.get("icon"),
-                loaded=bool(plugin.get("loaded")),
+                group=plugin.get("group"),
                 global_enabled=global_enabled,
                 agent_enabled=per_agent_enabled,
                 enabled=global_enabled and per_agent_enabled,

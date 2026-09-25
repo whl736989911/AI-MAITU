@@ -48,8 +48,9 @@ export default function WorkflowRunCards({
   isStreaming,
   onRun,
 }: WorkflowRunCardsProps) {
-  const [summaryContainer, setSummaryContainer] =
-    useState<HTMLElement | null>(null);
+  const [summaryContainer, setSummaryContainer] = useState<HTMLElement | null>(
+    null,
+  );
   useEffect(() => {
     setSummaryContainer(
       document.querySelector<HTMLElement>("[data-workflow-input-summary]"),

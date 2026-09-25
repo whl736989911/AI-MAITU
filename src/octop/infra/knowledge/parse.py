@@ -210,8 +210,19 @@ def _needs_password(path: Path, suffix: str) -> bool:
     return False
 
 
+_TEXT_ENCODINGS = ("utf-8-sig", "gb18030")
+
+
 def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8-sig", errors="replace")
+    """Decode text files as UTF-8 first, then GB18030 for legacy Chinese files."""
+    data = path.read_bytes()
+    for encoding in _TEXT_ENCODINGS:
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _document(

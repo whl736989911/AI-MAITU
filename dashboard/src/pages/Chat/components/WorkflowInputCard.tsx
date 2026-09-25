@@ -129,8 +129,13 @@ export default function WorkflowInputCard({
   const readOnly = run !== null;
   const summary = fields
     .slice(0, 2)
-    .map(([name, field]) =>
-      `${fieldLabel(field, locale)}: ${displayValue(field, run?.inputs[name], t)}`,
+    .map(
+      ([name, field]) =>
+        `${fieldLabel(field, locale)}: ${displayValue(
+          field,
+          run?.inputs[name],
+          t,
+        )}`,
     )
     .join(" · ");
 
@@ -211,7 +216,9 @@ export default function WorkflowInputCard({
 
   return (
     <section
-      className={`${styles.card} ${readOnly && !expanded ? styles.collapsed : ""}`}
+      className={`${styles.card} ${
+        readOnly && !expanded ? styles.collapsed : ""
+      }`}
       aria-label={t("chat.workflow.inputTitle")}
     >
       <div className={styles.header}>
@@ -244,96 +251,98 @@ export default function WorkflowInputCard({
         ) : null}
       </div>
 
-      {(!readOnly || expanded) && <div className={styles.fields}>
-        {fields.map(([name, field]) => {
-          const required = (inputs.required ?? []).includes(name);
-          return (
-            <div className={styles.field} key={name}>
-              <label className={styles.fieldLabel} htmlFor={`wf-${name}`}>
-                {fieldLabel(field, locale)}
-                {required ? <span className={styles.required}>*</span> : null}
-              </label>
-              {field.description ? (
-                <p className={styles.fieldHint}>
-                  {pickLocale(field.description, locale)}
-                </p>
-              ) : null}
+      {(!readOnly || expanded) && (
+        <div className={styles.fields}>
+          {fields.map(([name, field]) => {
+            const required = (inputs.required ?? []).includes(name);
+            return (
+              <div className={styles.field} key={name}>
+                <label className={styles.fieldLabel} htmlFor={`wf-${name}`}>
+                  {fieldLabel(field, locale)}
+                  {required ? <span className={styles.required}>*</span> : null}
+                </label>
+                {field.description ? (
+                  <p className={styles.fieldHint}>
+                    {pickLocale(field.description, locale)}
+                  </p>
+                ) : null}
 
-              {readOnly ? (
-                <p className={styles.readOnlyValue}>
-                  {displayValue(field, run?.inputs[name], t)}
-                </p>
-              ) : (
-                <FieldControl
-                  id={`wf-${name}`}
-                  field={field}
-                  value={draft[name]}
-                  disabled={busy}
-                  t={t}
-                  onChange={(next) => setValue(name, next)}
-                />
-              )}
-
-              {!readOnly && field.type === "file" ? (
-                <div className={styles.fileField}>
-                  <input
-                    ref={(element) => {
-                      fileInputs.current[name] = element;
-                    }}
-                    type="file"
-                    className={styles.fileInput}
-                    accept={field.accept || undefined}
-                    multiple={field.multiple === true}
-                    onChange={(event) => {
-                      const picked = event.target.files;
-                      if (picked && picked.length > 0) {
-                        void addFiles(name, picked);
-                      }
-                      event.target.value = "";
-                    }}
-                  />
-                  <Button
+                {readOnly ? (
+                  <p className={styles.readOnlyValue}>
+                    {displayValue(field, run?.inputs[name], t)}
+                  </p>
+                ) : (
+                  <FieldControl
                     id={`wf-${name}`}
-                    size="small"
-                    icon={<Paperclip size={13} />}
-                    loading={uploading[name] === true}
+                    field={field}
+                    value={draft[name]}
                     disabled={busy}
-                    onClick={() => fileInputs.current[name]?.click()}
-                  >
-                    {t("chat.workflow.chooseFile")}
-                  </Button>
-                  {field.accept ? (
-                    <span className={styles.fileHint}>{field.accept}</span>
-                  ) : null}
-                  <ul className={styles.fileList}>
-                    {(files[name] ?? []).map((file, index) => (
-                      <li
-                        className={styles.fileRow}
-                        key={`${file.url}-${index}`}
-                      >
-                        <span className={styles.fileName}>
-                          {file.filename || file.workspacePath}
-                        </span>
-                        <Button
-                          type="text"
-                          size="small"
-                          danger
-                          disabled={busy}
-                          icon={<Trash2 size={13} />}
-                          aria-label={t("chat.workflow.removeFile", {
-                            name: file.filename ?? "",
-                          })}
-                          onClick={() => removeFile(name, index)}
-                        />
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              ) : null}
-            </div>
-          );
-        })}
-      </div>}
+                    t={t}
+                    onChange={(next) => setValue(name, next)}
+                  />
+                )}
+
+                {!readOnly && field.type === "file" ? (
+                  <div className={styles.fileField}>
+                    <input
+                      ref={(element) => {
+                        fileInputs.current[name] = element;
+                      }}
+                      type="file"
+                      className={styles.fileInput}
+                      accept={field.accept || undefined}
+                      multiple={field.multiple === true}
+                      onChange={(event) => {
+                        const picked = event.target.files;
+                        if (picked && picked.length > 0) {
+                          void addFiles(name, picked);
+                        }
+                        event.target.value = "";
+                      }}
+                    />
+                    <Button
+                      id={`wf-${name}`}
+                      size="small"
+                      icon={<Paperclip size={13} />}
+                      loading={uploading[name] === true}
+                      disabled={busy}
+                      onClick={() => fileInputs.current[name]?.click()}
+                    >
+                      {t("chat.workflow.chooseFile")}
+                    </Button>
+                    {field.accept ? (
+                      <span className={styles.fileHint}>{field.accept}</span>
+                    ) : null}
+                    <ul className={styles.fileList}>
+                      {(files[name] ?? []).map((file, index) => (
+                        <li
+                          className={styles.fileRow}
+                          key={`${file.url}-${index}`}
+                        >
+                          <span className={styles.fileName}>
+                            {file.filename || file.workspacePath}
+                          </span>
+                          <Button
+                            type="text"
+                            size="small"
+                            danger
+                            disabled={busy}
+                            icon={<Trash2 size={13} />}
+                            aria-label={t("chat.workflow.removeFile", {
+                              name: file.filename ?? "",
+                            })}
+                            onClick={() => removeFile(name, index)}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {readOnly ? null : (
         <div className={styles.actions}>

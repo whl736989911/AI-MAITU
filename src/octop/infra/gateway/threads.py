@@ -46,6 +46,55 @@ class ThreadRegistry:
         )
 
     @staticmethod
+    def peer_room_session_key(
+        source_session_key: str,
+        agent_id: str,
+        *,
+        room_thread_id: str,
+        group: bool,
+    ) -> str | None:
+        """Give a peer its own session inside a team room, never its personal DM."""
+        parts = source_session_key.split(":", 3)
+        room_id = room_thread_id.strip()
+        if len(parts) != 4 or not all(parts) or not agent_id or not room_id:
+            return None
+        _source_agent, channel_type, _subject_id, source_chat_type = parts
+        return ThreadRegistry.make_key(
+            agent_id=agent_id,
+            channel_type=channel_type,
+            channel_subject_id=f"peer:{room_id}",
+            channel_chat_type=ThreadRegistry.CHAT_TYPE_GROUP if group else source_chat_type,
+        )
+
+    @staticmethod
+    def is_im_session(session: SessionRow) -> bool:
+        """Whether the session belongs to an external IM channel, not a local UI."""
+        return session.channel_type not in {
+            ThreadRegistry.CHANNEL_DASHBOARD,
+            ThreadRegistry.CHANNEL_CLI,
+        }
+
+    def im_sessions_for_thread(self, thread_id: str) -> list[SessionRow]:
+        """Return this thread owner's external IM sessions for team fan-in."""
+        if not thread_id.strip():
+            return []
+        thread = self._threads.get(thread_id)
+        if thread is None:
+            return []
+        return [
+            session
+            for session in self._sessions.list_by_thread(thread_id)
+            if session.agent_id == thread.agent_id
+            and session.user_id == thread.user_id
+            and self.is_im_session(session)
+        ]
+
+    @property
+    def thread_repo(self) -> ThreadRepo:
+        """The concrete thread repository used by this registry."""
+        return self._threads
+
+    @staticmethod
     def dashboard_key(*, agent_id: str, user_id: int) -> str:
         return ThreadRegistry.make_key(
             agent_id=agent_id,
@@ -122,14 +171,14 @@ class ThreadRegistry:
             channel_chat_type=channel_chat_type,
         )
         row = self._sessions.get(session_key)
-        if row is not None:
+        if row is not None and self._threads.get(row.thread_id) is not None:
             self._refresh_session_if_needed(
                 row, channel_id=channel_id, channel_metadata=channel_metadata
             )
             return row.thread_id
         async with self._lock:
             row = self._sessions.get(session_key)
-            if row is not None:
+            if row is not None and self._threads.get(row.thread_id) is not None:
                 self._refresh_session_if_needed(
                     row, channel_id=channel_id, channel_metadata=channel_metadata
                 )
@@ -178,10 +227,11 @@ class ThreadRegistry:
             if row.agent_id != agent_id:
                 msg = f"session {session_key!r} belongs to agent {row.agent_id!r}, not {agent_id!r}"
                 raise ValueError(msg)
-            self._refresh_session_if_needed(
-                row, channel_id=channel_channel_id, channel_metadata=channel_metadata
-            )
-            return row.thread_id
+            if self._threads.get(row.thread_id) is not None:
+                self._refresh_session_if_needed(
+                    row, channel_id=channel_channel_id, channel_metadata=channel_metadata
+                )
+                return row.thread_id
         parts = session_key.split(":", 3)
         subject_id = parts[2] if len(parts) >= 3 else str(user_id)
         return await self.get_or_create(
@@ -195,8 +245,11 @@ class ThreadRegistry:
         )
 
     def get_bound_thread_id(self, session_key: str) -> str | None:
+        """Return the live thread bound to *session_key*, or ``None`` if stale."""
         row = self._sessions.get(session_key)
-        return row.thread_id if row else None
+        if row is None or self._threads.get(row.thread_id) is None:
+            return None
+        return row.thread_id
 
     def get_session(self, session_key: str) -> SessionRow | None:
         return self._sessions.get(session_key)
@@ -335,12 +388,18 @@ class ThreadRegistry:
         model_ref: str | None | object = ...,
         reasoning_mode: str | None | object = ...,
         reasoning_effort: str | None | object = ...,
+        conversation_mode: str | None | object = ...,
+        pending_plan_path: str | None | object = ...,
+        hitl_policy: str | None | object = ...,
     ) -> None:
         self._threads.update_composer(
             thread_id,
             model_ref=model_ref,
             reasoning_mode=reasoning_mode,
             reasoning_effort=reasoning_effort,
+            conversation_mode=conversation_mode,
+            pending_plan_path=pending_plan_path,
+            hitl_policy=hitl_policy,
         )
 
     def touch_last_active(self, thread_id: str) -> None:
@@ -406,6 +465,7 @@ class ThreadRegistry:
 
     def delete_thread(self, thread_id: str) -> None:
         self._threads.delete(thread_id)
+        self._sessions.delete_for_thread(thread_id)
 
     def increment_unread(self, session_key: str, *, delta: int = 1) -> None:
         self._sessions.increment_unread(session_key, delta=delta)

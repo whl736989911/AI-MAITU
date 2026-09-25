@@ -63,6 +63,20 @@ function getStateMeta(state: string) {
 }
 
 const TRANSIENT = new Set(["starting", "stopping"]);
+const MEMORY_MAINTENANCE_ACTIVE: Record<string, true> = {
+  waiting: true,
+  queued: true,
+  backing_up: true,
+  pruning: true,
+  deduplicating: true,
+  compacting: true,
+};
+
+const MEMORY_MAINTENANCE_TERMINAL: Record<string, true> = {
+  done: true,
+  failed: true,
+  skipped: true,
+};
 
 /**
  * The card's own words about the row it is showing, keyed by kind.
@@ -143,8 +157,14 @@ export const AgentCard = memo(function AgentCard({
     Set<string>
   >(() => new Set());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [memorySlimming, setMemorySlimming] = useState(false);
+  const [memoryMaintenancePhase, setMemoryMaintenancePhase] = useState<
+    string | null
+  >(null);
   const maintPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const terminalMaintenanceSeenRef = useRef<{
+    key: string;
+    timestamp: number;
+  } | null>(null);
 
   useEffect(() => {
     setLocalState(agent.state);
@@ -183,7 +203,8 @@ export const AgentCard = memo(function AgentCard({
 
   useEffect(() => {
     if (localState !== "running") {
-      setMemorySlimming(false);
+      setMemoryMaintenancePhase(null);
+      terminalMaintenanceSeenRef.current = null;
       if (maintPollRef.current) {
         clearInterval(maintPollRef.current);
         maintPollRef.current = null;
@@ -194,18 +215,40 @@ export const AgentCard = memo(function AgentCard({
     const startedAt = Date.now();
     const pull = () =>
       request<{
-        memory_maintenance?: { phase?: string } | null;
+        memory_maintenance?: {
+          phase?: string;
+          updated_at?: number | null;
+          started_at?: number | null;
+        } | null;
       }>(`/agents/${agent.agent_id}/status`)
         .then((s) => {
           if (cancelled) return;
-          const phase = s.memory_maintenance?.phase;
-          const active =
-            phase === "queued" || phase === "pruning" || phase === "compacting";
-          setMemorySlimming(!!active);
-          // First tick is ~1s after start; don't drop the poll on the
-          // idle snapshot before compact begins. Keep going while active.
+          const maintenance = s.memory_maintenance;
+          const phase = maintenance?.phase ?? "";
+          const active = !!MEMORY_MAINTENANCE_ACTIVE[phase];
+          const terminal = !!MEMORY_MAINTENANCE_TERMINAL[phase];
+          const updatedAt = maintenance?.updated_at;
+          let recentTerminal = false;
+          if (terminal && maintenance) {
+            const key = `${phase}:${updatedAt ?? ""}:${
+              maintenance.started_at ?? ""
+            }`;
+            if (terminalMaintenanceSeenRef.current?.key !== key) {
+              terminalMaintenanceSeenRef.current = {
+                key,
+                timestamp: Date.now() / 1000,
+              };
+            }
+            const finishedAt =
+              updatedAt ?? terminalMaintenanceSeenRef.current.timestamp;
+            recentTerminal = Date.now() / 1000 - finishedAt <= 15;
+          } else {
+            terminalMaintenanceSeenRef.current = null;
+          }
+          setMemoryMaintenancePhase(active || recentTerminal ? phase : null);
           if (
             !active &&
+            !recentTerminal &&
             Date.now() - startedAt > 15_000 &&
             maintPollRef.current
           ) {
@@ -383,8 +426,22 @@ export const AgentCard = memo(function AgentCard({
                 />
                 {formatAgentState(localState, t)}
               </div>
-              {memorySlimming && (
-                <Tag color="processing">{t("experts.memorySlimming")}</Tag>
+              {memoryMaintenancePhase && (
+                <Tag
+                  color={
+                    memoryMaintenancePhase === "done"
+                      ? "success"
+                      : memoryMaintenancePhase === "failed"
+                      ? "error"
+                      : memoryMaintenancePhase === "skipped"
+                      ? "default"
+                      : "processing"
+                  }
+                >
+                  {t(`chat.memoryMaintenance.${memoryMaintenancePhase}`, {
+                    defaultValue: t("experts.memorySlimming"),
+                  })}
+                </Tag>
               )}
               <MbtiPersonaTag
                 value={agent.persona_mbti}

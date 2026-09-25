@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
+import re
 import threading
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -31,6 +33,28 @@ _OCR_PROMPT = (
     "Transcribe all visible text in this image exactly. Preserve reading order, headings, "
     "lists, and table rows. Return only the transcription, without commentary."
 )
+
+logger = logging.getLogger(__name__)
+_OCR_REFUSAL_MAX_CHARS = 400
+_OCR_REFUSAL_RE = re.compile(
+    r"no image (?:was |is |has been )?(?:attached|provided|found|received|included)"
+    r"|(?:don'?t|do not|can'?t|cannot|unable to|didn'?t) "
+    r"(?:see|find|detect|receive|locate)[^.\n]{0,30}(?:image|picture|photo|scan|attachment)"
+    r"|please (?:attach|upload|provide|send|share)[^.\n]{0,40}"
+    r"(?:image|picture|photo|scan|attachment|file)"
+    r"|未(?:收到|看到|检测到|获取到)[^。\n]{0,10}(?:图片|图像|照片|附件)"
+    r"|请(?:上传|提供|重新上传|发送)[^。\n]{0,10}(?:图片|图像|照片|附件|文件)",
+    re.IGNORECASE,
+)
+
+
+def _is_no_image_refusal(text: str) -> bool:
+    """Detect short remote OCR replies asking the caller to provide an image."""
+    stripped = text.strip()
+    return bool(
+        stripped and len(stripped) <= _OCR_REFUSAL_MAX_CHARS and _OCR_REFUSAL_RE.search(stripped)
+    )
+
 
 _local_engine: Any | None = None
 _local_engine_lock = threading.Lock()
@@ -297,6 +321,13 @@ class _RemoteOcr:
                 ]
             )
             text = llm_text_content(self._model.invoke([message]))
-            if text:
-                parts.append(text)
+            if not text:
+                continue
+            if _is_no_image_refusal(text):
+                logger.warning(
+                    "remote OCR returned a no-image refusal for %s; treating the page as empty",
+                    path.name,
+                )
+                continue
+            parts.append(text)
         return "\n\n".join(parts)

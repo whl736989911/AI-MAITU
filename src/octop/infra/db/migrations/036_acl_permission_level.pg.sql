@@ -29,6 +29,11 @@
 
 ALTER TABLE resource_acl ADD COLUMN IF NOT EXISTS permission TEXT NOT NULL DEFAULT 'read';
 
+-- Match the per-thread conversation/HITL columns in the SQLite v36 record.
+ALTER TABLE threads ADD COLUMN IF NOT EXISTS conversation_mode TEXT;
+ALTER TABLE threads ADD COLUMN IF NOT EXISTS pending_plan_path TEXT;
+ALTER TABLE threads ADD COLUMN IF NOT EXISTS hitl_policy TEXT;
+
 -- One caller's own standing text on one feature's workflow (schema v36).
 --
 -- A feature's workflow is declared once, by its author, for everybody; this is

@@ -553,3 +553,4 @@ def delete_thread_offline(agent_id: str, thread_id: str, *, home: Path | None = 
         except Exception:
             logger.exception("trajectory cascade delete failed thread=%s", thread_id)
         svc.thread_repo.delete(thread_id)
+        svc.session_repo.delete_for_thread(thread_id)

@@ -112,7 +112,9 @@ describe("<WorkflowInputCard />", () => {
 
     expect(screen.getByText(/ACME/)).toBeInTheDocument();
     expect(screen.queryByText("3")).not.toBeInTheDocument();
-    await user.click(screen.getByRole("button", { name: "chat.workflow.expandInputs" }));
+    await user.click(
+      screen.getByRole("button", { name: "chat.workflow.expandInputs" }),
+    );
     expect(screen.getByText("ACME")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
     expect(

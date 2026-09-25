@@ -50,6 +50,9 @@ class PublishedExpertInstallOptions:
     welcome_message: str | None = None
     runtime_config: dict[str, Any] | None = None
     enable_trajectory: bool = True
+    workspace_patch: Any = None
+    composer_copies: tuple[tuple[str, Any], ...] = ()
+    composer_report: Any = None
 
 
 def _snapshot_dir(services: Any, expert_id: str) -> Path:
@@ -346,6 +349,17 @@ async def install_published_expert(
     async def seed_snapshot(created_row: Any, workspace: Any) -> None:
         await seed_expert_directory(expert_dir=snapshot_dir, workspace=workspace)
         await bind_workspace_avatar_icon_url(registry, created_row.agent_id, workspace)
+        if options.workspace_patch is not None:
+            from octop.infra.agents.experts.composer_files import (
+                apply_composer_workspace_patch,
+            )
+
+            await apply_composer_workspace_patch(
+                workspace,
+                options.workspace_patch,
+                copies=options.composer_copies,
+                report=options.composer_report,
+            )
 
     created = await registry.create(
         AgentCreateSpec(

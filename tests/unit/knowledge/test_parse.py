@@ -83,6 +83,20 @@ def test_parse_plain_text_and_markdown(tmp_path: Path) -> None:
     assert parse_document(markdown).text == "# Heading\n\nbody"
 
 
+def test_parse_gb18030_text_without_mojibake(tmp_path: Path) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_bytes("知识库编码检测".encode("gb18030"))
+
+    assert parse_document(path).text == "知识库编码检测"
+
+
+def test_parse_text_prefers_utf8_and_normalizes_newlines(tmp_path: Path) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_bytes("café\r\n知识库\r".encode())
+
+    assert parse_document(path).text == "café\n知识库\n"
+
+
 def test_parse_pdf_docx_and_pptx(tmp_path: Path) -> None:
     from docx import Document
     from pptx import Presentation

@@ -9,15 +9,25 @@
  * agent's tool.
  */
 
-import { describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { App } from "antd";
 import type { OctopUser } from "../../../api/modules/auth";
 import { CurrentUserProvider } from "../../../hooks/useCurrentUser";
 import { ACPPanel } from "./index";
 
+const agentMocks = vi.hoisted(() => ({
+  agents: [] as Array<{ agent_id: string; config: Record<string, unknown> }>,
+}));
+
 vi.mock("../../../context/AgentContext", () => ({
-  useAgent: () => ({ activeAgentId: "ag1" }),
+  useAgent: () => ({ activeAgentId: "ag1", agents: agentMocks.agents }),
 }));
 
 vi.mock("../../../api/modules/acp", () => {
@@ -79,6 +89,10 @@ function agentToolSwitch(): HTMLElement {
   return within(row as HTMLElement).getByRole("switch");
 }
 
+beforeEach(() => {
+  agentMocks.agents = [];
+});
+
 describe("<ACPPanel /> runner definitions", () => {
   it("leaves the definitions to a non-administrator as read-only cards", async () => {
     renderPanel(GRANTED);
@@ -111,5 +125,21 @@ describe("<ACPPanel /> runner definitions", () => {
 
     fireEvent.click(screen.getByText("acp.runner_opencode"));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("blocks enabling outbound ACP for sandboxed agents", async () => {
+    agentMocks.agents = [
+      {
+        agent_id: "ag1",
+        config: { backend: { type: "named", name: "sandbox" } },
+      },
+    ];
+    renderPanel(ADMIN);
+
+    expect(
+      await screen.findByText("acp.outboundBlockedHint"),
+    ).toBeInTheDocument();
+    await screen.findByText("acp.runner_opencode");
+    await waitFor(() => expect(agentToolSwitch()).toBeDisabled());
   });
 });

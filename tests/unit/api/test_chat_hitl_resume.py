@@ -83,6 +83,8 @@ async def test_dashboard_hitl_resume_registers_followup_hitl_required() -> None:
     )
     assert followup is not None
     assert followup.pending_id != first.pending_id
+    followup_event = next(c for c in chunks if c.get("type") == "hitl_required")
+    assert followup_event["request"]["pending_id"] == followup.pending_id
     assert followup.action_requests[0]["args"]["command"] == "ls -la /private/etc"
     assert hitl.store.get(first.pending_id) is not None
     assert hitl.store.get(first.pending_id).status == "approved"  # type: ignore[union-attr]
@@ -158,3 +160,52 @@ async def test_dashboard_hitl_resume_finishes_after_client_disconnect() -> None:
 
     assert completed is True
     assert frames == []
+
+
+@pytest.mark.asyncio
+async def test_failed_hitl_resume_marks_pending_expired_not_approved() -> None:
+    async def _resume(*_args: object, **_kwargs: object):
+        raise RuntimeError("stream died")
+        yield {}  # pragma: no cover
+
+    processor = MagicMock()
+    processor.iter_hitl_resume_chunks = _resume
+    hitl = HitlChannelCoordinator()
+    pending = hitl.store.register(
+        thread_id="thr-failed",
+        agent_id="agent-1",
+        user_id=1,
+        session_key="sk-failed",
+        channel_type="dashboard",
+        action_requests=[{"name": "execute", "args": {}}],
+        review_configs=None,
+    )
+
+    frames = [
+        frame
+        async for frame in iter_dashboard_hitl_resume_sse(
+            processor=processor,
+            hitl_coordinator=hitl,
+            agent_id="agent-1",
+            thread_id="thr-failed",
+            user_id=1,
+            decisions=[{"type": "approve"}],
+            pending=pending,
+            session_key="sk-failed",
+            channel_type="dashboard",
+            locale="en",
+            is_disconnected=AsyncMock(return_value=False),
+        )
+    ]
+
+    chunks = _parse_sse_chunks("".join(frames))
+    assert any(chunk.get("type") == "error" for chunk in chunks)
+    assert hitl.store.get(pending.pending_id).status == "expired"  # type: ignore[union-attr]
+    assert (
+        hitl.store.resolve_pending_for_thread(
+            "thr-failed",
+            agent_id="agent-1",
+            user_id=1,
+        )
+        is None
+    )

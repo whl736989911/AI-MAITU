@@ -86,6 +86,7 @@ export interface SlashActionChunk {
   type: "slash_action";
   action: string;
   agent_id?: string;
+  mode?: "ask" | "plan" | "craft";
 }
 
 export interface AttachmentChunk {

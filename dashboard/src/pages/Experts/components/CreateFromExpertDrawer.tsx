@@ -1,7 +1,16 @@
 // dashboard/src/pages/Experts/components/CreateFromExpertDrawer.tsx
 import { useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Alert, Collapse, Drawer, Form, Input, Select, Spin } from "antd";
+import {
+  Alert,
+  Button,
+  Collapse,
+  Drawer,
+  Form,
+  Input,
+  Select,
+  Spin,
+} from "antd";
 import { message } from "@/utils/antdMessage";
 
 import { request } from "../../../api/request";
@@ -63,6 +72,19 @@ import {
 import AgentBackendFields from "./AgentBackendFields";
 import ExpertAvatarPicker from "./ExpertAvatarPicker";
 import ExpertComposerDefaultsFields from "./ExpertComposerDefaultsFields";
+import FileEditModal from "./FileEditModal";
+import SkillSourcePickerModal, {
+  type PickedAgentSkill,
+  type PickedHubSkill,
+} from "./SkillSourcePickerModal";
+import SubagentSourcePickerModal, {
+  type PickedCatalogSubagent,
+} from "./SubagentSourcePickerModal";
+import {
+  diffComposerFiles,
+  ensurePromptFiles,
+  upsertComposerFile,
+} from "./composerFiles";
 import styles from "../index.module.less";
 
 type FileContent = NamedFileContent;
@@ -189,6 +211,19 @@ export default function CreateFromExpertDrawer({
   const [pathMappings, setPathMappings] = useState<PathMapping[]>([]);
 
   const [fileContents, setFileContents] = useState<FileContent[]>([]);
+
+  const [originalFileContents, setOriginalFileContents] = useState<
+    FileContent[]
+  >([]);
+  const [pendingHubSkills, setPendingHubSkills] = useState<PickedHubSkill[]>(
+    [],
+  );
+  const [pendingCopySkills, setPendingCopySkills] = useState<
+    { agent_id: string; slug: string }[]
+  >([]);
+  const [skillPickerOpen, setSkillPickerOpen] = useState(false);
+  const [subagentPickerOpen, setSubagentPickerOpen] = useState(false);
+  const [localEditPath, setLocalEditPath] = useState<string | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [skillPackages, setSkillPackages] = useState<SkillPackage[]>([]);
   const [skillPackagesLoading, setSkillPackagesLoading] = useState(false);
@@ -242,8 +277,14 @@ export default function CreateFromExpertDrawer({
       enable_trajectory: true,
     });
 
+    setPendingHubSkills([]);
+    setPendingCopySkills([]);
+    setLocalEditPath(null);
+    setSubagentPickerOpen(false);
+    setSkillPickerOpen(false);
     if (source.kind === "market") {
-      setFileContents([]);
+      setFileContents(ensurePromptFiles([]));
+      setOriginalFileContents([]);
       setDetailLoading(false);
       return;
     }
@@ -256,7 +297,9 @@ export default function CreateFromExpertDrawer({
     request<ExpertDetail>(detailPath)
       .then((data) => {
         if (cancelled) return;
-        setFileContents(data.file_contents ?? []);
+        const files = data.file_contents ?? [];
+        setFileContents(ensurePromptFiles(files));
+        setOriginalFileContents(files);
         const welcome = data.welcome_message;
         const welcomeText = pickLocale(welcome, lang);
         if (welcomeText) {
@@ -266,7 +309,10 @@ export default function CreateFromExpertDrawer({
         }
       })
       .catch(() => {
-        if (!cancelled) setFileContents([]);
+        if (!cancelled) {
+          setFileContents([]);
+          setOriginalFileContents([]);
+        }
       })
       .finally(() => {
         if (!cancelled) setDetailLoading(false);
@@ -345,7 +391,10 @@ export default function CreateFromExpertDrawer({
         pathMappings,
         values.root_dir,
       );
-
+      const composerPatch = diffComposerFiles(
+        originalFileContents,
+        fileContents,
+      );
       const welcomeText = (stored.welcome_message ?? "").trim();
       const payload = {
         name: values.name,
@@ -364,11 +413,24 @@ export default function CreateFromExpertDrawer({
         ...(welcomeText ? { welcome_message: welcomeText } : {}),
         ...buildAgentRuntimeRequest(values),
         enable_trajectory: values.enable_trajectory === true,
+        ...(composerPatch.file_overrides.length
+          ? { file_overrides: composerPatch.file_overrides }
+          : {}),
+        ...(composerPatch.omit_files.length
+          ? { omit_files: composerPatch.omit_files }
+          : {}),
+        ...(pendingHubSkills.length ? { hub_skills: pendingHubSkills } : {}),
+        ...(pendingCopySkills.length ? { copy_skills: pendingCopySkills } : {}),
       };
 
-      let body: { agent_id: string; name: string };
+      let body: {
+        agent_id: string;
+        name: string;
+        hub_skill_errors?: string[];
+        copy_skill_errors?: string[];
+      };
       if (source.kind === "builtin") {
-        body = await request<{ agent_id: string; name: string }>(
+        body = await request<typeof body>(
           `/agents/from-expert/${encodeURIComponent(source.expert.id)}`,
           {
             method: "POST",
@@ -382,7 +444,12 @@ export default function CreateFromExpertDrawer({
           source.expert.slug,
           payload,
         );
-        body = { agent_id: created.agent_id, name: created.name };
+        body = {
+          agent_id: created.agent_id,
+          name: created.name,
+          hub_skill_errors: created.hub_skill_errors,
+          copy_skill_errors: created.copy_skill_errors,
+        };
         const enrichment = created.market?.welcome_enrichment;
         if (enrichment === "pending") {
           message.success(
@@ -397,6 +464,20 @@ export default function CreateFromExpertDrawer({
 
       if (source.kind !== "market") {
         message.success(t("experts.agentCreated", { name: body.name }));
+      }
+      if (body.hub_skill_errors?.length) {
+        message.warning(
+          t("experts.hubSkillsPartial", {
+            names: body.hub_skill_errors.join(", "),
+          }),
+        );
+      }
+      if (body.copy_skill_errors?.length) {
+        message.warning(
+          t("experts.copySkillsPartial", {
+            names: body.copy_skill_errors.join(", "),
+          }),
+        );
       }
       if (avatarFile) {
         try {
@@ -441,7 +522,42 @@ export default function CreateFromExpertDrawer({
 
   const { configFiles, skillGroups, subagentFiles } =
     groupExpertFiles(fileContents);
-  const showFilePreview = source?.kind !== "market";
+  const showFilePreview = true;
+  const selectedSkillSlugs = useMemo(() => {
+    const slugs = new Set(skillGroups.map((group) => group.name));
+    for (const skill of pendingHubSkills) slugs.add(skill.skill_name);
+    for (const skill of pendingCopySkills) slugs.add(skill.slug);
+    return slugs;
+  }, [pendingCopySkills, pendingHubSkills, skillGroups]);
+  const selectedSubagentSlugs = useMemo(
+    () => new Set(subagentFiles.map((item) => item.slug)),
+    [subagentFiles],
+  );
+  const localEditFile = localEditPath
+    ? fileContents.find((file) => file.name === localEditPath) ?? null
+    : null;
+  const handlePickAgentSkill = (skill: PickedAgentSkill) => {
+    setPendingCopySkills((prev) =>
+      prev.some((item) => item.slug === skill.slug)
+        ? prev
+        : [...prev, { agent_id: skill.agent_id, slug: skill.slug }],
+    );
+  };
+  const handlePickHubSkill = (skill: PickedHubSkill) => {
+    setPendingHubSkills((prev) =>
+      prev.some((item) => item.skill_name === skill.skill_name)
+        ? prev
+        : [...prev, skill],
+    );
+  };
+  const handlePickCatalogSubagent = (subagent: PickedCatalogSubagent) => {
+    setFileContents((prev) =>
+      upsertComposerFile(prev, {
+        name: `agents/${subagent.slug}.md`,
+        content: subagent.content,
+      }),
+    );
+  };
 
   const title = source
     ? t("experts.createDrawerTitle", {
@@ -640,6 +756,108 @@ export default function CreateFromExpertDrawer({
           ]}
         />
       </Form>
+      <div style={{ marginTop: 12, display: "grid", gap: 8 }}>
+        <div style={{ display: "flex", justifyContent: "space-between" }}>
+          <strong>{t("experts.createComposerFilesTitle")}</strong>
+          <Button size="small" onClick={() => setSkillPickerOpen(true)}>
+            {t("experts.addSkill")}
+          </Button>
+          <Button size="small" onClick={() => setSubagentPickerOpen(true)}>
+            {t("experts.addSubagent")}
+          </Button>
+        </div>
+        {fileContents.map((file) => (
+          <div
+            key={file.name}
+            style={{ display: "flex", justifyContent: "space-between" }}
+          >
+            <span>{file.name}</span>
+            <span>
+              <Button
+                type="link"
+                size="small"
+                onClick={() => setLocalEditPath(file.name)}
+              >
+                {t("experts.editFile")}
+              </Button>
+              {!["SOUL.md", "IDENTITY.md", "USER.md"].includes(file.name) && (
+                <Button
+                  type="link"
+                  size="small"
+                  danger
+                  onClick={() =>
+                    setFileContents((prev) =>
+                      prev.filter((item) => item.name !== file.name),
+                    )
+                  }
+                >
+                  {t("common.delete")}
+                </Button>
+              )}
+            </span>
+          </div>
+        ))}
+        {pendingHubSkills.map((skill) => (
+          <div key={`hub-${skill.skill_name}`}>
+            {skill.display_name || skill.skill_name} · Hub
+            <Button
+              type="link"
+              size="small"
+              danger
+              onClick={() =>
+                setPendingHubSkills((prev) =>
+                  prev.filter((item) => item.skill_name !== skill.skill_name),
+                )
+              }
+            >
+              {t("common.delete")}
+            </Button>
+          </div>
+        ))}
+        {pendingCopySkills.map((skill) => (
+          <div key={`copy-${skill.agent_id}-${skill.slug}`}>
+            {skill.slug} · {skill.agent_id}
+            <Button
+              type="link"
+              size="small"
+              danger
+              onClick={() =>
+                setPendingCopySkills((prev) =>
+                  prev.filter((item) => item.slug !== skill.slug),
+                )
+              }
+            >
+              {t("common.delete")}
+            </Button>
+          </div>
+        ))}
+      </div>
+      <SkillSourcePickerModal
+        open={skillPickerOpen}
+        excludeSlugs={selectedSkillSlugs}
+        onClose={() => setSkillPickerOpen(false)}
+        onPickHub={handlePickHubSkill}
+        onPickAgentSkill={handlePickAgentSkill}
+      />
+      <SubagentSourcePickerModal
+        open={subagentPickerOpen}
+        excludeSlugs={selectedSubagentSlugs}
+        onClose={() => setSubagentPickerOpen(false)}
+        onPick={handlePickCatalogSubagent}
+      />
+      <FileEditModal
+        open={!!localEditPath}
+        filePath={localEditPath}
+        localValue={localEditFile?.content ?? ""}
+        onClose={() => setLocalEditPath(null)}
+        onSaved={() => undefined}
+        onLocalSave={(content) => {
+          if (localEditPath)
+            setFileContents((prev) =>
+              upsertComposerFile(prev, { name: localEditPath, content }),
+            );
+        }}
+      />
 
       {showFilePreview &&
         (detailLoading ? (

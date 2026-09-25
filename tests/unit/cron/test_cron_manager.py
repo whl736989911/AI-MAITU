@@ -75,7 +75,9 @@ async def _aiter(items):
         yield item
 
 
-def _make_manager(services, *, gateway: MagicMock | None = None) -> CronManager:
+def _make_manager(
+    services, *, gateway: MagicMock | None = None, timezone: str = "UTC"
+) -> CronManager:
     gw = gateway or _make_gateway()
     mgr = CronManager(
         gateway=gw,
@@ -85,7 +87,7 @@ def _make_manager(services, *, gateway: MagicMock | None = None) -> CronManager:
             repos=services.repos,
         ),
         repos=services.repos,
-        timezone="UTC",
+        timezone=timezone,
     )
     # Replace real APScheduler with a mock to avoid background threads
     fake_scheduler = MagicMock()
@@ -159,6 +161,30 @@ async def test_boot_skips_disabled_jobs(tmp_path: Path) -> None:
     await mgr.boot()
 
     mgr._scheduler.add_job.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_boot_and_system_jobs_use_configured_timezone(tmp_path: Path) -> None:
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    cid = _cron_id()
+    services.repos.cron_repo.create(
+        cron_id=cid,
+        agent_id=aid,
+        user_id=uid,
+        trigger="cron:0 9 * * *",
+        prompt="hello",
+        session_key=_cron_session_key(aid, cid),
+    )
+    manager = _make_manager(services, timezone="America/New_York")
+
+    await manager.boot()
+    scheduled = manager._scheduler.add_job.call_args.kwargs["trigger"]
+    assert str(scheduled.timezone) == "America/New_York"
+
+    manager.schedule_system_job("system", trigger="cron:0 3 * * *", func=lambda: None)
+    system = manager._scheduler.add_job.call_args.kwargs["trigger"]
+    assert str(system.timezone) == "America/New_York"
 
 
 @pytest.mark.asyncio

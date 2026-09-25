@@ -33,7 +33,6 @@ export type ChannelKey =
 
 /**
  * Channel kinds backed by Octop ``ChannelKind`` / harness-gateway ``BUILTIN_CHANNELS``.
- * ``dashboard`` / ``agentchat`` / ``discord`` are intentionally omitted until implemented.
  */
 export const CHANNEL_KEYS: ChannelKey[] = [
   "weixin",
@@ -43,12 +42,12 @@ export const CHANNEL_KEYS: ChannelKey[] = [
   "yuanbao",
   "dingtalk",
   "telegram",
+  "discord",
   "xiaoyi",
   "mqtt",
 ];
 
-/** Overseas / less-common kinds hidden behind "更多通道" until expanded. */
-const COLLAPSED_CHANNEL_KEYS = new Set<ChannelKey>(["telegram"]);
+const COLLAPSED_CHANNEL_KEYS = new Set<ChannelKey>(["telegram", "discord"]);
 
 export function isCollapsedChannelKey(key: ChannelKey): boolean {
   return COLLAPSED_CHANNEL_KEYS.has(key);
@@ -323,6 +322,7 @@ export const CHANNEL_FIELDS: Partial<Record<ChannelKey, ChannelField[]>> = {
     {
       name: "http_proxy_auth",
       label: "HTTP Proxy Auth",
+      type: "password",
       placeholder: "user:password",
     },
   ],
@@ -388,6 +388,24 @@ export const CHANNEL_FIELDS: Partial<Record<ChannelKey, ChannelField[]>> = {
   ],
   // dashboard & agentchat: no required credentials.
 };
+
+/** Discord IDs are snowflakes: keep their decimal representation as strings. */
+export function parseDiscordSnowflakeIds(value: unknown): string[] {
+  if (Array.isArray(value))
+    return value
+      .map(String)
+      .map((id) => id.trim())
+      .filter(Boolean);
+  if (typeof value !== "string") return [];
+  return value
+    .split(/[\s,]+/)
+    .map((id) => id.trim())
+    .filter(Boolean);
+}
+
+export function isValidDiscordSnowflakeList(value: unknown): boolean {
+  return parseDiscordSnowflakeIds(value).every((id) => /^\d{17,20}$/.test(id));
+}
 
 /** Display-only config keys — excluded from credential field mapping. */
 export const CHANNEL_DISPLAY_CONFIG_KEYS = [

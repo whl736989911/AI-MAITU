@@ -154,11 +154,30 @@ def parse_plugin_ui_meta(plugin_dir: Path) -> dict[str, str] | None:
     return {"entry": entry, "manifest": manifest}
 
 
-def parse_plugin_icon(plugin_dir: Path) -> str | None:
-    """Optional ``icon`` from ``plugin.yaml``: emoji text or absolute image URL.
+_ICON_FILE_SUFFIXES = {".svg", ".png", ".jpg", ".jpeg", ".webp", ".gif"}
+_MARKET_ASSET_SUFFIXES = frozenset(_ICON_FILE_SUFFIXES)
 
-    Harness ignores unknown keys; Octop surfaces ``icon`` for Dashboard cards.
-    """
+
+def parse_plugin_group(plugin_dir: Path) -> str | None:
+    """Read a normalized optional group slug from ``plugin.yaml``."""
+    try:
+        raw = _read_plugin_yaml(plugin_dir).get("group")
+    except Exception:
+        return None
+    if raw is None:
+        return None
+    group = str(raw).strip().lower().replace("_", "-")
+    if not group or len(group) > 64 or not all(ch.isalnum() or ch == "-" for ch in group):
+        return None
+    return group
+
+
+def parse_plugin_icon(
+    plugin_dir: Path,
+    *,
+    asset_prefix: str | None = None,
+) -> str | None:
+    """Return an icon value, resolving an existing package-relative image path."""
     try:
         data = _read_plugin_yaml(plugin_dir)
     except Exception:
@@ -169,6 +188,23 @@ def parse_plugin_icon(plugin_dir: Path) -> str | None:
     icon = str(raw).strip()
     if not icon or len(icon) > 2048:
         return None
+    if icon.startswith(("http://", "https://", "/api/", "data:image/")) or icon.startswith("//"):
+        return icon
+    cleaned = icon.lstrip("/").replace("\\", "/")
+    if (
+        cleaned
+        and ".." not in cleaned.split("/")
+        and Path(cleaned).suffix.lower() in _ICON_FILE_SUFFIXES
+    ):
+        target = (plugin_dir / cleaned).resolve()
+        try:
+            target.relative_to(plugin_dir.resolve())
+        except ValueError:
+            return icon
+        if target.is_file():
+            plugin_id = str(data.get("id") or plugin_dir.name).strip() or plugin_dir.name
+            prefix = (asset_prefix or f"/api/plugins/{plugin_id}/ui").rstrip("/")
+            return f"{prefix}/{cleaned}"
     return icon
 
 
@@ -316,7 +352,7 @@ class PluginManager:
                     "kind": manifest.kind,
                     "description": manifest.description,
                     "icon": parse_plugin_icon(plugin_dir),
-                    "requires": parse_plugin_requires(plugin_dir),
+                    "group": parse_plugin_group(plugin_dir),
                     "path": str(plugin_dir),
                     "loaded": loaded is not None,
                     "enabled": enabled_map.get(manifest.id, True),
@@ -373,6 +409,38 @@ class PluginManager:
             if item.get("id") == plugin_id:
                 return item
         return {"id": plugin_id, "enabled": enabled}
+
+    def market_plugin_dir(self, plugin_id: str) -> Path | None:
+        """Return a shipped plugin directory for market-only asset requests."""
+        cleaned = plugin_id.strip()
+        if not cleaned or any(part in cleaned for part in ("/", "\\", "..")):
+            return None
+        from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
+
+        dest = default_bundled_plugins_root() / cleaned
+        if dest.is_dir() and (dest / "plugin.yaml").is_file():
+            return dest
+        return None
+
+    def resolve_market_ui_file(self, plugin_id: str, rel_path: str) -> Path:
+        """Resolve a shipped image asset without exposing arbitrary package files."""
+        plugin_dir = self.market_plugin_dir(plugin_id)
+        cleaned = rel_path.strip().lstrip("/").replace("\\", "/")
+        if (
+            plugin_dir is None
+            or not cleaned
+            or any(part in {"", ".", ".."} for part in cleaned.split("/"))
+            or Path(cleaned).suffix.lower() not in _MARKET_ASSET_SUFFIXES
+        ):
+            raise OctopError(ErrorCode.NOT_FOUND, "invalid marketplace asset path")
+        target = (plugin_dir / cleaned).resolve()
+        try:
+            target.relative_to(plugin_dir.resolve())
+        except ValueError as exc:
+            raise OctopError(ErrorCode.NOT_FOUND, "invalid marketplace asset path") from exc
+        if not target.is_file():
+            raise OctopError(ErrorCode.NOT_FOUND, "marketplace asset not found")
+        return target
 
     def plugin_dir(self, plugin_id: str) -> Path | None:
         """Return the on-disk plugin directory when it exists."""

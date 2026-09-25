@@ -20,6 +20,7 @@ import userEvent from "@testing-library/user-event";
 import type { OctopUser } from "../../../api/modules/auth";
 import type { OctopAgent } from "../../../context/AgentContext";
 import zh from "../../../locales/zh.json";
+import type { PermissionCatalogItem } from "../../../components/PermissionPicker";
 
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 
@@ -140,13 +141,15 @@ const EXPERT = agent("assistant", "agent", 1);
 const FEATURE = agent("weekly-report", "feature", 1);
 
 let agents: OctopAgent[] = [];
+let permissionCatalog: PermissionCatalogItem[] = [];
 
 beforeEach(() => {
+  permissionCatalog = [];
   requestMock.mockReset();
   requestMock.mockImplementation(async (url: string): Promise<unknown> => {
     if (url === "/users") return USERS;
     if (url === "/agents?scope=all") return agents;
-    if (url === "/users/permissions") return [];
+    if (url === "/users/permissions") return permissionCatalog;
     if (url === "/org-units") return { units: [] };
     if (url === "/filesystem/defaults") {
       return {
@@ -317,5 +320,30 @@ describe("Admin → Users org-unit requirements", () => {
     expect(
       formQueries.getByRole("combobox", { name: "所属组织单元" }),
     ).toHaveAttribute("aria-required", "true");
+  });
+});
+
+describe("Admin → Users team permissions", () => {
+  it("offers Teams in the new-user form without granting it by default", async () => {
+    permissionCatalog = [
+      { key: "experts", category: "settings", label: "专家", can_grant: true },
+      { key: "teams", category: "settings", label: "团队", can_grant: true },
+    ];
+    renderPanel();
+    await userEvent.click(
+      await screen.findByRole("button", { name: "新建用户" }),
+    );
+
+    const drawer = within(screen.getByRole("dialog", { name: "新建用户" }));
+    const experts = drawer.getByRole("button", { name: "专家" });
+    const teams = drawer.getByRole("button", { name: "团队" });
+    expect(experts).toHaveAttribute("aria-pressed", "true");
+    expect(teams).toHaveAttribute("aria-pressed", "false");
+
+    await userEvent.click(teams);
+    expect(teams).toHaveAttribute("aria-pressed", "true");
+    await userEvent.click(experts);
+    expect(experts).toHaveAttribute("aria-pressed", "false");
+    expect(teams).toHaveAttribute("aria-pressed", "false");
   });
 });

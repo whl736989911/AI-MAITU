@@ -330,10 +330,29 @@ async def cmd_model(d: SlashDispatcher, cmd: SlashCommand, ctx: SlashCtx, sink: 
     await sink.text(tr("model.set", lang, model=name))
 
 
+async def cmd_mode(d: SlashDispatcher, cmd: SlashCommand, ctx: SlashCtx, sink: SlashSink) -> None:
+    """Read or set the sticky Ask / Plan / Craft mode for this thread."""
+    lang = lang_of(ctx)
+    tid = await ensure_thread_id(ctx)
+    selected = cmd.args.strip().lower()
+    row = ctx.thread_registry.get_thread(tid)
+    if selected:
+        if selected not in ("ask", "plan", "craft"):
+            await sink.text(tr("mode.usage", lang))
+            return
+        ctx.thread_registry.update_composer(thread_id=tid, conversation_mode=selected)
+    else:
+        selected = getattr(row, "conversation_mode", None) or "craft"
+    if hasattr(sink, "action"):
+        await sink.action("set_conversation_mode", mode=selected)
+    await sink.text(tr("mode.current", lang, mode=selected))
+
+
 COMPOSITE_HANDLERS: dict[str, GatewayHandler] = {
     "compact": cmd_compact,
     "history": cmd_history,
     "status": cmd_status,
     "model": cmd_model,
     "models": cmd_model,
+    "mode": cmd_mode,
 }

@@ -151,6 +151,12 @@ destination synchronized after the request completes.
 | `GET /agents/{id}/chat/welcome` | agent access | `{welcome_message, quick_prompts, task_examples}`; `task_examples` is `null` when the workspace field is absent |
 | `POST /agents/{id}/chat/polish` | owner | body `{text, default_model?}` → `{text}` (one-shot prompt refinement) |
 | `POST /agents/{id}/chat/hitl/resume` | owner | body `{thread_id, decisions: [...]}` → SSE chunk stream; finishes with `{"type":"done"}` |
+| `PATCH /agents/{id}/threads/{thread_id}` | thread owner | persist `conversation_mode: "ask" \| "plan" \| "craft"` and/or `hitl_policy: {mode: "ask" \| "allow_all" \| "allow_tools", tools?: string[]}` on the thread |
+
+Dashboard `user_turn` frames may carry `conversation_mode` and `hitl_policy` to
+apply a per-turn change. Ask is read-only, Plan writes plans under `plans/*.md`,
+and Craft enables ordinary tools. HITL bypass is scoped to that thread;
+`ask_user_question` still requires interaction even under `allow_all`.
 
 ### Feature runs over the chat socket
 
@@ -304,9 +310,32 @@ see [Personas](./personas.md).
 | `GET`    | `/experts/{expert_id}` | user | full expert template (SOUL.md, skills, files, `task_examples`) |
 | `POST`   | `/agents/from-expert/{expert_id}` | user | body `{name, locale?, ...}` → `201` |
 
+Create-from-expert also accepts `file_overrides: [{name, content}]`,
+`omit_files: string[]`, `hub_skills: [{skill_name, ...}]`, and
+`copy_skills: [{agent_id, slug}]`. Overrides are applied to the new
+agent's workspace after its bundled template is seeded.
+
 Bundled experts live in `src/octop/infra/agents/experts/library/`
 (en/zh divisions); the catalog is locale-aware via
 `Accept-Language` / user preference.
+
+## Teams
+
+A team is a host agent (`kind = 'team'`) with a workspace roster in
+`.octop/manifest.json`. The host delegates to at least two enabled,
+accessible expert agents. Team management requires both the independent `teams`
+permission and effective `experts` permission; a teams grant is ineffective
+when experts is absent or explicitly denied. Individual team reads and writes
+also require ownership (or admin).
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/teams` | teams + experts | teams owned by the caller |
+| `GET` | `/teams/template` | teams + experts | packaged host Markdown files (`[{name, content}]`) |
+| `POST` | `/teams` | teams + experts | body `{name, member_ids, description?, default_model?, welcome_message?}` → `201`; members must be accessible experts |
+| `GET` | `/teams/{team_id}` | teams + experts + owner | host metadata and visible roster (`member_ids`, `members`) |
+| `PATCH` | `/teams/{team_id}` | teams + experts + owner | replace `member_ids` or update host metadata; busy members cannot be removed |
+| `DELETE` | `/teams/{team_id}` | teams + experts + owner | `204`; refused while a member has an in-flight job |
 
 ## Feature workflow
 

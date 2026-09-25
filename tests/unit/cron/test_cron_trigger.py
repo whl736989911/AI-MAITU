@@ -115,3 +115,27 @@ def test_malformed_cron_raises():
 def test_cron_rejects_invalid_weekday(weekday: str):
     with pytest.raises(OctopError):
         build_trigger(f"cron:0 9 * * {weekday}")
+
+
+@pytest.mark.parametrize("spec", ["interval:0", "interval:-5"])
+def test_interval_rejects_non_positive_seconds(spec: str) -> None:
+    with pytest.raises(OctopError, match="positive integer"):
+        build_trigger(spec)
+
+
+def test_cron_trigger_uses_requested_timezone() -> None:
+    trigger = build_trigger("cron:0 9 * * *", timezone="America/New_York")
+    assert isinstance(trigger, CronTrigger)
+    assert str(trigger.timezone) == "America/New_York"
+    assert trigger.get_next_fire_time(None, dt.datetime(2026, 1, 1, tzinfo=dt.UTC)) == dt.datetime(
+        2026, 1, 1, 14, 0, tzinfo=dt.UTC
+    )
+
+
+def test_naive_date_trigger_uses_requested_timezone() -> None:
+    trigger = build_trigger("date:2026-12-31T09:00:00", timezone="Asia/Shanghai")
+    assert isinstance(trigger, DateTrigger)
+    assert (trigger.run_date.hour, trigger.run_date.utcoffset()) == (
+        9,
+        dt.timedelta(hours=8),
+    )

@@ -11,6 +11,7 @@ interface ACPCardProps {
   config: ACPRunnerConfig;
   isHover: boolean;
   toggleLoading?: boolean;
+  interactionDisabled?: boolean;
   /**
    * Runner definitions are a system-administrator write (design §4.4): when
    * false the card is information only — no enable switch, and a click does
@@ -33,6 +34,7 @@ export function ACPCard({
   isHover,
   toggleLoading,
   editable = true,
+  interactionDisabled = false,
   onClick,
   onMouseEnter,
   onMouseLeave,
@@ -49,17 +51,28 @@ export function ACPCard({
       });
   const configured = isConfigured(config);
   const icon = runnerIcon(runnerKey);
-
+  const switchDisabled =
+    (interactionDisabled && !config.enabled) ||
+    (!configured && !config.enabled);
   const cardClass = [
     styles.channelCard,
     config.enabled ? styles.enabled : styles.normal,
-    editable && isHover ? styles.hover : "",
+    editable && isHover && !interactionDisabled ? styles.hover : "",
     editable ? "" : acpStyles.readOnly,
+    interactionDisabled ? acpStyles.runnerCardDisabled : "",
   ]
     .filter(Boolean)
     .join(" ");
 
   const renderStatusBadge = () => {
+    if (interactionDisabled) {
+      return (
+        <span className={`${styles.statusBadge} ${styles.statusInactive}`}>
+          <Plug size={14} />
+          {t("acp.runnerUnavailable")}
+        </span>
+      );
+    }
     if (config.enabled) {
       return (
         <span className={`${styles.statusBadge} ${styles.statusConnected}`}>
@@ -99,7 +112,9 @@ export function ACPCard({
           <div onClick={(e) => e.stopPropagation()}>
             <Tooltip
               title={
-                !configured && !config.enabled
+                interactionDisabled && !config.enabled
+                  ? t("acp.outboundBlockedTooltip")
+                  : !configured && !config.enabled
                   ? t("acp.clickCardToConfigure")
                   : undefined
               }
@@ -108,7 +123,7 @@ export function ACPCard({
                 size="small"
                 checked={config.enabled}
                 loading={toggleLoading}
-                disabled={!configured && !config.enabled}
+                disabled={switchDisabled}
                 onChange={(checked) => onToggleEnabled(runnerKey, checked)}
               />
             </Tooltip>

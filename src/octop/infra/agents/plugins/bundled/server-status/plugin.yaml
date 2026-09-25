@@ -1,10 +1,11 @@
 id: server-status
-version: 0.2.0
+version: 0.2.2
 name: 服务器状态
 description: 在聊天中展示当前服务器的操作系统、内核与 CPU / 内存 / 磁盘负载
 name_en: "Server Status"
 description_en: "Show this server's OS, kernel and CPU / memory / disk load in chat"
-icon: "🖥️"
+icon: icon.svg
+group: ops
 kind: tool
 entry: main.py
 requires:

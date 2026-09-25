@@ -175,6 +175,17 @@ def call_memory_rpc(
             server=server,
             capability=capability,
         )
+    runtime = server.app_runtime
+    coordinator = runtime.agent_registry.memory_slim if runtime is not None else None
+    if coordinator is not None:
+        status = coordinator.status(agent_id)
+        if isinstance(status, dict) and status.get("phase") in {
+            "backing_up",
+            "deduplicating",
+            "compacting",
+        }:
+            # Avoid synchronous dashboard writes waiting on the maintenance SQLite lock.
+            raise OctopError.localized(ErrorCode.AGENT_BUSY)
     _memory, bridge = _open_memory_for_agent(server, agent_id)
     payload = {
         "jsonrpc": "2.0",

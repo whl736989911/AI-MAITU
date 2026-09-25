@@ -1589,3 +1589,92 @@ def test_refresh_peer_entry_clears_empty_cards(manager: AgentManager) -> None:
     entry.metadata = {"quick_prompts": [{"title": "old"}]}
     manager._refresh_peer_entry(entry)
     assert "quick_prompts" not in entry.metadata
+
+
+@pytest.mark.asyncio
+async def test_stream_and_resume_hitl_serialize_per_thread(
+    manager: AgentManager,
+) -> None:
+    entered_turn = asyncio.Event()
+    entered_resume = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+    peak = 0
+
+    async def _enter(entered: asyncio.Event, content: str) -> AsyncIterator[Any]:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        entered.set()
+        await release.wait()
+        active -= 1
+        yield {"type": "token", "content": content}
+
+    async def _stream(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+        async for chunk in _enter(entered_turn, "turn"):
+            yield chunk
+
+    async def _resume(*_args: Any, **_kwargs: Any) -> AsyncIterator[Any]:
+        async for chunk in _enter(entered_resume, "resume"):
+            yield chunk
+
+    manager._harness_manager = MagicMock(stream=_stream, resume_hitl=_resume)
+    turn = asyncio.create_task(_collect_async(manager.stream("agt", {"thread_id": "thr1"})))
+    await entered_turn.wait()
+    resume = asyncio.create_task(
+        _collect_async(manager.resume_hitl("agt", "thr1", [{"type": "approve"}]))
+    )
+    await asyncio.sleep(0)
+    assert not entered_resume.is_set()
+    release.set()
+    await turn
+    await resume
+    assert peak == 1
+
+
+@pytest.mark.asyncio
+async def test_config_update_preserves_workspace_but_internal_persist_can_move_it(
+    manager: AgentManager,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from octop.infra.agents.manager import AgentCreateSpec
+
+    row = await manager.create(AgentCreateSpec(name="workspace-pinned"), defer_bootstrap=True)
+    monkeypatch.setattr(manager, "_schedule_reload", lambda _aid: None)
+    scoped = str(manager.paths.root / "sandbox-root" / "ws" / row.agent_id)
+    manager._repos.agent_repo.update_config(
+        agent_id=row.agent_id,
+        config_json=json.dumps({**manager.get_config(row.agent_id), "workspace_dir": scoped}),
+    )
+
+    await manager.update_config_json(row.agent_id, json.dumps({"foo": 1}))
+    assert manager.get_config(row.agent_id)["workspace_dir"] == scoped
+    assert manager.resolve_workspace_dir(row.agent_id) == Path(scoped)
+
+    cfg = manager.get_config(row.agent_id)
+    internal_path = str(manager.paths.root / "internal-ws" / row.agent_id)
+    cfg["workspace_dir"] = internal_path
+    manager.persist_harness_config(row.agent_id, cfg)
+    assert manager.get_config(row.agent_id)["workspace_dir"] == internal_path
+
+
+def test_acp_outbound_is_blocked_for_scoped_or_remote_backend(
+    manager: AgentManager,
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    scoped_root = tmp_path / "project"
+
+    assert manager._backend_blocks_acp_outbound(
+        {"type": "filesystem", "root_dir": str(scoped_root)},
+        workspace_dir=workspace,
+    )
+    assert manager._backend_blocks_acp_outbound({"type": "opensandbox"}, workspace_dir=workspace)
+    assert not manager._backend_blocks_acp_outbound(
+        {"type": "local_shell", "root_dir": "/"},
+        workspace_dir=workspace,
+    )
+    assert not manager._backend_blocks_acp_outbound(
+        {"type": "filesystem", "root_dir": str(workspace)},
+        workspace_dir=workspace,
+    )

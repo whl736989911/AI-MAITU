@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { App, Button, Empty, Form, Switch } from "antd";
+import { Alert, App, Button, Empty, Form, Switch, Tooltip } from "antd";
 
 import { useTranslation } from "react-i18next";
 import PageShell from "../../../layouts/PageShell";
@@ -11,6 +11,7 @@ import {
   type ACPRunnerConfig,
 } from "../../../api/types/acp";
 import { useAgent } from "../../../context/AgentContext";
+import { blocksAcpOutboundFromConfig } from "../../Experts/components/agentBackendForm";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { isSystemAdmin } from "../../../utils/permissions";
 import { ACPCard } from "./components/ACPCard";
@@ -29,7 +30,7 @@ const EMPTY_RUNNERS: Record<string, ACPRunnerConfig> = {};
 export function ACPPanel() {
   const { t } = useTranslation();
   const { modal, message } = App.useApp();
-  const { activeAgentId } = useAgent();
+  const { activeAgentId, agents } = useAgent();
   /**
    * Global runner definitions are a system-administrator write (design §4.4):
    * the backend gates ``PUT /api/acp`` on the admin role *and* the ``acp`` key.
@@ -50,6 +51,11 @@ export function ACPPanel() {
   const [isCreateMode, setIsCreateMode] = useState(false);
   const [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  const activeAgent = useMemo(
+    () => agents.find((agent) => agent.agent_id === activeAgentId) ?? null,
+    [agents, activeAgentId],
+  );
+  const outboundBlocked = blocksAcpOutboundFromConfig(activeAgent?.config);
   const activeAgentIdRef = useRef(activeAgentId);
 
   useEffect(() => {
@@ -153,11 +159,10 @@ export function ACPPanel() {
   );
 
   const handleToolToggle = async (checked: boolean) => {
-    const agentId = activeAgentIdRef.current;
-    if (!agentId || toolLoading) return;
+    if (!activeAgentId || toolLoading || (checked && outboundBlocked)) return;
     setToolToggleLoading(true);
     try {
-      await persistToolEnabled(agentId, checked);
+      await persistToolEnabled(activeAgentId, checked);
       message.success(t("acp.configSaved"));
     } catch {
       message.error(t("acp.configFailed"));
@@ -167,7 +172,7 @@ export function ACPPanel() {
   };
 
   const handleToggleEnabled = async (runnerKey: string, checked: boolean) => {
-    if (runnersLoading) return;
+    if (runnersLoading || (outboundBlocked && checked)) return;
     const runner = runners[runnerKey];
     if (!runner) return;
     if (!runner.command?.trim() && checked) {
@@ -260,13 +265,23 @@ export function ACPPanel() {
   };
 
   const toolSwitch = (
-    <Switch
-      key={activeAgentId ?? "none"}
-      checked={toolEnabled}
-      loading={toolLoading || toolToggleLoading}
-      disabled={!activeAgentId || toolLoading}
-      onChange={handleToolToggle}
-    />
+    <Tooltip
+      title={
+        activeAgentId && outboundBlocked && !toolEnabled
+          ? t("acp.outboundBlockedTooltip")
+          : undefined
+      }
+    >
+      <Switch
+        key={activeAgentId ?? "none"}
+        checked={toolEnabled}
+        loading={toolLoading || toolToggleLoading}
+        disabled={
+          !activeAgentId || toolLoading || (outboundBlocked && !toolEnabled)
+        }
+        onChange={handleToolToggle}
+      />
+    </Tooltip>
   );
 
   return (
@@ -285,6 +300,14 @@ export function ACPPanel() {
           </Button>
         ) : null}
       </div>
+      {activeAgentId && outboundBlocked ? (
+        <Alert
+          type="info"
+          showIcon
+          className={styles.outboundBlockedAlert}
+          message={t("acp.outboundBlockedHint")}
+        />
+      ) : null}
 
       {runnersLoading && cards.length === 0 ? (
         <CardSkeleton count={4} />
@@ -297,6 +320,7 @@ export function ACPPanel() {
               config={cfg}
               isHover={hoverKey === key}
               toggleLoading={toggleLoadingKey === key}
+              interactionDisabled={outboundBlocked}
               editable={canEditRunners}
               onClick={() => openEdit(key)}
               onMouseEnter={() => setHoverKey(key)}

@@ -35,7 +35,6 @@ export default function ExpertPickerPopover({
   const currentUser = useCurrentUser();
   const access = emptyAgentAccessFor(currentUser);
 
-
   const filterFn = useCallback(
     (agent: ChatAgentOption, query: string) =>
       agent.name.toLowerCase().includes(query) ||
@@ -89,8 +88,8 @@ export default function ExpertPickerPopover({
               access === "features"
                 ? "chat.featurePickerManage"
                 : access === "both"
-                  ? "chat.agentPickerManage"
-                  : "chat.expertPickerManage",
+                ? "chat.agentPickerManage"
+                : "chat.expertPickerManage",
             )
       }
       onFooterClick={() => {

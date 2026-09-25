@@ -119,6 +119,15 @@ class SessionRepo:
             ).fetchone()
         return SessionRow.from_row(r) if r else None
 
+    def list_by_thread(self, thread_id: str) -> list[SessionRow]:
+        """Return every session currently bound to a thread."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM sessions WHERE thread_id = ? ORDER BY updated_at DESC",
+                (thread_id,),
+            ).fetchall()
+        return [SessionRow.from_row(r) for r in rows]
+
     def upsert(
         self,
         *,
@@ -183,6 +192,11 @@ class SessionRepo:
                 "UPDATE sessions SET agent_id = ?, updated_at = ? WHERE session_key = ?",
                 (agent_id, now_ts(), session_key),
             )
+
+    def delete_for_thread(self, thread_id: str) -> None:
+        """Remove session bindings when their thread is deleted."""
+        with self._db.transaction() as conn:
+            conn.execute("DELETE FROM sessions WHERE thread_id = ?", (thread_id,))
 
     def increment_unread(self, session_key: str, *, delta: int = 1) -> None:
         with self._db.transaction() as conn:

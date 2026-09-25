@@ -51,6 +51,7 @@ import { isFileToolName } from "./constants";
 import { browserApi } from "../../api/modules/browser";
 import { octopThreadsApi } from "../../api/modules/octopThreads";
 import type { TokenUsage } from "../../api/types";
+import type { HitlSessionPolicy } from "../../api/modules/octopThreads";
 import type { ChatAttachment } from "./hooks/useChat";
 import MessageList from "./components/MessageList";
 import ChatInput, { type ChatInputHandle } from "./components/ChatInput";
@@ -67,6 +68,7 @@ import {
   selectEnabledExperts,
   projectChatAgentOption,
 } from "../../context/AgentContext";
+import type { ConversationMode } from "./utils/conversationMode";
 import { isFeatureAgent } from "../../utils/agentKind";
 import { useLayoutMode } from "../../context/LayoutModeContext";
 import { useBrowserSessionState } from "../../hooks/useBrowserSessionState";
@@ -75,6 +77,7 @@ import {
   chatSkillCatalogAgentId,
   isSharedExpertViewer,
 } from "../../utils/sharedExpert";
+import PlanReadyCard from "./components/PlanReadyCard";
 import ChatDockPanels from "./components/ChatDockPanels";
 import { ChatFilePreviewProvider } from "./ChatFilePreviewContext";
 import { ChatAgentProfileProvider } from "./ChatAgentProfileContext";
@@ -297,8 +300,9 @@ function ChatPageInner() {
         return;
       }
       void fetchAndSyncSessionArtifacts(resolvedAgentId, key);
+      void fetchSessions(key);
     });
-  }, [activeThreadId, resolvedAgentId, t]);
+  }, [activeThreadId, resolvedAgentId, t, fetchSessions]);
 
   // Refresh thread artifacts after file-producing tools finish (mid-turn updates).
   useEffect(() => {
@@ -433,6 +437,42 @@ function ChatPageInner() {
   const composerSession = useMemo(
     () => sessions.find((session) => session.id === activeThreadId) ?? null,
     [sessions, activeThreadId],
+  );
+  const [conversationMode, setConversationMode] = useState<ConversationMode>(
+    composerSession?.conversationMode ?? "craft",
+  );
+  useEffect(() => {
+    setConversationMode(composerSession?.conversationMode ?? "craft");
+  }, [composerSession?.conversationMode, activeThreadId]);
+  const handleConversationModeChange = useCallback(
+    (mode: ConversationMode) => {
+      setConversationMode(mode);
+      if (resolvedAgentId && activeThreadId) {
+        void octopThreadsApi
+          .patch(resolvedAgentId, activeThreadId, { conversation_mode: mode })
+          .then(() => fetchSessions(activeThreadId))
+          .catch(() =>
+            setConversationMode(composerSession?.conversationMode ?? "craft"),
+          );
+      }
+    },
+    [
+      resolvedAgentId,
+      activeThreadId,
+      composerSession?.conversationMode,
+      fetchSessions,
+    ],
+  );
+  const hitlPolicy = composerSession?.hitlPolicy ?? { mode: "ask" as const };
+  const handleHitlPolicyChange = useCallback(
+    (policy: HitlSessionPolicy) => {
+      if (!resolvedAgentId || !activeThreadId) return;
+      void octopThreadsApi
+        .patch(resolvedAgentId, activeThreadId, { hitl_policy: policy })
+        .then(() => fetchSessions(activeThreadId))
+        .catch(() => undefined);
+    },
+    [resolvedAgentId, activeThreadId, fetchSessions],
   );
 
   const panelFilePaths = useMemo(() => {
@@ -569,6 +609,7 @@ function ChatPageInner() {
     selectedConnectors,
     selectedKnowledgeBaseIds,
     reasoningMode,
+    conversationMode,
     reasoningEffort,
     defaultModel: activeAgent?.default_model ?? null,
     sendMessage,
@@ -729,8 +770,16 @@ function ChatPageInner() {
       if (ev.action === "switch_agent" && ev.agent_id) {
         navigateToAgent(ev.agent_id);
       }
+      if (
+        ev.action === "set_conversation_mode" &&
+        (ev.mode === "ask" || ev.mode === "plan" || ev.mode === "craft")
+      ) {
+        setConversationMode(ev.mode);
+        if (resolvedAgentId && activeThreadId)
+          void fetchSessions(activeThreadId);
+      }
     });
-  }, [navigateToAgent]);
+  }, [navigateToAgent, resolvedAgentId, activeThreadId, fetchSessions]);
 
   const handlePromptClick = useCallback(
     (text: string) => {
@@ -1443,7 +1492,6 @@ function ChatPageInner() {
                 isStreaming ||
                 !agentChatReady ||
                 isPendingThread(activeThreadId ?? "") ||
-                Boolean(pendingAsk) ||
                 hasPendingHitlPause
               }
               isStreaming={isStreaming}
@@ -1451,6 +1499,21 @@ function ChatPageInner() {
                 wrappedHandleSend(text, attachments, { featureRun: payload })
               }
             />
+            {conversationMode === "plan" &&
+              composerSession?.pendingPlanPath &&
+              !isStreaming && (
+                <PlanReadyCard
+                  path={composerSession.pendingPlanPath}
+                  onExecute={() => {
+                    const path = composerSession.pendingPlanPath;
+                    setConversationMode("craft");
+                    wrappedHandleSend(`Please execute ${path}`, undefined, {
+                      conversationMode: "craft",
+                    });
+                  }}
+                  onKeepEditing={() => handleConversationModeChange("plan")}
+                />
+              )}
             <ChatInput
               ref={chatInputRef}
               onSend={wrappedHandleSend}
@@ -1487,6 +1550,10 @@ function ChatPageInner() {
               defaultModel={activeAgent?.default_model ?? null}
               contextUsedTokens={contextUsedTokens}
               contextMaxTokens={contextMaxTokens}
+              conversationMode={conversationMode}
+              onConversationModeChange={handleConversationModeChange}
+              hitlPolicy={hitlPolicy}
+              onHitlPolicyChange={handleHitlPolicyChange}
             />
           </div>
 

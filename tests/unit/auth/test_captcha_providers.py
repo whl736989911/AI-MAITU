@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
 from typing import Any
 
 import pytest
@@ -53,6 +56,7 @@ def test_list_providers_is_builtin_registration_order() -> None:
         "turnstile",
         "hcaptcha",
         "recaptcha-v3",
+        "geetest-v4",
     ]
 
 
@@ -163,4 +167,46 @@ def test_tencent_interpret_rejects_api_error_envelope() -> None:
         _tencent().interpret(
             {"Response": {"Error": {"Code": "UnauthorizedOperation", "Message": "nope"}}},
             min_score=0.5,
+        )
+
+
+@pytest.mark.parametrize("alias", ["geetest", "geetest4", "gt4"])
+def test_geetest_aliases_resolve(alias: str) -> None:
+    assert parse_slug(alias) == "geetest-v4"
+
+
+def test_geetest_builds_signed_validation_request() -> None:
+    provider = get_provider("geetest-v4")
+    assert provider is not None
+    fields = {
+        "lot_number": "lot-1",
+        "captcha_output": "output",
+        "pass_token": "pass",
+        "gen_time": "123456",
+    }
+    call = provider.verify_call(
+        site_key="captcha-id",
+        secret="captcha-key",
+        token=json.dumps(fields),
+        client_ip="192.0.2.1",
+    )
+    assert call.url == "https://gcaptcha4.geetest.com/validate?captcha_id=captcha-id"
+    assert call.data == {
+        **fields,
+        "sign_token": hmac.new(b"captcha-key", b"lot-1", digestmod=hashlib.sha256).hexdigest(),
+    }
+    provider.interpret({"result": "success"}, min_score=0.5)
+    with pytest.raises(OctopError):
+        provider.interpret({"result": "fail"}, min_score=0.5)
+
+
+def test_geetest_rejects_incomplete_challenge_before_request() -> None:
+    provider = get_provider("geetest-v4")
+    assert provider is not None
+    with pytest.raises(OctopError):
+        provider.verify_call(
+            site_key="captcha-id",
+            secret="captcha-key",
+            token='{"lot_number":"only-one-field"}',
+            client_ip="192.0.2.1",
         )

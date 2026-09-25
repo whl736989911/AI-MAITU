@@ -1808,6 +1808,14 @@ def _ensure_acl_permission_level(db: DatabasePool) -> None:
     _ensure_column(db, "resource_acl", "permission", "TEXT NOT NULL DEFAULT 'read'")
 
 
+def _ensure_thread_policy_columns(db: DatabasePool) -> None:
+    """Add the v36 per-thread conversation mode, plan, and approval policy."""
+    if not _table_exists(db, "threads"):
+        return
+    for column in ("conversation_mode", "pending_plan_path", "hitl_policy"):
+        _ensure_column(db, "threads", column, "TEXT")
+
+
 def _ensure_feature_overlay_schema(db: DatabasePool) -> None:
     """Create ``feature_user_overlays`` (schema v36) — one caller's own text.
 
@@ -2892,6 +2900,7 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_column(db, "users", "permissions", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_resource_acl_schema(db)
         _ensure_acl_permission_level(db)
+        _ensure_thread_policy_columns(db)
         _ensure_feature_overlay_schema(db)
         _ensure_feature_run_schema(db)
         _ensure_feature_change_schema(db)
@@ -3231,6 +3240,7 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         # ``036_acl_permission_level.sql`` is the readable record; SQLite boots
         # run the helpers, each of which applies its DDL only when it is missing.
         _ensure_acl_permission_level(db)
+        _ensure_thread_policy_columns(db)
         _ensure_feature_overlay_schema(db)
         _ensure_feature_run_schema(db)
         _ensure_feature_change_schema(db)
@@ -3289,6 +3299,7 @@ def run_migrations(db: DatabasePool) -> None:
                 # path equivalent to it (a clamp or a build that stamped 36
                 # without the DDL still converges).
                 _ensure_acl_permission_level(db)
+                _ensure_thread_policy_columns(db)
                 _ensure_feature_overlay_schema(db)
                 _ensure_feature_run_schema(db)
                 _ensure_feature_change_schema(db)
@@ -3310,6 +3321,7 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_org_units_schema(db)
     _ensure_resource_acl_schema(db)
     _ensure_acl_permission_level(db)
+    _ensure_thread_policy_columns(db)
     _ensure_feature_overlay_schema(db)
     _ensure_feature_run_schema(db)
     _ensure_feature_change_schema(db)

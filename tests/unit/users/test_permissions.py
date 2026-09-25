@@ -40,7 +40,7 @@ def test_catalog_has_no_empty_keys_and_no_deferred_dead_keys() -> None:
 
 def test_functional_modules_and_channel_types_are_catalogued() -> None:
     """The keys design §2.2 names, generated channel types included."""
-    for key in ("mbti", "experts", "features", "acp", "channel_feishu"):
+    for key in ("mbti", "experts", "teams", "features", "acp", "channel_feishu"):
         assert key in PERMISSIONS
     # experts and features are two independent keys, never one "agents" key.
     assert "agents" not in PERMISSIONS
@@ -58,6 +58,9 @@ def test_functional_modules_and_channel_types_are_catalogued() -> None:
     # does not: before the catalog its entry was open to nobody but an admin.
     for key in ("mbti", "experts", "features"):
         assert key in BASELINE_PERMISSIONS
+    assert "teams" in PERMISSIONS
+    assert PERMISSIONS["teams"].category == "settings"
+    assert "teams" not in BASELINE_PERMISSIONS
     assert "acp" not in BASELINE_PERMISSIONS
 
 
@@ -74,10 +77,10 @@ def test_user_has_permission_normal_hit_and_miss() -> None:
     assert user_has_permission(u, "unknown_key") is False
 
 
-def test_baseline_is_settings_group() -> None:
+def test_baseline_is_settings_group_except_new_teams_key() -> None:
     assert {
         key for key, p in PERMISSIONS.items() if p.category == "settings"
-    } == BASELINE_PERMISSIONS
+    } == BASELINE_PERMISSIONS | {"teams"}
     assert BASELINE_PERMISSIONS
     assert all(PERMISSIONS[k].category == "settings" for k in BASELINE_PERMISSIONS)
 
@@ -103,6 +106,7 @@ def test_categories_match_nav_groups() -> None:
         "knowledge_bases",
         "mbti",
         "experts",
+        "teams",
         "features",
         *CHANNEL_PERMISSION_KEYS,
     }

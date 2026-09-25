@@ -13,11 +13,11 @@ export const ALL_PERMISSIONS_KEY = "*";
 export type PermissionKeys = readonly string[] | "admin";
 
 export const PERM = {
-  /** The functional modules of design §2.2. Baseline keys: every signed-in
-   *  account holds them until an administrator edits it, so hiding a nav entry
-   *  or refusing a route here only ever affects an explicit deny. */
+  /** Functional modules exposed by the dashboard. Some are baseline keys;
+   *  non-baseline keys remain opt-in and are checked independently. */
   mbti: ["mbti"],
   experts: ["experts"],
+  teams: ["teams"],
   features: ["features"],
   channels: ["channels"],
   connectors: ["connectors"],
@@ -47,6 +47,7 @@ export const PERM = {
 export const NAV_PERMISSIONS = {
   features: PERM.features,
   experts: PERM.experts,
+  teams: PERM.teams,
   channels: PERM.channels,
   connectors: PERM.connectors,
   "skill-packages": PERM.skillPackages,
@@ -164,6 +165,9 @@ export function navAllowed(
   user: PermissionHolder | null | undefined,
   navKey: NavPermissionKey,
 ): boolean {
+  if (navKey === "teams") {
+    return userCan(user, "teams") && userCan(user, "experts");
+  }
   return canAccessKeys(user, NAV_PERMISSIONS[navKey]);
 }
 
@@ -192,18 +196,21 @@ export function userCanKey(
 }
 
 /**
- * Permissions that unlock a dashboard path (any-of).
+ * Permissions that unlock a dashboard path (any-of unless explicitly noted).
  * ``"admin"`` means role===admin only — the ``/admin/*`` fallback, for paths
  * without a module key. ``null`` means no special gate.
  */
 export function pathPermissionKeys(pathname: string): PermissionKeys | null {
-  // The two module surfaces of design §5.2. The nav entry and the route read
-  // the same key, so "hidden" and "refused" cannot disagree.
+  // The module nav entries and routes read the same keys. Teams additionally
+  // requires Experts, enforced by both navAllowed and canAccessPath.
   if (pathname === "/features" || pathname.startsWith("/features/")) {
     return PERM.features;
   }
   if (pathname === "/experts" || pathname.startsWith("/experts/")) {
     return PERM.experts;
+  }
+  if (pathname === "/teams" || pathname.startsWith("/teams/")) {
+    return PERM.teams;
   }
   if (pathname.startsWith("/admin/users") || pathname === "/admin/sso") {
     return PERM.usersPage;
@@ -318,6 +325,9 @@ export function canAccessPath(
   user: PermissionHolder | null | undefined,
   pathname: string,
 ): boolean {
+  if (pathname === "/teams" || pathname.startsWith("/teams/")) {
+    return userCan(user, "teams") && userCan(user, "experts");
+  }
   const req = pathPermissionKeys(pathname);
   if (req === null) return true;
   return canAccessKeys(user, req);

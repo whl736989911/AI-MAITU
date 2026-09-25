@@ -3282,9 +3282,7 @@ export default function KnowledgeBasesPage() {
               precision={0}
               value={maxDocumentsDraft}
               onChange={(value) =>
-                setMaxDocumentsDraft(
-                  typeof value === "number" ? value : 0,
-                )
+                setMaxDocumentsDraft(typeof value === "number" ? value : 0)
               }
               style={{ width: "100%", marginTop: 8 }}
             />

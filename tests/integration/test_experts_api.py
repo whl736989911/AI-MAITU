@@ -79,6 +79,49 @@ async def test_create_agent_from_expert(env: Any) -> None:
     assert detail_row.get("system_prompt") in (None, "")
 
 
+async def test_create_from_expert_applies_prompt_file_changes(env: Any) -> None:
+    client, server, auth = env
+    response = await client.post(
+        "/api/agents/from-expert/default",
+        headers=auth,
+        json={
+            "name": "custom-persona",
+            "file_overrides": [{"name": "SOUL.md", "content": "# Deliberate persona"}],
+            "omit_files": ["IDENTITY.md"],
+        },
+    )
+    assert response.status_code == 201, response.text
+    workspace = server.app_runtime.agent_registry.workspace_for_agent(response.json()["agent_id"])
+    assert await workspace.aread_text("SOUL.md") == "# Deliberate persona"
+    assert await workspace.aread_text("IDENTITY.md") is None
+
+
+async def test_create_from_expert_copies_owned_skill_files(env: Any) -> None:
+    client, server, auth = env
+    source = await client.post(
+        "/api/agents/from-expert/default",
+        headers=auth,
+        json={"name": "skill-source"},
+    )
+    assert source.status_code == 201, source.text
+    source_id = source.json()["agent_id"]
+    source_workspace = server.app_runtime.agent_registry.workspace_for_agent(source_id)
+    skill = b"---\nname: reviewer\n---\nReview documents carefully.\n"
+    await source_workspace.aupload_bytes("skills/reviewer/SKILL.md", skill)
+
+    copied = await client.post(
+        "/api/agents/from-expert/default",
+        headers=auth,
+        json={
+            "name": "skill-recipient",
+            "copy_skills": [{"agent_id": source_id, "slug": "reviewer"}],
+        },
+    )
+    assert copied.status_code == 201, copied.text
+    destination = server.app_runtime.agent_registry.workspace_for_agent(copied.json()["agent_id"])
+    assert await destination.aread_text("skills/reviewer/SKILL.md") == skill.decode()
+
+
 async def test_create_agent_from_expert_duplicate_name_409(env: Any) -> None:
     c, _srv, auth = env
     first = await c.post(

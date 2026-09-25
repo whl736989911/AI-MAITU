@@ -24,12 +24,14 @@ export default function Header({ onToggle, isMobile }: HeaderProps) {
   const mobileLogoSrc = wordmark(isDark);
 
   if (!isMobile) return null;
+  const safeTop = "env(safe-area-inset-top, 0px)";
 
   return (
     <AntHeader
       style={{
-        height: "var(--fn-header-height)",
-        padding: "0 12px",
+        height: `calc(var(--fn-header-height) + ${safeTop})`,
+        padding: `${safeTop} 12px 0`,
+        boxSizing: "border-box",
         display: "flex",
         alignItems: "center",
         justifyContent: "space-between",

@@ -82,3 +82,33 @@ def test_overlay_stdio_mcp_configs_applies_to_stdio_only() -> None:
 def test_search_env_changed_detects_tavily() -> None:
     assert search_env_changed({}, {"TAVILY_API_KEY": "x"}) is True
     assert search_env_changed({"FOO": "1"}, {"FOO": "2"}) is False
+
+
+def test_escaped_values_roundtrip() -> None:
+    values = {
+        "WINDOWS_PATH": r"C:\Users\me\AppData",
+        "QUOTED": 'say "hi"',
+        "TRAILING_SLASH": "ends\\",
+    }
+
+    assert parse_env_text(format_env_file(values)) == values
+    assert parse_env_text(format_env_file(parse_env_text(format_env_file(values)))) == values
+
+
+def test_multiline_values_roundtrip() -> None:
+    values = {
+        "PEM_KEY": "-----BEGIN KEY-----\nMIIB\n-----END KEY-----",
+        "CRLF": "line1\r\nline2",
+    }
+
+    assert parse_env_text(format_env_file(values)) == {
+        "PEM_KEY": "-----BEGIN KEY-----\nMIIB\n-----END KEY-----",
+        "CRLF": "line1\nline2",
+    }
+
+
+def test_inner_quote_does_not_consume_next_env_entry() -> None:
+    assert parse_env_text('MALFORMED="abc"def\nNEXT=1\n') == {
+        "MALFORMED": '"abc"def',
+        "NEXT": "1",
+    }

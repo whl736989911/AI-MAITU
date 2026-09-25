@@ -3,27 +3,44 @@ import { describe, expect, it } from "vitest";
 import {
   applyQqChannelSaveConfig,
   DEFAULT_QQ_GROUP_CONTEXT_CONFIG,
+  isValidDiscordSnowflakeList,
   normalizeQqGroupContextConfig,
+  parseDiscordSnowflakeIds,
   partitionChannelKeys,
 } from "./constants";
 
 describe("partitionChannelKeys", () => {
-  it("hides telegram until expanded unless already configured", () => {
+  it("hides telegram and Discord until expanded unless already configured", () => {
     expect(
-      partitionChannelKeys(["weixin", "telegram", "mqtt"], new Set()),
+      partitionChannelKeys(
+        ["weixin", "telegram", "discord", "mqtt"],
+        new Set(),
+      ),
     ).toEqual({
       featured: ["weixin", "mqtt"],
-      more: ["telegram"],
+      more: ["telegram", "discord"],
     });
     expect(
       partitionChannelKeys(
-        ["weixin", "telegram", "mqtt"],
-        new Set(["telegram"]),
+        ["weixin", "telegram", "discord", "mqtt"],
+        new Set(["discord"]),
       ),
     ).toEqual({
-      featured: ["weixin", "telegram", "mqtt"],
-      more: [],
+      featured: ["weixin", "discord", "mqtt"],
+      more: ["telegram"],
     });
+  });
+});
+
+describe("Discord snowflake IDs", () => {
+  it("validates and preserves IDs as decimal strings", () => {
+    const ids = parseDiscordSnowflakeIds(
+      "12345678901234567\n987654321098765432",
+    );
+    expect(ids).toEqual(["12345678901234567", "987654321098765432"]);
+    expect(ids[0]).toBe("12345678901234567");
+    expect(isValidDiscordSnowflakeList(ids)).toBe(true);
+    expect(isValidDiscordSnowflakeList("1234567890123456\nnope")).toBe(false);
   });
 });
 

@@ -33,6 +33,13 @@ from octop.infra.agents.experts.catalog import (
     preview_paths_from_expert_dir,
     read_text_file_contents,
 )
+from octop.infra.agents.experts.composer_files import (
+    ComposerApplyReport,
+    ComposerSkillCopy,
+    ComposerWorkspacePatch,
+    apply_composer_workspace_patch,
+    composer_plan_from_payload,
+)
 from octop.infra.agents.experts.market_creation import (
     SkillHubMarketAgentCreateOptions,
 )
@@ -99,6 +106,24 @@ _SAFE_MARKET_REASONS: dict[SkillHubMarketErrorKind, str] = {
 }
 
 
+class ComposerFileOverrideBody(BaseModel):
+    name: str
+    content: str = ""
+
+
+class ComposerHubSkillBody(BaseModel):
+    skill_name: str
+    display_name: str = ""
+    icon_url: str = ""
+    label: dict[str, str] | None = None
+    summary: dict[str, str] | None = None
+
+
+class ComposerCopySkillBody(BaseModel):
+    agent_id: str
+    slug: str
+
+
 class FromExpertBody(AgentRuntimeFields):
     name: str | None = None
     description: str | None = None
@@ -116,6 +141,10 @@ class FromExpertBody(AgentRuntimeFields):
     )
     welcome_message: str | None = None
     enable_trajectory: bool = True
+    file_overrides: list[ComposerFileOverrideBody] | None = None
+    omit_files: list[str] | None = None
+    hub_skills: list[ComposerHubSkillBody] | None = None
+    copy_skills: list[ComposerCopySkillBody] | None = None
 
 
 class PublishExpertBody(BaseModel):
@@ -152,6 +181,10 @@ class InstallPublishedExpertBody(AgentRuntimeFields):
     )
     welcome_message: str | None = None
     enable_trajectory: bool = True
+    file_overrides: list[ComposerFileOverrideBody] | None = None
+    omit_files: list[str] | None = None
+    hub_skills: list[ComposerHubSkillBody] | None = None
+    copy_skills: list[ComposerCopySkillBody] | None = None
 
 
 class LocalizedTextResponse(BaseModel):
@@ -190,6 +223,64 @@ class ExpertHubListResponse(BaseModel):
     scenes: list[str] = Field(default_factory=list)
 
 
+def _composer_plan_from_body(
+    body: FromExpertBody | InstallPublishedExpertBody,
+) -> tuple[ComposerWorkspacePatch, tuple[ComposerSkillCopy, ...]]:
+    return composer_plan_from_payload(
+        file_overrides=[item.model_dump() for item in (body.file_overrides or [])],
+        omit_files=body.omit_files,
+        hub_skills=[item.model_dump() for item in (body.hub_skills or [])],
+        copy_skills=[item.model_dump() for item in (body.copy_skills or [])],
+    )
+
+
+def _composer_apply(
+    body: FromExpertBody | InstallPublishedExpertBody,
+    *,
+    user: Any,
+    server: Any,
+) -> tuple[ComposerWorkspacePatch, tuple[tuple[str, Any], ...], ComposerApplyReport]:
+    patch, requested_copies = _composer_plan_from_body(body)
+    report = ComposerApplyReport()
+    copies: list[tuple[str, Any]] = []
+    seen: set[str] = set()
+    registry = server.app_runtime.agent_registry
+    for item in requested_copies:
+        if item.slug in seen:
+            continue
+        seen.add(item.slug)
+        try:
+            require_agent_owner_row(item.agent_id, user=user, as_user=None, server=server)
+        except OctopError:
+            report.copy_skill_errors.append(item.slug)
+            continue
+        source = registry.workspace_for_agent(item.agent_id)
+        if source is None:
+            report.copy_skill_errors.append(item.slug)
+            continue
+        copies.append((item.slug, source))
+    return patch, tuple(copies), report
+
+
+def _composer_initializer(
+    patch: ComposerWorkspacePatch,
+    copies: tuple[tuple[str, Any], ...],
+    report: ComposerApplyReport,
+) -> Any:
+    if patch.is_empty() and not copies:
+        return None
+
+    async def apply(_row: Any, workspace: Any) -> None:
+        await apply_composer_workspace_patch(
+            workspace,
+            patch,
+            copies=copies,
+            report=report,
+        )
+
+    return apply
+
+
 class MarketCreateSourceResponse(BaseModel):
     source: str
     kind: str
@@ -210,6 +301,8 @@ class MarketCreateResponse(BaseModel):
     icon_url: str | None = None
     color: str | None = None
     market: MarketCreateSourceResponse
+    hub_skill_errors: list[str] = Field(default_factory=list)
+    copy_skill_errors: list[str] = Field(default_factory=list)
     bootstrap_pending: bool
 
 
@@ -519,7 +612,8 @@ async def install_published_expert(
         knowledge_base_ids=body.knowledge_base_ids,
         mcp_servers=body.mcp_servers,
     )
-    return await install_published_expert_agent(
+    patch, copies, report = _composer_apply(body, user=user, server=server)
+    result = await install_published_expert_agent(
         services=server.services,
         registry=server.app_runtime.agent_registry,
         user=user,
@@ -538,8 +632,13 @@ async def install_published_expert(
             welcome_message=body.welcome_message,
             runtime_config=runtime_field_updates(body, exclude_unset=True),
             enable_trajectory=body.enable_trajectory,
+            workspace_patch=patch,
+            composer_copies=copies,
+            composer_report=report,
         ),
     )
+    result.update(report.as_api_fields())
+    return result
 
 
 @router.get("/experts")
@@ -617,6 +716,7 @@ async def install_expert_hub_item(
     )
     if package_ids:
         server.app_runtime.agent_registry.assert_backend_supports_skill_packages(body.backend)
+    patch, copies, report = _composer_apply(body, user=user, server=server)
     kb_ids, servers = _validated_session_defaults(
         server.app_runtime.agent_registry,
         user.id,
@@ -636,6 +736,9 @@ async def install_expert_hub_item(
                 backend=body.backend,
                 color=body.color,
                 agent_id=body.agent_id,
+                workspace_patch=patch,
+                composer_copies=copies,
+                composer_report=report,
                 welcome_message=body.welcome_message,
                 skill_package_ids=package_ids,
                 knowledge_base_ids=kb_ids,
@@ -666,6 +769,7 @@ async def install_expert_hub_item(
             "slug": result.slug,
             "welcome_enrichment": result.welcome_enrichment,
         },
+        **report.as_api_fields(),
         "bootstrap_pending": not server.app_runtime.agent_registry.is_bootstrapped(row.agent_id),
     }
 
@@ -743,7 +847,12 @@ async def create_agent_from_expert(
         knowledge_base_ids=kb_ids,
         mcp_servers=servers,
     )
-    row = await server.app_runtime.agent_registry.create(spec, defer_bootstrap=True)
+    patch, copies, report = _composer_apply(body, user=user, server=server)
+    row = await server.app_runtime.agent_registry.create(
+        spec,
+        defer_bootstrap=True,
+        workspace_initializer=_composer_initializer(patch, copies, report),
+    )
     return {
         "id": row.id,
         "agent_id": row.agent_id,
@@ -757,4 +866,5 @@ async def create_agent_from_expert(
         "icon_url": row.icon_url,
         "color": row.color or expert.summary.color,
         "bootstrap_pending": not server.app_runtime.agent_registry.is_bootstrapped(row.agent_id),
+        **report.as_api_fields(),
     }

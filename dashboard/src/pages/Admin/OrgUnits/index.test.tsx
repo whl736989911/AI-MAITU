@@ -229,15 +229,11 @@ describe("Admin → Org units: department module grants", () => {
     expect(
       await screen.findByRole("button", { name: "新建部门" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "编辑" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "编辑" })).toBeInTheDocument();
     expect(
       screen.getByRole("button", { name: "模块授权" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "删除" }),
-    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
   });
 
   it("shows no grants control to an actor with no department to authorize", async () => {

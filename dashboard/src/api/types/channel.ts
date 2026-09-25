@@ -5,8 +5,11 @@ export interface BaseChannelConfig {
 
 export interface DiscordConfig extends BaseChannelConfig {
   bot_token: string;
-  http_proxy: string;
-  http_proxy_auth: string;
+  http_proxy?: string;
+  http_proxy_auth?: string;
+  allow_all_channels: boolean;
+  allowed_channel_ids: string[];
+  allowed_user_ids: string[];
 }
 
 export interface DingTalkConfig extends BaseChannelConfig {

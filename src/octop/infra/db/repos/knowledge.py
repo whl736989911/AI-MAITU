@@ -639,10 +639,11 @@ class KnowledgeRepo:
             return []
         with self._db.transaction() as conn:
             if document.is_dir:
+                prefix = f"{document.path}/"
                 rows = conn.execute(
                     "SELECT * FROM knowledge_documents WHERE kb_id = ? AND "
-                    "(path = ? OR path LIKE ?)",
-                    (document.kb_id, document.path, f"{document.path}/%"),
+                    "(path = ? OR substr(path, 1, ?) = ?)",
+                    (document.kb_id, document.path, len(prefix), prefix),
                 ).fetchall()
             else:
                 rows = conn.execute(

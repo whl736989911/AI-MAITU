@@ -22,6 +22,13 @@
 
 ALTER TABLE resource_acl ADD COLUMN permission TEXT NOT NULL DEFAULT 'read';
 
+-- Sticky Ask/Plan/Craft mode, pending plan, and per-thread HITL approval
+-- policy. SQLite applies these through migrate.py::_ensure_thread_policy_columns
+-- so a database already stamped v36 is repaired on its next boot.
+ALTER TABLE threads ADD COLUMN conversation_mode TEXT;
+ALTER TABLE threads ADD COLUMN pending_plan_path TEXT;
+ALTER TABLE threads ADD COLUMN hitl_policy TEXT;
+
 -- One caller's own standing text on one feature's workflow (schema v36).
 --
 -- A feature's workflow is declared once, by its author, for everybody; this is

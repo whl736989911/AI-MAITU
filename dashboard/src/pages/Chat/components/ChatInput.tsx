@@ -54,6 +54,8 @@ import type {
   EnqueueChatItemInput,
   QueuedChatItem,
 } from "../hooks/useChatMessageQueue";
+import type { ConversationMode } from "../utils/conversationMode";
+import type { HitlSessionPolicy } from "../../../api/modules/octopThreads";
 import styles from "../index.module.less";
 
 /** Imperative handle exposed via ref for programmatic text injection. */
@@ -87,6 +89,10 @@ interface ChatInputProps {
   availableModels?: ResolvedModel[];
   selectedModel?: string | null;
   onModelChange?: (model: string | null) => void;
+  conversationMode?: ConversationMode;
+  onConversationModeChange?: (mode: ConversationMode) => void;
+  hitlPolicy?: HitlSessionPolicy;
+  onHitlPolicyChange?: (policy: HitlSessionPolicy) => void;
   reasoningMode?: "auto" | "enabled" | "disabled";
   reasoningEffort?: string | null;
   onReasoningChange?: (
@@ -144,6 +150,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       availableModels,
       selectedModel,
       onModelChange,
+      conversationMode = "craft",
+      onConversationModeChange,
+      hitlPolicy = { mode: "ask" },
+      onHitlPolicyChange,
       reasoningMode = "auto",
       reasoningEffort = null,
       onReasoningChange,
@@ -314,7 +324,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       userHasEditedRef.current = false;
       ignoreInitialTextRef.current = null;
       prevInitialTextRef.current = "";
-      setText(initialText || readInputDraft(agentId, threadId));
+      setText(readInputDraft(agentId, threadId));
       const pendingAttachments = consumePendingPrefillAttachments();
       if (pendingAttachments.length > 0) {
         restoreAttachments(pendingAttachments);
@@ -849,6 +859,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
             availableModels={availableModels}
             selectedModel={selectedModel}
             onModelChange={onModelChange}
+            conversationMode={conversationMode}
+            onConversationModeChange={onConversationModeChange}
+            hitlPolicy={hitlPolicy}
+            onHitlPolicyChange={onHitlPolicyChange}
             reasoningMode={reasoningMode}
             reasoningEffort={reasoningEffort}
             onReasoningChange={onReasoningChange}

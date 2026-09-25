@@ -122,6 +122,68 @@ describe("CaptchaField", () => {
       delete (window as unknown as Record<string, unknown>).TencentCaptcha;
     }
   });
+  it("submits the GeeTest v4 validation fields as a JSON token", async () => {
+    const ref = createRef<CaptchaFieldHandle>();
+    let onSuccess: (() => void) | undefined;
+    const init = vi.fn(
+      (
+        options: Record<string, unknown>,
+        callback: (captcha: {
+          onReady: (fn: () => void) => void;
+          onSuccess: (fn: () => void) => void;
+          onError: (fn: () => void) => void;
+          onClose: (fn: () => void) => void;
+          showCaptcha: () => void;
+          getValidate: () => {
+            lot_number: string;
+            captcha_output: string;
+            pass_token: string;
+            gen_time: string;
+          };
+        }) => void,
+      ) => {
+        expect(options).toMatchObject({ captchaId: "gt4-id", product: "bind" });
+        callback({
+          onReady: (fn) => fn(),
+          onSuccess: (fn) => {
+            onSuccess = fn;
+          },
+          onError: vi.fn(),
+          onClose: vi.fn(),
+          showCaptcha: () => onSuccess?.(),
+          getValidate: () => ({
+            lot_number: "lot-1",
+            captcha_output: "out-1",
+            pass_token: "pass-1",
+            gen_time: "time-1",
+          }),
+        });
+      },
+    );
+    (window as unknown as Record<string, unknown>).initGeetest4 = init;
+    try {
+      render(
+        <CaptchaField
+          ref={ref}
+          config={{ provider: "geetest-v4", site_key: "gt4-id" }}
+          {...labels}
+          onReadyChange={vi.fn()}
+        />,
+      );
+      expect(screen.getByTestId("captcha-popup")).toBeInTheDocument();
+      await expect(ref.current?.getToken()).resolves.toBe(
+        JSON.stringify({
+          lot_number: "lot-1",
+          captcha_output: "out-1",
+          pass_token: "pass-1",
+          gen_time: "time-1",
+        }),
+      );
+      expect(init).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (window as unknown as Record<string, unknown>).initGeetest4;
+    }
+  });
 });
 
 describe("loginCaptchaBody", () => {

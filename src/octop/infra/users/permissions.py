@@ -5,12 +5,11 @@ key grants access to that module's management page and write/configure actions.
 Read access and agent use in chat are never gated. ``admin`` bypasses all.
 
 Categories mirror dashboard nav groups: ``settings`` / ``control`` / ``admin``.
-``settings`` is the functional-module group (channels, connectors, skill
-packages, knowledge bases, and the functional agents of design §2.2) and is
-also what :data:`BASELINE_PERMISSIONS` pre-checks for a new account — those are
-exactly the modules that were reachable by every signed-in account before this
-catalog existed, so they must not disappear on upgrade. ``control`` holds the
-remote-capability keys (terminal / browser / desktop / phone / ACP) and
+``settings`` is the functional-module group and includes optional capabilities
+as well as upgrade baselines. ``BASELINE_PERMISSIONS`` pre-checks only modules
+that were reachable by every signed-in account before this catalog existed;
+new modules such as team management must be granted explicitly. ``control``
+holds the remote-capability keys (terminal / browser / desktop / phone / ACP) and
 ``admin`` the platform-configuration keys. Admin keys may also carry a ``page``
 so the picker can group by page / tab.
 
@@ -121,7 +120,7 @@ CHANNEL_PERMISSION_KEYS: tuple[str, ...] = tuple(
 
 
 PERMISSIONS: dict[str, PermissionDef] = {
-    # --- settings (nav.settings) — listed & default-selected for new users ---
+    # --- settings (nav.settings) — listed in the module picker ---
     "channels": _p("channels", "settings", "通道", "Channels"),
     "connectors": _p("connectors", "settings", "连接器", "Connectors"),
     "skill_packages": _p("skill_packages", "settings", "技能包", "Skill Packages"),
@@ -133,6 +132,7 @@ PERMISSIONS: dict[str, PermissionDef] = {
     # silently granted, the key is written like any other.
     "mbti": _p("mbti", "settings", "MBTI", "MBTI"),
     "experts": _p("experts", "settings", "专家", "Experts"),
+    "teams": _p("teams", "settings", "团队", "Teams"),
     "features": _p("features", "settings", "功能型智能体", "Feature agents"),
     # --- control (nav.control) — page/tab labels ---
     "terminal": _p("terminal", "control", "工作台/终端", "Workbench / Terminal"),
@@ -320,11 +320,12 @@ PERMISSIONS.update(
 
 ALL_PERMISSION_KEYS: set[str] = set(PERMISSIONS)
 
-# Settings-group keys: shown in the picker and pre-checked for new users.
-# They are still stored explicitly — not silently granted without being written.
-# ``role_default_permissions`` therefore never implies them for a non-admin role:
-# an unset (or unchecked) key means no access.
-BASELINE_PERMISSIONS: set[str] = {key for key, p in PERMISSIONS.items() if p.category == "settings"}
+# Settings-group keys are shown in the picker. ``teams`` is intentionally not
+# part of the pre-checked baseline: it is a new capability, unlike existing
+# settings modules that every account could reach before this catalog.
+BASELINE_PERMISSIONS: set[str] = {
+    key for key, p in PERMISSIONS.items() if p.category == "settings" and key != "teams"
+}
 
 
 def _as_set(values: Iterable[str] | None) -> set[str]:
@@ -369,12 +370,18 @@ def resolve_permissions(
     denied: list[str] | None,
     unit_grants: set[str] | None,
 ) -> set[str]:
-    """role ∪ unit ∪ grant − deny, with admin bypassing everything."""
+    """role ∪ unit ∪ grant − deny, with admin bypassing everything.
+
+    Team management is additionally scoped to expert management: ``teams`` is
+    effective only when ``experts`` survives the explicit-deny subtraction.
+    """
     if role_value(role) == Role.ADMIN:
         return set(ALL_PERMISSION_KEYS)
     granted = role_default_permissions(role)
     granted |= _as_set(unit_grants) | _as_set(permissions)
     granted -= _as_set(denied)
+    if "experts" not in granted:
+        granted.discard("teams")
     return granted
 
 

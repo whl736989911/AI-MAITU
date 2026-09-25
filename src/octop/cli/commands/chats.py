@@ -21,6 +21,7 @@ def _run_turn(
     model: str | None = None,
     plain: bool = False,
     as_user: str | None = None,
+    conversation_mode: str | None = None,
 ) -> Any:
     import asyncio
 
@@ -46,6 +47,7 @@ def _run_turn(
             thread_id=thread_id,
             model=model,
             on_chunk=on_chunk,
+            conversation_mode=conversation_mode,
         )
     )
     renderer.finish_turn()
@@ -76,6 +78,11 @@ def _apply_slash_actions(
         elif name == "clear_model":
             holder[0] = None
             click.secho("model override cleared", fg="cyan")
+        elif name == "set_conversation_mode" and repl_state is not None:
+            mode = str(act.get("mode") or "").strip()
+            if mode in ("ask", "plan", "craft"):
+                repl_state.conversation_mode = mode
+                click.echo(click.style(f"mode → {mode}", fg="cyan"))
         elif name == "new_chat" and repl_state is not None:
             repl_state.on_new_chat(act.get("thread_id"))
         elif name == "rebind_thread" and repl_state is not None:
@@ -213,6 +220,13 @@ def delete_chat(thread_id: str, agent_id: str | None, as_user: str | None, yes: 
 @click.option("--thread-id", default=None, help="Pin this thread for every turn.")
 @click.option("--model", default=None)
 @click.option("--plain", is_flag=True, help="Raw token stream (no Markdown finish).")
+@click.option(
+    "--mode",
+    "conversation_mode",
+    type=click.Choice(["ask", "plan", "craft"], case_sensitive=False),
+    default=None,
+    help="Ask (read-only), Plan (write plans/*.md), or Craft (default).",
+)
 def send_chat(
     prompt: str,
     agent_id: str | None,
@@ -220,6 +234,7 @@ def send_chat(
     thread_id: str | None,
     model: str | None,
     plain: bool,
+    conversation_mode: str | None,
 ) -> None:
     """Send one message and stream the response (CLI channel)."""
     aid = require_agent(agent_id)
@@ -230,6 +245,7 @@ def send_chat(
         thread_id=thread_id,
         model=model,
         plain=plain,
+        conversation_mode=conversation_mode,
     )
 
 

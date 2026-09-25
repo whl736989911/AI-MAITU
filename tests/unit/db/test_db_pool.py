@@ -166,6 +166,23 @@ def test_run_migrations_idempotent(db: SqlitePool):
     assert "kind" in agent_cols
 
 
+def test_v36_repairs_missing_thread_mode_and_policy_columns(db: SqlitePool) -> None:
+    """An existing v36 database must gain folded-in thread columns on reboot."""
+    columns = ("conversation_mode", "pending_plan_path", "hitl_policy")
+    with db.connect() as conn:
+        for column in columns:
+            conn.execute(f"ALTER TABLE threads DROP COLUMN {column}")
+
+    run_migrations(db)
+    run_migrations(db)
+
+    with db.connect() as conn:
+        version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
+        actual = {row["name"] for row in conn.execute("PRAGMA table_info(threads)")}
+    assert version == 36
+    assert set(columns).issubset(actual)
+
+
 def test_watermark_at_25_gets_agent_kind_and_loses_the_feature_tables(tmp_path: Path) -> None:
     """A v25 database lands on v26: the marker is added and the old tables go.
 
@@ -826,3 +843,15 @@ def test_v14_to_v15_adds_sso_provider_kind_without_rebuilding(tmp_path: Path) ->
     assert row["extra"] == "{}"
     assert "idx_sso_providers_kind" in indexes
     assert int(bound) == int(provider_id)
+
+
+def test_transaction_takes_write_lock_before_first_write(db: SqlitePool, tmp_path: Path) -> None:
+    """A separate connection cannot commit after this transaction has read."""
+    competitor = sqlite3.connect(tmp_path / "octop.db", isolation_level=None, timeout=0)
+    try:
+        with db.transaction() as conn:
+            conn.execute("SELECT COUNT(*) FROM users")
+            with pytest.raises(sqlite3.OperationalError, match="locked"):
+                competitor.execute("BEGIN IMMEDIATE")
+    finally:
+        competitor.close()
