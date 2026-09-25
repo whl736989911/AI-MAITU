@@ -109,6 +109,7 @@ import {
   knowledgeBreadcrumb,
   shouldOpenKnowledgeFolder,
 } from "./knowledgeFolder";
+import { effectiveDocumentLimit } from "./documentLimit";
 import { resolveKnowledgeDeepLink } from "./knowledgeDeepLink";
 import {
   canDownloadKnowledgeOriginal,
@@ -720,8 +721,12 @@ export default function KnowledgeBasesPage() {
   const limits = capability?.limits ?? DEFAULT_KNOWLEDGE_LIMITS;
   const enterpriseBase = bases.find((base) => base.owner_user_id === null);
   const fileCount = documents.filter((document) => !document.is_dir).length;
+  const documentLimit = effectiveDocumentLimit(
+    selected?.max_documents,
+    limits.max_docs_per_kb,
+  );
   const isAtDocumentLimit =
-    fileCount >= (selected?.max_documents ?? limits.max_docs_per_kb);
+    documentLimit !== null && fileCount >= documentLimit;
   const folderEntries = documents
     .filter((document) =>
       isDirectKnowledgeChild(document.path || document.filename, currentFolder),
@@ -1320,10 +1325,10 @@ export default function KnowledgeBasesPage() {
 
   const uploadDocuments = async (files: FileList | File[] | null) => {
     if (!selected || !files || !usable || isAtDocumentLimit) return;
-    const remaining = Math.max(
-      0,
-      (selected?.max_documents ?? limits.max_docs_per_kb) - fileCount,
-    );
+    const remaining =
+      documentLimit === null
+        ? Number.POSITIVE_INFINITY
+        : Math.max(0, documentLimit - fileCount);
     const incoming = Array.from(files);
     const matched = incoming.filter((file) =>
       fileMatchesAccept(file, supportedDocumentTypes),
@@ -1336,10 +1341,10 @@ export default function KnowledgeBasesPage() {
     }
     const chosen = matched.slice(0, remaining);
     if (chosen.length === 0) return;
-    if (matched.length > remaining) {
+    if (matched.length > remaining && documentLimit !== null) {
       message.warning(
         t("knowledgeBases.documentLimitReached", {
-          count: selected?.max_documents ?? limits.max_docs_per_kb,
+          count: documentLimit,
         }),
       );
     }
@@ -2218,6 +2223,15 @@ export default function KnowledgeBasesPage() {
                           {selected.name}
                         </Typography.Title>
                       </div>
+                      {canManageSelected ? (
+                        <Button
+                          size="small"
+                          icon={<Pencil size={14} />}
+                          onClick={() => openEdit(selected)}
+                        >
+                          {t("common.edit")}
+                        </Button>
+                      ) : null}
                     </div>
                     <Typography.Paragraph
                       type="secondary"
@@ -2266,11 +2280,14 @@ export default function KnowledgeBasesPage() {
                       className={`${skillStyles.gridToolbar} ${styles.docsToolbar}`}
                     >
                       <span className={skillStyles.gridCount}>
-                        {t("knowledgeBases.documentLimit", {
-                          count: fileCount,
-                          max:
-                            selected?.max_documents ?? limits.max_docs_per_kb,
-                        })}
+                        {documentLimit === null
+                          ? t("knowledgeBases.documentLimitUnlimited", {
+                              count: fileCount,
+                            })
+                          : t("knowledgeBases.documentLimit", {
+                              count: fileCount,
+                              max: documentLimit,
+                            })}
                       </span>
                       <div className={skillStyles.gridToolbarRight}>
                         <Input
@@ -2446,10 +2463,8 @@ export default function KnowledgeBasesPage() {
                       <Alert
                         className={styles.limitAlert}
                         type="info"
-                        showIcon
                         message={t("knowledgeBases.documentLimitReached", {
-                          count:
-                            selected?.max_documents ?? limits.max_docs_per_kb,
+                          count: documentLimit ?? limits.max_docs_per_kb,
                         })}
                       />
                     ) : null}

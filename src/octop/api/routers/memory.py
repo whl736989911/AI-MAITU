@@ -46,7 +46,12 @@ from octop.api.common.agent import (
     assert_agent_capability_write,
     require_agent_owner_row,
 )
-from octop.api.common.memory_client import call_memory_rpc
+from octop.api.common.memory_client import (
+    MemoryAccess,
+    MemoryScope,
+    call_memory_rpc,
+    resolve_memory_access,
+)
 from octop.api.deps import current_user, get_server
 from octop.infra.errors import ErrorCode, OctopError
 
@@ -245,23 +250,40 @@ def _strip_none(payload: dict[str, Any]) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+@router.get(
+    "/agents/{agent_id}/memory/access",
+    response_model=MemoryAccess,
+    summary="Get memory stages and writable scopes",
+    description="Draft features expose author-editable shared training memory. Published features expose read-only shared memory and separate writable memory for the current caller.",
+)
+async def get_memory_access(
+    agent_id: str,
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> MemoryAccess:
+    return await resolve_memory_access(agent_id, user=user, as_user=as_user, server=server)
+
+
 @router.post("/agents/{agent_id}/memory/atoms/list")
 async def list_atoms(
     agent_id: str,
     body: _ListAtomsBody = Body(default_factory=_ListAtomsBody),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="list_atoms",
             params=_strip_none(body.model_dump()),
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -271,18 +293,20 @@ async def list_raw_events(
     agent_id: str,
     body: _ListRawEventsBody = Body(default_factory=_ListRawEventsBody),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="list_raw_events",
             params=_strip_none(body.model_dump()),
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -292,18 +316,20 @@ async def list_entities(
     agent_id: str,
     body: _ListEntitiesBody = Body(default_factory=_ListEntitiesBody),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="list_entities",
             params=_strip_none(body.model_dump()),
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -313,18 +339,20 @@ async def list_episodes(
     agent_id: str,
     body: _ListEpisodesBody = Body(default_factory=_ListEpisodesBody),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="list_episodes",
             params=_strip_none(body.model_dump()),
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -334,18 +362,20 @@ async def list_journal(
     agent_id: str,
     body: _ListJournalBody = Body(default_factory=_ListJournalBody),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="list_journal",
             params=_strip_none(body.model_dump()),
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -355,18 +385,20 @@ async def list_candidates(
     agent_id: str,
     body: _ListCandidatesBody = Body(default_factory=_ListCandidatesBody),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="list_candidates",
             params=_strip_none(body.model_dump()),
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -381,18 +413,20 @@ async def get_raw_event(
     agent_id: str,
     event_id: str,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="get_raw_event",
             params={"event_id": event_id},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -402,18 +436,20 @@ async def get_candidate(
     agent_id: str,
     candidate_id: str,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="get_candidate",
             params={"candidate_id": candidate_id},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -423,18 +459,20 @@ async def get_atom(
     agent_id: str,
     atom_id: str,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="get_atom",
             params={"atom_id": atom_id},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -444,18 +482,20 @@ async def get_entity(
     agent_id: str,
     entity_id: str,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="get_entity",
             params={"entity_id": entity_id},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -465,18 +505,20 @@ async def get_episode(
     agent_id: str,
     episode_id: str,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="get_episode",
             params={"episode_id": episode_id},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -490,18 +532,20 @@ async def get_episode(
 async def stats_counts(
     agent_id: str,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="stats_counts",
             params={},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -511,18 +555,20 @@ async def stats_growth(
     agent_id: str,
     days: int = Query(default=7, ge=1, le=90),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="stats_growth",
             params={"days": days},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -531,18 +577,20 @@ async def stats_growth(
 async def stats_atom_kinds(
     agent_id: str,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="stats_atom_kinds",
             params={},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -552,18 +600,20 @@ async def recent_journal(
     agent_id: str,
     limit: int = Query(default=5, ge=1, le=100),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="recent_journal",
             params={"limit": limit},
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -578,12 +628,13 @@ async def promote_candidate(
     agent_id: str,
     candidate_id: str,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="promote_candidate",
             capability=AgentCapability.MEMORY,
@@ -591,6 +642,7 @@ async def promote_candidate(
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -601,13 +653,14 @@ async def reject_candidate(
     candidate_id: str,
     body: _RejectCandidateBody = Body(default_factory=_RejectCandidateBody),
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     params = _strip_none({"candidate_id": candidate_id, **body.model_dump()})
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="reject_candidate",
             capability=AgentCapability.MEMORY,
@@ -615,6 +668,7 @@ async def reject_candidate(
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -626,12 +680,13 @@ async def deprecate_atom(
     body: _DeprecateAtomBody = Body(default_factory=_DeprecateAtomBody),
     as_user: int | None = None,
     user: Any = Depends(current_user),
+    scope: MemoryScope | None = Query(default=None),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     params = _strip_none({"atom_id": atom_id, **body.model_dump()})
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="deprecate_atom",
             capability=AgentCapability.MEMORY,
@@ -639,6 +694,7 @@ async def deprecate_atom(
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -655,12 +711,13 @@ async def create_atom(
     agent_id: str,
     body: _CreateAtomBody,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="create_atom",
             capability=AgentCapability.MEMORY,
@@ -668,6 +725,7 @@ async def create_atom(
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -685,13 +743,14 @@ async def replace_atom(
     atom_id: str,
     body: _ReplaceAtomBody,
     as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     params = _strip_none({"atom_id": atom_id, **body.model_dump()})
     return cast(
         dict[str, Any],
-        call_memory_rpc(
+        await call_memory_rpc(
             agent_id=agent_id,
             method="replace_atom",
             capability=AgentCapability.MEMORY,
@@ -699,6 +758,7 @@ async def replace_atom(
             user=user,
             as_user=as_user,
             server=server,
+            scope=scope,
         ),
     )
 
@@ -719,18 +779,20 @@ def _terminal_endpoint(method_name: str) -> Any:
         agent_id: str,
         limit: int = Query(default=5, ge=1, le=20),
         as_user: int | None = None,
+        scope: MemoryScope | None = Query(default=None),
         user: Any = Depends(current_user),
         server: Any = Depends(get_server),
     ) -> dict[str, Any]:
         return cast(
             dict[str, Any],
-            call_memory_rpc(
+            await call_memory_rpc(
                 agent_id=agent_id,
                 method=method_name,
                 params={"limit": limit},
                 user=user,
                 as_user=as_user,
                 server=server,
+                scope=scope,
             ),
         )
 
@@ -835,8 +897,8 @@ async def put_extract_config(
     row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    # How memory is extracted is configuration, not memory: a feature agent's
-    # memory is never *written*, but who may configure it is the author.
+    # Extraction timing is configuration, not a memory edit. The active
+    # feature's shared namespace remains immutable regardless of these settings.
     assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION)
 
     merged = _read_extract_config(row)

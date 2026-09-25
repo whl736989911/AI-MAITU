@@ -64,6 +64,7 @@ _SLIDING_RENEW_REMAINING_FRACTION = 1 / 3
 
 # Paths that bypass JWT middleware (setup wizard, health, login).
 _JWT_EXEMPT_PREFIXES = (
+    "/api/branding",
     "/api/setup/",
     "/api/health/",
     "/api/i18n/",

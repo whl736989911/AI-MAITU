@@ -29,7 +29,11 @@ from octop.infra.agents.media_generation import (
     MediaGenerationSettingsStore,
     MediaProviderUpdate,
 )
-from octop.infra.agents.memory_backend import memory_backend_from_agent_config
+from octop.infra.agents.memory_backend import (
+    memory_backend_from_agent_config,
+    memory_namespace,
+    open_memory_kwargs,
+)
 from octop.infra.agents.memory_slim import MemorySlimCoordinator
 from octop.infra.agents.profile import (
     dump_id_list,
@@ -104,7 +108,8 @@ _PROVIDER_RELOAD_CONCURRENCY = 6
 
 # harness-memory builds SQLite table names as ``{namespace}_*``. The namespace
 # must be a valid bare SQL identifier: start with a letter, only [A-Za-z0-9_].
-_MEMORY_NS_PREFIX = "agent_"
+# The canonical ``agent_{id}`` / ``agent_{id}_user_{uid}`` rule lives in
+# ``octop.infra.agents.memory_backend.memory_namespace``.
 
 _AGENT_STATES_NEEDING_MODEL_RELOAD = frozenset({"failed", "created"})
 
@@ -114,10 +119,6 @@ _AGENT_STATES_NEEDING_MODEL_RELOAD = frozenset({"failed", "created"})
 _SKILL_CATALOG_EPOCH = int(uuid4().int % (1 << 31))
 
 _HARNESS_AGENT_CONFIG_FIELDS = frozenset(item.name for item in fields(HarnessAgentConfig))
-
-
-def _memory_namespace(agent_id: str) -> str:
-    return f"{_MEMORY_NS_PREFIX}{agent_id}"
 
 
 def skills_disabled_set(cfg: dict[str, Any]) -> set[str]:
@@ -428,6 +429,10 @@ class AgentManager:
         self._turn_mcp_tools: dict[tuple[str, int], dict[str, list[Any]]] = {}
         # Sanitized plugin tool name → original label (per agent, rebuilt on reload).
         self._plugin_tool_labels: dict[str, dict[str, str]] = {}
+        # Per-agent feature-memory routing (middleware holding shared + per-user
+        # private services). Closed alongside the harness memory store when the
+        # agent is removed or rebuilt — see ``_quiesce_harness_memory``.
+        self._feature_memory_routings: dict[str, Any] = {}
 
     def replace_persistence(self, repos: RepoBundle, config: OctopConfig) -> None:
         """Retarget repos/config and rebuild settings stores after control-plane rebind."""
@@ -535,6 +540,11 @@ class AgentManager:
     async def shutdown(self) -> None:
         await self.memory_slim.close()
         async with self._lock:
+            routings = list(self._feature_memory_routings.values())
+            self._feature_memory_routings.clear()
+            for routing in routings:
+                with suppress(Exception):
+                    routing.close()
             if self._harness_manager:
                 try:
                     # Drain SQLite workers before the owning event loop can close.
@@ -915,6 +925,10 @@ class AgentManager:
         store while ``list_candidates`` is in flight segfaults (Linux live CI
         and Windows unit tests with a real HarnessAgentManager).
         """
+        routing = self._feature_memory_routings.pop(agent_id, None)
+        if routing is not None:
+            with suppress(Exception):
+                routing.close()
         hm = self._harness_manager
         if hm is None:
             return
@@ -3128,6 +3142,116 @@ class AgentManager:
         runtime_cfg = merge_agent_runtime_values(agent_cfg, overrides) if overrides else agent_cfg
         return apply_agent_runtime_to_stream_request(req, runtime_cfg)
 
+    def _build_feature_memory_routing(
+        self,
+        *,
+        row: AgentRow,
+        cfg: dict[str, Any],
+        workspace_dir: Path,
+    ) -> tuple[Any, list[Any]] | None:
+        """Build the per-turn memory routing for a feature's agent, if it is one.
+
+        Returns ``(middleware, tools)``. The middleware owns recall, capture
+        and extraction routing (harness's own capture/recall/extract are
+        switched off for features by the config flags in ``_build_harness_config``);
+        the tools replace harness's shared-only ``memory_search`` / ``memory_get``
+        with scope-routed ones. ``None`` for every expert — their memory stays
+        exactly as harness-agent wires it.
+        """
+        if not is_feature_agent(str(getattr(row, "kind", ""))):
+            return None
+        from octop.infra.agents.middleware.feature_memory import (  # noqa: PLC0415
+            FeatureMemoryMiddleware,
+            FeatureMemoryRuntime,
+            build_feature_memory_tools,
+        )
+
+        _ns, backend_type, backend_config = open_memory_kwargs(
+            agent_id=row.agent_id,
+            cfg=cfg,
+            octop_config=self._config,
+            workspace_dir=workspace_dir,
+        )
+        extract_settings = _memory_extract_settings(
+            cfg, is_ref_usable=self._providers.is_model_ref_usable
+        )
+        idle_seconds = float(
+            extract_settings.get("memory_extract_idle_seconds")
+            or extract_settings.get("memory_extract_interval_seconds")
+            or 300.0
+        )
+        runtime = FeatureMemoryRuntime(
+            agent_id=row.agent_id,
+            backend_type=backend_type,
+            backend_config=backend_config,
+            llm=self._feature_memory_llm(cfg),
+        )
+        middleware = FeatureMemoryMiddleware(
+            agent_id=row.agent_id,
+            runtime=runtime,
+            idle_extract_seconds=idle_seconds,
+        )
+        tools = build_feature_memory_tools(runtime, agent_id=row.agent_id)
+        previous = self._feature_memory_routings.get(row.agent_id)
+        if previous is not None:
+            with suppress(Exception):
+                previous.close()
+        self._feature_memory_routings[row.agent_id] = middleware
+        return middleware, tools
+
+    def _memory_config_kwargs(
+        self,
+        *,
+        row: AgentRow,
+        cfg: dict[str, Any],
+        feature_routing: tuple[Any, list[Any]] | None,
+    ) -> dict[str, Any]:
+        """Harness memory kwargs for one agent's config.
+
+        Experts get exactly the stored ``memory`` settings. A feature's agent
+        keeps them (idle/interval cadence still drives the routing middleware)
+        but loses the harness write paths — recall injection, capture and
+        session-end extraction all target the shared namespace only, so for a
+        feature they are replaced by the per-turn routing middleware.
+        """
+        settings = _memory_extract_settings(cfg, is_ref_usable=self._providers.is_model_ref_usable)
+        if feature_routing is not None:
+            for flag in (
+                "memory_recall_inject_enabled",
+                "memory_capture_enabled",
+                "memory_extract_on_session_end",
+            ):
+                if flag in _HARNESS_AGENT_CONFIG_FIELDS:
+                    settings[flag] = False
+        return settings
+
+    def _feature_memory_llm(self, cfg: dict[str, Any]) -> Any:
+        """Aux model for feature-memory extraction, or ``None`` (degrades softly)."""
+        factory = self._harness_manager.shared_factory if self._harness_manager else None
+        if factory is None:
+            return None
+        from harness_agent.memory.llm_client import HarnessAgentLLMClient  # noqa: PLC0415
+
+        mem = cfg.get("memory")
+        refs = _memory_aux_model_settings(
+            mem if isinstance(mem, dict) else {},
+            _HARNESS_AGENT_CONFIG_FIELDS,
+            self._providers.is_model_ref_usable,
+        )
+        aux_ref = refs.get("memory_aux_light_model") or refs.get("memory_aux_heavy_model")
+        try:
+            return HarnessAgentLLMClient(
+                factory,
+                aux_model=aux_ref,
+                default_model=cfg.get("default_model") or None,
+            )
+        except Exception:
+            logger.warning(
+                "feature memory aux LLM could not be built; extraction degrades",
+                exc_info=True,
+            )
+            return None
+
     def _build_harness_config(
         self, row: AgentRow, *, team_member_ids: Sequence[str] | None = None
     ) -> HarnessAgentConfig:
@@ -3342,6 +3466,19 @@ class AgentManager:
         ]
 
         merged_tools: list[Any] = []
+        # A feature's memory routes per turn: an active verified caller's
+        # capture/extraction lands only in their own private namespace, and
+        # shared memory is never auto-written in any stage — a draft author
+        # trains it by editing the shared files directly. The middleware
+        # carries recall/capture/extraction; the tools replace harness's
+        # shared-only memory_search/get (same names, declared later, so the
+        # graph keeps these).
+        feature_routing = self._build_feature_memory_routing(
+            row=row, cfg=cfg, workspace_dir=workspace_dir
+        )
+        if feature_routing is not None:
+            agent_middleware.append(feature_routing[0])
+            merged_tools.extend(feature_routing[1])
         if cron_tools:
             merged_tools.extend(cron_tools)
         merged_tools.extend(feature_creation_tools)
@@ -3449,7 +3586,7 @@ class AgentManager:
         harness_backend: Any = ws.backend if self._spec_is_opensandbox(backend) else backend
 
         harness_cfg = HarnessAgentConfig(
-            name=_memory_namespace(row.agent_id),
+            name=memory_namespace(row.agent_id),
             workspace_dir=harness_workspace,
             system_files_path=system_files_path_from_config(cfg),
             # Memory aux LLM (extraction / promotion) needs a concrete ref; fall
@@ -3482,7 +3619,7 @@ class AgentManager:
             default_timezone=self._config.default_timezone,
             log_dir=str(self.paths.logs_dir),
             media_generation=self._media_generation.harness_config(),
-            **_memory_extract_settings(cfg, is_ref_usable=self._providers.is_model_ref_usable),
+            **self._memory_config_kwargs(row=row, cfg=cfg, feature_routing=feature_routing),
             **_resolve_memory_backend_kwargs(cfg, workspace_dir=workspace_dir, config=self._config),
         )
         if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:

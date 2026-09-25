@@ -46,6 +46,7 @@ import {
   type CandidateItem,
   type CandidateStatus,
   type ListCandidatesBody,
+  type MemoryScope,
 } from "../../../api/modules/memoryDashboard";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import styles from "./CandidatesReview.module.less";
@@ -72,9 +73,15 @@ const KIND_OPTIONS: { value: AtomKind | ""; label: string }[] = [
 
 interface Props {
   agentId: string;
+  scope?: MemoryScope;
+  readOnly?: boolean;
 }
 
-export default function CandidatesReview({ agentId }: Props) {
+export default function CandidatesReview({
+  agentId,
+  scope,
+  readOnly = false,
+}: Props) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const [items, setItems] = useState<CandidateItem[]>([]);
@@ -102,7 +109,9 @@ export default function CandidatesReview({ agentId }: Props) {
     if (status) body.status = status;
     if (kind) body.candidate_type = kind;
     try {
-      const r = await memoryDashboardApi.listCandidates(agentId, body);
+      const r = scope
+        ? await memoryDashboardApi.listCandidates(agentId, body, scope)
+        : await memoryDashboardApi.listCandidates(agentId, body);
       setItems(r.items);
       setTotal(r.total);
     } catch (e) {
@@ -113,7 +122,7 @@ export default function CandidatesReview({ agentId }: Props) {
     // ``t`` is intentionally NOT a dependency — the i18n hook returns
     // a fresh ``t`` ref on every render, which would re-fire the load
     // effect on every keystroke / hover.
-  }, [agentId, page, status, kind]);
+  }, [agentId, page, status, kind, scope]);
 
   useEffect(() => {
     if (!agentId) return;
@@ -121,9 +130,12 @@ export default function CandidatesReview({ agentId }: Props) {
   }, [agentId, load]);
 
   const handlePromote = async (c: CandidateItem) => {
+    if (readOnly) return;
     setBusyId(c.id);
     try {
-      const r = await memoryDashboardApi.promoteCandidate(agentId, c.id);
+      const r = scope
+        ? await memoryDashboardApi.promoteCandidate(agentId, c.id, scope)
+        : await memoryDashboardApi.promoteCandidate(agentId, c.id);
       const detail =
         r.merged > 0
           ? `与现有记忆合并 ${r.merged} 条`
@@ -142,12 +154,21 @@ export default function CandidatesReview({ agentId }: Props) {
   };
 
   const handleReject = async () => {
-    if (!rejectTarget) return;
+    if (!rejectTarget || readOnly) return;
     setRejecting(true);
     try {
-      await memoryDashboardApi.rejectCandidate(agentId, rejectTarget.id, {
-        reason: rejectReason.trim() || undefined,
-      });
+      if (scope) {
+        await memoryDashboardApi.rejectCandidate(
+          agentId,
+          rejectTarget.id,
+          { reason: rejectReason.trim() || undefined },
+          scope,
+        );
+      } else {
+        await memoryDashboardApi.rejectCandidate(agentId, rejectTarget.id, {
+          reason: rejectReason.trim() || undefined,
+        });
+      }
       message.success(t("memory.candidates.rejectOk", "已忽略"));
       setRejectTarget(null);
       setRejectReason("");
@@ -226,38 +247,40 @@ export default function CandidatesReview({ agentId }: Props) {
                     “{c.verbatim_quote}” · {c.subject_name}
                   </div>
                 </div>
-                <div className={styles.candidateActions}>
-                  <Popconfirm
-                    title={t(
-                      "memory.candidates.confirmPromote",
-                      "采纳这条记忆？",
-                    )}
-                    okText={t("common.confirm", "采纳")}
-                    cancelText={t("common.cancel", "取消")}
-                    disabled={decided}
-                    onConfirm={() => void handlePromote(c)}
-                  >
-                    <Button
-                      type="primary"
-                      size="small"
-                      loading={busyId === c.id}
+                {!readOnly ? (
+                  <div className={styles.candidateActions}>
+                    <Popconfirm
+                      title={t(
+                        "memory.candidates.confirmPromote",
+                        "采纳这条记忆？",
+                      )}
+                      okText={t("common.confirm", "采纳")}
+                      cancelText={t("common.cancel", "取消")}
                       disabled={decided}
+                      onConfirm={() => void handlePromote(c)}
                     >
-                      {t("memory.candidates.promote", "采纳")}
+                      <Button
+                        type="primary"
+                        size="small"
+                        loading={busyId === c.id}
+                        disabled={decided}
+                      >
+                        {t("memory.candidates.promote", "采纳")}
+                      </Button>
+                    </Popconfirm>
+                    <Button
+                      danger
+                      size="small"
+                      disabled={decided}
+                      onClick={() => {
+                        setRejectTarget(c);
+                        setRejectReason("");
+                      }}
+                    >
+                      {t("memory.candidates.reject", "忽略")}
                     </Button>
-                  </Popconfirm>
-                  <Button
-                    danger
-                    size="small"
-                    disabled={decided}
-                    onClick={() => {
-                      setRejectTarget(c);
-                      setRejectReason("");
-                    }}
-                  >
-                    {t("memory.candidates.reject", "忽略")}
-                  </Button>
-                </div>
+                  </div>
+                ) : null}
               </li>
             );
           })}
@@ -311,36 +334,38 @@ export default function CandidatesReview({ agentId }: Props) {
         ) : null}
       </Drawer>
 
-      <Modal
-        title={t("memory.candidates.rejectTitle", "忽略这条草稿")}
-        open={!!rejectTarget}
-        confirmLoading={rejecting}
-        okText={t("memory.candidates.confirmReject", "确认忽略")}
-        cancelText={t("common.cancel", "取消")}
-        okButtonProps={{ danger: true }}
-        onCancel={() => {
-          if (rejecting) return;
-          setRejectTarget(null);
-          setRejectReason("");
-        }}
-        onOk={() => void handleReject()}
-      >
-        <Typography.Paragraph>
-          {t(
-            "memory.candidates.rejectHint",
-            "忽略后这条记忆不会进入长期记忆。可选择填写原因，便于日后回顾。",
-          )}
-        </Typography.Paragraph>
-        <Input.TextArea
-          rows={3}
-          value={rejectReason}
-          onChange={(e) => setRejectReason(e.target.value)}
-          placeholder={t(
-            "memory.candidates.rejectReasonPlaceholder",
-            "原因可选，例如：已过期 / 记录有误 / 不重要",
-          )}
-        />
-      </Modal>
+      {!readOnly ? (
+        <Modal
+          title={t("memory.candidates.rejectTitle", "忽略这条草稿")}
+          open={!!rejectTarget}
+          confirmLoading={rejecting}
+          okText={t("memory.candidates.confirmReject", "确认忽略")}
+          cancelText={t("common.cancel", "取消")}
+          okButtonProps={{ danger: true }}
+          onCancel={() => {
+            if (rejecting) return;
+            setRejectTarget(null);
+            setRejectReason("");
+          }}
+          onOk={() => void handleReject()}
+        >
+          <Typography.Paragraph>
+            {t(
+              "memory.candidates.rejectHint",
+              "忽略后这条记忆不会进入长期记忆。可选择填写原因，便于日后回顾。",
+            )}
+          </Typography.Paragraph>
+          <Input.TextArea
+            rows={3}
+            value={rejectReason}
+            onChange={(e) => setRejectReason(e.target.value)}
+            placeholder={t(
+              "memory.candidates.rejectReasonPlaceholder",
+              "原因可选，例如：已过期 / 记录有误 / 不重要",
+            )}
+          />
+        </Modal>
+      ) : null}
     </Card>
   );
 }

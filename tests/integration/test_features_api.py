@@ -106,14 +106,6 @@ async def test_caller_reads_the_feature_but_cannot_configure_it(env) -> None:
     )
     assert response.status_code == 403, response.text
 
-    # Its memory is written by nobody: the author is refused too.
-    response = await client.post(
-        "/api/agents/feat-shared-tool/memory/atoms",
-        headers=author_auth,
-        json={"assertion": "should not be writable"},
-    )
-    assert response.status_code == 403, response.text
-
 
 async def _grant_feature(client, admin_auth, *, feature_id: str, grantee_id: int):
     """One directed grant on ``resource_type='feature'`` — the sharing API's own call."""

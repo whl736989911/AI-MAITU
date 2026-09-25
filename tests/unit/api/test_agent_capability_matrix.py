@@ -54,15 +54,15 @@ APP_OWNED_EXPERT = _Row("01SYSTEM", None, KIND_AGENT)
 
 
 @pytest.mark.parametrize("capability", GROUPS)
-def test_a_feature_agents_author_writes_every_group_but_its_memory(
+def test_feature_memory_without_a_verified_stage_fails_closed(
     capability: AgentCapability,
 ) -> None:
-    """The author configures the feature; its memory is nobody's to write."""
+    """The generic capability gate cannot assume an unpublished workflow."""
     refusal = agent_capability_refusal(FEATURE_AGENT, AUTHOR, capability)
 
     if capability is AgentCapability.MEMORY:
         assert refusal is not None
-        assert "never written" in refusal
+        assert "stage and scope" in refusal
     else:
         assert refusal is None
 
@@ -76,22 +76,78 @@ def test_an_ordinary_caller_writes_none_of_a_feature_agents_groups(
 
     assert refusal is not None
     if capability is AgentCapability.MEMORY:
-        assert "never written" in refusal
+        assert "stage and scope" in refusal
     else:
         assert "read-only" in refusal
 
 
 @pytest.mark.parametrize("capability", GROUPS)
-def test_an_administrator_may_still_step_in_but_never_for_memory(
+def test_an_administrator_may_step_in_except_for_unscoped_memory(
     capability: AgentCapability,
 ) -> None:
-    """The admin bypass survives on the configuration groups, and stops at memory."""
+    """The generic matrix stays closed until a trusted workflow stage is supplied."""
     refusal = agent_capability_refusal(FEATURE_AGENT, ADMIN, capability)
 
     if capability is AgentCapability.MEMORY:
         assert refusal is not None
     else:
         assert refusal is None
+
+
+def test_feature_memory_training_and_published_scopes() -> None:
+    """Only the author trains shared memory; publication freezes it and isolates callers."""
+    for user in (AUTHOR, ADMIN):
+        assert (
+            agent_capability_refusal(
+                FEATURE_AGENT,
+                user,
+                AgentCapability.MEMORY,
+                memory_stage="draft",
+                memory_scope="shared",
+            )
+            is None
+        )
+    assert (
+        agent_capability_refusal(
+            FEATURE_AGENT,
+            CALLER,
+            AgentCapability.MEMORY,
+            memory_stage="draft",
+            memory_scope="shared",
+        )
+        is not None
+    )
+    for user in (AUTHOR, CALLER, ADMIN):
+        assert (
+            agent_capability_refusal(
+                FEATURE_AGENT,
+                user,
+                AgentCapability.MEMORY,
+                memory_stage="active",
+                memory_scope="shared",
+            )
+            is not None
+        )
+        assert (
+            agent_capability_refusal(
+                FEATURE_AGENT,
+                user,
+                AgentCapability.MEMORY,
+                memory_stage="draft",
+                memory_scope="private",
+            )
+            is not None
+        )
+        assert (
+            agent_capability_refusal(
+                FEATURE_AGENT,
+                user,
+                AgentCapability.MEMORY,
+                memory_stage="active",
+                memory_scope="private",
+            )
+            is None
+        )
 
 
 @pytest.mark.parametrize("capability", GROUPS)

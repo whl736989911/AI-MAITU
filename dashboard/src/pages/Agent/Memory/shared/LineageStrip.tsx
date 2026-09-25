@@ -14,6 +14,7 @@ import {
   type AtomItem,
   type CandidateItem,
   type JournalItem,
+  type MemoryScope,
 } from "../../../../api/modules/memoryDashboard";
 
 interface RawEventShape {
@@ -27,9 +28,10 @@ interface RawEventShape {
 interface Props {
   agentId: string;
   atom: AtomItem;
+  scope?: MemoryScope;
 }
 
-export default function LineageStrip({ agentId, atom }: Props) {
+export default function LineageStrip({ agentId, atom, scope }: Props) {
   const { t } = useTranslation();
   const [rawEvent, setRawEvent] = useState<RawEventShape | null>(null);
   const [correction, setCorrection] = useState<JournalItem | null>(null);
@@ -45,13 +47,18 @@ export default function LineageStrip({ agentId, atom }: Props) {
       try {
         const correctionRequest =
           typeof memoryDashboardApi.listJournal === "function"
-            ? memoryDashboardApi
-                .listJournal(agentId, {
-                  action: "user_edit",
-                  target_atom_id: atom.id,
-                  limit: 1,
-                })
-                .catch(() => null)
+            ? (scope
+                ? memoryDashboardApi.listJournal(
+                    agentId,
+                    { action: "user_edit", target_atom_id: atom.id, limit: 1 },
+                    scope,
+                  )
+                : memoryDashboardApi.listJournal(agentId, {
+                    action: "user_edit",
+                    target_atom_id: atom.id,
+                    limit: 1,
+                  })
+              ).catch(() => null)
             : Promise.resolve(null);
 
         if (
@@ -62,18 +69,20 @@ export default function LineageStrip({ agentId, atom }: Props) {
           if (!cancelled) setCorrection(correctionResult?.items[0] ?? null);
           return;
         }
-        const cand = (await memoryDashboardApi
-          .getCandidate(agentId, atom.candidate_id)
-          .catch(() => null)) as CandidateItem | null;
+        const cand = (await (scope
+          ? memoryDashboardApi.getCandidate(agentId, atom.candidate_id, scope)
+          : memoryDashboardApi.getCandidate(agentId, atom.candidate_id)
+        ).catch(() => null)) as CandidateItem | null;
         if (cancelled) return;
         const correctionResult = await correctionRequest;
         if (cancelled) return;
         setCorrection(correctionResult?.items[0] ?? null);
         const eventId = cand?.quote_event_id;
         if (eventId && typeof memoryDashboardApi.getRawEvent === "function") {
-          const ev = (await memoryDashboardApi
-            .getRawEvent(agentId, eventId)
-            .catch(() => null)) as RawEventShape | null;
+          const ev = (await (scope
+            ? memoryDashboardApi.getRawEvent(agentId, eventId, scope)
+            : memoryDashboardApi.getRawEvent(agentId, eventId)
+          ).catch(() => null)) as RawEventShape | null;
           if (cancelled) return;
           setRawEvent(ev);
         }
@@ -85,7 +94,7 @@ export default function LineageStrip({ agentId, atom }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [agentId, atom.id, atom.candidate_id]);
+  }, [agentId, atom.id, atom.candidate_id, scope]);
 
   if (loading) {
     return (

@@ -106,8 +106,11 @@ def build_app(server: OctopServer) -> FastAPI:
         cfg.capabilities.mobile.enabled if cfg and cfg.capabilities.mobile.enabled else False
     )
 
+    from octop.api.routers.branding import _state as _branding_state
+
+    api_title = f"{_branding_state(server)['name']['en']} API"
     app = FastAPI(
-        title="MAITU Smart Manufacturing API",
+        title=api_title,
         version="0.1.0",
         description=API_DESCRIPTION,
         openapi_url="/api/openapi.json" if enable_api_docs else None,
@@ -151,6 +154,7 @@ def build_app(server: OctopServer) -> FastAPI:
         auth_oauth,
         auth_oidc,
         backup,
+        branding,
         browser,
         channels,
         chat,
@@ -210,6 +214,7 @@ def build_app(server: OctopServer) -> FastAPI:
         app,
         [
             _RouterMount(setup.router, "/api", ["setup"]),
+            _RouterMount(branding.router, "/api", ["branding"]),
             _RouterMount(auth.router, "/api/auth", ["auth"]),
             _RouterMount(auth_oidc.router, "/api/auth", ["auth"]),
             _RouterMount(auth_oauth.router, "/api/auth", ["auth"]),
@@ -295,7 +300,7 @@ def build_app(server: OctopServer) -> FastAPI:
         async def api_docs() -> HTMLResponse:
             return get_scalar_api_reference(
                 openapi_url=app.openapi_url,
-                title="MAITU Smart Manufacturing API",
+                title=app.title,
             )
 
     if enable_dashboard:

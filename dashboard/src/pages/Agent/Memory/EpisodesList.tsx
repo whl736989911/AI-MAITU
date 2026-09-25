@@ -22,6 +22,7 @@ import { useTranslation } from "react-i18next";
 import {
   memoryDashboardApi,
   type EpisodeItem,
+  type MemoryScope,
 } from "../../../api/modules/memoryDashboard";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import {
@@ -35,9 +36,10 @@ const PAGE_SIZE = 20;
 
 interface Props {
   agentId: string;
+  scope?: MemoryScope;
 }
 
-export default function EpisodesList({ agentId }: Props) {
+export default function EpisodesList({ agentId, scope }: Props) {
   const { t } = useTranslation();
   const timeZone = useServerTimezone();
   const [items, setItems] = useState<EpisodeItem[]>([]);
@@ -49,16 +51,19 @@ export default function EpisodesList({ agentId }: Props) {
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await memoryDashboardApi.listEpisodes(agentId, {
+      const body = {
         offset: (page - 1) * PAGE_SIZE,
         limit: PAGE_SIZE,
-      });
+      };
+      const r = scope
+        ? await memoryDashboardApi.listEpisodes(agentId, body, scope)
+        : await memoryDashboardApi.listEpisodes(agentId, body);
       setItems(r.items);
       setTotal(r.total);
     } finally {
       setLoading(false);
     }
-  }, [agentId, page]);
+  }, [agentId, page, scope]);
 
   useEffect(() => {
     if (!agentId) return;

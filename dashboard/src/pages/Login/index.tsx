@@ -9,9 +9,9 @@ import { clearAuthToken, setAuthToken } from "../../api";
 import { authApi, type OauthProviderStatus } from "../../api/modules/auth";
 import { apiErrorMessage } from "../../utils/apiError";
 import { refreshServerLabels } from "../../i18n";
-import { BRAND, wordmark } from "../../brand.generated";
 import { applyUserLocale, applyGuestLocale } from "../../utils/locale";
 import { useTheme } from "../../context/ThemeContext";
+import { useBranding } from "../../context/BrandingContext";
 import {
   isSsoPopup,
   isSsoPopupMessage,
@@ -67,6 +67,7 @@ function providerIcon(provider: OauthProviderStatus): ReactNode {
 export default function LoginPage() {
   const { t } = useTranslation();
   const { isDark } = useTheme();
+  const brand = useBranding();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [username, setUsername] = useState("");
@@ -249,8 +250,8 @@ export default function LoginPage() {
         }}
       >
         <img
-          src={wordmark(isDark)}
-          alt={BRAND.name.en}
+          src={isDark ? brand.logos.wordmark_dark : brand.logos.wordmark_light}
+          alt={brand.name.en}
           style={{
             height: 48,
             width: "auto",

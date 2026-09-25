@@ -2,11 +2,9 @@
  * A page's scope controls: one row per kind of agent the page's content can
  * belong to.
  *
- * Every agent-scoped page draws the experts' bar. A page whose content belongs
- * to an agent of either kind — an automation schedule, the personalization
- * panels, an ACP tool — draws the second one, over the caller's features: a
- * feature's agent is a scope on the same terms an expert's is, and the only
- * difference the two rows have is which half of them each one offers.
+ * Agent-scoped pages show the caller's experts and features in separate rows.
+ * Personalization also includes shared features in the second row: callers
+ * can manage their own private memory without managing the feature definition.
  *
  * The two are the *same control* (``AgentSelector``, and the stylesheet that
  * draws it), declared here once so a page cannot get one of them and not the
@@ -28,11 +26,19 @@
 
 import AgentSelector from "./AgentSelector";
 
-export default function AgentScopeBars() {
+export default function AgentScopeBars({
+  includeSharedFeatures = false,
+}: {
+  includeSharedFeatures?: boolean;
+}) {
   return (
     <>
       <AgentSelector />
-      <AgentSelector scope="features" style={{ marginTop: 10 }} />
+      <AgentSelector
+        scope="features"
+        includeSharedFeatures={includeSharedFeatures}
+        style={{ marginTop: 10 }}
+      />
     </>
   );
 }

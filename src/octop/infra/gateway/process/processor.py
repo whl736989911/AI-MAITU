@@ -31,11 +31,18 @@ from octop.infra.agents.feature_workflow import (
     CONFIGURABLE_WORKFLOW_KEY,
     FEATURE_RUN_META_KEY,
     STATUS_ACTIVE,
+    STATUS_DRAFT,
     WorkflowRunContext,
+    feature_memory_stage,
     load_workflow,
     workflow_status,
 )
 from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
+from octop.infra.agents.memory_backend import memory_namespace
+from octop.infra.agents.middleware.feature_memory import (
+    CONFIGURABLE_FEATURE_MEMORY_KEY,
+    FeatureMemoryTurnContext,
+)
 from octop.infra.agents.middleware.feature_workflow import CONFIGURABLE_FEATURE_LOCALE_KEY
 from octop.infra.agents.profile import parse_config_json
 from octop.infra.agents.providers.reasoning import reasoning_request_parameters
@@ -77,6 +84,7 @@ from octop.infra.gateway.slash.catalog import spec_for
 from octop.infra.gateway.slash.ctx import SlashCtx, build_slash_ctx
 from octop.infra.gateway.slash.parser import parse_slash
 from octop.infra.gateway.slash.runner import try_handle_slash
+from octop.infra.gateway.threads import ThreadRegistry
 from octop.infra.knowledge.default_open import stamp_turn_knowledge_config
 from octop.infra.trajectory.settings import agent_trajectory_enabled
 from octop.infra.users.preferences import (
@@ -873,14 +881,25 @@ class GlobalProcessor:
         )
         if mcp_servers:
             request["mcp_servers"] = mcp_servers
-        self._stamp_feature_workflow(
+
+        # An IM run of a feature follows the same workflow as one started from the
+        # dashboard: the steps are the feature's, not the entry point's.
+        workflow_context = await self._feature_workflow_context(
+            agent_id=agent_id,
+            user_id=user_id,
+            locale=locale,
+            run_payload=None,
+            thread_id=thread_id,
+        )
+        self._stamp_feature_workflow(request, workflow_context)
+        self._stamp_feature_memory(
             request,
-            await self._feature_workflow_context(
+            await self._feature_memory_context(
                 agent_id=agent_id,
+                row=self._agent_repo.get(agent_id),
                 user_id=user_id,
-                locale=locale,
-                run_payload=None,
-                thread_id=thread_id,
+                channel_type=channel_type,
+                workflow_context=workflow_context,
             ),
         )
         self._stamp_turn_conversation_mode(
@@ -1366,6 +1385,16 @@ class GlobalProcessor:
             thread_id=thread_id,
         )
         self._stamp_feature_workflow(request, workflow_context)
+        self._stamp_feature_memory(
+            request,
+            await self._feature_memory_context(
+                agent_id=agent_id,
+                row=self._agent_repo.get(agent_id),
+                user_id=user_id,
+                channel_type=msg.channel_type or "unknown",
+                workflow_context=workflow_context,
+            ),
+        )
         self._stamp_turn_conversation_mode(
             request, thread_id=thread_id, meta=meta, user_text=msg.text, locale=locale
         )
@@ -1388,6 +1417,82 @@ class GlobalProcessor:
         configurable = dict(request.get("configurable") or {})
         configurable[CONFIGURABLE_WORKFLOW_KEY] = context
         request["configurable"] = configurable
+
+    @staticmethod
+    def _stamp_feature_memory(
+        request: dict[str, Any],
+        context: FeatureMemoryTurnContext | None,
+    ) -> None:
+        """Attach this turn's feature-memory routing, when there is one.
+
+        The memory middleware and the shared-file freeze read nothing else:
+        what this turn may recall, where its capture may land, and whether the
+        shared root files may change are all decided here, once, from the
+        workflow stage and the caller's verified identity.
+        """
+        if context is None:
+            return
+        configurable = dict(request.get("configurable") or {})
+        configurable[CONFIGURABLE_FEATURE_MEMORY_KEY] = context
+        request["configurable"] = configurable
+
+    async def _feature_memory_context(
+        self,
+        *,
+        agent_id: str,
+        row: Any,
+        user_id: int,
+        channel_type: str,
+        workflow_context: WorkflowRunContext | None,
+    ) -> FeatureMemoryTurnContext | None:
+        """What this caller's turn may do with a feature's memory.
+
+        The stage comes from the definition this turn already loaded; only a
+        turn without workflow context (a draft shown to a non-author, or an
+        unreadable definition) re-reads the file to tell those two apart —
+        both fail closed, but a draft must still freeze the shared files for
+        a caller who is not training. An IM turn never gets a private
+        namespace: its user id falls back to the agent owner, and routing
+        owner-id channel traffic into the owner's private memory would let
+        every channel member read and write it. The same fallback is why an
+        IM turn never unlocks the shared files either: shared_writable is the
+        verified author's *manual* training path (file tools), never a
+        conversational write — capture rides private_namespace alone, so
+        shared memory is never auto-written in any stage.
+        """
+        if row is None or not is_feature_agent(str(getattr(row, "kind", ""))):
+            return None
+        if workflow_context is not None:
+            stage = workflow_status(workflow_context.definition)
+        else:
+            workspace = harness_workspace_for_agent(self._agent_manager, agent_id)
+            if workspace is None:
+                return None
+            try:
+                stage = await feature_memory_stage(workspace)
+            except OctopError:
+                # An unreadable definition unlocks nothing anywhere.
+                stage = None
+            except Exception:
+                logger.warning("feature memory stage of %s unreadable", agent_id, exc_info=True)
+                stage = None
+        author = getattr(row, "user_id", None) is not None and user_id == row.user_id
+        verified = (
+            channel_type in (ThreadRegistry.CHANNEL_DASHBOARD, ThreadRegistry.CHANNEL_CLI)
+            and user_id > 0
+        )
+        private_user_id = user_id if (verified and stage == STATUS_ACTIVE) else None
+        return FeatureMemoryTurnContext(
+            stage=stage,
+            # Manual training only: a verified draft author may edit the shared
+            # root files with file tools. On an active feature they freeze for
+            # everyone, and an unverified IM turn never unlocks them.
+            shared_writable=stage == STATUS_DRAFT and author and verified,
+            shared_namespace=memory_namespace(agent_id),
+            private_namespace=(
+                memory_namespace(agent_id, private_user_id) if private_user_id else None
+            ),
+        )
 
     async def _feature_workflow_context(
         self,

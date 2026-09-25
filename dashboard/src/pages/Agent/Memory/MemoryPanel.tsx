@@ -4,7 +4,17 @@
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { Empty, Segmented, Tabs } from "antd";
+import {
+  Alert,
+  Button,
+  Card,
+  Empty,
+  Input,
+  Segmented,
+  Space,
+  Tabs,
+  Typography,
+} from "antd";
 import type { LucideIcon } from "lucide-react";
 import {
   Bell,
@@ -32,7 +42,11 @@ import MemoryTree from "./MemoryTree";
 import ProactiveConfig from "./ProactiveConfig";
 import MemorySettings from "./MemorySettings";
 
-import memoryDashboardApi from "../../../api/modules/memoryDashboard";
+import memoryDashboardApi, {
+  type MemoryAccess,
+  type MemoryScope,
+} from "../../../api/modules/memoryDashboard";
+import { featureWorkflowApi } from "../../../api/modules/featureWorkflow";
 import styles from "./index.module.less";
 
 type MemoryTab =
@@ -92,7 +106,6 @@ const TABS: TabDef[] = [
     fallback: "记忆沉淀",
     showPendingBadge: true,
     icon: Inbox,
-    writes: true,
   },
   {
     key: "journal",
@@ -124,21 +137,16 @@ const TABS: TabDef[] = [
 
 export interface MemoryPanelProps {
   agentId: string | null;
-  /** Stretch tabs to fill parent height (desktop PageShell / drawer). */
   fill?: boolean;
-  /**
-   * Show the memory without offering to change it: the tabs that write are not
-   * offered (whatever they hold stays on screen), and so are the entries that
-   * would write from the tabs that remain. Defaults to false, which is every
-   * surface an expert is configured on.
-   */
   readOnly?: boolean;
+  featureMemory?: boolean;
 }
 
 export default function MemoryPanel({
   agentId,
   fill = true,
   readOnly = false,
+  featureMemory = false,
 }: MemoryPanelProps) {
   const { t } = useTranslation();
 
@@ -149,16 +157,133 @@ export default function MemoryPanel({
     undefined,
   );
   const [expandKey, setExpandKey] = useState(0);
+  const [access, setAccess] = useState<MemoryAccess | null>(null);
+  const [accessError, setAccessError] = useState(false);
+  const [scope, setScope] = useState<MemoryScope>("shared");
+  const [accessAgentId, setAccessAgentId] = useState<string | null>(null);
+  const [overlay, setOverlay] = useState("");
+  const [overlayLoading, setOverlayLoading] = useState(false);
+  const [overlaySaving, setOverlaySaving] = useState(false);
+  const [overlaySaved, setOverlaySaved] = useState(false);
+  const [overlayError, setOverlayError] = useState(false);
+  const [overlayLoaded, setOverlayLoaded] = useState(false);
 
   useEffect(() => {
-    if (!agentId) {
+    if (!featureMemory || !agentId) {
+      setAccess(null);
+      setAccessError(false);
+      setAccessAgentId(null);
+      setScope("shared");
+      return;
+    }
+    let cancelled = false;
+    setAccess(null);
+    setAccessAgentId(null);
+    setAccessError(false);
+    memoryDashboardApi
+      .getAccess(agentId)
+      .then((result) => {
+        if (cancelled) return;
+        setAccess(result);
+        setAccessError(false);
+        setAccessAgentId(agentId);
+        setActiveTab("overview");
+        setLibraryView("tree");
+        setExpandEntityId(undefined);
+        setPendingCount(0);
+        setScope(
+          result.stage === "draft"
+            ? "shared"
+            : result.stage === "active"
+            ? "private"
+            : result.default_scope,
+        );
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setAccess(null);
+          setAccessAgentId(null);
+          setAccessError(true);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, featureMemory]);
+
+  useEffect(() => {
+    if (!featureMemory || !agentId) {
+      setOverlay("");
+      setOverlayLoaded(false);
+      setOverlayLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setOverlayLoaded(false);
+    setOverlay("");
+    setOverlayLoading(true);
+    setOverlaySaved(false);
+    setOverlayError(false);
+    featureWorkflowApi
+      .overlay(agentId)
+      .then((result) => {
+        if (!cancelled) {
+          setOverlay(result.overlay ?? "");
+          setOverlayLoaded(true);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setOverlayError(true);
+      })
+      .finally(() => {
+        if (!cancelled) setOverlayLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, featureMemory]);
+
+  const saveOverlay = async () => {
+    if (!agentId) return;
+    setOverlaySaving(true);
+    setOverlaySaved(false);
+    setOverlayError(false);
+    try {
+      const result = await featureWorkflowApi.putOverlay(agentId, overlay);
+      setOverlay(result.overlay ?? "");
+      setOverlaySaved(true);
+    } catch {
+      setOverlayError(true);
+    } finally {
+      setOverlaySaving(false);
+    }
+  };
+
+  const currentAccess = accessAgentId === agentId ? access : null;
+  const memoryScope = featureMemory && currentAccess ? scope : undefined;
+  const effectiveReadOnly =
+    readOnly ||
+    (featureMemory &&
+      (!currentAccess ||
+        (currentAccess.stage === "active" && scope === "shared") ||
+        (currentAccess.stage === "draft" && scope === "private") ||
+        (scope === "shared"
+          ? !currentAccess.shared_writable
+          : !currentAccess.private_writable)));
+  const availableScopes: MemoryScope[] =
+    currentAccess?.stage === "draft" ? ["shared"] : ["shared", "private"];
+
+  useEffect(() => {
+    if (!agentId || (featureMemory && !currentAccess)) {
       setPendingCount(0);
       return;
     }
     let cancelled = false;
     (async () => {
       try {
-        const c = await memoryDashboardApi.statsCounts(agentId);
+        const c = memoryScope
+          ? await memoryDashboardApi.statsCounts(agentId, memoryScope)
+          : await memoryDashboardApi.statsCounts(agentId);
         if (!cancelled) setPendingCount(c.candidates_pending ?? 0);
       } catch {
         if (!cancelled) setPendingCount(0);
@@ -167,7 +292,7 @@ export default function MemoryPanel({
     return () => {
       cancelled = true;
     };
-  }, [agentId, activeTab]);
+  }, [agentId, activeTab, featureMemory, currentAccess, memoryScope]);
 
   const tabItems = useMemo(() => {
     if (!agentId) return [];
@@ -212,21 +337,35 @@ export default function MemoryPanel({
         </div>
         {libraryView === "tree" ? (
           <MemoryTree
-            key={expandKey}
+            key={`${expandKey}:${memoryScope ?? "default"}:${agentId}`}
             agentId={agentId}
+            scope={memoryScope}
+            readOnly={effectiveReadOnly}
             initialExpandEntityId={expandEntityId}
           />
         ) : libraryView === "atoms" ? (
-          <AtomsList agentId={agentId} />
+          <AtomsList
+            key={`${memoryScope ?? "default"}:${agentId}`}
+            agentId={agentId}
+            scope={memoryScope}
+            readOnly={effectiveReadOnly}
+          />
         ) : (
-          <RawEventsList agentId={agentId} />
+          <RawEventsList agentId={agentId} scope={memoryScope} />
         )}
       </div>
     );
 
-    // A read-only panel still shows what it holds: the tabs that write are the
-    // ones nobody may use here, and leaving them out is how "no" is said.
-    const offered = readOnly ? TABS.filter((tab) => !tab.writes) : TABS;
+    const offered = TABS.filter(
+      (tab) =>
+        !(effectiveReadOnly && tab.writes) &&
+        !(
+          featureMemory &&
+          (tab.key === "proactive" ||
+            tab.key === "settings" ||
+            tab.key === "conversations")
+        ),
+    );
 
     return offered.map((tab) => {
       const showBadge = tab.showPendingBadge && pendingCount > 0;
@@ -244,17 +383,19 @@ export default function MemoryPanel({
         case "overview":
           children = (
             <Overview
+              key={`${memoryScope ?? "default"}:${agentId}`}
               agentId={agentId}
-              readOnly={readOnly}
-              onViewConversations={() => setActiveTab("conversations")}
-              // ``undefined`` rather than a handler into a tab that is not
-              // offered: the panel hides the entry when it has nowhere to go,
-              // and a button whose only outcome is a refusal is not an entry.
-              onReviewCandidates={
-                readOnly ? undefined : () => setActiveTab("candidates")
+              scope={memoryScope}
+              readOnly={effectiveReadOnly}
+              hideMigration={featureMemory}
+              onViewConversations={
+                featureMemory ? undefined : () => setActiveTab("conversations")
               }
+              onReviewCandidates={() => setActiveTab("candidates")}
               onOpenSettings={
-                readOnly ? undefined : () => setActiveTab("settings")
+                effectiveReadOnly || featureMemory
+                  ? undefined
+                  : () => setActiveTab("settings")
               }
             />
           );
@@ -262,8 +403,10 @@ export default function MemoryPanel({
         case "profile":
           children = (
             <ProfileOverview
+              key={`${memoryScope ?? "default"}:${agentId}`}
               agentId={agentId}
-              onReview={readOnly ? undefined : () => setActiveTab("candidates")}
+              scope={memoryScope}
+              onReview={() => setActiveTab("candidates")}
               onViewAll={(entityId) => {
                 setExpandEntityId(entityId);
                 setExpandKey((k) => k + 1);
@@ -277,13 +420,32 @@ export default function MemoryPanel({
           children = library;
           break;
         case "episodes":
-          children = <EpisodesList agentId={agentId} />;
+          children = (
+            <EpisodesList
+              key={`${memoryScope ?? "default"}:${agentId}`}
+              agentId={agentId}
+              scope={memoryScope}
+            />
+          );
           break;
         case "candidates":
-          children = <CandidatesReview agentId={agentId} />;
+          children = (
+            <CandidatesReview
+              key={`${memoryScope ?? "default"}:${agentId}`}
+              agentId={agentId}
+              scope={memoryScope}
+              readOnly={effectiveReadOnly}
+            />
+          );
           break;
         case "journal":
-          children = <JournalList agentId={agentId} />;
+          children = (
+            <JournalList
+              key={`${memoryScope ?? "default"}:${agentId}`}
+              agentId={agentId}
+              scope={memoryScope}
+            />
+          );
           break;
         case "conversations":
           children = <ConversationRecords agentId={agentId} />;
@@ -308,8 +470,10 @@ export default function MemoryPanel({
     expandEntityId,
     expandKey,
     libraryView,
+    featureMemory,
+    memoryScope,
+    effectiveReadOnly,
     pendingCount,
-    readOnly,
     t,
   ]);
 
@@ -322,14 +486,139 @@ export default function MemoryPanel({
     );
   }
 
+  if (featureMemory && !currentAccess) {
+    return accessError ? (
+      <Alert type="error" showIcon message={t("memory.scope.loadFailed")} />
+    ) : (
+      <Empty
+        description={t("memory.scope.loading", "Loading memory access…")}
+      />
+    );
+  }
+
   return (
-    <Tabs
-      className={styles.memoryTabs}
-      style={fill ? undefined : { height: "auto" }}
-      activeKey={activeTab}
-      onChange={(k) => setActiveTab(k as MemoryTab)}
-      destroyOnHidden
-      items={tabItems}
-    />
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        minHeight: 0,
+        height: "100%",
+      }}
+    >
+      {featureMemory && (
+        <Card
+          size="small"
+          title={t("personalization.overlayTitle", "我的专属指令")}
+          style={{ marginBottom: 12 }}
+        >
+          <Typography.Paragraph type="secondary">
+            {t(
+              "personalization.overlayHint",
+              "只影响你自己的功能调用；不会从记忆中自动生成或覆盖。",
+            )}
+          </Typography.Paragraph>
+          {overlayError && (
+            <Alert
+              type="error"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message={t(
+                "personalization.overlayError",
+                "专属指令加载或保存失败。",
+              )}
+            />
+          )}
+          <Input.TextArea
+            value={overlay}
+            onChange={(event) => {
+              setOverlay(event.target.value);
+              setOverlaySaved(false);
+            }}
+            disabled={!overlayLoaded || overlayLoading || overlaySaving}
+            placeholder={t(
+              "personalization.overlayPlaceholder",
+              "写下你希望功能额外遵循的要求…",
+            )}
+            maxLength={4000}
+            showCount
+            rows={3}
+            aria-label={t("personalization.overlayTitle", "我的专属指令")}
+          />
+          <Space style={{ marginTop: 12 }}>
+            <Button
+              onClick={() => void saveOverlay()}
+              loading={overlaySaving}
+              disabled={!overlayLoaded || overlayLoading}
+            >
+              {t("common.save")}
+            </Button>
+            {overlaySaved && (
+              <Typography.Text type="success">
+                {t("personalization.overlaySaved", "已保存")}
+              </Typography.Text>
+            )}
+          </Space>
+        </Card>
+      )}
+      {featureMemory && (
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            marginBottom: 12,
+          }}
+        >
+          <Typography.Text strong>
+            {t("personalization.memorySourceTitle", "功能记忆")}
+          </Typography.Text>
+          <Segmented
+            value={scope}
+            onChange={(value) => {
+              const nextScope = value as MemoryScope;
+              if (!availableScopes.includes(nextScope)) return;
+              setScope(nextScope);
+              setPendingCount(0);
+              setActiveTab("overview");
+            }}
+            options={availableScopes.map((availableScope) => ({
+              label: t(
+                `memory.scope.${availableScope}`,
+                availableScope === "shared"
+                  ? "Shared memory"
+                  : "My private memory",
+              ),
+              value: availableScope,
+            }))}
+          />
+        </div>
+      )}
+      {featureMemory && (
+        <Typography.Paragraph type="secondary">
+          {scope === "shared" && currentAccess?.stage === "draft"
+            ? t(
+                "memory.scope.draftShared",
+                "Draft feature memory is shared and editable by its author.",
+              )
+            : scope === "shared"
+            ? t(
+                "memory.scope.sharedReadOnly",
+                "Shared memory is read-only for active features.",
+              )
+            : t(
+                "memory.scope.privateDescription",
+                "Private memory is visible and editable only to you.",
+              )}
+        </Typography.Paragraph>
+      )}
+      <Tabs
+        className={styles.memoryTabs}
+        style={fill ? undefined : { height: "auto" }}
+        activeKey={activeTab}
+        onChange={(k) => setActiveTab(k as MemoryTab)}
+        destroyOnHidden
+        items={tabItems}
+      />
+    </div>
   );
 }

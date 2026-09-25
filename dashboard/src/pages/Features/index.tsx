@@ -34,6 +34,7 @@ import { canManageExpert } from "../../utils/sharedExpert";
 import { AgentCard } from "../Experts/components/AgentCard";
 import EditAgentDrawer from "../Experts/components/EditAgentDrawer";
 import { EmptyStateIcon } from "../../components/EmptyState";
+import MemoryCatalogDrawer from "../Experts/components/MemoryCatalogDrawer";
 import FeatureCreateDrawer from "./components/FeatureCreateDrawer";
 import FeatureWorkflowPanel from "./components/FeatureWorkflowPanel";
 // The experts' own grid, toolbar and empty-state styles: a feature's list is the
@@ -72,6 +73,8 @@ export default function FeaturesPage() {
   const [workflowFeature, setWorkflowFeature] = useState<OctopAgent | null>(
     null,
   );
+  const [personalizationFeature, setPersonalizationFeature] =
+    useState<OctopAgent | null>(null);
 
   useEffect(() => {
     setLocalFeatures(features);
@@ -212,6 +215,11 @@ export default function FeaturesPage() {
                   localFeatures.find((a) => a.agent_id === agentId) ?? null,
                 )
               }
+              onPersonalization={(agentId) =>
+                setPersonalizationFeature(
+                  localFeatures.find((a) => a.agent_id === agentId) ?? null,
+                )
+              }
               onDeleted={handleDeleted}
               onStateChange={handleStateChange}
             />
@@ -251,6 +259,12 @@ export default function FeaturesPage() {
           />
         )}
       </Drawer>
+      <MemoryCatalogDrawer
+        agentId={personalizationFeature?.agent_id ?? ""}
+        open={personalizationFeature !== null}
+        onClose={() => setPersonalizationFeature(null)}
+        featureMemory
+      />
 
       <FeatureCreateDrawer
         open={createOpen}

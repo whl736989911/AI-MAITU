@@ -15,6 +15,7 @@ import {
   type ExtractRunStats,
   type JournalItem,
   type ListJournalBody,
+  type MemoryScope,
 } from "../../../api/modules/memoryDashboard";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import {
@@ -71,9 +72,10 @@ const GROUP_GAP_MS = 60_000;
 
 interface Props {
   agentId: string;
+  scope?: MemoryScope;
 }
 
-export default function JournalList({ agentId }: Props) {
+export default function JournalList({ agentId, scope }: Props) {
   const timeZone = useServerTimezone();
   const [items, setItems] = useState<JournalItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -90,13 +92,15 @@ export default function JournalList({ agentId }: Props) {
     };
     if (action) body.action = action;
     try {
-      const r = await memoryDashboardApi.listJournal(agentId, body);
+      const r = scope
+        ? await memoryDashboardApi.listJournal(agentId, body, scope)
+        : await memoryDashboardApi.listJournal(agentId, body);
       setItems(r.items);
       setTotal(r.total);
     } finally {
       setLoading(false);
     }
-  }, [agentId, page, action]);
+  }, [agentId, page, action, scope]);
 
   useEffect(() => {
     if (!agentId) return;

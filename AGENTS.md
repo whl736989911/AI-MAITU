@@ -380,7 +380,7 @@ Boundary rules are in [§5](#5-module-boundaries). Additionally:
 2. **Hooks** — if this clone has not run `make install-hooks` yet, do it before committing (see [§6](#6-run-commands)). Pre-commit must stay green (`make all` + dashboard build).
 3. **Minimal implementation** — change only task-related files; dashboard source is in `dashboard/`, build output in `src/octop/dashboard/` (run `make build-frontend` after UI changes).
 4. **Verify** — backend/ship bar: `make all` (`format-all` + `lint` + `typecheck` + `test` + `test-frontend`). After `dashboard/` changes, also run `cd dashboard && npx tsc -b` (and `npm run lint` when appropriate). After API route changes, glance at `/api/docs` for readable summaries and schemas. After i18n JSON changes, run `uv run pytest tests/unit/i18n -q`. Treat Windows CI as part of the bar: follow [§7 Cross-platform tests](#7-key-patterns).
-5. **Wrap up** — remove orphan symbols introduced in this change; do not commit or push unless asked.
+5. **Wrap up** — remove orphan symbols introduced in this change; do not commit or push unless asked. **Never push to GitHub on your own initiative** (this includes forks): deploy to the **local instance** instead, let the user exercise the change, and push only after the user confirms it passes. Pushing is the user's call, not the agent's wrap-up step.
 
 ### Branching & release
 

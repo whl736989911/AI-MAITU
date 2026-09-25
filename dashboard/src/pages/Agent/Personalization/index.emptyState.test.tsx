@@ -1,15 +1,3 @@
-/**
- * The personalization page when the caller has no expert of their own.
- *
- * The panels below are built from one agent id, so with none the page used to
- * leave a switcher's rejection ("pick an agent first") where the body should be.
- * It now says what it is waiting for and offers the two ways to get one, and it
- * still renders the panels the moment the caller has an expert. The empty state
- * is about the caller's *experts*: a caller who only holds features is exactly
- * the case this branch serves, so the branch is never read as "this deployment
- * has no features".
- */
-
 import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type * as PersonalizationPanelsModule from "./components/PersonalizationPanels";
@@ -17,55 +5,59 @@ import type { OctopAgent } from "../../../context/AgentContext";
 import { KIND_FEATURE } from "../../../utils/agentKind";
 import PersonalizationPage from "./index";
 
-const navigateMock = vi.fn();
-const panelsMock = vi.fn();
-
-vi.mock("react-router-dom", () => ({
-  useNavigate: () => navigateMock,
+const navigate = vi.fn();
+const held = vi.hoisted(() => ({
+  agents: [] as OctopAgent[],
+  activeAgentId: null as string | null,
 }));
 
+vi.mock("react-router-dom", () => ({ useNavigate: () => navigate }));
 vi.mock("../../../layouts/PageShell", () => ({
-  default: ({ children }: { children?: React.ReactNode }) => (
-    <div>{children}</div>
+  default: ({
+    children,
+    pathTabs,
+  }: {
+    children?: React.ReactNode;
+    pathTabs?: { options: { value: string; label: string }[] };
+  }) => (
+    <div>
+      <div role="tablist" aria-label="personalization">
+        {pathTabs?.options.map(({ value, label }) => (
+          <button role="tab" key={value}>
+            {label}
+          </button>
+        ))}
+      </div>
+      {children}
+    </div>
   ),
 }));
-
 vi.mock("../../../hooks/useIsMobile", () => ({ useIsMobile: () => false }));
 vi.mock("../../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => null,
 }));
+vi.mock("../../../hooks/useUserRole", () => ({ useUserRole: () => null }));
 vi.mock("../../../hooks/usePathTabs", () => ({
-  usePathTabs: () => ({
-    activeTab: "skills",
+  usePathTabs: ({ tabs }: { tabs: string[] }) => ({
+    activeTab: tabs[0],
     handleTabChange: vi.fn(),
     isMounted: () => true,
   }),
 }));
-
-vi.mock("./components/PersonalizationPanels", async (importOriginal) => {
-  // The page's own imports of this module stay the app's — the tabs a scope
-  // offers are asked of the real table; only the panels are replaced.
-  const actual = await importOriginal<typeof PersonalizationPanelsModule>();
-  return {
-    ...actual,
-    default: (props: { agentId: string | null }) => {
-      panelsMock(props);
-      return <div data-testid="panels" />;
-    },
-  };
-});
-
-const held = vi.hoisted(() => ({ agents: [] as OctopAgent[] }));
+vi.mock("./components/PersonalizationPanels", async (importOriginal) => ({
+  ...(await importOriginal<typeof PersonalizationPanelsModule>()),
+  default: () => <div data-testid="panels" />,
+}));
 vi.mock("../../../context/AgentContext", () => ({
-  useAgent: () => ({ agents: held.agents, activeAgentId: null }),
+  useAgent: () => ({ agents: held.agents, activeAgentId: held.activeAgentId }),
 }));
 
-function agent(agentId: string, kind?: string): OctopAgent {
+function sharedFeature(): OctopAgent {
   return {
     id: 1,
-    agent_id: agentId,
-    kind,
-    name: agentId,
+    agent_id: "feat-weekly",
+    kind: KIND_FEATURE,
+    name: "Shared feature",
     description: null,
     persona_mbti: null,
     default_model: null,
@@ -78,59 +70,72 @@ function agent(agentId: string, kind?: string): OctopAgent {
     icon_url: null,
     color: null,
     config: {},
+    is_shared: true,
+    is_owner: false,
   };
 }
 
-describe("PersonalizationPage with no expert of the caller's", () => {
+describe("PersonalizationPage feature availability", () => {
   beforeEach(() => {
-    navigateMock.mockReset();
-    panelsMock.mockReset();
+    navigate.mockReset();
     held.agents = [];
+    held.activeAgentId = null;
   });
 
-  it("offers both ways to get one instead of an empty panel", () => {
-    // A caller who holds a feature and no expert of their own: the panels are
-    // per-expert, so this is the branch — and the entries still lead to both.
-    held.agents = [agent("feat-weekly", KIND_FEATURE)];
+  it("offers creation and feature navigation only when no agent is available", () => {
     render(<PersonalizationPage />);
 
-    expect(screen.queryByTestId("panels")).toBeNull();
-    // ``t("personalization.noExpertTitle")`` — the i18n test mock resolves a
-    // key with no fallback to itself.
     expect(
       screen.getByText("personalization.noExpertTitle"),
     ).toBeInTheDocument();
-
+    expect(screen.queryByTestId("panels")).not.toBeInTheDocument();
     fireEvent.click(
       screen.getByRole("button", { name: "personalization.createExpert" }),
     );
-    expect(navigateMock).toHaveBeenCalledWith("/experts");
-
     fireEvent.click(
       screen.getByRole("button", { name: "personalization.pickFeature" }),
     );
-    expect(navigateMock).toHaveBeenCalledWith("/features");
+    expect(navigate).toHaveBeenCalledWith("/experts");
+    expect(navigate).toHaveBeenCalledWith("/features");
   });
 
-  it("renders the panels, for the caller's own expert", () => {
-    held.agents = [agent("A1")];
+  it("offers private memory for the first shared feature without an expert", () => {
+    held.agents = [sharedFeature()];
     render(<PersonalizationPage />);
 
-    expect(screen.getByTestId("panels")).toBeInTheDocument();
-    expect(panelsMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "A1" }),
-    );
     expect(
-      screen.queryByRole("button", { name: "personalization.createExpert" }),
-    ).toBeNull();
+      screen.getByRole("tab", { name: "personalization.tabs.memory" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "personalization.tabs.skills" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByTestId("panels")).toBeInTheDocument();
+    expect(
+      screen.queryByText("personalization.noExpertTitle"),
+    ).not.toBeInTheDocument();
   });
-
-  it("prefers the caller's own expert over a feature they also hold", () => {
-    held.agents = [agent("feat-weekly", KIND_FEATURE), agent("A1")];
+  it("keeps a selected shared feature in the memory-only scope even with an owned expert", () => {
+    held.agents = [
+      {
+        ...sharedFeature(),
+        agent_id: "my-expert",
+        kind: undefined,
+        is_shared: false,
+        is_owner: true,
+      },
+      sharedFeature(),
+    ];
+    held.activeAgentId = "feat-weekly";
     render(<PersonalizationPage />);
 
-    expect(panelsMock).toHaveBeenCalledWith(
-      expect.objectContaining({ agentId: "A1" }),
-    );
+    expect(
+      screen.getByRole("tab", { name: "personalization.tabs.memory" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("tab", { name: "personalization.tabs.skills" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("personalization.noExpertTitle"),
+    ).not.toBeInTheDocument();
   });
 });

@@ -3,8 +3,8 @@ import { Menu as MenuIcon } from "lucide-react";
 import PwaInstallPrompt from "../components/PwaInstallPrompt";
 import CurrentVersionBadge from "../components/CurrentVersionBadge";
 import { useTheme } from "../context/ThemeContext";
+import { useBranding } from "../context/BrandingContext";
 import { typeSize } from "../utils/mobileTypeScale";
-import { wordmark } from "../brand.generated";
 
 const { Header: AntHeader } = Layout;
 
@@ -21,7 +21,10 @@ interface HeaderProps {
  */
 export default function Header({ onToggle, isMobile }: HeaderProps) {
   const { isDark } = useTheme();
-  const mobileLogoSrc = wordmark(isDark);
+  const brand = useBranding();
+  const mobileLogoSrc = isDark
+    ? brand.logos.wordmark_dark
+    : brand.logos.wordmark_light;
 
   if (!isMobile) return null;
   const safeTop = "env(safe-area-inset-top, 0px)";
@@ -72,7 +75,7 @@ export default function Header({ onToggle, isMobile }: HeaderProps) {
         )}
         <img
           src={mobileLogoSrc}
-          alt="octop"
+          alt={brand.name.en}
           style={{
             height: 36,
             width: "auto",

@@ -6,6 +6,7 @@ import AvatarDropdown from "../components/AvatarDropdown";
 import CurrentVersionBadge from "../components/CurrentVersionBadge";
 import { ArrowRightLeft, X, ChevronDown } from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
+import { useBranding } from "../context/BrandingContext";
 import { useLayoutMode } from "../context/LayoutModeContext";
 import { useCurrentUser, useSetCurrentUser } from "../hooks/useCurrentUser";
 import { prefetchRoute } from "../routes/prefetch";
@@ -30,7 +31,6 @@ import {
 } from "./sidebarNav";
 import styles from "./Sidebar.module.less";
 import { typeSize } from "../utils/mobileTypeScale";
-import { BRAND, wordmark } from "../brand.generated";
 
 const NAV_GROUPS_STORAGE_KEY = "octop:sidebar-nav-groups";
 /** Minimal settings pane: skip the "设置" group header (duplicates the pane title). */
@@ -375,7 +375,10 @@ export default function Sidebar({
   const showChatRailExpand = !isMinimal && !chatSidebarOpen;
 
   const isRailCollapsed = collapsed && !isMobile;
-  const wordmarkSrc = wordmark(isDark);
+  const brand = useBranding();
+  const wordmarkSrc = isDark
+    ? brand.logos.wordmark_dark
+    : brand.logos.wordmark_light;
 
   const selectMinimalPane = useCallback(
     (pane: MinimalNavPane, opts?: { expand?: boolean }) => {
@@ -437,8 +440,8 @@ export default function Sidebar({
   const brandInner = (
     <>
       <img
-        src={isRailCollapsed ? BRAND.logo.mark : wordmarkSrc}
-        alt={BRAND.name.en}
+        src={isRailCollapsed ? brand.logos.mark : wordmarkSrc}
+        alt={brand.name.en}
         style={{
           height: isRailCollapsed ? 32 : isMobile ? 38 : 36,
           width: isRailCollapsed ? 32 : "auto",

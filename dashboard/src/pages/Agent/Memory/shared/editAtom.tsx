@@ -8,15 +8,18 @@ import i18n from "@/i18n";
 import {
   memoryDashboardApi,
   type AtomItem,
+  type MemoryScope,
 } from "../../../../api/modules/memoryDashboard";
 
 export function confirmEditAtom({
   agentId,
   atom,
+  scope,
   onSuccess,
 }: {
   agentId: string;
   atom: AtomItem;
+  scope?: MemoryScope;
   onSuccess?: (next: AtomItem) => void;
 }) {
   let assertion = atom.assertion;
@@ -46,9 +49,12 @@ export function confirmEditAtom({
         throw new Error("empty assertion");
       }
       try {
-        const r = await memoryDashboardApi.replaceAtom(agentId, atom.id, {
-          assertion: text,
-        });
+        const r = await memoryDashboardApi.replaceAtom(
+          agentId,
+          atom.id,
+          { assertion: text },
+          scope,
+        );
         message.success(i18n.t("memory.edit.success"));
         onSuccess?.(r.atom);
       } catch (e) {

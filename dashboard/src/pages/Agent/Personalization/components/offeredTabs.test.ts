@@ -1,6 +1,5 @@
 import { describe, expect, it } from "vitest";
 import {
-  CAPABILITY_POLICY,
   FEATURE_PERSONALIZATION_TABS,
   PERSONALIZATION_TABS,
   offeredTabs,
@@ -21,15 +20,10 @@ describe("offeredTabs", () => {
     ]);
   });
 
-  it("offers a caller only what nobody has to write", () => {
-    // A feature is configured by whoever defines it. For a caller the writing
-    // tabs are not offered at all — a control whose only outcome is a refusal is
-    // a dead end, not a choice — and what is left is its memory, which no one
-    // writes and which therefore stays readable.
+  it("offers a caller memory but not author-owned configuration", () => {
     expect(offeredTabs("feature", FEATURE_PERSONALIZATION_TABS, false)).toEqual(
       ["memory"],
     );
-    expect(CAPABILITY_POLICY.feature.memory?.writer).toBe("nobody");
   });
 
   it("does not offer a caller a capability the author writes", () => {

@@ -7,6 +7,7 @@ import sqlite3
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from langgraph.checkpoint.base import empty_checkpoint
@@ -82,24 +83,31 @@ async def test_live_maintenance_waits_for_turn_then_releases_admission(tmp_path,
         memory.backend.close()
 
 
-def test_memory_api_rejects_sqlite_access_while_maintenance_is_mutating(monkeypatch):
+@pytest.mark.asyncio
+async def test_memory_api_rejects_sqlite_access_while_maintenance_is_mutating(monkeypatch):
     from octop.api.common import memory_client
     from octop.infra.errors import ErrorCode, OctopError
 
-    monkeypatch.setattr(memory_client, "require_agent_owner_row", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        memory_client,
+        "resolve_memory_access",
+        AsyncMock(return_value=SimpleNamespace(default_scope="shared")),
+    )
     opened = []
-    monkeypatch.setattr(memory_client, "_open_memory_for_agent", lambda *args: opened.append(True))
+    monkeypatch.setattr(
+        memory_client, "_open_memory_for_agent", lambda *args, **kwargs: opened.append(True)
+    )
     coordinator = SimpleNamespace(status=lambda _: {"phase": "compacting", "kind": "memory_slim"})
     host = SimpleNamespace(
         app_runtime=SimpleNamespace(agent_registry=SimpleNamespace(memory_slim=coordinator))
     )
 
     with pytest.raises(OctopError) as error:
-        memory_client.call_memory_rpc(
+        await memory_client.call_memory_rpc(
             agent_id="owned-agent",
             method="stats_counts",
             params={},
-            user=None,
+            user=SimpleNamespace(id=7),
             as_user=None,
             server=host,
         )

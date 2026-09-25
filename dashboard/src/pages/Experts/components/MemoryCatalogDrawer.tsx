@@ -8,12 +8,9 @@ interface MemoryCatalogDrawerProps {
   agentId: string;
   open: boolean;
   onClose: () => void;
-  /**
-   * Show the memory without offering to change it — a feature's memory is written
-   * by nobody (its author included), so over that agent the panel would otherwise
-   * offer entries whose only outcome is a refusal. Defaults to false, which is
-   * every expert.
-   */
+  /** Feature callers use the unified overlay plus stage-scoped memory editor. */
+  featureMemory?: boolean;
+  /** Show only read-only memory. Defaults to false, which is every expert. */
   readOnly?: boolean;
 }
 
@@ -23,13 +20,18 @@ export default function MemoryCatalogDrawer({
   open,
   onClose,
   readOnly = false,
+  featureMemory = false,
 }: MemoryCatalogDrawerProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
 
   return (
     <CatalogDrawer
-      title={t("pageShell.memory.title")}
+      title={t(
+        featureMemory
+          ? "personalization.myPersonalization"
+          : "pageShell.memory.title",
+      )}
       open={open}
       onClose={onClose}
     >
@@ -43,9 +45,11 @@ export default function MemoryCatalogDrawer({
         }}
       >
         <MemoryPanel
+          key={featureMemory ? `${agentId}:${open}` : agentId}
           agentId={agentId || null}
           fill={!isMobile}
           readOnly={readOnly}
+          featureMemory={featureMemory}
         />
       </div>
     </CatalogDrawer>

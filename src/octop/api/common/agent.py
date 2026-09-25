@@ -11,7 +11,7 @@ Two questions live here, and they are not the same question:
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
@@ -45,7 +45,7 @@ class AgentCapability(StrEnum):
     """Its workspace persona files: the markdown the agent is run with."""
 
     MEMORY = "memory"
-    """Its memory: the workspace ``MEMORY.md`` and the memory store behind it."""
+    """Shared training memory, published shared memory, or caller-private memory."""
 
     CHANNELS = "channels"
     """Its conversation entry points — the channels bound to it."""
@@ -57,10 +57,9 @@ class AgentCapability(StrEnum):
 
 
 _FEATURE_MEMORY_REFUSAL = (
-    "This agent belongs to a feature, so every caller of that feature runs on the "
-    "same memory: it is read but never written — not by a run, and not by you. A "
-    "feature's memory staying as it is *is* the design, not a permission you are "
-    "missing."
+    "Feature memory requires its stage and scope: the author can edit shared "
+    "memory during training, but published shared memory is read-only. A published "
+    "feature's private memory belongs to the authenticated caller."
 )
 
 _FEATURE_WRITE_REFUSAL = (
@@ -70,50 +69,49 @@ _FEATURE_WRITE_REFUSAL = (
 )
 
 
-def agent_capability_refusal(row: Any, user: Any, capability: AgentCapability) -> str | None:
-    """Why *user* may not write *capability* of *row*, or ``None`` when they may.
+def agent_capability_refusal(
+    row: Any,
+    user: Any,
+    capability: AgentCapability,
+    *,
+    memory_stage: Literal["draft", "active"] | None = None,
+    memory_scope: Literal["shared", "private"] = "shared",
+) -> str | None:
+    """Return a write refusal for this row, caller, capability and memory phase.
 
-    **This is the capability matrix, stated once.**
-
-    An ordinary agent — the user's own expert — is unchanged: its owner writes
-    everything it has, and an administrator may always step in.
-
-    A feature's agent is owned by whoever defined the feature, and:
-
-    * ``CONFIGURATION`` and ``PERSONA_FILES`` are written by that author, or an
-      administrator — the same "the owner writes it" rule, read on a row whose
-      owner *is* the author — and are read-only for every other caller, who
-      reaches them by running the feature rather than by configuring it;
-    * ``CHANNELS`` follows that rule too: the author may bind one, because a
-      feature's agent *is* a conversation entry point;
-    * ``MEMORY`` is written by nobody at all, an administrator included. One agent
-      serves every caller of the feature, so one caller's run would leave its
-      context for the next one's — that is not personalization, and neither is a
-      person editing the file.
-
-    The row and the caller are the only inputs: no id convention, no definition
-    lookup, nothing that can drift from what the row says.
+    Without a verified stage, feature-memory writes fail closed. Only the
+    memory endpoints may provide a stage after reading the workflow definition;
+    the ordinary configuration and persona rules do not depend on it.
     """
     if not is_feature_agent(row.kind):
         if user.is_admin or user_owns_agent(row, user):
             return None
         return "agent not owned by user"
     if capability is AgentCapability.MEMORY:
+        if memory_stage == "active" and memory_scope == "private":
+            return None  # Access to this private namespace was checked by its caller.
+        if memory_stage == "draft" and memory_scope == "shared":
+            if user.is_admin or user_owns_agent(row, user):
+                return None
+            return _FEATURE_WRITE_REFUSAL.format(author=row.user_id, capability=capability.label)
         return _FEATURE_MEMORY_REFUSAL
     if user.is_admin or user_owns_agent(row, user):
         return None
     return _FEATURE_WRITE_REFUSAL.format(author=row.user_id, capability=capability.label)
 
 
-def assert_agent_capability_write(row: Any, user: Any, capability: AgentCapability) -> None:
-    """Raise if *user* may not write *capability* of this agent. Never silent.
-
-    A client response is localized by error *code*, so ``FORBIDDEN`` alone would
-    arrive as the generic "no permission" sentence and the matrix's own words
-    would be dropped. They ride in ``details`` as well, which is how every refusal
-    that has something specific to say does it here.
-    """
-    reason = agent_capability_refusal(row, user, capability)
+def assert_agent_capability_write(
+    row: Any,
+    user: Any,
+    capability: AgentCapability,
+    *,
+    memory_stage: Literal["draft", "active"] | None = None,
+    memory_scope: Literal["shared", "private"] = "shared",
+) -> None:
+    """Raise if *user* may not write this capability in its verified memory scope."""
+    reason = agent_capability_refusal(
+        row, user, capability, memory_stage=memory_stage, memory_scope=memory_scope
+    )
     if reason is None:
         return
     if is_feature_agent(row.kind):

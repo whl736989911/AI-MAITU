@@ -44,10 +44,14 @@ from octop.api.common.agent import (
     AgentCapability,
     require_agent_capability_row,
     require_agent_owner_row,
+    require_agent_row,
 )
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
+from octop.api.common.memory_client import feature_memory_reason, resolve_memory_access
 from octop.api.common.workspace import require_running_workspace
 from octop.api.deps import current_user, get_server
+from octop.infra.agents.feature_workflow import STATUS_ACTIVE, feature_memory_stage
+from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.errors import ErrorCode, OctopError
 
 logger = logging.getLogger(__name__)
@@ -68,9 +72,8 @@ def _resolve_runtime(
 ) -> Any:
     """Return the AgentRow for the given agent_id after auth.
 
-    *capability* names the group an endpoint is about to **write**, so the
-    capability matrix decides it (daily memory is memory: a feature's is never
-    written, by anyone); ``None`` is the read path, which stays owner-level.
+    *capability* names the group an endpoint is about to write; daily memory
+    follows the author-controlled configuration policy only during training.
     """
     if capability is None:
         return require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
@@ -81,6 +84,17 @@ def _resolve_runtime(
         server=server,
         capability=capability,
     )
+
+
+async def _resolve_memory_reader(
+    agent_id: str, *, user: Any, as_user: int | None, server: Any
+) -> Any:
+    row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    if is_feature_agent(row.kind):
+        await resolve_memory_access(agent_id, user=user, as_user=as_user, server=server)
+    else:
+        require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    return row
 
 
 # --- heartbeat config ------------------------------------------------------
@@ -184,7 +198,7 @@ async def list_daily_memory(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    rt = _resolve_runtime(agent_id, user=user, as_user=as_user, server=server)
+    rt = await _resolve_memory_reader(agent_id, user=user, as_user=as_user, server=server)
     ws = await require_running_workspace(rt.agent_id, user=user, as_user=as_user, server=server)
     result = await ws.als("daily")
     if result is None:
@@ -226,7 +240,7 @@ async def read_daily_memory(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     date = _validate_filename(filename)
-    rt = _resolve_runtime(agent_id, user=user, as_user=as_user, server=server)
+    rt = await _resolve_memory_reader(agent_id, user=user, as_user=as_user, server=server)
     ws = await require_running_workspace(rt.agent_id, user=user, as_user=as_user, server=server)
     target = f"daily/{filename}"
     content = await ws.aread_text(target)
@@ -249,8 +263,12 @@ async def delete_daily_memory(
         user=user,
         as_user=as_user,
         server=server,
-        capability=AgentCapability.MEMORY,
+        capability=AgentCapability.CONFIGURATION,
     )
+    ws = await require_running_workspace(rt.agent_id, user=user, as_user=as_user, server=server)
+    if is_feature_agent(rt.kind) and await feature_memory_stage(ws) == STATUS_ACTIVE:
+        reason = feature_memory_reason("shared_read_only", user=user, server=server)
+        raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})
     # ``BackendProtocol`` has no delete — fall back to the filesystem
     # path we know lives behind the local_shell / filesystem backends.
     workspace = resolve_agent_workspace_dir(server, rt.agent_id)

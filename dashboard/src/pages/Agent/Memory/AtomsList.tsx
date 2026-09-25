@@ -26,6 +26,7 @@ import {
   type EntityItem,
   type Importance,
   type ListAtomsBody,
+  type MemoryScope,
 } from "../../../api/modules/memoryDashboard";
 import MemoryLayerView from "./shared/MemoryLayerView";
 import LineageStrip from "./shared/LineageStrip";
@@ -55,9 +56,11 @@ const IMPORTANCE_OPTIONS: { value: Importance | ""; label: string }[] = [
 
 interface Props {
   agentId: string;
+  scope?: MemoryScope;
+  readOnly?: boolean;
 }
 
-export default function AtomsList({ agentId }: Props) {
+export default function AtomsList({ agentId, scope, readOnly = false }: Props) {
   const { t } = useTranslation();
   const [items, setItems] = useState<AtomItem[]>([]);
   const [total, setTotal] = useState(0);
@@ -79,31 +82,44 @@ export default function AtomsList({ agentId }: Props) {
     if (kind) body.candidate_type = kind;
     if (importance) body.importance_min = importance;
     try {
-      const r = await memoryDashboardApi.listAtoms(agentId, body);
+      const r = scope
+        ? await memoryDashboardApi.listAtoms(agentId, body, scope)
+        : await memoryDashboardApi.listAtoms(agentId, body);
       setItems(r.items);
       setTotal(r.total);
     } finally {
       setLoading(false);
     }
-  }, [agentId, page, kind, importance]);
+  }, [agentId, page, kind, importance, scope]);
 
   useEffect(() => {
     if (!agentId) return;
     void load();
-    void memoryDashboardApi
-      .listEntities(agentId, {
-        limit: 200,
-        order_by: "atom_count",
-        order: "desc",
-      })
+    const entitiesRequest = scope
+      ? memoryDashboardApi.listEntities(
+          agentId,
+          {
+            limit: 200,
+            order_by: "atom_count",
+            order: "desc",
+          },
+          scope,
+        )
+      : memoryDashboardApi.listEntities(agentId, {
+          limit: 200,
+          order_by: "atom_count",
+          order: "desc",
+        });
+    void entitiesRequest
       .then((r) => setEntities(r.items))
       .catch(() => setEntities([]));
-  }, [agentId, load]);
+  }, [agentId, load, scope]);
 
   const handleDeprecate = (atom: AtomItem) => {
     confirmDeprecateAtom({
       agentId,
       atom,
+      scope,
       onSuccess: () => {
         setSelected(null);
         void load();
@@ -115,6 +131,7 @@ export default function AtomsList({ agentId }: Props) {
     confirmEditAtom({
       agentId,
       atom,
+      scope,
       onSuccess: (next) => {
         setSelected(next);
         void load();
@@ -146,13 +163,15 @@ export default function AtomsList({ agentId }: Props) {
         }}
         options={IMPORTANCE_OPTIONS}
       />
-      <Button
-        size="small"
-        icon={<Plus size={14} />}
-        onClick={() => setCreateOpen(true)}
-      >
-        {t("memory.create.title", "新建记忆")}
-      </Button>
+      {!readOnly && (
+        <Button
+          size="small"
+          icon={<Plus size={14} />}
+          onClick={() => setCreateOpen(true)}
+        >
+          {t("memory.create.title", "新建记忆")}
+        </Button>
+      )}
     </>
   );
 
@@ -171,7 +190,9 @@ export default function AtomsList({ agentId }: Props) {
         onPageChange={setPage}
         loading={loading}
         emptyContent={
-          noFilterActive ? <MemoryPipelineEmpty agentId={agentId} /> : undefined
+          noFilterActive ? (
+            <MemoryPipelineEmpty agentId={agentId} scope={scope} />
+          ) : undefined
         }
         keyOf={(a) => a.id}
         selected={selected}
@@ -195,9 +216,8 @@ export default function AtomsList({ agentId }: Props) {
             <div style={{ marginTop: 4, fontSize: 13 }}>{a.assertion}</div>
             <div style={{ marginTop: 2, fontSize: 12, color: "#8c8c8c" }}>
               {formatRelativeTime(a.created_at)}
-              {a.kind ? ` · ${kindLabel(a.kind)}` : ""}
             </div>
-            {!isAtomDeprecated(a) && hoveredId === a.id ? (
+            {!readOnly && !isAtomDeprecated(a) && hoveredId === a.id ? (
               <span
                 style={{
                   position: "absolute",
@@ -258,8 +278,7 @@ export default function AtomsList({ agentId }: Props) {
               </Tag>
             </Space>
 
-            <LineageStrip agentId={agentId} atom={atom} />
-
+            <LineageStrip agentId={agentId} atom={atom} scope={scope} />
             <Typography.Title level={5}>记忆内容</Typography.Title>
             <Typography.Paragraph>{atom.assertion}</Typography.Paragraph>
 
@@ -294,7 +313,7 @@ export default function AtomsList({ agentId }: Props) {
                 : ""}
             </Typography.Paragraph>
 
-            {!isAtomDeprecated(atom) ? (
+            {!readOnly && !isAtomDeprecated(atom) ? (
               <>
                 <Typography.Title level={5} style={{ marginTop: 12 }}>
                   {t("memory.tree.actions", "操作")}
@@ -316,15 +335,20 @@ export default function AtomsList({ agentId }: Props) {
         open={createOpen}
         agentId={agentId}
         entities={entities}
+        scope={scope}
         onClose={() => setCreateOpen(false)}
         onSuccess={() => {
           void load();
           void memoryDashboardApi
-            .listEntities(agentId, {
-              limit: 200,
-              order_by: "atom_count",
-              order: "desc",
-            })
+            .listEntities(
+              agentId,
+              {
+                limit: 200,
+                order_by: "atom_count",
+                order: "desc",
+              },
+              scope,
+            )
             .then((r) => setEntities(r.items))
             .catch(() => undefined);
         }}

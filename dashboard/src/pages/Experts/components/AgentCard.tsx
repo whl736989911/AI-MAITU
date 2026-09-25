@@ -105,6 +105,7 @@ export interface AgentCardProps {
   onPublishedChange?: () => void;
   onEdit: (agentId: string) => void;
   onWorkflow?: (agentId: string) => void;
+  onPersonalization?: (agentId: string) => void;
   onDeleted: (agentId: string) => void;
   onStateChange: (agentId: string, newState: string) => void;
   /** Called when a start/stop poll settles (e.g. admin views another user's agents). */
@@ -127,6 +128,7 @@ export const AgentCard = memo(function AgentCard({
   onPublishedChange,
   onEdit,
   onWorkflow,
+  onPersonalization,
   onDeleted,
   onStateChange,
   onPollSettled,
@@ -580,10 +582,27 @@ export const AgentCard = memo(function AgentCard({
                 onTools={() => setToolSettingsOpen(true)}
                 onPlugins={() => setPluginCatalogOpen(true)}
                 onMbti={() => setMbtiCatalogOpen(true)}
-                onMemory={() => setMemoryCatalogOpen(true)}
+                onMemory={
+                  isFeatureAgent(agent)
+                    ? undefined
+                    : () => setMemoryCatalogOpen(true)
+                }
                 onChannels={() => setChannelCatalogOpen(true)}
               />
             </>
+          )}
+          {onPersonalization && isFeatureAgent(agent) && (
+            <button
+              type="button"
+              className={styles.agentCard2EditBtn}
+              onClick={() => onPersonalization(agent.agent_id)}
+              aria-label={t(
+                "personalization.myPersonalization",
+                "My personalization",
+              )}
+            >
+              {t("personalization.myPersonalization", "My personalization")}
+            </button>
           )}
 
           {chatReady ? (

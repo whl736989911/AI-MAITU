@@ -17,13 +17,14 @@ import OctopSpinner from "./components/OctopSpinner";
 import { AntdAppProvider } from "./components/AntdAppProvider";
 import GlobalErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
+import { BrandingProvider, useBranding } from "./context/BrandingContext";
+import { DEFAULT_PALETTE, brandTokensFor } from "./styles/themePalettes";
 import { AgentProvider } from "./context/AgentContext";
 import { LayoutModeProvider } from "./context/LayoutModeContext";
 import { VoiceOutputProvider } from "./context/VoiceOutputContext";
 import { useIsMobile } from "./hooks/useIsMobile";
 import { useUnauthorizedRedirect } from "./hooks/useUnauthorizedRedirect";
 import { installDesktopExternalLinks } from "./utils/desktopExternalLinks";
-import { brandTokensFor } from "./styles/themePalettes";
 import "./styles/theme-vars.css";
 import "./styles/layout.css";
 import "./styles/form-override.css";
@@ -38,9 +39,15 @@ const GlobalStyle = createGlobalStyle`
 
 function ThemedApp() {
   const { isDark, palette, customColor } = useTheme();
-  const { t, i18n } = useTranslation();
+  const { i18n } = useTranslation();
   const isMobile = useIsMobile();
-  const brandTokens = brandTokensFor(palette, isDark, customColor);
+  const brand = useBranding();
+  const brandTokens = {
+    ...brandTokensFor(palette, isDark, customColor),
+    ...(palette === DEFAULT_PALETTE
+      ? { colorPrimary: brand.colors.accent }
+      : {}),
+  };
   // Make antd built-ins (Popconfirm OK/Cancel, Modal default footer, Empty,
   // Pagination, DatePicker, Table… ) follow the current UI language.
   // DatePicker month/weekday labels come from dayjs — keep it in sync too.
@@ -52,10 +59,10 @@ function ThemedApp() {
 
   useEffect(() => installDesktopExternalLinks(), []);
 
-  // Set document title based on current language
   useEffect(() => {
-    document.title = t("app.pageTitle");
-  }, [t]);
+    document.title =
+      brand.name[i18n.language?.toLowerCase().startsWith("zh") ? "zh" : "en"];
+  }, [brand, i18n.language]);
 
   const themeConfig = {
     algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
@@ -155,7 +162,9 @@ function App() {
       <GlobalErrorBoundary>
         <GlobalStyle />
         <ThemeProvider>
-          <ThemedApp />
+          <BrandingProvider>
+            <ThemedApp />
+          </BrandingProvider>
         </ThemeProvider>
       </GlobalErrorBoundary>
     </BrowserRouter>

@@ -538,11 +538,31 @@ export function wordmark(isDark: boolean): string {{
         ts.parent.mkdir(parents=True, exist_ok=True)
         write(ts, body)
         changed.append("dashboard/src/brand.generated.ts")
+    # ---- backend runtime defaults (derived from the same config) ----------
+    py_defaults = ROOT / "src/octop/branding_defaults.py"
+    runtime_defaults = {
+        "name": CFG["name"],
+        "full_name": CFG["full_name"],
+        "short_name": CFG["short_name"],
+        "description": CFG["description"],
+        "colors": {key: CFG["color"][key] for key in ("brand", "accent")},
+        "pwa": CFG["pwa"],
+        "logos": CFG["logo"],
+    }
+    py_body = (
+        '"""Generated runtime defaults from brand.config.json; do not edit by hand."""\n\n'
+        f"DEFAULTS = {runtime_defaults!r}\n"
+    )
+    if not py_defaults.is_file() or py_defaults.read_text(encoding="utf-8") != py_body:
+        write(py_defaults, py_body)
+        changed.append("src/octop/branding_defaults.py")
 
     # ---- backend Python string literals ----------------------------------
     prev_values = _candidate_values(prev)
     py_hits = py_files = 0
     for py in sorted(PY_ROOT.rglob("*.py")):
+        if py == py_defaults:
+            continue
         new_src, n = rewrite_python(py, prev_values)
         if n:
             write(py, new_src)
