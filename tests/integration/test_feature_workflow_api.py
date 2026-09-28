@@ -13,7 +13,9 @@ import json
 
 import pytest
 
-from tests.support.auth import create_user, resolve_user_id
+from octop.infra.agents import feature_workflow as wf
+from octop.infra.users.permissions import BASELINE_PERMISSIONS
+from tests.support.auth import TEST_ORG_UNIT, create_user, resolve_user_id
 
 
 @pytest.fixture
@@ -75,6 +77,191 @@ async def test_author_writes_a_draft_and_reads_it_back(env) -> None:
     assert read.json() == {"workflow": _draft(), "error": None}
     # The definition is a workspace document, so it travels with the agent.
     assert await _stored_definition(srv, "feat-quote-helper") == _draft()
+
+
+async def test_enterprise_admin_can_inspect_unshared_drafts_only_in_own_enterprise(env) -> None:
+    client, _srv, admin_auth = env
+    author_auth = await create_user(client, admin_auth, username="draft_local")
+    enterprise_auth = await create_user(
+        client,
+        admin_auth,
+        username="draft_enterprise",
+        role="enterprise_admin",
+        org_unit=TEST_ORG_UNIT,
+    )
+    foreign_root = "foreign-enterprise"
+    created_root = await client.post(
+        "/api/org-units",
+        headers=admin_auth,
+        json={"key": foreign_root, "label_zh": "外部企业", "label_en": "Foreign Enterprise"},
+    )
+    assert created_root.status_code == 201, created_root.text
+    foreign_author = await create_user(
+        client, admin_auth, username="draft_foreign", org_unit=foreign_root
+    )
+
+    assert (await _create_feature(client, author_auth)).status_code == 201
+    assert (
+        await _create_feature(client, foreign_author, feature_id="foreign-helper", name="外部助手")
+    ).status_code == 201
+    path = "/api/agents/feat-quote-helper/workflow"
+    assert (
+        await client.put(path, headers=author_auth, json={"workflow": _draft()})
+    ).status_code == 200
+
+    listed = await client.get("/api/agents", headers=enterprise_auth)
+    assert listed.status_code == 200, listed.text
+    feature_rows = {row["agent_id"]: row for row in listed.json() if row["kind"] == "feature"}
+    assert set(feature_rows) == {"feat-quote-helper"}
+    assert feature_rows["feat-quote-helper"]["can_manage"] is False
+    assert (await client.get(path, headers=enterprise_auth)).json()["workflow"] == _draft()
+    assert (
+        await client.put(path, headers=enterprise_auth, json={"workflow": _draft()})
+    ).status_code == 403
+    assert (
+        await client.get("/api/agents/feat-foreign-helper/workflow", headers=enterprise_auth)
+    ).status_code == 403
+
+
+async def test_publication_transfers_feature_to_enterprise_role_and_survives_author_deletion(
+    env,
+) -> None:
+    client, srv, admin_auth = env
+    author_auth = await create_user(
+        client,
+        admin_auth,
+        username="published_author",
+        permissions=sorted(BASELINE_PERMISSIONS | {"users"}),
+    )
+    manager_auth = await create_user(
+        client,
+        admin_auth,
+        username="published_manager",
+        role="enterprise_admin",
+        org_unit=TEST_ORG_UNIT,
+    )
+    second_manager_auth = await create_user(
+        client,
+        admin_auth,
+        username="published_second",
+        role="enterprise_admin",
+        org_unit=TEST_ORG_UNIT,
+    )
+    assert (await _create_feature(client, author_auth)).status_code == 201
+    path = "/api/agents/feat-quote-helper/workflow"
+    published = _draft(
+        status="active",
+        steps=[{"id": "extract", "name": "提取要点", "prompt": "提取客户要点"}],
+    )
+    activated = await client.put(path, headers=author_auth, json={"workflow": published})
+    assert activated.status_code == 200, activated.text
+    row = srv.services.agent_repo.get("feat-quote-helper")
+    assert row is not None and row.user_id is None
+    assert row.enterprise_unit_key == TEST_ORG_UNIT
+
+    for auth, can_manage in (
+        (author_auth, False),
+        (manager_auth, True),
+        (second_manager_auth, True),
+    ):
+        listed = await client.get("/api/agents", headers=auth)
+        assert listed.status_code == 200, listed.text
+        feature = next(item for item in listed.json() if item["agent_id"] == "feat-quote-helper")
+        assert feature["can_manage"] is can_manage
+    assert (
+        await client.patch(
+            "/api/agents/feat-quote-helper",
+            headers=author_auth,
+            json={"description": "unauthorized"},
+        )
+    ).status_code == 403
+    sharing_path = "/api/sharing/acl/feature/quote-helper"
+    grant = {"visibility": "private", "grants": []}
+    assert (await client.post(sharing_path, headers=author_auth, json=grant)).status_code == 403
+    changed = await client.post(sharing_path, headers=manager_auth, json=grant)
+    assert changed.status_code == 200, changed.text
+    rollback_path = f"/api/sharing/changes/{changed.json()['change_id']}/rollback"
+    assert (await client.post(rollback_path, headers=author_auth)).status_code == 403
+    assert (await client.post(rollback_path, headers=second_manager_auth)).status_code == 200
+
+    assert (
+        await client.put(path, headers=author_auth, json={"workflow": published})
+    ).status_code == 403
+    assert (
+        await client.patch(
+            "/api/agents/feat-quote-helper",
+            headers=manager_auth,
+            json={"description": "enterprise-owned"},
+        )
+    ).status_code == 200
+    assert (
+        await client.put(path, headers=second_manager_auth, json={"workflow": published})
+    ).status_code == 200
+
+    author_id = await resolve_user_id(client, admin_auth, "published_author")
+    removed = await client.delete(f"/api/users/{author_id}", headers=admin_auth)
+    assert removed.status_code == 204, removed.text
+    retained = srv.services.agent_repo.get("feat-quote-helper")
+    assert retained is not None and retained.user_id is None
+    assert (await client.get(path, headers=manager_auth)).json()["workflow"] == published
+    assert (
+        await client.get("/api/agents/feat-quote-helper", headers=second_manager_auth)
+    ).status_code == 200
+    stopped = await client.post("/api/agents/feat-quote-helper/stop", headers=manager_auth)
+    assert stopped.status_code == 204, stopped.text
+    restarted = await client.post(
+        "/api/agents/feat-quote-helper/start", headers=second_manager_auth
+    )
+    assert restarted.status_code == 204, restarted.text
+
+    reset = await client.put(path, headers=manager_auth, json={"workflow": _draft()})
+    assert reset.status_code == 200, reset.text
+    memory_path = "/api/agents/feat-quote-helper/memory"
+    access = await client.get(f"{memory_path}/access", headers=second_manager_auth)
+    assert access.status_code == 200, access.text
+    assert access.json()["stage"] == "draft"
+    assert access.json()["shared_writable"] is False
+    shared_write = await client.post(
+        f"{memory_path}/atoms",
+        headers=manager_auth,
+        json={"assertion": "cannot retrain published shared memory", "entity_name": "feature"},
+    )
+    assert shared_write.status_code == 403
+
+
+async def test_existing_active_feature_is_adopted_before_author_can_be_deleted(env) -> None:
+    client, srv, admin_auth = env
+    author_auth = await create_user(client, admin_auth, username="legacy_active_author")
+    manager_auth = await create_user(
+        client,
+        admin_auth,
+        username="legacy_active_manager",
+        role="enterprise_admin",
+        org_unit=TEST_ORG_UNIT,
+    )
+    assert (await _create_feature(client, author_auth)).status_code == 201
+    registry = srv.app_runtime.agent_registry
+    workspace = registry.workspace_for_agent("feat-quote-helper")
+    assert workspace is not None
+    definition = _draft(
+        status="active",
+        steps=[{"id": "extract", "name": "提取要点", "prompt": "提取要点"}],
+    )
+    await wf.save_workflow(workspace, definition)  # Simulates a pre-transfer published document.
+    author_id = await resolve_user_id(client, admin_auth, "legacy_active_author")
+    assert srv.services.agent_repo.get("feat-quote-helper").user_id == author_id
+
+    await registry._claim_existing_active_features()
+    adopted = srv.services.agent_repo.get("feat-quote-helper")
+    assert adopted is not None and adopted.user_id is None
+    assert adopted.enterprise_unit_key == TEST_ORG_UNIT
+    assert (await client.delete(f"/api/users/{author_id}", headers=admin_auth)).status_code == 204
+    assert (
+        await client.get("/api/agents/feat-quote-helper", headers=manager_auth)
+    ).status_code == 200
+    assert (
+        await client.get("/api/agents/feat-quote-helper/workflow", headers=manager_auth)
+    ).json()["workflow"] == definition
 
 
 async def test_an_active_definition_must_stand_on_its_own(env) -> None:

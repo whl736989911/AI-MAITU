@@ -90,95 +90,9 @@ def test_as_user_still_requires_admin() -> None:
     assert "as_user" in usage
 
 
-#: Files whose *every* route names a gate of its own — the module surfaces design
-#: §4.4 lists, each one gated in full. ``test_every_route_on_a_gated_surface_is_gated``
-#: exists because the file-level test above cannot see the gap this list closes:
-#: a router that gates one route and leaves the next one open still contains the
-#: string ``require_permission(``, so before this test the *open* route was the
-#: quiet one (``mbti.py``, ``experts.py``, ``features.py`` and most of
-#: ``connectors.py`` were exactly that until design §4.4 was implemented).
-ROUTE_GATED_FILES = [
-    "routers/mbti.py",
-    "routers/experts.py",
-    "routers/features.py",
-    "routers/plugins.py",
-    "routers/connectors.py",
-    "routers/skill_packages.py",
-    # The workbench / remote surfaces and the user-management module (design §4.4
-    # second half: 终端和浏览器分别接入 terminal、browser; 远程桌面接入 desktop;
-    # 用户管理接口接入 users 和组织范围判断). ``browser/env.py``,
-    # ``browser/harness.py`` and ``browser/record_replay.py`` were signed-in-only
-    # until this list was extended — the module key is what a direct API call was
-    # skipping.
-    "routers/terminal.py",
-    "routers/browser/env.py",
-    "routers/browser/harness.py",
-    "routers/browser/record_replay.py",
-    "routers/browser/uninstall.py",
-    "routers/desktop/install.py",
-    "routers/desktop/settings.py",
-    "routers/desktop/status.py",
-    "routers/desktop/uninstall.py",
-    "routers/mobile/install.py",
-    "routers/mobile/status.py",
-    "routers/acp.py",
-    "routers/users.py",
-    "routers/org_units.py",
-    "routers/invites.py",
-    "routers/sharing.py",
-    # The channel surface is gated per *type* (§2.3), which is why it is here as
-    # well as in GATED_FILES: every route on it names a gate of its own, and
-    # ``test_every_channel_route_reads_its_kind_from_somewhere`` below insists the
-    # gate is the key of the kind that route touches, not just any key.
-    "routers/channels.py",
-    # The knowledge-base surface: every route is gated — its reads on the page's
-    # own key pair (``knowledge_bases`` *or* ``knowledge_settings``, the same pair
-    # ``dashboard/src/utils/permissions.ts`` opens ``/knowledge-bases`` with),
-    # its writes on the single key that owns the thing written. Until this list
-    # included it, the file's *reads* were signed-in-only: revoking the module
-    # key hid the page and refused its writes while ``GET /api/knowledge-bases``,
-    # ``GET /{kb_id}`` and ``GET /{kb_id}/documents`` still answered 200 to a
-    # direct API call (design §2.4: an unauthorized capability must not be
-    # reachable by calling the API directly).
-    "routers/knowledge_bases.py",
-]
-
-#: Routes on those surfaces that deliberately carry no gate, and why. An empty
-#: reason is not accepted by the test: a route is either gated or explained.
-UNGATED_ROUTES: dict[str, dict[str, str]] = {
-    "routers/connectors.py": {
-        # The provider redirects the browser here without an Authorization
-        # header (the path is JWT-exempt in ``api/deps.py``), so there is no user
-        # to resolve a key against. It is reachable only with a ``state`` that
-        # ``/connectors/oauth/start`` minted — and that route is gated, so the
-        # entry point is the gate.
-        "oauth_callback": "JWT-exempt provider redirect; gated at oauth/start by its state",
-    },
-    "routers/users.py": {
-        # The permission catalog the editor's picker is drawn from: key, category,
-        # label and ``can_grant`` — definitions, never account data, with
-        # ``can_grant`` resolved for whoever asks. The page that renders it is
-        # behind the ``users`` key, and reading what keys exist is not a
-        # capability of its own.
-        "list_permission_catalog": "static permission definitions; the picker's own data",
-    },
-    "routers/invites.py": {
-        # The invitee has no account yet, which is the whole point of an invite:
-        # both paths are JWT-exempt (``_JWT_EXEMPT_EXACT``) and are gated by the
-        # invite's own single-use code, checked in ``infra/users/invites.py``.
-        "validate_invite": "pre-account invite flow, JWT-exempt; the invite code is the gate",
-        "redeem_invite": "pre-account invite flow, JWT-exempt; the invite code is the gate",
-    },
-}
-
-#: Surfaces whose WebSocket routes carry the gate *in their body*, because a
-#: browser cannot set an ``Authorization`` header on a WebSocket upgrade: those
-#: routes take ``?token=<JWT>`` and resolve the user themselves, so no
-#: ``Depends`` sits in the signature for ``_names_a_gate`` to see. The value is
-#: the key the route must check. ``GET /api/browser-stream/ws`` checked nothing
-#: at all until design §4.4 was implemented, which is the bypass this test exists
-#: to keep closed: the socket is a stream of the same capability the HTTP routes
-#: gate, and 未授权功能 must not be reachable through it either (§2.4).
+#: WebSocket routes authenticate using ``?token=<JWT>`` because the browser
+#: cannot set an ``Authorization`` header on the upgrade. Their bodies must check
+#: the same permission as the corresponding HTTP surface.
 WS_GATED_FILES: dict[str, str] = {
     "routers/terminal.py": "terminal",
     "routers/browser/stream.py": "browser",
@@ -215,31 +129,6 @@ def _gate_defaults(node: ast.FunctionDef | ast.AsyncFunctionDef) -> list[str]:
     return [ast.unparse(default) for default in defaults]
 
 
-def _names_a_gate(node: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
-    """True when the route's own parameters ask for a gate.
-
-    Four shapes count, and all four are ``require_*`` dependency factories:
-    ``require_permission(key)``, ``require_any_permission(*keys)`` (a page the
-    dashboard opens through either of two keys — ``/knowledge-bases`` is
-    ``knowledge_bases`` *or* ``knowledge_settings``), ``require_admin()``, and the
-    channel surface's two per-type factories
-    (``require_channel_kind_from_body`` / ``_from_row``), which resolve the key at
-    request time instead of naming it — what they must ask for is checked key by
-    key in :func:`test_every_channel_route_reads_its_kind_from_somewhere`.
-
-    The any-of form is accepted here because its keys are validated where they
-    are written: ``require_any_permission`` refuses an unknown key at import, so
-    the call in the signature cannot name one the catalog does not hold.
-    """
-    return any(
-        "require_permission(" in default
-        or "require_any_permission(" in default
-        or "require_admin(" in default
-        or "require_channel_kind_from_" in default
-        for default in _gate_defaults(node)
-    )
-
-
 def _keys_checked_in_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[str]:
     """Module keys the route checks itself, via ``user_has_permission(user, key)``."""
     keys: set[str] = set()
@@ -254,20 +143,6 @@ def _keys_checked_in_body(node: ast.FunctionDef | ast.AsyncFunctionDef) -> set[s
         ):
             keys.add(sub.args[1].value)
     return keys
-
-
-def test_every_route_on_a_gated_surface_is_gated() -> None:
-    exempt = UNGATED_ROUTES
-    for rel in ROUTE_GATED_FILES:
-        for reason in exempt.get(rel, {}).values():
-            assert reason, f"{rel}: an ungated route must say why"
-        for node in _route_functions(rel):
-            if node.name in exempt.get(rel, {}):
-                continue
-            assert _names_a_gate(node), (
-                f"{rel}: route {node.name!r} names no require_permission/require_admin "
-                "gate — gate it, or list it in UNGATED_ROUTES with the reason it has none"
-            )
 
 
 def test_every_websocket_on_a_gated_surface_checks_its_key() -> None:

@@ -90,7 +90,7 @@ def _require_owned_team(server: Any, user: Any, team_id: str) -> Any:
     row = _registry(server).get_row(team_id)
     if row is None or not is_team_agent(row):
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"team {team_id!r} not found")
-    assert_agent_owner(row, user)
+    assert_agent_owner(row, user, server=server)
     return row
 
 

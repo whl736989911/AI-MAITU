@@ -451,7 +451,7 @@ def _agent_row_and_config(
     row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     return row, registry.get_config(agent_id)
 
 
@@ -544,7 +544,7 @@ async def list_agent_plugin_tools(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     mgr = _plugin_manager(server)
     agent_cfg = server.app_runtime.agent_registry.get_config(agent_id)
     raw_plugins = agent_cfg.get("plugins")
@@ -601,7 +601,7 @@ async def patch_agent_plugin_tools(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION)
+    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION, server=server)
     registry = server.app_runtime.agent_registry
     cfg = registry.get_config(agent_id)
     merged = merge_plugins_tool_settings(cfg.get("plugins"), body.plugins)

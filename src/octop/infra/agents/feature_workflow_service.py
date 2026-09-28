@@ -2,8 +2,8 @@
 
 A change to a feature's workflow arrives two ways: over HTTP (the dashboard's
 improvement card, and whatever computes a diff for it) and through the tools a
-feature's own agent is given, so its author can say "第 3 步改成确认门" in
-conversation and have it actually happen. Both must apply a diff the same way —
+feature's own agent is given, so its authorized editor can request a change in
+conversation and have it happen. Both must apply a diff the same way —
 resolve the batch, refuse it whole when the document moved, validate the result,
 record exactly what was applied — because a second implementation would drift
 precisely where drift is expensive: the undo would stop matching what was applied.
@@ -23,6 +23,7 @@ from typing import Any, cast
 
 from octop.infra.agents import feature_workflow as wf
 from octop.infra.agents import feature_workflow_changes as wfc
+from octop.infra.agents.kinds import feature_agent_id_for
 from octop.infra.db.repos.feature_workflow_changes import (
     TARGET_DEFINITION,
     TARGET_OVERLAY,
@@ -70,6 +71,7 @@ async def apply_change(
     summary: str,
     items: Sequence[Mapping[str, Any]],
     run_id: str | None = None,
+    agent_id: str | None = None,
 ) -> FeatureChangeRow:
     """Apply one improvement and record how to undo it.
 
@@ -77,7 +79,9 @@ async def apply_change(
     — so undoing it later deletes that element rather than guessing which one moved.
     """
     if target == TARGET_DEFINITION:
-        applied = await _apply_to_definition(workspace, items)
+        applied = await _apply_to_definition(
+            workspace, items, repos=repos, agent_id=agent_id or feature_agent_id_for(feature_id)
+        )
     elif target == TARGET_OVERLAY:
         applied = _apply_to_overlay(repos, feature_id=feature_id, user_id=user_id, items=items)
     else:
@@ -95,13 +99,18 @@ async def apply_change(
     )
 
 
-async def save_definition(workspace: Any, raw: Any) -> dict[str, Any]:
-    """Validate a definition, refuse dangling references when it is published, store it.
+async def save_definition(
+    workspace: Any,
+    raw: Any,
+    *,
+    repos: Any,
+    agent_id: str,
+) -> dict[str, Any]:
+    """Validate the definition and transfer first publication to its enterprise.
 
-    Both write paths go through here — a person pressing save and a change computed
-    from a run — so "published means runnable as declared" holds for whichever of
-    them moved the document to ``active``. A draft is only checked for shape: naming a
-    skill the author is about to install is what training *is*.
+    The ownership change happens after validation but before writing the active
+    document. A failed workspace write can leave a draft under enterprise control;
+    the reverse order could leave a published document editable by its author.
     """
     definition = wf.parse_workflow(raw)
     if wf.workflow_status(definition) == wf.STATUS_ACTIVE:
@@ -109,12 +118,16 @@ async def save_definition(workspace: Any, raw: Any) -> dict[str, Any]:
         problems = wf.validate_references(definition, capabilities)
         if problems:
             raise _invalid("; ".join(problems))
+        repos.agent_repo.publish_feature(agent_id)
     return await wf.save_workflow(workspace, definition)
 
 
 async def _apply_to_definition(
     workspace: Any | None,
     items: Sequence[Mapping[str, Any]],
+    *,
+    repos: Any,
+    agent_id: str,
 ) -> list[dict[str, Any]]:
     """Apply the diff to the definition and store the validated result."""
     if workspace is None:
@@ -123,7 +136,7 @@ async def _apply_to_definition(
     if loaded.definition is None:
         raise _invalid(loaded.error or "this feature has no workflow to change")
     resolved, updated = _apply(loaded.definition, items)
-    await save_definition(workspace, updated)
+    await save_definition(workspace, updated, repos=repos, agent_id=agent_id)
     return resolved
 
 
@@ -164,6 +177,7 @@ async def revert_change(
     feature_id: str,
     user_id: int,
     change_id: str,
+    agent_id: str | None = None,
 ) -> FeatureChangeRow:
     """Undo one recorded improvement; an already-undone one is returned as it is.
 
@@ -177,7 +191,9 @@ async def revert_change(
     if row.is_reverted:
         return cast("FeatureChangeRow", row)
     if row.target == TARGET_DEFINITION:
-        await _revert_definition(workspace, row)
+        await _revert_definition(
+            workspace, row, repos=repos, agent_id=agent_id or feature_agent_id_for(feature_id)
+        )
     elif row.target == TARGET_OVERLAY:
         _revert_overlay(repos, row, user_id=user_id)
     else:
@@ -188,7 +204,9 @@ async def revert_change(
     return cast("FeatureChangeRow", refreshed)
 
 
-async def _revert_definition(workspace: Any | None, row: FeatureChangeRow) -> None:
+async def _revert_definition(
+    workspace: Any | None, row: FeatureChangeRow, *, repos: Any, agent_id: str
+) -> None:
     if workspace is None:
         raise _invalid("this feature's workspace is not reachable")
     loaded = await wf.load_workflow(workspace)
@@ -200,7 +218,7 @@ async def _revert_definition(workspace: Any | None, row: FeatureChangeRow) -> No
         raise _invalid(str(exc)) from exc
     if conflicts:
         raise _conflict(conflicts)
-    await save_definition(workspace, restored)
+    await save_definition(workspace, restored, repos=repos, agent_id=agent_id)
 
 
 def _revert_overlay(repos: Any, row: FeatureChangeRow, *, user_id: int) -> None:

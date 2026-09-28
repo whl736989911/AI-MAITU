@@ -139,6 +139,7 @@ class FeatureChangeRepo:
         feature_id: str,
         user_id: int,
         limit: int = 20,
+        target: str | None = None,
     ) -> list[FeatureChangeRow]:
         """Recent changes this caller may see, newest first.
 
@@ -146,12 +147,27 @@ class FeatureChangeRepo:
         A draft may contain material that must not reach other callers through its
         change history.
         """
+        sql = "SELECT * FROM feature_workflow_changes WHERE feature_id = ? AND user_id = ?"
+        params: list[object] = [feature_id, user_id]
+        if target is not None:
+            sql += " AND target = ?"
+            params.append(target)
+        sql += " ORDER BY created_at DESC, id DESC LIMIT ?"
+        params.append(max(1, int(limit)))
+        with self._db.connect() as conn:
+            rows = conn.execute(sql, params).fetchall()
+        return [FeatureChangeRow.from_row(row) for row in rows]
+
+    def list_definition_for_feature(
+        self, *, feature_id: str, limit: int = 20
+    ) -> list[FeatureChangeRow]:
+        """Feature definition history for an authorized enterprise administrator."""
         with self._db.connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM feature_workflow_changes"
-                " WHERE feature_id = ? AND user_id = ?"
+                " WHERE feature_id = ? AND target = ?"
                 " ORDER BY created_at DESC, id DESC LIMIT ?",
-                (feature_id, user_id, max(1, int(limit))),
+                (feature_id, TARGET_DEFINITION, max(1, int(limit))),
             ).fetchall()
         return [FeatureChangeRow.from_row(row) for row in rows]
 

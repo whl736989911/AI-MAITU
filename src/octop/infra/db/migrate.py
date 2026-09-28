@@ -1808,6 +1808,12 @@ def _ensure_acl_permission_level(db: DatabasePool) -> None:
     _ensure_column(db, "resource_acl", "permission", "TEXT NOT NULL DEFAULT 'read'")
 
 
+def _ensure_agent_enterprise_unit_key(db: DatabasePool) -> None:
+    """Add the enterprise ownership marker for features (schema v36)."""
+    if _table_exists(db, "agents"):
+        _ensure_column(db, "agents", "enterprise_unit_key", "TEXT")
+
+
 def _ensure_thread_policy_columns(db: DatabasePool) -> None:
     """Add the v36 per-thread conversation mode, plan, and approval policy."""
     if not _table_exists(db, "threads"):
@@ -3240,6 +3246,7 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         # ``036_acl_permission_level.sql`` is the readable record; SQLite boots
         # run the helpers, each of which applies its DDL only when it is missing.
         _ensure_acl_permission_level(db)
+        _ensure_agent_enterprise_unit_key(db)
         _ensure_thread_policy_columns(db)
         _ensure_feature_overlay_schema(db)
         _ensure_feature_run_schema(db)
@@ -3320,6 +3327,7 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_sso_provider_kind_schema(db)
     _ensure_org_units_schema(db)
     _ensure_resource_acl_schema(db)
+    _ensure_agent_enterprise_unit_key(db)
     _ensure_acl_permission_level(db)
     _ensure_thread_policy_columns(db)
     _ensure_feature_overlay_schema(db)

@@ -5,12 +5,10 @@ the agent's own path like its skills, its tools and its workspace files, and hol
 exactly the one document those surfaces have no equivalent of:
 ``.octop/workflow.json`` (:mod:`octop.infra.agents.feature_workflow`).
 
-**Who may read, who may write.** Reading is the same answer as reading the agent:
-a caller who may reach the feature may read its definition, which they need to
-render the input card they run it with. Writing is the *configuration* group
-(:class:`~octop.api.common.agent.AgentCapability`), which for a feature's own agent
-is its author — the matrix states that rule once, and this router names the group
-rather than deciding for itself who may edit a feature.
+**Who may read, who may write.** A feature's author trains an unfinished draft,
+and enterprise administrators may inspect all drafts in their enterprise. On
+publication, enterprise administrators take over configuration; the author keeps
+read access but no longer has editing authority unless they hold that role.
 
 **Only a feature has one.** An expert has no declared run, so a workflow is refused
 on any other kind with its own code (``WORKFLOW_NOT_A_FEATURE``) instead of writing
@@ -30,14 +28,19 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field
 
-from octop.api.common.agent import AgentCapability, require_agent_row
+from octop.api.common.agent import (
+    AgentCapability,
+    feature_can_manage,
+    feature_in_enterprise_scope,
+    require_agent_row,
+)
 from octop.api.common.workspace import require_agent_workspace
 from octop.api.deps import current_user, get_server
 from octop.infra.agents import feature_workflow as wf
 from octop.infra.agents import feature_workflow_changes as wfc
 from octop.infra.agents import feature_workflow_service as workflow_service
 from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
-from octop.infra.db.repos.feature_workflow_changes import TARGET_DEFINITION
+from octop.infra.db.repos.feature_workflow_changes import TARGET_DEFINITION, TARGET_OVERLAY
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.server import OctopServer
 
@@ -94,11 +97,9 @@ def _require_feature_row(agent_id: str, *, user: Any, server: OctopServer) -> An
     summary="Read a feature's workflow definition",
     response_model=WorkflowResponse,
     description=(
-        "The definition the feature's runs follow: input form, fixed steps, "
-        "deliverables and rules. An unfinished draft is visible only to its "
-        "author for training; callers see it after the author activates it. "
-        "Readable while the agent is stopped, because it is a document rather "
-        "than runtime state."
+        "An unfinished draft is visible to its author and enterprise "
+        "administrators in its enterprise; callers see it after activation. "
+        "Readable while the agent is stopped, because it is a document."
     ),
 )
 async def get_workflow(
@@ -114,6 +115,8 @@ async def get_workflow(
         loaded.definition is not None
         and wf.workflow_status(loaded.definition) != wf.STATUS_ACTIVE
         and row.user_id != user.id
+        and not user.is_admin
+        and not feature_in_enterprise_scope(row, user, server)
     ):
         return WorkflowResponse()
     return WorkflowResponse(workflow=loaded.definition, error=loaded.error)
@@ -136,7 +139,7 @@ async def put_workflow(
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
 ) -> WorkflowResponse:
-    """Store a feature's workflow definition (its author writes it)."""
+    """Store a feature's workflow definition (author in draft, enterprise after publish)."""
     _require_feature_row(agent_id, user=user, server=server)
     workspace = await require_agent_workspace(
         agent_id,
@@ -147,7 +150,9 @@ async def put_workflow(
     if body.workflow is None:
         await wf.clear_workflow(workspace)
         return WorkflowResponse()
-    stored = await workflow_service.save_definition(workspace, body.workflow)
+    stored = await workflow_service.save_definition(
+        workspace, body.workflow, repos=_services(server).repos, agent_id=agent_id
+    )
     return WorkflowResponse(workflow=stored)
 
 
@@ -200,8 +205,8 @@ class WorkflowChangeBody(BaseModel):
     target: Literal["definition", "overlay"] = Field(
         ...,
         description=(
-            "``definition`` edits the feature's own workflow (its author's); "
-            "``overlay`` edits the caller's own text (its owner's)."
+            "``definition`` edits the feature's shared workflow (draft author or "
+            "published enterprise administrator); ``overlay`` edits the caller's own text."
         ),
     )
     summary: str = Field(
@@ -250,7 +255,8 @@ def _change_payload(row: Any) -> WorkflowChangeOut:
     summary="Apply an improvement to a feature's workflow",
     response_model=WorkflowChangeOut,
     description=(
-        "Applies a diff to the feature's definition (its author's) or to the "
+        "Applies a diff to the feature's shared definition (draft author or "
+        "published enterprise administrator) or to the "
         "caller's own overlay. An item carries the value it expected to find: if "
         "that place was edited in the meantime the whole batch is refused "
         "(`WORKFLOW_CHANGE_CONFLICT`, nothing written) rather than overwriting the "
@@ -287,6 +293,7 @@ async def post_workflow_change(
         workspace=workspace,
         repos=services.repos,
         feature_id=feature_id,
+        agent_id=agent_id,
         user_id=user.id,
         target=body.target,
         summary=body.summary,
@@ -301,9 +308,9 @@ async def post_workflow_change(
     summary="List a feature's applied improvements",
     response_model=WorkflowChangesResponse,
     description=(
-        "Newest first. Definition edits are visible to their author, and personal "
-        "overlay edits only to the caller who made them; draft content is never "
-        "exposed through improvement history."
+        "Newest first. Enterprise administrators can inspect definition edits "
+        "within their enterprise. Personal overlay edits remain private to "
+        "their caller."
     ),
 )
 async def list_workflow_changes(
@@ -313,11 +320,21 @@ async def list_workflow_changes(
     user: Any = Depends(current_user),
 ) -> WorkflowChangesResponse:
     """List the changes this caller may see."""
-    feature_id = _require_feature_id(agent_id, user=user, server=server)
-    rows = _services(server).feature_change_repo.list_for_feature(
-        feature_id=feature_id, user_id=user.id, limit=limit
-    )
-    return WorkflowChangesResponse(changes=[_change_payload(row) for row in rows])
+    row = _require_feature_row(agent_id, user=user, server=server)
+    feature_id = feature_id_of_agent(agent_id)
+    assert feature_id is not None
+    repo = _services(server).feature_change_repo
+    if user.is_admin or feature_in_enterprise_scope(row, user, server):
+        rows = [
+            *repo.list_definition_for_feature(feature_id=feature_id, limit=limit),
+            *repo.list_for_feature(
+                feature_id=feature_id, user_id=user.id, limit=limit, target=TARGET_OVERLAY
+            ),
+        ]
+        rows = sorted(rows, key=lambda item: (item.created_at, item.id), reverse=True)[:limit]
+    else:
+        rows = repo.list_for_feature(feature_id=feature_id, user_id=user.id, limit=limit)
+    return WorkflowChangesResponse(changes=[_change_payload(item) for item in rows])
 
 
 @router.post(
@@ -343,9 +360,12 @@ async def revert_workflow_change(
     row = services.feature_change_repo.get(change_id)
     if row is None or row.feature_id != feature_id:
         raise OctopError(ErrorCode.NOT_FOUND, f"change {change_id!r} not found")
-    # A reverted diff still contains its original before/after values. Never reveal
-    # it to another caller just because there is no work left to undo.
-    if row.user_id != user.id:
+    # A reverted diff still contains its original content. Only the original
+    # caller sees a personal overlay; enterprise managers may undo definition edits.
+    feature_row = _require_feature_row(agent_id, user=user, server=server)
+    if row.user_id != user.id and not (
+        row.target == TARGET_DEFINITION and feature_can_manage(feature_row, user, server)
+    ):
         reason = "a change belongs to its own author"
         raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})
     workspace = None
@@ -360,6 +380,7 @@ async def revert_workflow_change(
         workspace=workspace,
         repos=services.repos,
         feature_id=feature_id,
+        agent_id=agent_id,
         user_id=user.id,
         change_id=change_id,
     )

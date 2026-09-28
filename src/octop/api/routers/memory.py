@@ -899,7 +899,7 @@ async def put_extract_config(
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     # Extraction timing is configuration, not a memory edit. The active
     # feature's shared namespace remains immutable regardless of these settings.
-    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION)
+    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION, server=server)
 
     merged = _read_extract_config(row)
     patch = body.model_dump(exclude_none=True)

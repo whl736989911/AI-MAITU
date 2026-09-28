@@ -21,6 +21,7 @@ from harness_agent.registry import AgentEntry
 from harness_agent.security.models import SecurityPolicy
 
 from octop.i18n.domains.agents import NO_MODELS_CONFIGURED, format_agent_start_error
+from octop.infra.agents import feature_workflow as feature_wf
 from octop.infra.agents.acp_settings import ACPSettingsStore
 from octop.infra.agents.kinds import KIND_AGENT, KIND_TEAM, KINDS, is_feature_agent
 from octop.infra.agents.langfuse import LangfuseSettings, LangfuseSettingsStore
@@ -531,11 +532,40 @@ class AgentManager:
             self._harness_manager.set_security_policy(self._security.harness_policy())
             self._install_team_host_dispatch()
 
+        await self._claim_existing_active_features()
+
         rows = self._repos.agent_repo.list_all(include_disabled=False)
         for row in rows:
             if row.last_state == "stopped":
                 continue
             await self._start_agent(row)
+
+    async def _claim_existing_active_features(self) -> None:
+        """Bring pre-transfer active workflows under enterprise management.
+
+        Older definitions live in workspaces, not in SQL; both running and
+        stopped features must be inspected before user deletion can cascade
+        their rows. A draft remains author-owned until its first activation.
+        """
+        for row in self._repos.agent_repo.list_all(include_disabled=True):
+            if not is_feature_agent(row.kind) or row.user_id is None or row.enterprise_unit_key:
+                continue
+            try:
+                workspace = self.workspace_for_agent(row.agent_id)
+                if workspace is None:
+                    continue
+                loaded = await feature_wf.load_workflow(workspace)
+                if (
+                    loaded.definition is not None
+                    and feature_wf.workflow_status(loaded.definition) == feature_wf.STATUS_ACTIVE
+                ):
+                    self._repos.agent_repo.publish_feature(row.agent_id)
+            except Exception:
+                logger.warning(
+                    "Could not reconcile ownership for feature %s; will retry on next boot",
+                    row.agent_id,
+                    exc_info=True,
+                )
 
     async def shutdown(self) -> None:
         await self.memory_slim.close()
@@ -3303,9 +3333,9 @@ class AgentManager:
                 repos=self._repos,
             )
 
-        # A feature's own agent can write its own workflow when its author asks for it
-        # in conversation. Nobody else gets these: the tools refuse a feature the
-        # caller does not own, and they are meaningless on an expert.
+        # A feature's own agent exposes workflow tools to its draft author and,
+        # after publication, administrators of its enterprise. The tools verify
+        # the current caller and persisted ownership at invocation time.
         feature_workflow_tools: list[Any] = []
         if is_feature_agent(row.kind):
             from octop.infra.agents.feature_workflow_tools import (  # noqa: PLC0415
@@ -3447,7 +3477,10 @@ class AgentManager:
             # it has a workflow; a declared run follows that guide in the system
             # message. Experts get neither block.
             *feature_workflow_chain(
-                agent_id=row.agent_id, kind=row.kind, author_user_id=row.user_id
+                agent_id=row.agent_id,
+                kind=row.kind,
+                author_user_id=row.user_id,
+                repos=self._repos,
             ),
             TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
             KnowledgeSearchHintMiddleware(),

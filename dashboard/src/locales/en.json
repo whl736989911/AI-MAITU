@@ -1218,13 +1218,15 @@
     "agentId": "Agent ID",
     "copyAgentId": "Click to copy agent ID",
     "share": {
-      "fromOwner": "Shared feature · from {{name}}"
+      "fromOwner": "Shared feature · from {{name}}",
+      "enterpriseManaged": "Enterprise-managed"
     },
     "tabWorkflow": "Workflow",
     "workflow": {
       "intro": "Start with what people will fill in during a chat, then describe the steps and what they will receive. Save a draft as you go and activate it when ready.",
       "storedInvalid": "The saved workflow cannot be read",
-      "authorOnly": "This workflow is kept by the feature's author; only they can change it. Calling the feature runs it as that author defined it.",
+      "authorOnly": "This draft can be changed only by its author. Enterprise administrators may inspect it during training.",
+      "enterpriseOnly": "This feature is managed by enterprise administrators; its original author may use it but cannot edit it.",
       "modeForm": "Visual editor",
       "modeJson": "JSON",
       "notDefined": "Not defined yet",
@@ -1233,7 +1235,7 @@
       "statusActive": "Active",
       "statusHint": "You can save an unfinished draft. Before activating, give each step a name and a clear task; missing settings are explained when you save.",
       "publish": "Activate workflow",
-      "publishConfirm": "Activate this workflow for callers? Its input form and fixed steps will become available to everyone who can reach this feature.",
+      "publishConfirm": "Activate this workflow for callers? Its ownership transfers to your enterprise administrators; the original author will no longer be able to edit it.",
       "refusalServer": "The server refused this definition and wrote nothing. Every problem has to be fixed:",
       "refusalClient": "This definition still has the problems below, so nothing was sent to be saved:",
       "jsonHint": "The whole definition as one document. Switching back to the form parses this JSON and validates it by the same rules; JSON with problems neither switches nor saves.",
@@ -6099,7 +6101,7 @@
     },
     "features": {
       "title": "Features",
-      "subtitle": "Your features — each one carries its own agent, is defined and configured by its author, and can be called as a conversation entry point."
+      "subtitle": "Feature drafts are trained by their authors; published features are managed by enterprise administrators."
     },
     "tasks": {
       "title": "Automation",

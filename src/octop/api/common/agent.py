@@ -13,22 +13,52 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, Literal
 
+from octop.i18n import tr
 from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.sharing import AclEntry, can_access
+from octop.infra.users.identity import Role, resolved_role
+from octop.infra.users.scope import scope_for
+from octop.infra.utils.locale import resolve_user_locale
+
+
+def feature_in_enterprise_scope(row: Any, user: Any, server: Any) -> bool:
+    """An enterprise administrator reaches this feature's owning enterprise."""
+    if not is_feature_agent(row.kind) or resolved_role(user) != Role.ENTERPRISE_ADMIN.value:
+        return False
+    unit_key = row.enterprise_unit_key
+    if unit_key is None:
+        owner = server.services.user_repo.get(row.user_id) if row.user_id is not None else None
+        if owner is None:
+            return False
+        unit_key = owner.org_unit
+    return scope_for(user, server.services.org_unit_repo).covers_unit(unit_key)
+
+
+def feature_can_manage(row: Any, user: Any, server: Any) -> bool:
+    """Published features belong to the enterprise role, not their author."""
+    if not is_feature_agent(row.kind):
+        return user.is_admin or user_owns_agent(row, user)
+    if user.is_admin:
+        return True
+    if row.enterprise_unit_key is not None:
+        return feature_in_enterprise_scope(row, user, server)
+    return user_owns_agent(row, user)
 
 
 def user_owns_agent(row: Any, user: Any) -> bool:
     return row.user_id is not None and row.user_id == user.id
 
 
-def assert_agent_owner(row: Any, user: Any) -> None:
-    """Raise if the user may not mutate this agent row (admin bypasses)."""
-    if user.is_admin:
+def assert_agent_owner(row: Any, user: Any, *, server: Any | None = None) -> None:
+    """Raise if the caller cannot manage this agent row."""
+    if is_feature_agent(row.kind) and server is not None:
+        if feature_can_manage(row, user, server):
+            return
+    elif user.is_admin or user_owns_agent(row, user):
         return
-    if row.user_id is None or row.user_id != user.id:
-        raise OctopError(ErrorCode.FORBIDDEN, "agent not owned by user")
+    raise OctopError(ErrorCode.FORBIDDEN, "agent not owned by user")
 
 
 class AgentCapability(StrEnum):
@@ -69,6 +99,18 @@ _FEATURE_WRITE_REFUSAL = (
 )
 
 
+def _feature_write_refusal(
+    row: Any, user: Any, capability: AgentCapability, server: Any | None
+) -> str:
+    if row.enterprise_unit_key is not None:
+        locale = resolve_user_locale(
+            user_repo=server.services.user_repo if server is not None else None,
+            user_id=user.id,
+        )
+        return tr("feature_access.enterprise_only", locale, capability=capability.label)
+    return _FEATURE_WRITE_REFUSAL.format(author=row.user_id, capability=capability.label)
+
+
 def agent_capability_refusal(
     row: Any,
     user: Any,
@@ -76,6 +118,7 @@ def agent_capability_refusal(
     *,
     memory_stage: Literal["draft", "active"] | None = None,
     memory_scope: Literal["shared", "private"] = "shared",
+    server: Any | None = None,
 ) -> str | None:
     """Return a write refusal for this row, caller, capability and memory phase.
 
@@ -91,13 +134,19 @@ def agent_capability_refusal(
         if memory_stage == "active" and memory_scope == "private":
             return None  # Access to this private namespace was checked by its caller.
         if memory_stage == "draft" and memory_scope == "shared":
-            if user.is_admin or user_owns_agent(row, user):
+            if row.enterprise_unit_key is None and (user.is_admin or user_owns_agent(row, user)):
                 return None
-            return _FEATURE_WRITE_REFUSAL.format(author=row.user_id, capability=capability.label)
+            return _feature_write_refusal(row, user, capability, server)
         return _FEATURE_MEMORY_REFUSAL
-    if user.is_admin or user_owns_agent(row, user):
+    if server is not None and feature_can_manage(row, user, server):
         return None
-    return _FEATURE_WRITE_REFUSAL.format(author=row.user_id, capability=capability.label)
+    if (
+        server is None
+        and row.enterprise_unit_key is None
+        and (user.is_admin or user_owns_agent(row, user))
+    ):
+        return None
+    return _feature_write_refusal(row, user, capability, server)
 
 
 def assert_agent_capability_write(
@@ -107,10 +156,11 @@ def assert_agent_capability_write(
     *,
     memory_stage: Literal["draft", "active"] | None = None,
     memory_scope: Literal["shared", "private"] = "shared",
+    server: Any | None = None,
 ) -> None:
     """Raise if *user* may not write this capability in its verified memory scope."""
     reason = agent_capability_refusal(
-        row, user, capability, memory_stage=memory_stage, memory_scope=memory_scope
+        row, user, capability, memory_stage=memory_stage, memory_scope=memory_scope, server=server
     )
     if reason is None:
         return
@@ -135,7 +185,7 @@ def require_agent_capability_row(
     :func:`agent_capability_refusal`.
     """
     row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
-    assert_agent_capability_write(row, user, capability)
+    assert_agent_capability_write(row, user, capability, server=server)
     return row
 
 
@@ -181,7 +231,14 @@ def _user_may_access(row: Any, user: Any, *, acl: ResourceAclRepo) -> bool:
     )
 
 
-def assert_agent_access_row(row: Any, user: Any, *, acl: ResourceAclRepo) -> None:
+def assert_agent_access_row(
+    row: Any, user: Any, *, acl: ResourceAclRepo, server: Any | None = None
+) -> None:
+    if server is not None and (
+        (user.is_admin and is_feature_agent(row.kind))
+        or feature_in_enterprise_scope(row, user, server)
+    ):
+        return
     if not _user_may_access(row, user, acl=acl):
         raise OctopError(ErrorCode.FORBIDDEN, "agent not accessible to user")
 
@@ -207,7 +264,9 @@ def require_agent_row(
         if row.user_id is not None and row.user_id != as_user:
             raise OctopError(ErrorCode.FORBIDDEN, "agent not owned by as_user")
     else:
-        assert_agent_access_row(row, user, acl=server.services.repos.resource_acl_repo)
+        assert_agent_access_row(
+            row, user, acl=server.services.repos.resource_acl_repo, server=server
+        )
     return row
 
 
@@ -220,7 +279,7 @@ def require_agent_owner_row(
 ) -> Any:
     """Load an agent row and require owner-level access."""
     row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
-    assert_agent_owner(row, user)
+    assert_agent_owner(row, user, server=server)
     return row
 
 

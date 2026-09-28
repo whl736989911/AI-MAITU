@@ -111,9 +111,10 @@ def _require_agent_access(
 ) -> Any:
     """The agent row, checked for the channels capability.
 
-    Every endpoint in this module is about the channels bound to one agent, so the
-    capability is named here once: an owner configures their own agent's channels
-    as before, and a feature's channels belong to that feature's author.
+    Every endpoint in this module is bound to one agent. A draft author
+    configures training channels; enterprise administrators manage them after
+    publication.
+    Channel-type permissions remain an independent gate.
     """
     return require_agent_capability_row(
         agent_id,

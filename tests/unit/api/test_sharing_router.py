@@ -85,6 +85,19 @@ async def test_owner_change_takes_effect_immediately(api: dict[str, Any]) -> Non
     assert queue.json()["changes"] == []
 
 
+async def test_without_users_permission_cannot_read_or_change_acl(api: dict[str, Any]) -> None:
+    client: httpx.AsyncClient = api["client"]
+    outsider = await create_user(client, api["admin"], username="outsider")
+
+    read = await client.get(_acl_url(api), headers=outsider)
+    assert read.status_code == 403, read.text
+    assert read.json()["error"]["code"] == "FORBIDDEN"
+
+    changed = await client.post(_acl_url(api), headers=outsider, json={"visibility": "public"})
+    assert changed.status_code == 403, changed.text
+    assert changed.json()["error"]["code"] == "FORBIDDEN"
+
+
 async def test_widening_to_public_waits_for_an_admin(api: dict[str, Any]) -> None:
     client: httpx.AsyncClient = api["client"]
 

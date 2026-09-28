@@ -32,7 +32,7 @@ export interface OctopAgent {
    * row was before the column existed.
    */
   kind?: string | null;
-  /** Owning user id (present on list responses). */
+  /** Operational owner; null after an enterprise takes over a published feature. */
   user_id?: number | null;
   /** Resolved username for admin list view. */
   owner_username?: string | null;
@@ -40,6 +40,8 @@ export interface OctopAgent {
   is_shared?: boolean;
   /** Whether the current user owns this expert. */
   is_owner?: boolean;
+  /** Feature management authority for this viewer, resolved by the server. */
+  can_manage?: boolean;
   name: string;
   description: string | null;
   persona_mbti: string | null;

@@ -79,6 +79,17 @@ describe("canManageExpert", () => {
       ),
     ).toBe(false);
   });
+  it("uses the server verdict when a feature moves from author to enterprise management", () => {
+    const draft = { kind: "feature", is_owner: false, can_manage: false };
+    const published = { kind: "feature", is_owner: false, can_manage: true };
+    const formerAuthor = { kind: "feature", is_owner: true, can_manage: false };
+    expect(canManageExpert(draft, "enterprise_admin")).toBe(false);
+    expect(canManageExpert(published, "enterprise_admin")).toBe(true);
+    expect(canManageExpert(formerAuthor, "user")).toBe(false);
+    expect(
+      canManageExpert({ ...published, kind: "agent" }, "enterprise_admin"),
+    ).toBe(false);
+  });
 });
 
 describe("chatSkillCatalogAgentId", () => {
@@ -148,5 +159,24 @@ describe("ownedFeatures", () => {
     // A shared feature is still somebody else's to manage, exactly as a shared
     // expert is — one ownership rule, both kinds.
     expect(ownedExperts(agents).map((a) => a.agent_id)).toEqual(["my-expert"]);
+  });
+  it("selects enterprise-managed features and excludes the former author", () => {
+    const agents = [
+      {
+        agent_id: "feat-published",
+        kind: "feature",
+        is_owner: false,
+        can_manage: true,
+      },
+      {
+        agent_id: "feat-former",
+        kind: "feature",
+        is_owner: true,
+        can_manage: false,
+      },
+    ];
+    expect(ownedFeatures(agents).map((agent) => agent.agent_id)).toEqual([
+      "feat-published",
+    ]);
   });
 });

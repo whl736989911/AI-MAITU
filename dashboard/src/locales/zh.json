@@ -1218,13 +1218,15 @@
     "agentId": "Agent ID",
     "copyAgentId": "点击复制 Agent ID",
     "share": {
-      "fromOwner": "共享功能 · 来自 {{name}}"
+      "fromOwner": "共享功能 · 来自 {{name}}",
+      "enterpriseManaged": "企业管理员管理"
     },
     "tabWorkflow": "工作流",
     "workflow": {
       "intro": "先设计用户在聊天中填写的内容，再安排处理步骤和交付结果。可以先保存草稿，准备好后再启用。",
       "storedInvalid": "已经保存的工作流读不出来",
-      "authorOnly": "这个工作流由功能作者维护，只有作者能修改它；调用这个功能时，它按作者定义好的工作流执行。",
+      "authorOnly": "训练阶段仅功能作者可修改，企业管理员可查看。",
+      "enterpriseOnly": "正式阶段由企业管理员管理；原作者仍可使用，但不能修改。",
       "modeForm": "可视化编辑",
       "modeJson": "JSON",
       "notDefined": "尚未定义",
@@ -1233,7 +1235,7 @@
       "statusActive": "已启用",
       "statusHint": "未写完也可以保存草稿。启用前请写清每一步的名称和任务；缺少必要设置时会在保存时指出。",
       "publish": "启用工作流",
-      "publishConfirm": "启用这份工作流并提供给调用者？所有有权访问此功能的人都将看到输入表单并按固定步骤运行。",
+      "publishConfirm": "启用这份工作流并提供给调用者？功能管理权将移交给企业管理员，原作者之后不能再修改。",
       "refusalServer": "服务器拒绝了这份定义，没有写入任何内容。以下问题需要逐一修正：",
       "refusalClient": "这份定义还有以下问题，因此没有发出保存请求：",
       "jsonHint": "整份定义文档。切回表单时会解析这段 JSON，并用同一套规则校验；有问题的 JSON 既不会切换，也不会保存。",
@@ -6099,7 +6101,7 @@
     },
     "features": {
       "title": "功能",
-      "subtitle": "你的功能：每一个都自带一个 agent，由作者定义与配置，可作为对话入口被调用。"
+      "subtitle": "功能草稿由作者训练；转为正式阶段后由所属企业管理员管理。"
     },
     "tasks": {
       "title": "自动化",

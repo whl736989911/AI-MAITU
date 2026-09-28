@@ -28,6 +28,9 @@
 -- A level the rules cannot read is answered by ``can_write`` as "no write".
 
 ALTER TABLE resource_acl ADD COLUMN IF NOT EXISTS permission TEXT NOT NULL DEFAULT 'read';
+-- Published feature ownership is enterprise-scoped rather than tied to its author.
+-- NULL means unpublished; an unbound enterprise uses the explicit '*' marker.
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS enterprise_unit_key TEXT;
 
 -- Match the per-thread conversation/HITL columns in the SQLite v36 record.
 ALTER TABLE threads ADD COLUMN IF NOT EXISTS conversation_mode TEXT;
@@ -36,9 +39,9 @@ ALTER TABLE threads ADD COLUMN IF NOT EXISTS hitl_policy TEXT;
 
 -- One caller's own standing text on one feature's workflow (schema v36).
 --
--- A feature's workflow is declared once, by its author, for everybody; this is
--- the layer above it — a caller's own wording, injected *after* the definition
--- and stated to win where the two disagree. Keyed by ``(feature_id, user_id)``
+-- A feature's shared workflow starts with its author and is managed by its
+-- enterprise after publication. A caller's own wording is injected after it.
+-- It wins on conflicts. Keyed by ``(feature_id, user_id)``
 -- because that is exactly what it is: one person's instruction on one feature,
 -- never the feature's configuration, and never another caller's to read.
 --

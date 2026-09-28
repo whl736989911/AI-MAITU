@@ -341,21 +341,33 @@ also require ownership (or admin).
 
 A feature is an agent (`kind = 'feature'`); its workflow is a document in that
 agent's workspace (`.octop/workflow.json`) declaring the input form, the fixed
-steps, the deliverables and the soft rules its runs follow. A `draft` is visible
-only to the feature's author for training; an `active` definition is readable by
-anyone who may reach the feature and renders their input card. Only the author
-may write it (`configuration` capability). Both endpoints are refused
-on an expert with `WORKFLOW_NOT_A_FEATURE`.
+steps, the deliverables and the soft rules its runs follow. An unpublished
+`draft` is visible to its author and administrators of that author's enterprise,
+but only the author may train it. On the first activation, ownership moves from
+the author's account to the enterprise administrator role: the author's account
+can no longer change the feature, and deletion of that account does not remove
+the feature. Administrators of the owning enterprise and system administrators
+manage it thereafter, even if the definition is returned to `draft` or removed.
+An `active` definition is readable by anyone who may reach the feature and
+renders their input card. Workflow endpoints refuse experts with
+`WORKFLOW_NOT_A_FEATURE`.
+
+Existing active workflows are adopted on server startup, including stopped or
+disabled feature agents; an unreadable workspace is logged for retry on the
+next startup rather than silently treating the feature as a draft.
+
+The default `/agents` list includes every enabled draft feature in the
+administrator's enterprise even when its author has not shared it.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| `GET`    | `/agents/{aid}/workflow` | agent access | `{workflow, error}` — the author's draft or a published definition; `null` when none exists or the caller cannot see an unpublished draft; `error` when an accessible stored file cannot be read as one |
-| `PUT`    | `/agents/{aid}/workflow` | author (`configuration`) | body `{workflow}`; `draft` is shape-checked, `active` must stand on its own **and** may only reference skills/subagents the feature actually has (the refusal lists what it does have); **every** problem is reported at once (`WORKFLOW_INVALID`) and nothing is written; `null` removes it |
-| `DELETE` | `/agents/{aid}/workflow` | author (`configuration`) | same as `PUT` with `null` |
+| `GET`    | `/agents/{aid}/workflow` | agent access | `{workflow, error}` — the author's or in-scope enterprise administrator's draft, or a published definition; `null` when none exists or the caller cannot see an unpublished draft; `error` when an accessible stored file cannot be read as one |
+| `PUT`    | `/agents/{aid}/workflow` | draft author; published enterprise/system administrator (`configuration`) | body `{workflow}`; `draft` is shape-checked, `active` must stand on its own **and** may only reference skills/subagents the feature actually has (the refusal lists what it does have); **every** problem is reported at once (`WORKFLOW_INVALID`) and nothing is written; `null` removes it |
+| `DELETE` | `/agents/{aid}/workflow` | draft author; published enterprise/system administrator (`configuration`) | same as `PUT` with `null` |
 | `GET`    | `/agents/{aid}/workflow/runs` | agent access | the caller's own runs, newest first: `{runs: [{id, created_at, thread_id, inputs}]}` |
-| `POST`   | `/agents/{aid}/workflow/changes` | author for `definition`, caller for `overlay` | body `{target, summary, items: [{path, before, after}], run_id?}` → the applied change. Each item's `before` must still be the current value, or the whole batch is refused (`WORKFLOW_CHANGE_CONFLICT`, 409, nothing written); a definition change that would not validate is refused too |
-| `GET`    | `/agents/{aid}/workflow/changes` | agent access | the caller's own changes, newest first: definition edits made by the author and overlay edits made by that caller; draft diffs are not exposed to grantees |
-| `POST`   | `/agents/{aid}/workflow/changes/{change_id}/revert` | as the change | undoes it item by item; an item since edited elsewhere is reported (`WORKFLOW_CHANGE_CONFLICT`) instead of overwritten. Reverting twice is a no-op |
+| `POST`   | `/agents/{aid}/workflow/changes` | draft author or published enterprise/system administrator for `definition`; caller for `overlay` | body `{target, summary, items: [{path, before, after}], run_id?}` → the applied change. Each item's `before` must still be the current value, or the whole batch is refused (`WORKFLOW_CHANGE_CONFLICT`, 409, nothing written); a definition change that would not validate is refused too |
+| `GET`    | `/agents/{aid}/workflow/changes` | agent access | the caller's own changes, newest first; an in-scope enterprise administrator also sees all definition changes, but not another caller's overlay edits |
+| `POST`   | `/agents/{aid}/workflow/changes/{change_id}/revert` | draft author or published enterprise/system administrator for `definition`; caller for own `overlay` | undoes it item by item; an item since edited elsewhere is reported (`WORKFLOW_CHANGE_CONFLICT`) instead of overwritten. Reverting twice is a no-op |
 | `GET`    | `/agents/{aid}/workflow/overlay` | agent access | the caller's own overlay text: `{overlay}` or `null` |
 | `PUT`    | `/agents/{aid}/workflow/overlay` | agent access | body `{overlay}` (at most 4000 chars); blank or `null` removes it |
 
@@ -396,7 +408,8 @@ and is not visible to another caller.
 | `DELETE` | `/agents/{aid}/memory/daily/{filename}` | owner, draft only for features | delete one daily memory |
 | `GET`/`POST` | `/agents/{aid}/memory/...` | agent access | scoped memory API; `scope=shared|private` on memory operations, with omitted scope defaulting to shared in draft and private when active |
 
-For a feature, its author may edit shared memory while the workflow is a draft.
+For a feature, its author may edit shared memory while the workflow is a draft;
+in-scope enterprise administrators may inspect the draft and training memory.
 After publication, shared memory (including workspace files and the SQLite store)
 is read-only to everyone. Each authenticated caller has a separate writable private
 memory; automatic capture and extraction deposit only there, never into shared

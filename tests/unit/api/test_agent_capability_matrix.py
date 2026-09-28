@@ -36,6 +36,7 @@ class _Row:
     agent_id: str
     user_id: int | None
     kind: str = KIND_AGENT
+    enterprise_unit_key: str | None = None
 
 
 @dataclass(frozen=True)

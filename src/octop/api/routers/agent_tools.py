@@ -7,13 +7,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from octop.api.common.agent import (
-    AgentCapability,
-    assert_agent_capability_write,
-)
-from octop.api.common.agent import (
-    assert_agent_owner as _assert_agent_owner,
-)
+from octop.api.common.agent import AgentCapability, assert_agent_capability_write, require_agent_row
 from octop.api.deps import current_user, get_server
 from octop.i18n.domains.tools import tool_display_name
 from octop.infra.agents.plugin_tool_defaults import merge_plugins_tool_settings
@@ -77,13 +71,10 @@ async def get_tool_settings(
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
 ) -> ToolSettingsResponse:
-    assert server.app_runtime is not None
-    row = server.app_runtime.agent_registry.get_row(agent_id)
-    if row is None:
-        raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    require_agent_row(agent_id, user=user, as_user=None, server=server)
 
     locale = resolve_request_locale(request)
+    assert server.app_runtime is not None
     agent_cfg = server.app_runtime.agent_registry.get_config(agent_id)
     disabled = set(normalize_tools_disabled(agent_cfg.get("tools_disabled")))
     mobile_enabled = bool(server.config is not None and server.config.capabilities.mobile.enabled)
@@ -127,7 +118,7 @@ async def put_tool_settings(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION)
+    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION, server=server)
 
     registry = server.app_runtime.agent_registry
     await registry.persist_tools_disabled(agent_id, set(body.disabled_builtin))
@@ -157,7 +148,7 @@ async def patch_tool_setting(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION)
+    assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION, server=server)
 
     name = tool_name.strip()
     if not name:

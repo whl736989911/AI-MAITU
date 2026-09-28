@@ -18,6 +18,8 @@ from typing import Any, Literal, cast
 from octop.api.common.agent import (
     AgentCapability,
     assert_agent_capability_write,
+    feature_can_manage,
+    feature_in_enterprise_scope,
     require_agent_owner_row,
     require_agent_row,
 )
@@ -62,14 +64,17 @@ async def resolve_memory_access(
         )
     workspace = await require_agent_workspace(agent_id, user=user, server=server)
     stage = cast('Literal["draft", "active"]', await feature_memory_stage(workspace))
-    author = user.is_admin or row.user_id == user.id
-    if stage == STATUS_DRAFT and not author:
+    author = row.enterprise_unit_key is None and (user.is_admin or row.user_id == user.id)
+    manager = feature_can_manage(row, user, server)
+    if stage == STATUS_DRAFT and not (
+        author or user.is_admin or feature_in_enterprise_scope(row, user, server)
+    ):
         reason = feature_memory_reason("draft_author_only", user=user, server=server)
         raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})
     return MemoryAccess(
         stage=stage,
         default_scope="private" if stage == STATUS_ACTIVE else "shared",
-        shared_writable=stage == STATUS_DRAFT and author,
+        shared_writable=stage == STATUS_DRAFT and row.enterprise_unit_key is None and manager,
         private_writable=stage == STATUS_ACTIVE and (as_user is None or as_user == user.id),
     )
 
@@ -226,7 +231,12 @@ async def call_memory_rpc(
     if capability is not None:
         row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
         assert_agent_capability_write(
-            row, user, capability, memory_stage=access.stage, memory_scope=selected
+            row,
+            user,
+            capability,
+            memory_stage=access.stage,
+            memory_scope=selected,
+            server=server,
         )
     runtime = server.app_runtime
     coordinator = runtime.agent_registry.memory_slim if runtime is not None else None

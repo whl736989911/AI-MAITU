@@ -15,6 +15,7 @@ import {
   FolderOpen,
   RefreshCw,
   MessageSquare,
+  SlidersHorizontal,
 } from "lucide-react";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
 import SubagentCatalogDrawer from "./SubagentCatalogDrawer";
@@ -390,9 +391,14 @@ export const AgentCard = memo(function AgentCard({
           <div className={styles.agentCard2TitleBlock}>
             <div className={styles.agentCard2NameRow}>
               <div className={styles.agentCard2Name}>{agent.name}</div>
+              {isFeatureAgent(agent) && agent.user_id === null && (
+                <Tag color="purple">
+                  {t("features.share.enterpriseManaged")}
+                </Tag>
+              )}
               {agent.is_shared && (
                 <Tag color="blue">
-                  {sharedViewer
+                  {sharedViewer && agent.owner_username
                     ? t(rowKey("experts.share.fromOwner"), {
                         name: agent.owner_username,
                       })
@@ -592,17 +598,25 @@ export const AgentCard = memo(function AgentCard({
             </>
           )}
           {onPersonalization && isFeatureAgent(agent) && (
-            <button
-              type="button"
-              className={styles.agentCard2EditBtn}
-              onClick={() => onPersonalization(agent.agent_id)}
-              aria-label={t(
+            <Tooltip
+              title={t(
                 "personalization.myPersonalization",
                 "My personalization",
               )}
+              mouseEnterDelay={0.5}
             >
-              {t("personalization.myPersonalization", "My personalization")}
-            </button>
+              <button
+                type="button"
+                className={styles.agentCard2EditBtn}
+                onClick={() => onPersonalization(agent.agent_id)}
+                aria-label={t(
+                  "personalization.myPersonalization",
+                  "My personalization",
+                )}
+              >
+                <SlidersHorizontal size={13} />
+              </button>
+            </Tooltip>
           )}
 
           {chatReady ? (

@@ -98,6 +98,7 @@ if TYPE_CHECKING:
     from octop.infra.agents.manager import AgentManager
     from octop.infra.db.repos.agents import AgentRepo
     from octop.infra.db.repos.audit import AuditRepo
+    from octop.infra.db.repos.channels import ChannelRepo
     from octop.infra.db.repos.connectors import ConnectorRepo
     from octop.infra.db.repos.users import UserRepo
     from octop.infra.gateway.slash.dispatcher import SlashDispatcher
@@ -163,6 +164,7 @@ class GlobalProcessor:
         settings_repo: Any | None = None,
         provider_repo: Any | None = None,
         dispatcher: SlashDispatcher,
+        channel_repo: ChannelRepo | None = None,
         usage_repo: Any | None = None,
         thread_message_repo: Any | None = None,
         gateway: Any | None = None,
@@ -177,6 +179,7 @@ class GlobalProcessor:
         self._audit_repo = audit_repo
         self._agent_repo = agent_repo
         self._user_repo = user_repo
+        self._channel_repo = channel_repo
         self._connector_repo = connector_repo
         self._knowledge_services = (
             SimpleNamespace(
@@ -673,6 +676,21 @@ class GlobalProcessor:
         )
         return reasoning_request_parameters(capability, mode=mode, effort=effort)
 
+    def _message_owner_id(self, agent_row: Any, msg: InboundMessage) -> int | None:
+        """IM turns on enterprise-owned features use the channel's accountable user."""
+        if agent_row is None:
+            return None
+        if agent_row.user_id is not None:
+            return int(agent_row.user_id)
+        if not is_feature_agent(agent_row.kind) or not msg.channel_id or self._channel_repo is None:
+            return None
+        channel = self._channel_repo.get(msg.channel_id)
+        return (
+            channel.user_id
+            if channel is not None and channel.agent_id == agent_row.agent_id
+            else None
+        )
+
     # -- IM channel entry (MessageEvent stream) --------------------------------
 
     async def __call__(self, msg: InboundMessage) -> AsyncIterator[MessageEvent]:
@@ -689,7 +707,7 @@ class GlobalProcessor:
         agent_row = self._agent_repo.get(agent_id)
         user_id = resolve_user_id_for_message(
             msg,
-            agent_owner_id=agent_row.user_id if agent_row is not None else None,
+            agent_owner_id=self._message_owner_id(agent_row, msg),
         )
         session_key = session_key_from_message(msg, agent_id=agent_id)
         channel_type = msg.channel_type or "unknown"
@@ -1005,7 +1023,7 @@ class GlobalProcessor:
         traj_on = self._agent_trajectory_enabled(agent_id, agent_row)
         user_id = resolve_user_id_for_message(
             msg,
-            agent_owner_id=agent_row.user_id if agent_row is not None else None,
+            agent_owner_id=self._message_owner_id(agent_row, msg),
         )
         session_key = session_key_from_message(msg, agent_id=agent_id)
         channel_type = msg.channel_type or "unknown"

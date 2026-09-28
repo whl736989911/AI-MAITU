@@ -188,7 +188,7 @@ def _agent_row(server: Any, agent_id: str, user: Any) -> Any:
     row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     return row
 
 
