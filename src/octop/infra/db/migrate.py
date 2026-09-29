@@ -1241,8 +1241,8 @@ def _seed_enterprise_knowledge_space(db: DatabasePool) -> None:
                 "INSERT INTO knowledge_bases("
                 "knowledge_base_id, owner_user_id, name, description, default_open, "
                 "icon_name, embedding_model, embedding_dim, doc_count, created_at, "
-                "updated_at, is_enterprise"
-                ") VALUES (?, NULL, ?, '', 0, '', '', 0, 0, ?, ?, 1)",
+                "updated_at, max_documents, is_enterprise"
+                ") VALUES (?, NULL, ?, '', 0, '', '', 0, 0, ?, ?, 0, 1)",
                 (kb_id, _ENTERPRISE_SPACE_NAME, ts, ts),
             )
         else:
@@ -1623,11 +1623,10 @@ def _ensure_knowledge_derived_schema(db: DatabasePool) -> None:
 
 
 def _ensure_extract_templates_schema(db: DatabasePool) -> None:
-    """Create extraction templates, their versions, and their bindings (v33).
+    """Reconstruct the historical v33 template tables during an old upgrade.
 
-    Design §7: a template is an enterprise resource, editing one writes a new
-    version rather than overwriting it, and a binding names where it applies
-    (the whole source, a folder, or one file) through its path alone.
+    Migration v38 removes these tables and their data. Do not invoke this helper
+    on current-schema startup.
     """
     if not _table_exists(db, "users") or not _table_exists(db, "data_sources"):
         # The three tables reference both; a database old enough to be missing
@@ -1699,11 +1698,9 @@ def _ensure_extract_templates_schema(db: DatabasePool) -> None:
 
 
 def _ensure_extract_results_schema(db: DatabasePool) -> None:
-    """Create the table that records what a template produced (schema v34).
+    """Reconstruct the historical v34 results table during an old upgrade.
 
-    One row per document and template, replaced on a re-run. The unique index is
-    the point: a template applied twice to one file is not two answers, and the
-    design's "新结果成功后原子替换" (§8.3) needs one row to replace.
+    Migration v38 removes it. Do not invoke this helper on current-schema startup.
     """
     if not _table_exists(db, "knowledge_extract_templates") or not _table_exists(
         db, "knowledge_documents"
@@ -1740,6 +1737,47 @@ def _ensure_extract_results_schema(db: DatabasePool) -> None:
             "CREATE INDEX IF NOT EXISTS idx_extract_results_template "
             "ON knowledge_extract_results (template_id, status)"
         )
+
+
+def _ensure_knowledge_search_rules_schema(db: DatabasePool) -> None:
+    """Upgrade v37 folder rules, including databases with a stale watermark."""
+    old_table = _table_exists(db, "knowledge_folder_search_rules")
+    new_table = _table_exists(db, "knowledge_search_rules")
+    if not old_table and not new_table:
+        raise RuntimeError("knowledge search rule table is missing")
+    table = "knowledge_search_rules" if new_table else "knowledge_folder_search_rules"
+    old_column = "folder_document_id" in _table_columns(db, table)
+    with db.connect() as conn:
+        if old_table and not new_table:
+            conn.execute(
+                "ALTER TABLE knowledge_folder_search_rules RENAME TO knowledge_search_rules"
+            )
+        if old_column:
+            conn.execute(
+                "ALTER TABLE knowledge_search_rules RENAME COLUMN folder_document_id TO document_id"
+            )
+        if old_table and new_table:
+            conn.execute(
+                "INSERT INTO knowledge_search_rules "
+                "(document_id, user_id, mode, keywords_json, updated_at) "
+                "SELECT folder_document_id, user_id, mode, keywords_json, updated_at "
+                "FROM knowledge_folder_search_rules WHERE 1 "
+                "ON CONFLICT (document_id, user_id) DO NOTHING"
+            )
+            conn.execute("DROP TABLE knowledge_folder_search_rules")
+        conn.execute("DROP INDEX IF EXISTS idx_knowledge_folder_search_rules_user")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_search_rules_user "
+            "ON knowledge_search_rules(user_id)"
+        )
+        for table in (
+            "knowledge_extract_results",
+            "knowledge_extract_bindings",
+            "knowledge_extract_template_versions",
+            "knowledge_extract_templates",
+        ):
+            conn.execute(f"DROP TABLE IF EXISTS {table}")
+        conn.execute("UPDATE _schema_version SET version = ?", (38,))
 
 
 def _ensure_org_units_schema(db: DatabasePool) -> None:
@@ -3265,6 +3303,12 @@ def run_migrations(db: DatabasePool) -> None:
     for version, path in _discover(db.dialect):
         if version <= _current_version(db):
             continue
+        if version == 38:
+            # v37->v38 renames a table. A restored/clamped watermark can repeat
+            # the upgrade after that rename, so use the idempotent equivalent of
+            # the numbered SQL pair rather than re-running its ALTER statements.
+            _ensure_knowledge_search_rules_schema(db)
+            continue
         if db.dialect == "postgresql":
             sql = path.read_text(encoding="utf-8")
             with db.connect() as conn, conn.transaction():
@@ -3342,5 +3386,3 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_file_index_schema(db)
     _ensure_knowledge_sync_runs_schema(db)
     _ensure_knowledge_derived_schema(db)
-    _ensure_extract_templates_schema(db)
-    _ensure_extract_results_schema(db)

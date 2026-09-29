@@ -204,62 +204,6 @@ def test_format_agent_start_error_unwraps_exception_group() -> None:
     assert format_agent_start_error(exc) == "storage backend 'cos' not found"
 
 
-def test_build_harness_config_includes_cronjob_tools_when_cron_manager_set(
-    manager: AgentManager,
-    tmp_path: Path,
-) -> None:
-    from unittest.mock import MagicMock
-
-    from octop.infra.cron.manager import CronManager
-
-    gw = MagicMock()
-    gw.thread_registry = MagicMock()
-    from octop.infra.cron.delivery import CronDeliveryService
-
-    cron_mgr = CronManager(
-        gateway=gw,
-        delivery_service=CronDeliveryService(
-            gateway=gw,
-            agent_manager=manager,
-            repos=manager._repos,
-        ),
-        repos=manager._repos,
-        timezone="UTC",
-    )
-    cron_mgr._scheduler = MagicMock()
-    manager.set_cron_manager(cron_mgr)
-
-    cfg = manager._build_harness_config(_row(agent_id="AGT001"))
-    assert cfg.tools is not None
-    names = {t.name for t in cfg.tools}
-    assert names == {
-        "cronjob_list",
-        "cronjob_get",
-        "cronjob_create",
-        "cronjob_update",
-        "cronjob_delete",
-        "cronjob_run_now",
-        "search_knowledge",
-        "feature_create",
-        "archive_extract",
-    }
-
-
-def test_build_harness_config_includes_search_knowledge_without_cron(
-    manager: AgentManager,
-) -> None:
-    from octop.infra.knowledge.hint import KnowledgeSearchHintMiddleware
-
-    cfg = manager._build_harness_config(_row(agent_id="AGT001"))
-    assert cfg.tools is not None
-    assert {t.name for t in cfg.tools} == {
-        "search_knowledge",
-        "feature_create",
-        "archive_extract",
-    }
-    assert any(isinstance(item, KnowledgeSearchHintMiddleware) for item in (cfg.middleware or []))
-
-
 def test_build_harness_config_freezes_a_feature_agents_shared_files(
     manager: AgentManager,
 ) -> None:

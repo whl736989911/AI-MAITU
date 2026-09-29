@@ -897,6 +897,12 @@ class GlobalProcessor:
             locale=locale,
             agent_id=agent_id,
         )
+        await self._prefetch_turn_knowledge(
+            request,
+            user_id=user_id,
+            is_admin=False,
+            query=msg.text,
+        )
         if mcp_servers:
             request["mcp_servers"] = mcp_servers
 
@@ -1390,6 +1396,12 @@ class GlobalProcessor:
             locale=locale,
             agent_id=agent_id,
         )
+        await self._prefetch_turn_knowledge(
+            request,
+            user_id=user_id,
+            is_admin=bool(meta.get("user_is_admin")),
+            query=msg.text,
+        )
 
         if mcp_servers:
             request["mcp_servers"] = mcp_servers
@@ -1640,6 +1652,67 @@ class GlobalProcessor:
             is_admin=is_admin,
             locale=locale,
         )
+
+    async def _prefetch_turn_knowledge(
+        self,
+        request: dict[str, Any],
+        *,
+        user_id: int,
+        is_admin: bool,
+        query: str,
+    ) -> None:
+        """Surface a few authorized locations to the model without reading source content."""
+        services = self._knowledge_services
+        if services is None or not query.strip():
+            return
+        configurable = request.get("configurable") or {}
+        kb_ids = configurable.get("knowledge_base_ids")
+        if not isinstance(kb_ids, list) or not kb_ids:
+            return
+
+        def candidates() -> list[dict[str, object]]:
+            from octop.infra.knowledge.gate import assert_knowledge_usable  # noqa: PLC0415
+
+            try:
+                assert_knowledge_usable(
+                    services.settings_repo.get,
+                    getattr(services, "provider_repo", None),
+                )
+            except RuntimeError:
+                return []
+            from octop.infra.knowledge.service import KnowledgeService  # noqa: PLC0415
+
+            service = KnowledgeService(services)
+            matches = []
+            for kb_id in kb_ids:
+                matches.extend(
+                    service.search(
+                        actor_user_id=user_id,
+                        is_admin=is_admin,
+                        kb_id=str(kb_id),
+                        query=query[:256],
+                        limit=3,
+                    )
+                )
+            matches.sort(key=lambda hit: hit.score, reverse=True)
+            return [
+                {
+                    "kb_id": hit.kb_id,
+                    "document_id": hit.document_id,
+                    "segment_id": hit.segment_id,
+                    "filename": hit.filename,
+                    "locator": hit.locator,
+                }
+                for hit in matches[:3]
+            ]
+
+        try:
+            found = await asyncio.get_running_loop().run_in_executor(None, candidates)
+        except Exception:
+            logger.warning("knowledge candidate prefetch failed", exc_info=True)
+            return
+        if found:
+            configurable["knowledge_candidates"] = found
 
     async def _resolve_turn_mcp_servers(
         self,

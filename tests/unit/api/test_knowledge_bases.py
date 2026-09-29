@@ -170,7 +170,6 @@ async def test_enterprise_space_route_returns_the_seeded_space(
     server = SimpleNamespace(services=_services())
     user = SimpleNamespace(id=1, is_admin=False)
     monkeypatch.setattr(knowledge_bases, "_knowledge_service", lambda _server: service)
-
     payload = await knowledge_bases.enterprise_space(request=_request(), server=server, user=user)
 
     assert seen == {"kb_id": "kb-1", "actor_user_id": 1, "is_admin": False}

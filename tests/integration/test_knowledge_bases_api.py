@@ -127,6 +127,97 @@ async def test_search_is_the_pages_read_too(env: Any) -> None:
     assert allowed.json() == []
 
 
+async def test_search_rules_are_personal_and_reader_editable_for_files_and_folders(
+    env: Any,
+) -> None:
+    client, server, admin_auth = env
+    kb_id = await _space_id(client, admin_auth)
+    root = f"/api/knowledge-bases/{kb_id}"
+    created = await client.post(f"{root}/folders", headers=admin_auth, json={"path": "legal"})
+    assert created.status_code == 201, created.text
+    document = server.services.knowledge_repo.create_document(
+        kb_id=kb_id,
+        filename="contract.md",
+        path="legal/contract.md",
+        content_type="text/markdown",
+        byte_size=1,
+    )
+
+    settings_reader = await create_user(
+        client, admin_auth, username="kb_rule_settings", permissions=["knowledge_settings"]
+    )
+    page_reader = await create_user(
+        client, admin_auth, username="kb_rule_page", permissions=["knowledge_bases"]
+    )
+    keyless = await create_user(client, admin_auth, username="kb_rule_keyless", permissions=[])
+    rules = f"{root}/search-rules"
+    denied = await client.put(
+        rules, headers=keyless, json={"path": "legal", "mode": "exclude", "keywords": []}
+    )
+    assert denied.status_code == 403, denied.text
+
+    saved = await client.put(
+        rules,
+        headers=settings_reader,
+        json={"path": "legal", "mode": "keyword", "keywords": ["renewal"]},
+    )
+    assert saved.status_code == 200, saved.text
+    assert saved.json() == {
+        "path": "legal",
+        "kind": "folder",
+        "mode": "keyword",
+        "keywords": ["renewal"],
+    }
+    file_rule = await client.put(
+        rules,
+        headers=settings_reader,
+        json={"path": document.path, "mode": "hybrid", "keywords": ["signed contract"]},
+    )
+    assert file_rule.status_code == 200, file_rule.text
+    assert file_rule.json() == {
+        "path": document.path,
+        "kind": "file",
+        "mode": "hybrid",
+        "keywords": ["signed contract"],
+    }
+    other = await client.get(rules, headers=page_reader)
+    assert other.status_code == 200 and other.json() == []
+    assert (await client.get(rules, headers=admin_auth)).json() == []
+
+    own = await client.put(
+        rules, headers=page_reader, json={"path": "legal", "mode": "exclude", "keywords": []}
+    )
+    assert own.status_code == 200, own.text
+    invalid = await client.put(
+        rules,
+        headers=settings_reader,
+        json={"path": "../legal", "mode": "keyword", "keywords": ["renewal"]},
+    )
+    assert invalid.status_code == 422, invalid.text
+    current = (await client.get(rules, headers=settings_reader)).json()
+    assert {row["path"]: row for row in current} == {
+        "legal": {"path": "legal", "kind": "folder", "mode": "keyword", "keywords": ["renewal"]},
+        document.path: {
+            "path": document.path,
+            "kind": "file",
+            "mode": "hybrid",
+            "keywords": ["signed contract"],
+        },
+    }
+
+    deleted = await client.delete(rules, headers=settings_reader, params={"path": document.path})
+    assert deleted.status_code == 204, deleted.text
+    assert (await client.get(rules, headers=settings_reader)).json() == [
+        {"path": "legal", "kind": "folder", "mode": "keyword", "keywords": ["renewal"]}
+    ]
+    deleted_folder = await client.delete(rules, headers=settings_reader, params={"path": "legal"})
+    assert deleted_folder.status_code == 204, deleted_folder.text
+    assert (await client.get(rules, headers=settings_reader)).json() == []
+    assert (await client.get(rules, headers=page_reader)).json() == [
+        {"path": "legal", "kind": "folder", "mode": "exclude", "keywords": []}
+    ]
+
+
 async def test_a_write_refusal_is_not_a_read_refusal(env: Any) -> None:
     """④: 403 says which permission was missing, not "no access" to everything."""
     client, server, admin_auth = env

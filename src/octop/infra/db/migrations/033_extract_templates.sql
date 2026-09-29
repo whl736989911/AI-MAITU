@@ -10,18 +10,16 @@
 --     §7.3 is explicit that editing a template does not overwrite it — a new
 --     version is written, so a later extraction can say which one produced it
 --     and changing a template cannot silently rewrite history.
---   * ``knowledge_extract_bindings`` is where a template applies. Design §7.4's
+--   * ``knowledge_extract_bindings`` was where a template applied. The historical
 --     tree (source → folder → file) is expressed by a single path column rather
 --     than three tables or a level column: ``''`` is the whole source, a folder
 --     path covers its contents, and a file path covers that file. Which level a
 --     binding acts at is therefore a property of the candidate file, not a
 --     second thing to keep in step.
 --
--- SQLite boots apply this through migrate.py::_ensure_extract_templates_schema
--- (idempotent, re-run every boot so a database whose watermark skipped 33 still
--- converges). The statements below are what that helper executes, listed here so
--- the file stays the readable record of the change; this file is not executed on
--- SQLite.
+-- This is historical v33 DDL: SQLite upgrades applied it through
+-- migrate.py::_ensure_extract_templates_schema. Migration v38 drops these tables
+-- and their data. This file is a readable record and is not executed on SQLite.
 
 CREATE TABLE IF NOT EXISTS knowledge_extract_templates (
   id              TEXT PRIMARY KEY,

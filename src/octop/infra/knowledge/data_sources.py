@@ -64,15 +64,13 @@ from octop.infra.db.repos.knowledge_sync_runs import (
     SyncRunRow,
 )
 from octop.infra.knowledge.index import KnowledgeIndex
-from octop.infra.knowledge.jobs import process_document, process_source_file
-from octop.infra.knowledge.parse import failure_status
+from octop.infra.knowledge.jobs import process_document
 from octop.infra.knowledge.relpath import path_basename, path_parent
 from octop.infra.knowledge.service import KnowledgeService, knowledge_content_type
 from octop.infra.knowledge.source_crypto import decrypt_source_secret, encrypt_source_secret
 from octop.infra.knowledge.sources import (
     ScanPlan,
     SourceConnector,
-    SourceEntry,
     SourceError,
     build_connector,
     filter_entries,
@@ -607,7 +605,7 @@ class DataSourceService:
             row for row in self._knowledge_repo.list_source_files(data_source.id) if not row.is_dir
         ]
         plan = plan_scan(entries, [row.scan_row() for row in indexed], now=now)
-        counts = self._apply_plan(base, data_source, connector, plan, indexed=indexed, now=now)
+        counts = self._apply_plan(base, data_source, plan, indexed=indexed, now=now)
         self._repo.mark_sync(data_source.id, status=SYNC_OK, error=None, synced_at=now)
         self._repo.mark_scan(data_source.id, at=now, ok=True)
         self._runs.finish(run.id, status=RUN_OK, counts=counts)
@@ -630,7 +628,6 @@ class DataSourceService:
         self,
         base: KnowledgeBaseRow,
         data_source: DataSourceRow,
-        connector: SourceConnector,
         plan: ScanPlan,
         *,
         indexed: list[KnowledgeDocumentRow],
@@ -687,8 +684,21 @@ class DataSourceService:
                 if row is None:
                     counts["failed"] += 1
                     continue
-            if not self._index_source_file(base, data_source, connector, row, entry):
-                counts["failed"] += 1
+            if knowledge_content_type(Path(entry.path).suffix) is None:
+                self._knowledge_repo.update_document(
+                    row.id, status="unsupported", error_message="", byte_size=entry.size
+                )
+                self._knowledge_repo.mark_source_processed(
+                    row.id, size=entry.size, modified_at=entry.modified_at
+                )
+            else:
+                self._knowledge_repo.update_document(
+                    row.id,
+                    status="pending",
+                    error_message="",
+                    chunk_count=0,
+                    byte_size=entry.size,
+                )
 
         # 4. Missing files: start the window, then act on the ones that ran out.
         for missing in plan.absent:
@@ -730,6 +740,7 @@ class DataSourceService:
                 path=f"{data_source.id}/{path}",
                 data_source_id=data_source.id,
                 source_path=path,
+                max_documents=base.max_documents,
             )
         except ValueError as exc:
             # The base refuses new documents (its limit): a scan must report it
@@ -740,65 +751,6 @@ class DataSourceService:
                 payload=f"{path}: {exc}",
             )
             return None
-
-    def _index_source_file(
-        self,
-        base: KnowledgeBaseRow,
-        data_source: DataSourceRow,
-        connector: SourceConnector,
-        document: KnowledgeDocumentRow,
-        entry: SourceEntry,
-    ) -> bool:
-        """Index one settled file. ``False`` when it could not be indexed.
-
-        A file this build cannot parse is marked ``unsupported`` and keeps its
-        metadata: design §6's matrix ends at "保存元数据并标记不支持", and
-        refusing it outright would leave no trace that the folder holds it.
-        """
-        if knowledge_content_type(Path(entry.path).suffix) is None:
-            self._knowledge_repo.update_document(
-                document.id, status="unsupported", error_message="", byte_size=entry.size
-            )
-            self._knowledge_repo.mark_source_processed(
-                document.id, size=entry.size, modified_at=entry.modified_at
-            )
-            return True
-        try:
-            process_source_file(
-                self._services,
-                base.id,
-                document.id,
-                connector=connector,
-                source_path=entry.path,
-            )
-        except Exception as exc:
-            # One file failing must not stop the source (design §8.3). The
-            # reason goes on the row so §8.4's "查看失败原因" has something to
-            # show: ``process_source_file`` records what failed *inside* the
-            # pipeline, but a failure before it starts — the knowledge feature
-            # being off, embedding prerequisites unmet — would otherwise leave
-            # the row looking merely discovered. Writing it again is idempotent,
-            # and ``failure_status`` keeps a locked file's ``password_required``
-            # state instead of flattening it into a plain failure (§6.1).
-            self._knowledge_repo.update_document(
-                document.id,
-                status=failure_status(exc),
-                error_message=str(exc),
-                chunk_count=0,
-            )
-            logger.warning(
-                "knowledge source %s: indexing %s failed: %s",
-                data_source.id,
-                entry.path,
-                exc,
-            )
-            # ``mark_source_processed`` is deliberately skipped so the next scan
-            # retries the file once whatever stopped it is fixed.
-            return False
-        self._knowledge_repo.mark_source_processed(
-            document.id, size=entry.size, modified_at=entry.modified_at
-        )
-        return True
 
     def _remove_source_file(self, kb_id: str, doc_id: str) -> None:
         """Drop a confirmed-missing file and the chunks it was indexed into."""

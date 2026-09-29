@@ -16,6 +16,7 @@ platform may read the result.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
 from octop.infra.knowledge.sources.base import SourceEntry, SourceError
@@ -65,6 +66,13 @@ class LocalFolderConnector:
     def read_bytes(self, path: str) -> bytes:
         try:
             return self._resolve(path).read_bytes()
+        except OSError as exc:
+            raise SourceError(f"cannot read {path}: {_reason(exc)}") from exc
+
+    def copy_to(self, path: str, destination: Path) -> None:
+        try:
+            with self._resolve(path).open("rb") as source, destination.open("wb") as output:
+                shutil.copyfileobj(source, output, length=1 << 20)
         except OSError as exc:
             raise SourceError(f"cannot read {path}: {_reason(exc)}") from exc
 

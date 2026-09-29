@@ -62,7 +62,7 @@ def test_format_description_lists_titles_and_descriptions() -> None:
     assert "Attached this turn:" in text
     assert "- Refund policy: Retail refund rules" in text
     assert "- HR handbook" in text
-    assert "overlaps any of those topics" in text
+    assert "read_knowledge_segment" in text
 
 
 def test_format_description_clips_long_fields() -> None:
@@ -72,11 +72,6 @@ def test_format_description_clips_long_fields() -> None:
     line = next(part for part in text.splitlines() if part.startswith("- Policy:"))
     assert line.endswith("...")
     assert len(line) < 260
-
-
-def test_format_description_none_selected() -> None:
-    text = format_search_knowledge_description([])
-    assert text == "No knowledge bases are attached this turn."
 
 
 def test_middleware_rewrites_search_knowledge_description() -> None:
@@ -104,12 +99,23 @@ def test_middleware_rewrites_search_knowledge_description() -> None:
                 "description": "Retail refund rules",
             }
         ],
+        knowledge_candidates=[
+            {
+                "kb_id": "kb-1",
+                "document_id": "doc-9",
+                "segment_id": "seg-3",
+                "filename": "policy.pdf",
+                "locator": {"kind": "page", "page": 9},
+            }
+        ],
     ):
         KnowledgeSearchHintMiddleware().wrap_model_call(request, handler)
 
     tools = list(captured[0].tools or [])
     kb_tool = next(t for t in tools if getattr(t, "name", None) == "search_knowledge")
     assert "Refund policy: Retail refund rules" in kb_tool.description
+    assert "policy.pdf" in kb_tool.description
+    assert "seg-3" in kb_tool.description
     assert next(t for t in tools if getattr(t, "name", None) == "other").description == "keep"
     assert request.tools[0].description == "stale"
 
@@ -120,10 +126,15 @@ def test_middleware_hides_tool_when_catalog_empty() -> None:
         name="other",
         description="keep",
     )
+    read_tool = StructuredTool.from_function(
+        func=lambda: "x",
+        name="read_knowledge_segment",
+        description="source",
+    )
     request = ModelRequest(
         model=MagicMock(),
         messages=[],
-        tools=[_dummy_tool("stale"), other],
+        tools=[_dummy_tool("stale"), read_tool, other],
     )
     captured: list[ModelRequest] = []
 

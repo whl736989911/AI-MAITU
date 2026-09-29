@@ -29,7 +29,7 @@ def test_enqueue_index_document_limits_concurrency(monkeypatch: pytest.MonkeyPat
     entered = threading.Event()
     hold = threading.Event()
 
-    def blocking(_services: object, _kb: str, _doc: str) -> None:
+    def blocking(_services: object, _kb: str, _doc: str) -> bool:
         nonlocal active, peak
         with lock:
             active += 1
@@ -38,8 +38,9 @@ def test_enqueue_index_document_limits_concurrency(monkeypatch: pytest.MonkeyPat
         assert hold.wait(timeout=2)
         with lock:
             active -= 1
+        return False
 
-    monkeypatch.setattr(jobs, "process_document", blocking)
+    monkeypatch.setattr(jobs, "_process_current_document", blocking)
 
     async def run() -> None:
         first = jobs.enqueue_index_document(object(), "kb", "d1")
@@ -73,7 +74,7 @@ def test_process_document_marks_empty_extract_as_failed(
     )
     write_document(kb.id, doc.id, doc.filename, b"   \n")
     services = SimpleNamespace(knowledge_repo=repo, settings_repo=SettingsRepo(pool))
-    monkeypatch.setattr(jobs, "assert_knowledge_usable", lambda *_args: None)
+    monkeypatch.setattr(jobs, "assert_embedding_usable", lambda *_args: None)
     monkeypatch.setattr(
         jobs, "embed_knowledge_texts", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError())
     )
@@ -103,7 +104,7 @@ def test_process_document_indexes_chunks_and_marks_ready(
     )
     write_document(kb.id, doc.id, doc.filename, b"hello")
     services = SimpleNamespace(knowledge_repo=repo, settings_repo=SettingsRepo(pool))
-    monkeypatch.setattr(jobs, "assert_knowledge_usable", lambda *_args: None)
+    monkeypatch.setattr(jobs, "assert_embedding_usable", lambda *_args: None)
     monkeypatch.setattr(
         jobs, "embed_knowledge_texts", lambda _services, texts: [[1.0, 0.0] for _ in texts]
     )
@@ -129,7 +130,7 @@ def test_process_document_indexes_ocr_text(tmp_path: Path, monkeypatch: pytest.M
     )
     write_document(kb.id, doc.id, doc.filename, b"image")
     services = SimpleNamespace(knowledge_repo=repo, settings_repo=SettingsRepo(pool))
-    monkeypatch.setattr(jobs, "assert_knowledge_usable", lambda *_args: None)
+    monkeypatch.setattr(jobs, "assert_embedding_usable", lambda *_args: None)
     monkeypatch.setattr(jobs, "optional_ocr_extractor", lambda _services: lambda _path: "发票")
     monkeypatch.setattr(jobs, "embed_knowledge_texts", lambda _services, _texts: [[1.0, 0.0]])
 

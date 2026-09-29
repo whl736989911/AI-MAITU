@@ -2,13 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Collection
 from contextlib import suppress
 from dataclasses import asdict
-from typing import Any
+from functools import partial
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    status,
+)
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
@@ -55,7 +67,7 @@ from octop.infra.knowledge.ocr import (
     validate_ocr_settings,
 )
 from octop.infra.knowledge.parse import PasswordRequiredError
-from octop.infra.knowledge.search import DEFAULT_SEARCH_K
+from octop.infra.knowledge.search import DEFAULT_SEARCH_K, SearchHit
 from octop.infra.knowledge.service import (
     ACCESS_WRITE,
     MAX_DOCS_PER_KB,
@@ -85,11 +97,33 @@ KNOWLEDGE_PAGE_KEYS = ("knowledge_bases", "knowledge_settings")
 _TEXT_DOC_MAX_LENGTH = upload_mb_to_bytes(MAX_MAX_UPLOAD_MB)
 
 
+class KnowledgeCoverage(BaseModel):
+    total: int = Field(description="Readable file count, including files without searchable text.")
+    searchable: int = Field(description="Readable files with a current text index.")
+    pending: int = Field(description="Readable files waiting for or undergoing indexing.")
+    indexing: int = Field(description="Subset of pending files actively queued or processing.")
+    failed: int = Field(description="Readable files whose extraction failed or needs a password.")
+    unsupported: int = Field(description="Readable files whose format cannot be extracted.")
+
+
+class KnowledgeSegmentEvidence(BaseModel):
+    document_id: str
+    segment_id: str
+    filename: str
+    text: str = Field(
+        description="Verified original excerpt; empty when the original cannot be checked."
+    )
+    locator: dict[str, Any] = Field(description="Position in the original format.")
+    version: str = Field(description="Content hash of the indexed original.")
+    verified: bool
+    reason: str | None = Field(description="stale or source_unavailable when verification failed.")
+
+
 class FeatureBody(BaseModel):
     enabled: bool = Field(description="Whether to enable the instance-wide knowledge-base feature.")
     model: str | None = Field(
         default=None,
-        description="Downloaded ONNX embedding model ID; required when enabling.",
+        description="Optional embedding model ID; leave blank for lexical-only search.",
     )
     backend: str | None = Field(default=None, pattern="^(onnx|remote)$")
     provider_id: str | None = None
@@ -127,6 +161,10 @@ class UpdateTextDocumentBody(BaseModel):
     content: str = Field(max_length=_TEXT_DOC_MAX_LENGTH)
 
 
+class RenameDocumentBody(BaseModel):
+    new_name: str = Field(min_length=1, max_length=255, description="New document or folder name.")
+
+
 class UpdateBaseBody(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
@@ -141,8 +179,27 @@ class UpdateBaseBody(BaseModel):
     )
 
 
-class RenameDocumentBody(BaseModel):
-    new_name: str = Field(min_length=1, max_length=255, description="New document or folder name.")
+class KnowledgeSearchRule(BaseModel):
+    path: str = Field(description="Relative file or folder path.")
+    kind: Literal["file", "folder"] = Field(description="Stored rule target type.")
+    mode: Literal["keyword", "hybrid", "exclude"] = Field(
+        description="Search strategy for a file or inherited by files within a folder."
+    )
+    keywords: list[str] = Field(description="Aliases that produce unverified file candidates.")
+
+
+class KnowledgeSearchRuleBody(BaseModel):
+    path: str = Field(min_length=1, max_length=500, description="Relative file or folder path.")
+    mode: Literal["keyword", "hybrid", "exclude"] = Field(
+        description=(
+            "keyword uses lexical search, hybrid also uses available vectors, exclude hides files."
+        )
+    )
+    keywords: list[str] = Field(
+        default_factory=list,
+        max_length=32,
+        description="Aliases that add matching files as candidates.",
+    )
 
 
 def _knowledge_service(server: OctopServer) -> KnowledgeService:
@@ -451,7 +508,7 @@ async def put_feature(
         server.services.settings_repo.get, server.services.provider_repo
     )
     selected_backend = (body.backend or "onnx").strip().lower()
-    if body.enabled and selected_backend == "onnx":
+    if body.enabled and body.model and selected_backend == "onnx":
         try:
             await ensure_local_embedding_deps_async(allow_install=True)
         except RuntimeError as exc:
@@ -814,8 +871,72 @@ async def upload_document(
 
 
 @router.get(
+    "/{kb_id}/coverage",
+    response_model=KnowledgeCoverage,
+    summary="Get readable file and searchable text coverage",
+)
+async def knowledge_coverage(
+    kb_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> KnowledgeCoverage:
+    try:
+        service = _knowledge_service(server)
+        data = await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                service.coverage,
+                kb_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
+        )
+        return KnowledgeCoverage(**data)
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.get(
+    "/{kb_id}/documents/{doc_id}/segments/{segment_id}",
+    response_model=KnowledgeSegmentEvidence,
+    summary="Read a source-located excerpt and verify the original version",
+)
+async def read_knowledge_segment(
+    kb_id: str,
+    doc_id: str,
+    segment_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> KnowledgeSegmentEvidence:
+    """Recheck file ACL and source bytes; stale or offline originals yield no text."""
+    try:
+        service = _knowledge_service(server)
+        data = await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                service.read_segment,
+                kb_id,
+                doc_id,
+                segment_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
+        )
+        return KnowledgeSegmentEvidence.model_validate(data)
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.get(
     "/{kb_id}/search",
-    summary="Search this knowledge base's indexed content",
+    response_model=list[SearchHit],
+    summary="Search readable file names and located document text",
 )
 async def search_documents(
     kb_id: str,
@@ -826,23 +947,122 @@ async def search_documents(
     ),
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
-) -> list[dict[str, Any]]:
-    """Keyword and full-text search (design §9), scoped to what the caller may read.
+) -> list[SearchHit]:
+    """Search metadata immediately and ready text, limited to readable files.
 
-    Only ``ready`` documents are searched, so a file that is still indexing, one
-    that failed, and one the caller may not open cannot come back as a result.
-    Each hit carries the document's path and the chunk's position, which is what
-    a citation points at.
+    Hits with a segment ID support verified source reading; metadata-only hits
+    locate files not yet indexed. Inspect coverage for partial results.
     """
     try:
-        hits = _knowledge_service(server).search(
-            kb_id=kb_id,
-            actor_user_id=user.id,
-            query=q,
-            limit=limit,
-            is_admin=_is_admin(user),
+        service = _knowledge_service(server)
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                service.search,
+                kb_id=kb_id,
+                actor_user_id=user.id,
+                query=q,
+                limit=limit,
+                is_admin=_is_admin(user),
+                generate_query_vector=True,
+            ),
         )
-        return [asdict(hit) for hit in hits]
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.get(
+    "/{kb_id}/search-rules",
+    response_model=list[KnowledgeSearchRule],
+    summary="List the current user's file and folder search rules",
+)
+async def list_search_rules(
+    kb_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> list[KnowledgeSearchRule]:
+    try:
+        service = _knowledge_service(server)
+        rows = await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                service.list_search_rules,
+                kb_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
+        )
+        return [KnowledgeSearchRule.model_validate(row) for row in rows]
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.put(
+    "/{kb_id}/search-rules",
+    response_model=KnowledgeSearchRule,
+    summary="Set a current-user file or folder search rule",
+)
+async def put_search_rule(
+    kb_id: str,
+    body: KnowledgeSearchRuleBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> KnowledgeSearchRule:
+    try:
+        service = _knowledge_service(server)
+        row = await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                service.set_search_rule,
+                kb_id,
+                actor_user_id=user.id,
+                path=body.path,
+                mode=body.mode,
+                keywords=body.keywords,
+                is_admin=_is_admin(user),
+            ),
+        )
+        return KnowledgeSearchRule.model_validate(row)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.delete(
+    "/{kb_id}/search-rules",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Delete a current-user file or folder search rule",
+)
+async def delete_search_rule(
+    kb_id: str,
+    request: Request,
+    path: str = Query(min_length=1, max_length=500),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> None:
+    try:
+        service = _knowledge_service(server)
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                service.delete_search_rule,
+                kb_id,
+                actor_user_id=user.id,
+                path=path,
+                is_admin=_is_admin(user),
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
