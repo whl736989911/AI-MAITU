@@ -26,12 +26,12 @@ what find the part of it a document actually contains).
 
 from __future__ import annotations
 
-import re
+import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Literal
 
-from octop.infra.knowledge.index import Hit, KnowledgeIndex
+from octop.infra.knowledge.index import Hit, KnowledgeIndex, search_tokens
 
 MAX_TERMS = 12
 """Bound on the terms one query contributes; more stops being a search."""
@@ -39,21 +39,13 @@ MAX_TERMS = 12
 SNIPPET_CHARS = 200
 DEFAULT_SEARCH_K = 20
 
-_CJK_RUN = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af"
-_TERM_RE = re.compile(rf"[0-9A-Za-z_]+|[{_CJK_RUN}]+")
 _MAX_WHOLE_CJK = 4
 """A run this short is one term; longer runs are cut into windows instead."""
 
 
 @dataclass(frozen=True)
 class SearchHit:
-    """One search result: where it came from, and how it reads (design §9, §14).
-
-    ``ordinal`` is the chunk's position inside its document and ``path`` is the
-    document's path in the knowledge base — together they are the "原文件路径及
-    位置" a result is supposed to be able to cite, and they are what the
-    dashboard's existing citation deep link needs to open the file.
-    """
+    """A readable file's candidate or located hit and source-version identity."""
 
     kb_id: str
     base_name: str
@@ -65,16 +57,17 @@ class SearchHit:
     ordinal: int
     snippet: str
     score: float
+    segment_id: str
+    locator: dict[str, object]
+    version: str
+    match_kind: Literal["content", "filename", "rule_keyword"] = "content"
 
 
 def query_terms(query: str) -> tuple[str, ...]:
     """The terms a query is searched by, lower-cased and de-duplicated."""
     terms: list[str] = []
-    for match in _TERM_RE.finditer(query or ""):
-        token = match.group(0)
-        if token.isascii():
-            terms.append(token.lower())
-        elif len(token) <= _MAX_WHOLE_CJK:
+    for token, cjk in search_tokens(query or ""):
+        if not cjk or len(token) <= _MAX_WHOLE_CJK:
             terms.append(token)
         else:
             terms.extend(token[index : index + 2] for index in range(len(token) - 1))
@@ -83,7 +76,7 @@ def query_terms(query: str) -> tuple[str, ...]:
 
 def normalize_query(query: str) -> str:
     """The query as one compared string, for the whole-query test."""
-    return " ".join((query or "").split()).lower()
+    return " ".join(unicodedata.normalize("NFKC", query or "").split()).casefold()
 
 
 def score_chunk(text: str, terms: Sequence[str], phrase: str = "") -> float:
@@ -104,7 +97,7 @@ def score_chunk(text: str, terms: Sequence[str], phrase: str = "") -> float:
     """
     if not terms and not phrase:
         return 0.0
-    haystack = " ".join(text.lower().split())
+    haystack = " ".join(unicodedata.normalize("NFKC", text).casefold().split())
     found = sum(1 for term in terms if term in haystack)
     coverage = found / len(terms) if terms else 0.0
     occurrences = sum(haystack.count(term) for term in terms)
@@ -214,6 +207,8 @@ def search_base(
     query: str,
     ready_documents: dict[str, Any],
     limit: int,
+    query_vector: Sequence[float] | None = None,
+    semantic_document_ids: set[str] | None = None,
 ) -> list[tuple[Hit, Any]]:
     """Rank one base's chunks and keep only hits on documents that may be shown.
 
@@ -224,14 +219,51 @@ def search_base(
     someone else's cannot surface here.
     """
     terms = query_terms(query)
-    if not terms or limit <= 0:
+    if not ready_documents or (not terms and not query_vector) or limit <= 0:
         return []
     phrase = normalize_query(query)
-    ranked = rank_hits(
-        KnowledgeIndex(kb_id).search_text(terms),
-        terms,
-        phrase,
+    index = KnowledgeIndex(kb_id)
+    lexical = (
+        rank_hits(
+            index.search_text(terms, allowed_doc_ids=list(ready_documents), phrase=phrase),
+            terms,
+            phrase,
+        )
+        if terms
+        else []
     )
+    ranked = lexical
+    if query_vector and (semantic_document_ids is None or semantic_document_ids):
+        semantic: list[Hit] = []
+        seen: set[str] = set()
+        for vector in index.search(
+            query_vector,
+            k=limit * 4,
+            allowed_doc_ids=(
+                list(semantic_document_ids & ready_documents.keys())
+                if semantic_document_ids is not None
+                else list(ready_documents)
+            ),
+        ):
+            segment_id = vector.metadata.get("segment_id")
+            if not isinstance(segment_id, str) or segment_id in seen:
+                continue
+            segment = index.get_segment(vector.doc_id, segment_id)
+            if segment is None:
+                continue
+            seen.add(segment_id)
+            semantic.append(
+                Hit(
+                    segment.chunk_id,
+                    segment.doc_id,
+                    segment.ordinal,
+                    segment.text,
+                    vector.score,
+                    segment.metadata,
+                )
+            )
+        if semantic:
+            ranked = fuse_rankings([semantic, lexical])
     out: list[tuple[Hit, Any]] = []
     for hit in ranked:
         document = ready_documents.get(hit.doc_id)

@@ -132,6 +132,15 @@ export const DEFAULT_KNOWLEDGE_LIMITS: KnowledgeLimits = {
   max_document_bytes: 100 * 1024 * 1024,
 };
 
+export type SearchRuleMode = "keyword" | "hybrid" | "exclude";
+
+export interface SearchRule {
+  path: string;
+  mode: SearchRuleMode;
+  keywords: string[];
+  kind: "folder" | "file";
+}
+
 export interface KnowledgeSearchHit {
   kb_id: string;
   base_name: string;
@@ -147,6 +156,31 @@ export interface KnowledgeSearchHit {
   ordinal: number;
   snippet: string;
   score: number;
+  /** Empty for metadata-only file candidates without verified text evidence. */
+  segment_id: string;
+  locator: Record<string, unknown>;
+  version: string;
+  match_kind?: "content" | "filename" | "rule_keyword";
+}
+
+export interface KnowledgeCoverage {
+  total: number;
+  searchable: number;
+  pending: number;
+  indexing: number;
+  failed: number;
+  unsupported: number;
+}
+
+export interface KnowledgeEvidence {
+  document_id: string;
+  segment_id: string;
+  filename: string;
+  text: string;
+  locator: Record<string, unknown>;
+  version: string;
+  verified: boolean;
+  reason: "stale" | "source_unavailable" | null;
 }
 
 export const knowledgeBasesApi = {
@@ -294,6 +328,7 @@ export const knowledgeBasesApi = {
     onProgress?: (percent: number) => void,
   ) => {
     const body = new FormData();
+
     body.append("upload", file);
     if (relativePath) body.append("path", relativePath);
     return requestUpload<KnowledgeDocument>(
@@ -315,6 +350,26 @@ export const knowledgeBasesApi = {
       { method: "POST" },
     ),
 
+  listSearchRules: (id: string) =>
+    request<SearchRule[]>(`/knowledge-bases/${id}/search-rules`),
+
+  saveSearchRule: (
+    id: string,
+    rule: Pick<SearchRule, "path" | "mode" | "keywords">,
+  ) =>
+    request<SearchRule>(`/knowledge-bases/${id}/search-rules`, {
+      method: "PUT",
+      body: JSON.stringify(rule),
+    }),
+
+  deleteSearchRule: (id: string, path: string) =>
+    request<void>(
+      `/knowledge-bases/${id}/search-rules?${new URLSearchParams({
+        path,
+      }).toString()}`,
+      { method: "DELETE" },
+    ),
+
   /** Keyword and full-text search over what this base may show (design §9). */
   searchDocuments: (id: string, query: string, limit = 20) =>
     request<KnowledgeSearchHit[]>(
@@ -322,6 +377,13 @@ export const knowledgeBasesApi = {
         q: query,
         limit: String(limit),
       }).toString()}`,
+    ),
+  coverage: (id: string) =>
+    request<KnowledgeCoverage>(`/knowledge-bases/${id}/coverage`),
+
+  getEvidence: (id: string, documentId: string, segmentId: string) =>
+    request<KnowledgeEvidence>(
+      `/knowledge-bases/${id}/documents/${documentId}/segments/${segmentId}`,
     ),
 
   previewDocument: (id: string, documentId: string) =>

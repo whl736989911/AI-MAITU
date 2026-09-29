@@ -22,6 +22,8 @@ it is, the message below is what an operator acts on.
 
 from __future__ import annotations
 
+import shutil
+from pathlib import Path
 from typing import Any
 
 from octop.infra.knowledge.sources.base import (
@@ -100,6 +102,20 @@ class SmbConnector:
         except Exception as exc:
             raise SourceError(f"cannot read {relative} on {self._share}: {_reason(exc)}") from exc
         return data
+
+    def copy_to(self, path: str, destination: Path) -> None:
+        client = _smbclient()
+        relative = _clean_relative(path)
+        if not relative:
+            raise SourceError("empty source path")
+        try:
+            with (
+                client.open_file(self._unc(relative), mode="rb", **self._credentials()) as source,
+                destination.open("wb") as output,
+            ):
+                shutil.copyfileobj(source, output, length=1 << 20)
+        except Exception as exc:
+            raise SourceError(f"cannot read {relative} on {self._share}: {_reason(exc)}") from exc
 
     def test(self) -> str:
         client = _smbclient()
