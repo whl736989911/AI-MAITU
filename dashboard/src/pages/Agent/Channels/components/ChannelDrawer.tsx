@@ -28,6 +28,8 @@ import {
   applyQqChannelSaveConfig,
   DEFAULT_QQ_GROUP_CONTEXT_CONFIG,
   normalizeChannelFieldValue,
+  isValidDiscordSnowflakeList,
+  parseDiscordSnowflakeIds,
   normalizeQqGroupContextConfig,
   type ChannelField,
   type ChannelKey,
@@ -79,6 +81,7 @@ export interface ChannelFormValues {
   show_thinking?: boolean;
   show_tool_hints?: boolean;
   group_context?: QqGroupContextConfig;
+  __discord_existing_bot_token?: string;
   [k: string]: string | boolean | QqGroupContextConfig | undefined;
   __raw_config?: string;
 }
@@ -160,7 +163,13 @@ interface ChannelDrawerProps {
   agentId: string;
 }
 
-function FormItemForField({ field }: { field: ChannelField }) {
+function FormItemForField({
+  field,
+  allowEmpty = false,
+}: {
+  field: ChannelField;
+  allowEmpty?: boolean;
+}) {
   const { t } = useTranslation();
   const Input1 =
     field.type === "password"
@@ -168,14 +177,15 @@ function FormItemForField({ field }: { field: ChannelField }) {
       : field.type === "textarea" || field.type === "json"
       ? Input.TextArea
       : Input;
-  const rules: Rule[] = field.required
-    ? [
-        {
-          required: true,
-          message: t("channels.fieldRequired", { label: field.label }),
-        },
-      ]
-    : [];
+  const rules: Rule[] =
+    field.required && !allowEmpty
+      ? [
+          {
+            required: true,
+            message: t("channels.fieldRequired", { label: field.label }),
+          },
+        ]
+      : [];
   if (field.type === "json") {
     rules.push({
       validator: async (_: unknown, value: unknown) => {
@@ -487,6 +497,7 @@ export function ChannelDrawer({
 }: ChannelDrawerProps) {
   const { t } = useTranslation();
   const isEdit = editing !== null;
+  const allowAllDiscordChannels = Form.useWatch("allow_all_channels", form);
   const [selectedKind, setSelectedKind] = useState<ChannelKey>(
     initialValues?.kind ?? "feishu",
   );
@@ -1124,6 +1135,7 @@ export function ChannelDrawer({
     const {
       kind,
       __raw_config,
+      __discord_existing_bot_token,
       response_mode,
       show_thinking,
       show_tool_hints,
@@ -1162,6 +1174,19 @@ export function ChannelDrawer({
           return;
         }
       }
+    }
+    if (kind === "discord") {
+      const token =
+        typeof rest.bot_token === "string" && rest.bot_token.trim()
+          ? rest.bot_token.trim()
+          : __discord_existing_bot_token;
+      if (!token) return;
+      config.bot_token = token;
+      config.allow_all_channels = rest.allow_all_channels !== false;
+      config.allowed_channel_ids = parseDiscordSnowflakeIds(
+        rest.allowed_channel_ids,
+      );
+      config.allowed_user_ids = parseDiscordSnowflakeIds(rest.allowed_user_ids);
     }
     config = {
       ...config,
@@ -1762,10 +1787,10 @@ export function ChannelDrawer({
           onValuesChange={(changed, all) => {
             if (changed.kind) setSelectedKind(changed.kind as ChannelKey);
             if (!restoringDraftRef.current && draftScope) {
-              saveFormDraft(
-                draftScope,
-                all as unknown as Record<string, unknown>,
-              );
+              const draft = { ...(all as Record<string, unknown>) };
+              delete draft.__discord_existing_bot_token;
+              if (all.kind === "discord") delete draft.__raw_config;
+              saveFormDraft(draftScope, draft);
             }
           }}
         >
@@ -1841,9 +1866,92 @@ export function ChannelDrawer({
                 </Form.Item>
               )}
 
-              {hasSchema ? (
-                fields!.map((f) => <FormItemForField key={f.name} field={f} />)
-              ) : (
+              {hasSchema &&
+                fields!.map((f) => (
+                  <FormItemForField
+                    key={f.name}
+                    field={f}
+                    allowEmpty={
+                      f.name === "bot_token" &&
+                      isEdit &&
+                      !!initialValues?.__discord_existing_bot_token
+                    }
+                  />
+                ))}
+              {selectedKind === "discord" && (
+                <>
+                  <Form.Item name="__discord_existing_bot_token" hidden>
+                    <Input />
+                  </Form.Item>
+                  {isEdit && (
+                    <div style={{ marginTop: -16, marginBottom: 16 }}>
+                      {t("channels.discord_token_keep_existing")}
+                    </div>
+                  )}
+                  <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                    {t("channels.discord_section_access")}
+                  </div>
+                  <Alert
+                    type="warning"
+                    showIcon
+                    message={t("channels.discord_message_content_intent")}
+                    style={{ marginBottom: 16 }}
+                  />
+                  <Form.Item
+                    name="allow_all_channels"
+                    label={t("channels.discord_allow_all_channels")}
+                    valuePropName="checked"
+                    tooltip={t("channels.discord_allow_all_channels_help")}
+                  >
+                    <Switch />
+                  </Form.Item>
+                  <div style={{ marginBottom: 12 }}>
+                    {t("channels.discord_access_help")}
+                  </div>
+                  <Form.Item
+                    name="allowed_channel_ids"
+                    label={t("channels.discord_channel_ids")}
+                    help={t("channels.discord_snowflake_help")}
+                    rules={[
+                      {
+                        validator: (_, value) =>
+                          isValidDiscordSnowflakeList(value)
+                            ? Promise.resolve()
+                            : Promise.reject(
+                                new Error(
+                                  t("channels.discord_snowflake_invalid"),
+                                ),
+                              ),
+                      },
+                    ]}
+                  >
+                    <Input.TextArea
+                      rows={3}
+                      disabled={allowAllDiscordChannels !== false}
+                    />
+                  </Form.Item>
+                  <Form.Item
+                    name="allowed_user_ids"
+                    label={t("channels.discord_user_ids")}
+                    help={t("channels.discord_snowflake_help")}
+                    rules={[
+                      {
+                        validator: (_, value) =>
+                          isValidDiscordSnowflakeList(value)
+                            ? Promise.resolve()
+                            : Promise.reject(
+                                new Error(
+                                  t("channels.discord_snowflake_invalid"),
+                                ),
+                              ),
+                      },
+                    ]}
+                  >
+                    <Input.TextArea rows={3} />
+                  </Form.Item>
+                </>
+              )}
+              {!hasSchema && (
                 <Form.Item
                   name="__raw_config"
                   label="Config (JSON)"

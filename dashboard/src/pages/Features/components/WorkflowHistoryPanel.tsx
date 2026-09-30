@@ -3,7 +3,6 @@ import {
   Alert,
   Button,
   Card,
-  Input,
   List,
   Popconfirm,
   Space,
@@ -32,13 +31,10 @@ export default function WorkflowHistoryPanel({
 }) {
   const { t } = useTranslation();
   const timeZone = useServerTimezone();
-  const [overlay, setOverlay] = useState("");
   const [runs, setRuns] = useState<WorkflowRunItem[]>([]);
   const [changes, setChanges] = useState<WorkflowChange[]>([]);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [undoing, setUndoing] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -46,13 +42,11 @@ export default function WorkflowHistoryPanel({
     setLoading(true);
     setError(null);
     void Promise.all([
-      featureWorkflowApi.overlay(agentId),
       featureWorkflowApi.runs(agentId),
       featureWorkflowApi.changes(agentId),
     ])
-      .then(([own, runResult, changeResult]) => {
+      .then(([runResult, changeResult]) => {
         if (cancelled) return;
-        setOverlay(own.overlay ?? "");
         setRuns(runResult.runs);
         setChanges(changeResult.changes);
       })
@@ -72,23 +66,6 @@ export default function WorkflowHistoryPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentId]);
 
-  const save = async () => {
-    setSaving(true);
-    setSaved(false);
-    setError(null);
-    try {
-      const result = await featureWorkflowApi.putOverlay(agentId, overlay);
-      setOverlay(result.overlay ?? "");
-      setSaved(true);
-    } catch (reason) {
-      setError(
-        apiErrorMessage(reason, t("features.workflow.overlaySaveFailed"), t),
-      );
-    } finally {
-      setSaving(false);
-    }
-  };
-
   const undo = async (id: string) => {
     setUndoing(id);
     setError(null);
@@ -97,10 +74,7 @@ export default function WorkflowHistoryPanel({
       setChanges((current) =>
         current.map((item) => (item.id === id ? result : item)),
       );
-      if (result.target === "overlay") {
-        const own = await featureWorkflowApi.overlay(agentId);
-        setOverlay(own.overlay ?? "");
-      }
+      // Overlay edits have their own editor in the feature's personalization entry.
     } catch (reason) {
       setError(apiErrorMessage(reason, t("workflowChange.revertFailed"), t));
     } finally {
@@ -113,33 +87,6 @@ export default function WorkflowHistoryPanel({
   return (
     <Space direction="vertical" size="middle" style={{ width: "100%" }}>
       {error && <Alert type="error" showIcon message={error} />}
-      <Card size="small" title={t("features.workflow.overlayTitle")}>
-        <Typography.Paragraph type="secondary">
-          {t("features.workflow.overlayHint")}
-        </Typography.Paragraph>
-        <Input.TextArea
-          value={overlay}
-          onChange={(event) => {
-            setOverlay(event.target.value);
-            setSaved(false);
-          }}
-          placeholder={t("features.workflow.overlayPlaceholder")}
-          maxLength={4000}
-          showCount
-          rows={3}
-          aria-label={t("features.workflow.overlayTitle")}
-        />
-        <Space style={{ marginTop: 16 }}>
-          <Button onClick={() => void save()} loading={saving}>
-            {t("common.save")}
-          </Button>
-          {saved && (
-            <Typography.Text type="success">
-              {t("features.workflow.overlaySaved")}
-            </Typography.Text>
-          )}
-        </Space>
-      </Card>
       <Card size="small" title={t("features.workflow.overviewTitle")}>
         <Typography.Paragraph type="secondary">
           {t("features.workflow.runsHint")}

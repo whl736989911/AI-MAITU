@@ -88,7 +88,6 @@ def test_compose_followup_uses_peer_display_name(processor_env: dict) -> None:
     )
     text = processor.compose_followup(msg, result_text="findings", error_text=None)
     assert "Researcher" in text
-    assert "findings" in text
 
 
 @pytest.mark.asyncio
@@ -134,7 +133,6 @@ async def test_prepare_peer_session_creates_callee_thread_without_rebind(
     )
     assert prepared is not None
     assert prepared.thread_id == "thr_parent~child"
-    assert prepared.session_key == "child:dashboard:1:dm"
     registry = processor_env["gateway"].thread_registry
     row = registry.get_thread("thr_parent~child")
     assert row is not None

@@ -1,10 +1,10 @@
 """Feature configuration guidance and the declared workflow in model calls.
 
 Every feature turn gets the product's configuration menu and shared-workspace
-boundary, even before a workflow exists. The author's turn also learns how to
-change a workflow in conversation; callers only learn where the author configures
-it. The locale and user come from the turn's configurable context, not a workspace
-template that can be stale or shared between callers.
+boundary, even before a workflow exists. Draft authors and the enterprise
+administrators responsible after publication receive management guidance; other
+callers only learn who can configure the feature. The locale and user come from
+the turn's configurable context.
 
 When a workflow exists, its fixed steps and caller overlay follow that guidance
 in the system message. No workspace I/O occurs per model call: the turn path
@@ -28,6 +28,9 @@ from octop.infra.agents.feature_workflow import (
     render_run_context,
 )
 from octop.infra.agents.kinds import is_feature_agent
+from octop.infra.db.services import RepoBundle
+from octop.infra.users.identity import Role, resolved_role
+from octop.infra.users.scope import scope_for
 
 logger = logging.getLogger(__name__)
 
@@ -79,9 +82,12 @@ def _with_block(request: ModelRequest[Any], block: str) -> ModelRequest[Any]:
 class FeatureWorkflowMiddleware(AgentMiddleware[Any, Any]):
     """State a feature's configuration choices and any declared workflow."""
 
-    def __init__(self, *, agent_id: str, author_user_id: int | None) -> None:
+    def __init__(
+        self, *, agent_id: str, author_user_id: int | None, repos: RepoBundle | None = None
+    ) -> None:
         self._agent_id = agent_id
         self._author_user_id = author_user_id
+        self._repos = repos
 
     def wrap_model_call(
         self,
@@ -105,11 +111,28 @@ class FeatureWorkflowMiddleware(AgentMiddleware[Any, Any]):
             configurable.get(CONFIGURABLE_FEATURE_LOCALE_KEY)
             or (context.locale if context is not None else "en")
         )
-        is_author = self._author_user_id is not None and str(configurable.get("user") or "") == str(
-            self._author_user_id
-        )
+        actor = str(configurable.get("user") or "")
+        is_author = self._author_user_id is not None and actor == str(self._author_user_id)
+        is_manager = False
+        if self._repos is not None:
+            row = self._repos.agent_repo.get(self._agent_id)
+            if row is not None and row.enterprise_unit_key is not None:
+                is_author = False
+                if actor.isdecimal():
+                    user = self._repos.user_repo.get(int(actor))
+                    if user is not None:
+                        is_manager = resolved_role(user) == Role.ADMIN.value or (
+                            resolved_role(user) == Role.ENTERPRISE_ADMIN.value
+                            and scope_for(user, self._repos.org_unit_repo).covers_unit(
+                                row.enterprise_unit_key
+                            )
+                        )
         guide = tr(
-            "feature_training.author" if is_author else "feature_training.caller",
+            "feature_training.author"
+            if is_author
+            else "feature_training.manager"
+            if is_manager
+            else "feature_training.caller",
             locale,
             catalog=tr("feature_training.catalog", locale),
         )
@@ -128,11 +151,15 @@ class FeatureWorkflowMiddleware(AgentMiddleware[Any, Any]):
         return _with_block(guided, block)
 
 
-def feature_workflow_chain(*, agent_id: str, kind: str, author_user_id: int | None) -> list[Any]:
+def feature_workflow_chain(
+    *, agent_id: str, kind: str, author_user_id: int | None, repos: RepoBundle | None = None
+) -> list[Any]:
     """Feature-only guidance and workflow block; experts keep their own chain."""
     if not is_feature_agent(kind):
         return []
-    return [FeatureWorkflowMiddleware(agent_id=agent_id, author_user_id=author_user_id)]
+    return [
+        FeatureWorkflowMiddleware(agent_id=agent_id, author_user_id=author_user_id, repos=repos)
+    ]
 
 
 __all__ = [

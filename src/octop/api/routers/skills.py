@@ -72,6 +72,7 @@ from octop.infra.skills.skill_transfer import (
     SkillTransferNotFound,
     copy_package_skills_to_workspace,
     copy_workspace_skill_to_package,
+    copy_workspace_skill_to_workspace,
 )
 from octop.infra.utils.locale import Locale, resolve_request_locale
 
@@ -497,6 +498,12 @@ class CopyPackageSkillsBody(BaseModel):
     overwrite: bool = False
 
 
+class CopyAgentSkillBody(BaseModel):
+    source_agent_id: str
+    slug: str
+    overwrite: bool = False
+
+
 class PushSkillToPackageBody(BaseModel):
     package_id: str
     overwrite: bool = False
@@ -628,6 +635,62 @@ async def copy_skill_package_to_workspace(
     if copied:
         _note_catalog_changed(server, agent_id)
     disabled = _disabled_set(ctx.config)
+    if disabled.intersection(copied_identity_keys):
+        disabled.difference_update(copied_identity_keys)
+        await _persist_disabled(server, agent_id, disabled)
+    return {"copied": copied}
+
+
+@router.post(
+    "/agents/{agent_id}/skills/copy",
+    status_code=201,
+    summary="Copy an owned agent workspace skill",
+)
+async def copy_agent_skill_to_workspace(
+    agent_id: str,
+    body: CopyAgentSkillBody,
+    request: Request,
+    as_user: int | None = None,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> dict[str, str]:
+    target = await _ctx(agent_id, user=user, as_user=as_user, server=server)
+    source_row = require_agent_owner_row(
+        body.source_agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+    )
+    assert server.app_runtime is not None
+    source = server.app_runtime.agent_registry.workspace_for_agent(source_row.agent_id)
+    if source is None:
+        raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {body.source_agent_id!r} not found")
+
+    try:
+        slug = validate_skill_slug(body.slug)
+    except SkillPackageError as exc:
+        raise _skill_transfer_error(
+            exc,
+            locale=resolve_request_locale(request),
+        ) from exc
+    await _guard_package_only_skill_write(target.workspace, target.config, server, slug)
+    copied_identity_keys = await _skill_disable_keys(target, slug)
+    try:
+        copied = await copy_workspace_skill_to_workspace(
+            source=source,
+            destination=target.workspace,
+            slug=slug,
+            overwrite=body.overwrite,
+        )
+    except SkillPackageError as exc:
+        raise _skill_transfer_error(
+            exc,
+            locale=resolve_request_locale(request),
+        ) from exc
+
+    copied_identity_keys.update(await _skill_disable_keys(target, copied))
+    _note_catalog_changed(server, agent_id)
+    disabled = _disabled_set(target.config)
     if disabled.intersection(copied_identity_keys):
         disabled.difference_update(copied_identity_keys)
         await _persist_disabled(server, agent_id, disabled)

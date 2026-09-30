@@ -68,6 +68,16 @@ describe("<Overview />", () => {
     expect(api.getExtractConfig).toHaveBeenCalledWith("ZYWZTD");
   });
 
+  it("does not request owner-only extraction settings in feature memory", async () => {
+    stubOverview();
+    render(<Overview agentId="ZYWZTD" scope="private" hideMigration />);
+    await screen.findByText("关键主题");
+    await waitFor(() =>
+      expect(api.statsCounts).toHaveBeenCalledWith("ZYWZTD", "private"),
+    );
+    expect(api.getExtractConfig).not.toHaveBeenCalled();
+  });
+
   it("shows the disabled memory state", async () => {
     stubOverview();
     api.getExtractConfig.mockResolvedValue({

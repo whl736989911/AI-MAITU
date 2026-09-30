@@ -17,21 +17,8 @@ from tests.support.app import octop_client
 from tests.support.auth import auth_header, bootstrap_admin, create_user
 
 from octop.infra.knowledge import data_sources as data_sources_module
-from octop.infra.knowledge import jobs as jobs_module
-from octop.infra.knowledge import service as service_module
 from octop.infra.knowledge.url_fetch import FetchedDocument
 from octop.infra.utils.ssrf_guard import OutboundFetchError
-
-
-def _fake_embeddings(_services: object, texts: list[str]) -> list[list[float]]:
-    return [[float(len(text)), 1.0, 0.0, 0.0] for text in texts]
-
-
-def _allow_ingest(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Stand in for the embedding backend a unit test cannot download."""
-    monkeypatch.setattr(jobs_module, "assert_knowledge_usable", lambda *_a, **_k: None)
-    monkeypatch.setattr(service_module, "assert_knowledge_usable", lambda *_a, **_k: None)
-    monkeypatch.setattr(jobs_module, "embed_knowledge_texts", _fake_embeddings)
 
 
 @pytest.fixture
@@ -167,7 +154,11 @@ async def test_url_sync_fetches_and_ingests_the_page(
 ) -> None:
     """A ``url`` source syncs for real — and the page lands in the base."""
     client: httpx.AsyncClient = api["client"]
-    _allow_ingest(monkeypatch)
+    enabled = await client.put(
+        "/api/knowledge-bases/feature", headers=api["admin"], json={"enabled": True}
+    )
+    assert enabled.status_code == 200, enabled.text
+    assert enabled.json()["selected_model"] == ""
     page = "<h1>Refund policy</h1><p>Refunds take five business days.</p>"
     monkeypatch.setattr(
         data_sources_module,
@@ -267,21 +258,14 @@ async def test_a_body_field_the_api_does_not_write_is_rejected(api: dict[str, An
     assert created.status_code == 422, created.text
 
 
-async def test_upload_sync_that_cannot_ingest_reports_the_failure(api: dict[str, Any]) -> None:
-    """No embedding backend is configured here, so the ingest cannot run.
-
-    The point is the report: the call fails and the row records the failure
-    instead of a silent ``ok``.
-    """
+async def test_upload_sync_without_the_original_reports_the_failure(api: dict[str, Any]) -> None:
+    """A missing original file fails sync and records a diagnostic on the source."""
     client: httpx.AsyncClient = api["client"]
 
     synced = await client.post(f"/api/data-sources/{api['source']}/sync", headers=api["admin"])
 
     assert synced.status_code != 200, synced.text
-    assert synced.json()["error"]["code"] in {
-        "KNOWLEDGE_FEATURE_DISABLED",
-        "KNOWLEDGE_PREREQUISITES_FAILED",
-    }
+    assert synced.json()["error"]["code"] == "KNOWLEDGE_NOT_FOUND"
     failed = await client.get(f"/api/data-sources/{api['source']}", headers=api["admin"])
     assert failed.status_code == 200, failed.text
     assert failed.json()["sync_status"] == "failed"

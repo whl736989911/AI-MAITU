@@ -1,9 +1,9 @@
 /**
  * 工作流 — what the feature asks for, the steps it runs, what comes back.
  *
- * This is the definition's editor: the document ``.octop/workflow.json`` holds,
- * edited by its author and read by callers once active. The four sections edit the
- * document itself — the form holds *the document*, not a form-shaped copy of it —
+ * This is the definition's editor: ``.octop/workflow.json`` is trained by its
+ * draft author, then managed by enterprise administrators after publication.
+ * The four sections edit the document itself — the form holds *the document*,
  * so what the JSON tab shows is what saving writes, and saving writes exactly what
  * the server validates.
  *
@@ -12,21 +12,21 @@
  * cannot succeed is refused on the spot, and the same list is what the sections
  * mark their problems with. The server still validates again and answers with every
  * problem at once; that answer is rendered whole — split from ``details.reason`` —
- * because a refusal that hides problems behind a generic sentence costs the author a
- * round-trip per problem.
+ * because a refusal that hides problems behind a generic sentence costs an editor
+ * a round-trip per problem.
  *
  * **The status control is the difference the server makes.** A draft is checked for
  * shape and may still be half-written; an active definition must stand on its own
- * (every step named, identified and told what to do). Nothing else in the document
- * changes: publishing is the same document, declared runnable.
+ * (every step named, identified and told what to do). The first activation also
+ * transfers management from the author to the enterprise administrator role.
  *
  * **A stored file that cannot be read is said, not hidden.** The read answers
  * ``error`` for a definition that was hand-edited into something invalid; the
  * editor shows the reason and starts from an empty document, because the broken one
  * is not a document this build can offer to fix in place.
  *
- * Read-only for a caller who cannot manage the feature: the controls are
- * disabled, while the active workflow remains readable.
+ * Read-only for a caller who cannot manage the feature: controls are disabled;
+ * administrators may still inspect drafts and callers may read active workflows.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -58,8 +58,12 @@ import styles from "./FeatureWorkflowPanel.module.less";
 export interface FeatureWorkflowPanelProps {
   /** The feature's agent id — the definition lives in that agent's workspace. */
   agentId: string;
-  /** Whether this caller may configure the feature (owner or administrator). */
+  /** Whether this caller may configure the feature. */
   canWrite: boolean;
+  /** Published features are managed by the enterprise, not their former author. */
+  enterpriseManaged?: boolean;
+  /** Refresh feature permissions after publication transfers ownership. */
+  onSaved?: () => void;
 }
 
 type EditorMode = "form" | "json";
@@ -67,6 +71,8 @@ type EditorMode = "form" | "json";
 export default function FeatureWorkflowPanel({
   agentId,
   canWrite,
+  onSaved,
+  enterpriseManaged = false,
 }: FeatureWorkflowPanelProps) {
   const { t } = useTranslation();
   const [loading, setLoading] = useState(true);
@@ -176,6 +182,7 @@ export default function FeatureWorkflowPanel({
       setJsonText(documentJson(storedWorkflow));
       setProblems([]);
       message.success(t("features.workflow.saved"));
+      onSaved?.();
     } catch (error) {
       const parsed = parseApiError(error);
       const reason = parsed?.details?.reason;
@@ -292,7 +299,11 @@ export default function FeatureWorkflowPanel({
           type="info"
           showIcon
           className={styles.notice}
-          message={t("features.workflow.authorOnly")}
+          message={t(
+            enterpriseManaged
+              ? "features.workflow.enterpriseOnly"
+              : "features.workflow.authorOnly",
+          )}
         />
       ) : null}
 

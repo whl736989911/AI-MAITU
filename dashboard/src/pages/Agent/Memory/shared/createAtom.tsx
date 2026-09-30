@@ -11,6 +11,7 @@ import {
   type AtomItem,
   type AtomKind,
   type EntityItem,
+  type MemoryScope,
 } from "../../../../api/modules/memoryDashboard";
 
 const KIND_OPTIONS: { value: AtomKind; label: string }[] = [
@@ -33,6 +34,7 @@ interface Props {
   open: boolean;
   agentId: string;
   entities: EntityItem[];
+  scope?: MemoryScope;
   /** When set, lock the form to this existing topic. */
   presetEntityId?: string;
   onClose: () => void;
@@ -47,6 +49,7 @@ export default function CreateAtomModal({
   open,
   agentId,
   entities,
+  scope,
   presetEntityId,
   onClose,
   onSuccess,
@@ -101,7 +104,7 @@ export default function CreateAtomModal({
                   entity_id: values.entity_id as string,
                   kind: values.kind as AtomKind,
                 };
-          const r = await memoryDashboardApi.createAtom(agentId, body);
+          const r = await memoryDashboardApi.createAtom(agentId, body, scope);
           message.success(t("memory.create.success", "记忆已添加"));
           onSuccess?.(r.atom, r.entity, r.created_entity);
           onClose();

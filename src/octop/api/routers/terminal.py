@@ -453,7 +453,7 @@ async def terminal_context(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, "no agents for user")
-    assert_agent_owner(row, user)
+    assert_agent_owner(row, user, server=server)
     # AI-facing path: persisted config value (e.g. ``/.octop/workspaces/<id>``).
     # PTY spawn still uses the host-mapped path via resolve_agent_workspace_dir.
     cfg = server.app_runtime.agent_registry.get_config(agent_id)
@@ -549,7 +549,7 @@ async def terminal_ws(
         await websocket.close(code=4404, reason="agent not found")
         return
     try:
-        assert_agent_owner(agent_row, user)
+        assert_agent_owner(agent_row, user, server=server)
     except OctopError:
         await websocket.close(code=4003, reason="agent not owned by user")
         return

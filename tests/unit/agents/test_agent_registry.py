@@ -153,43 +153,17 @@ async def test_boot_skips_disabled_agents(tmp_path: Path, monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_shutdown_clears_harness_manager(tmp_path: Path) -> None:
-    """shutdown() calls harness_manager.close() and drops the manager reference."""
+async def test_shutdown_awaits_harness_close_once(tmp_path: Path) -> None:
     services = _make_services(tmp_path)
     fake_hm = _make_fake_hm()
-    fake_hm.close = MagicMock()
+    fake_hm.aclose = AsyncMock()
     registry = _make_registry(services, fake_hm=fake_hm)
 
-    await registry.create(AgentCreateSpec(name="a"))
-    await registry.create(AgentCreateSpec(name="b"))
-
+    await registry.shutdown()
     await registry.shutdown()
 
-    fake_hm.close.assert_called_once()
+    fake_hm.aclose.assert_awaited_once()
     assert registry._harness_manager is None
-
-
-@pytest.mark.asyncio
-async def test_shutdown_idempotent(tmp_path: Path, monkeypatch) -> None:
-    """Calling shutdown() twice must not raise."""
-    services = _make_services(tmp_path)
-    registry = _make_registry(services)
-
-    await registry.shutdown()
-    await registry.shutdown()
-
-
-@pytest.mark.asyncio
-async def test_shutdown_calls_close_when_available(tmp_path: Path) -> None:
-    """shutdown() calls harness_manager.close() if the method exists."""
-    services = _make_services(tmp_path)
-    fake_hm = _make_fake_hm()
-    fake_hm.close = MagicMock()
-    registry = _make_registry(services, fake_hm=fake_hm)
-
-    await registry.shutdown()
-
-    fake_hm.close.assert_called_once()
 
 
 # ---------------------------------------------------------------------------

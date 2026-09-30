@@ -9,7 +9,12 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
 
-from octop.api.common.agent import assert_agent_access_row, assert_agent_owner
+from octop.api.common.agent import (
+    assert_agent_access_row,
+    assert_agent_owner,
+    feature_can_manage,
+    feature_in_enterprise_scope,
+)
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
 from octop.api.common.validators import assert_user_backend_root_dirs
 from octop.api.common.workspace import require_agent_workspace
@@ -21,6 +26,7 @@ from octop.infra.agents.avatar import (
     read_workspace_avatar,
     write_workspace_avatar,
 )
+from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.agents.profile import (
     id_list_from_row,
     parse_config_json,
@@ -94,6 +100,12 @@ def _bootstrap_pending_for(server: Any, agent_id: str) -> bool:
 
 def _memory_maintenance_status(server: Any, agent_id: str) -> dict[str, Any] | None:
     """Phase snapshot while this agent's SQLite is being slimmed. None if idle/unloaded."""
+    runtime = server.app_runtime
+    coordinator = runtime.agent_registry.memory_slim if runtime is not None else None
+    if coordinator is not None:
+        current = coordinator.status(agent_id)
+        if isinstance(current, dict):
+            return current
     try:
         agent = server.app_runtime.agent_registry.get_agent(agent_id)
     except OctopError:
@@ -128,6 +140,7 @@ def _row_dict(
     owner_username: str | None = None,
     bootstrap_pending: bool | None = None,
     is_shared: bool,
+    can_manage: bool | None = None,
 ) -> dict[str, Any]:
     cfg = parse_config_json(row.config_json)
     public_cfg = {
@@ -177,6 +190,8 @@ def _row_dict(
     }
     if bootstrap_pending is not None:
         payload["bootstrap_pending"] = bootstrap_pending
+    if can_manage is not None:
+        payload["can_manage"] = can_manage
     return payload
 
 
@@ -186,7 +201,7 @@ async def list_agents(
     server: Any = Depends(get_server),
     scope: Literal["mine", "all"] = Query(
         "mine",
-        description="mine: agents owned by the current user; all: every agent (admin only)",
+        description="mine: owned, usable, and enterprise-scoped features for administrators; all: every agent (users permission required)",
     ),
 ) -> list[dict[str, Any]]:
     """List agents for the dashboard.
@@ -195,8 +210,11 @@ async def list_agents(
     every agent they may use — shared to everyone, to their unit, to their role,
     or granted to them directly (``sharing.allowed_resource_ids``), which is the
     same rule that decides opening one. A feature shared through its own ACL entry
-    arrives the same way, as the agent that carries it.
-    Holders of the ``users`` permission (and admins) may pass ``scope=all``.
+    arrives the same way, as the agent that carries it. System administrators
+    and enterprise administrators additionally see every feature in their scope,
+    including private drafts; ``can_manage`` distinguishes read-only drafts
+    from enterprise-managed published features. Holders of the ``users``
+    permission (and system administrators) may pass ``scope=all``.
     """
     if scope == "all" and not user_has_permission(
         user, "users", unit_grants=unit_grants_for(server, user)
@@ -228,6 +246,9 @@ async def list_agents(
                 owner_username=username_by_id.get(r.user_id) if r.user_id is not None else None,
                 bootstrap_pending=_bootstrap_pending_for(server, r.agent_id),
                 is_shared=r.agent_id in public_ids,
+                can_manage=feature_can_manage(r, user, server)
+                if is_feature_agent(r.kind)
+                else None,
             )
             for r in rows
         ]
@@ -238,7 +259,19 @@ async def list_agents(
     # one: a directed grant, a unit share or a role grant puts an agent here, and
     # so does a feature shared through its own entry (``list_visible``).
     usable = server.services.agent_repo.list_visible(user.id, exclude_user_id=user.id)
-    rows = list({row.agent_id: row for row in [*usable, *owned]}.values())
+    # Enterprise administrators see all features in their enterprise, including
+    # drafts that have not been shared with any callers.
+    rows_by_id = {row.agent_id: row for row in [*usable, *owned]}
+    if user.is_admin or getattr(user, "is_enterprise_admin", False):
+        rows_by_id.update(
+            {
+                row.agent_id: row
+                for row in registry.list_rows()
+                if is_feature_agent(row.kind)
+                and (user.is_admin or feature_in_enterprise_scope(row, user, server))
+            }
+        )
+    rows = list(rows_by_id.values())
     shared_owner_username_by_id: dict[int, str] = {}
     for row in usable:
         if row.user_id is None or row.user_id in shared_owner_username_by_id:
@@ -258,6 +291,9 @@ async def list_agents(
                 ),
                 bootstrap_pending=_bootstrap_pending_for(server, r.agent_id),
                 is_shared=r.agent_id in public_ids,
+                can_manage=feature_can_manage(r, user, server)
+                if is_feature_agent(r.kind)
+                else None,
             )
             for r in rows
         ],
@@ -356,7 +392,7 @@ async def mark_agent_read(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     server.services.session_repo.clear_unread_for_agent(agent_id, user.id)
 
 
@@ -371,13 +407,14 @@ async def get_agent(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    assert_agent_access_row(row, user, acl=server.services.repos.resource_acl_repo)
+    assert_agent_access_row(row, user, acl=server.services.repos.resource_acl_repo, server=server)
     return _row_dict(
         row,
         viewer_user_id=user.id,
         owner_username=_owner_username(server, row),
         bootstrap_pending=_bootstrap_pending_for(server, agent_id),
         is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
+        can_manage=feature_can_manage(row, user, server) if is_feature_agent(row.kind) else None,
     )
 
 
@@ -396,7 +433,7 @@ async def patch_agent(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     if body.config is not None and isinstance(body.config, dict):
         assert_user_backend_root_dirs(
             user,
@@ -446,9 +483,10 @@ async def patch_agent(
     return _row_dict(
         row,
         viewer_user_id=user.id,
-        owner_username=user.username,
+        owner_username=_owner_username(server, row),
         bootstrap_pending=_bootstrap_pending_for(server, agent_id),
         is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
+        can_manage=feature_can_manage(row, user, server) if is_feature_agent(row.kind) else None,
     )
 
 
@@ -463,7 +501,7 @@ async def delete_agent(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     await server.app_runtime.agent_registry.delete(agent_id)
 
 
@@ -535,7 +573,7 @@ async def start_agent(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     await server.app_runtime.agent_registry.start(agent_id)
 
 
@@ -550,7 +588,7 @@ async def stop_agent(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     await server.app_runtime.agent_registry.stop(agent_id)
 
 
@@ -565,7 +603,7 @@ async def reload_agent(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    _assert_agent_owner(row, user, server=server)
     await server.app_runtime.agent_registry.reload(agent_id)
 
 
@@ -580,7 +618,7 @@ async def agent_status(
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-    _assert_agent_owner(row, user)
+    assert_agent_access_row(row, user, acl=server.services.repos.resource_acl_repo, server=server)
     channels = server.app_runtime.gateway.list_channels(agent_id)
     cron_jobs = server.app_runtime.cron_manager.list_by_agent(agent_id)
     return {

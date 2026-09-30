@@ -10,6 +10,27 @@ from octop.infra.agents.workspace_dir import host_system_dir
 from octop.infra.errors import ErrorCode, OctopError
 
 
+def memory_namespace(agent_id: str, user_id: int | None = None) -> str:
+    """The canonical memory namespace for an agent, optionally scoped to a user.
+
+    ``user_id=None`` is the agent's *shared* namespace — the exact
+    ``agent_{agent_id}`` string every expert and every feature has always had.
+    A user id maps to that caller's *private* namespace
+    ``agent_{agent_id}_user_{user_id}``, the partition a feature's active-stage
+    caller reads and writes as their own.
+
+    harness-memory builds SQLite table names as ``{namespace}_*``, so the
+    result must stay a usable identifier stem; only a positive integer user id
+    is accepted, and anything else is a caller bug worth raising on rather
+    than silently redirecting writes into the shared namespace.
+    """
+    if user_id is None:
+        return f"agent_{agent_id}"
+    if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
+        raise ValueError(f"user_id must be a positive integer or None, got {user_id!r}")
+    return f"agent_{agent_id}_user_{user_id}"
+
+
 def memory_backend_from_agent_config(
     cfg: dict[str, Any],
     *,
@@ -68,12 +89,18 @@ def memory_backend_from_agent_config(
 def open_memory_kwargs(
     *,
     agent_id: str,
+    user_id: int | None = None,
     cfg: dict[str, Any],
     octop_config: OctopConfig,
     workspace_dir: Path,
 ) -> tuple[str, str, dict[str, Any] | None]:
-    """Return ``(namespace, backend_type, backend_config)`` for ``Memory(...)``."""
-    ns = f"agent_{agent_id}"
+    """Return ``(namespace, backend_type, backend_config)`` for ``Memory(...)``.
+
+    ``user_id=None`` opens the agent's shared namespace; a caller id opens
+    that user's private namespace of the same agent (same backend, same
+    database, partitioned by namespace). See :func:`memory_namespace`.
+    """
+    ns = memory_namespace(agent_id, user_id)
     resolved = memory_backend_from_agent_config(
         cfg, octop_config=octop_config, workspace_dir=workspace_dir
     )

@@ -21,6 +21,7 @@ from harness_agent.plugins import PluginManifest
 
 from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
 from octop.infra.agents.plugins.manager import (
+    parse_plugin_group,
     parse_plugin_icon,
     parse_plugin_requires,
 )
@@ -42,6 +43,7 @@ class CatalogPlugin:
     name: str
     description: str
     kind: str
+    group: str | None
     name_en: str
     description_en: str
     icon: str | None
@@ -92,9 +94,13 @@ def _entry_for(plugin_dir: Path) -> CatalogPlugin | None:
         name=manifest.name,
         description=manifest.description,
         kind=manifest.kind,
+        group=parse_plugin_group(plugin_dir),
         name_en=name_en,
         description_en=description_en,
-        icon=parse_plugin_icon(plugin_dir),
+        icon=parse_plugin_icon(
+            plugin_dir,
+            asset_prefix=f"/api/plugins/market/{manifest.id}/ui",
+        ),
         requires=tuple(parse_plugin_requires(plugin_dir)),
         source_dir=plugin_dir,
     )

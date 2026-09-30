@@ -71,12 +71,3 @@ def test_replace_services_retargets_user_and_provider_repos(tmp_path: Path) -> N
     assert gateway._repos is svc_b.repos  # noqa: SLF001
     assert cron._repos is svc_b.repos  # noqa: SLF001
     assert cron._delivery_service._repos is svc_b.repos  # noqa: SLF001
-
-
-def test_rebind_module_delegates_retarget_to_app_runtime() -> None:
-    """db.rebind must not own runtime private-field surgery."""
-    src = Path(__file__).resolve().parents[3] / "src/octop/infra/db/rebind.py"
-    text = src.read_text(encoding="utf-8")
-    assert "replace_services" in text
-    assert "_retarget_runtime" not in text
-    assert "registry._repos" not in text

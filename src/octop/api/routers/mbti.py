@@ -16,10 +16,12 @@ from pydantic import BaseModel, Field
 
 from octop.api.common.agent import (
     AgentCapability,
+    assert_agent_access_row,
     assert_agent_capability_write,
     assert_agent_owner,
 )
 from octop.api.deps import get_server, require_permission
+from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.agents.mbti_profiles import (
     MBTIProfile,
     get_all_profiles,
@@ -48,16 +50,21 @@ def _resolve_agent_row(
 
     *capability* names the group an endpoint is about to **write** (applying a
     type rewrites the agent's persona), so the row carries the capability
-    matrix's own rule for it; ``None`` is the read path, which stays owner-level.
+    matrix's own rule for it; reads remain owner-only except scoped feature viewers.
     """
     assert server.app_runtime is not None
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id} not found")
     if capability is None:
-        assert_agent_owner(row, user)
+        if is_feature_agent(row.kind):
+            assert_agent_access_row(
+                row, user, acl=server.services.repos.resource_acl_repo, server=server
+            )
+        else:
+            assert_agent_owner(row, user, server=server)
     else:
-        assert_agent_capability_write(row, user, capability)
+        assert_agent_capability_write(row, user, capability, server=server)
     return row
 
 

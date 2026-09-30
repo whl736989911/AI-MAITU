@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import tempfile
 from collections.abc import Callable, Iterator
@@ -13,12 +14,17 @@ from typing import Any
 from octop.infra.knowledge.chunk import chunk_text
 from octop.infra.knowledge.embed import embed_knowledge_texts
 from octop.infra.knowledge.files import document_path, file_digest
-from octop.infra.knowledge.gate import assert_knowledge_usable
+from octop.infra.knowledge.gate import assert_embedding_usable
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.ocr import optional_ocr_extractor
 from octop.infra.knowledge.params import get_advanced_settings
-from octop.infra.knowledge.parse import failure_status, parse_document
+from octop.infra.knowledge.parse import ParsedBlock, failure_status, parse_document
 from octop.infra.knowledge.sources import SourceConnector
+
+logger = logging.getLogger(__name__)
+
+_running_jobs: dict[tuple[str, str], asyncio.Task[None]] = {}
+
 
 INDEX_CONCURRENCY = 2
 _index_semaphore: asyncio.Semaphore | None = None
@@ -77,7 +83,7 @@ def _source_path(
     os.close(handle)
     temp = Path(temp_name)
     try:
-        temp.write_bytes(connector.read_bytes(source_path))
+        connector.copy_to(source_path, temp)
         yield temp
     finally:
         temp.unlink(missing_ok=True)
@@ -145,9 +151,8 @@ def _parse_document_text(services: Any, path: Path, document: Any) -> str:
 
 
 def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> None:
-    """Parse, chunk, embed, and atomically replace one document's chunks."""
+    """Index original-located text; embeddings are an optional ranking layer."""
     repo = services.knowledge_repo
-    assert_knowledge_usable(services.settings_repo.get, getattr(services, "provider_repo", None))
     document = repo.get_document(doc_id)
     base = repo.get_base(kb_id)
     if document is None or document.kb_id != kb_id or base is None:
@@ -167,23 +172,45 @@ def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -
                 source_path=document.display_path,
             )
         text = parsed.text
-        knobs = get_advanced_settings(services.settings_repo.get)
-        chunks = chunk_text(text, size=knobs["chunk_size"], overlap=knobs["chunk_overlap"])
-        if not (text or "").strip() or not chunks:
+        if not text.strip():
             raise ValueError("knowledge document has no extractable text")
-        embeddings = embed_knowledge_texts(services, chunks)
-        KnowledgeIndex(kb_id).replace_doc_chunks(doc_id, chunks, embeddings)
-        dimension = len(embeddings[0]) if embeddings else 0
+        blocks = parsed.blocks or (
+            ParsedBlock(text=text, kind="document", locator={"kind": "document"}),
+        )
+        index = KnowledgeIndex(kb_id)
+        count = index.replace_doc_segments(doc_id, blocks, version=digest)
+        if not count:
+            raise ValueError("knowledge document has no extractable text")
+        dimension = 0
+        try:
+            assert_embedding_usable(
+                services.settings_repo.get, getattr(services, "provider_repo", None)
+            )
+            knobs = get_advanced_settings(services.settings_repo.get)
+            chunks = []
+            vector_metadata: list[dict[str, object]] = []
+            for ordinal, block in enumerate(blocks):
+                for piece in chunk_text(
+                    block.text, size=knobs["chunk_size"], overlap=knobs["chunk_overlap"]
+                ):
+                    chunks.append(piece)
+                    vector_metadata.append({"segment_id": f"{doc_id}:{ordinal}"})
+            embeddings = embed_knowledge_texts(services, chunks)
+        except Exception:
+            # A missing or unavailable model must not prevent local lexical search.
+            logger.info("optional knowledge embeddings unavailable for %s", doc_id)
+            index.delete_doc_chunks(doc_id)
+        else:
+            index.replace_doc_chunks(doc_id, chunks, embeddings, metadata=vector_metadata)
+            dimension = len(embeddings[0]) if embeddings else 0
+        repo.set_derived(doc_id, parsed.derived())
         repo.update_document(
             doc_id,
             status="ready",
             error_message="",
-            chunk_count=len(chunks),
+            chunk_count=count,
             content_hash=digest,
         )
-        # design §3.4: the structure is derived content, stored once the file it
-        # describes has parsed — the text itself lives in the chunks above.
-        repo.set_derived(doc_id, parsed.derived())
         if dimension and base.embedding_dim != dimension:
             repo.update_base(kb_id, embedding_dim=dimension)
     except Exception as exc:
@@ -193,16 +220,82 @@ def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -
         raise
 
 
+def _process_current_document(services: Any, kb_id: str, doc_id: str) -> bool:
+    """Reopen the right source kind when a queued job runs or resumes."""
+    repo = services.knowledge_repo
+    document = repo.get_document(doc_id)
+    if document is None or document.kb_id != kb_id:
+        return False
+    if not document.data_source_id:
+        process_document(services, kb_id, doc_id)
+        return False
+    from octop.infra.knowledge.data_sources import DataSourceService
+
+    source = services.data_sources_repo.get(document.data_source_id)
+    if source is None:
+        repo.update_document(doc_id, status="failed", error_message="knowledge source unavailable")
+        return False
+    try:
+        connector = DataSourceService(services).connector(source)
+        process_source_file(
+            services,
+            kb_id,
+            doc_id,
+            connector=connector,
+            source_path=document.source_path,
+        )
+    except Exception as exc:
+        repo.update_document(doc_id, status=failure_status(exc), error_message=str(exc))
+        raise
+    current = repo.get_document(doc_id)
+    if current is None:
+        KnowledgeIndex(kb_id).delete_doc(doc_id)
+    elif (current.observed_size, current.observed_modified_at) != (
+        document.observed_size,
+        document.observed_modified_at,
+    ):
+        repo.update_document(doc_id, status="pending", error_message="")
+        return True
+    else:
+        repo.mark_source_processed(
+            doc_id,
+            size=document.observed_size
+            if document.observed_size is not None
+            else document.byte_size,
+            modified_at=document.observed_modified_at,
+        )
+    return False
+
+
 def enqueue_index_document(services: Any, kb_id: str, doc_id: str) -> asyncio.Task[None]:
-    """Schedule CPU- and I/O-bound indexing outside the event loop."""
+    """Schedule a durable pending document once, bounded by the shared semaphore."""
+    key = (kb_id, doc_id)
+    previous = _running_jobs.get(key)
+    if previous is not None and not previous.done():
+        return previous
     loop = asyncio.get_running_loop()
     sem = _get_index_semaphore()
 
     async def _run() -> None:
         async with sem:
-            await loop.run_in_executor(None, process_document, services, kb_id, doc_id)
+            while await loop.run_in_executor(
+                None, _process_current_document, services, kb_id, doc_id
+            ):
+                pass
 
-    return asyncio.create_task(_run())
+    task = asyncio.create_task(_run())
+    _running_jobs[key] = task
+
+    def _finished(done: asyncio.Task[None]) -> None:
+        _running_jobs.pop(key, None)
+        if not done.cancelled():
+            try:
+                done.result()
+            except Exception:
+                logger.exception("knowledge indexing failed for %s", doc_id)
+
+    task.add_done_callback(_finished)
+    return task
 
 
 def reindex_all_documents(services: Any, embedding_model: str) -> None:

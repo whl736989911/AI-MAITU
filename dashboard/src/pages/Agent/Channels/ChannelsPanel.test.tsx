@@ -153,6 +153,55 @@ describe("<ChannelsPanel /> create-flow default", () => {
       );
     });
   });
+
+  it("creates Discord with access policy IDs preserved as strings", async () => {
+    const user = userEvent.setup(userOptions);
+    renderPanel({ ...baselineUser, role: "admin", permissions: [] });
+    await user.click(
+      await screen.findByRole("button", {
+        name: /channels\.showMoreChannels/,
+      }),
+    );
+    await user.click((await screen.findAllByText("channels.label_discord"))[0]);
+    await user.type(
+      await screen.findByLabelText(/Bot Token/i),
+      "discord-secret",
+    );
+    expect(
+      (
+        await screen.findByLabelText("channels.discord_allow_all_channels")
+      ).getAttribute("aria-checked"),
+    ).toBe("true");
+    await user.click(
+      screen.getByLabelText("channels.discord_allow_all_channels"),
+    );
+    await user.type(
+      screen.getByLabelText("channels.discord_channel_ids"),
+      "123456789012345678",
+    );
+    await user.type(
+      screen.getByLabelText("channels.discord_user_ids"),
+      "987654321098765432",
+    );
+    await user.click(screen.getByRole("button", { name: "common.save" }));
+
+    await waitFor(() => {
+      const post = api.mock.calls.find(
+        ([, init]) => (init as RequestInit | undefined)?.method === "POST",
+      );
+      expect(post).toBeDefined();
+      expect(JSON.parse(String((post![1] as RequestInit).body))).toEqual({
+        kind: "discord",
+        name: "discord",
+        config: expect.objectContaining({
+          bot_token: "discord-secret",
+          allow_all_channels: false,
+          allowed_channel_ids: ["123456789012345678"],
+          allowed_user_ids: ["987654321098765432"],
+        }),
+      });
+    });
+  });
 });
 
 describe("<ChannelsPanel /> channel types the account may use", () => {

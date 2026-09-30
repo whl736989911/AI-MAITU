@@ -373,6 +373,17 @@ export interface ListCandidatesBody {
 // ---------------------------------------------------------------------------
 
 const base = (aid: string) => `/agents/${aid}/memory`;
+export type MemoryScope = "shared" | "private";
+
+export interface MemoryAccess {
+  stage: "draft" | "active" | null;
+  default_scope: MemoryScope;
+  shared_writable: boolean;
+  private_writable: boolean;
+}
+
+const scoped = (path: string, scope?: MemoryScope) =>
+  scope ? `${path}${path.includes("?") ? "&" : "?"}scope=${scope}` : path;
 
 const post = <T>(path: string, body?: unknown) =>
   request<T>(path, {
@@ -381,89 +392,110 @@ const post = <T>(path: string, body?: unknown) =>
   });
 
 export const memoryDashboardApi = {
-  // listings
-  listAtoms: (aid: string, body?: ListAtomsBody) =>
-    post<ListAtomsResponse>(`${base(aid)}/atoms/list`, body),
+  getAccess: (aid: string) => request<MemoryAccess>(`${base(aid)}/access`),
 
-  listEntities: (aid: string, body?: ListEntitiesBody) =>
-    post<ListEntitiesResponse>(`${base(aid)}/entities/list`, body),
+  listAtoms: (aid: string, body?: ListAtomsBody, scope?: MemoryScope) =>
+    post<ListAtomsResponse>(scoped(`${base(aid)}/atoms/list`, scope), body),
+  listEntities: (aid: string, body?: ListEntitiesBody, scope?: MemoryScope) =>
+    post<ListEntitiesResponse>(
+      scoped(`${base(aid)}/entities/list`, scope),
+      body,
+    ),
+  listEpisodes: (aid: string, body?: ListEpisodesBody, scope?: MemoryScope) =>
+    post<ListEpisodesResponse>(
+      scoped(`${base(aid)}/episodes/list`, scope),
+      body,
+    ),
+  listJournal: (aid: string, body?: ListJournalBody, scope?: MemoryScope) =>
+    post<ListJournalResponse>(scoped(`${base(aid)}/journal/list`, scope), body),
+  listCandidates: (
+    aid: string,
+    body?: ListCandidatesBody,
+    scope?: MemoryScope,
+  ) =>
+    post<ListCandidatesResponse>(
+      scoped(`${base(aid)}/candidates/list`, scope),
+      body,
+    ),
+  listRawEvents: (aid: string, body?: ListRawEventsBody, scope?: MemoryScope) =>
+    post<ListRawEventsResponse>(
+      scoped(`${base(aid)}/raw_events/list`, scope),
+      body,
+    ),
 
-  listEpisodes: (aid: string, body?: ListEpisodesBody) =>
-    post<ListEpisodesResponse>(`${base(aid)}/episodes/list`, body),
-
-  listJournal: (aid: string, body?: ListJournalBody) =>
-    post<ListJournalResponse>(`${base(aid)}/journal/list`, body),
-
-  listCandidates: (aid: string, body?: ListCandidatesBody) =>
-    post<ListCandidatesResponse>(`${base(aid)}/candidates/list`, body),
-
-  listRawEvents: (aid: string, body?: ListRawEventsBody) =>
-    post<ListRawEventsResponse>(`${base(aid)}/raw_events/list`, body),
-
-  // single fetches
-  getAtom: (aid: string, atomId: string) =>
-    request<AtomItem>(`${base(aid)}/atoms/${encodeURIComponent(atomId)}`),
-
-  getEntity: (aid: string, entityId: string) =>
+  getAtom: (aid: string, atomId: string, scope?: MemoryScope) =>
+    request<AtomItem>(
+      scoped(`${base(aid)}/atoms/${encodeURIComponent(atomId)}`, scope),
+    ),
+  getEntity: (aid: string, entityId: string, scope?: MemoryScope) =>
     request<EntityDetail>(
-      `${base(aid)}/entities/${encodeURIComponent(entityId)}`,
+      scoped(`${base(aid)}/entities/${encodeURIComponent(entityId)}`, scope),
     ),
-
-  getEpisode: (aid: string, episodeId: string) =>
+  getEpisode: (aid: string, episodeId: string, scope?: MemoryScope) =>
     request<EpisodeItem>(
-      `${base(aid)}/episodes/${encodeURIComponent(episodeId)}`,
+      scoped(`${base(aid)}/episodes/${encodeURIComponent(episodeId)}`, scope),
     ),
-
-  getRawEvent: (aid: string, eventId: string) =>
-    request<unknown>(`${base(aid)}/raw_events/${encodeURIComponent(eventId)}`),
-
-  getCandidate: (aid: string, candidateId: string) =>
+  getRawEvent: (aid: string, eventId: string, scope?: MemoryScope) =>
     request<unknown>(
-      `${base(aid)}/candidates/${encodeURIComponent(candidateId)}`,
+      scoped(`${base(aid)}/raw_events/${encodeURIComponent(eventId)}`, scope),
+    ),
+  getCandidate: (aid: string, candidateId: string, scope?: MemoryScope) =>
+    request<unknown>(
+      scoped(
+        `${base(aid)}/candidates/${encodeURIComponent(candidateId)}`,
+        scope,
+      ),
     ),
 
-  // stats / overview
-  statsCounts: (aid: string) =>
-    request<StatsCounts>(`${base(aid)}/stats/counts`),
-
-  statsGrowth: (aid: string, days = 7) =>
-    request<StatsGrowthResponse>(`${base(aid)}/stats/growth?days=${days}`),
-
-  statsAtomKinds: (aid: string) =>
-    request<StatsAtomKindsResponse>(`${base(aid)}/stats/atom_kinds`),
-
-  recentJournal: (aid: string, limit = 5) =>
+  statsCounts: (aid: string, scope?: MemoryScope) =>
+    request<StatsCounts>(scoped(`${base(aid)}/stats/counts`, scope)),
+  statsGrowth: (aid: string, days = 7, scope?: MemoryScope) =>
+    request<StatsGrowthResponse>(
+      scoped(`${base(aid)}/stats/growth?days=${days}`, scope),
+    ),
+  statsAtomKinds: (aid: string, scope?: MemoryScope) =>
+    request<StatsAtomKindsResponse>(
+      scoped(`${base(aid)}/stats/atom_kinds`, scope),
+    ),
+  recentJournal: (aid: string, limit = 5, scope?: MemoryScope) =>
     request<RecentJournalResponse>(
-      `${base(aid)}/journal/recent?limit=${limit}`,
+      scoped(`${base(aid)}/journal/recent?limit=${limit}`, scope),
     ),
 
-  // write actions
-  promoteCandidate: (aid: string, candidateId: string) =>
+  promoteCandidate: (aid: string, candidateId: string, scope?: MemoryScope) =>
     request<PromoteCandidateResponse>(
-      `${base(aid)}/candidates/${encodeURIComponent(candidateId)}:promote`,
+      scoped(
+        `${base(aid)}/candidates/${encodeURIComponent(candidateId)}:promote`,
+        scope,
+      ),
       { method: "POST" },
     ),
-
   rejectCandidate: (
     aid: string,
     candidateId: string,
     body?: { reason?: string; actor?: string },
+    scope?: MemoryScope,
   ) =>
     request<RejectCandidateResponse>(
-      `${base(aid)}/candidates/${encodeURIComponent(candidateId)}:reject`,
+      scoped(
+        `${base(aid)}/candidates/${encodeURIComponent(candidateId)}:reject`,
+        scope,
+      ),
       { method: "POST", body: JSON.stringify(body ?? {}) },
     ),
-
   deprecateAtom: (
     aid: string,
     atomId: string,
     body?: { reason?: string; actor?: string },
+    scope?: MemoryScope,
   ) =>
     request<unknown>(
-      `${base(aid)}/atoms/${encodeURIComponent(atomId)}:deprecate`,
+      scoped(
+        `${base(aid)}/atoms/${encodeURIComponent(atomId)}:deprecate`,
+        scope,
+      ),
       { method: "POST", body: JSON.stringify(body ?? {}) },
     ),
-
   createAtom: (
     aid: string,
     body: {
@@ -476,52 +508,47 @@ export const memoryDashboardApi = {
       confidence?: Confidence;
       reason?: string;
     },
+    scope?: MemoryScope,
   ) =>
-    request<CreateAtomResponse>(`${base(aid)}/atoms`, {
+    request<CreateAtomResponse>(scoped(`${base(aid)}/atoms`, scope), {
       method: "POST",
       body: JSON.stringify(body),
     }),
-
   replaceAtom: (
     aid: string,
     atomId: string,
     body: { assertion: string; reason?: string },
+    scope?: MemoryScope,
   ) =>
     request<ReplaceAtomResponse>(
-      `${base(aid)}/atoms/${encodeURIComponent(atomId)}:replace`,
+      scoped(`${base(aid)}/atoms/${encodeURIComponent(atomId)}:replace`, scope),
       { method: "POST", body: JSON.stringify(body) },
     ),
 
-  // terminal aggregator (5 cards)
-  terminalAboutMe: (aid: string, limit = 5) =>
+  terminalAboutMe: (aid: string, limit = 5, scope?: MemoryScope) =>
     request<TerminalAtomResponse>(
-      `${base(aid)}/terminal/about_me?limit=${limit}`,
+      scoped(`${base(aid)}/terminal/about_me?limit=${limit}`, scope),
     ),
-
-  terminalCurrentFocus: (aid: string, limit = 5) =>
+  terminalCurrentFocus: (aid: string, limit = 5, scope?: MemoryScope) =>
     request<TerminalAtomResponse>(
-      `${base(aid)}/terminal/current_focus?limit=${limit}`,
+      scoped(`${base(aid)}/terminal/current_focus?limit=${limit}`, scope),
     ),
-
-  terminalThingsYouToldMe: (aid: string, limit = 5) =>
+  terminalThingsYouToldMe: (aid: string, limit = 5, scope?: MemoryScope) =>
     request<TerminalAtomResponse>(
-      `${base(aid)}/terminal/things_you_told_me?limit=${limit}`,
+      scoped(`${base(aid)}/terminal/things_you_told_me?limit=${limit}`, scope),
     ),
-
-  terminalRecentStories: (aid: string, limit = 5) =>
+  terminalRecentStories: (aid: string, limit = 5, scope?: MemoryScope) =>
     request<TerminalEpisodeResponse>(
-      `${base(aid)}/terminal/recent_stories?limit=${limit}`,
+      scoped(`${base(aid)}/terminal/recent_stories?limit=${limit}`, scope),
     ),
-
-  terminalEntities: (aid: string, limit = 5) =>
+  terminalEntities: (aid: string, limit = 5, scope?: MemoryScope) =>
     request<TerminalEntityResponse>(
-      `${base(aid)}/terminal/entities?limit=${limit}`,
+      scoped(`${base(aid)}/terminal/entities?limit=${limit}`, scope),
     ),
 
-  // extraction-trigger config
+  // Extraction settings are global, not scoped memory data.
   getExtractConfig: (aid: string) =>
     request<ExtractConfig>(`${base(aid)}/extract-config`),
-
   putExtractConfig: (aid: string, body: Partial<ExtractConfig>) =>
     request<ExtractConfig>(`${base(aid)}/extract-config`, {
       method: "PUT",

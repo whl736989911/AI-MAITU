@@ -67,6 +67,7 @@ class CliChatSession:
         thread_id: str | None,
         model: str | None,
         on_chunk: Callable[[dict[str, Any]], None],
+        conversation_mode: str | None = None,
     ) -> ChatTurnResult:
         channel_manager = self._gateway.channel_manager
         if channel_manager is None:
@@ -93,6 +94,7 @@ class CliChatSession:
             cli_connection_id=self._connection_id,
             model=model,
             user_is_admin=user_is_admin,
+            conversation_mode=conversation_mode,
         )
 
         self._done.clear()
@@ -112,6 +114,7 @@ async def run_chat_turn_async(
     thread_id: str | None,
     model: str | None,
     on_chunk: Callable[[dict[str, Any]], None],
+    conversation_mode: str | None = None,
 ) -> ChatTurnResult:
     async with embedded_runtime() as server:
         user_id = resolve_embedded_user_id(server, agent_id=agent_id, as_user=as_user)
@@ -124,6 +127,7 @@ async def run_chat_turn_async(
                 thread_id=thread_id,
                 model=model,
                 on_chunk=on_chunk,
+                conversation_mode=conversation_mode,
             )
         finally:
             session.close()

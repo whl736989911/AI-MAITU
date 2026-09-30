@@ -6,8 +6,9 @@ reported back instead of being re-derived in the dashboard: ``status`` says
 whether a change is live (``applied``) or parked for an admin
 (``pending_approval``), and ``impact_scope`` says how far it reaches.
 
-Changing access is a user-management action, so reading and writing ACLs needs
-the ``users`` module permission. Approving or refusing an org-wide change is a
+Reading and writing ACLs needs the ``users`` module permission, except that an
+enterprise administrator may manage their own published feature without it.
+Approving or refusing an org-wide change is a
 governance decision and stays admin-only: no module key can grant it.
 """
 
@@ -19,7 +20,15 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from octop.api.deps import get_server, require_admin, require_permission
+from octop.api.common.agent import feature_can_manage
+from octop.api.deps import (
+    current_user,
+    get_server,
+    require_admin,
+    require_permission,
+    unit_grants_for,
+)
+from octop.infra.agents.kinds import feature_agent_id_for, is_feature_agent
 from octop.infra.db.repos.resource_acl import (
     CHANGE_APPLIED,
     CHANGE_PENDING,
@@ -32,6 +41,7 @@ from octop.infra.db.repos.resource_acl import (
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.sharing import RESOURCE_TYPES, VISIBILITY_UNIT, AclEntry
 from octop.infra.sharing.service import ChangeResult, SharingService
+from octop.infra.users.permissions import user_has_permission
 
 router = APIRouter()
 
@@ -236,11 +246,39 @@ def _change_payload(
     }
 
 
+def _may_manage_acl(user: Any, server: Any, resource_type: str, resource_id: str) -> bool:
+    if user_has_permission(user, "users", unit_grants=unit_grants_for(server, user)):
+        return True
+    if resource_type not in {"feature", "agent"}:
+        return False
+    agent_id = feature_agent_id_for(resource_id) if resource_type == "feature" else resource_id
+    row = server.services.agent_repo.get(agent_id)
+    return (
+        row is not None
+        and is_feature_agent(row.kind)
+        and row.enterprise_unit_key is not None
+        and feature_can_manage(row, user, server)
+    )
+
+
+async def _acl_user(
+    resource_type: str,
+    resource_id: str,
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> Any:
+    if not _may_manage_acl(user, server, resource_type, resource_id):
+        raise OctopError(
+            ErrorCode.FORBIDDEN, "permission required", details={"permission": "users"}
+        )
+    return user
+
+
 @router.get("/acl/{resource_type}/{resource_id}", summary="Read a resource's ACL")
 async def get_resource_acl(
     resource_type: str,
     resource_id: str,
-    _user: Any = Depends(require_permission("users")),
+    _user: Any = Depends(_acl_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """The ACL entry in force, or ``entry: null`` when the resource has none.
@@ -262,7 +300,7 @@ async def change_resource_acl(
     resource_type: str,
     resource_id: str,
     body: AclChangeBody,
-    user: Any = Depends(require_permission("users")),
+    user: Any = Depends(_acl_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Apply an access change, or park it when it would reach the whole org.
@@ -378,7 +416,7 @@ async def reject_sharing_change(
 @router.post("/changes/{change_id}/rollback", summary="Roll a change back")
 async def rollback_sharing_change(
     change_id: str,
-    user: Any = Depends(require_permission("users")),
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Restore the state a change replaced, logged as a new change.
@@ -387,6 +425,13 @@ async def rollback_sharing_change(
     change. The reply describes the change that was rolled back and the state now
     in force — which is the restored one, not ``after``.
     """
+    change = _services(server).repos.resource_acl_repo.get_change(change_id)
+    if change is not None and not _may_manage_acl(
+        user, server, change.resource_type, change.resource_id
+    ):
+        raise OctopError(
+            ErrorCode.FORBIDDEN, "permission required", details={"permission": "users"}
+        )
     try:
         _sharing(server).rollback(change_id, user.id)
     except ValueError as exc:

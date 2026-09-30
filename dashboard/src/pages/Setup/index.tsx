@@ -8,6 +8,7 @@ import { storeUiLocale, type UiLocale } from "../../utils/locale";
 
 import { authApi } from "../../api/modules/auth";
 import { preferencesApi } from "../../api/modules/preferences";
+import BootOfflinePanel from "../../components/BootOfflinePanel";
 import { useTheme } from "../../context/ThemeContext";
 import DatabaseStep from "./steps/DatabaseStep";
 import PasswordStep from "./steps/PasswordStep";
@@ -34,6 +35,8 @@ export default function SetupPage() {
   const { isDark } = useTheme();
   const navigate = useNavigate();
   const [checking, setChecking] = useState(true);
+  const [offline, setOffline] = useState(false);
+  const [statusRetryKey, setStatusRetryKey] = useState(0);
   const [passwordRequired, setPasswordRequired] = useState(true);
   const [current, setCurrentRaw] = useState<number>(STEP_PASSWORD);
   const [adminCreds, setAdminCreds] = useState<{
@@ -65,6 +68,8 @@ export default function SetupPage() {
   }, []);
 
   useEffect(() => {
+    setOffline(false);
+    setChecking(true);
     let cancelled = false;
     authApi
       .getAuthStatus()
@@ -130,12 +135,14 @@ export default function SetupPage() {
         if (!cancelled) setChecking(false);
       })
       .catch(() => {
-        if (!cancelled) setChecking(false);
+        if (cancelled) return;
+        setOffline(true);
+        setChecking(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [navigate, goToStep, ensureWizardToken]);
+  }, [navigate, goToStep, ensureWizardToken, statusRetryKey]);
 
   const handlePasswordVerified = () => {
     goToStep(STEP_DATABASE);
@@ -163,14 +170,29 @@ export default function SetupPage() {
     goToStep(STEP_PASSWORD);
   };
 
+  if (offline) {
+    return (
+      <BootOfflinePanel
+        onRetry={() => {
+          setChecking(true);
+          setOffline(false);
+          setStatusRetryKey((key) => key + 1);
+        }}
+      />
+    );
+  }
+
   if (checking) {
     return (
       <div
         style={{
           height: "100dvh",
+          boxSizing: "border-box",
           display: "flex",
           alignItems: "center",
           justifyContent: "center",
+          padding:
+            "env(safe-area-inset-top, 0px) env(safe-area-inset-right, 0px) env(safe-area-inset-bottom, 0px) env(safe-area-inset-left, 0px)",
           background: "var(--fn-bg-layout)",
         }}
       >

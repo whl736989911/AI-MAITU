@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from octop.infra.agents.plugins.catalog import (
+    _entry_for,
     get_catalog_plugin,
     list_catalog_plugins,
 )
@@ -29,3 +30,30 @@ def test_catalog_lookup_rejects_ids_outside_the_catalog(plugin_id: str) -> None:
     with pytest.raises(OctopError) as exc:
         get_catalog_plugin(plugin_id)
     assert exc.value.code is ErrorCode.NOT_FOUND
+
+
+def test_catalog_resolves_relative_icon_and_group_for_market(tmp_path) -> None:
+    plugin_dir = tmp_path / "catalog" / "sample"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "icon.svg").write_text("<svg/>", encoding="utf-8")
+    (plugin_dir / "plugin.yaml").write_text(
+        "\n".join(
+            [
+                "id: sample",
+                "version: 1.0.0",
+                "name: Sample",
+                "description: Sample plugin",
+                "kind: tool",
+                "entry: main.py",
+                "group: Some_Group",
+                "icon: icon.svg",
+            ],
+        ),
+        encoding="utf-8",
+    )
+
+    entry = _entry_for(plugin_dir)
+
+    assert entry is not None
+    assert entry.group == "some-group"
+    assert entry.icon == "/api/plugins/market/sample/ui/icon.svg"

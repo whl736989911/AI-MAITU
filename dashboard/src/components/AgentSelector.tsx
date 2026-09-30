@@ -21,6 +21,8 @@ interface AgentSelectorProps {
    * side rather than teaching one bar to sort them.
    */
   scope?: AgentScope;
+  /** Include shared features on pages where a caller may edit private memory. */
+  includeSharedFeatures?: boolean;
 }
 
 /** Which half of the caller's agents a bar is about. */
@@ -84,13 +86,17 @@ export default function AgentSelector({
   variant = "auto",
   showLabel = true,
   scope = "experts",
+  includeSharedFeatures = false,
 }: AgentSelectorProps) {
   const { t } = useTranslation();
   const { agents, activeAgentId, setActiveAgent, loading } = useAgent();
   const featuresBar = scope === "features";
   const selectable = useMemo(
-    () => selectableAgents(agents, scope),
-    [agents, scope],
+    () =>
+      scope === "features" && includeSharedFeatures
+        ? agents.filter(isFeatureAgent)
+        : selectableAgents(agents, scope),
+    [agents, scope, includeSharedFeatures],
   );
 
   useEffect(() => {

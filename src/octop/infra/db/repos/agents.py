@@ -21,6 +21,7 @@ from octop.infra.db.repos._base import (
     optional_updates,
     sql_in_placeholders,
 )
+from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo, owner_unit_key
 from octop.infra.sharing import VISIBILITY_PRIVATE, VISIBILITY_PUBLIC, allowed_resource_ids
 
@@ -64,6 +65,8 @@ class AgentRow:
     mcp_servers: str | None = None
     kind: str = KIND_AGENT
     """What this row is — see :mod:`octop.infra.agents.kinds`. Never empty."""
+    enterprise_unit_key: str | None = None
+    """Root org unit that owns a published feature, or ``*`` for an unbound enterprise."""
 
     @classmethod
     def from_row(cls, r: DbRow) -> AgentRow:
@@ -91,6 +94,7 @@ class AgentRow:
             published_expert_id=_opt_str(r, "published_expert_id"),
             welcome_message=_opt_str(r, "welcome_message"),
             knowledge_base_ids=_opt_str(r, "knowledge_base_ids"),
+            enterprise_unit_key=_opt_str(r, "enterprise_unit_key"),
             mcp_servers=_opt_str(r, "mcp_servers"),
             kind=str(r["kind"]),
         )
@@ -100,6 +104,7 @@ class AgentRepo:
     def __init__(self, db: DatabasePool) -> None:
         self._db = db
         self._acl = ResourceAclRepo(db)
+        self._units = OrgUnitRepo(db)
 
     def create(
         self,
@@ -171,6 +176,64 @@ class AgentRepo:
         with self._db.connect() as conn:
             r = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
         return AgentRow.from_row(r) if r else None
+
+    def publish_feature(self, agent_id: str) -> None:
+        """Detach a feature from its author and bind it to its enterprise once.
+
+        Both ACL entries and the agent row cross the ownership boundary in one
+        transaction. Existing grants are retained; the author receives an
+        explicit read grant on the agent entry before their account can be removed.
+        """
+        feature_id = feature_id_of_agent(agent_id)
+        if feature_id is None:
+            raise ValueError(f"agent {agent_id!r} is not a feature agent")
+        current = self.get(agent_id)
+        if current is None or not is_feature_agent(current.kind):
+            raise ValueError(f"agent {agent_id!r} is not a feature")
+        if current.enterprise_unit_key is not None:
+            return
+        author_id = current.user_id
+        if author_id is None:
+            raise ValueError("an unpublished feature must have an author")
+        with self._db.connect() as conn:
+            row = conn.execute("SELECT org_unit FROM users WHERE id = ?", (author_id,)).fetchone()
+        org_unit = None if row is None else row["org_unit"]
+        ancestors = self._units.ancestor_keys(str(org_unit)) if org_unit else []
+        if org_unit and not ancestors:
+            raise ValueError(f"feature author's org unit {org_unit!r} does not exist")
+        enterprise_unit_key = ancestors[-1] if ancestors else "*"
+
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT user_id, enterprise_unit_key, kind FROM agents WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+            if row is None or not is_feature_agent(str(row["kind"])):
+                raise ValueError(f"agent {agent_id!r} is not a feature")
+            if row["enterprise_unit_key"] is not None:
+                return
+            if row["user_id"] is None or int(row["user_id"]) != author_id:
+                raise ValueError("feature author changed during publication")
+            ts = now_ts()
+            conn.execute(
+                "UPDATE agents SET user_id = NULL, enterprise_unit_key = ?, updated_at = ? "
+                "WHERE agent_id = ?",
+                (enterprise_unit_key, ts, agent_id),
+            )
+            for resource_type, resource_id in (
+                ("agent", agent_id),
+                ("feature", feature_id),
+            ):
+                conn.execute(
+                    "UPDATE resource_acl SET owner_user_id = NULL, updated_at = ? "
+                    "WHERE resource_type = ? AND resource_id = ?",
+                    (ts, resource_type, resource_id),
+                )
+            conn.execute(
+                "INSERT INTO resource_acl_grants(resource_type, resource_id, grantee_type, "
+                "grantee_id) VALUES ('agent', ?, 'user', ?) ON CONFLICT DO NOTHING",
+                (agent_id, str(author_id)),
+            )
 
     def list_by_user(self, user_id: int, *, include_disabled: bool = True) -> list[AgentRow]:
         sql = "SELECT * FROM agents WHERE user_id = ?"
@@ -292,7 +355,7 @@ class AgentRepo:
         )
         params: list[object] = [*sorted(allowed)]
         if exclude_user_id is not None:
-            sql += " AND user_id != ?"
+            sql += " AND (user_id IS NULL OR user_id != ?)"
             params.append(exclude_user_id)
         sql += " ORDER BY created_at ASC, id ASC"
         with self._db.connect() as conn:

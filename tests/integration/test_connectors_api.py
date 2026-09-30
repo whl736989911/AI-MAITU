@@ -1,12 +1,14 @@
 """Integration tests for connector APIs."""
 
-from __future__ import annotations
-
+import json
+import re
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from octop.infra.connectors.catalog import get_catalog_entry
 from octop.infra.connectors.custom_mcp import CUSTOM_MCP_KIND
 from octop.infra.connectors.oauth.registry import save_oauth_ctx
 from octop.infra.utils.ulid import new_ulid
@@ -30,6 +32,7 @@ async def test_catalog(env):
     assert "figma" not in kinds
     assert "baidu-netdisk" not in kinds
     for kind in (
+        "openalex",
         "tencent-meeting",
         "tencent-lexiang",
         "notion",
@@ -46,6 +49,7 @@ async def test_catalog(env):
         "meituan-travel",
         "didi",
         "yuandian",
+        "qcc",
     ):
         entry = next(e for e in r.json() if e["kind"] == kind)
         assert entry["phase"] == "available", kind
@@ -59,6 +63,24 @@ async def test_catalog(env):
     assert weiyun["mcp_mode"] == "remote"
     assert weiyun["category"] == "office"
     assert weiyun.get("quick_auth_url") == "https://www.weiyun.com/act/openclaw"
+    openalex = next(e for e in r.json() if e["kind"] == "openalex")
+    assert openalex["auth_kind"] == "oauth2"
+    assert openalex["mcp_mode"] == "remote"
+    assert openalex["oauth_mode"] == "dynamic"
+    qcc_api = next(e for e in r.json() if e["kind"] == "qcc")
+    assert qcc_api["auth_kind"] == "api_key"
+    assert qcc_api["mcp_mode"] == "internal"
+    qcc_entry = get_catalog_entry("qcc")
+    assert qcc_entry is not None
+    assert qcc_entry.mcp_url is None
+    openalex_entry = get_catalog_entry("openalex")
+    assert openalex_entry is not None
+    assert openalex_entry.oauth_issuer == "https://mcp.openalex.org"
+    assert openalex_entry.mcp_url == "https://mcp.openalex.org/mcp"
+    assert openalex_entry.oauth_resource == "https://mcp.openalex.org/mcp"
+    assert openalex_entry.oauth_scopes == "openalex:query"
+    assert openalex_entry.remote_transport == "streamable_http"
+    assert openalex["oauth_ready"] is True
 
 
 async def test_create_tencent_instance(env):
@@ -665,3 +687,37 @@ async def test_custom_mcp_oauth_start_unified(env):
     call_kwargs = mocked_start.await_args.kwargs
     assert call_kwargs["target"] == {"type": "custom_mcp", "server_name": "oauth-srv"}
     assert call_kwargs["mcp_url"] == "https://mcp.example.com/mcp"
+
+
+async def test_oauth_callback_rejects_redirect_injection_and_preserves_safe_query(env):
+    c, srv, auth, _ = env
+    user_id = await resolve_user_id(c, auth, "admin")
+    state_id = new_ulid()
+    srv.services.repos.connector_repo.create_oauth_state(
+        state_id=state_id,
+        state=state_id,
+        user_id=user_id,
+        kind="notion",
+        code_verifier="verifier",
+        redirect_after="/connectors?tab=custom&oauth_state=stale</script><script>alert(1)</script>",
+    )
+    with patch(
+        "octop.api.routers.connectors.exchange_oauth_code",
+        new_callable=AsyncMock,
+        return_value={"access_token": "test-token"},
+    ):
+        response = await c.get(
+            "/api/connectors/oauth/callback",
+            params={"code": "code", "state": state_id},
+        )
+
+    assert response.status_code == 200
+    assert response.text.count("<script>") == response.text.count("</script>") == 1
+    assignment = re.search(r"window.location.href = (.*);", response.text)
+    assert assignment is not None
+    target = urlsplit(json.loads(assignment.group(1)))
+    assert target.path == "/connectors"
+    assert not target.scheme and not target.netloc
+    query = parse_qs(target.query)
+    assert query == {"tab": ["custom"], "oauth_state": [state_id]}
+    assert "}, window.location.origin);" in response.text

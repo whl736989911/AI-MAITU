@@ -15,7 +15,14 @@ export interface OctopThread {
   model_ref?: string | null;
   reasoning_mode?: "auto" | "enabled" | "disabled" | null;
   reasoning_effort?: string | null;
+  conversation_mode?: "ask" | "plan" | "craft";
+  pending_plan_path?: string | null;
+  hitl_policy?: HitlSessionPolicy;
   artifacts?: string[];
+}
+export interface HitlSessionPolicy {
+  mode: "ask" | "allow_all" | "allow_tools";
+  tools?: string[];
 }
 
 export interface OctopThreadHistory {
@@ -32,6 +39,9 @@ export interface OctopThreadHistory {
   pinned?: boolean;
   model_ref?: string | null;
   reasoning_mode?: "auto" | "enabled" | "disabled" | null;
+  conversation_mode?: "ask" | "plan" | "craft";
+  pending_plan_path?: string | null;
+  hitl_policy?: HitlSessionPolicy;
   reasoning_effort?: string | null;
   has_more?: boolean;
   limit?: number;
@@ -54,6 +64,8 @@ export interface OctopThreadPatch {
   model_ref?: string | null;
   reasoning_mode?: "auto" | "enabled" | "disabled" | null;
   reasoning_effort?: string | null;
+  conversation_mode?: "ask" | "plan" | "craft";
+  hitl_policy?: HitlSessionPolicy;
 }
 
 export type ContextUsageSegmentKey =
@@ -171,6 +183,9 @@ export const octopThreadsApi = {
       model_ref?: string | null;
       reasoning_mode?: "auto" | "enabled" | "disabled" | null;
       reasoning_effort?: string | null;
+      conversation_mode?: "ask" | "plan" | "craft";
+      pending_plan_path?: string | null;
+      hitl_policy?: HitlSessionPolicy;
     }>(
       `/agents/${encodeURIComponent(agentId)}/threads/${encodeURIComponent(
         threadId,

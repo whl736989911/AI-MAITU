@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Literal
+from zipfile import BadZipFile, ZipFile
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
@@ -14,6 +17,7 @@ from pydantic import BaseModel
 from octop.api.common.agent import AgentCapability
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.common.content_disposition import content_disposition
+from octop.api.common.memory_client import feature_memory_reason
 from octop.api.common.workspace import (
     coerce_read_content,
     file_info_to_dict,
@@ -22,6 +26,9 @@ from octop.api.common.workspace import (
     workspace_api_path,
 )
 from octop.api.deps import current_user, get_server
+from octop.infra.agents.feature_workflow import STATUS_ACTIVE, feature_memory_stage
+from octop.infra.agents.kinds import is_feature_agent
+from octop.infra.agents.memory_backend import open_memory_kwargs
 from octop.infra.backup.workspace_archive import export_workspace_zip, import_workspace_zip
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.media.backend_files import (
@@ -34,6 +41,65 @@ from octop.infra.utils.doc_edit import DocConverter, get_doc_converter
 logger = logging.getLogger(__name__)
 
 _PROTECTED_PREFIX = "_builtin_skills"
+_SHARED_MEMORY_FILES = frozenset({"memory.md"})
+_SHARED_SQLITE_FILES = frozenset({"memory.sqlite", ".octop/memory.sqlite"})
+
+
+async def _protect_published_memory(
+    workspace: Any,
+    agent_id: str,
+    server: Any,
+    *paths: str,
+    user: Any,
+    replace_archive: bool = False,
+    destructive: bool = False,
+) -> None:
+    """Block alternate workspace write routes into published shared memory."""
+    row = server.services.agent_repo.get(agent_id)
+    if row is None or not is_feature_agent(row.kind):
+        return
+    if await feature_memory_stage(workspace) != STATUS_ACTIVE:
+        return
+    if replace_archive:
+        # Replacement erases existing shared files even if omitted from the zip.
+        reason = feature_memory_reason("shared_read_only", user=user, server=server)
+        raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})
+    root = workspace.workspace_dir.resolve()
+    cfg: dict[str, Any] = {}
+    if row.config_json:
+        try:
+            parsed = json.loads(row.config_json)
+            if isinstance(parsed, dict):
+                cfg = parsed
+        except json.JSONDecodeError:
+            pass
+    _namespace, backend, backend_cfg = open_memory_kwargs(
+        agent_id=agent_id,
+        cfg=cfg,
+        octop_config=server.services.config,
+        workspace_dir=root,
+    )
+    sqlite_files = set(_SHARED_SQLITE_FILES)
+    if backend == "sqlite" and backend_cfg:
+        db_path = Path(backend_cfg["db_path"]).resolve()
+        if db_path.is_relative_to(root):
+            sqlite_files.add(db_path.relative_to(root).as_posix().casefold())
+    for path in paths:
+        candidate = Path(path)
+        relative = (
+            (candidate if is_host_absolute_path(path) else root / path).resolve().relative_to(root)
+        )
+        target = relative.as_posix().casefold()
+        if (
+            target in _SHARED_MEMORY_FILES
+            or any(target == db or target.startswith(f"{db}-") for db in sqlite_files)
+            or target == "daily"
+            or target.startswith("daily/")
+            or destructive
+            and target == ".octop"
+        ):
+            reason = feature_memory_reason("shared_read_only", user=user, server=server)
+            raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})
 
 
 def _assert_workspace_mutable(path: str, *, workspace_dir: Path) -> str:
@@ -213,6 +279,7 @@ async def write_file(
     io_path = _workspace_io_path(
         path, from_workspace=from_workspace, workspace_dir=ws.workspace_dir
     )
+    await _protect_published_memory(ws, agent_id, server, io_path, user=user)
     converter = get_doc_converter(path)
     if converter is not None:
         try:
@@ -296,6 +363,7 @@ async def delete_workspace_file(
         capability=AgentCapability.PERSONA_FILES,
     )
     rel = _assert_workspace_mutable(path, workspace_dir=ws.workspace_dir)
+    await _protect_published_memory(ws, agent_id, server, rel, user=user, destructive=True)
     try:
         await ws.adelete(rel)
     except Exception as exc:
@@ -330,6 +398,7 @@ async def move_workspace_file(
     )
     src = _assert_workspace_mutable(path, workspace_dir=ws.workspace_dir)
     dest = _assert_workspace_mutable(body.destination, workspace_dir=ws.workspace_dir)
+    await _protect_published_memory(ws, agent_id, server, src, dest, user=user, destructive=True)
     try:
         await ws.amove(src, dest)
     except Exception as exc:
@@ -362,6 +431,7 @@ async def upload_file(
         from_workspace=from_workspace or path is None,
         workspace_dir=ws.workspace_dir,
     )
+    await _protect_published_memory(ws, agent_id, server, io_path, user=user)
     data = await file.read()
     try:
         await ws.aupload_bytes(io_path, data)
@@ -614,6 +684,16 @@ async def import_workspace_archive(
         server=server,
         capability=AgentCapability.PERSONA_FILES,
     )
+    if mode == "replace":
+        await _protect_published_memory(ws, agent_id, server, user=user, replace_archive=True)
+    else:
+        try:
+            with ZipFile(BytesIO(raw)) as archive:
+                await _protect_published_memory(
+                    ws, agent_id, server, *archive.namelist(), user=user
+                )
+        except BadZipFile:
+            pass  # Keep the existing import validator's error for malformed archives.
     local_ws = resolve_agent_workspace_dir(server, agent_id)
     result = await import_workspace_zip(
         ws,

@@ -28,12 +28,14 @@ import {
   type AtomItem,
   type EntityItem,
   type StatsCounts,
+  type MemoryScope,
 } from "../../../api/modules/memoryDashboard";
 
 import styles from "./Overview.module.less";
 
 interface Props {
   agentId: string;
+  scope?: MemoryScope;
   /** Jump to the review tab when the profile-review action is clicked. */
   onReview?: () => void;
   /** Jump to the memory tree; entityId can auto-expand the corresponding topic. */
@@ -78,6 +80,7 @@ interface ConceptItem {
 
 export default function ProfileOverview({
   agentId,
+  scope,
   onReview,
   onViewAll,
 }: Props) {
@@ -90,11 +93,25 @@ export default function ProfileOverview({
     setState((s) => ({ ...s, refreshing: true }));
 
     const results = await Promise.allSettled([
-      memoryDashboardApi.terminalAboutMe(agentId, SECTION_FETCH),
-      memoryDashboardApi.terminalCurrentFocus(agentId, SECTION_FETCH),
-      memoryDashboardApi.terminalThingsYouToldMe(agentId, SECTION_FETCH),
-      memoryDashboardApi.terminalEntities(agentId, SECTION_FETCH),
-      memoryDashboardApi.statsCounts(agentId),
+      scope
+        ? memoryDashboardApi.terminalAboutMe(agentId, SECTION_FETCH, scope)
+        : memoryDashboardApi.terminalAboutMe(agentId, SECTION_FETCH),
+      scope
+        ? memoryDashboardApi.terminalCurrentFocus(agentId, SECTION_FETCH, scope)
+        : memoryDashboardApi.terminalCurrentFocus(agentId, SECTION_FETCH),
+      scope
+        ? memoryDashboardApi.terminalThingsYouToldMe(
+            agentId,
+            SECTION_FETCH,
+            scope,
+          )
+        : memoryDashboardApi.terminalThingsYouToldMe(agentId, SECTION_FETCH),
+      scope
+        ? memoryDashboardApi.terminalEntities(agentId, SECTION_FETCH, scope)
+        : memoryDashboardApi.terminalEntities(agentId, SECTION_FETCH),
+      scope
+        ? memoryDashboardApi.statsCounts(agentId, scope)
+        : memoryDashboardApi.statsCounts(agentId),
     ]);
 
     const [aboutMe, focus, toldMe, entities, counts] = results;
@@ -108,7 +125,7 @@ export default function ProfileOverview({
       firstLoading: false,
       refreshing: false,
     });
-  }, [agentId]);
+  }, [agentId, scope]);
 
   useEffect(() => {
     if (!agentId) return;

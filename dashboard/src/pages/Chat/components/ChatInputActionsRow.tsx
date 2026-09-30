@@ -36,6 +36,10 @@ import {
   modelShortLabel,
 } from "../../../utils/modelOptions";
 import { indexAgentsByKind } from "../../../utils/agentKindCounts";
+import ConversationModePicker from "./ConversationModePicker";
+import type { ConversationMode } from "../utils/conversationMode";
+import HitlPolicyPicker from "./HitlPolicyPicker";
+import type { HitlSessionPolicy } from "../../../api/modules/octopThreads";
 import ContextWindowRing from "./ContextWindowRing";
 import SkillPickerPopover from "./SkillPickerPopover";
 import ExpertPickerPopover from "./ExpertPickerPopover";
@@ -93,6 +97,10 @@ interface ChatInputActionsRowProps {
   selectedModel?: string | null;
   defaultModel?: string | null;
   onModelChange?: (model: string | null) => void;
+  conversationMode?: ConversationMode;
+  onConversationModeChange?: (mode: ConversationMode) => void;
+  hitlPolicy?: HitlSessionPolicy;
+  onHitlPolicyChange?: (policy: HitlSessionPolicy) => void;
   reasoningMode?: "auto" | "enabled" | "disabled";
   reasoningEffort?: string | null;
   onReasoningChange?: (
@@ -150,6 +158,10 @@ export default function ChatInputActionsRow({
   selectedModel,
   defaultModel,
   onModelChange,
+  conversationMode = "craft",
+  onConversationModeChange,
+  hitlPolicy = { mode: "ask" },
+  onHitlPolicyChange,
   reasoningMode = "auto",
   reasoningEffort = null,
   onReasoningChange,
@@ -797,6 +809,19 @@ export default function ChatInputActionsRow({
                 {modelButton}
               </Popover>
             ))}
+          {onConversationModeChange && (
+            <ConversationModePicker
+              compact
+              conversationMode={conversationMode}
+              onChange={onConversationModeChange}
+            />
+          )}
+          {onHitlPolicyChange && (
+            <HitlPolicyPicker
+              policy={hitlPolicy}
+              onChange={onHitlPolicyChange}
+            />
+          )}
           <button
             className={styles.secondaryBtn}
             onClick={onFileSelect}
@@ -863,6 +888,15 @@ export default function ChatInputActionsRow({
 
     return (
       <>
+        {onConversationModeChange && (
+          <ConversationModePicker
+            conversationMode={conversationMode}
+            onChange={onConversationModeChange}
+          />
+        )}
+        {onHitlPolicyChange && (
+          <HitlPolicyPicker policy={hitlPolicy} onChange={onHitlPolicyChange} />
+        )}
         {showModelPicker && (
           <Popover
             trigger="click"

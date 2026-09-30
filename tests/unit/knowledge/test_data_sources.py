@@ -8,6 +8,7 @@ document status — is produced and asserted for real.
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import sqlite3
@@ -16,6 +17,8 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from docx.opc.exceptions import PackageNotFoundError
+from langgraph.config import var_child_runnable_config
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
@@ -23,6 +26,7 @@ from octop.infra.db.repos._base import now_ts
 from octop.infra.db.repos.audit import AuditRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.knowledge_search_rules import KnowledgeSearchRulesRepo
 from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.secrets import SecretRepo
@@ -46,6 +50,7 @@ from octop.infra.knowledge.sources import (
     SourceError,
     SourceUnsupported,
 )
+from octop.infra.knowledge.tools import build_knowledge_tools
 from octop.infra.knowledge.url_fetch import FetchedDocument
 from octop.infra.utils.paths import PathLayout
 from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
@@ -67,6 +72,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         config=SimpleNamespace(max_upload_bytes=1_000_000, max_upload_mb=1),
         paths=PathLayout.from_env(),
         knowledge_repo=KnowledgeRepo(pool),
+        knowledge_search_rules_repo=KnowledgeSearchRulesRepo(pool),
         data_sources_repo=DataSourceRepo(pool),
         knowledge_sync_runs_repo=KnowledgeSyncRunRepo(pool),
         settings_repo=SettingsRepo(pool),
@@ -76,7 +82,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         provider_repo=None,
     )
     monkeypatch.setattr(service_module, "assert_knowledge_usable", lambda *_a, **_k: None)
-    monkeypatch.setattr(jobs_module, "assert_knowledge_usable", lambda *_a, **_k: None)
+    monkeypatch.setattr(jobs_module, "assert_embedding_usable", lambda *_a, **_k: None)
     monkeypatch.setattr(jobs_module, "embed_knowledge_texts", _fake_embeddings)
     return SimpleNamespace(
         services=services,
@@ -115,6 +121,12 @@ def _chunk_count(base_id: str) -> int:
         return int(conn.execute("SELECT COUNT(*) FROM chunks").fetchone()[0])
 
 
+def _segment_count(base_id: str) -> int:
+    path = KnowledgeIndex(base_id).path
+    with sqlite3.connect(path) as conn:
+        return int(conn.execute("SELECT COUNT(*) FROM segments").fetchone()[0])
+
+
 def _indexed_text(base_id: str) -> str:
     """Every chunk text in the base's index — what retrieval can actually see."""
     path = KnowledgeIndex(base_id).path
@@ -143,7 +155,7 @@ def test_upload_source_sync_ingests_the_document(
     refreshed = env.services.knowledge_repo.get_document(document.id)
     assert refreshed.status == "ready"
     assert refreshed.chunk_count > 0
-    assert _chunk_count(base.id) == refreshed.chunk_count
+    assert _segment_count(base.id) == refreshed.chunk_count
 
 
 def test_connector_sync_refuses_instead_of_reporting_success(
@@ -210,7 +222,7 @@ def test_url_source_sync_ingests_the_fetched_page(
     assert document.status == "ready"
     assert document.chunk_count > 0
     assert document_path(base.id, document.id, document.filename).exists()
-    assert _chunk_count(base.id) == document.chunk_count
+    assert _segment_count(base.id) == document.chunk_count
     stored = _indexed_text(base.id)
     assert "Refund policy" in stored
     assert "five business days" in stored
@@ -257,7 +269,7 @@ def test_url_sync_after_the_document_is_deleted_ingests_a_fresh_one(
     document = env.services.knowledge_repo.get_document(second.config["document_id"])
     assert document is not None
     assert document.status == "ready"
-    assert _chunk_count(base.id) == document.chunk_count
+    assert _segment_count(base.id) == document.chunk_count
 
 
 @pytest.mark.parametrize(
@@ -787,6 +799,14 @@ def _last_run(env: SimpleNamespace, source_id: str):
     return env.services.knowledge_sync_runs_repo.list_for_source(source_id)[0]
 
 
+def _finish_pending(env: SimpleNamespace, source_id: str) -> None:
+    """Run the source-aware worker that the HTTP sync endpoint enqueues."""
+    for row in env.services.knowledge_repo.list_source_files(source_id):
+        if not row.is_dir and row.status == "pending":
+            while jobs_module._process_current_document(env.services, row.kb_id, row.id):
+                pass
+
+
 def test_scan_defers_a_new_file_then_indexes_it_once_it_settles(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
 ) -> None:
@@ -810,6 +830,11 @@ def test_scan_defers_a_new_file_then_indexes_it_once_it_settles(
 
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    pending = [
+        row for row in env.services.knowledge_repo.list_source_files(source.id) if not row.is_dir
+    ]
+    assert [row.status for row in pending] == ["pending"]
+    _finish_pending(env, source.id)
 
     run = _last_run(env, source.id)
     assert (run.added, run.deferred, run.failed) == (1, 0, 0)
@@ -840,6 +865,7 @@ def test_scan_reindexes_a_file_whose_contents_changed(
     env.sources.sync(source.id, actor_user_id=people.owner)
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
 
     path.write_text("refunds now take two days", encoding="utf-8")
     os.utime(path, (now_ts() + 5, now_ts() + 5))
@@ -848,6 +874,7 @@ def test_scan_reindexes_a_file_whose_contents_changed(
 
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
 
     run = _last_run(env, source.id)
     assert (run.updated, run.added, run.failed) == (1, 0, 0)
@@ -866,6 +893,7 @@ def test_scan_removes_a_deleted_file_only_after_the_confirmation_window(
     env.sources.sync(source.id, actor_user_id=people.owner)
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
     document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
     assert document is not None
 
@@ -900,6 +928,7 @@ def test_scan_keeps_everything_when_the_walk_fails(
     env.sources.sync(source.id, actor_user_id=people.owner)
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
     before = env.services.knowledge_repo.list_source_files(source.id)
 
     def _drop_connection(*_args: object, **_kwargs: object) -> object:
@@ -946,6 +975,7 @@ def test_a_file_that_comes_back_unchanged_is_not_indexed_again(
     env.sources.sync(source.id, actor_user_id=people.owner)
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
     chunks_before = _chunk_count(base.id)
     before = path.stat()
 
@@ -980,6 +1010,7 @@ def test_a_scanned_file_stores_the_structure_it_yielded(
     _settle(env, source.id)
 
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
 
     document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/contract.md")
     assert document is not None
@@ -1053,12 +1084,14 @@ def test_a_file_that_cannot_be_parsed_records_why(
     _settle(env, source.id)
 
     env.sources.sync(source.id, actor_user_id=people.owner)
+    with pytest.raises(PackageNotFoundError):
+        _finish_pending(env, source.id)
 
     document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/broken.docx")
     assert document is not None
     assert document.status == "failed"
     assert document.error_message
-    assert _last_run(env, source.id).failed == 1
+    assert _last_run(env, source.id).failed == 0
     # Not marked processed, so the next scan retries it once it is fixed.
     assert document.source_size == 0
 
@@ -1073,6 +1106,7 @@ def test_deleting_a_folder_source_takes_its_index_with_it(
     env.sources.sync(source.id, actor_user_id=people.owner)
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
     assert env.services.knowledge_repo.count_documents(base.id) == 1
     assert _indexed_text(base.id) != ""
 
@@ -1114,6 +1148,7 @@ def test_a_changed_file_is_reindexed(
     env.sources.sync(source.id, actor_user_id=people.owner)
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
     first = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
     assert first is not None
     assert first.content_hash
@@ -1124,9 +1159,85 @@ def test_a_changed_file_is_reindexed(
     env.sources.sync(source.id, actor_user_id=people.owner)
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
 
     refreshed = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
     assert refreshed is not None
     assert refreshed.content_hash != first.content_hash
     assert refreshed.status == "ready"
     assert "cash" in _indexed_text(base.id)
+
+
+@pytest.mark.asyncio
+async def test_source_evidence_rechecks_version_and_authorization(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    root = _local_root(tmp_path)
+    original = _source_file(root, "policy.md", "refunds take five business days")
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
+
+    hits = env.knowledge.search(actor_user_id=people.owner, kb_id=base.id, query="business days")
+    located = next(hit for hit in hits if hit.segment_id)
+    evidence = env.knowledge.read_segment(
+        base.id,
+        located.document_id,
+        located.segment_id,
+        actor_user_id=people.owner,
+    )
+    assert evidence["verified"] is True
+    assert "business days" in str(evidence["text"])
+    assert evidence["locator"]
+    assert evidence["version"] == located.version
+
+    env.services.settings_repo.set("knowledge_bases_enabled", "true")
+    token = var_child_runnable_config.set(
+        {"configurable": {"user": str(people.owner), "knowledge_base_ids": [base.id]}}
+    )
+    try:
+        tools = {tool.name: tool for tool in build_knowledge_tools(env.services)}
+        candidates = json.loads(await tools["search_knowledge"].ainvoke({"query": "business days"}))
+        assert candidates["status"] == "found"
+        assert any(hit["segment_id"] == located.segment_id for hit in candidates["hits"])
+        verified = json.loads(
+            await tools["read_knowledge_segment"].ainvoke(
+                {
+                    "kb_id": base.id,
+                    "document_id": located.document_id,
+                    "segment_id": located.segment_id,
+                }
+            )
+        )
+        assert verified["verified"] is True
+        denied = json.loads(
+            await tools["read_knowledge_segment"].ainvoke(
+                {
+                    "kb_id": "not-selected",
+                    "document_id": located.document_id,
+                    "segment_id": located.segment_id,
+                }
+            )
+        )
+        assert denied["verified"] is False
+    finally:
+        var_child_runnable_config.reset(token)
+    with pytest.raises(PermissionError):
+        env.knowledge.read_segment(
+            base.id,
+            located.document_id,
+            located.segment_id,
+            actor_user_id=people.viewer,
+        )
+    original.write_text("refunds take two days", encoding="utf-8")
+    stale = env.knowledge.read_segment(
+        base.id,
+        located.document_id,
+        located.segment_id,
+        actor_user_id=people.owner,
+    )
+    assert stale["verified"] is False
+    assert stale["reason"] == "stale"
+    assert stale["text"] == ""

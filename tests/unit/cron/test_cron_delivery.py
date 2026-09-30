@@ -203,6 +203,11 @@ async def test_agent_hitl_does_not_push() -> None:
     with pytest.raises(RuntimeError, match="interaction"):
         await service.deliver(_command(task_type="agent", prompt="run"))
     gateway.push_session_text.assert_not_awaited()
+    projected = repos.thread_message_repo.append_if_ready.call_args.args[1]
+    assert projected[0].role == "human"
+    assert "run" in projected[0].message_json
+    assert projected[1].role == "ai"
+    assert "partial" in projected[1].message_json
 
 
 @pytest.mark.asyncio

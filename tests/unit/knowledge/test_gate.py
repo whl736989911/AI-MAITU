@@ -50,7 +50,7 @@ def test_enabled_capability_uses_selected_model_not_onnx_service(
     assert capability["usable"] is True
 
 
-def test_enabling_requires_model_and_persists_verified_selection(
+def test_enabling_without_model_preserves_search_and_optional_selection(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values: dict[str, str] = {}
@@ -61,8 +61,9 @@ def test_enabling_requires_model_and_persists_verified_selection(
         lambda candidate: candidate.strip(),
     )
 
-    with pytest.raises(ValueError, match="requires an embedding model"):
-        gate.set_feature_enabled(values.get, values.__setitem__, enabled=True, model=None)
+    gate.set_feature_enabled(values.get, values.__setitem__, enabled=True, model=None)
+    assert gate.get_capability(values.get)["usable"] is True
+    assert values["knowledge_embedding_model"] == ""
 
     gate.set_feature_enabled(values.get, values.__setitem__, enabled=True, model=model)
 
@@ -74,7 +75,7 @@ def test_enabling_requires_model_and_persists_verified_selection(
     }
 
 
-def test_assert_knowledge_usable_distinguishes_disabled_from_prerequisites(
+def test_assert_knowledge_usable_checks_feature_and_embedding_separately(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(gate, "embedding_prerequisites_ok_for_model", lambda _model: False)
@@ -85,8 +86,9 @@ def test_assert_knowledge_usable_distinguishes_disabled_from_prerequisites(
         "knowledge_bases_enabled": "true",
         "knowledge_embedding_model": "BAAI/bge-small-zh-v1.5",
     }
+    gate.assert_knowledge_usable(settings.get)
     with pytest.raises(RuntimeError, match="prerequisites"):
-        gate.assert_knowledge_usable(settings.get)
+        gate.assert_embedding_usable(settings.get)
 
 
 def test_remote_capability_requires_enabled_embedding_provider(

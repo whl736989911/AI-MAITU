@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -66,18 +66,23 @@ class ParsedTable:
 
 
 @dataclass(frozen=True)
+class ParsedBlock:
+    """Searchable text with an honest, source-relative locator."""
+
+    text: str
+    kind: str
+    locator: dict[str, object]
+    heading: str = ""
+
+
+@dataclass(frozen=True)
 class ParsedDocument:
     """The unified document structure a parser yields (design §6.2).
 
-    Every format lands here, so nothing downstream has to know which file it
-    came from. ``text`` stays the flattened, searchable form — it is what gets
-    chunked and embedded — while the other fields carry what the text cannot
-    express: where a table came from, which headings the document declares, how
-    many pages it has, what its own title is.
-
-    A field a format cannot answer stays empty rather than guessed: ``pages`` is
-    ``None`` for a Word file because its page count only exists once something
-    lays it out, and an invented number would be worse than none.
+    ``text`` remains the flattened searchable form; ``blocks`` retain source
+    text and positions for retrieval evidence. A format that cannot reliably
+    map extracted text to smaller source locations uses one document-level
+    block rather than claiming a position it cannot know.
     """
 
     text: str
@@ -89,14 +94,10 @@ class ParsedDocument:
     filename: str = ""
     modified_at: str = ""
     parser_version: str = PARSE_VERSION
+    blocks: tuple[ParsedBlock, ...] = ()
 
     def derived(self) -> dict[str, Any]:
-        """The structure as it is stored on the row (design §3.4).
-
-        ``text`` is deliberately absent: the chunk table already holds it, and
-        this payload is the part the text cannot carry. Storing the text twice
-        would double every document's footprint for no reader.
-        """
+        """The structure as it is stored on the row (design §3.4)."""
         return {
             "parser_version": self.parser_version,
             "title": self.title,
@@ -154,11 +155,19 @@ def parse_document(
     if suffix in OCR_IMAGE_SUFFIXES:
         if ocr is None:
             raise RuntimeError("knowledge OCR is not enabled")
-        return _document(ocr(path), path, source_path)
+        extracted = ocr(path)
+        return _document(
+            extracted,
+            path,
+            source_path,
+            blocks=()
+            if not extracted.strip()
+            else (ParsedBlock(extracted, "ocr", {"image_ocr": True}),),
+        )
     if suffix in _PLAIN_TEXT_SUFFIXES:
         text = _read_text(path)
         headings = _markdown_headings(text) if suffix in _MARKDOWN_SUFFIXES else ()
-        return _document(text, path, source_path, sections=headings)
+        return _document(text, path, source_path, sections=headings, blocks=_line_blocks(text))
     if suffix == ".json":
         return _document(_parse_json(path), path, source_path)
     if suffix == ".xml":
@@ -210,8 +219,19 @@ def _needs_password(path: Path, suffix: str) -> bool:
     return False
 
 
+_TEXT_ENCODINGS = ("utf-8-sig", "gb18030")
+
+
 def _read_text(path: Path) -> str:
-    return path.read_text(encoding="utf-8-sig", errors="replace")
+    """Decode text files as UTF-8 first, then GB18030 for legacy Chinese files."""
+    data = path.read_bytes()
+    for encoding in _TEXT_ENCODINGS:
+        try:
+            text = data.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+    return data.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
 
 
 def _document(
@@ -223,6 +243,7 @@ def _document(
     sections: tuple[str, ...] = (),
     tables: tuple[ParsedTable, ...] = (),
     pages: int | None = None,
+    blocks: tuple[ParsedBlock, ...] = (),
 ) -> ParsedDocument:
     """Wrap extracted text in the structure, with the file's own metadata.
 
@@ -246,6 +267,17 @@ def _document(
         source_path=source_path,
         filename=name,
         modified_at=datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds"),
+        blocks=blocks
+        or ((ParsedBlock(text, "document", {"scope": "document"}),) if text.strip() else ()),
+    )
+
+
+def _line_blocks(text: str) -> tuple[ParsedBlock, ...]:
+    """Plain text has reliable source line positions; blank lines carry no text."""
+    return tuple(
+        ParsedBlock(line, "line", {"line": index})
+        for index, line in enumerate(text.splitlines(), start=1)
+        if line.strip()
     )
 
 
@@ -371,7 +403,10 @@ def _docx_document(path: Path, source_path: str) -> ParsedDocument:
     document = Document(str(path))
     body = document.element.body
     text = _docx_body_text(body, document.part)
+    blocks = list(_docx_blocks(body, document.part))
     comments = _docx_comment_text(path)
+    if comments:
+        blocks.append(ParsedBlock(comments, "comment", {"part": "comments"}))
     return _document(
         text if not comments else f"{text}\n# Comments\n{comments}",
         path,
@@ -379,7 +414,68 @@ def _docx_document(path: Path, source_path: str) -> ParsedDocument:
         title=str(document.core_properties.title or ""),
         sections=_docx_heading_lines(body),
         tables=_docx_tables(body),
+        blocks=tuple(blocks),
     )
+
+
+def _docx_blocks(body: Any, part: Any) -> tuple[ParsedBlock, ...]:
+    """Locate Word paragraphs, including nested containers, and table rows."""
+    from docx.oxml.ns import qn
+
+    blocks: list[ParsedBlock] = []
+    heading = ""
+    paragraph_index = 0
+    table_index = 0
+    alt_chunk_index = 0
+    for element in body.iterchildren():
+        if element.tag == qn("w:p"):
+            paragraph_index += 1
+            value = str(element.text or "").strip()
+            if value:
+                style = element.find(f"{qn('w:pPr')}/{qn('w:pStyle')}")
+                style_id = "" if style is None else str(style.get(qn("w:val")) or "")
+                if _heading_level(style_id):
+                    heading = value
+                blocks.append(
+                    ParsedBlock(value, "paragraph", {"paragraph": paragraph_index}, heading)
+                )
+        elif element.tag == qn("w:tbl"):
+            table_index += 1
+            for row_index, row in enumerate(element.findall(qn("w:tr")), start=1):
+                cells = [
+                    " ".join(node.text or "" for node in cell.iter(qn("w:t"))).strip()
+                    for cell in row.findall(qn("w:tc"))
+                ]
+                value = "\t".join(cells).strip()
+                if value:
+                    blocks.append(
+                        ParsedBlock(
+                            value,
+                            "table_row",
+                            {"table": table_index, "row": row_index},
+                            heading,
+                        )
+                    )
+        elif element.tag == qn("w:altChunk"):
+            alt_chunk_index += 1
+            value = _docx_alt_chunk_text(element, part).strip()
+            if value:
+                blocks.append(
+                    ParsedBlock(value, "embedded", {"part": "altChunk", "index": alt_chunk_index})
+                )
+    nested_index = 0
+    for paragraph in body.iter(qn("w:p")):
+        if (
+            paragraph.getparent() is body
+            or next(paragraph.iterancestors(qn("w:tbl")), None) is not None
+            or next(paragraph.iterancestors(_DOCX_FALLBACK_TAG), None) is not None
+        ):
+            continue
+        nested_index += 1
+        value = str(paragraph.text or "").strip()
+        if value:
+            blocks.append(ParsedBlock(value, "paragraph", {"nested_paragraph": nested_index}))
+    return tuple(blocks)
 
 
 def _docx_heading_lines(body: Any) -> tuple[str, ...]:
@@ -489,6 +585,7 @@ def _pptx_document(path: Path, source_path: str) -> ParsedDocument:
     slides = list(presentation.slides)
     parts: list[str] = []
     tables: list[ParsedTable] = []
+    slide_blocks: list[ParsedBlock] = []
     sections: list[str] = []
     for index, slide in enumerate(slides, start=1):
         title = _slide_title(slide)
@@ -514,6 +611,15 @@ def _pptx_document(path: Path, source_path: str) -> ParsedDocument:
         if notes:
             lines.append(f"# Notes\n{notes}")
         if lines:
+            slide_blocks.append(
+                ParsedBlock(
+                    "\n".join(lines),
+                    "slide",
+                    {"slide": index},
+                    title,
+                )
+            )
+        if lines:
             parts.append(f"# Slide {index}\n" + "\n".join(lines))
     return _document(
         "\n\n".join(parts),
@@ -522,6 +628,7 @@ def _pptx_document(path: Path, source_path: str) -> ParsedDocument:
         title=str(presentation.core_properties.title or ""),
         sections=tuple(sections),
         tables=tuple(tables),
+        blocks=tuple(slide_blocks),
         pages=len(slides) or None,
     )
 
@@ -729,10 +836,33 @@ def _sheet_tables(
     return tuple(tables)
 
 
+def _sheet_content(
+    sheet_name: str, rows: Iterable[Iterable[object]]
+) -> tuple[ParsedTable | None, tuple[ParsedBlock, ...]]:
+    kept: list[tuple[str, ...]] = []
+    blocks: list[ParsedBlock] = []
+    for index, raw in enumerate(rows, start=1):
+        cells = _trim_row([_stringify_cell(cell) for cell in raw])
+        if not cells:
+            continue
+        kept.append(tuple(cells))
+        blocks.append(ParsedBlock("\t".join(cells), "row", {"sheet": sheet_name, "row": index}))
+    table = (
+        None if not kept else ParsedTable(location=sheet_name, header=kept[0], rows=tuple(kept[1:]))
+    )
+    return table, tuple(blocks)
+
+
 def _delimited_document(path: Path, source_path: str, *, delimiter: str) -> ParsedDocument:
-    table = _table(path.stem, csv.reader(_read_text(path).splitlines(), delimiter=delimiter))
+    rows = list(csv.reader(_read_text(path).splitlines(), delimiter=delimiter))
+    table = _table(path.stem, rows)
     tables = () if table is None else (table,)
-    return _document(_tables_text(tables), path, source_path, tables=tables)
+    blocks = tuple(
+        ParsedBlock("\t".join(cells), "row", {"row": index})
+        for index, raw in enumerate(rows, start=1)
+        if (cells := _trim_row([_stringify_cell(cell) for cell in raw]))
+    )
+    return _document(_tables_text(tables), path, source_path, tables=tables, blocks=blocks)
 
 
 def _xlsx_document(path: Path, source_path: str) -> ParsedDocument:
@@ -740,14 +870,37 @@ def _xlsx_document(path: Path, source_path: str) -> ParsedDocument:
 
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        tables = _sheet_tables(
-            (str(sheet.title), sheet.iter_rows(values_only=True)) for sheet in workbook.worksheets
-        )
+        tables_list: list[ParsedTable] = []
+        blocks: list[ParsedBlock] = []
+        for sheet in workbook.worksheets:
+            name = str(sheet.title)
+            table, sheet_blocks = _sheet_content(name, sheet.iter_rows(min_row=1, values_only=True))
+            if table is not None:
+                tables_list.append(table)
+            blocks.extend(sheet_blocks)
+        tables = tuple(tables_list)
         properties = workbook.properties
         title = "" if properties is None else str(properties.title or "")
     finally:
         workbook.close()
-    return _document(_tables_text(tables), path, source_path, title=title, tables=tables)
+    return _document(
+        _tables_text(tables), path, source_path, title=title, tables=tables, blocks=tuple(blocks)
+    )
+
+
+def _xls_rows(book: Any, sheet: Any) -> Iterator[list[object]]:
+    import xlrd
+
+    for row_index in range(sheet.nrows):
+        values: list[object] = []
+        for cell in sheet.row(row_index):
+            if cell.ctype == xlrd.XL_CELL_DATE:
+                values.append(xlrd.xldate_as_datetime(cell.value, book.datemode))
+            elif cell.ctype == xlrd.XL_CELL_BOOLEAN:
+                values.append(bool(cell.value))
+            else:
+                values.append(cell.value)
+        yield values
 
 
 def _xls_document(path: Path, source_path: str) -> ParsedDocument:
@@ -759,31 +912,50 @@ def _xls_document(path: Path, source_path: str) -> ParsedDocument:
         if _mentions_password(exc):
             raise PasswordRequiredError("the file is password-protected") from exc
         raise
-    tables = _sheet_tables((sheet.name, _xls_rows(book, sheet)) for sheet in book.sheets())
-    return _document(_tables_text(tables), path, source_path, tables=tables)
-
-
-def _xls_rows(book: Any, sheet: Any) -> list[list[object]]:
-    return [
-        [_xlrd_cell_value(book, sheet.cell(row, column)) for column in range(sheet.ncols)]
-        for row in range(sheet.nrows)
-    ]
+    tables_list: list[ParsedTable] = []
+    blocks: list[ParsedBlock] = []
+    for sheet in book.sheets():
+        table, sheet_blocks = _sheet_content(sheet.name, _xls_rows(book, sheet))
+        if table is not None:
+            tables_list.append(table)
+        blocks.extend(sheet_blocks)
+    tables = tuple(tables_list)
+    return _document(_tables_text(tables), path, source_path, tables=tables, blocks=tuple(blocks))
 
 
 def _pdf_document(path: Path, source_path: str, *, ocr: OcrExtractor | None) -> ParsedDocument:
-    """A PDF's text, plus the two things only a PDF knows: pages and its title.
-
-    An encrypted file never reaches here — :func:`_needs_password` refuses it
-    first, which is what keeps this from raising a decryption error at the
-    caller.
-    """
-    from pypdf import PdfReader
+    """Extract searchable page blocks; OCR scanned pages when text is mixed."""
+    from pypdf import PdfReader, PdfWriter
 
     reader = PdfReader(path)
-    text = "\n".join(page.extract_text() or "" for page in reader.pages)
-    if not text.strip() and ocr is not None:
-        # design §6: a scanned page has no embedded text, so it goes to OCR.
+    page_texts = [page.extract_text() or "" for page in reader.pages]
+    blocks: list[ParsedBlock] = []
+    if not any(value.strip() for value in page_texts) and ocr is not None:
+        # Keep the existing whole-document OCR path when the PDF is entirely scanned.
         text = ocr(path)
+        if text.strip():
+            blocks.append(ParsedBlock(text, "ocr", {"scope": "document", "image_ocr": True}))
+    else:
+        ocr_pages = {index for index, value in enumerate(page_texts, start=1) if not value.strip()}
+        if ocr is not None and ocr_pages:
+            from tempfile import TemporaryDirectory
+
+            with TemporaryDirectory(prefix="octop-pdf-page-") as temporary:
+                for index in ocr_pages:
+                    one_page = PdfWriter()
+                    one_page.add_page(reader.pages[index - 1])
+                    temp_path = Path(temporary) / f"page-{index}.pdf"
+                    with temp_path.open("wb") as handle:
+                        one_page.write(handle)
+                    page_texts[index - 1] = ocr(temp_path)
+        for index, value in enumerate(page_texts, start=1):
+            if value.strip():
+                kind = "ocr" if index in ocr_pages else "page"
+                locator: dict[str, object] = {"page": index}
+                if kind == "ocr":
+                    locator["image_ocr"] = True
+                blocks.append(ParsedBlock(value, kind, locator))
+        text = "\n".join(page_texts)
     metadata = reader.metadata
     return _document(
         text,
@@ -791,6 +963,7 @@ def _pdf_document(path: Path, source_path: str, *, ocr: OcrExtractor | None) -> 
         source_path,
         title="" if metadata is None else str(metadata.title or ""),
         pages=len(reader.pages),
+        blocks=tuple(blocks),
     )
 
 

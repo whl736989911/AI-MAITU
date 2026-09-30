@@ -118,6 +118,13 @@ async def iter_dashboard_hitl_resume_sse(
         channel_type=channel_type,
     )
     disconnected = False
+    # Remove the resolved card before the resumed turn starts streaming, so
+    # a concurrent history reload cannot re-inject it.
+    if pending is not None:
+        hitl_coordinator.store.mark_resolved(
+            pending.pending_id,
+            "rejected" if rejected else "approved",
+        )
     try:
         async for chunk in processor.iter_hitl_resume_chunks(
             agent_id=agent_id,
@@ -130,17 +137,20 @@ async def iter_dashboard_hitl_resume_sse(
             if isinstance(chunk, dict) and chunk.get("type") == "hitl_required":
                 request_payload = chunk.get("request")
                 if isinstance(request_payload, dict):
-                    hitl_coordinator.register_from_request(request_payload, ctx=hitl_ctx)
+                    record = hitl_coordinator.register_from_request(
+                        request_payload,
+                        ctx=hitl_ctx,
+                    )
+                    request_payload["pending_id"] = record.pending_id
+
             if not disconnected:
                 yield format_sse("chunk", chunk)
-        if pending is not None:
-            hitl_coordinator.store.mark_resolved(
-                pending.pending_id,
-                "rejected" if rejected else "approved",
-            )
+
         if not disconnected:
             yield format_sse("chunk", {"type": "done"})
     except Exception as exc:
+        if pending is not None:
+            hitl_coordinator.store.mark_resolved(pending.pending_id, "expired")
         yield format_sse(
             "chunk",
             {"type": "error", "message": format_stream_error(exc, locale)},
@@ -191,6 +201,8 @@ async def resume_hitl(
         reason = decision_rejection_reason(pending, body.decisions)
         if reason is not None:
             raise HTTPException(status_code=400, detail=reason)
+    if body.hitl_policy is not None:
+        hitl_coordinator.session_policies.set(body.thread_id, body.hitl_policy.model_dump())
 
     async def gen() -> AsyncIterator[str]:
         async for frame in iter_dashboard_hitl_resume_sse(
@@ -246,9 +258,9 @@ async def polish_prompt(
         )
     except TimeoutError:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "polish request timed out") from None
-    except Exception as exc:
+    except Exception:
         logger.exception("polish failed agent=%s model=%s", agent_id, model_ref)
-        raise OctopError(ErrorCode.INTERNAL_ERROR, str(exc)) from exc
+        raise OctopError(ErrorCode.INTERNAL_ERROR, "polish request failed") from None
 
     if not polished:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "model returned empty polish result")

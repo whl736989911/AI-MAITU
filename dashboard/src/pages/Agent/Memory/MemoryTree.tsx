@@ -54,6 +54,7 @@ import {
   type EntityDetail,
   type EntityItem,
   type EntityPage,
+  type MemoryScope,
 } from "../../../api/modules/memoryDashboard";
 import Markdown from "../../../components/Markdown/LazyMarkdown";
 import MemoryPipelineEmpty from "./shared/MemoryPipelineEmpty";
@@ -61,9 +62,10 @@ import { confirmDeprecateAtom } from "./shared/deprecateAtom";
 import { confirmEditAtom } from "./shared/editAtom";
 import CreateAtomModal from "./shared/createAtom";
 import LineageStrip from "./shared/LineageStrip";
-
 interface Props {
   agentId: string;
+  scope?: MemoryScope;
+  readOnly?: boolean;
   /** Auto-expand the specified entity when jumping from the profile page. */
   initialExpandEntityId?: string;
 }
@@ -72,8 +74,12 @@ const ENTITY_LIMIT = 200; // pull all entities up-front; tree view shouldn't pag
 const ATOM_LIMIT = 200; // per entity
 
 type AtomCache = Map<string, { loading: boolean; items: AtomItem[] | null }>;
-
-export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
+export default function MemoryTree({
+  agentId,
+  scope,
+  readOnly = false,
+  initialExpandEntityId,
+}: Props) {
   const { t } = useTranslation();
 
   const [entities, setEntities] = useState<EntityItem[]>([]);
@@ -96,16 +102,19 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
   const loadEntities = useCallback(async () => {
     setEntitiesLoading(true);
     try {
-      const r = await memoryDashboardApi.listEntities(agentId, {
+      const body = {
         limit: ENTITY_LIMIT,
-        order_by: "atom_count",
-        order: "desc",
-      });
+        order_by: "atom_count" as const,
+        order: "desc" as const,
+      };
+      const r = scope
+        ? await memoryDashboardApi.listEntities(agentId, body, scope)
+        : await memoryDashboardApi.listEntities(agentId, body);
       setEntities(r.items);
     } finally {
       setEntitiesLoading(false);
     }
-  }, [agentId]);
+  }, [agentId, scope]);
 
   const fetchAtoms = useCallback(
     async (entityId: string) => {
@@ -116,12 +125,15 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
         return next;
       });
       try {
-        const r = await memoryDashboardApi.listAtoms(agentId, {
+        const body = {
           entity_id: entityId,
           limit: ATOM_LIMIT,
-          order_by: "importance",
-          order: "desc",
-        });
+          order_by: "importance" as const,
+          order: "desc" as const,
+        };
+        const r = scope
+          ? await memoryDashboardApi.listAtoms(agentId, body, scope)
+          : await memoryDashboardApi.listAtoms(agentId, body);
         setAtomsByEntity((prev) => {
           const next = new Map(prev);
           next.set(entityId, { loading: false, items: r.items });
@@ -135,7 +147,7 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
         });
       }
     },
-    [agentId],
+    [agentId, scope],
   );
 
   // When initialExpandEntityId changes or entities finish loading, ensure the target
@@ -244,16 +256,18 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
           </Tag>
         </Space>
         <Space size={12}>
-          <Button
-            size="small"
-            icon={<Plus size={14} />}
-            onClick={() => {
-              setCreateEntityId(undefined);
-              setCreateOpen(true);
-            }}
-          >
-            {t("memory.create.title", "新建记忆")}
-          </Button>
+          {!readOnly && (
+            <Button
+              size="small"
+              icon={<Plus size={14} />}
+              onClick={() => {
+                setCreateEntityId(undefined);
+                setCreateOpen(true);
+              }}
+            >
+              {t("memory.create.title", "新建记忆")}
+            </Button>
+          )}
           <a
             onClick={handleRefresh}
             style={{ fontSize: 12, cursor: "pointer" }}
@@ -273,7 +287,7 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
       {entitiesLoading && entities.length === 0 ? (
         <Skeleton active />
       ) : entities.length === 0 ? (
-        <MemoryPipelineEmpty agentId={agentId} />
+        <MemoryPipelineEmpty agentId={agentId} scope={scope} />
       ) : (
         <div className="memory-tree" style={{ fontSize: 13 }}>
           {/* Root row */}
@@ -297,6 +311,7 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
                   <EntityRow
                     entity={entity}
                     expanded={isExpanded}
+                    readOnly={readOnly}
                     onToggle={() => handleToggleEntity(entity.id)}
                     onViewSummary={() => setSummaryEntity(entity)}
                     onAdd={() => {
@@ -308,19 +323,28 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
                     <AtomChildren
                       cache={cache}
                       onSelect={setSelectedAtom}
-                      onEdit={(atom) =>
-                        confirmEditAtom({
-                          agentId,
-                          atom,
-                          onSuccess: handleReplaced,
-                        })
+                      onEdit={
+                        readOnly
+                          ? undefined
+                          : (atom) =>
+                              confirmEditAtom({
+                                agentId,
+                                atom,
+                                scope,
+                                onSuccess: handleReplaced,
+                              })
                       }
-                      onDeprecate={(atom) =>
-                        confirmDeprecateAtom({
-                          agentId,
-                          atom,
-                          onSuccess: () => void fetchAtoms(atom.entity_id),
-                        })
+                      onDeprecate={
+                        readOnly
+                          ? undefined
+                          : (atom) =>
+                              confirmDeprecateAtom({
+                                agentId,
+                                atom,
+                                scope,
+                                onSuccess: () =>
+                                  void fetchAtoms(atom.entity_id),
+                              })
                       }
                     />
                   ) : null}
@@ -332,10 +356,12 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
       )}
 
       <AtomDetailDrawer
+        scope={scope}
         open={!!selectedAtom}
         atom={selectedAtom}
         agentId={agentId}
         onClose={() => setSelectedAtom(null)}
+        readOnly={readOnly}
         onDeprecated={handleDeprecated}
         onReplaced={handleReplaced}
       />
@@ -344,9 +370,11 @@ export default function MemoryTree({ agentId, initialExpandEntityId }: Props) {
         agentId={agentId}
         entity={summaryEntity}
         onClose={() => setSummaryEntity(null)}
+        scope={scope}
       />
 
       <CreateAtomModal
+        scope={scope}
         open={createOpen}
         agentId={agentId}
         entities={entities}
@@ -404,11 +432,13 @@ function EntityRow({
   expanded,
   onToggle,
   onViewSummary,
+  readOnly,
   onAdd,
 }: {
   entity: EntityItem;
   expanded: boolean;
   onToggle: () => void;
+  readOnly: boolean;
   onViewSummary: () => void;
   onAdd: () => void;
 }) {
@@ -476,21 +506,23 @@ function EntityRow({
           待刷新
         </Tag>
       ) : null}
-      <Tooltip title={t("memory.create.addToTopicTip", "在此主题下添加记忆")}>
-        <Button
-          size="small"
-          type="text"
-          icon={<Plus size={13} />}
-          onClick={(e) => {
-            e.stopPropagation();
-            onAdd();
-          }}
-          style={{
-            flexShrink: 0,
-            color: hovered ? "#1677ff" : "#8c8c8c",
-          }}
-        />
-      </Tooltip>
+      {!readOnly && (
+        <Tooltip title={t("memory.create.addToTopicTip", "在此主题下添加记忆")}>
+          <Button
+            size="small"
+            type="text"
+            icon={<Plus size={13} />}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAdd();
+            }}
+            style={{
+              flexShrink: 0,
+              color: hovered ? "#1677ff" : "#8c8c8c",
+            }}
+          />
+        </Tooltip>
+      )}
       <Tooltip title={t("memory.tree.viewSummaryTip")}>
         <Button
           size="small"
@@ -745,6 +777,8 @@ function AtomDetailDrawer({
   open,
   atom,
   agentId,
+  scope,
+  readOnly,
   onClose,
   onDeprecated,
   onReplaced,
@@ -752,6 +786,8 @@ function AtomDetailDrawer({
   open: boolean;
   atom: AtomItem | null;
   agentId: string;
+  scope?: MemoryScope;
+  readOnly: boolean;
   onClose: () => void;
   onDeprecated: (atom: AtomItem) => void;
   onReplaced: (atom: AtomItem) => void;
@@ -774,7 +810,7 @@ function AtomDetailDrawer({
               {isAtomDeprecated(atom) ? "已忘记" : "在用"}
             </Tag>
           </Space>
-          <LineageStrip agentId={agentId} atom={atom} />
+          <LineageStrip agentId={agentId} atom={atom} scope={scope} />
           <Typography.Title level={5}>记忆内容</Typography.Title>
           <Typography.Paragraph>{atom.assertion}</Typography.Paragraph>
           {(atom.search_terms ?? []).length > 0 ? (
@@ -798,7 +834,7 @@ function AtomDetailDrawer({
           </Typography.Paragraph>
 
           {/* Actions, shown only for active atoms */}
-          {!isAtomDeprecated(atom) ? (
+          {!readOnly && !isAtomDeprecated(atom) ? (
             <>
               <Typography.Title level={5} style={{ marginTop: 12 }}>
                 {t("memory.tree.actions")}
@@ -809,6 +845,7 @@ function AtomDetailDrawer({
                     confirmEditAtom({
                       agentId,
                       atom,
+                      scope,
                       onSuccess: onReplaced,
                     })
                   }
@@ -821,6 +858,7 @@ function AtomDetailDrawer({
                     confirmDeprecateAtom({
                       agentId,
                       atom,
+                      scope,
                       onSuccess: () => onDeprecated(atom),
                     })
                   }
@@ -843,10 +881,12 @@ function AtomDetailDrawer({
 function EntitySummaryDrawer({
   agentId,
   entity,
+  scope,
   onClose,
 }: {
   agentId: string;
   entity: EntityItem | null;
+  scope?: MemoryScope;
   onClose: () => void;
 }) {
   const { t } = useTranslation();
@@ -861,7 +901,7 @@ function EntitySummaryDrawer({
     setFailed(false);
     setDetail(null);
     memoryDashboardApi
-      .getEntity(agentId, entity.id)
+      .getEntity(agentId, entity.id, scope)
       .then((d) => {
         if (!cancelled) setDetail(d);
       })
@@ -874,7 +914,7 @@ function EntitySummaryDrawer({
     return () => {
       cancelled = true;
     };
-  }, [agentId, entity]);
+  }, [agentId, entity, scope]);
 
   const page = detail?.page ?? null;
 

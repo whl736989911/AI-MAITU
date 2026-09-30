@@ -31,6 +31,7 @@ from octop.infra.knowledge.data_sources import (
     DataSourceSyncUnsupported,
     FolderSettings,
 )
+from octop.infra.knowledge.jobs import enqueue_index_document
 from octop.infra.knowledge.sources import SourceError
 from octop.infra.knowledge.url_fetch import UrlFetchError
 from octop.infra.server import OctopServer
@@ -269,11 +270,15 @@ async def sync_data_source(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> dict[str, Any]:
     try:
-        # Parsing, embedding, and index writes are blocking work; keep them off
-        # the event loop, like every other ingest path.
+        # Scanning records the full file catalog; settled content is processed
+        # after the response instead of keeping this HTTP request open for OCR.
         row = await asyncio.to_thread(
             _service(server).sync, ds_id, actor_user_id=user.id, is_admin=_is_admin(user)
         )
+        assert server.services is not None
+        for document in server.services.knowledge_repo.list_source_files(ds_id):
+            if document.status == "pending" and not document.is_dir:
+                enqueue_index_document(server.services, document.kb_id, document.id)
         return _payload(row)
     except Exception as exc:
         raise _map_data_source_error(

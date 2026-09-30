@@ -21,7 +21,7 @@ interface AgentMoreActionsProps {
   onTools: () => void;
   onPlugins: () => void;
   onMbti: () => void;
-  onMemory: () => void;
+  onMemory?: () => void;
   onChannels: () => void;
 }
 
@@ -80,12 +80,16 @@ export default function AgentMoreActions({
       label: t("experts.mbtiBtn"),
       onClick: onMbti,
     },
-    {
-      key: "memory",
-      icon: <Notebook size={14} />,
-      label: t("experts.memoryBtn"),
-      onClick: onMemory,
-    },
+    ...(onMemory
+      ? [
+          {
+            key: "memory",
+            icon: <Notebook size={14} />,
+            label: t("experts.memoryBtn"),
+            onClick: onMemory,
+          },
+        ]
+      : []),
     {
       key: "channels",
       icon: <Waypoints size={14} />,

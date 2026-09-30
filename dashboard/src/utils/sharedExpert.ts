@@ -4,6 +4,8 @@ import { isFeatureAgent } from "./agentKind";
 export interface SharedExpertAccess {
   is_shared?: boolean;
   is_owner?: boolean;
+  /** Feature-specific server verdict; ownership alone does not decide after publication. */
+  can_manage?: boolean;
   /** What the row is — see ``utils/agentKind.ts``. Absent means an expert. */
   kind?: string | null;
 }
@@ -18,25 +20,9 @@ export function isOwnedExpert(agent: SharedExpertAccess): boolean {
 }
 
 /**
- * True when this user may manage the expert behind this row: its owner, or a
- * system administrator.
- *
- * That is the server's whole rule for writing an agent — ``assert_agent_owner``
- * and ``agent_capability_refusal`` in ``api/common/agent.py`` both read
- * "``user.is_admin`` or the row's owner, and nobody else" — and a row cannot say
- * which half of it the caller is. ``is_owner`` answers *did you create this*: an
- * administrator reading a list that holds other people's experts gets ``false``
- * on every row that is not theirs, so a card gating on ownership alone hides the
- * controls the server would have accepted, and an expert's row arrives as an ID
- * and a conversation button. The role is the missing half; ownership still
- * carries it for everybody else.
- *
- * A share-only viewer stays read-only, which is the same statement from the other
- * side: ``is_owner`` is ``false`` for them and their role is no administrator's,
- * so a shared expert keeps offering the conversation and nothing that writes.
- * ``admin`` here is the system administrator alone — ``enterprise_admin`` and
- * ``unit_admin`` are scoped server-side and do not reach this rule
- * (``infra/users/identity.py``).
+ * Experts are managed by their owner or a system administrator. Features use
+ * the server's explicit verdict: drafts belong to their author, while published
+ * features belong to the administrators of their enterprise.
  *
  * The role may still be ``null`` (the current user is in flight); read as "not an
  * administrator", which only means a card is drawn without its controls until the
@@ -46,6 +32,9 @@ export function canManageExpert(
   agent: SharedExpertAccess,
   role: OctopRole | null,
 ): boolean {
+  if (isFeatureAgent(agent) && agent.can_manage !== undefined) {
+    return agent.can_manage;
+  }
   return agent.is_owner !== false || role === "admin";
 }
 
@@ -83,14 +72,12 @@ export function ownedExperts<T extends SharedExpertAccess>(agents: T[]): T[] {
 }
 
 /**
- * The caller's own features — :func:`ownedExperts`'s mirror for the other kind.
- *
- * A surface that manages the things a feature owns (an automation schedule, say)
- * asks for these; a surface that picks an expert asks for the experts. Same
- * ownership rule on both sides: a share-only viewer gets neither.
+ * Features the caller may configure, as distinct from read-only feature cards.
+ * For features the server resolves enterprise role ownership after publication.
  */
 export function ownedFeatures<T extends SharedExpertAccess>(agents: T[]): T[] {
   return agents.filter(
-    (agent) => isOwnedExpert(agent) && isFeatureAgent(agent),
+    (agent) =>
+      isFeatureAgent(agent) && (agent.can_manage ?? isOwnedExpert(agent)),
   );
 }

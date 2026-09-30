@@ -73,6 +73,10 @@ import {
   type KnowledgeCapability,
   type KnowledgeDocument,
   type KnowledgeOnnxModel,
+  type KnowledgeCoverage,
+  type KnowledgeEvidence,
+  type SearchRuleMode,
+  type SearchRule,
   type KnowledgeSearchHit,
 } from "../../api/modules/knowledgeBases";
 import { EmptyStateIcon } from "../../components/EmptyState";
@@ -122,7 +126,6 @@ import TextDocumentEditorModal, {
   type TextDocumentFormat,
 } from "./TextDocumentEditorModal";
 import DataSourcesPanel from "./components/DataSourcesPanel";
-import ExtractTemplatesPanel from "./components/ExtractTemplatesPanel";
 import styles from "./index.module.less";
 
 type BaseFormValues = {
@@ -143,6 +146,21 @@ function loadDocsViewMode(): DocsViewMode {
   return stored === "table" ? "table" : "card";
 }
 
+function effectiveSearchRule(
+  rulesByPath: Map<string, SearchRule>,
+  path: string,
+): SearchRule | undefined {
+  let candidate = path;
+  while (candidate) {
+    const rule = rulesByPath.get(candidate);
+    if (rule) return rule;
+    const separator = candidate.lastIndexOf("/");
+    if (separator < 0) break;
+    candidate = candidate.slice(0, separator);
+  }
+  return undefined;
+}
+
 /**
  * What opening a preview needs. A document row satisfies it, and so does a
  * search hit: a result knows which file it came from, not everything about it.
@@ -154,6 +172,17 @@ type PreviewTarget = Pick<KnowledgeDocument, "id" | "filename"> &
       "path" | "is_dir" | "content_type" | "has_original" | "title"
     >
   >;
+function hideAbsolutePath(value: string): string {
+  return /^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(value) ? "[hidden path]" : value;
+}
+function formatEvidenceLocator(locator: Record<string, unknown>): string {
+  return JSON.stringify(
+    locator,
+    (_key, value: unknown) =>
+      typeof value === "string" ? hideAbsolutePath(value) : value,
+    2,
+  );
+}
 
 function documentStatusColor(status: KnowledgeDocument["status"]) {
   if (status === "ready") return "success";
@@ -321,6 +350,12 @@ export default function KnowledgeBasesPage() {
     null,
   );
   const [renameName, setRenameName] = useState("");
+  const [searchRules, setSearchRules] = useState<SearchRule[]>([]);
+  const searchRulesRequestRef = useRef(0);
+  const [ruleTarget, setRuleTarget] = useState<KnowledgeDocument | null>(null);
+  const [ruleMode, setRuleMode] = useState<SearchRuleMode>("hybrid");
+  const [ruleKeywords, setRuleKeywords] = useState("");
+  const [ruleSaving, setRuleSaving] = useState(false);
   const [capability, setCapability] = useState<KnowledgeCapability | null>(
     null,
   );
@@ -385,7 +420,20 @@ export default function KnowledgeBasesPage() {
   const [previewTitle, setPreviewTitle] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchHits, setSearchHits] = useState<KnowledgeSearchHit[]>([]);
+  const [searchSubmitted, setSearchSubmitted] = useState(false);
+  const searchRequestRef = useRef(0);
   const [searchLoading, setSearchLoading] = useState(false);
+  const [coverage, setCoverage] = useState<KnowledgeCoverage | null>(null);
+  const [coverageState, setCoverageState] = useState<
+    "loading" | "ready" | "error"
+  >("loading");
+  const coverageRequestRef = useRef(0);
+  const evidenceRequestRef = useRef(0);
+  const [previewEvidence, setPreviewEvidence] =
+    useState<KnowledgeEvidence | null>(null);
+  const [evidenceLoadError, setEvidenceLoadError] = useState<
+    "stale" | "unavailable" | "error" | null
+  >(null);
   const [previewText, setPreviewText] = useState("");
   const [previewKind, setPreviewKind] = useState<DocKind | null>(null);
   const [previewDocId, setPreviewDocId] = useState<string | null>(null);
@@ -592,7 +640,10 @@ export default function KnowledgeBasesPage() {
 
   const closePreview = useCallback(() => {
     previewTextAbortRef.current?.abort();
+    evidenceRequestRef.current += 1;
     previewTextAbortRef.current = null;
+    setPreviewEvidence(null);
+    setEvidenceLoadError(null);
     setPreviewOpen(false);
     setPreviewKind(null);
     setPreviewDocId(null);
@@ -727,6 +778,21 @@ export default function KnowledgeBasesPage() {
   );
   const isAtDocumentLimit =
     documentLimit !== null && fileCount >= documentLimit;
+  const searchRulesByPath = useMemo(
+    () => new Map(searchRules.map((rule) => [rule.path, rule])),
+    [searchRules],
+  );
+  const searchRuleModeLabel = (path: string) =>
+    t(
+      `knowledgeBases.searchRuleModes.${
+        effectiveSearchRule(searchRulesByPath, path)?.mode ?? "hybrid"
+      }`,
+    );
+  const ruleTargetPath = ruleTarget?.path || ruleTarget?.filename || "";
+  const ruleTargetOwn = searchRulesByPath.get(ruleTargetPath);
+  const ruleTargetInherited = ruleTargetOwn
+    ? undefined
+    : effectiveSearchRule(searchRulesByPath, ruleTargetPath);
   const folderEntries = documents
     .filter((document) =>
       isDirectKnowledgeChild(document.path || document.filename, currentFolder),
@@ -948,9 +1014,43 @@ export default function KnowledgeBasesPage() {
     },
     [t],
   );
+  const loadCoverage = useCallback(async (id: string, silent = false) => {
+    const requestId = ++coverageRequestRef.current;
+    if (!silent) setCoverageState("loading");
+    try {
+      const result = await knowledgeBasesApi.coverage(id);
+      if (coverageRequestRef.current !== requestId) return;
+      setCoverage(result);
+      setCoverageState("ready");
+    } catch {
+      if (coverageRequestRef.current !== requestId) return;
+      setCoverage(null);
+      setCoverageState("error");
+    }
+  }, []);
+  const loadSearchRules = useCallback(
+    async (id: string) => {
+      const requestId = ++searchRulesRequestRef.current;
+      try {
+        const rules = await knowledgeBasesApi.listSearchRules(id);
+        if (searchRulesRequestRef.current === requestId) setSearchRules(rules);
+      } catch (error) {
+        if (searchRulesRequestRef.current !== requestId) return;
+        message.error(
+          apiErrorMessage(error, t("knowledgeBases.searchRulesLoadFailed"), t),
+        );
+      }
+    },
+    [message, t],
+  );
 
   useEffect(() => {
     setCurrentFolder("");
+    searchRequestRef.current += 1;
+    setSearchQuery("");
+    setSearchHits([]);
+    setSearchLoading(false);
+    setSearchSubmitted(false);
   }, [selected?.id]);
 
   useEffect(() => {
@@ -959,18 +1059,40 @@ export default function KnowledgeBasesPage() {
     );
   }, [loadBases, loadCapability]);
 
+  const selectedId = selected?.id;
   useEffect(() => {
-    const indexing = documents.some(
-      (document) =>
-        !document.is_dir &&
-        (document.status === "pending" || document.status === "processing"),
-    );
+    if (!selectedId) {
+      coverageRequestRef.current += 1;
+      setCoverage(null);
+      setCoverageState("loading");
+      return;
+    }
+    void loadCoverage(selectedId);
+  }, [loadCoverage, selectedId]);
+  useEffect(() => {
+    setSearchRules([]);
+    setRuleTarget(null);
+    if (!selectedId) {
+      searchRulesRequestRef.current += 1;
+      return;
+    }
+    void loadSearchRules(selectedId);
+  }, [loadSearchRules, selectedId]);
+  useEffect(() => {
+    const indexing =
+      (coverage?.indexing ?? 0) > 0 ||
+      documents.some(
+        (document) =>
+          !document.is_dir &&
+          (document.status === "pending" || document.status === "processing"),
+      );
     if (!selected || !indexing) return;
     const timer = window.setInterval(() => {
       void loadDetail(selected.id, { silent: true });
+      void loadCoverage(selected.id, true);
     }, 2500);
     return () => window.clearInterval(timer);
-  }, [documents, loadDetail, selected]);
+  }, [coverage?.indexing, documents, loadCoverage, loadDetail, selected]);
   useEffect(() => {
     if (!isMobile && !selected && bases.length > 0 && !detailLoading) {
       void loadDetail(bases[0].id);
@@ -987,7 +1109,13 @@ export default function KnowledgeBasesPage() {
       await Promise.all([
         loadBases(),
         loadCapability(),
-        selected ? loadDetail(selected.id) : Promise.resolve(),
+        selected
+          ? Promise.all([
+              loadDetail(selected.id),
+              loadCoverage(selected.id),
+              loadSearchRules(selected.id),
+            ])
+          : Promise.resolve(),
       ]);
     } finally {
       setRefreshing(false);
@@ -1184,7 +1312,7 @@ export default function KnowledgeBasesPage() {
       }
       return;
     }
-    if (!featureModel || (featureBackend === "remote" && !featureProviderId)) {
+    if (featureModel && featureBackend === "remote" && !featureProviderId) {
       return;
     }
     if (
@@ -1195,6 +1323,7 @@ export default function KnowledgeBasesPage() {
       return;
     }
     if (
+      featureModel &&
       featureBackend === "onnx" &&
       !catalog.find((model) => model.id === featureModel)?.downloaded
     ) {
@@ -1483,6 +1612,7 @@ export default function KnowledgeBasesPage() {
       setRenameTarget(null);
       setRenameName("");
       await loadDetail(selected.id);
+      await loadSearchRules(selected.id);
       message.success(t("knowledgeBases.renameFolderSuccess"));
     } catch (error) {
       message.error(
@@ -1497,6 +1627,7 @@ export default function KnowledgeBasesPage() {
       await knowledgeBasesApi.deleteDocument(selected.id, documentId);
       await loadDetail(selected.id);
       await loadBases();
+      await loadSearchRules(selected.id);
     } catch (error) {
       message.error(
         apiErrorMessage(error, t("knowledgeBases.deleteFailed"), t),
@@ -1525,7 +1656,10 @@ export default function KnowledgeBasesPage() {
       const kind = rich ? getDocKind(document.filename) : null;
       const asMarkdown = isKnowledgeMarkdownDocument(document);
       previewTextAbortRef.current?.abort();
+      evidenceRequestRef.current += 1;
       const abort = new AbortController();
+      setPreviewEvidence(null);
+      setEvidenceLoadError(null);
       previewTextAbortRef.current = abort;
       setPreviewOpen(true);
       setPreviewFilename(document.filename);
@@ -1591,39 +1725,151 @@ export default function KnowledgeBasesPage() {
   const runSearch = useCallback(
     async (raw: string) => {
       const query = raw.trim();
-      if (!selected || !query) {
+      const requestId = ++searchRequestRef.current;
+      if (!selectedId || !query) {
+        setSearchSubmitted(false);
         setSearchHits([]);
+        setSearchLoading(false);
         return;
       }
+      setSearchSubmitted(true);
+      void loadCoverage(selectedId, true);
       setSearchLoading(true);
       try {
-        setSearchHits(
-          await knowledgeBasesApi.searchDocuments(selected.id, query),
+        const results = await knowledgeBasesApi.searchDocuments(
+          selectedId,
+          query,
         );
+        if (searchRequestRef.current === requestId) setSearchHits(results);
       } catch (error) {
-        setSearchHits([]);
-        message.error(
-          apiErrorMessage(error, t("knowledgeBases.searchFailed"), t),
-        );
+        if (searchRequestRef.current === requestId) {
+          setSearchHits([]);
+          message.error(
+            apiErrorMessage(error, t("knowledgeBases.searchFailed"), t),
+          );
+        }
       } finally {
-        setSearchLoading(false);
+        if (searchRequestRef.current === requestId) setSearchLoading(false);
       }
     },
-    [message, selected, t],
+    [loadCoverage, message, selectedId, t],
   );
+  const openSearchRule = (target: KnowledgeDocument) => {
+    const path = target.path || target.filename;
+    const own = searchRulesByPath.get(path);
+    const effective = own ?? effectiveSearchRule(searchRulesByPath, path);
+    setRuleTarget(target);
+    setRuleMode(effective?.mode ?? "hybrid");
+    setRuleKeywords(effective?.keywords.join("\n") ?? "");
+  };
+
+  const saveSearchRule = async () => {
+    if (!selected || !ruleTarget) return;
+    setRuleSaving(true);
+    try {
+      await knowledgeBasesApi.saveSearchRule(selected.id, {
+        path: ruleTarget.path || ruleTarget.filename,
+        mode: ruleMode,
+        keywords: ruleKeywords
+          .split(/\r?\n/)
+          .map((keyword) => keyword.trim())
+          .filter(Boolean),
+      });
+      await loadSearchRules(selected.id);
+      setRuleTarget(null);
+      if (searchSubmitted) void runSearch(searchQuery);
+      message.success(t("knowledgeBases.searchRuleSaved"));
+    } catch (error) {
+      message.error(
+        apiErrorMessage(error, t("knowledgeBases.searchRuleSaveFailed"), t),
+      );
+    } finally {
+      setRuleSaving(false);
+    }
+  };
+
+  const removeSearchRule = async () => {
+    if (!selected || !ruleTarget) return;
+    setRuleSaving(true);
+    try {
+      await knowledgeBasesApi.deleteSearchRule(
+        selected.id,
+        ruleTarget.path || ruleTarget.filename,
+      );
+      await loadSearchRules(selected.id);
+      setRuleTarget(null);
+      if (searchSubmitted) void runSearch(searchQuery);
+      message.success(t("knowledgeBases.searchRuleRemoved"));
+    } catch (error) {
+      message.error(
+        apiErrorMessage(error, t("knowledgeBases.searchRuleRemoveFailed"), t),
+      );
+    } finally {
+      setRuleSaving(false);
+    }
+  };
 
   const openSearchHit = useCallback(
-    (hit: KnowledgeSearchHit) => {
-      // A hit carries the file it came from, which is all the preview reads.
-      void openDocumentPreview({
-        id: hit.document_id,
-        filename: hit.filename,
-        path: hit.path,
-        is_dir: false,
-        title: hit.title,
-      });
+    async (hit: KnowledgeSearchHit) => {
+      if (!selected) return;
+      if (!hit.segment_id) {
+        // File-level metadata hits open a preview, not a verified excerpt.
+        const knownDocument = documents.find(
+          (document) => document.id === hit.document_id,
+        );
+        void openDocumentPreview({
+          id: hit.document_id,
+          filename: hit.filename,
+          path: hit.path,
+          is_dir: false,
+          has_original: knownDocument?.has_original ?? false,
+          title: hit.title,
+        });
+        return;
+      }
+
+      const requestId = ++evidenceRequestRef.current;
+      setPreviewOpen(true);
+      setPreviewLoading(true);
+      setPreviewFilename(hideAbsolutePath(hit.filename));
+      setPreviewTitle(hideAbsolutePath(hit.title || hit.filename));
+      setPreviewKind(null);
+      setPreviewDocId(null);
+      setPreviewHasOriginal(false);
+      setPreviewAsMarkdown(false);
+      setPreviewText("");
+      setPreviewEvidence(null);
+      setEvidenceLoadError(null);
+      try {
+        const evidence = await knowledgeBasesApi.getEvidence(
+          selected.id,
+          hit.document_id,
+          hit.segment_id,
+        );
+        if (evidenceRequestRef.current !== requestId) return;
+        const evidenceFilename = hideAbsolutePath(
+          evidence.filename || hit.filename,
+        );
+        setPreviewFilename(evidenceFilename);
+        setPreviewTitle(
+          evidenceFilename || hideAbsolutePath(hit.title || hit.filename),
+        );
+        setPreviewEvidence(evidence);
+        if (!evidence.verified) {
+          setEvidenceLoadError(
+            evidence.reason === "source_unavailable" ? "unavailable" : "stale",
+          );
+        }
+      } catch (error) {
+        if (evidenceRequestRef.current !== requestId) return;
+        setEvidenceLoadError(isNotFoundApiError(error) ? "stale" : "error");
+      } finally {
+        if (evidenceRequestRef.current === requestId) {
+          setPreviewLoading(false);
+        }
+      }
     },
-    [openDocumentPreview],
+    [documents, openDocumentPreview, selected],
   );
 
   const downloadDocumentOriginal = async (
@@ -1868,6 +2114,15 @@ export default function KnowledgeBasesPage() {
             ) : null}
           </>
         )}
+        <Tooltip title={t("knowledgeBases.searchRuleSettings")}>
+          <Button
+            type="text"
+            size="small"
+            icon={<Settings size={14} />}
+            aria-label={t("knowledgeBases.searchRuleSettings")}
+            onClick={() => openSearchRule(document)}
+          />
+        </Tooltip>
         {canWriteSelected ? (
           <>
             {!document.is_dir && isEditableKnowledgeDocument(document) ? (
@@ -2290,22 +2545,26 @@ export default function KnowledgeBasesPage() {
                             })}
                       </span>
                       <div className={skillStyles.gridToolbarRight}>
-                        <Input
+                        <Input.Search
                           allowClear
                           value={searchQuery}
                           placeholder={t("knowledgeBases.searchPlaceholder")}
-                          prefix={<Search size={14} />}
                           className={styles.searchInput}
-                          onChange={(event) =>
-                            setSearchQuery(event.target.value)
-                          }
-                          onPressEnter={() => void runSearch(searchQuery)}
-                          onBlur={() => {
-                            if (searchQuery.trim()) void runSearch(searchQuery);
-                          }}
-                          onClear={() => {
-                            setSearchQuery("");
+                          onChange={(event) => {
+                            searchRequestRef.current += 1;
+                            setSearchQuery(event.target.value);
+                            setSearchSubmitted(false);
                             setSearchHits([]);
+                            setSearchLoading(false);
+                          }}
+                          enterButton
+                          onSearch={(value) => void runSearch(value)}
+                          onClear={() => {
+                            searchRequestRef.current += 1;
+                            setSearchQuery("");
+                            setSearchSubmitted(false);
+                            setSearchHits([]);
+                            setSearchLoading(false);
                           }}
                           disabled={!selected}
                         />
@@ -2418,6 +2677,23 @@ export default function KnowledgeBasesPage() {
                           );
                         })}
                       </nav>
+                      {currentFolder ? (
+                        <Button
+                          type="link"
+                          size="small"
+                          icon={<Settings size={14} />}
+                          onClick={() => {
+                            const folder = documents.find(
+                              (document) =>
+                                document.is_dir &&
+                                document.path === currentFolder,
+                            );
+                            if (folder) openSearchRule(folder);
+                          }}
+                        >
+                          {t("knowledgeBases.searchRuleSettings")}
+                        </Button>
+                      ) : null}
                       {canWriteSelected ? (
                         <Typography.Text
                           type="secondary"
@@ -2470,10 +2746,46 @@ export default function KnowledgeBasesPage() {
                     ) : null}
                     {searchQuery.trim() ? (
                       <div className={styles.searchResults} aria-live="polite">
+                        {coverageState === "loading" ? (
+                          <Typography.Text type="secondary">
+                            {t("knowledgeBases.coverageLoading")}
+                          </Typography.Text>
+                        ) : coverageState === "error" || !coverage ? (
+                          <Alert
+                            type="warning"
+                            showIcon
+                            message={t("knowledgeBases.coverageUnavailable")}
+                          />
+                        ) : (
+                          <Alert
+                            type={
+                              coverage.pending +
+                                coverage.failed +
+                                coverage.unsupported >
+                              0
+                                ? "warning"
+                                : "success"
+                            }
+                            showIcon
+                            message={t(
+                              coverage.pending +
+                                coverage.failed +
+                                coverage.unsupported >
+                                0
+                                ? "knowledgeBases.coveragePartial"
+                                : "knowledgeBases.coverageComplete",
+                              { ...coverage },
+                            )}
+                          />
+                        )}
                         {searchLoading ? (
                           <div className={styles.searchLoading}>
                             <Spin size="small" />
                           </div>
+                        ) : !searchSubmitted ? (
+                          <Typography.Text type="secondary">
+                            {t("knowledgeBases.searchReady")}
+                          </Typography.Text>
                         ) : searchHits.length === 0 ? (
                           <Typography.Text type="secondary">
                             {t("knowledgeBases.searchEmpty")}
@@ -2491,7 +2803,9 @@ export default function KnowledgeBasesPage() {
                             <ul className={styles.searchList}>
                               {searchHits.map((hit) => (
                                 <li
-                                  key={`${hit.document_id}:${hit.ordinal}`}
+                                  key={`${hit.document_id}:${
+                                    hit.match_kind ?? "content"
+                                  }:${hit.ordinal}`}
                                   className={styles.searchItem}
                                 >
                                   <button
@@ -2501,15 +2815,36 @@ export default function KnowledgeBasesPage() {
                                   >
                                     <span className={styles.searchHitHead}>
                                       <span className={styles.searchHitTitle}>
-                                        {hit.title || hit.filename}
+                                        {hideAbsolutePath(
+                                          hit.title || hit.filename,
+                                        )}
                                       </span>
+                                      {hit.match_kind === "rule_keyword" ? (
+                                        <Tag color="gold">
+                                          {t(
+                                            "knowledgeBases.searchRuleCandidate",
+                                          )}
+                                        </Tag>
+                                      ) : null}
                                       <span className={styles.searchHitPath}>
-                                        {hit.source_path || hit.path}
+                                        {hideAbsolutePath(
+                                          hit.source_path || hit.path,
+                                        )}
                                       </span>
                                     </span>
-                                    <span className={styles.searchHitSnippet}>
-                                      {hit.snippet}
-                                    </span>
+                                    {hit.match_kind !== "rule_keyword" &&
+                                    Object.keys(hit.locator || {}).length >
+                                      0 ? (
+                                      <span className={styles.searchHitPath}>
+                                        {t("knowledgeBases.evidenceLocation")}:{" "}
+                                        {formatEvidenceLocator(hit.locator)}
+                                      </span>
+                                    ) : null}
+                                    {hit.match_kind !== "rule_keyword" ? (
+                                      <span className={styles.searchHitSnippet}>
+                                        {hit.snippet}
+                                      </span>
+                                    ) : null}
                                   </button>
                                 </li>
                               ))}
@@ -2574,12 +2909,18 @@ export default function KnowledgeBasesPage() {
                                   </div>
                                   <div className={styles.docCardMeta}>
                                     {document.is_dir
-                                      ? t("knowledgeBases.folder")
+                                      ? `${t(
+                                          "knowledgeBases.folder",
+                                        )} · ${searchRuleModeLabel(
+                                          document.path || document.filename,
+                                        )}`
                                       : `${formatBytes(
                                           document.byte_size,
                                         )} · ${t("knowledgeBases.chunkCount", {
                                           count: document.chunk_count,
-                                        })}`}
+                                        })} · ${searchRuleModeLabel(
+                                          document.path || document.filename,
+                                        )}`}
                                   </div>
                                 </div>
                                 <span
@@ -2591,6 +2932,11 @@ export default function KnowledgeBasesPage() {
                               </div>
                               {document.is_dir ? null : (
                                 <div className={styles.docCardFooter}>
+                                  <Tag color="blue">
+                                    {searchRuleModeLabel(
+                                      document.path || document.filename,
+                                    )}
+                                  </Tag>
                                   <Tooltip
                                     title={
                                       document.error_message ||
@@ -2684,11 +3030,22 @@ export default function KnowledgeBasesPage() {
                           {
                             title: t("knowledgeBases.entryType"),
                             key: "entry_type",
-                            width: 88,
-                            render: (_, document) =>
-                              document.is_dir
-                                ? t("knowledgeBases.folder")
-                                : t("knowledgeBases.file"),
+                            width: 160,
+                            render: (_, document) => (
+                              <span>
+                                {document.is_dir
+                                  ? `${t(
+                                      "knowledgeBases.folder",
+                                    )} · ${searchRuleModeLabel(
+                                      document.path || document.filename,
+                                    )}`
+                                  : `${t(
+                                      "knowledgeBases.file",
+                                    )} · ${searchRuleModeLabel(
+                                      document.path || document.filename,
+                                    )}`}
+                              </span>
+                            ),
                           },
                           {
                             title: t("knowledgeBases.status"),
@@ -2750,13 +3107,10 @@ export default function KnowledgeBasesPage() {
                       canWriteBase={canWriteSelected}
                       onDocumentsChanged={() => {
                         void loadDetail(selected.id, { silent: true });
+                        void loadCoverage(selected.id, true);
                         void loadBases();
+                        void loadSearchRules(selected.id);
                       }}
-                    />
-                    <ExtractTemplatesPanel
-                      key={`templates-${selected.id}`}
-                      baseId={selected.id}
-                      canWriteBase={canWriteSelected}
                     />
                   </div>
                 </>
@@ -2897,7 +3251,55 @@ export default function KnowledgeBasesPage() {
           },
         }}
       >
-        {previewKind && previewDocId ? (
+        {previewEvidence ? (
+          <div className={styles.mdPreviewWrap} data-preview-fullscreen-root="">
+            <div className={styles.mdPreviewToolbar}>
+              <span>{t("knowledgeBases.evidenceTitle")}</span>
+            </div>
+            <div className={styles.mdPreviewBody}>
+              {evidenceLoadError ? (
+                <Alert
+                  type="warning"
+                  showIcon
+                  message={t(
+                    evidenceLoadError === "stale"
+                      ? "knowledgeBases.evidenceStale"
+                      : evidenceLoadError === "unavailable"
+                      ? "knowledgeBases.evidenceUnavailable"
+                      : "knowledgeBases.evidenceFailed",
+                  )}
+                />
+              ) : null}
+              <div>
+                <Typography.Text type="secondary">
+                  {t("knowledgeBases.evidenceLocation")}
+                </Typography.Text>
+                <pre className={styles.previewBody}>
+                  {formatEvidenceLocator(previewEvidence.locator)}
+                </pre>
+              </div>
+              {previewEvidence.verified ? (
+                <pre className={styles.previewBody}>
+                  {previewEvidence.text || t("knowledgeBases.previewEmpty")}
+                </pre>
+              ) : null}
+            </div>
+          </div>
+        ) : previewLoading ? (
+          <DocumentPreviewLoading phase="file" />
+        ) : evidenceLoadError ? (
+          <Alert
+            type="warning"
+            showIcon
+            message={t(
+              evidenceLoadError === "stale"
+                ? "knowledgeBases.evidenceStale"
+                : evidenceLoadError === "unavailable"
+                ? "knowledgeBases.evidenceUnavailable"
+                : "knowledgeBases.evidenceFailed",
+            )}
+          />
+        ) : previewKind && previewDocId ? (
           <div
             className={styles.richPreviewBody}
             data-preview-fullscreen-root=""
@@ -3098,6 +3500,114 @@ export default function KnowledgeBasesPage() {
       </Modal>
 
       <Modal
+        title={t("knowledgeBases.searchRuleSettings")}
+        open={Boolean(ruleTarget)}
+        onCancel={() => {
+          if (!ruleSaving) setRuleTarget(null);
+        }}
+        destroyOnHidden
+        footer={[
+          ruleTargetOwn ? (
+            <Button
+              key="remove"
+              danger
+              loading={ruleSaving}
+              onClick={() => void removeSearchRule()}
+            >
+              {t("knowledgeBases.searchRuleRemove")}
+            </Button>
+          ) : null,
+          <Button
+            key="cancel"
+            disabled={ruleSaving}
+            onClick={() => setRuleTarget(null)}
+          >
+            {t("common.cancel")}
+          </Button>,
+          <Button
+            key="save"
+            type="primary"
+            loading={ruleSaving}
+            onClick={() => void saveSearchRule()}
+          >
+            {t("common.save")}
+          </Button>,
+        ]}
+      >
+        {ruleTarget ? (
+          <Form layout="vertical">
+            <Typography.Paragraph strong>
+              {ruleTarget.path || ruleTarget.filename}
+            </Typography.Paragraph>
+            <Typography.Paragraph type="secondary">
+              {ruleTargetOwn
+                ? t("knowledgeBases.searchRuleOwn", {
+                    kind: t(
+                      ruleTarget.is_dir
+                        ? "knowledgeBases.folder"
+                        : "knowledgeBases.file",
+                    ),
+                  })
+                : ruleTargetInherited
+                ? t("knowledgeBases.searchRuleInherited", {
+                    path: ruleTargetInherited.path,
+                    mode: t(
+                      `knowledgeBases.searchRuleModes.${ruleTargetInherited.mode}`,
+                    ),
+                  })
+                : t("knowledgeBases.searchRuleDefault")}
+            </Typography.Paragraph>
+            <Form.Item label={t("knowledgeBases.searchRuleMode")}>
+              <Select<SearchRuleMode>
+                value={ruleMode}
+                onChange={setRuleMode}
+                options={(["hybrid", "keyword", "exclude"] as const).map(
+                  (mode) => ({
+                    value: mode,
+                    label: t(`knowledgeBases.searchRuleModes.${mode}`),
+                  }),
+                )}
+                optionRender={(option) => (
+                  <Tooltip
+                    title={t(
+                      `knowledgeBases.searchRuleModeDetails.${option.value}`,
+                    )}
+                    placement="right"
+                  >
+                    <span>
+                      <span>{option.label}</span>
+                      <span style={{ display: "block", whiteSpace: "normal" }}>
+                        {t(
+                          `knowledgeBases.searchRuleModeDetails.${option.value}`,
+                        )}
+                      </span>
+                    </span>
+                  </Tooltip>
+                )}
+              />
+              <Typography.Text type="secondary">
+                {t(`knowledgeBases.searchRuleModeDetails.${ruleMode}`)}
+              </Typography.Text>
+            </Form.Item>
+            <Form.Item
+              label={t("knowledgeBases.searchRuleKeywords")}
+              extra={t("knowledgeBases.searchRuleKeywordsHint")}
+            >
+              <Input.TextArea
+                value={ruleKeywords}
+                onChange={(event) => setRuleKeywords(event.target.value)}
+                placeholder={t("knowledgeBases.searchRuleKeywordsPlaceholder")}
+                autoSize={{ minRows: 3, maxRows: 6 }}
+              />
+            </Form.Item>
+            <Typography.Text type="secondary">
+              {t("knowledgeBases.searchRulePersonalHint")}
+            </Typography.Text>
+          </Form>
+        ) : null}
+      </Modal>
+
+      <Modal
         title={t("knowledgeBases.createFolder")}
         open={folderModalOpen}
         onCancel={() => setFolderModalOpen(false)}
@@ -3246,15 +3756,17 @@ export default function KnowledgeBasesPage() {
               loading={featureSaving}
               disabled={
                 featureEnabledDraft
-                  ? !featureModel ||
-                    (featureBackend === "remote" && !featureProviderId) ||
+                  ? (Boolean(featureModel) &&
+                      featureBackend === "remote" &&
+                      !featureProviderId) ||
                     (ocrEnabledDraft &&
                       ocrBackend === "remote" &&
                       (!ocrProviderId || !ocrModel)) ||
-                    (featureBackend === "onnx" &&
+                    (Boolean(featureModel) &&
+                      featureBackend === "onnx" &&
                       !catalog.find((model) => model.id === featureModel)
                         ?.downloaded) ||
-                    featureOptionsLoading ||
+                    (Boolean(featureModel) && featureOptionsLoading) ||
                     onnxDownloading
                   : false
               }
@@ -3297,9 +3809,7 @@ export default function KnowledgeBasesPage() {
               precision={0}
               value={maxDocumentsDraft}
               onChange={(value) =>
-                setMaxDocumentsDraft(
-                  typeof value === "number" ? value : 0,
-                )
+                setMaxDocumentsDraft(typeof value === "number" ? value : 0)
               }
               style={{ width: "100%", marginTop: 8 }}
             />

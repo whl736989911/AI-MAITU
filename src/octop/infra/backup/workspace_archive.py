@@ -19,6 +19,24 @@ WorkspaceImportMode = Literal["merge", "replace"]
 _SKIP_DIR_NAMES = frozenset({".git", "__pycache__", ".venv", "node_modules"})
 
 
+def _excluded_path(path: str) -> bool:
+    return any(part in _SKIP_DIR_NAMES for part in path.replace("\\", "/").split("/"))
+
+
+def _workspace_relative(workspace: BackendWorkspace, path: str) -> str | None:
+    """Normalize an aglob result into a safe path relative to the workspace."""
+    raw = str(path).replace("\\", "/")
+    root = str(workspace.workspace_dir).replace("\\", "/").rstrip("/")
+    if raw == root:
+        return None
+    if raw.startswith(root + "/"):
+        raw = raw[len(root) + 1 :]
+    safe = _safe_zip_name(raw)
+    if safe is None or _excluded_path(safe):
+        return None
+    return safe
+
+
 def _safe_zip_name(name: str) -> str | None:
     raw = name.replace("\\", "/").strip().lstrip("/")
     if not raw or raw.endswith("/"):
@@ -30,45 +48,63 @@ def _safe_zip_name(name: str) -> str | None:
 
 
 async def _list_file_paths(workspace: BackendWorkspace) -> list[str]:
-    result = await workspace.aglob("**/*", ".")
-    if result is None:
-        return []
-    matches = getattr(result, "matches", None) or []
-    paths: list[str] = []
-    for item in matches:
-        if isinstance(item, dict):
-            path = item.get("path")
-            is_dir = item.get("is_dir")
-        else:
-            path = getattr(item, "path", None)
-            is_dir = getattr(item, "is_dir", False)
-        if not path or is_dir:
-            continue
-        storage = str(path)
-        ws_root = str(workspace.workspace_dir)
-        if storage.startswith(ws_root):
-            rel = storage[len(ws_root) :].lstrip("/\\")
-            if rel:
-                paths.append(rel)
+    """Enumerate workspace files, including hidden state, on mounted and remote backends."""
+    local_root = _local_mount(workspace)
+    if local_root is not None:
+        root = workspace.workspace_dir
+        if not root.is_dir():
+            return []
+        local_paths: list[str] = []
+        for entry in root.rglob("*"):
+            try:
+                rel = entry.relative_to(root).as_posix()
+                resolved = entry.resolve()
+                resolved.relative_to(root.resolve())
+            except (OSError, ValueError):
                 continue
-        paths.append(storage.lstrip("/"))
-    return sorted(set(paths))
+            if _excluded_path(rel) or entry.is_dir():
+                continue
+            if entry.is_file():
+                local_paths.append(rel)
+        return sorted(set(local_paths))
+
+    # Common glob implementations deliberately omit dotfiles from "**/*".
+    # Explicit hidden-component patterns preserve backend semantics while making
+    # hidden workspace data discoverable on sandbox and remote filesystems.
+    remote_paths: set[str] = set()
+    result_paths: dict[str, bool] = {}
+    for pattern in ("**/*", "**/.*", "**/.*/**/*"):
+        result = await workspace.aglob(pattern, ".")
+        for item in getattr(result, "matches", None) or []:
+            if isinstance(item, dict):
+                raw_path, is_dir = item.get("path"), item.get("is_dir", False)
+            else:
+                raw_path, is_dir = getattr(item, "path", None), getattr(item, "is_dir", False)
+            if raw_path:
+                result_paths[str(raw_path)] = bool(is_dir)
+    for match_path, is_dir in result_paths.items():
+        if is_dir:
+            continue
+        safe_rel = _workspace_relative(workspace, match_path)
+        if safe_rel is not None:
+            remote_paths.add(safe_rel)
+    return sorted(remote_paths)
 
 
 def _clear_local_workspace(workspace_dir: Path) -> None:
-    """Clear local workspace content, keeping entries an archive cannot restore.
+    """Clear ordinary workspace content while retaining hidden state.
 
-    The export glob never matches hidden paths, so harness system state (``.octop``
-    sessions / skills / auth, legacy ``.octop-auth``, ``.env``) is absent from every
-    archive. Deleting it here would destroy data the import can never put back, so
-    hidden entries are left untouched.
+    Older archives did not include hidden files, so replacing from one must not
+    erase local state such as ``.octop`` sessions or ``.env`` configuration.
     """
     if not workspace_dir.is_dir():
         return
     for child in workspace_dir.iterdir():
         if child.name in _SKIP_DIR_NAMES or child.name.startswith("."):
             continue
-        if child.is_dir():
+        if child.is_symlink():
+            child.unlink()
+        elif child.is_dir():
             shutil.rmtree(child)
         else:
             child.unlink()

@@ -35,6 +35,7 @@ import {
   type StatsAtomKindsResponse,
   type StatsCounts,
   type StatsGrowthResponse,
+  type MemoryScope,
 } from "../../../api/modules/memoryDashboard";
 import { useTheme } from "../../../context/ThemeContext";
 import { brandPrimary } from "../../../styles/themePalettes";
@@ -48,6 +49,8 @@ interface Props {
    * surface an expert is configured on.
    */
   readOnly?: boolean;
+  scope?: MemoryScope;
+  hideMigration?: boolean;
   onViewConversations?: () => void;
   onReviewCandidates?: () => void;
   onOpenSettings?: () => void;
@@ -81,6 +84,8 @@ const KIND_COLOR_BASE: Record<string, string> = {
 export default function Overview({
   agentId,
   readOnly = false,
+  scope,
+  hideMigration = false,
   onViewConversations,
   onReviewCandidates,
   onOpenSettings,
@@ -101,10 +106,18 @@ export default function Overview({
     if (!agentId) return;
     setState((current) => ({ ...current, refreshing: true }));
     const results = await Promise.allSettled([
-      memoryDashboardApi.statsCounts(agentId),
-      memoryDashboardApi.statsAtomKinds(agentId),
-      memoryDashboardApi.statsGrowth(agentId, 7),
-      memoryDashboardApi.getExtractConfig(agentId),
+      scope
+        ? memoryDashboardApi.statsCounts(agentId, scope)
+        : memoryDashboardApi.statsCounts(agentId),
+      scope
+        ? memoryDashboardApi.statsAtomKinds(agentId, scope)
+        : memoryDashboardApi.statsAtomKinds(agentId),
+      scope
+        ? memoryDashboardApi.statsGrowth(agentId, 7, scope)
+        : memoryDashboardApi.statsGrowth(agentId, 7),
+      hideMigration
+        ? Promise.resolve(null)
+        : memoryDashboardApi.getExtractConfig(agentId),
     ]);
     const [counts, kinds, growth, config] = results;
     setState({
@@ -115,7 +128,7 @@ export default function Overview({
       firstLoading: false,
       refreshing: false,
     });
-  }, [agentId]);
+  }, [agentId, scope, hideMigration]);
 
   useEffect(() => {
     void loadAll();
@@ -174,7 +187,9 @@ export default function Overview({
               disabled={state.refreshing}
             />
           </Tooltip>
-          {readOnly ? null : <MigrateMemory agentId={agentId} />}
+          {readOnly || hideMigration ? null : (
+            <MigrateMemory agentId={agentId} />
+          )}
         </div>
       </header>
 

@@ -60,6 +60,9 @@ class SkillHubMarketAgentCreateOptions:
     top_p: float | None = None
     max_tokens: int | None = None
     enable_trajectory: bool = True
+    workspace_patch: Any = None
+    composer_copies: tuple[tuple[str, Any], ...] = ()
+    composer_report: Any = None
 
 
 @dataclass(frozen=True)
@@ -326,8 +329,27 @@ async def create_agent_from_skillhub_skillset(
     )
     registry = server.app_runtime.agent_registry
     row = await registry.create(spec, defer_bootstrap=True)
-
     workspace = registry.workspace_for_agent(row.agent_id)
+
+    if workspace is not None and options.workspace_patch is not None:
+        from octop.infra.agents.experts.composer_files import (
+            apply_composer_workspace_patch,
+        )
+
+        await apply_composer_workspace_patch(
+            workspace,
+            options.workspace_patch,
+            copies=options.composer_copies,
+            report=options.composer_report,
+        )
+    elif options.composer_report is not None:
+        if options.workspace_patch is not None:
+            options.composer_report.hub_skill_errors.extend(
+                pick.skill_name for pick in options.workspace_patch.hub_skills
+            )
+        options.composer_report.copy_skill_errors.extend(
+            slug for slug, _source in options.composer_copies
+        )
     if workspace is not None and portrait_url:
         try:
             await materialize_remote_icon_url(

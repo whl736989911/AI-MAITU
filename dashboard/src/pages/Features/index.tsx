@@ -1,23 +1,8 @@
 /**
- * Features — the caller's own list, and what a card on it can do.
- *
- * A feature *is* an agent (``utils/agentKind.ts``): this page is the same grid the
- * Experts page shows its own experts in, built from the same card
- * (``AgentCard``), reading the same ``/agents`` list and filtering it by ``kind``.
- * Nothing here is a second rendering of an agent — a feature that looked like
- * anything but an agent on this page would be a claim the model does not make.
- *
- * What the card offers a reader is the card's own answer, which is already the
- * matrix: its author reaches the start switch, the workspace, the reload, the edit
- * and the catalogs, an administrator reaches them on any feature in front of them
- * (``canManageExpert`` in ``utils/sharedExpert``, the server's own "the owner, or
- * an administrator"), and a caller of one reaches the conversation and nothing
- * that writes. The page adds no gate of its own, so the two cannot disagree.
- *
- * ── Where a feature is configured ───────────────────────────────────────────
- * The card opens the experts' own drawer for its agent definition. Its More
- * menu opens capability catalogs and the workflow editor, all of which can
- * also be reached from the feature's tabs in Personalization.
+ * Features share the agent card and list with Experts. Enterprise administrators
+ * additionally see drafts from their enterprise; the server supplies each
+ * feature's `can_manage` verdict, so published ownership need not be inferred
+ * from a personal user id.
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -34,19 +19,14 @@ import { canManageExpert } from "../../utils/sharedExpert";
 import { AgentCard } from "../Experts/components/AgentCard";
 import EditAgentDrawer from "../Experts/components/EditAgentDrawer";
 import { EmptyStateIcon } from "../../components/EmptyState";
+import MemoryCatalogDrawer from "../Experts/components/MemoryCatalogDrawer";
 import FeatureCreateDrawer from "./components/FeatureCreateDrawer";
 import FeatureWorkflowPanel from "./components/FeatureWorkflowPanel";
 // The experts' own grid, toolbar and empty-state styles: a feature's list is the
 // same list, so it is the same stylesheet rather than a look-alike of it.
 import styles from "../Experts/index.module.less";
 
-/**
- * The features in front of the caller, the ones they defined first.
- *
- * Order is what makes the two roles readable at a glance — "mine" is the list the
- * page is for, and a feature somebody else defined is next to it with the card's
- * own ``fromOwner`` tag.
- */
+/** Show the caller's own draft features before other visible features. */
 function orderFeatures(features: OctopAgent[]): OctopAgent[] {
   return [...features].sort((a, b) => {
     const mine = (agent: OctopAgent) => (agent.is_owner === false ? 1 : 0);
@@ -72,6 +52,12 @@ export default function FeaturesPage() {
   const [workflowFeature, setWorkflowFeature] = useState<OctopAgent | null>(
     null,
   );
+  const [personalizationFeature, setPersonalizationFeature] =
+    useState<OctopAgent | null>(null);
+  const currentWorkflowFeature = workflowFeature
+    ? features.find((item) => item.agent_id === workflowFeature.agent_id) ??
+      workflowFeature
+    : null;
 
   useEffect(() => {
     setLocalFeatures(features);
@@ -212,6 +198,11 @@ export default function FeaturesPage() {
                   localFeatures.find((a) => a.agent_id === agentId) ?? null,
                 )
               }
+              onPersonalization={(agentId) =>
+                setPersonalizationFeature(
+                  localFeatures.find((a) => a.agent_id === agentId) ?? null,
+                )
+              }
               onDeleted={handleDeleted}
               onStateChange={handleStateChange}
             />
@@ -243,14 +234,22 @@ export default function FeaturesPage() {
         onClose={() => setWorkflowFeature(null)}
         destroyOnHidden
       >
-        {workflowFeature && (
+        {currentWorkflowFeature && (
           <FeatureWorkflowPanel
-            key={workflowFeature.agent_id}
-            agentId={workflowFeature.agent_id}
-            canWrite={canManageExpert(workflowFeature, role)}
+            key={currentWorkflowFeature.agent_id}
+            agentId={currentWorkflowFeature.agent_id}
+            canWrite={canManageExpert(currentWorkflowFeature, role)}
+            enterpriseManaged={currentWorkflowFeature.user_id === null}
+            onSaved={() => void refresh({ silent: true, force: true })}
           />
         )}
       </Drawer>
+      <MemoryCatalogDrawer
+        agentId={personalizationFeature?.agent_id ?? ""}
+        open={personalizationFeature !== null}
+        onClose={() => setPersonalizationFeature(null)}
+        featureMemory
+      />
 
       <FeatureCreateDrawer
         open={createOpen}

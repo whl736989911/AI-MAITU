@@ -156,8 +156,13 @@ export default function WorkflowInputCard({
   const readOnly = run !== null;
   const summary = fields
     .slice(0, 2)
-    .map(([name, field]) =>
-      `${fieldLabel(field, locale)}: ${displayValue(field, run?.inputs[name], t)}`,
+    .map(
+      ([name, field]) =>
+        `${fieldLabel(field, locale)}: ${displayValue(
+          field,
+          run?.inputs[name],
+          t,
+        )}`,
     )
     .join(" · ");
   const time = run?.createdAt
@@ -368,6 +373,7 @@ export default function WorkflowInputCard({
             );
           })}
         </div>
+
         <div className={styles.actions}>
           <Tooltip
             title={

@@ -60,8 +60,12 @@ class _Siteverify(BaseHTTPRequestHandler):
         # instead of delivering the response the client is waiting for.
         length = int(self.headers.get("Content-Length") or 0)
         body = self.rfile.read(length) if length else b""
-        if body and (self.headers.get("Content-Type") or "").startswith("application/json"):
+        ctype = self.headers.get("Content-Type") or ""
+        if body and ctype.startswith("application/json"):
             type(self).last_body = json.loads(body)
+        elif body and ctype.startswith("application/x-www-form-urlencoded"):
+            type(self).last_body = {k: v[0] for k, v in parse_qs(body.decode("utf-8")).items()}
+        type(self).last_query = parse_qs(urlparse(self.path).query)
         self._reply()
 
     def do_GET(self) -> None:
@@ -89,7 +93,7 @@ def siteverify() -> tuple[str, type[_Siteverify]]:
 @pytest.fixture(autouse=True)
 def _clear_test_urls() -> None:
     yield
-    for slug in ("turnstile", "hcaptcha", "recaptcha", "recaptcha-v3", "tencent"):
+    for slug in ("turnstile", "hcaptcha", "recaptcha", "recaptcha-v3", "tencent", "geetest-v4"):
         set_test_siteverify_url(slug, None)
 
 
@@ -202,3 +206,34 @@ async def test_tencent_malformed_token_fails_before_http(
         await ensure_captcha(_effective("tencent"), "no-randstr")
     assert exc.value.code is ErrorCode.CAPTCHA_FAILED
     assert handler.last_query == {}
+
+
+@pytest.mark.asyncio
+async def test_geetest_posts_signed_challenge_as_form(
+    siteverify: tuple[str, type[_Siteverify]],
+) -> None:
+    url, handler = siteverify
+    original_payload = handler.payload
+    handler.payload = {"result": "success"}
+    set_test_siteverify_url("geetest-v4", url)
+    token = json.dumps(
+        {
+            "lot_number": "lot-123",
+            "captcha_output": "output",
+            "pass_token": "pass",
+            "gen_time": "123456",
+        }
+    )
+    try:
+        await ensure_captcha(
+            _effective("geetest-v4", site_key="captcha-id", secret="captcha-key"),
+            token,
+        )
+        assert handler.last_query == {}
+        assert handler.last_body["lot_number"] == "lot-123"
+        assert handler.last_body["captcha_output"] == "output"
+        assert handler.last_body["pass_token"] == "pass"
+        assert handler.last_body["gen_time"] == "123456"
+        assert len(str(handler.last_body["sign_token"])) == 64
+    finally:
+        handler.payload = original_payload

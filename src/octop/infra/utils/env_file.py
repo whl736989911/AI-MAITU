@@ -36,10 +36,25 @@ def env_file_path(root: Path) -> Path:
     return root / "env"
 
 
+def _has_closing_quote(value: str, quote: str) -> bool:
+    escaped = False
+    for char in value[1:]:
+        if quote == '"' and char == "\\" and not escaped:
+            escaped = True
+            continue
+        if char == quote and not escaped:
+            return True
+        escaped = False
+    return False
+
+
 def parse_env_text(text: str) -> dict[str, str]:
     out: dict[str, str] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
+    lines = text.splitlines()
+    index = 0
+    while index < len(lines):
+        line = lines[index].strip()
+        index += 1
         if not line or line.startswith("#"):
             continue
         if line.startswith("export "):
@@ -51,8 +66,27 @@ def parse_env_text(text: str) -> dict[str, str]:
         if not key or not _KEY_RE.match(key):
             continue
         value = value.strip()
+        if value[:1] in {'"', "'"}:
+            quote = value[0]
+            while not _has_closing_quote(value, quote) and index < len(lines):
+                value = f"{value}\n{lines[index]}"
+                index += 1
+            value = value.strip()
         if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            quote = value[0]
             value = value[1:-1]
+            if quote == '"' and "\\" in value:
+                unescaped: list[str] = []
+                i, n = 0, len(value)
+                while i < n:
+                    char = value[i]
+                    if char == "\\" and i + 1 < n and value[i + 1] in ('"', "\\"):
+                        unescaped.append(value[i + 1])
+                        i += 2
+                    else:
+                        unescaped.append(char)
+                        i += 1
+                value = "".join(unescaped)
         out[key] = value
     return out
 

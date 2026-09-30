@@ -16,10 +16,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, replace
 
-from octop.infra.agents.kinds import feature_agent_id_for
+from octop.infra.agents.kinds import feature_agent_id_for, is_feature_agent
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import now_ts
 from octop.infra.db.repos.agents import AgentRepo
+from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.resource_acl import (
     CHANGE_APPLIED,
     CHANGE_PENDING,
@@ -39,6 +40,8 @@ from octop.infra.sharing import (
     impact_scope,
     requires_approval,
 )
+from octop.infra.users.identity import Role
+from octop.infra.users.scope import scope_for
 from octop.infra.utils.ulid import new_ulid
 
 _ADMIN_ROLE = "admin"
@@ -64,6 +67,7 @@ class SharingService:
         self._repo = ResourceAclRepo(db)
         self._users = UserRepo(db)
         self._agents = AgentRepo(db)
+        self._units = OrgUnitRepo(db)
 
     # ------------------------------------------------------------------
     # Change pipeline
@@ -79,11 +83,9 @@ class SharingService:
     ) -> ChangeResult:
         """Apply ``new_entry`` now, or park it for approval when it goes org-wide.
 
-        ``actor`` is the acting user id. Only the resource's owner or an admin
-        may change its access; the owner is never taken from ``new_entry`` for a
-        resource that already has an ACL row (ownership is not a shareable
-        property). A resource with no row yet is treated as private to the entry's
-        owner, so the impact of its first change is classified correctly.
+        ``actor`` is the acting user id. An owner or system administrator may
+        change access; published features additionally belong to their scoped
+        enterprise administrators. Ownership cannot be changed by a share.
         """
         self._require_resource_type(resource_type)
         actor_role = self._role_of(actor)
@@ -99,7 +101,11 @@ class SharingService:
                 unit_key=None,
                 version=0,
             )
-        if actor_role != _ADMIN_ROLE and before.owner_user_id != actor:
+        if (
+            actor_role != _ADMIN_ROLE
+            and before.owner_user_id != actor
+            and not self._manages_published_feature(actor, resource_type, resource_id)
+        ):
             raise OctopError(
                 ErrorCode.FORBIDDEN,
                 f"user {actor} may not change access for {resource_type} {resource_id!r}",
@@ -157,6 +163,8 @@ class SharingService:
             resource_id=change.resource_id,
             version=version,
         )
+        if current is not None:
+            after = replace(after, owner_user_id=current.owner_user_id)
         with self._db.transaction() as conn:
             self._repo.upsert(after, conn=conn)
             self._repo.set_change_status(change_id, CHANGE_APPLIED, to_version=version, conn=conn)
@@ -178,7 +186,18 @@ class SharingService:
         """
         change = self._require_change(change_id)
         actor_role = self._role_of(actor)
-        if actor_role != _ADMIN_ROLE and change.actor_user_id != actor:
+        if actor_role != _ADMIN_ROLE and (
+            (
+                self._is_published_feature(change.resource_type, change.resource_id)
+                and not self._manages_published_feature(
+                    actor, change.resource_type, change.resource_id
+                )
+            )
+            or (
+                not self._is_published_feature(change.resource_type, change.resource_id)
+                and change.actor_user_id != actor
+            )
+        ):
             raise OctopError(
                 ErrorCode.FORBIDDEN,
                 f"user {actor} may not roll back change {change_id!r}",
@@ -198,6 +217,7 @@ class SharingService:
             resource_id=change.resource_id,
             version=version,
         )
+        restored = replace(restored, owner_user_id=current.owner_user_id)
         rollback = AclChangeRow(
             id=new_ulid(),
             resource_type=change.resource_type,
@@ -239,10 +259,36 @@ class SharingService:
         row (or one whose author is gone) resolves to no owner, which only an
         admin may then change.
         """
-        if resource_type != "feature":
-            return requested
-        row = self._agents.get(feature_agent_id_for(resource_id))
-        return None if row is None else row.user_id
+        if resource_type == "feature":
+            row = self._agents.get(feature_agent_id_for(resource_id))
+            return None if row is None else row.user_id
+        if resource_type == "agent":
+            row = self._agents.get(resource_id)
+            if row is not None and is_feature_agent(row.kind):
+                return row.user_id
+        return requested
+
+    def _is_published_feature(self, resource_type: str, resource_id: str) -> bool:
+        if resource_type == "feature":
+            agent_id = feature_agent_id_for(resource_id)
+        elif resource_type == "agent":
+            agent_id = resource_id
+        else:
+            return False
+        row = self._agents.get(agent_id)
+        return (
+            row is not None and is_feature_agent(row.kind) and row.enterprise_unit_key is not None
+        )
+
+    def _manages_published_feature(self, actor: int, resource_type: str, resource_id: str) -> bool:
+        if not self._is_published_feature(resource_type, resource_id):
+            return False
+        user = self._users.get(actor)
+        if user is None or user.role != Role.ENTERPRISE_ADMIN.value:
+            return False
+        agent_id = feature_agent_id_for(resource_id) if resource_type == "feature" else resource_id
+        row = self._agents.get(agent_id)
+        return row is not None and scope_for(user, self._units).covers_unit(row.enterprise_unit_key)
 
     def _require_resource_type(self, resource_type: str) -> None:
         if resource_type not in RESOURCE_TYPES:

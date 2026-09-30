@@ -7,7 +7,7 @@ import ipaddress
 import socket
 import typing
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 from httpcore._backends.auto import AutoBackend
@@ -238,11 +238,17 @@ async def safe_request(
     :func:`validate_https_url_resolved`). The connection is pinned to that IP,
     so a DNS change between validation and connection cannot redirect it.
     """
-    host, _port = _parse_https_host(url)
+    parsed = urlparse(url)
+    host, port = _parse_https_host(url)
     pin_ip = await _resolve_validated_ip(url)
+    # Build the request from the validated host, not the original untrusted URL.
+    authority = f"[{host}]" if ":" in host else host
+    if port is not None:
+        authority = f"{authority}:{port}"
+    request_url = urlunparse(("https", authority, parsed.path or "/", "", parsed.query, ""))
     transport = PinnedIPTransport(host, pin_ip)
     async with httpx.AsyncClient(transport=transport, timeout=timeout) as client:
-        return await client.request(method, url, json=json, data=data, headers=headers)
+        return await client.request(method, request_url, json=json, data=data, headers=headers)
 
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})

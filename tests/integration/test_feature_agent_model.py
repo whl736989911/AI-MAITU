@@ -1,8 +1,7 @@
-"""A feature's own agent, end to end: ownership and shared-file boundaries.
+"""A feature's own agent, workflow stages, and shared/private memory boundaries.
 
-Creating a feature creates one agent owned by its author. That agent serves all
-callers from one workspace, so its profile and memory must stay read-only to
-conversational file tools, while its other configuration remains author-owned.
+The author trains its shared memory, publication freezes that namespace, and
+each caller can write only the caller's own private memory.
 """
 
 from __future__ import annotations
@@ -135,39 +134,201 @@ async def test_a_new_feature_explains_training_before_it_has_a_workflow(
     assert "不要收集个人身份和偏好写入 USER.md" in content
 
 
-async def test_the_author_configures_the_feature_agent_but_not_its_memory(
+async def test_feature_training_memory_and_published_caller_memory(
     env_with_author: tuple[httpx.AsyncClient, OctopServer, Any],
 ) -> None:
-    """The matrix over HTTP: configuration is the author's, memory is nobody's."""
-    client, srv, (_admin_auth, author_auth, author_id, _caller_auth) = env_with_author
+    """Deprecation works in training; publication freezes shared memory without freezing callers."""
+    pytest.importorskip("harness_memory.adapters.bridge.handlers")
+    client, srv, (admin_auth, author_auth, author_id, caller_auth) = env_with_author
     await _create_feature_agent(srv, author_id)
-
-    response = await client.put(
-        f"/api/agents/{AGENT_ID}/tool-settings",
+    base = f"/api/agents/{AGENT_ID}/memory"
+    author_access = await client.get(f"{base}/access", headers=author_auth)
+    assert author_access.status_code == 200, author_access.text
+    assert author_access.json() == {
+        "stage": "draft",
+        "default_scope": "shared",
+        "shared_writable": True,
+        "private_writable": False,
+    }
+    refused_private_draft = await client.post(
+        f"{base}/atoms/list?scope=private",
         headers=author_auth,
-        json={"disabled_builtin": []},
+        json={},
     )
-    assert response.status_code == 200, response.text
-
-    response = await client.put(
-        f"/api/agents/{AGENT_ID}/memory/extract-config",
+    assert refused_private_draft.status_code == 403, refused_private_draft.text
+    trained = await client.post(
+        f"{base}/atoms",
         headers=author_auth,
-        json={"memory_enabled": True},
+        json={
+            "assertion": "训练中的共享知识",
+            "entity_name": "功能",
+            "entity_type": "Fact",
+            "kind": "Fact",
+        },
     )
-    assert response.status_code == 200, response.text
-
-    response = await client.post(
-        f"/api/agents/{AGENT_ID}/memory/candidates/cand-1:promote",
+    assert trained.status_code == 200, trained.text
+    atom_id = trained.json()["atom"]["id"]
+    deprecated = await client.post(
+        f"{base}/atoms/{atom_id}:deprecate",
         headers=author_auth,
+        json={"reason": "训练时修正"},
     )
-    assert response.status_code == 403, response.text
-    assert "never written" in response.json()["error"]["details"]["reason"]
+    assert deprecated.status_code == 200, deprecated.text
+    assert deprecated.json()["status"] == "deprecated"
+    trained = await client.post(
+        f"{base}/atoms",
+        headers=author_auth,
+        json={
+            "assertion": "发布后的共享知识",
+            "entity_name": "功能",
+            "entity_type": "Fact",
+            "kind": "Fact",
+        },
+    )
+    assert trained.status_code == 200, trained.text
+    workspace_file = f"/api/agents/{AGENT_ID}/workspace/file"
+    trained_file = await client.put(
+        workspace_file,
+        headers=author_auth,
+        params={"path": "MEMORY.md", "from_workspace": True},
+        json={"content": "训练时的人设共享记忆"},
+    )
+    assert trained_file.status_code == 200, trained_file.text
+
+    caller_id = await resolve_user_id(client, admin_auth, "feature_caller")
+    granted = await client.post(
+        f"/api/sharing/acl/feature/{FEATURE_ID}",
+        headers=admin_auth,
+        json={
+            "visibility": "private",
+            "grants": [{"grantee_type": "user", "grantee_id": str(caller_id)}],
+        },
+    )
+    assert granted.status_code == 200, granted.text
+    assert (await client.get(f"{base}/access", headers=caller_auth)).status_code == 403
+    assert (await client.get(f"{base}/daily", headers=caller_auth)).status_code == 403
+
+    active = {
+        "version": 1,
+        "status": "active",
+        "inputs": {
+            "type": "object",
+            "required": ["subject"],
+            "properties": {"subject": {"type": "string", "title": {"zh": "主题", "en": "Subject"}}},
+        },
+        "steps": [{"id": "summarize", "name": "整理", "prompt": "整理主题"}],
+        "outputs": [{"name": "总结", "form": "markdown"}],
+        "rules": [],
+    }
+    published = await client.put(
+        f"/api/agents/{AGENT_ID}/workflow",
+        headers=author_auth,
+        json={"workflow": active},
+    )
+    assert published.status_code == 200, published.text
+    access = await client.get(f"{base}/access", headers=caller_auth)
+    assert access.status_code == 200, access.text
+    assert access.json() == {
+        "stage": "active",
+        "default_scope": "private",
+        "shared_writable": False,
+        "private_writable": True,
+    }
+    instruction = "只用公制单位"
+    overlay_path = f"/api/agents/{AGENT_ID}/workflow/overlay"
+    saved_instruction = await client.put(
+        overlay_path, headers=caller_auth, json={"overlay": instruction}
+    )
+    assert saved_instruction.status_code == 200, saved_instruction.text
+    assert saved_instruction.json()["overlay"] == instruction
+    shared = await client.post(
+        f"{base}/atoms/list?scope=shared",
+        headers=caller_auth,
+        json={},
+    )
+    assert shared.status_code == 200, shared.text
+    assert [item["assertion"] for item in shared.json()["items"]] == ["发布后的共享知识"]
+    caller_daily = await client.get(f"{base}/daily", headers=caller_auth)
+    assert caller_daily.status_code == 200, caller_daily.text
+    shared_file = await client.get(
+        workspace_file,
+        headers=caller_auth,
+        params={"path": "MEMORY.md", "from_workspace": True},
+    )
+    assert shared_file.status_code == 200, shared_file.text
+    assert shared_file.json()["content"] == "训练时的人设共享记忆"
+    frozen_file = await client.put(
+        workspace_file,
+        headers=author_auth,
+        params={"path": "MEMORY.md", "from_workspace": True},
+        json={"content": "不得改写"},
+    )
+    assert frozen_file.status_code == 403, frozen_file.text
+    frozen_wal = await client.put(
+        workspace_file,
+        headers=author_auth,
+        params={"path": ".octop/memory.sqlite-wal", "from_workspace": True},
+        json={"content": "不得改写数据库"},
+    )
+    assert frozen_wal.status_code == 403, frozen_wal.text
+    for headers in (author_auth, admin_auth, caller_auth):
+        refused = await client.post(
+            f"{base}/atoms?scope=shared",
+            headers=headers,
+            json={"assertion": "不得修改", "entity_name": "功能"},
+        )
+        assert refused.status_code == 403, refused.text
+    personal = await client.post(
+        f"{base}/atoms",
+        headers=caller_auth,
+        json={
+            "assertion": "只属于调用者",
+            "entity_name": "我",
+            "entity_type": "User",
+            "kind": "Preference",
+        },
+    )
+    assert personal.status_code == 200, personal.text
+    mine = await client.post(f"{base}/atoms/list", headers=caller_auth, json={})
+    assert [item["assertion"] for item in mine.json()["items"]] == ["只属于调用者"]
+    author_private = await client.post(f"{base}/atoms/list", headers=author_auth, json={})
+    assert author_private.status_code == 200, author_private.text
+    assert author_private.json()["items"] == []
+    shared_after = await client.post(
+        f"{base}/atoms/list?scope=shared", headers=caller_auth, json={}
+    )
+    assert [item["assertion"] for item in shared_after.json()["items"]] == ["发布后的共享知识"]
+    deprecated_private = await client.post(
+        f"{base}/atoms/{personal.json()['atom']['id']}:deprecate",
+        headers=caller_auth,
+        json={"reason": "私人记忆已过期"},
+    )
+    assert deprecated_private.status_code == 200, deprecated_private.text
+    assert deprecated_private.json()["status"] == "deprecated"
+    assert (
+        await client.post(
+            f"{base}/atoms/list?scope=shared",
+            headers=caller_auth,
+            json={},
+        )
+    ).json()["items"][0]["assertion"] == "发布后的共享知识"
+    own_instruction = await client.get(overlay_path, headers=caller_auth)
+    assert own_instruction.status_code == 200, own_instruction.text
+    assert own_instruction.json()["overlay"] == instruction
+    assert (await client.get(overlay_path, headers=author_auth)).json()["overlay"] is None
+    assert (
+        await client.post(
+            f"{base}/atoms/list?scope=private&as_user={caller_id}",
+            headers=admin_auth,
+            json={},
+        )
+    ).status_code == 403
 
 
 async def test_a_caller_reaches_a_feature_agent_but_writes_none_of_it(
     env_with_author: tuple[httpx.AsyncClient, OctopServer, Any],
 ) -> None:
-    """A published feature agent is readable; every write is refused with the reason."""
+    """A caller can read a published feature but cannot change its tool settings."""
     client, srv, (_admin_auth, _author_auth, author_id, caller_auth) = env_with_author
     await _create_feature_agent(srv, author_id)
     assert srv.app_runtime is not None
@@ -181,7 +342,6 @@ async def test_a_caller_reaches_a_feature_agent_but_writes_none_of_it(
         json={"disabled_builtin": []},
     )
     assert response.status_code == 403, response.text
-    assert "read-only" in response.json()["error"]["details"]["reason"]
 
 
 async def test_a_feature_id_that_cannot_name_an_agent_says_so(

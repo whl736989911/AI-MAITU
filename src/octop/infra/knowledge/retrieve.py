@@ -109,8 +109,20 @@ def _retrieve_context_sync(
         # fused by rank because their scores share no scale. Either may be
         # empty — a query with nothing searchable in it, or a deployment whose
         # embedding backend is down — and the other one still answers.
-        vectors = index.search(query_vectors[0], k=k) if query_vectors else []
-        lexical = rank_hits(index.search_text(terms), terms, phrase) if terms else []
+        vectors = (
+            index.search(query_vectors[0], k=k, allowed_doc_ids=list(ready_documents))
+            if query_vectors
+            else []
+        )
+        lexical = (
+            rank_hits(
+                index.search_text(terms, allowed_doc_ids=list(ready_documents)),
+                terms,
+                phrase,
+            )
+            if terms
+            else []
+        )
         for hit in fuse_rankings([vectors, lexical]):
             document = ready_documents.get(hit.doc_id)
             if document is not None:

@@ -10,6 +10,15 @@ from pydantic import BaseModel, Field, field_validator
 _DECISION_TYPES: frozenset[str] = frozenset({"approve", "edit", "reject", "respond"})
 # One decision per interrupted tool call; the model cannot fan out further.
 _MAX_DECISIONS = 16
+
+
+class HitlSessionPolicyBody(BaseModel):
+    """Thread-scoped approval bypass, bounded independently of global security policy."""
+
+    mode: Literal["ask", "allow_all", "allow_tools"] = "ask"
+    tools: list[str] = Field(default_factory=list, max_length=64)
+
+
 _MAX_DECISION_MESSAGE_CHARS = 8000
 
 
@@ -66,6 +75,12 @@ class ChatTurnBody(BaseModel):
     )
     reasoning_mode: Literal["auto", "enabled", "disabled"] | None = None
     reasoning_effort: str | None = None
+    conversation_mode: Literal["ask", "plan", "craft"] | None = Field(
+        default=None, description="Sticky Ask, Plan, or Craft mode for this thread."
+    )
+    hitl_policy: HitlSessionPolicyBody | None = Field(
+        default=None, description="Thread-scoped approval policy; does not change global HITL."
+    )
     target_agent_ids: list[str] | None = Field(
         default=None,
         description="Optional agent ids to involve via @mention (same user only).",
@@ -123,6 +138,12 @@ class ChatTurnBody(BaseModel):
             feature_run=payload.get("feature_run")
             if isinstance(payload.get("feature_run"), dict)
             else None,
+            conversation_mode=payload.get("conversation_mode")
+            if payload.get("conversation_mode") in ("ask", "plan", "craft")
+            else None,
+            hitl_policy=HitlSessionPolicyBody.model_validate(payload["hitl_policy"])
+            if isinstance(payload.get("hitl_policy"), dict)
+            else None,
         )
 
 
@@ -143,6 +164,8 @@ class UserTurnWsFrame(BaseModel):
     messages: list[dict[str, Any]] | None = None
     target_agent_ids: list[str] | None = None
     feature_run: FeatureRunBody | None = None
+    conversation_mode: Literal["ask", "plan", "craft"] | None = None
+    hitl_policy: HitlSessionPolicyBody | None = None
 
     def to_turn_body(self) -> ChatTurnBody:
         return ChatTurnBody.from_ws_payload(self.model_dump(exclude_none=True))
@@ -179,6 +202,8 @@ class RenameThreadBody(BaseModel):
     model_ref: str | None = None
     reasoning_mode: Literal["auto", "enabled", "disabled"] | None = None
     reasoning_effort: str | None = None
+    conversation_mode: Literal["ask", "plan", "craft"] | None = None
+    hitl_policy: HitlSessionPolicyBody | None = None
 
 
 class HitlResumeBody(BaseModel):
@@ -192,6 +217,9 @@ class HitlResumeBody(BaseModel):
             '[{"type": "reject", "message": "..."}] or '
             '[{"type": "respond", "message": "<answer>"}].'
         ),
+    )
+    hitl_policy: HitlSessionPolicyBody | None = Field(
+        default=None, description="Optional thread-scoped approval policy applied before resume."
     )
 
     @field_validator("decisions")

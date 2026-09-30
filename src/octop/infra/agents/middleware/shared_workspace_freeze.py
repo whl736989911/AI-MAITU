@@ -5,6 +5,17 @@ The feature's workspace is the same for every caller. Its root ``USER.md`` and
 preferences there exposes them to the next. Expert workspaces are private and
 keep their normal write behavior.
 
+The one exception is manual training: while the feature's workflow is a *draft*,
+the turn path stamps the verified author's turns as shared-writable, and those
+turns may edit the shared root files with file tools — that is what building the
+feature's memory means. An IM turn is never verified (its user id falls back to
+the agent owner), so it can never unlock the files. Once the workflow is
+*active* the files freeze for everyone, authors included. None of this touches
+structured memory: conversational capture never targets shared in any stage.
+The decision rides the per-turn feature-memory context; a turn that carries
+none is refused (fail-closed), so an unstamped path can never write the
+shared files.
+
 This guard covers harness file tools, like the existing memory freeze. Shell
 access is outside the harness filesystem guard's scope.
 """
@@ -22,6 +33,7 @@ from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
 from octop.infra.agents.kinds import is_feature_agent
+from octop.infra.agents.middleware.feature_memory import turn_feature_memory_context
 
 logger = logging.getLogger(__name__)
 
@@ -54,8 +66,25 @@ def _shared_file_name(path: str) -> str | None:
     return _SHARED_FILES.get(normalized.lstrip("/").casefold())
 
 
-def frozen_shared_file_refusal(tool_name: str, params: Mapping[str, Any]) -> str | None:
-    """Explain a blocked write to the feature's shared root profile or memory."""
+def frozen_shared_file_refusal(
+    tool_name: str,
+    params: Mapping[str, Any],
+    *,
+    shared_writable: bool | None = None,
+) -> str | None:
+    """Explain a blocked write to the feature's shared root profile or memory.
+
+    ``shared_writable`` comes from the turn's feature-memory context: a
+    verified draft author's turn is allowed through (manual training only),
+    and ``None`` (no context on the turn) fails closed like ``False``.
+    """
+    if shared_writable is None:
+        shared_writable = False
+        ctx = turn_feature_memory_context()
+        if ctx is not None:
+            shared_writable = ctx.shared_writable
+    if shared_writable:
+        return None
     if _tool_base_name(tool_name) not in _WRITE_TOOLS:
         return None
     file_name = _shared_file_name(_written_path(params))

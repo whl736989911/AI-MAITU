@@ -239,6 +239,7 @@ export interface StreamEvent {
 export type SlashActionEvent = {
   action: string;
   agent_id?: string;
+  mode?: "ask" | "plan" | "craft";
   sessionId?: string;
 };
 type ToolEventListener = (event: ToolEvent) => void;
@@ -982,6 +983,12 @@ function handleHarnessChunk(
       emitSlashAction({
         action: chunk.action,
         agent_id: chunk.agent_id,
+        mode:
+          chunk.mode === "ask" ||
+          chunk.mode === "plan" ||
+          chunk.mode === "craft"
+            ? chunk.mode
+            : undefined,
         sessionId,
       });
       break;
@@ -1856,6 +1863,7 @@ async function sendTurnWebSocket(
   reasoningMode?: "auto" | "enabled" | "disabled",
   reasoningEffort?: string | null,
   featureRun?: FeatureRunPayload,
+  conversationMode?: "ask" | "plan" | "craft",
 ): Promise<boolean> {
   const state = getOrCreate(sessionId);
   const resolvedThreadId = (threadId || sessionId).trim();
@@ -1933,6 +1941,7 @@ async function sendTurnWebSocket(
       }
       if (reasoningMode) payload.reasoning_mode = reasoningMode;
       if (reasoningEffort) payload.reasoning_effort = reasoningEffort;
+      if (conversationMode) payload.conversation_mode = conversationMode;
       // A submitted run of a feature's workflow: the frame's own typed field, which
       // the server copies onto the turn's inbound metadata (``octop_feature_run``)
       // for the processor to read — the run is recorded and its values are injected
@@ -2063,6 +2072,7 @@ export async function sendTurn(
   reasoningMode?: "auto" | "enabled" | "disabled",
   reasoningEffort?: string | null,
   featureRun?: FeatureRunPayload,
+  conversationMode?: "ask" | "plan" | "craft",
 ): Promise<void> {
   const state = getOrCreate(sessionId);
 
@@ -2135,6 +2145,7 @@ export async function sendTurn(
     reasoningMode,
     reasoningEffort,
     featureRun,
+    conversationMode,
   );
   if (!wsOk) {
     state.messages = [

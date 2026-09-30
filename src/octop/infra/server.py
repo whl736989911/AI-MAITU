@@ -452,6 +452,9 @@ class OctopServer:
 
         registry.set_cron_manager(cron_mgr)
         registry.set_team_processor(gateway.processor)
+        hitl_session_store = gateway.processor.hitl_coordinator.session_policies
+        hitl_session_store.replace_repo(self.services.repos.thread_repo)
+        registry.set_hitl_session_store(hitl_session_store)
 
         care_service = ProactiveCareService(
             gateway=gateway,

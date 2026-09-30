@@ -396,3 +396,40 @@ async def test_slash_outcome_completed_turn() -> None:
     ):
         pass
     assert outcome.completed_turn is True
+
+
+def test_expire_pending_for_thread_is_scoped_to_agent_and_user() -> None:
+    store = HitlPendingStore()
+    target = store.register(
+        thread_id="thr1",
+        agent_id="agent1",
+        user_id=7,
+        session_key="sk1",
+        channel_type="dashboard",
+        action_requests=[{"name": "execute", "args": {}}],
+        review_configs=None,
+    )
+    other_user = store.register(
+        thread_id="thr1",
+        agent_id="agent1",
+        user_id=8,
+        session_key="sk2",
+        channel_type="dashboard",
+        action_requests=[{"name": "execute", "args": {}}],
+        review_configs=None,
+    )
+    other_agent = store.register(
+        thread_id="thr1",
+        agent_id="agent2",
+        user_id=7,
+        session_key="sk3",
+        channel_type="dashboard",
+        action_requests=[{"name": "execute", "args": {}}],
+        review_configs=None,
+    )
+
+    store.expire_pending_for_thread("thr1", agent_id="agent1", user_id=7)
+
+    assert store.get(target.pending_id).status == "expired"  # type: ignore[union-attr]
+    assert store.get(other_user.pending_id).status == "pending"  # type: ignore[union-attr]
+    assert store.get(other_agent.pending_id).status == "pending"  # type: ignore[union-attr]

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
 from typing import Any
+from urllib.parse import urlparse
 
 # LocalServiceCard creates the ONNX provider with ``api_key=preset.id`` ("onnx").
 _ONNX_PRESET_API_KEY = "onnx"
@@ -11,6 +13,11 @@ _ONNX_PRESET_NAMES = frozenset({"onnx", "onnx (local)"})
 # Same pattern for Ollama (placeholder api_key + exact preset names).
 _OLLAMA_PRESET_API_KEY = "ollama"
 _OLLAMA_PRESET_NAMES = frozenset({"ollama", "ollama (local)"})
+
+_LOCAL_OLLAMA_HOSTNAMES = frozenset(
+    {"localhost", "ollama", "host.docker.internal", "gateway.docker.internal"}
+)
+_LOCAL_OLLAMA_HOST_SUFFIXES = (".local", ".localhost", ".internal")
 
 
 def is_onnx_local_provider(
@@ -28,6 +35,28 @@ def is_onnx_local_provider(
     if not provider_name:
         return False
     return provider_name.strip().lower() in _ONNX_PRESET_NAMES
+
+
+def _is_local_ollama_url(url: str) -> bool:
+    """Return whether a URL identifies a local Ollama runtime."""
+    value = (url or "").strip().lower()
+    if not value:
+        return False
+    try:
+        parsed = urlparse(value if "://" in value else f"//{value}")
+        host = (parsed.hostname or "").lower()
+        port = parsed.port
+    except ValueError:
+        return False
+    if port == 11434:
+        return True
+    if host in _LOCAL_OLLAMA_HOSTNAMES or host.endswith(_LOCAL_OLLAMA_HOST_SUFFIXES):
+        return True
+    try:
+        address = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    return address.is_loopback or address.is_private or address.is_link_local
 
 
 def is_ollama_local_provider(
@@ -48,8 +77,7 @@ def is_ollama_local_provider(
         return True
     if provider_name and provider_name.strip().lower() in _OLLAMA_PRESET_NAMES:
         return True
-    url = (provider_base_url or "").strip().lower()
-    return "11434" in url or "ollama" in url
+    return _is_local_ollama_url(provider_base_url or "")
 
 
 def is_local_runtime_provider(

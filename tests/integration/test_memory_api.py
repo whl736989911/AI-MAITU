@@ -26,11 +26,8 @@ import pytest
 # this whole file silently skip).
 pytest.importorskip("harness_memory.adapters.bridge.handlers")
 
-from octop.api.common.memory_client import (
-    invalidate_cached_memory,
-    memory_db_path_for_cfg,
-    memory_namespace,
-)
+from octop.api.common.memory_client import invalidate_cached_memory, memory_db_path_for_cfg
+from octop.infra.agents.memory_backend import memory_namespace
 
 
 def _now() -> datetime:

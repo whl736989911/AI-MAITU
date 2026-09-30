@@ -129,6 +129,46 @@ export function supportsHostSkillPackagesFromConfig(
   });
 }
 
+/**
+ * Outbound ACP runners execute outside the agent's storage isolation boundary.
+ * Host root and the agent workspace root are safe; scoped roots and non-local
+ * backends must not enable external runners.
+ */
+export function blocksAcpOutbound(options: {
+  backendChoice: string;
+  rootDir?: string | null;
+  workspaceDir?: string | null;
+}): boolean {
+  if (
+    options.backendChoice !== "local_shell" &&
+    options.backendChoice !== "filesystem"
+  ) {
+    return true;
+  }
+  if (isHostRootDir(options.rootDir)) return false;
+  const root = normalizeRootDir(options.rootDir);
+  const workspace = normalizeRootDir(options.workspaceDir);
+  return !(
+    options.workspaceDir?.trim() &&
+    workspace !== "/" &&
+    root === workspace
+  );
+}
+
+export function blocksAcpOutboundFromConfig(
+  config: Record<string, unknown> | null | undefined,
+  workspaceDir?: string | null,
+): boolean {
+  const parsed = parseBackendSpec(config?.backend);
+  const configuredWorkspace =
+    typeof config?.workspace_dir === "string" ? config.workspace_dir : null;
+  return blocksAcpOutbound({
+    backendChoice: parsed.backendChoice,
+    rootDir: parsed.rootDir,
+    workspaceDir: workspaceDir ?? configuredWorkspace,
+  });
+}
+
 export function shouldProbeRootDir(choice: string, rootDir?: string): boolean {
   if (!needsRootDirProbe(choice)) return false;
   return !isHostRootDir(rootDir);

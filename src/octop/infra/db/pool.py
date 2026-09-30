@@ -59,7 +59,9 @@ class SqlitePool:
     @contextmanager
     def transaction(self) -> Iterator[sqlite3.Connection]:
         with self._lock:
-            self._conn.execute("BEGIN")
+            # Lock at transaction start so another process cannot commit between
+            # a read and the later write (which would invalidate a WAL snapshot).
+            self._conn.execute("BEGIN IMMEDIATE")
             try:
                 yield self._conn
                 self._conn.execute("COMMIT")

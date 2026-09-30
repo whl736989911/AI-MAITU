@@ -4,8 +4,42 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import httpx
+
 from octop.config import OctopConfig, TlsConfig
 from octop.infra.setup.tls.preflight import run_preflight
+
+
+def test_public_ip_probe_skips_unusable_endpoints(monkeypatch):
+    from octop.infra.setup.tls import preflight
+
+    seen = []
+    original_client = httpx.Client
+
+    def respond(request):
+        seen.append(str(request.url))
+        if request.url.path == "/private":
+            return httpx.Response(200, text="10.0.0.2")
+        if request.url.path == "/redirect":
+            return httpx.Response(302, headers={"location": "http://127.0.0.1/"})
+        return httpx.Response(200, text="address: 1.1.1.1")
+
+    monkeypatch.setattr(
+        preflight.httpx,
+        "Client",
+        lambda **kwargs: original_client(
+            transport=httpx.MockTransport(respond),
+            timeout=kwargs["timeout"],
+            follow_redirects=kwargs["follow_redirects"],
+        ),
+    )
+    urls = (
+        "https://example.com/private",
+        "https://example.com/redirect",
+        "https://example.com/public",
+    )
+    assert preflight._fetch_public_ip_from_urls(urls, timeout=1) == "1.1.1.1"
+    assert seen == list(urls)
 
 
 def test_preflight_requires_domain():

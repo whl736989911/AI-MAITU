@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ipaddress
+import logging
+import re
 import socket
 from dataclasses import dataclass
 from typing import Any
@@ -13,6 +16,23 @@ from octop.i18n.domains.tls import preflight_message
 from octop.infra.setup.tls.listeners import TLS_HTTP_PORT, TLS_HTTPS_PORT
 from octop.infra.setup.tls.modes import is_renewal_mode, normalize_domain
 from octop.infra.utils.locale import normalize_locale
+
+logger = logging.getLogger(__name__)
+
+_METADATA_PUBLIC_IP_URLS = (
+    "http://metadata.tencentyun.com/latest/meta-data/public-ipv4",
+    "http://100.100.100.200/latest/meta-data/eipv4",
+)
+_PUBLIC_IP_HTTPS_URLS = (
+    "https://4.ipw.cn/",
+    "https://api.ip.sb/ip",
+    "https://ifconfig.me/ip",
+    "https://icanhazip.com",
+    "https://api.ipify.org?format=text",
+)
+_IPV4_RE = re.compile(
+    r"\b(?:(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\.){3}(?:25[0-5]|2[0-4]\d|[01]?\d\d?)\b"
+)
 
 
 @dataclass(frozen=True)
@@ -58,15 +78,33 @@ def _resolve_domain_ips(domain: str) -> set[str]:
     return ips
 
 
-def _fetch_public_ip(timeout: float = 8.0) -> str | None:
-    try:
-        with httpx.Client(timeout=timeout) as client:
-            r = client.get("https://api.ipify.org?format=text")
-            r.raise_for_status()
-            ip = r.text.strip()
-            return ip if ip else None
-    except httpx.HTTPError:
-        return None
+def _parse_public_ipv4(text: str) -> str | None:
+    """Extract only a globally routable IPv4 address from a probe response."""
+    for candidate in _IPV4_RE.findall(text):
+        if ipaddress.ip_address(candidate).is_global:
+            return str(candidate)
+    return None
+
+
+def _fetch_public_ip_from_urls(urls: tuple[str, ...], *, timeout: float) -> str | None:
+    for url in urls:
+        try:
+            with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+                response = client.get(url)
+                response.raise_for_status()
+                ip = _parse_public_ipv4(response.text)
+                if ip:
+                    return ip
+        except httpx.HTTPError as exc:
+            logger.debug("public IP probe failed for %s: %s", url, exc)
+    return None
+
+
+def _fetch_public_ip(timeout: float = 4.0) -> str | None:
+    """Try cloud metadata first, then multiple HTTPS public-IP services."""
+    return _fetch_public_ip_from_urls(
+        _METADATA_PUBLIC_IP_URLS, timeout=min(timeout, 1.5)
+    ) or _fetch_public_ip_from_urls(_PUBLIC_IP_HTTPS_URLS, timeout=timeout)
 
 
 def run_preflight(domain: str, config: OctopConfig, *, locale: str = "en") -> PreflightResult:

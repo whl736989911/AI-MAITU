@@ -52,6 +52,7 @@ def build_cli_inbound(
     cli_connection_id: str,
     model: str | None = None,
     user_is_admin: bool = False,
+    conversation_mode: str | None = None,
 ) -> InboundMessage:
     metadata: dict[str, Any] = {
         CLI_CONNECTION_META: cli_connection_id,
@@ -61,6 +62,8 @@ def build_cli_inbound(
     }
     if model:
         metadata["model"] = model
+    if conversation_mode in ("ask", "plan", "craft"):
+        metadata["conversation_mode"] = conversation_mode
     return InboundMessage(
         channel_id=CLI_CHANNEL_ID,
         channel_type=ThreadRegistry.CHANNEL_CLI,

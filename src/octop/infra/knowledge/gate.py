@@ -82,7 +82,7 @@ def get_capability(settings_get: SettingsGet, provider_repo: Any = None) -> dict
         "backend": backend,
         "provider_id": provider_id,
         "prerequisites_ok": prerequisites_ok,
-        "usable": feature_enabled and prerequisites_ok,
+        "usable": feature_enabled,
         "checks": {
             "model_selected": bool(selected_model),
             "model_downloaded": model_downloaded,
@@ -103,7 +103,7 @@ def set_feature_enabled(
     provider_id: str | None = None,
     provider_repo: Any = None,
 ) -> None:
-    """Enable only after model-specific prerequisites pass."""
+    """Enable lexical knowledge search; validate an embedding model if selected."""
     if not enabled:
         settings_set(_FEATURE_ENABLED_KEY, "false")
         if model is not None:
@@ -117,17 +117,16 @@ def set_feature_enabled(
     if selected_backend not in {"onnx", "remote"}:
         raise ValueError("knowledge embedding backend must be onnx or remote")
     selected_model = (model or "").strip()
-    if not selected_model:
-        raise ValueError("enabling knowledge bases requires an embedding model")
-    if selected_backend == "remote":
+    selected_provider_id = ""
+    verified_model = ""
+    if selected_model and selected_backend == "remote":
         selected_provider_id = (provider_id or "").strip()
         if not _remote_ready(
             _provider_for_settings(provider_repo, selected_provider_id), selected_model
         ):
             raise ValueError("knowledge remote embedding provider is not ready")
         verified_model = selected_model
-    else:
-        selected_provider_id = ""
+    elif selected_model:
         verified_model = require_embedding_prerequisites_for_model(selected_model)
     settings_set(_EMBEDDING_BACKEND_KEY, selected_backend)
     settings_set(_EMBEDDING_MODEL_KEY, verified_model)
@@ -136,9 +135,13 @@ def set_feature_enabled(
 
 
 def assert_knowledge_usable(settings_get: SettingsGet, provider_repo: Any = None) -> None:
-    """Raise a distinguishable runtime error when the capability cannot be used."""
-    capability = get_capability(settings_get, provider_repo)
-    if not capability["feature_enabled"]:
+    """Require the feature, without requiring optional embeddings."""
+    if not _as_bool(settings_get(_FEATURE_ENABLED_KEY)):
         raise RuntimeError("knowledge feature is disabled")
-    if not capability["prerequisites_ok"]:
+
+
+def assert_embedding_usable(settings_get: SettingsGet, provider_repo: Any = None) -> None:
+    """Require a usable embedding model only for optional semantic indexing."""
+    capability = get_capability(settings_get, provider_repo)
+    if not capability["selected_model"] or not capability["prerequisites_ok"]:
         raise RuntimeError("knowledge embedding prerequisites are not satisfied")

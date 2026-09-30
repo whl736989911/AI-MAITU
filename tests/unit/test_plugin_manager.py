@@ -14,6 +14,7 @@ from harness_agent.plugins import PluginRegistry
 from octop.infra.agents.plugins.manager import (
     PluginManager,
     normalize_plugin_download_url,
+    parse_plugin_group,
     parse_plugin_icon,
     parse_plugin_ui_meta,
 )
@@ -289,6 +290,49 @@ def test_parse_plugin_icon(tmp_path: Path) -> None:
     )
     assert parse_plugin_icon(plugin_dir) == "🧩"
     assert parse_plugin_icon(tmp_path / "missing") is None
+
+
+def test_relative_icon_group_and_market_asset_resolution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from octop.infra.agents.plugins import bundled as bundled_plugins
+
+    market = tmp_path / "bundled"
+    plugin_dir = market / "with-icon"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "icon.svg").write_text("<svg/>", encoding="utf-8")
+    (plugin_dir / "plugin.yaml").write_text(
+        "\n".join(
+            [
+                "id: with-icon",
+                "version: 0.1.0",
+                "name: With Icon",
+                "kind: tool",
+                "entry: main.py",
+                "group: Some_Group",
+                "icon: icon.svg",
+            ],
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bundled_plugins, "default_bundled_plugins_root", lambda: market)
+
+    assert parse_plugin_group(plugin_dir) == "some-group"
+    assert parse_plugin_icon(plugin_dir) == "/api/plugins/with-icon/ui/icon.svg"
+    assert (
+        parse_plugin_icon(
+            plugin_dir,
+            asset_prefix="/api/plugins/market/with-icon/ui",
+        )
+        == "/api/plugins/market/with-icon/ui/icon.svg"
+    )
+
+    mgr = PluginManager(plugins_dir=tmp_path / "installed", config_path=tmp_path / "config.json")
+    assert mgr.resolve_market_ui_file("with-icon", "icon.svg") == plugin_dir / "icon.svg"
+    with pytest.raises(OctopError) as excinfo:
+        mgr.resolve_market_ui_file("with-icon", "../plugin.yaml")
+    assert excinfo.value.code is ErrorCode.NOT_FOUND
 
 
 def test_set_enabled_refuses_corrupt_config_and_preserves_bytes(tmp_path: Path) -> None:

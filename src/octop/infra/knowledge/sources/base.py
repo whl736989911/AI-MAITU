@@ -14,6 +14,7 @@ share and a POSIX folder from producing two different indexes for one tree.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol
 
 
@@ -68,6 +69,10 @@ class SourceConnector(Protocol):
 
     def read_bytes(self, path: str) -> bytes:
         """The full contents of one file, addressed relative to the root."""
+        ...
+
+    def copy_to(self, path: str, destination: Path) -> None:
+        """Stream one source file into a temporary parser input without loading it whole."""
         ...
 
     def test(self) -> str:

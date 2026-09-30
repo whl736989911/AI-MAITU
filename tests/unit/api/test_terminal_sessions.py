@@ -200,7 +200,9 @@ class _FakeWS:
 
 
 def _make_server(*, has_agent: bool = True) -> tuple[object, Mock]:
-    get_row = Mock(return_value=SimpleNamespace(name="bot", user_id=1) if has_agent else None)
+    get_row = Mock(
+        return_value=SimpleNamespace(name="bot", kind="agent", user_id=1) if has_agent else None
+    )
     server = SimpleNamespace(
         app_runtime=SimpleNamespace(agent_registry=SimpleNamespace(get_row=get_row)),
         services=SimpleNamespace(

@@ -59,9 +59,7 @@ export default function AgentNotReadyScreen({
             <Button
               type="primary"
               size="large"
-              onClick={() =>
-                navigate(emptyAgentAccessPath(emptyStateVariant))
-              }
+              onClick={() => navigate(emptyAgentAccessPath(emptyStateVariant))}
             >
               {t(`chat.noAgents${emptyStateKey}Action`)}
             </Button>
@@ -124,16 +122,14 @@ export default function AgentNotReadyScreen({
           ) : emptyStateVariant === "none" ? null : (
             <Button
               type="primary"
-              onClick={() =>
-                navigate(emptyAgentAccessPath(emptyStateVariant))
-              }
+              onClick={() => navigate(emptyAgentAccessPath(emptyStateVariant))}
             >
               {t(
                 emptyStateVariant === "features"
                   ? "chat.goToFeatures"
                   : emptyStateVariant === "both"
-                    ? "chat.goToAgents"
-                    : "chat.goToExperts",
+                  ? "chat.goToAgents"
+                  : "chat.goToExperts",
               )}
             </Button>
           )

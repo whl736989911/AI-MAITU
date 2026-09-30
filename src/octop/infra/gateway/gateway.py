@@ -175,6 +175,7 @@ class Gateway:
         )
         if self._processor is not None:
             self._processor.replace_thread_message_repo(repos.thread_message_repo)
+            self._processor.hitl_coordinator.session_policies.replace_repo(repos.thread_repo)
 
     @property
     def ws_hub(self) -> WebSocketHub:
@@ -222,6 +223,21 @@ class Gateway:
         return self._thread_registry
 
     def get_runtime_status(self, channel_id: str) -> ChannelRuntimeStatus | None:
+        status = self._runtime_status.get(channel_id)
+        if status is None or status.reason in ("disabled", "unregistered"):
+            return status
+        channel = self._channel_manager.get_channel(channel_id) if self._channel_manager else None
+        connected = getattr(channel, "is_connected", None)
+        if isinstance(connected, bool):
+            detail = getattr(channel, "runtime_error", None)
+            detail = detail if isinstance(detail, str) else None
+            if connected != status.connected or detail != status.detail:
+                self._set_runtime_status(
+                    channel_id,
+                    connected=connected,
+                    reason=None if connected else "error",
+                    detail=detail,
+                )
         return self._runtime_status.get(channel_id)
 
     def runtime_status_to_dict(
@@ -234,7 +250,8 @@ class Gateway:
         if status.reason is not None:
             error = channel_runtime_reason(status.reason, locale)
             if status.detail:
-                error = f"{error}: {status.detail}"
+                detail = self._format_probe_error(RuntimeError(status.detail), locale)
+                error = f"{error}: {detail}"
         return {
             "connected": status.connected,
             "error": error,
@@ -249,6 +266,7 @@ class Gateway:
             agent_repo=self._repos.agent_repo,
             user_repo=self._repos.user_repo,
             connector_repo=self._repos.connector_repo,
+            channel_repo=self._repos.channel_repo,
             knowledge_repo=self._repos.knowledge_repo,
             settings_repo=self._repos.settings_repo,
             provider_repo=self._repos.provider_repo,
@@ -649,6 +667,15 @@ class Gateway:
     @staticmethod
     def _format_probe_error(exc: Exception, locale: Locale) -> str:
         msg = str(exc)
+        if msg in {
+            "discord_invalid_token",
+            "discord_intents_required",
+            "discord_connect_timeout",
+            "discord_connection_failed",
+            "discord_disconnected",
+            "discord_proxy_auth_invalid",
+        }:
+            return tr(f"channel.probe.{msg}", locale)
         lower = msg.lower()
         if "invalid appid or secret" in lower or "100016" in msg:
             return tr("channel.probe.invalid_credentials", locale)

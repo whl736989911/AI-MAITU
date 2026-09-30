@@ -90,7 +90,6 @@ export default function MainLayout() {
     persistNavCollapsed(!collapsed);
   }, [collapsed, persistNavCollapsed]);
 
-
   // When switching to mobile, always collapse; restore saved preference on desktop
   useEffect(() => {
     if (isMobile) {

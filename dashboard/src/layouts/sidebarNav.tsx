@@ -90,10 +90,8 @@ export function buildNavSections(
       labelKey: "nav.chat",
     },
   ];
-  // The two module surfaces (design §5.2). Both keys are baseline, so this
-  // hides them only from an account an administrator took the key from — which
-  // is the point: the nav entry and the route behind it answer to the same key,
-  // and `pathPermissionKeys` refuses the URL for exactly the same accounts.
+  // Module visibility follows the same keys as route guards. Teams is
+  // independently gated and additionally requires Experts.
   if (navAllowed(user, "features")) {
     primaryItems.push({
       key: "features",
@@ -108,6 +106,14 @@ export function buildNavSections(
       path: "/experts",
       icon: <GraduationCap size={iconSize} strokeWidth={iconStroke} />,
       labelKey: "nav.experts",
+    });
+  }
+  if (navAllowed(user, "teams")) {
+    primaryItems.push({
+      key: "teams",
+      path: "/teams",
+      icon: <Network size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.teams",
     });
   }
   primaryItems.push(

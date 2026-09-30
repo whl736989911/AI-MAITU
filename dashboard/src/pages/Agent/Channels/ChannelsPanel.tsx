@@ -25,6 +25,7 @@ import {
   normalizeChannelFieldValue,
   normalizeQqGroupContextConfig,
   partitionChannelKeys,
+  parseDiscordSnowflakeIds,
   type ChannelKey,
 } from "./components";
 import type { ChannelRow } from "./useChannels";
@@ -53,6 +54,7 @@ function configFromFormValues(
         k === "name" ||
         k === "enabled" ||
         k === "__raw_config" ||
+        k === "__discord_existing_bot_token" ||
         k === "response_mode" ||
         k === "show_thinking" ||
         k === "show_tool_hints" ||
@@ -61,7 +63,14 @@ function configFromFormValues(
         continue;
       }
       if (v === undefined || v === null || v === "") continue;
-      config[k] = normalizeChannelFieldValue(k, v);
+      if (
+        values.kind === "discord" &&
+        (k === "allowed_channel_ids" || k === "allowed_user_ids")
+      ) {
+        config[k] = parseDiscordSnowflakeIds(v);
+      } else {
+        config[k] = normalizeChannelFieldValue(k, v);
+      }
     }
   } else if (__raw_config !== undefined) {
     const trimmed = __raw_config.trim();
@@ -71,6 +80,14 @@ function configFromFormValues(
         config = parsed;
       }
     }
+  }
+  if (values.kind === "discord") {
+    if (!config.bot_token && values.__discord_existing_bot_token) {
+      config.bot_token = values.__discord_existing_bot_token;
+    }
+    config.allow_all_channels = values.allow_all_channels !== false;
+    config.allowed_channel_ids ??= [];
+    config.allowed_user_ids ??= [];
   }
   config = {
     ...config,
@@ -172,6 +189,7 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
         // needs no follow-up PATCH, so the row keeps a clean single-write
         // signature and no start/stop churn happens behind the save.
         enabled: true,
+        ...(kind === "discord" ? { allow_all_channels: true } : {}),
         ...DEFAULT_CHANNEL_DISPLAY_CONFIG,
         ...(kind === "qq"
           ? { group_context: { ...DEFAULT_QQ_GROUP_CONTEXT_CONFIG } }
@@ -192,6 +210,7 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
       const baseValues: ChannelFormValues = {
         kind: row.kind as ChannelKey,
         enabled: row.enabled,
+        ...(row.kind === "discord" ? { allow_all_channels: true } : {}),
         ...DEFAULT_CHANNEL_DISPLAY_CONFIG,
       };
       setDrawerInitialValues(baseValues);
@@ -212,7 +231,18 @@ export default function ChannelsPanel({ agentId }: ChannelsPanelProps) {
           ) {
             continue;
           }
-          if (row.kind === "qq" && k === "group_context") {
+          if (row.kind === "discord" && k === "bot_token") {
+            formCfg.__discord_existing_bot_token = String(v);
+            formCfg.bot_token = "";
+          } else if (
+            row.kind === "discord" &&
+            (k === "allowed_channel_ids" || k === "allowed_user_ids") &&
+            Array.isArray(v)
+          ) {
+            formCfg[k] = v.map(String).join("\n");
+          } else if (row.kind === "discord" && k === "allow_all_channels") {
+            formCfg[k] = v === true;
+          } else if (row.kind === "qq" && k === "group_context") {
             formCfg[k] = normalizeQqGroupContextConfig(v);
           } else if (typeof v === "string") formCfg[k] = v;
           else if (typeof v === "number" || typeof v === "boolean")

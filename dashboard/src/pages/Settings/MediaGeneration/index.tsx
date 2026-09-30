@@ -3,104 +3,234 @@ import {
   Alert,
   AutoComplete,
   Button,
+  Card,
   Divider,
-  Form,
   Input,
+  Modal,
+  Select,
   Space,
   Switch,
   Typography,
 } from "antd";
-import { CheckCircle2, Images, RefreshCw } from "lucide-react";
+import { CheckCircle2, Images, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
-import { mediaGenerationApi } from "../../../api/modules/mediaGeneration";
+import {
+  mediaGenerationApi,
+  type MediaGenerationSettings,
+  type MediaProviderInput,
+  type MediaProviderName,
+  type MediaProviderPreset,
+} from "../../../api/modules/mediaGeneration";
 import { message } from "@/utils/antdMessage";
 import { TabPanelHeader } from "../AdvancedSettings/TabPanelHeader";
 import tabStyles from "../AdvancedSettings/tabContent.module.less";
 
 const { Text } = Typography;
+type BaseUrlError = "invalid" | "https" | "host" | "query";
 
-const IMAGE_MODEL_OPTIONS = [
-  {
-    value: "doubao-seedream-5-0-lite-260128",
-    label: "Doubao Seedream 5.0 Lite",
-  },
-  {
-    value: "doubao-seedream-5-0-260128",
-    label: "Doubao Seedream 5.0",
-  },
-];
+function getBaseUrlError(
+  baseUrl: string,
+  officialBaseUrl: string,
+): BaseUrlError | null {
+  let url: URL;
+  let officialUrl: URL;
+  try {
+    url = new URL(baseUrl);
+    officialUrl = new URL(officialBaseUrl);
+  } catch {
+    return "invalid";
+  }
+  if (url.protocol !== "https:") return "https";
+  if (url.search || url.hash) return "query";
+  if (
+    url.hostname !== officialUrl.hostname ||
+    url.port ||
+    url.username ||
+    url.password
+  ) {
+    return "host";
+  }
+  return null;
+}
 
-const VIDEO_MODEL_OPTIONS = [
-  {
-    value: "doubao-seedance-2-0-mini-260615",
-    label: "Doubao Seedance 2.0 Mini",
-  },
-  {
-    value: "doubao-seedance-2-0-fast-260128",
-    label: "Doubao Seedance 2.0 Fast",
-  },
-  {
-    value: "doubao-seedance-2-0-260128",
-    label: "Doubao Seedance 2.0",
-  },
-];
+function getOfficialProviderBaseUrl(
+  provider: MediaProviderName,
+  presets: MediaProviderPreset[],
+): string | null {
+  return (
+    presets.find((preset) => preset.provider === provider)?.base_url ?? null
+  );
+}
+
+function getOfficialProviderHost(
+  provider: MediaProviderName,
+  presets: MediaProviderPreset[],
+): string | null {
+  const baseUrl = getOfficialProviderBaseUrl(provider, presets);
+  if (!baseUrl) return null;
+  try {
+    return new URL(baseUrl).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function getProviderBaseUrlError(
+  provider: ProviderDraft,
+  presets: MediaProviderPreset[],
+): BaseUrlError | null {
+  const officialBaseUrl = getOfficialProviderBaseUrl(
+    provider.provider,
+    presets,
+  );
+  return officialBaseUrl
+    ? getBaseUrlError(provider.base_url, officialBaseUrl)
+    : null;
+}
+
+type ProviderDraft = MediaProviderInput & {
+  api_key_set: boolean;
+  apiKey: string;
+};
+
+const toDraft = (
+  provider: MediaGenerationSettings["providers"][number],
+): ProviderDraft => ({
+  id: provider.id,
+  provider: provider.provider,
+  display_name: provider.display_name,
+  enabled: provider.enabled,
+  base_url: provider.base_url,
+  image_enabled: provider.image_enabled,
+  video_enabled: provider.video_enabled,
+  image_model: provider.image_model,
+  video_model: provider.video_model,
+  api_key_set: provider.api_key_set,
+  apiKey: "",
+});
 
 export function MediaGenerationSettingsPanel() {
   const { t } = useTranslation();
-  const [form] = Form.useForm();
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [testingCredentials, setTestingCredentials] = useState(false);
-  const [testingModel, setTestingModel] = useState<"image" | "video" | null>(
+  const [settings, setSettings] = useState<MediaGenerationSettings | null>(
     null,
   );
-  const [apiKeySet, setApiKeySet] = useState(false);
+  const [providers, setProviders] = useState<ProviderDraft[]>([]);
+  const [presets, setPresets] = useState<MediaProviderPreset[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState<string | null>(null);
+  const [addingProvider, setAddingProvider] = useState<MediaProviderName>();
 
   const fetchConfig = useCallback(async () => {
     setLoading(true);
     try {
-      const cfg = await mediaGenerationApi.get();
-      setApiKeySet(cfg.api_key_set);
-      form.setFieldsValue({
-        enabled: cfg.enabled,
-        provider: cfg.provider,
-        base_url: cfg.base_url,
-        image_enabled: cfg.image_enabled,
-        video_enabled: cfg.video_enabled,
-        image_model: cfg.image_model,
-        video_model: cfg.video_model,
-        api_key: "",
-      });
+      const [config, presetList] = await Promise.all([
+        mediaGenerationApi.get(),
+        mediaGenerationApi.getPresets(),
+      ]);
+      setSettings(config);
+      setProviders(config.providers.map(toDraft));
+      setPresets(presetList);
     } catch (err) {
       message.error(t("mediaGeneration.loadError"));
       console.error(err);
     } finally {
       setLoading(false);
     }
-  }, [form, t]);
+  }, [t]);
 
   useEffect(() => {
     void fetchConfig();
   }, [fetchConfig]);
 
+  const updateProvider = (id: string, patch: Partial<ProviderDraft>) => {
+    setProviders((current) =>
+      current.map((provider) =>
+        provider.id === id ? { ...provider, ...patch } : provider,
+      ),
+    );
+  };
+
+  const addProvider = () => {
+    if (!addingProvider) return;
+    const preset = presets.find((item) => item.provider === addingProvider);
+    if (!preset) return;
+    let suffix =
+      providers.filter((item) => item.provider === preset.provider).length + 1;
+    while (providers.some((item) => item.id === `${preset.provider}-${suffix}`))
+      suffix += 1;
+    const id = `${preset.provider}-${suffix}`;
+    const next: ProviderDraft = {
+      id,
+      provider: preset.provider,
+      display_name: preset.display_name,
+      enabled: true,
+      base_url: preset.base_url,
+      image_enabled: true,
+      video_enabled: true,
+      image_model: preset.image_models[0] ?? "",
+      video_model: preset.video_models[0] ?? "",
+      api_key_set: false,
+      apiKey: "",
+    };
+    setProviders((current) => [...current, next]);
+    setAddingProvider(undefined);
+  };
+
+  const routeOptions = (kind: "image" | "video") => [
+    { value: "", label: t("mediaGeneration.noRoute") },
+    ...providers
+      .filter(
+        (provider) =>
+          provider.enabled &&
+          provider[`${kind}_enabled`] &&
+          (provider.api_key_set || Boolean(provider.apiKey.trim())),
+      )
+      .map((provider) => ({
+        value: provider.id,
+        label: provider.display_name,
+      })),
+  ];
+
+  const payloadFor = (provider: ProviderDraft): MediaProviderInput => {
+    const apiKey = provider.apiKey.trim();
+    return {
+      id: provider.id,
+      provider: provider.provider,
+      display_name: provider.display_name,
+      enabled: provider.enabled,
+      base_url: provider.base_url,
+      image_enabled: provider.image_enabled,
+      video_enabled: provider.video_enabled,
+      image_model: provider.image_model,
+      video_model: provider.video_model,
+      ...(apiKey ? { api_key: apiKey } : {}),
+    };
+  };
+
   const handleSave = async () => {
+    if (!settings) return;
+    if (
+      providers.some(
+        (provider) => getProviderBaseUrlError(provider, presets) !== null,
+      )
+    ) {
+      message.error(t("mediaGeneration.baseUrlValidationError"));
+      return;
+    }
     try {
       setSaving(true);
-      const values = await form.validateFields();
-      const cfg = await mediaGenerationApi.save({
-        enabled: Boolean(values.enabled),
-        image_enabled: Boolean(values.image_enabled),
-        video_enabled: Boolean(values.video_enabled),
-        image_model: String(values.image_model || "").trim(),
-        video_model: String(values.video_model || "").trim(),
-        api_key: values.api_key ? String(values.api_key).trim() : null,
+      const saved = await mediaGenerationApi.save({
+        enabled: settings.enabled,
+        providers: providers.map(payloadFor),
+        default_image_provider: settings.default_image_provider,
+        default_video_provider: settings.default_video_provider,
       });
-      setApiKeySet(cfg.api_key_set);
-      form.setFieldValue("api_key", "");
+      setSettings(saved);
+      setProviders(saved.providers.map(toDraft));
       message.success(t("mediaGeneration.saved"));
     } catch (err) {
-      if (err && typeof err === "object" && "errorFields" in err) return;
       message.error(
         err instanceof Error ? err.message : t("mediaGeneration.saveFailed"),
       );
@@ -109,63 +239,87 @@ export function MediaGenerationSettingsPanel() {
     }
   };
 
-  const handleCredentialTest = async () => {
-    try {
-      setTestingCredentials(true);
-      const draft = String(form.getFieldValue("api_key") || "").trim();
-      const result = await mediaGenerationApi.test({
-        kind: "credentials",
-        api_key: draft || null,
-      });
-      if (result.ok) message.success(t("mediaGeneration.testSuccess"));
-      else message.error(result.error || t("mediaGeneration.testFailed"));
-    } catch (err) {
-      message.error(
-        err instanceof Error ? err.message : t("mediaGeneration.testFailed"),
-      );
-    } finally {
-      setTestingCredentials(false);
-    }
+  const confirmClearKey = (provider: ProviderDraft) => {
+    Modal.confirm({
+      title: t("mediaGeneration.clearApiKeyConfirmTitle"),
+      content: t("mediaGeneration.clearApiKeyConfirmBody", {
+        name: provider.display_name,
+      }),
+      okText: t("mediaGeneration.clearApiKey"),
+      cancelText: t("common.cancel"),
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        try {
+          setSaving(true);
+          const cleared = providers.map((item) =>
+            item.id === provider.id
+              ? { ...payloadFor(item), api_key: undefined, clear_api_key: true }
+              : payloadFor(item),
+          );
+          const saved = await mediaGenerationApi.save({
+            enabled: settings?.enabled ?? false,
+            providers: cleared,
+            default_image_provider: settings?.default_image_provider ?? null,
+            default_video_provider: settings?.default_video_provider ?? null,
+          });
+          setSettings(saved);
+          setProviders(saved.providers.map(toDraft));
+          message.success(t("mediaGeneration.clearApiKeySuccess"));
+        } catch (err) {
+          message.error(
+            err instanceof Error
+              ? err.message
+              : t("mediaGeneration.saveFailed"),
+          );
+          throw err;
+        } finally {
+          setSaving(false);
+        }
+      },
+    });
   };
 
-  const handleModelTest = async (kind: "image" | "video") => {
+  const testProvider = async (
+    provider: ProviderDraft,
+    kind: "credentials" | "image" | "video",
+  ) => {
+    const key = `${provider.id}:${kind}`;
     try {
-      setTestingModel(kind);
-      const draft = String(form.getFieldValue("api_key") || "").trim();
+      setTesting(key);
       const result = await mediaGenerationApi.test({
         kind,
-        api_key: draft || null,
-        image_model: String(form.getFieldValue("image_model") || "").trim(),
-        video_model: String(form.getFieldValue("video_model") || "").trim(),
+        provider: payloadFor(provider),
       });
       if (result.ok) {
         message.success(
           t(
-            kind === "image"
+            kind === "credentials"
+              ? "mediaGeneration.testSuccess"
+              : kind === "image"
               ? "mediaGeneration.imageTestSuccess"
               : "mediaGeneration.videoTestSuccess",
           ),
         );
       } else {
-        message.error(result.error || t("mediaGeneration.modelTestFailed"));
+        message.error(result.error || t("mediaGeneration.testFailed"));
       }
     } catch (err) {
       message.error(
-        err instanceof Error
-          ? err.message
-          : t("mediaGeneration.modelTestFailed"),
+        err instanceof Error ? err.message : t("mediaGeneration.testFailed"),
       );
     } finally {
-      setTestingModel(null);
+      setTesting(null);
     }
   };
 
-  const enabled = Form.useWatch("enabled", form);
-  const imageEnabled = Form.useWatch("image_enabled", form);
-  const videoEnabled = Form.useWatch("video_enabled", form);
-  const imageModel = Form.useWatch("image_model", form);
-  const videoModel = Form.useWatch("video_model", form);
-  const apiKey = Form.useWatch("api_key", form);
+  const modelOptions = (provider: ProviderDraft, kind: "image" | "video") => {
+    const preset = presets.find((item) => item.provider === provider.provider);
+    const values =
+      kind === "image"
+        ? preset?.image_models ?? []
+        : preset?.video_models ?? [];
+    return values.map((value) => ({ value, label: value }));
+  };
 
   return (
     <>
@@ -174,168 +328,337 @@ export function MediaGenerationSettingsPanel() {
         title={t("mediaGeneration.title")}
         description={t("mediaGeneration.description")}
       />
-
       {loading ? (
         <Text type="secondary">{t("mediaGeneration.loading")}</Text>
-      ) : (
-        <Form form={form} layout="vertical" className={tabStyles.formFields}>
-          <Form.Item
-            name="enabled"
-            label={t("mediaGeneration.enable")}
-            valuePropName="checked"
-          >
-            <Switch />
-          </Form.Item>
-
-          {enabled && (
-            <>
-              <Alert
-                type="info"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message={t("mediaGeneration.hint")}
+      ) : settings ? (
+        <div className={tabStyles.formFields}>
+          <Alert
+            type="info"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={t("mediaGeneration.hint")}
+          />
+          <div style={{ marginBottom: 20 }}>
+            <Text strong>{t("mediaGeneration.enable")}</Text>
+            <div style={{ marginTop: 8 }}>
+              <Switch
+                checked={settings.enabled}
+                onChange={(enabled) => setSettings({ ...settings, enabled })}
               />
-              <Form.Item name="provider" label={t("mediaGeneration.provider")}>
-                <Input disabled />
-              </Form.Item>
-              <Form.Item name="base_url" label={t("mediaGeneration.baseUrl")}>
-                <Input disabled />
-              </Form.Item>
-              <Form.Item
-                name="api_key"
-                label={t("mediaGeneration.apiKey")}
+            </div>
+          </div>
+          <Divider orientation="left">
+            {t("mediaGeneration.providerListTitle")}
+          </Divider>
+          <Space wrap style={{ marginBottom: 16 }}>
+            <Select
+              aria-label={t("mediaGeneration.providerPreset")}
+              placeholder={t("mediaGeneration.providerPreset")}
+              value={addingProvider}
+              onChange={setAddingProvider}
+              style={{ minWidth: 240 }}
+              options={presets.map((preset) => ({
+                value: preset.provider,
+                label: preset.display_name,
+              }))}
+            />
+            <Button
+              icon={<Plus size={14} />}
+              disabled={!addingProvider}
+              onClick={addProvider}
+            >
+              {t("mediaGeneration.addProvider")}
+            </Button>
+          </Space>
+          {providers.map((provider) => {
+            const officialHost = getOfficialProviderHost(
+              provider.provider,
+              presets,
+            );
+            const baseUrlError = getProviderBaseUrlError(provider, presets);
+            return (
+              <Card
+                key={provider.id}
+                size="small"
+                title={provider.display_name}
+                style={{ marginBottom: 16 }}
                 extra={
-                  apiKeySet ? (
-                    <Text type="secondary">
-                      <CheckCircle2 size={12} style={{ marginRight: 4 }} />
-                      {t("mediaGeneration.apiKeySet")}
-                    </Text>
-                  ) : null
-                }
-                rules={
-                  apiKeySet
-                    ? []
-                    : [
-                        {
-                          required: true,
-                          message: t("mediaGeneration.apiKeyRequired"),
-                        },
-                      ]
+                  <Space>
+                    <Text type="secondary">{provider.id}</Text>
+                    <Button
+                      danger
+                      type="text"
+                      aria-label={t("mediaGeneration.removeProvider", {
+                        name: provider.display_name,
+                      })}
+                      icon={<Trash2 size={14} />}
+                      onClick={() =>
+                        Modal.confirm({
+                          title: t(
+                            "mediaGeneration.removeProviderConfirmTitle",
+                          ),
+                          content: t(
+                            "mediaGeneration.removeProviderConfirmBody",
+                            {
+                              name: provider.display_name,
+                            },
+                          ),
+                          okButtonProps: { danger: true },
+                          onOk: () => {
+                            setProviders((current) =>
+                              current.filter((item) => item.id !== provider.id),
+                            );
+                            setSettings((current) =>
+                              current
+                                ? {
+                                    ...current,
+                                    default_image_provider:
+                                      current.default_image_provider ===
+                                      provider.id
+                                        ? null
+                                        : current.default_image_provider,
+                                    default_video_provider:
+                                      current.default_video_provider ===
+                                      provider.id
+                                        ? null
+                                        : current.default_video_provider,
+                                  }
+                                : current,
+                            );
+                          },
+                        })
+                      }
+                    />
+                  </Space>
                 }
               >
-                <Input.Password
-                  placeholder="ark-..."
-                  autoComplete="new-password"
-                />
-              </Form.Item>
-
-              <Button
-                loading={testingCredentials}
-                disabled={!apiKeySet && !apiKey}
-                onClick={() => void handleCredentialTest()}
-              >
-                {t("mediaGeneration.testCredentials")}
-              </Button>
-
-              <Divider />
-
-              <Alert
-                type="warning"
-                showIcon
-                style={{ marginBottom: 16 }}
-                message={t("mediaGeneration.modelTestBillingHint")}
+                <Space
+                  direction="vertical"
+                  style={{ width: "100%" }}
+                  size="middle"
+                >
+                  <Space wrap align="start" style={{ width: "100%" }}>
+                    <label>
+                      <Text type="secondary">
+                        {t("mediaGeneration.enabled")}
+                      </Text>
+                      <div style={{ marginTop: 6 }}>
+                        <Switch
+                          checked={provider.enabled}
+                          onChange={(enabled) =>
+                            updateProvider(provider.id, { enabled })
+                          }
+                        />
+                      </div>
+                    </label>
+                    <label style={{ flex: 1, minWidth: 200 }}>
+                      <Text type="secondary">
+                        {t("mediaGeneration.providerName")}
+                      </Text>
+                      <Input
+                        value={provider.display_name}
+                        onChange={(event) =>
+                          updateProvider(provider.id, {
+                            display_name: event.target.value,
+                          })
+                        }
+                      />
+                    </label>
+                    <label style={{ flex: 2, minWidth: 260 }}>
+                      <Text type="secondary">
+                        {t("mediaGeneration.baseUrl")}
+                      </Text>
+                      <Input
+                        status={baseUrlError ? "error" : undefined}
+                        value={provider.base_url}
+                        onChange={(event) =>
+                          updateProvider(provider.id, {
+                            base_url: event.target.value,
+                          })
+                        }
+                      />
+                      <Text type={baseUrlError ? "danger" : "secondary"}>
+                        {baseUrlError
+                          ? t(`mediaGeneration.baseUrlError.${baseUrlError}`, {
+                              host: officialHost,
+                            })
+                          : officialHost
+                          ? t("mediaGeneration.baseUrlOfficialHostHelp", {
+                              host: officialHost,
+                            })
+                          : null}
+                      </Text>
+                    </label>
+                  </Space>
+                  <div>
+                    <Text type="secondary">{t("mediaGeneration.apiKey")}</Text>
+                    <Input.Password
+                      value={provider.apiKey}
+                      autoComplete="new-password"
+                      placeholder={
+                        provider.api_key_set
+                          ? t("mediaGeneration.apiKeySet")
+                          : t("mediaGeneration.apiKeyRequired")
+                      }
+                      onChange={(event) =>
+                        updateProvider(provider.id, {
+                          apiKey: event.target.value,
+                        })
+                      }
+                    />
+                    {provider.api_key_set && (
+                      <Text type="secondary">
+                        <CheckCircle2 size={12} style={{ marginRight: 4 }} />
+                        {t("mediaGeneration.apiKeySet")}
+                      </Text>
+                    )}
+                  </div>
+                  <Space wrap>
+                    <Button
+                      loading={testing === `${provider.id}:credentials`}
+                      disabled={
+                        !provider.api_key_set && !provider.apiKey.trim()
+                      }
+                      onClick={() => void testProvider(provider, "credentials")}
+                    >
+                      {t("mediaGeneration.testCredentials")}
+                    </Button>
+                    {provider.api_key_set && (
+                      <Button danger onClick={() => confirmClearKey(provider)}>
+                        {t("mediaGeneration.clearApiKey")}
+                      </Button>
+                    )}
+                  </Space>
+                  <Divider style={{ margin: "4px 0" }} />
+                  <Space wrap align="start" style={{ width: "100%" }}>
+                    <label>
+                      <Text type="secondary">
+                        {t("mediaGeneration.imageEnabled")}
+                      </Text>
+                      <div style={{ marginTop: 6 }}>
+                        <Switch
+                          checked={provider.image_enabled}
+                          onChange={(image_enabled) =>
+                            updateProvider(provider.id, { image_enabled })
+                          }
+                        />
+                      </div>
+                    </label>
+                    <label style={{ flex: 1, minWidth: 220 }}>
+                      <Text type="secondary">
+                        {t("mediaGeneration.imageModel")}
+                      </Text>
+                      <AutoComplete
+                        style={{ width: "100%" }}
+                        value={provider.image_model}
+                        options={modelOptions(provider, "image")}
+                        placeholder={t(
+                          "mediaGeneration.customModelPlaceholder",
+                        )}
+                        onChange={(image_model) =>
+                          updateProvider(provider.id, { image_model })
+                        }
+                      />
+                    </label>
+                    <Button
+                      style={{ marginTop: 22 }}
+                      loading={testing === `${provider.id}:image`}
+                      disabled={
+                        !provider.api_key_set && !provider.apiKey.trim()
+                      }
+                      onClick={() => void testProvider(provider, "image")}
+                    >
+                      {t("mediaGeneration.testImageModel")}
+                    </Button>
+                  </Space>
+                  <Space wrap align="start" style={{ width: "100%" }}>
+                    <label>
+                      <Text type="secondary">
+                        {t("mediaGeneration.videoEnabled")}
+                      </Text>
+                      <div style={{ marginTop: 6 }}>
+                        <Switch
+                          checked={provider.video_enabled}
+                          onChange={(video_enabled) =>
+                            updateProvider(provider.id, { video_enabled })
+                          }
+                        />
+                      </div>
+                    </label>
+                    <label style={{ flex: 1, minWidth: 220 }}>
+                      <Text type="secondary">
+                        {t("mediaGeneration.videoModel")}
+                      </Text>
+                      <AutoComplete
+                        style={{ width: "100%" }}
+                        value={provider.video_model}
+                        options={modelOptions(provider, "video")}
+                        placeholder={t(
+                          "mediaGeneration.customModelPlaceholder",
+                        )}
+                        onChange={(video_model) =>
+                          updateProvider(provider.id, { video_model })
+                        }
+                      />
+                    </label>
+                    <Button
+                      style={{ marginTop: 22 }}
+                      loading={testing === `${provider.id}:video`}
+                      disabled={
+                        !provider.api_key_set && !provider.apiKey.trim()
+                      }
+                      onClick={() => void testProvider(provider, "video")}
+                    >
+                      {t("mediaGeneration.testVideoModel")}
+                    </Button>
+                  </Space>
+                </Space>
+              </Card>
+            );
+          })}
+          <Alert
+            type="warning"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message={t("mediaGeneration.modelTestBillingHint")}
+          />
+          <Divider orientation="left">
+            {t("mediaGeneration.defaultRoutes")}
+          </Divider>
+          <Space wrap style={{ width: "100%", marginBottom: 24 }}>
+            <label style={{ flex: 1, minWidth: 240 }}>
+              <Text type="secondary">
+                {t("mediaGeneration.imageDefaultRoute")}
+              </Text>
+              <Select
+                style={{ width: "100%" }}
+                value={settings.default_image_provider ?? ""}
+                options={routeOptions("image")}
+                onChange={(value) =>
+                  setSettings({
+                    ...settings,
+                    default_image_provider: value || null,
+                  })
+                }
               />
-
-              <Form.Item
-                name="image_enabled"
-                label={t("mediaGeneration.enableImage")}
-                valuePropName="checked"
-              >
-                <Switch />
-              </Form.Item>
-              {imageEnabled && (
-                <Form.Item
-                  name="image_model"
-                  label={t("mediaGeneration.imageModel")}
-                  rules={[
-                    {
-                      required: true,
-                      message: t("mediaGeneration.imageModelRequired"),
-                    },
-                  ]}
-                >
-                  <AutoComplete
-                    options={IMAGE_MODEL_OPTIONS}
-                    placeholder={t("mediaGeneration.customModelPlaceholder")}
-                    filterOption={(input, option) =>
-                      String(option?.label || "")
-                        .toLowerCase()
-                        .includes(input.toLowerCase()) ||
-                      String(option?.value || "")
-                        .toLowerCase()
-                        .includes(input.toLowerCase())
-                    }
-                  />
-                </Form.Item>
-              )}
-              {imageEnabled && (
-                <Button
-                  loading={testingModel === "image"}
-                  disabled={
-                    (!apiKeySet && !apiKey) || !String(imageModel || "").trim()
-                  }
-                  onClick={() => void handleModelTest("image")}
-                >
-                  {t("mediaGeneration.testImageModel")}
-                </Button>
-              )}
-
-              <Form.Item
-                name="video_enabled"
-                label={t("mediaGeneration.enableVideo")}
-                valuePropName="checked"
-              >
-                <Switch />
-              </Form.Item>
-              {videoEnabled && (
-                <Form.Item
-                  name="video_model"
-                  label={t("mediaGeneration.videoModel")}
-                  rules={[
-                    {
-                      required: true,
-                      message: t("mediaGeneration.videoModelRequired"),
-                    },
-                  ]}
-                >
-                  <AutoComplete
-                    options={VIDEO_MODEL_OPTIONS}
-                    placeholder={t("mediaGeneration.customModelPlaceholder")}
-                    filterOption={(input, option) =>
-                      String(option?.label || "")
-                        .toLowerCase()
-                        .includes(input.toLowerCase()) ||
-                      String(option?.value || "")
-                        .toLowerCase()
-                        .includes(input.toLowerCase())
-                    }
-                  />
-                </Form.Item>
-              )}
-              {videoEnabled && (
-                <Button
-                  loading={testingModel === "video"}
-                  disabled={
-                    (!apiKeySet && !apiKey) || !String(videoModel || "").trim()
-                  }
-                  onClick={() => void handleModelTest("video")}
-                >
-                  {t("mediaGeneration.testVideoModel")}
-                </Button>
-              )}
-            </>
-          )}
-
+            </label>
+            <label style={{ flex: 1, minWidth: 240 }}>
+              <Text type="secondary">
+                {t("mediaGeneration.videoDefaultRoute")}
+              </Text>
+              <Select
+                style={{ width: "100%" }}
+                value={settings.default_video_provider ?? ""}
+                options={routeOptions("video")}
+                onChange={(value) =>
+                  setSettings({
+                    ...settings,
+                    default_video_provider: value || null,
+                  })
+                }
+              />
+            </label>
+          </Space>
           <Space>
             <Button
               type="primary"
@@ -351,7 +674,17 @@ export function MediaGenerationSettingsPanel() {
               {t("common.refresh")}
             </Button>
           </Space>
-        </Form>
+        </div>
+      ) : (
+        <Space>
+          <Text type="secondary">{t("mediaGeneration.loadError")}</Text>
+          <Button
+            icon={<RefreshCw size={14} />}
+            onClick={() => void fetchConfig()}
+          >
+            {t("common.refresh")}
+          </Button>
+        </Space>
       )}
     </>
   );

@@ -16,6 +16,7 @@ import type { TFunction } from "i18next";
 import {
   memoryDashboardApi,
   type ListRawEventsBody,
+  type MemoryScope,
   type RawEventItem,
 } from "../../../api/modules/memoryDashboard";
 import MemoryLayerView from "./shared/MemoryLayerView";
@@ -45,6 +46,7 @@ const EVENT_TYPE_OPTIONS: {
 
 interface Props {
   agentId: string;
+  scope?: MemoryScope;
 }
 
 function eventTypeLabel(type: string, t: TFunction): string {
@@ -68,7 +70,7 @@ function eventTypeColor(type: string): string | undefined {
   return undefined;
 }
 
-export default function RawEventsList({ agentId }: Props) {
+export default function RawEventsList({ agentId, scope }: Props) {
   const { t } = useTranslation();
   const timeZone = useServerTimezone();
   const [items, setItems] = useState<RawEventItem[]>([]);
@@ -88,13 +90,15 @@ export default function RawEventsList({ agentId }: Props) {
     if (eventType) body.event_type = eventType;
     if (query.trim()) body.query = query.trim();
     try {
-      const r = await memoryDashboardApi.listRawEvents(agentId, body);
+      const r = scope
+        ? await memoryDashboardApi.listRawEvents(agentId, body, scope)
+        : await memoryDashboardApi.listRawEvents(agentId, body);
       setItems(r.items);
       setTotal(r.total);
     } finally {
       setLoading(false);
     }
-  }, [agentId, page, eventType, query]);
+  }, [agentId, page, eventType, query, scope]);
 
   useEffect(() => {
     if (!agentId) return;
@@ -148,7 +152,9 @@ export default function RawEventsList({ agentId }: Props) {
       drawerTitle={t("memory.raw.detailTitle", "素材详情")}
       drawerWidth={520}
       emptyContent={
-        noFilterActive ? <MemoryPipelineEmpty agentId={agentId} /> : undefined
+        noFilterActive ? (
+          <MemoryPipelineEmpty agentId={agentId} scope={scope} />
+        ) : undefined
       }
       renderItem={(e) => (
         <div>

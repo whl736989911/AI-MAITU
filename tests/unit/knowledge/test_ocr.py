@@ -156,3 +156,64 @@ def test_remote_ocr_sends_image_block(tmp_path: Path, monkeypatch: pytest.Monkey
     content = messages[0].content
     assert content[1]["type"] == "image_url"
     assert content[1]["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+@pytest.mark.parametrize(
+    "reply",
+    [
+        "No image was attached. Please upload an image.",
+        "I don't see an image attached to your message. Please upload the image you'd "
+        "like me to transcribe, and I'll provide the exact transcription.",
+        "未收到图片，请上传图片后重试。",
+    ],
+)
+def test_remote_ocr_discards_no_image_refusal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, reply: str
+) -> None:
+    image = tmp_path / "scan.png"
+    image.write_bytes(b"image")
+
+    class Model:
+        @staticmethod
+        def invoke(_value: list[object]) -> SimpleNamespace:
+            return SimpleNamespace(content=reply)
+
+    monkeypatch.setattr(ocr, "build_probe_chat_model", lambda *_a, **_k: Model())
+    assert ocr._RemoteOcr(SimpleNamespace(), "vision")(image) == ""
+
+
+def test_remote_ocr_keeps_real_text_and_ignores_refusal_page(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pdf = tmp_path / "scan.pdf"
+    pdf.write_bytes(b"%PDF-1.4")
+    monkeypatch.setattr(
+        ocr,
+        "_image_inputs",
+        lambda _path: iter([(b"page-1", "image/png"), (b"page-2", "image/png")]),
+    )
+    replies = iter(["No image was attached. Please upload an image.", "第二页正文"])
+
+    class Model:
+        @staticmethod
+        def invoke(_value: list[object]) -> SimpleNamespace:
+            return SimpleNamespace(content=next(replies))
+
+    monkeypatch.setattr(ocr, "build_probe_chat_model", lambda *_a, **_k: Model())
+    assert ocr._RemoteOcr(SimpleNamespace(), "vision")(pdf) == "第二页正文"
+
+
+def test_remote_ocr_keeps_long_transcription_mentioning_upload(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    image = tmp_path / "scan.png"
+    image.write_bytes(b"image")
+    page = "No image was attached. Please upload an image. " + "识别出的正文内容。" * 50
+
+    class Model:
+        @staticmethod
+        def invoke(_value: list[object]) -> SimpleNamespace:
+            return SimpleNamespace(content=page)
+
+    monkeypatch.setattr(ocr, "build_probe_chat_model", lambda *_a, **_k: Model())
+    assert ocr._RemoteOcr(SimpleNamespace(), "vision")(image) == page

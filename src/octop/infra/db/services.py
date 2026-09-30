@@ -14,13 +14,12 @@ from octop.infra.db.repos.channels import ChannelRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
-from octop.infra.db.repos.extract_results import ExtractResultRepo
-from octop.infra.db.repos.extract_templates import ExtractTemplateRepo
 from octop.infra.db.repos.feature_overlays import FeatureOverlayRepo
 from octop.infra.db.repos.feature_runs import FeatureRunRepo
 from octop.infra.db.repos.feature_workflow_changes import FeatureChangeRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.knowledge_search_rules import KnowledgeSearchRulesRepo
 from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
@@ -66,6 +65,7 @@ class RepoBundle:
     connector_repo: ConnectorRepo
     skill_package_repo: SkillPackageRepo
     published_expert_repo: PublishedExpertRepo
+    knowledge_search_rules_repo: KnowledgeSearchRulesRepo
     knowledge_repo: KnowledgeRepo
     voice_provider_repo: VoiceProviderRepo
     care_push_repo: CarePushRepo
@@ -74,8 +74,6 @@ class RepoBundle:
     resource_acl_repo: ResourceAclRepo
     data_sources_repo: DataSourceRepo
     knowledge_sync_runs_repo: KnowledgeSyncRunRepo
-    extract_templates_repo: ExtractTemplateRepo
-    extract_results_repo: ExtractResultRepo
     feature_overlay_repo: FeatureOverlayRepo
     feature_run_repo: FeatureRunRepo
     feature_change_repo: FeatureChangeRepo
@@ -104,6 +102,7 @@ class RepoBundle:
             connector_repo=ConnectorRepo(db),
             skill_package_repo=SkillPackageRepo(db),
             published_expert_repo=PublishedExpertRepo(db),
+            knowledge_search_rules_repo=KnowledgeSearchRulesRepo(db),
             knowledge_repo=KnowledgeRepo(db),
             voice_provider_repo=VoiceProviderRepo(db),
             care_push_repo=CarePushRepo(db),
@@ -112,8 +111,6 @@ class RepoBundle:
             resource_acl_repo=ResourceAclRepo(db),
             data_sources_repo=DataSourceRepo(db),
             knowledge_sync_runs_repo=KnowledgeSyncRunRepo(db),
-            extract_templates_repo=ExtractTemplateRepo(db),
-            extract_results_repo=ExtractResultRepo(db),
             feature_overlay_repo=FeatureOverlayRepo(db),
             feature_run_repo=FeatureRunRepo(db),
             feature_change_repo=FeatureChangeRepo(db),
@@ -235,16 +232,12 @@ class SharedServices:
         return self.repos.data_sources_repo
 
     @property
+    def knowledge_search_rules_repo(self) -> KnowledgeSearchRulesRepo:
+        return self.repos.knowledge_search_rules_repo
+
+    @property
     def knowledge_sync_runs_repo(self) -> KnowledgeSyncRunRepo:
         return self.repos.knowledge_sync_runs_repo
-
-    @property
-    def extract_templates_repo(self) -> ExtractTemplateRepo:
-        return self.repos.extract_templates_repo
-
-    @property
-    def extract_results_repo(self) -> ExtractResultRepo:
-        return self.repos.extract_results_repo
 
     @property
     def feature_overlay_repo(self) -> FeatureOverlayRepo:

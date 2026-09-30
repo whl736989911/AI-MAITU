@@ -1,10 +1,11 @@
 id: qrcode
-version: 0.2.0
+version: 0.2.2
 name: 二维码
 description: 把文本或链接生成二维码图片卡片
 name_en: "QR Code"
 description_en: "Turn text or links into a QR code image card"
-icon: "🔳"
+icon: icon.svg
+group: tools
 kind: tool
 entry: main.py
 requires:

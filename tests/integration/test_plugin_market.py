@@ -19,6 +19,7 @@ async def test_market_lists_shipped_plugins(env: Any) -> None:
     assert card["name"]["zh"] and card["name"]["en"]
     assert card["description"]["zh"] and card["description"]["en"]
     assert card["kind"] == "tool"
+    assert "group" in card
     assert card["version"]
     # Seeding copies shipped plugins into the user dir globally disabled.
     assert card["installed"] is True
@@ -88,3 +89,8 @@ async def test_market_requires_plugins_permission(env_admin_alice: Any) -> None:
         headers=alice_auth,
     )
     assert r.status_code == 403, r.text
+    asset = await client.get(
+        f"/api/plugins/market/{_MARKET_ID}/ui/icon.svg",
+        headers=alice_auth,
+    )
+    assert asset.status_code == 403, asset.text

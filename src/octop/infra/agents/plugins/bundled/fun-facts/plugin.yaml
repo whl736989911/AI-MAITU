@@ -1,0 +1,13 @@
+id: fun-facts
+version: 0.1.0
+name: 趣味百科
+description: 随机冷知识与轻松笑话
+name_en: "Fun Facts"
+description_en: "Get a random fun fact or lighthearted joke"
+icon: icon.svg
+group: fun
+kind: tool
+entry: main.py
+ui:
+  entry: ui/index.js
+  manifest: ui/manifest.json

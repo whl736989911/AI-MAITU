@@ -75,6 +75,7 @@ class ErrorCode(StrEnum):
     SKILL_PACKAGE_NOT_FOUND = "SKILL_PACKAGE_NOT_FOUND"
     SKILL_PACKAGE_NAME_TAKEN = "SKILL_PACKAGE_NAME_TAKEN"
     SKILL_PACKAGE_BACKEND_UNSUPPORTED = "SKILL_PACKAGE_BACKEND_UNSUPPORTED"
+    ACP_BACKEND_UNSUPPORTED = "ACP_BACKEND_UNSUPPORTED"
     PUBLISHED_EXPERT_SLUG_TAKEN = "PUBLISHED_EXPERT_SLUG_TAKEN"
     PUBLISHED_EXPERT_ALREADY_EXISTS = "PUBLISHED_EXPERT_ALREADY_EXISTS"
     OIDC_BAD_REQUEST = "OIDC_BAD_REQUEST"
@@ -108,11 +109,6 @@ class ErrorCode(StrEnum):
     # neither may answer with INTERNAL_ERROR.
     KNOWLEDGE_PASSWORD_REQUIRED = "KNOWLEDGE_PASSWORD_REQUIRED"
     KNOWLEDGE_CONVERSION_FAILED = "KNOWLEDGE_CONVERSION_FAILED"
-    # Extraction templates (design §7): a template that cannot be carried out is
-    # refused when it is written, and one that is still bound is refused deletion
-    # with the reason, because "in use" is something an administrator can undo.
-    EXTRACT_TEMPLATE_INVALID = "EXTRACT_TEMPLATE_INVALID"
-    EXTRACT_TEMPLATE_IN_USE = "EXTRACT_TEMPLATE_IN_USE"
     # Data sources: a kind whose ingest is not implemented must refuse instead
     # of reporting a success it never performed.
     DATA_SOURCE_INVALID = "DATA_SOURCE_INVALID"
@@ -184,6 +180,11 @@ class ErrorCode(StrEnum):
     # (whose message reads "provider") cannot carry it.
     ORG_UNIT_HAS_CHILDREN = "ORG_UNIT_HAS_CHILDREN"
     ORG_UNIT_IN_USE = "ORG_UNIT_IN_USE"
+    TEAM_NOT_FOUND = "TEAM_NOT_FOUND"
+    TEAM_MEMBERS_TOO_FEW = "TEAM_MEMBERS_TOO_FEW"
+    TEAM_MEMBER_INVALID = "TEAM_MEMBER_INVALID"
+    TEAM_MEMBER_BUSY = "TEAM_MEMBER_BUSY"
+    TEAM_NOT_SHAREABLE = "TEAM_NOT_SHAREABLE"
 
 
 _DEFAULT_STATUS: dict[ErrorCode, int] = {
@@ -251,6 +252,7 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.SKILL_PACKAGE_NOT_FOUND: 404,
     ErrorCode.SKILL_PACKAGE_NAME_TAKEN: 409,
     ErrorCode.SKILL_PACKAGE_BACKEND_UNSUPPORTED: 400,
+    ErrorCode.ACP_BACKEND_UNSUPPORTED: 400,
     ErrorCode.PUBLISHED_EXPERT_SLUG_TAKEN: 409,
     ErrorCode.PUBLISHED_EXPERT_ALREADY_EXISTS: 409,
     ErrorCode.OIDC_BAD_REQUEST: 400,
@@ -276,8 +278,6 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_NAME_INVALID: 400,
     ErrorCode.KNOWLEDGE_PASSWORD_REQUIRED: 409,
     ErrorCode.KNOWLEDGE_CONVERSION_FAILED: 409,
-    ErrorCode.EXTRACT_TEMPLATE_INVALID: 400,
-    ErrorCode.EXTRACT_TEMPLATE_IN_USE: 409,
     ErrorCode.DATA_SOURCE_INVALID: 400,
     ErrorCode.DATA_SOURCE_SYNC_UNSUPPORTED: 400,
     ErrorCode.DATA_SOURCE_FETCH_FAILED: 502,
@@ -313,6 +313,11 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.WORKFLOW_CHANGE_CONFLICT: 409,
     ErrorCode.ORG_UNIT_HAS_CHILDREN: 409,
     ErrorCode.ORG_UNIT_IN_USE: 409,
+    ErrorCode.TEAM_NOT_FOUND: 404,
+    ErrorCode.TEAM_MEMBERS_TOO_FEW: 400,
+    ErrorCode.TEAM_MEMBER_INVALID: 400,
+    ErrorCode.TEAM_MEMBER_BUSY: 409,
+    ErrorCode.TEAM_NOT_SHAREABLE: 400,
 }
 
 

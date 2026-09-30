@@ -6,6 +6,7 @@ replacing its persona; a caller must not be guided to edit shared settings.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -143,7 +144,6 @@ def test_a_caller_sees_the_menu_but_not_author_editing_advice(monkeypatch: Any) 
     content = injected.system_message.content
     assert isinstance(content, str)
     assert "工作流" in content and "人设文件" in content
-    assert "功能定义由作者维护" in content
     assert "feature_workflow_save" not in content
 
 
@@ -230,6 +230,45 @@ async def test_the_async_hook_injects_the_same_block(monkeypatch: Any) -> None:
 
     assert result == "model-response"
     assert "功能工作流" in str(seen["request"].system_message.content)
+
+
+def test_guidance_moves_from_draft_author_to_scoped_enterprise_admin(
+    monkeypatch: Any,
+) -> None:
+    row = SimpleNamespace(enterprise_unit_key=None)
+    users = {
+        42: SimpleNamespace(role="user", org_unit="enterprise_a"),
+        7: SimpleNamespace(role="enterprise_admin", org_unit="enterprise_a"),
+        8: SimpleNamespace(role="enterprise_admin", org_unit="enterprise_b"),
+    }
+    repos = SimpleNamespace(
+        agent_repo=SimpleNamespace(get=lambda _id: row),
+        user_repo=SimpleNamespace(get=users.get),
+        org_unit_repo=object(),
+    )
+    monkeypatch.setattr(
+        mw,
+        "scope_for",
+        lambda user, _repo: SimpleNamespace(covers_unit=lambda key: user.org_unit == key),
+    )
+    middleware = mw.FeatureWorkflowMiddleware(agent_id="feat-quote", author_user_id=42, repos=repos)
+
+    def guide_for(user_id: int) -> str:
+        _configure(monkeypatch, None, user=user_id)
+        seen: list[str] = []
+
+        def handler(req: ModelRequest[Any]) -> None:
+            assert req.system_message is not None
+            seen.append(str(req.system_message.content))
+
+        middleware.wrap_model_call(_request(), handler)
+        return seen[0]
+
+    assert "feature_workflow_save" in guide_for(42)
+    row.enterprise_unit_key = "enterprise_a"
+    assert "feature_workflow_save" not in guide_for(42)
+    assert "feature_workflow_save" in guide_for(7)
+    assert "feature_workflow_save" not in guide_for(8)
 
 
 def test_the_chain_is_a_features_alone() -> None:

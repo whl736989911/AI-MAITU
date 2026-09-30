@@ -15,11 +15,10 @@
  * that table. Two axes meet there —
  *
  *   - the scope: whose agent this is (``expert`` or ``feature``), and
- *   - the writer: who is allowed to write through the panel. A caller of a
- *     feature may not (design: the configuration belongs to whoever defines the
- *     feature), and the feature's memory is written by nobody at all, because
- *     one file serves every caller and a run must not fold one caller's
- *     experience into the next one's.
+ *   - the writer: feature configuration belongs to its author; draft shared
+ *     memory may be manually edited by that author, while active shared memory
+ *     is read-only and active callers keep separate private memory. A caller's
+ *     explicit overlay instruction is separate from both memory sources.
  *
  * A page that shows these panels says which of the two it is showing, and hands
  * ``canWrite`` the answer it already had to know: a feature is configured by
@@ -148,12 +147,14 @@ export const CAPABILITY_POLICY: Record<
       },
     },
     memory: {
-      // Nobody writes it. One agent means one MEMORY.md and every caller runs
-      // on it, so a run must not carry one caller's experience into the next —
-      // and neither may a person, or the file stops meaning what the design
-      // says it means. The panel stays: what it holds is what a run reads.
-      writer: "nobody",
-      note: { tone: "warning", message: "personalization.memorySharedNote" },
+      // Feature memory scopes are stage-aware: draft shared memory is writable
+      // by its author; active shared memory is read-only, with private memory
+      // available per caller. MemoryPanel applies the access response.
+      writer: "viewer",
+      note: {
+        tone: "info",
+        message: "personalization.memorySharedNote",
+      },
     },
   },
 };
@@ -358,16 +359,24 @@ export default function PersonalizationPanels({
           {note(memoryRule)}
           {isMobile ? (
             <MemoryPanel
+              key={`${agentId ?? "none"}:${scope}:${canWrite}:${
+                activeTab === "memory" ? "open" : "closed"
+              }`}
               agentId={agentId}
               fill={false}
-              readOnly={!writesFor(memoryRule)}
+              readOnly={scope === "expert" && !writesFor(memoryRule)}
+              featureMemory={scope === "feature"}
             />
           ) : (
             <div className={pageShellStyles.fillChild}>
               <MemoryPanel
+                key={`${agentId ?? "none"}:${scope}:${canWrite}:${
+                  activeTab === "memory" ? "open" : "closed"
+                }`}
                 agentId={agentId}
                 fill
-                readOnly={!writesFor(memoryRule)}
+                readOnly={scope === "expert" && !writesFor(memoryRule)}
+                featureMemory={scope === "feature"}
               />
             </div>
           )}

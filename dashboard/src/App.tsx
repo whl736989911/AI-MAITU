@@ -44,7 +44,9 @@ function ThemedApp() {
   const brand = useBranding();
   const brandTokens = {
     ...brandTokensFor(palette, isDark, customColor),
-    ...(palette === DEFAULT_PALETTE ? { colorPrimary: brand.colors.accent } : {}),
+    ...(palette === DEFAULT_PALETTE
+      ? { colorPrimary: brand.colors.accent }
+      : {}),
   };
   // Make antd built-ins (Popconfirm OK/Cancel, Modal default footer, Empty,
   // Pagination, DatePicker, Table… ) follow the current UI language.
@@ -58,7 +60,8 @@ function ThemedApp() {
   useEffect(() => installDesktopExternalLinks(), []);
 
   useEffect(() => {
-    document.title = brand.name[i18n.language?.toLowerCase().startsWith("zh") ? "zh" : "en"];
+    document.title =
+      brand.name[i18n.language?.toLowerCase().startsWith("zh") ? "zh" : "en"];
   }, [brand, i18n.language]);
 
   const themeConfig = {

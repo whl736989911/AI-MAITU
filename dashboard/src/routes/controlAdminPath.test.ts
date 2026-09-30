@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
+import type { OctopUser } from "../api/modules/auth";
+import { buildNavSections } from "../layouts/sidebarNav";
 import {
   ADVANCED_TAB_PERMISSIONS,
   canAccessPath,
   NAV_PERMISSIONS,
+  navAllowed,
   pathPermissionKeys,
   PERM,
 } from "../utils/permissions";
@@ -66,30 +69,68 @@ describe("pathPermissionKeys", () => {
     expect(pathPermissionKeys("/personalization/skills")).toBeNull();
   });
 
-  it("gates the two module surfaces independently", () => {
-    // The nav entries and the routes read the same keys (design §5.2).
+  it("gates experts and teams independently, with experts required by teams", () => {
     expect(pathPermissionKeys("/features")).toEqual([...PERM.features]);
     expect(pathPermissionKeys("/experts")).toEqual([...PERM.experts]);
+    expect(pathPermissionKeys("/teams")).toEqual([...PERM.teams]);
+
+    expect(
+      canAccessPath({ role: "user", permissions: ["experts"] }, "/teams"),
+    ).toBe(false);
+    expect(
+      canAccessPath({ role: "user", permissions: ["teams"] }, "/teams"),
+    ).toBe(false);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["teams", "experts"] },
+        "/teams",
+      ),
+    ).toBe(true);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["teams", "experts"] },
+        "/teams/alpha",
+      ),
+    ).toBe(true);
     expect(
       canAccessPath({ role: "user", permissions: ["experts"] }, "/experts"),
     ).toBe(true);
     expect(
-      canAccessPath({ role: "user", permissions: ["experts"] }, "/features"),
+      canAccessPath({ role: "user", permissions: ["features"] }, "/teams"),
+    ).toBe(false);
+    expect(
+      canAccessPath({ role: "user", permissions: ["features"] }, "/experts"),
     ).toBe(false);
     expect(
       canAccessPath({ role: "user", permissions: ["features"] }, "/features"),
     ).toBe(true);
-    expect(
-      canAccessPath({ role: "user", permissions: ["features"] }, "/experts"),
-    ).toBe(false);
-    // A surface's own sub-paths answer to the same key, so a detail URL is
-    // refused wherever its entry point is.
     expect(
       canAccessPath({ role: "user", permissions: [] }, "/features/feat-1"),
     ).toBe(false);
     expect(
       canAccessPath({ role: "user", permissions: [] }, "/experts/any-expert"),
     ).toBe(false);
+    expect(NAV_PERMISSIONS.teams).toEqual([...PERM.teams]);
+  });
+
+  it("shows Teams only when both Teams and Experts are available", () => {
+    const makeUser = (permissions: string[]): OctopUser => ({
+      id: 1,
+      username: "test",
+      role: "user",
+      display_name: null,
+      locale: "en",
+      permissions,
+    });
+    const containsTeams = (permissions: string[]) =>
+      buildNavSections(makeUser(permissions))
+        .flatMap((section) => section.items)
+        .some((item) => item.key === "teams");
+
+    expect(navAllowed(makeUser(["experts"]), "experts")).toBe(true);
+    expect(containsTeams(["experts"])).toBe(false);
+    expect(containsTeams(["teams"])).toBe(false);
+    expect(containsTeams(["teams", "experts"])).toBe(true);
   });
 
   it("gates settings modules", () => {

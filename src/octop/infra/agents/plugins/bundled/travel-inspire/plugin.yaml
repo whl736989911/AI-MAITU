@@ -1,0 +1,13 @@
+id: travel-inspire
+version: 0.1.0
+name: 旅行灵感
+description: 按心情推荐目的地与最佳季节
+name_en: "Travel Inspiration"
+description_en: "Get destination ideas matched to your mood, with the best season to visit"
+icon: icon.svg
+group: lifestyle
+kind: tool
+entry: main.py
+ui:
+  entry: ui/index.js
+  manifest: ui/manifest.json

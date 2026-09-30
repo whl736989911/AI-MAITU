@@ -25,6 +25,8 @@ export {
   normalizeChannelFieldValue,
   normalizeQqGroupContextConfig,
   hasRequiredCredentials,
+  parseDiscordSnowflakeIds,
+  isValidDiscordSnowflakeList,
   partitionChannelKeys,
   isCollapsedChannelKey,
   type ChannelKey,

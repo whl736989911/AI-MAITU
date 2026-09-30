@@ -24,6 +24,7 @@ from octop.infra.errors import ErrorCode, OctopError
 
 AUTHOR_ID = 7
 FEATURE_ID = "quote-helper"
+FEATURE_AGENT = "feat-quote-helper"
 
 
 def _definition(*, status: str, skills: list[str] | None = None) -> dict[str, Any]:
@@ -48,27 +49,43 @@ def repos(tmp_path: Path) -> RepoBundle:
             "VALUES (?, 'author', 'x', 'user', 0)",
             (AUTHOR_ID,),
         )
-    return RepoBundle.from_pool(pool)
+    bundle = RepoBundle.from_pool(pool)
+    bundle.agent_repo.create(
+        agent_id=FEATURE_AGENT, user_id=AUTHOR_ID, name="Quote helper", kind="feature"
+    )
+    return bundle
 
 
 @pytest.mark.asyncio
-async def test_a_draft_may_name_a_skill_that_is_not_installed_yet(tmp_path: Path) -> None:
+async def test_a_draft_may_name_a_skill_that_is_not_installed_yet(
+    tmp_path: Path, repos: RepoBundle
+) -> None:
     workspace = _workspace(tmp_path / "ws")
 
-    stored = await service.save_definition(workspace, _definition(status="draft", skills=["excel"]))
+    stored = await service.save_definition(
+        workspace,
+        _definition(status="draft", skills=["excel"]),
+        repos=repos,
+        agent_id=FEATURE_AGENT,
+    )
 
     assert stored["steps"][0]["skills"] == ["excel"]
 
 
 @pytest.mark.asyncio
 async def test_publishing_with_an_unknown_skill_is_refused_with_what_exists(
-    tmp_path: Path,
+    tmp_path: Path, repos: RepoBundle
 ) -> None:
     workspace = _workspace(tmp_path / "ws")
     await workspace.aupload_bytes("skills/xlsx/SKILL.md", b"---\nname: xlsx\n---\n")
 
     with pytest.raises(OctopError) as caught:
-        await service.save_definition(workspace, _definition(status="active", skills=["excel"]))
+        await service.save_definition(
+            workspace,
+            _definition(status="active", skills=["excel"]),
+            repos=repos,
+            agent_id=FEATURE_AGENT,
+        )
 
     assert caught.value.code is ErrorCode.WORKFLOW_INVALID
     reason = caught.value.details["reason"]
@@ -79,24 +96,31 @@ async def test_publishing_with_an_unknown_skill_is_refused_with_what_exists(
 
 
 @pytest.mark.asyncio
-async def test_publishing_with_an_installed_skill_is_accepted(tmp_path: Path) -> None:
+async def test_publishing_with_an_installed_skill_is_accepted(
+    tmp_path: Path, repos: RepoBundle
+) -> None:
     workspace = _workspace(tmp_path / "ws")
     await workspace.aupload_bytes("skills/xlsx/SKILL.md", b"---\nname: xlsx\n---\n")
 
-    stored = await service.save_definition(workspace, _definition(status="active", skills=["xlsx"]))
+    stored = await service.save_definition(
+        workspace,
+        _definition(status="active", skills=["xlsx"]),
+        repos=repos,
+        agent_id=FEATURE_AGENT,
+    )
 
     assert stored["status"] == "active"
     assert (await wf.load_workflow(workspace)).definition == stored
 
 
 @pytest.mark.asyncio
-async def test_an_unknown_subagent_is_refused_too(tmp_path: Path) -> None:
+async def test_an_unknown_subagent_is_refused_too(tmp_path: Path, repos: RepoBundle) -> None:
     workspace = _workspace(tmp_path / "ws")
     definition = _definition(status="active")
     definition["steps"][0]["subagents"] = ["writer"]
 
     with pytest.raises(OctopError) as caught:
-        await service.save_definition(workspace, definition)
+        await service.save_definition(workspace, definition, repos=repos, agent_id=FEATURE_AGENT)
 
     assert "subagents names unknown subagent(s): writer" in caught.value.details["reason"]
     assert "has none installed" in caught.value.details["reason"]
@@ -108,7 +132,9 @@ async def test_a_change_that_would_publish_a_dangling_reference_is_refused(
 ) -> None:
     """The rule holds for whichever write path moved the document to active."""
     workspace = _workspace(tmp_path / "ws")
-    await service.save_definition(workspace, _definition(status="draft"))
+    await service.save_definition(
+        workspace, _definition(status="draft"), repos=repos, agent_id=FEATURE_AGENT
+    )
 
     with pytest.raises(OctopError) as caught:
         await service.apply_change(

@@ -27,6 +27,7 @@ interface UseChatSendParams {
   selectedTargetAgents?: string[];
   reasoningMode: "auto" | "enabled" | "disabled";
   reasoningEffort: string | null;
+  conversationMode: "ask" | "plan" | "craft";
   defaultModel?: string | null;
   sendMessage: (
     text: string,
@@ -43,6 +44,7 @@ interface UseChatSendParams {
     reasoningEffort?: string | null,
     /** A workflow run this turn carries, as the frame's own ``feature_run`` field. */
     featureRun?: FeatureRunPayload,
+    conversationMode?: "ask" | "plan" | "craft",
   ) => void;
   createSession: () => { session: Session; resolvedId: Promise<string> };
   renameSession: (id: string, name: string) => void;
@@ -67,6 +69,7 @@ export type ChatSendOverrides = {
   featureRun?: FeatureRunPayload;
   /** Send to this thread instead of the active one (queued flush). */
   threadId?: string | null;
+  conversationMode?: "ask" | "plan" | "craft";
   /** Send as this agent instead of the active one (queued flush). */
   agentId?: string | null;
 };
@@ -82,6 +85,7 @@ export function useChatSend({
   selectedTargetAgents = [],
   reasoningMode,
   reasoningEffort,
+  conversationMode,
   defaultModel,
   sendMessage,
   createSession,
@@ -113,12 +117,16 @@ export function useChatSend({
           renameSession(tid, deriveThreadTitle(trimmed));
         }
       };
-
-      const connectors = overrides?.selectedConnectors ?? selectedConnectors;
+      const mode = overrides?.conversationMode ?? conversationMode;
+      const restricted = mode === "ask" || mode === "plan";
+      const connectors = restricted
+        ? []
+        : overrides?.selectedConnectors ?? selectedConnectors;
       const knowledgeBaseIds =
         overrides?.selectedKnowledgeBaseIds ?? selectedKnowledgeBaseIds;
-      const targetAgents =
-        overrides?.selectedTargetAgents ?? selectedTargetAgents;
+      const targetAgents = restricted
+        ? []
+        : overrides?.selectedTargetAgents ?? selectedTargetAgents;
       const modelSelection =
         overrides?.selectedModel !== undefined
           ? overrides.selectedModel
@@ -127,7 +135,7 @@ export function useChatSend({
       const composerContext =
         overrides?.composerContext ??
         buildComposerContext({
-          skills: parseSkillSlugsInText(trimmed),
+          skills: restricted ? [] : parseSkillSlugsInText(trimmed),
           connectors,
           knowledgeBaseIds,
           targetAgents,
@@ -142,7 +150,6 @@ export function useChatSend({
         overrides?.modelRef !== undefined
           ? overrides.modelRef
           : resolveTurnModelRef(modelSelection, defaultModel);
-
       const runSend = (tid: string, hadMessages: boolean) => {
         maybeRenameNewThread(tid, hadMessages);
         sendMessage(
@@ -159,6 +166,7 @@ export function useChatSend({
           composerContext?.reasoningMode ?? reasoningMode,
           composerContext?.reasoningEffort ?? reasoningEffort,
           overrides?.featureRun,
+          mode,
         );
       };
 
@@ -219,6 +227,7 @@ export function useChatSend({
           composerContext?.reasoningMode ?? reasoningMode,
           composerContext?.reasoningEffort ?? reasoningEffort,
           overrides?.featureRun,
+          mode,
         );
         navigate(`/chat/${agent}/${tid}`, { replace: true });
       });
@@ -240,6 +249,7 @@ export function useChatSend({
       reasoningMode,
       reasoningEffort,
       defaultModel,
+      conversationMode,
       t,
     ],
   );

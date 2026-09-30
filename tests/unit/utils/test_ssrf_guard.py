@@ -77,6 +77,45 @@ async def test_async_backend_refuses_an_unexpected_host_without_connecting(
     assert calls == ["93.184.216.34"]
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("url", "expected", "host"),
+    [
+        (
+            "https://user:secret@EXAMPLE.COM.:8443/path?q=1#fragment",
+            "https://example.com:8443/path?q=1",
+            "example.com",
+        ),
+        (
+            "https://[2606:4700:4700::1111]:8443/path",
+            "https://[2606:4700:4700::1111]:8443/path",
+            "2606:4700:4700::1111",
+        ),
+    ],
+)
+async def test_safe_request_uses_validated_authority(
+    monkeypatch: pytest.MonkeyPatch, url: str, expected: str, host: str
+) -> None:
+    seen: list[tuple[str, str, str]] = []
+
+    async def resolve(_url: str) -> str:
+        return "1.1.1.1"
+
+    def transport(validated_host: str, ip: str) -> httpx.MockTransport:
+        def respond(request: httpx.Request) -> httpx.Response:
+            seen.append((validated_host, ip, str(request.url)))
+            return httpx.Response(200)
+
+        return httpx.MockTransport(respond)
+
+    monkeypatch.setattr(ssrf_guard, "_resolve_validated_ip", resolve)
+    monkeypatch.setattr(ssrf_guard, "PinnedIPTransport", transport)
+
+    response = await ssrf_guard.safe_request("GET", url)
+    assert response.status_code == 200
+    assert seen == [(host, "1.1.1.1", expected)]
+
+
 def test_sync_backend_refuses_an_unexpected_host_without_connecting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

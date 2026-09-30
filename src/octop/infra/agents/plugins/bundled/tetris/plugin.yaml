@@ -1,10 +1,11 @@
 id: tetris
-version: 0.2.0
+version: 0.2.2
 name: 俄罗斯方块
 description: 在聊天卡片里玩俄罗斯方块，支持键盘与按钮操作
 name_en: "Tetris"
 description_en: "Play Tetris in a chat card with keyboard and button controls"
-icon: "🧱"
+icon: icon.svg
+group: games
 kind: tool
 entry: main.py
 ui:

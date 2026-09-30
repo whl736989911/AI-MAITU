@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
+  blocksAcpOutbound,
+  blocksAcpOutboundFromConfig,
   isHostRootDir,
   normalizeRootDir,
   supportsHostSkillPackages,
@@ -84,5 +86,44 @@ describe("skill package backend gates", () => {
         },
       }),
     ).toBe(false);
+  });
+});
+
+describe("outbound ACP sandbox gate", () => {
+  it("blocks runners only when the backend isolates them from the host", () => {
+    expect(
+      blocksAcpOutbound({
+        backendChoice: "local_shell",
+        rootDir: "/",
+      }),
+    ).toBe(false);
+    expect(
+      blocksAcpOutbound({
+        backendChoice: "local_shell",
+        rootDir: "/home/u/.octop/agents/A1",
+        workspaceDir: "/home/u/.octop/agents/A1/",
+      }),
+    ).toBe(false);
+    expect(
+      blocksAcpOutbound({
+        backendChoice: "local_shell",
+        rootDir: "/tmp/project",
+        workspaceDir: "/home/u/.octop/agents/A1",
+      }),
+    ).toBe(true);
+    expect(
+      blocksAcpOutbound({
+        backendChoice: "named:sandbox",
+        rootDir: "/",
+      }),
+    ).toBe(true);
+  });
+
+  it("reads sandbox state from the selected agent config", () => {
+    expect(
+      blocksAcpOutboundFromConfig({
+        backend: { type: "named", name: "sandbox" },
+      }),
+    ).toBe(true);
   });
 });

@@ -1131,15 +1131,19 @@ export default function UsersListPanel() {
    * to the submitted list, so a key the picker offers is a key the submit
    * accepts — which is why a key the actor may not hand out is never shown.
    */
-  const assignableCatalog = useMemo(
-    () => permCatalog.filter((p) => p.can_grant),
-    [permCatalog],
-  );
+  const assignableCatalog = useMemo(() => {
+    const grantable = new Set(
+      permCatalog.filter((p) => p.can_grant).map((p) => p.key),
+    );
+    return permCatalog.filter(
+      (p) => p.can_grant && (p.key !== "teams" || grantable.has("experts")),
+    );
+  }, [permCatalog]);
 
   const baselinePermissions = useMemo(
     () =>
       assignableCatalog
-        .filter((p) => p.category === "settings")
+        .filter((p) => p.category === "settings" && p.key !== "teams")
         .map((p) => p.key),
     [assignableCatalog],
   );
@@ -1424,8 +1428,7 @@ export default function UsersListPanel() {
             values.role === "admin" || values.role === "enterprise_admin"
               ? null
               : values.org_unit ?? null,
-          permissions:
-            values.role === "admin" ? [] : values.permissions ?? [],
+          permissions: values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
         }),
       });

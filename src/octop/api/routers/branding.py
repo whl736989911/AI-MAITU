@@ -35,12 +35,16 @@ def _state(server: Any) -> dict[str, Any]:
         custom = json.loads((repo.get(BRAND_SETTINGS_KEY) if repo else None) or "{}")
     except (TypeError, ValueError):
         custom = {}
-    value = json.loads(json.dumps(DEFAULTS))
+    value: dict[str, Any] = {group: fields.copy() for group, fields in DEFAULTS.items()}
     for group in ("name", "full_name", "short_name", "description", "colors", "pwa"):
         value[group].update(custom.get(group, {}))
     stored_logos = custom.get("logos", {})
     for slot, filename in stored_logos.items():
-        if slot in SLOTS and isinstance(filename, str) and re.fullmatch(r"[a-f0-9]{32}\.(png|jpg|webp|svg)", filename):
+        if (
+            slot in SLOTS
+            and isinstance(filename, str)
+            and re.fullmatch(r"[a-f0-9]{32}\.(png|jpg|webp|svg)", filename)
+        ):
             value["logos"][slot] = f"/api/branding/assets/{slot}/{filename}"
     serialized = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     value["version"] = hashlib.sha256(serialized.encode()).hexdigest()[:16]
@@ -113,7 +117,9 @@ def _merge(server: Any, data: dict[str, Any]) -> dict[str, Any]:
             if not logos:
                 custom.pop("logos", None)
     if custom:
-        server.services.settings_repo.set(BRAND_SETTINGS_KEY, json.dumps(custom, ensure_ascii=False))
+        server.services.settings_repo.set(
+            BRAND_SETTINGS_KEY, json.dumps(custom, ensure_ascii=False)
+        )
     else:
         server.services.settings_repo.delete(BRAND_SETTINGS_KEY)
     return _state(server)

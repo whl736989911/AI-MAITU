@@ -52,11 +52,16 @@ def _tools(
     workspace: BackendWorkspace,
     repos: RepoBundle,
     kind: str = "feature",
-    owner_id: int = AUTHOR_ID,
     user_id: int = AUTHOR_ID,
 ) -> dict[str, Any]:
     registry = SimpleNamespace(
-        get_row=lambda agent_id: SimpleNamespace(kind=kind, user_id=owner_id),
+        get_row=(
+            repos.agent_repo.get
+            if kind == "feature"
+            else lambda agent_id: SimpleNamespace(
+                kind=kind, user_id=AUTHOR_ID, enterprise_unit_key=None
+            )
+        ),
         workspace_for_agent=lambda agent_id: workspace,
     )
     monkeypatch.setattr(
@@ -84,7 +89,11 @@ def repos(tmp_path: Path) -> RepoBundle:
             "VALUES (99, 'stranger', 'x', 'user', ?)",
             (now_ts(),),
         )
-    return RepoBundle.from_pool(pool)
+    bundle = RepoBundle.from_pool(pool)
+    bundle.agent_repo.create(
+        agent_id=FEATURE_AGENT, user_id=AUTHOR_ID, name="Quote helper", kind="feature"
+    )
+    return bundle
 
 
 @pytest.mark.asyncio
@@ -105,17 +114,33 @@ async def test_get_returns_the_document_problems_and_the_authors_own_overlay(
 
 
 @pytest.mark.asyncio
+async def test_enterprise_admin_tool_inspects_draft_but_cannot_train_it(
+    tmp_path: Path, monkeypatch: Any, repos: RepoBundle
+) -> None:
+    workspace = _workspace(tmp_path / "ws")
+    await wf.save_workflow(workspace, _definition())
+    enterprise_id = repos.user_repo.create(
+        username="draft_inspector", password_hash="h", role="enterprise_admin"
+    )
+    tools = _tools(monkeypatch, workspace=workspace, repos=repos, user_id=enterprise_id)
+
+    inspected = json.loads(await tools["feature_workflow_get"].ainvoke({"feature_id": ""}))
+    refused = json.loads(
+        await tools["feature_workflow_save"].ainvoke(
+            {"workflow": _definition(rules=["管理员未经发布尝试修改"])}
+        )
+    )
+    assert inspected["workflow"] == _definition()
+    assert refused.get("saved") is not True
+    assert (await wf.load_workflow(workspace)).definition == _definition()
+
+
+@pytest.mark.asyncio
 async def test_save_writes_a_validated_document_or_lists_every_problem(
     tmp_path: Path, monkeypatch: Any, repos: RepoBundle
 ) -> None:
     workspace = _workspace(tmp_path / "ws")
     tools = _tools(monkeypatch, workspace=workspace, repos=repos)
-
-    saved = json.loads(
-        await tools["feature_workflow_save"].ainvoke({"workflow": _definition(status="active")})
-    )
-    assert saved["saved"] is True
-    assert (await wf.load_workflow(workspace)).definition == _definition(status="active")
 
     refused = json.loads(
         await tools["feature_workflow_save"].ainvoke(
@@ -124,8 +149,31 @@ async def test_save_writes_a_validated_document_or_lists_every_problem(
     )
     assert "version must be 1" in refused["error"]
     assert "form must be one of" in refused["error"]
-    # Nothing was written by the refusal.
+    assert (await wf.load_workflow(workspace)).definition is None
+
+    saved = json.loads(
+        await tools["feature_workflow_save"].ainvoke({"workflow": _definition(status="active")})
+    )
+    assert saved["saved"] is True
     assert (await wf.load_workflow(workspace)).definition == _definition(status="active")
+    published = repos.agent_repo.get(FEATURE_AGENT)
+    assert published is not None and published.user_id is None
+    assert published.enterprise_unit_key == "*"
+    author_read = json.loads(await tools["feature_workflow_get"].ainvoke({"feature_id": ""}))
+    author_write = json.loads(
+        await tools["feature_workflow_save"].ainvoke(
+            {"workflow": _definition(status="active", rules=["未经授权的修改"])}
+        )
+    )
+    assert author_read["workflow"] == _definition(status="active")
+    assert "error" in author_write
+    assert (await wf.load_workflow(workspace)).definition == _definition(status="active")
+
+    stranger_tools = _tools(monkeypatch, workspace=workspace, repos=repos, user_id=99)
+    stranger_read = json.loads(
+        await stranger_tools["feature_workflow_get"].ainvoke({"feature_id": ""})
+    )
+    assert "error" in stranger_read
 
 
 @pytest.mark.asyncio
@@ -264,6 +312,38 @@ async def test_runs_list_what_the_author_submitted(
 
 
 @pytest.mark.asyncio
+async def test_published_feature_tools_follow_enterprise_role_not_former_author(
+    tmp_path: Path, monkeypatch: Any, repos: RepoBundle
+) -> None:
+    workspace = _workspace(tmp_path / "ws")
+    author_tools = _tools(monkeypatch, workspace=workspace, repos=repos)
+    published = json.loads(
+        await author_tools["feature_workflow_save"].ainvoke(
+            {"workflow": _definition(status="active")}
+        )
+    )
+    assert published["saved"] is True
+
+    enterprise_id = repos.user_repo.create(
+        username="enterprise", password_hash="h", role="enterprise_admin"
+    )
+    manager_tools = _tools(monkeypatch, workspace=workspace, repos=repos, user_id=enterprise_id)
+    revised = _definition(status="active", rules=["管理员复核"])
+    saved = json.loads(await manager_tools["feature_workflow_save"].ainvoke({"workflow": revised}))
+    assert saved["saved"] is True
+    assert (await wf.load_workflow(workspace)).definition == revised
+
+    _tools(monkeypatch, workspace=workspace, repos=repos, user_id=AUTHOR_ID)
+    refused = json.loads(
+        await author_tools["feature_workflow_save"].ainvoke(
+            {"workflow": _definition(status="active", rules=["作者擅改"])}
+        )
+    )
+    assert refused.get("saved") is not True
+    assert (await wf.load_workflow(workspace)).definition == revised
+
+
+@pytest.mark.asyncio
 async def test_somebody_else_cannot_change_the_feature(
     tmp_path: Path, monkeypatch: Any, repos: RepoBundle
 ) -> None:
@@ -276,7 +356,7 @@ async def test_somebody_else_cannot_change_the_feature(
         await tools["feature_workflow_save"].ainvoke({"workflow": _definition(status="active")})
     )
 
-    assert "only the feature's author" in refused["error"]
+    assert refused.get("saved") is not True
     assert (await wf.load_workflow(workspace)).definition == _definition()
 
 

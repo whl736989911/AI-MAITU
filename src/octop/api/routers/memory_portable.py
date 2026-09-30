@@ -21,9 +21,13 @@ from pydantic import BaseModel, Field
 from octop.api.common.agent import require_agent_owner_row
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.common.content_disposition import content_disposition
-from octop.api.common.memory_client import memory_db_path_for_cfg, memory_namespace
+from octop.api.common.memory_client import (
+    feature_memory_reason,
+    memory_db_path_for_cfg,
+    resolve_memory_access,
+)
 from octop.api.deps import current_user, get_server
-from octop.infra.agents.memory_backend import open_memory_kwargs
+from octop.infra.agents.memory_backend import memory_namespace, open_memory_kwargs
 from octop.infra.errors import ErrorCode, OctopError
 
 logger = logging.getLogger(__name__)
@@ -210,6 +214,10 @@ async def adopt_agent_memory(
 ) -> JSONResponse:
     """Upload a .hmpkg file and import it into the target host."""
     require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    access = await resolve_memory_access(agent_id, user=user, as_user=as_user, server=server)
+    if not dry_run and not access.shared_writable:
+        reason = feature_memory_reason("shared_read_only", user=user, server=server)
+        raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})
     _refuse_postgres_portable(server, agent_id)
 
     try:

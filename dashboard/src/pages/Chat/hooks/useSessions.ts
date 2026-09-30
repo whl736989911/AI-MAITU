@@ -17,6 +17,9 @@ export interface Session {
   reasoningMode?: "auto" | "enabled" | "disabled" | null;
   reasoningEffort?: string | null;
   artifacts?: string[];
+  conversationMode?: "ask" | "plan" | "craft";
+  pendingPlanPath?: string | null;
+  hitlPolicy?: { mode: "ask" | "allow_all" | "allow_tools"; tools?: string[] };
 }
 
 /** Result of probing whether a thread exists for the current agent. */
@@ -35,6 +38,9 @@ export function toSession(row: {
   reasoning_mode?: "auto" | "enabled" | "disabled" | null;
   reasoning_effort?: string | null;
   artifacts?: string[] | null;
+  conversation_mode?: "ask" | "plan" | "craft";
+  pending_plan_path?: string | null;
+  hitl_policy?: { mode: "ask" | "allow_all" | "allow_tools"; tools?: string[] };
 }): Session {
   const hasActivity =
     Boolean(row.has_messages) || Boolean(row.title) || row.last_active > 0;
@@ -57,6 +63,9 @@ export function toSession(row: {
     modelRef: row.model_ref ?? null,
     reasoningMode: row.reasoning_mode ?? null,
     reasoningEffort: row.reasoning_effort ?? null,
+    conversationMode: row.conversation_mode ?? "craft",
+    pendingPlanPath: row.pending_plan_path ?? null,
+    hitlPolicy: row.hitl_policy ?? { mode: "ask" },
     artifacts: Array.isArray(row.artifacts)
       ? row.artifacts.filter(
           (path): path is string =>

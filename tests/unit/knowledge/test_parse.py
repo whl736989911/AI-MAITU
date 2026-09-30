@@ -83,6 +83,26 @@ def test_parse_plain_text_and_markdown(tmp_path: Path) -> None:
     assert parse_document(markdown).text == "# Heading\n\nbody"
 
 
+def test_parse_gb18030_text_without_mojibake(tmp_path: Path) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_bytes("知识库编码检测".encode("gb18030"))
+
+    assert parse_document(path).text == "知识库编码检测"
+
+
+def test_parse_text_prefers_utf8_and_normalizes_newlines(tmp_path: Path) -> None:
+    path = tmp_path / "notes.txt"
+    path.write_bytes("café\r\n知识库\r".encode())
+
+    assert parse_document(path).text == "café\n知识库\n"
+
+    parsed = parse_document(path)
+    assert [(block.text, block.kind, block.locator) for block in parsed.blocks] == [
+        ("café", "line", {"line": 1}),
+        ("知识库", "line", {"line": 2}),
+    ]
+
+
 def test_parse_pdf_docx_and_pptx(tmp_path: Path) -> None:
     from docx import Document
     from pptx import Presentation
@@ -120,9 +140,13 @@ def test_parse_docx_reads_tables_content_controls_and_revisions(tmp_path: Path) 
     )
     path = _docx_with_body(tmp_path / "nested.docx", body)
 
-    assert (
-        parse_document(path).text == "发布说明\n\n第一章 总则\n第一条 为了规范\n第二条 本办法适用于"
-    )
+    parsed = parse_document(path)
+    assert parsed.text == "发布说明\n\n第一章 总则\n第一条 为了规范\n第二条 本办法适用于"
+    assert {block.text for block in parsed.blocks} >= {
+        "第一章 总则",
+        "第一条 为了规范",
+        "第二条 本办法适用于",
+    }
 
 
 def test_parse_docx_reads_text_box_once(tmp_path: Path) -> None:
@@ -135,7 +159,9 @@ def test_parse_docx_reads_text_box_once(tmp_path: Path) -> None:
     )
     path = _docx_with_body(tmp_path / "textbox.docx", body)
 
-    assert parse_document(path).text == "正文段落\n\n文本框内容"
+    parsed = parse_document(path)
+    assert parsed.text == "正文段落\n\n文本框内容"
+    assert [block.text for block in parsed.blocks].count("文本框内容") == 1
 
 
 def test_parse_docx_expands_html_alt_chunk(tmp_path: Path) -> None:
@@ -284,6 +310,12 @@ def test_parse_docx_reports_headings_and_tables(tmp_path: Path) -> None:
     # paragraphs are lines), so retrieval behaviour does not move; the row
     # structure is what ``tables`` adds — design §6.2's "保留表头、行列关系".
     assert parsed.text == "采购合同\n第一条 为了规范\nitem\nqty\napple\n2"
+    assert [(block.text, block.kind, block.locator, block.heading) for block in parsed.blocks] == [
+        ("采购合同", "paragraph", {"paragraph": 1}, "采购合同"),
+        ("第一条 为了规范", "paragraph", {"paragraph": 2}, "采购合同"),
+        ("item\tqty", "table_row", {"table": 1, "row": 1}, "采购合同"),
+        ("apple\t2", "table_row", {"table": 1, "row": 2}, "采购合同"),
+    ]
 
 
 def test_parse_xlsx_reports_one_table_per_sheet(tmp_path: Path) -> None:
@@ -301,6 +333,10 @@ def test_parse_xlsx_reports_one_table_per_sheet(tmp_path: Path) -> None:
     workbook.save(path)
 
     parsed = parse_document(path)
+    assert [(block.text, block.locator) for block in parsed.blocks] == [
+        ("item\tqty", {"sheet": "Q1", "row": 1}),
+        ("apple\t2", {"sheet": "Q1", "row": 2}),
+    ]
 
     assert [(t.location, t.header, t.rows) for t in parsed.tables] == [
         ("Q1", ("item", "qty"), (("apple", "2"),))

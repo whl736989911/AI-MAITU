@@ -1,17 +1,13 @@
-"""Tools a feature's own agent uses to write its own workflow, in conversation.
+"""Tools for inspecting or editing a feature's workflow in conversation.
 
-The author of a feature talks to it. These tools are what let that conversation
-*change* the feature instead of only describing it: read the current document, save a
-whole new one, apply a small diff (and hand back the change so it can be undone), list
-the runs it has produced, and read back the author's own overlay.
+The draft author may change a workflow while training; enterprise administrators
+may inspect drafts and manage published features in their enterprise. Publication
+removes the author's write access while retaining their granted read access.
+Each tool resolves the feature from the turn's agent and user, independently of
+the API layer, which ``infra/`` may not import.
 
-**Only the author, only their own feature.** Each tool resolves the feature from the
-turn's own agent id (or an id the model passed in) and refuses everything else — the
-same rule the HTTP surface applies as "the author writes it", expressed here without
-the API layer, which `infra/` may not import. The *change* logic is not duplicated:
-apply and undo go through :mod:`octop.infra.agents.feature_workflow_service`, the one
-implementation both entry points share, so a change applied here is recorded and
-reversible exactly like one applied from the dashboard.
+Apply and undo go through :mod:`octop.infra.agents.feature_workflow_service`, the
+same implementation used by the dashboard, so changes remain reversible.
 
 **Diffs, not rewrites.** ``feature_workflow_change`` is the tool to reach for while
 working something out with a person: it names the places it touches, refuses the whole
@@ -33,6 +29,9 @@ from octop.infra.agents import feature_workflow_changes as wf_changes
 from octop.infra.agents import feature_workflow_service as service
 from octop.infra.agents.kinds import feature_agent_id_for, feature_id_of_agent, is_feature_agent
 from octop.infra.db.repos.feature_workflow_changes import TARGET_DEFINITION, TARGET_OVERLAY
+from octop.infra.sharing import can_access
+from octop.infra.users.identity import Role
+from octop.infra.users.scope import scope_for
 
 
 class WorkflowChangeItemArg(BaseModel):
@@ -65,14 +64,10 @@ def _turn_identity() -> tuple[str, int]:
     return agent_id, user_id
 
 
-def _resolve_owned_feature(registry: Any, requested: str) -> tuple[str, str, int]:
-    """``(agent_id, feature_id, user_id)`` for a feature the caller authored.
-
-    Resolution accepts either id — the feature's public id ("quote-helper") or its
-    agent's ("feat-quote-helper") — because a person says the first and the platform
-    passes the second, and making the model translate between them is a way to get it
-    wrong for no benefit.
-    """
+def _resolve_owned_feature(
+    registry: Any, requested: str, repos: Any, *, read_only: bool = False
+) -> tuple[str, str, int]:
+    """Resolve draft authors and draft readers, or published administrators."""
     agent_id, user_id = _turn_identity()
     if not agent_id or not user_id:
         raise ValueError("this tool needs the turn's agent and user")
@@ -83,11 +78,38 @@ def _resolve_owned_feature(registry: Any, requested: str) -> tuple[str, str, int
     row = registry.get_row(target)
     if row is None or not is_feature_agent(str(getattr(row, "kind", ""))):
         raise ValueError(f"{target!r} is not a feature's own agent")
-    if getattr(row, "user_id", None) != user_id:
-        raise ValueError("only the feature's author can change it")
     feature_id = feature_id_of_agent(target)
     if feature_id is None:
         raise ValueError(f"{target!r} carries no feature id")
+    caller = repos.user_repo.get(user_id)
+    if row.enterprise_unit_key is None:
+        allowed = row.user_id == user_id
+        if read_only and not allowed and caller is not None:
+            author = repos.user_repo.get(row.user_id) if row.user_id is not None else None
+            allowed = caller.role == Role.ADMIN.value or (
+                caller.role == Role.ENTERPRISE_ADMIN.value
+                and author is not None
+                and scope_for(caller, repos.org_unit_repo).covers_unit(author.org_unit)
+            )
+    else:
+        allowed = caller is not None and (
+            caller.role == Role.ADMIN.value
+            or (
+                caller.role == Role.ENTERPRISE_ADMIN.value
+                and scope_for(caller, repos.org_unit_repo).covers_unit(row.enterprise_unit_key)
+            )
+        )
+        if read_only and not allowed and caller is not None:
+            acl = repos.resource_acl_repo
+            role, unit_keys = acl.scope_for_user(user_id)
+            entries = (acl.get("agent", target), acl.get("feature", feature_id))
+            allowed = any(
+                can_access(entry, user_id=user_id, role=role, unit_keys=unit_keys)
+                for entry in entries
+                if entry is not None
+            )
+    if not allowed:
+        raise ValueError("this user cannot manage or inspect the feature's workflow")
     return target, feature_id, user_id
 
 
@@ -107,8 +129,8 @@ _SAVE_DESC = (
     "Replace this feature's whole workflow document. Use it for the first draft, or "
     "for a deliberate rewrite. The document is validated first and the refusal lists "
     "every problem at once; nothing is written when anything is wrong. Keep "
-    "'status': 'draft' while you are still working it out with the author — an "
-    "'active' document must have every step's id, name and prompt. The shape is: "
+    "'status': 'draft' while training with the author — an 'active' document "
+    "must have every step's id, name and prompt. The shape is: "
     "{version: 1, status, inputs: {type: 'object', properties: {...}, required: [...]}, "
     "steps: [{id, name, prompt, depends_on: [], skills: [], subagents: [], tools: [], "
     "gate: 'auto'|'confirm'}], outputs: [{name, form, path}], rules: [str]}. Field "
@@ -116,24 +138,26 @@ _SAVE_DESC = (
 )
 
 _CHANGE_DESC = (
-    "Apply a small change to this feature's workflow as a diff — the tool to use while "
-    "working something out with the author, because it is reversible. Each item names "
-    "one place (path) and what it says before and after; the whole batch is refused if "
-    "anything moved since (nothing is written), so read the document first "
-    "(feature_workflow_get). target='definition' edits the workflow everybody runs; "
-    "target='overlay' edits only this author's own extra instructions, where path is "
-    "'/overlay'. The applied change is returned with its id — tell the author what "
-    "changed, and that they can undo it with feature_workflow_revert."
+    "Apply a small reversible change to the feature's workflow as a diff. "
+    "The draft author or a published feature's enterprise administrator may edit "
+    "the shared definition. Each item names one place (path) and what it says "
+    "before and after; the whole batch is refused if anything moved since "
+    "(nothing is written), so read the document first (feature_workflow_get). "
+    "target='definition' edits the workflow everybody runs; target='overlay' edits "
+    "only the current caller's extra instructions, where path is '/overlay'. "
+    "The applied change returns an id and can be undone with feature_workflow_revert."
 )
 
 
 def build_feature_workflow_tools(*, registry: Any, repos: Any) -> list[StructuredTool]:
-    """The workflow tool set for a feature's own agent (its author's turn)."""
+    """The workflow tools for a feature's author or enterprise administrator."""
 
     async def feature_workflow_get(feature_id: str = "") -> str:
         """Read this feature's workflow: the document, any validation problems, and your own overlay text."""
         try:
-            target, public_id, user_id = _resolve_owned_feature(registry, feature_id)
+            target, public_id, user_id = _resolve_owned_feature(
+                registry, feature_id, repos, read_only=True
+            )
             workspace = registry.workspace_for_agent(target)
             if workspace is None:
                 raise ValueError("this feature's workspace is not reachable")
@@ -164,13 +188,15 @@ def build_feature_workflow_tools(*, registry: Any, repos: Any) -> list[Structure
     async def feature_workflow_save(workflow: dict[str, Any]) -> str:
         """Replace this feature's workflow document (validated; nothing is written when invalid)."""
         try:
-            target, _public_id, _user_id = _resolve_owned_feature(registry, "")
+            target, _public_id, _user_id = _resolve_owned_feature(registry, "", repos)
             workspace = registry.workspace_for_agent(target)
             if workspace is None:
                 raise ValueError("this feature's workspace is not reachable")
             # The model is not asked to invent identifiers: a step that has none
             # gets one derived from its name, uniquely, before anything is validated.
-            stored = await service.save_definition(workspace, wf.fill_step_ids(workflow))
+            stored = await service.save_definition(
+                workspace, wf.fill_step_ids(workflow), repos=repos, agent_id=target
+            )
             return _ok({"saved": True, "workflow": stored})
         except Exception as exc:
             return _err(exc)
@@ -184,7 +210,7 @@ def build_feature_workflow_tools(*, registry: Any, repos: Any) -> list[Structure
         try:
             if target not in (TARGET_DEFINITION, TARGET_OVERLAY):
                 raise ValueError("target must be 'definition' or 'overlay'")
-            agent_id, public_id, user_id = _resolve_owned_feature(registry, "")
+            agent_id, public_id, user_id = _resolve_owned_feature(registry, "", repos)
             payload = [item.model_dump() for item in items]
             problems = wf_changes.validate_items(payload)
             if problems:
@@ -198,6 +224,7 @@ def build_feature_workflow_tools(*, registry: Any, repos: Any) -> list[Structure
                 workspace=workspace,
                 repos=repos,
                 feature_id=public_id,
+                agent_id=agent_id,
                 user_id=user_id,
                 target=target,
                 summary=summary,
@@ -218,7 +245,7 @@ def build_feature_workflow_tools(*, registry: Any, repos: Any) -> list[Structure
     async def feature_workflow_revert(change_id: str) -> str:
         """Undo a change this feature's workflow received (idempotent: undoing twice is fine)."""
         try:
-            agent_id, public_id, user_id = _resolve_owned_feature(registry, "")
+            agent_id, public_id, user_id = _resolve_owned_feature(registry, "", repos)
             row = repos.feature_change_repo.get(change_id)
             workspace = None
             needs_workspace = (
@@ -233,6 +260,7 @@ def build_feature_workflow_tools(*, registry: Any, repos: Any) -> list[Structure
                 repos=repos,
                 feature_id=public_id,
                 user_id=user_id,
+                agent_id=agent_id,
                 change_id=change_id,
             )
             return _ok(
@@ -246,9 +274,9 @@ def build_feature_workflow_tools(*, registry: Any, repos: Any) -> list[Structure
             return _err(exc)
 
     async def feature_workflow_runs(limit: int = 5) -> str:
-        """List this author's recent runs of the feature: what each was given, and when."""
+        """List this caller's recent runs of the feature: what each was given, and when."""
         try:
-            _agent, public_id, user_id = _resolve_owned_feature(registry, "")
+            _agent, public_id, user_id = _resolve_owned_feature(registry, "", repos, read_only=True)
             rows = repos.feature_run_repo.list_for(
                 feature_id=public_id, user_id=user_id, limit=max(1, min(int(limit), 50))
             )

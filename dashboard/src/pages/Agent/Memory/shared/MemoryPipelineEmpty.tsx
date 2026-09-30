@@ -19,13 +19,15 @@ import { useTranslation } from "react-i18next";
 import {
   memoryDashboardApi,
   type StatsCounts,
+  type MemoryScope,
 } from "../../../../api/modules/memoryDashboard";
 
 interface Props {
   agentId: string;
+  scope?: MemoryScope;
 }
 
-export default function MemoryPipelineEmpty({ agentId }: Props) {
+export default function MemoryPipelineEmpty({ agentId, scope }: Props) {
   const { t } = useTranslation();
   const [counts, setCounts] = useState<StatsCounts | null>(null);
   const [loading, setLoading] = useState(true);
@@ -38,10 +40,12 @@ export default function MemoryPipelineEmpty({ agentId }: Props) {
     (async () => {
       try {
         if (typeof memoryDashboardApi.statsCounts !== "function") return;
-        const c = await memoryDashboardApi
-          .statsCounts(agentId)
-          .catch(() => null);
+        const c = scope
+          ? await memoryDashboardApi.statsCounts(agentId, scope)
+          : await memoryDashboardApi.statsCounts(agentId);
         if (!cancelled) setCounts(c);
+      } catch {
+        if (!cancelled) setCounts(null);
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -50,7 +54,7 @@ export default function MemoryPipelineEmpty({ agentId }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [agentId]);
+  }, [agentId, scope]);
 
   if (loading) {
     return <Skeleton active paragraph={{ rows: 2 }} title={false} />;

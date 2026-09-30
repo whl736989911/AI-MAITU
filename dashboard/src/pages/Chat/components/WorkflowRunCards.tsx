@@ -47,6 +47,7 @@ export default function WorkflowRunCards({
   isStreaming,
   onRun,
 }: WorkflowRunCardsProps) {
+
   const { t } = useTranslation();
   const { inputs, definition, run, loading, markSubmitted } = useWorkflowRun({
     agentId,

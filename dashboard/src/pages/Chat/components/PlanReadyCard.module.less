@@ -1,0 +1,72 @@
+.card {
+  width: 100%;
+  max-width: var(--chat-column-max, 960px);
+  box-sizing: border-box;
+  padding: 14px 16px;
+  border: 1px solid
+    color-mix(
+      in srgb,
+      var(--fn-color-info, #1677ff) 42%,
+      var(--fn-border-primary)
+    );
+  border-radius: var(--fn-radius-lg);
+  background: color-mix(
+    in srgb,
+    var(--fn-color-info, #1677ff) 7%,
+    var(--fn-bg-primary)
+  );
+  box-shadow: var(--fn-shadow-xs);
+}
+.titleRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.iconWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--fn-radius-full);
+  color: var(--fn-color-info, #1677ff);
+  background: color-mix(
+    in srgb,
+    var(--fn-color-info, #1677ff) 16%,
+    transparent
+  );
+}
+.title {
+  color: var(--fn-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+.body {
+  margin: 0 0 12px;
+  color: var(--fn-text-secondary);
+  font-size: 13px;
+  line-height: 1.55;
+}
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.execute,
+.keep {
+  padding: 6px 12px;
+  border: 0;
+  border-radius: var(--fn-radius-md);
+  font-size: 13px;
+  cursor: pointer;
+}
+.execute {
+  color: #fff;
+  background: var(--fn-color-info, #1677ff);
+}
+.keep {
+  color: var(--fn-text-primary);
+  border: 1px solid var(--fn-border-primary);
+  background: var(--fn-bg-secondary, transparent);
+}

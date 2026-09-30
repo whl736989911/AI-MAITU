@@ -15,6 +15,7 @@ import {
   FolderOpen,
   RefreshCw,
   MessageSquare,
+  SlidersHorizontal,
 } from "lucide-react";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
 import SubagentCatalogDrawer from "./SubagentCatalogDrawer";
@@ -63,6 +64,20 @@ function getStateMeta(state: string) {
 }
 
 const TRANSIENT = new Set(["starting", "stopping"]);
+const MEMORY_MAINTENANCE_ACTIVE: Record<string, true> = {
+  waiting: true,
+  queued: true,
+  backing_up: true,
+  pruning: true,
+  deduplicating: true,
+  compacting: true,
+};
+
+const MEMORY_MAINTENANCE_TERMINAL: Record<string, true> = {
+  done: true,
+  failed: true,
+  skipped: true,
+};
 
 /**
  * The card's own words about the row it is showing, keyed by kind.
@@ -91,6 +106,7 @@ export interface AgentCardProps {
   onPublishedChange?: () => void;
   onEdit: (agentId: string) => void;
   onWorkflow?: (agentId: string) => void;
+  onPersonalization?: (agentId: string) => void;
   onDeleted: (agentId: string) => void;
   onStateChange: (agentId: string, newState: string) => void;
   /** Called when a start/stop poll settles (e.g. admin views another user's agents). */
@@ -113,6 +129,7 @@ export const AgentCard = memo(function AgentCard({
   onPublishedChange,
   onEdit,
   onWorkflow,
+  onPersonalization,
   onDeleted,
   onStateChange,
   onPollSettled,
@@ -143,8 +160,14 @@ export const AgentCard = memo(function AgentCard({
     Set<string>
   >(() => new Set());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const [memorySlimming, setMemorySlimming] = useState(false);
+  const [memoryMaintenancePhase, setMemoryMaintenancePhase] = useState<
+    string | null
+  >(null);
   const maintPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const terminalMaintenanceSeenRef = useRef<{
+    key: string;
+    timestamp: number;
+  } | null>(null);
 
   useEffect(() => {
     setLocalState(agent.state);
@@ -183,7 +206,8 @@ export const AgentCard = memo(function AgentCard({
 
   useEffect(() => {
     if (localState !== "running") {
-      setMemorySlimming(false);
+      setMemoryMaintenancePhase(null);
+      terminalMaintenanceSeenRef.current = null;
       if (maintPollRef.current) {
         clearInterval(maintPollRef.current);
         maintPollRef.current = null;
@@ -194,18 +218,40 @@ export const AgentCard = memo(function AgentCard({
     const startedAt = Date.now();
     const pull = () =>
       request<{
-        memory_maintenance?: { phase?: string } | null;
+        memory_maintenance?: {
+          phase?: string;
+          updated_at?: number | null;
+          started_at?: number | null;
+        } | null;
       }>(`/agents/${agent.agent_id}/status`)
         .then((s) => {
           if (cancelled) return;
-          const phase = s.memory_maintenance?.phase;
-          const active =
-            phase === "queued" || phase === "pruning" || phase === "compacting";
-          setMemorySlimming(!!active);
-          // First tick is ~1s after start; don't drop the poll on the
-          // idle snapshot before compact begins. Keep going while active.
+          const maintenance = s.memory_maintenance;
+          const phase = maintenance?.phase ?? "";
+          const active = !!MEMORY_MAINTENANCE_ACTIVE[phase];
+          const terminal = !!MEMORY_MAINTENANCE_TERMINAL[phase];
+          const updatedAt = maintenance?.updated_at;
+          let recentTerminal = false;
+          if (terminal && maintenance) {
+            const key = `${phase}:${updatedAt ?? ""}:${
+              maintenance.started_at ?? ""
+            }`;
+            if (terminalMaintenanceSeenRef.current?.key !== key) {
+              terminalMaintenanceSeenRef.current = {
+                key,
+                timestamp: Date.now() / 1000,
+              };
+            }
+            const finishedAt =
+              updatedAt ?? terminalMaintenanceSeenRef.current.timestamp;
+            recentTerminal = Date.now() / 1000 - finishedAt <= 15;
+          } else {
+            terminalMaintenanceSeenRef.current = null;
+          }
+          setMemoryMaintenancePhase(active || recentTerminal ? phase : null);
           if (
             !active &&
+            !recentTerminal &&
             Date.now() - startedAt > 15_000 &&
             maintPollRef.current
           ) {
@@ -345,9 +391,14 @@ export const AgentCard = memo(function AgentCard({
           <div className={styles.agentCard2TitleBlock}>
             <div className={styles.agentCard2NameRow}>
               <div className={styles.agentCard2Name}>{agent.name}</div>
+              {isFeatureAgent(agent) && agent.user_id === null && (
+                <Tag color="purple">
+                  {t("features.share.enterpriseManaged")}
+                </Tag>
+              )}
               {agent.is_shared && (
                 <Tag color="blue">
-                  {sharedViewer
+                  {sharedViewer && agent.owner_username
                     ? t(rowKey("experts.share.fromOwner"), {
                         name: agent.owner_username,
                       })
@@ -383,8 +434,22 @@ export const AgentCard = memo(function AgentCard({
                 />
                 {formatAgentState(localState, t)}
               </div>
-              {memorySlimming && (
-                <Tag color="processing">{t("experts.memorySlimming")}</Tag>
+              {memoryMaintenancePhase && (
+                <Tag
+                  color={
+                    memoryMaintenancePhase === "done"
+                      ? "success"
+                      : memoryMaintenancePhase === "failed"
+                      ? "error"
+                      : memoryMaintenancePhase === "skipped"
+                      ? "default"
+                      : "processing"
+                  }
+                >
+                  {t(`chat.memoryMaintenance.${memoryMaintenancePhase}`, {
+                    defaultValue: t("experts.memorySlimming"),
+                  })}
+                </Tag>
               )}
               <MbtiPersonaTag
                 value={agent.persona_mbti}
@@ -523,10 +588,35 @@ export const AgentCard = memo(function AgentCard({
                 onTools={() => setToolSettingsOpen(true)}
                 onPlugins={() => setPluginCatalogOpen(true)}
                 onMbti={() => setMbtiCatalogOpen(true)}
-                onMemory={() => setMemoryCatalogOpen(true)}
+                onMemory={
+                  isFeatureAgent(agent)
+                    ? undefined
+                    : () => setMemoryCatalogOpen(true)
+                }
                 onChannels={() => setChannelCatalogOpen(true)}
               />
             </>
+          )}
+          {onPersonalization && isFeatureAgent(agent) && (
+            <Tooltip
+              title={t(
+                "personalization.myPersonalization",
+                "My personalization",
+              )}
+              mouseEnterDelay={0.5}
+            >
+              <button
+                type="button"
+                className={styles.agentCard2EditBtn}
+                onClick={() => onPersonalization(agent.agent_id)}
+                aria-label={t(
+                  "personalization.myPersonalization",
+                  "My personalization",
+                )}
+              >
+                <SlidersHorizontal size={13} />
+              </button>
+            </Tooltip>
           )}
 
           {chatReady ? (
