@@ -1898,7 +1898,14 @@
       "expandInputs": "展开",
       "collapseInputs": "收起",
       "expandOutputs": "查看文件",
-      "collapseOutputs": "收起文件"
+      "collapseOutputs": "收起文件",
+      "inputCount": "{{count}} 个参数",
+      "fillInputs": "填写工作流输入",
+      "running": "运行中",
+      "generatedBy": "由「{{name}}」生成",
+      "expandDetails": "展开详情",
+      "collapseDetails": "收起详情",
+      "noOutputs": "暂无输出文件"
     },
     "openBrowser": "查看浏览器",
     "openBrowserHint": "Agent 正在网页中操作",

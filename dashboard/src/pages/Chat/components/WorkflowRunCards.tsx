@@ -10,9 +10,8 @@
  * before the card existed.
  */
 
-import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { createPortal } from "react-dom";
+
 
 import type { ChatAttachment } from "../hooks/useChat";
 import { useRunArtifacts, useWorkflowRun } from "../hooks/useWorkflowRun";
@@ -48,13 +47,6 @@ export default function WorkflowRunCards({
   isStreaming,
   onRun,
 }: WorkflowRunCardsProps) {
-  const [summaryContainer, setSummaryContainer] =
-    useState<HTMLElement | null>(null);
-  useEffect(() => {
-    setSummaryContainer(
-      document.querySelector<HTMLElement>("[data-workflow-input-summary]"),
-    );
-  }, []);
   const { t } = useTranslation();
   const { inputs, definition, run, loading, markSubmitted } = useWorkflowRun({
     agentId,
@@ -86,47 +78,29 @@ export default function WorkflowRunCards({
   };
 
   return (
-    <>
-      {run && summaryContainer
-        ? createPortal(
-            <div className={styles.workflowInputSummary}>
-              <WorkflowInputCard
-                inputs={inputs}
-                run={run}
-                agentId={agentId ?? ""}
-                busy={busy}
-                onRun={({ attachments, payload }) =>
-                  submit(attachments, payload)
-                }
-              />
-            </div>,
-            summaryContainer,
-          )
-        : null}
-      <div className={styles.workflowDock}>
-        <div className={styles.workflowDockInner}>
-          <div className={styles.workflowStack}>
-            {!run ? (
-              <WorkflowInputCard
-                inputs={inputs}
-                run={null}
-                agentId={agentId ?? ""}
-                busy={busy}
-                onRun={({ attachments, payload }) =>
-                  submit(attachments, payload)
-                }
-              />
-            ) : null}
-            {run ? (
-              <WorkflowOutputCard
-                agentId={agentId ?? ""}
-                files={artifacts}
-                outputs={definition?.outputs}
-              />
-            ) : null}
-          </div>
+    <div className={styles.workflowDock}>
+      <div className={styles.workflowDockInner}>
+        <div className={styles.workflowStack}>
+          <WorkflowInputCard
+            inputs={inputs}
+            run={run}
+            agentId={agentId ?? ""}
+            featureName={name}
+            stateKey={threadId}
+            busy={busy}
+            onRun={({ attachments, payload }) => submit(attachments, payload)}
+          />
+          {run ? (
+            <WorkflowOutputCard
+              agentId={agentId ?? ""}
+              files={artifacts}
+              outputs={definition?.outputs}
+              featureName={name}
+              createdAt={run.createdAt}
+            />
+          ) : null}
         </div>
       </div>
-    </>
+    </div>
   );
 }

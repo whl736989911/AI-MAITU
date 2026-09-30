@@ -485,6 +485,23 @@ class OctopServer:
             trajectory_service=trajectory_service,
             history_archive=history_archive,
         )
+        users = user_mgr.list()
+        admin = next((user for user in users if user.is_admin), None)
+        if admin is not None:
+            from octop.infra.agents.default_agent import (  # noqa: PLC0415
+                ensure_builtin_general_assistant_feature,
+            )
+
+            try:
+                await ensure_builtin_general_assistant_feature(
+                    registry,
+                    self.expert_catalog,
+                    self.services.repos.resource_acl_repo,
+                    owner_user_id=admin.id,
+                    locale=admin.locale,
+                )
+            except Exception:
+                logger.exception("could not ensure built-in general-assistant feature")
         from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
         resume_pending_index_jobs(self.services)

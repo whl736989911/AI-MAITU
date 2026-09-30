@@ -168,6 +168,15 @@ async def _bootstrap_default_agent(server: Any, *, user_id: int, locale: str = "
         locale=locale,
         agent_id=SETUP_DEFAULT_AGENT_ID,
     )
+    from octop.infra.agents.default_agent import ensure_builtin_general_assistant_feature
+
+    await ensure_builtin_general_assistant_feature(
+        server.app_runtime.agent_registry,
+        server.expert_catalog,
+        server.services.repos.resource_acl_repo,
+        owner_user_id=user_id,
+        locale=locale,
+    )
 
 
 async def _apply_provider_draft(server: Any, draft: ProviderDraftBody) -> None:

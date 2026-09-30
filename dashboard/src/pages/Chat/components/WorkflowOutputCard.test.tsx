@@ -47,26 +47,30 @@ function renderCard(
 }
 
 describe("<WorkflowOutputCard />", () => {
-  it("keeps files reachable from a compact output summary", async () => {
+  it("renders artifacts as unboxed content and reveals their details on demand", async () => {
     const user = userEvent.setup();
     renderCard([QUOTE, NOTES]);
 
     expect(screen.getByText("chat.workflow.outputCount")).toBeInTheDocument();
-    expect(screen.queryByText(QUOTE)).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "chat.workflow.expandOutputs" }),
-    );
-
     expect(screen.getByText("报价单")).toBeInTheDocument();
+    expect(screen.getByText("notes.txt")).toBeInTheDocument();
+    expect(screen.queryByText(QUOTE)).not.toBeInTheDocument();
+    const expand = screen.getByRole("button", { name: "chat.workflow.expandDetails" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    await user.click(expand);
+
     expect(screen.getByText(QUOTE)).toBeInTheDocument();
     expect(screen.getByText("给客户的报价")).toBeInTheDocument();
-    expect(screen.getByText("notes.txt")).toBeInTheDocument();
-    expect(
-      screen.getAllByRole("button", { name: "common.preview" }),
-    ).toHaveLength(2);
-    expect(
-      screen.getAllByRole("button", { name: "common.download" }),
-    ).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "common.preview" })).toHaveLength(2);
+    expect(screen.getAllByRole("button", { name: "common.download" })).toHaveLength(2);
+  });
+  it("keeps the empty state and keyboard-accessible details control on one compact row", () => {
+    renderCard([]);
+    const empty = screen.getByText("chat.workflow.noOutputs");
+    expect(empty.parentElement).toContainElement(
+      screen.getByRole("button", { name: "chat.workflow.expandDetails" }),
+    );
+    expect(screen.queryByRole("button", { name: "common.download" })).not.toBeInTheDocument();
   });
   it("opens a produced file in the chat's file panel", async () => {
     const user = userEvent.setup();
@@ -74,14 +78,36 @@ describe("<WorkflowOutputCard />", () => {
     renderCard([QUOTE, NOTES], onPreview);
 
     await user.click(
-      screen.getByRole("button", { name: "chat.workflow.expandOutputs" }),
-    );
-    await user.click(
       (await screen.findAllByRole("button", { name: "common.preview" }))[0],
     );
 
     // The path is the workspace one the panel and the download use — not the
     // label the card put on it.
     expect(onPreview).toHaveBeenCalledWith(QUOTE);
+  });
+
+  it("normalizes output mount URIs before opening workspace files", async () => {
+    const user = userEvent.setup();
+    const onPreview = vi.fn();
+    const expectedPaths = [
+      "output/苏州本周天气预报_20260930.md",
+      "output/forecast.md",
+      "output/summary.txt",
+    ];
+    renderCard(
+      [
+        "file:///output/%E8%8B%8F%E5%B7%9E%E6%9C%AC%E5%91%A8%E5%A4%A9%E6%B0%94%E9%A2%84%E6%8A%A5_20260930.md",
+        "/output/forecast.md",
+        "output\\summary.txt",
+      ],
+      onPreview,
+    );
+
+    const previews = await screen.findAllByRole("button", {
+      name: "common.preview",
+    });
+    for (const preview of previews) await user.click(preview);
+
+    expect(onPreview.mock.calls.map(([path]) => path)).toEqual(expectedPaths);
   });
 });

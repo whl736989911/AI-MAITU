@@ -1,8 +1,4 @@
-"""Bootstrap a first default agent (general-assistant) for a user.
-
-Used by the setup wizard (pinned ``agent_id=main``) and by invite redeem
-(auto-allocated agent id) so every new account starts with the same expert.
-"""
+"""Bootstrap the default expert and built-in general-assistant feature."""
 
 from __future__ import annotations
 
@@ -10,7 +6,9 @@ import logging
 from typing import Any
 
 from octop.infra.agents.experts.catalog import ExpertCatalog, build_create_spec_from_expert
+from octop.infra.agents.kinds import KIND_FEATURE, feature_agent_id_for
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.sharing import VISIBILITY_PUBLIC
 from octop.infra.utils.host_dirs import host_home_dir, host_path_text
 from octop.infra.utils.locale import normalize_locale
 
@@ -18,7 +16,62 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EXPERT_ID = "general-assistant"
 SETUP_DEFAULT_AGENT_ID = "main"
+BUILTIN_GENERAL_ASSISTANT_FEATURE_ID = "general-assistant"
+BUILTIN_GENERAL_ASSISTANT_FEATURE_AGENT_ID = feature_agent_id_for(
+    BUILTIN_GENERAL_ASSISTANT_FEATURE_ID
+)
 
+
+async def ensure_builtin_general_assistant_feature(
+    registry: Any,
+    catalog: ExpertCatalog | None,
+    resource_acl_repo: Any,
+    *,
+    owner_user_id: int,
+    locale: str = "zh",
+) -> Any | None:
+    """Create the instance-wide assistant feature once, seeded from the expert template."""
+    if registry.get_row(BUILTIN_GENERAL_ASSISTANT_FEATURE_AGENT_ID) is not None:
+        return None
+    if catalog is None:
+        raise OctopError(ErrorCode.INTERNAL_ERROR, "expert catalog not available")
+    expert = catalog.get(DEFAULT_EXPERT_ID)
+    if expert is None:
+        raise OctopError(
+            ErrorCode.INTERNAL_ERROR,
+            f"{DEFAULT_EXPERT_ID} expert template missing",
+        )
+
+    loc = normalize_locale(locale)
+    summary = expert.summary
+    if loc == "zh":
+        name = "通用助手"
+        description = summary.description_zh or summary.label_zh
+        welcome_message = summary.welcome_message_zh
+    else:
+        name = "General Assistant"
+        description = summary.description_en or summary.label_en
+        welcome_message = summary.welcome_message_en
+
+    spec = build_create_spec_from_expert(
+        expert_id=DEFAULT_EXPERT_ID,
+        expert=expert,
+        user_id=owner_user_id,
+        name=name,
+        description=description,
+        locale=loc,
+        agent_id=BUILTIN_GENERAL_ASSISTANT_FEATURE_AGENT_ID,
+        welcome_message=welcome_message,
+    )
+    spec.kind = KIND_FEATURE
+    created = await registry.create(spec)
+    resource_acl_repo.set_visibility(
+        "feature",
+        BUILTIN_GENERAL_ASSISTANT_FEATURE_ID,
+        VISIBILITY_PUBLIC,
+        owner_user_id=owner_user_id,
+    )
+    return created
 
 def default_home_local_backend() -> dict[str, Any]:
     """Same local backend as the dashboard create-from-expert default (home-scoped)."""

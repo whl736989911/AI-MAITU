@@ -32,7 +32,7 @@ const inputs = {
 function renderCards() {
   return render(
     <>
-      <div data-testid="chat-header" data-workflow-input-summary />
+      <div data-testid="chat-header" />
       <WorkflowRunCards
         agentId="feature"
         agentKind="feature"
@@ -46,7 +46,7 @@ function renderCards() {
 }
 
 describe("WorkflowRunCards placement", () => {
-  it("puts a submitted input summary in the header and keeps outputs in the dock", async () => {
+  it("keeps the submitted input summary and artifacts together in the dock", async () => {
     useWorkflowRunMock.mockReturnValue({
       inputs,
       definition: null,
@@ -58,14 +58,13 @@ describe("WorkflowRunCards placement", () => {
 
     renderCards();
 
-    const summary = await screen.findByTestId("submitted-workflow-input");
-    const header = screen.getByTestId("chat-header");
-    await waitFor(() => expect(header).toContainElement(summary));
+    expect(await screen.findByTestId("submitted-workflow-input")).toBeInTheDocument();
     expect(screen.getByTestId("workflow-output")).toBeInTheDocument();
     expect(screen.queryByTestId("workflow-input-form")).not.toBeInTheDocument();
+    expect(screen.getByTestId("chat-header")).toBeEmptyDOMElement();
   });
 
-  it("keeps an unsubmitted form in the workflow dock", () => {
+  it("keeps an unsubmitted form in the workflow dock without output", () => {
     useWorkflowRunMock.mockReturnValue({
       inputs,
       definition: null,
@@ -78,6 +77,7 @@ describe("WorkflowRunCards placement", () => {
     renderCards();
 
     expect(screen.getByTestId("workflow-input-form")).toBeInTheDocument();
+    expect(screen.queryByTestId("workflow-output")).not.toBeInTheDocument();
     expect(screen.getByTestId("chat-header")).toBeEmptyDOMElement();
   });
 });

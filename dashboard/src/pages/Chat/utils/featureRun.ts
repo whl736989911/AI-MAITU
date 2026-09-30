@@ -165,11 +165,39 @@ export function submittedInputs(
   return values;
 }
 
+/** Normalize workflow output URIs into workspace-relative paths for workspace I/O. */
+export function normalizeWorkflowOutputPath(path: string): string {
+  const trimmed = path.trim();
+  if (!trimmed) return "";
+
+  let candidate = trimmed.replace(/\\/g, "/");
+  const isFileUri = /^file:\/\//i.test(candidate);
+  if (isFileUri) {
+    candidate = candidate.replace(/^file:\/\//i, "");
+    if (candidate.startsWith("//")) candidate = candidate.slice(1);
+  }
+
+  try {
+    candidate = decodeURIComponent(candidate);
+  } catch {
+    // Keep malformed URI escapes opaque and let the workspace API reject the URI.
+    if (isFileUri) return trimmed;
+  }
+  candidate = candidate.replace(/\\/g, "/");
+
+  // Workflow tools report their output mount both as a file URI and as an
+  // absolute-looking workspace key. Other absolute paths remain absolute so the
+  // backend's workspace-boundary check can reject them rather than rebase them.
+  if (candidate === "/output" || candidate.startsWith("/output/")) {
+    return candidate.slice(1);
+  }
+  if (isFileUri) return trimmed;
+  return candidate;
+}
+
 /** A path in one spelling: separators normalized, no leading ``./`` or ``/``. */
 function comparablePath(path: string): string {
-  return path
-    .trim()
-    .replace(/\\/g, "/")
+  return normalizeWorkflowOutputPath(path)
     .replace(/^\.\//, "")
     .replace(/^\/+/, "")
     .toLowerCase();
@@ -193,15 +221,20 @@ export function labelRunOutputs(
   outputs?: readonly WorkflowOutput[],
 ): RunOutputFile[] {
   const declared = outputs ?? [];
-  return files.map((path) => ({
-    path,
-    filename: filenameOf(path),
-    declared:
-      declared.find(
-        (output) => output.path && pathMatches(path, output.path),
-      ) ?? null,
-  }));
+  return files.map((reportedPath) => {
+    const path = normalizeWorkflowOutputPath(reportedPath);
+    return {
+      path,
+      filename: filenameOf(path),
+      declared:
+        declared.find(
+          (output) => output.path && pathMatches(path, output.path),
+        ) ?? null,
+    };
+  });
 }
+
+
 
 /** Whether the definition declares a form worth showing. */
 export function declaredInputs(
