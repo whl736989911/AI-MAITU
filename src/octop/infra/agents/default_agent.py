@@ -73,6 +73,7 @@ async def ensure_builtin_general_assistant_feature(
     )
     return created
 
+
 def default_home_local_backend() -> dict[str, Any]:
     """Same local backend as the dashboard create-from-expert default (home-scoped)."""
     return {

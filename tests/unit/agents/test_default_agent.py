@@ -27,7 +27,9 @@ def catalog() -> ExpertCatalog:
     return cat
 
 
-async def test_ensure_builtin_feature_creates_public_plain_assistant(catalog: ExpertCatalog) -> None:
+async def test_ensure_builtin_feature_creates_public_plain_assistant(
+    catalog: ExpertCatalog,
+) -> None:
     registry = MagicMock()
     registry.get_row.return_value = None
     registry.create = AsyncMock(return_value=object())
@@ -58,9 +60,7 @@ async def test_ensure_builtin_feature_is_idempotent(catalog: ExpertCatalog) -> N
     registry.create = AsyncMock()
     acl = MagicMock()
 
-    result = await ensure_builtin_general_assistant_feature(
-        registry, catalog, acl, owner_user_id=4
-    )
+    result = await ensure_builtin_general_assistant_feature(registry, catalog, acl, owner_user_id=4)
 
     assert result is None
     registry.create.assert_not_called()
