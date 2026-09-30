@@ -57,23 +57,27 @@ async def test_invite_create_list_redeem_and_one_time(env) -> None:
     assert me.status_code == 200
     assert me.json()["username"] == "bob_invitee"
 
-    # Same default expert as setup wizard (general-assistant), not pinned to ``main``.
+    # The public built-in feature is shared; redemption creates a separate user agent.
     agents = await c.get(
         "/api/agents",
         headers={"Authorization": f"Bearer {body['access_token']}"},
     )
     assert agents.status_code == 200, agents.text
     bob_agents = agents.json()
-    assert len(bob_agents) == 1
-    assert bob_agents[0]["template_name"] == "general-assistant"
-    assert bob_agents[0]["agent_id"] != "main"
+    feature_ids = {row["agent_id"] for row in bob_agents if row["kind"] == "feature"}
+    assert feature_ids == {"feat-general-assistant"}
+    bob_agent_rows = {row["agent_id"]: row for row in bob_agents if row["kind"] == "agent"}
+    assert len(bob_agent_rows) == 1
+    bob_agent = next(iter(bob_agent_rows.values()))
+    assert bob_agent["template_name"] == "general-assistant"
+    assert bob_agent["agent_id"] != "main"
     assert srv.app_runtime is not None
-    bob_row = srv.app_runtime.agent_registry.get_row(bob_agents[0]["agent_id"])
+    bob_row = srv.app_runtime.agent_registry.get_row(bob_agent["agent_id"])
     assert bob_row is not None
     bob_cfg = json.loads(bob_row.config_json or "{}")
     assert bob_cfg["backend"] == default_home_local_backend()
     assert bob_cfg["backend"]["root_dir"] == host_path_text(host_home_dir())
-    assert bob_cfg["workspace_dir"] == f"/.octop/workspaces/{bob_agents[0]['agent_id']}"
+    assert bob_cfg["workspace_dir"] == f"/.octop/workspaces/{bob_agent['agent_id']}"
 
     again = await c.post(
         "/api/auth/invite/redeem",

@@ -130,12 +130,10 @@ async def test_regular_user_can_create_and_reload_agent(env) -> None:
 
 
 async def test_agent_kinds_are_readable_without_the_deployment_list_scope(env) -> None:
-    """Which kinds exist is the deployment's, and is read without the list's permission.
+    """Kinds come from the deployment even when a caller cannot list all agents.
 
-    The agent list is what the caller may see, so a caller without the ``users``
-    permission decides from a subset: here their own list holds no feature at all,
-    while the deployment does. A surface drawing one branch per kind has to get
-    the deployment's answer, or it hides a branch that has rows in it.
+    This caller sees the instance-wide public assistant, but not another user's
+    unshared feature or agent. The kinds endpoint still reflects the deployment.
     """
     c, _srv, admin_auth = env
     caller_auth = await create_user(c, admin_auth, username="kinds_caller")
@@ -149,12 +147,12 @@ async def test_agent_kinds_are_readable_without_the_deployment_list_scope(env) -
     )
     assert r.status_code == 201, r.text
 
-    # The deployment's own list stays the permission's to read …
+    # The deployment-wide list still requires permission; the caller sees its public builtin.
     r = await c.get("/api/agents?scope=all", headers=caller_auth)
     assert r.status_code == 403
     r = await c.get("/api/agents", headers=caller_auth)
     assert r.status_code == 200
-    assert "feature" not in {row["kind"] for row in r.json()}
+    assert {row["agent_id"] for row in r.json()} == {"feat-general-assistant"}
 
     # … and the kinds the deployment holds are not.
     r = await c.get("/api/agents/kinds", headers=caller_auth)
@@ -163,7 +161,7 @@ async def test_agent_kinds_are_readable_without_the_deployment_list_scope(env) -
 
 
 async def test_agent_kinds_count_only_enabled_rows(env) -> None:
-    """A disabled row is not "the deployment holds this kind" — the list it is read from is enabled-only."""
+    """Disabled rows do not count; the enabled public assistant still does."""
     c, srv, admin_auth = env
     r = await c.post("/api/agents", headers=admin_auth, json={"name": "kinds-enabled"})
     assert r.status_code == 201, r.text
@@ -178,6 +176,10 @@ async def test_agent_kinds_count_only_enabled_rows(env) -> None:
     assert "feature" in r.json()["kinds"]
 
     srv.services.agent_repo.set_enabled("feat-kinds-disabled", False)
+    r = await c.get("/api/agents/kinds", headers=admin_auth)
+    assert "feature" in r.json()["kinds"]
+
+    srv.services.agent_repo.set_enabled("feat-general-assistant", False)
     r = await c.get("/api/agents/kinds", headers=admin_auth)
     assert "feature" not in r.json()["kinds"]
     assert "agent" in r.json()["kinds"]

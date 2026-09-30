@@ -21,8 +21,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Button, Input, InputNumber, Select, Switch, Tooltip } from "antd";
 import type { TFunction } from "i18next";
-import { ChevronDown, Paperclip, Play, Trash2 } from "lucide-react";
+import { Check, ChevronDown, LoaderCircle, Paperclip, Play, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
+
 
 import type {
   WorkflowInputField,
@@ -62,10 +63,14 @@ export interface WorkflowInputCardProps {
   /** The run this thread already has — the card is read-only when there is one. */
   run: ThreadRun | null;
   agentId: string;
-  /** A turn is in flight (or the thread is being created): no second run. */
+  /** The feature name used to label this run in the chat. */
+  featureName?: string | null;
+  /** Session-scoped key used to remember expansion for this conversation. */
+  stateKey?: string | null;
   busy: boolean;
   onRun: (submission: WorkflowRunSubmission) => void;
 }
+
 
 /** The label a field is asked under, in the reader's language. */
 function fieldLabel(field: WorkflowInputField, locale: UiLocale): string {
@@ -98,6 +103,8 @@ export default function WorkflowInputCard({
   inputs,
   run,
   agentId,
+  featureName,
+  stateKey,
   busy,
   onRun,
 }: WorkflowInputCardProps) {
@@ -109,16 +116,36 @@ export default function WorkflowInputCard({
   );
   const [files, setFiles] = useState<Record<string, ChatAttachment[]>>({});
   const [uploading, setUploading] = useState<Record<string, boolean>>({});
-  const [expanded, setExpanded] = useState(run === null);
+  // Expansion is remembered for this conversation in the current browser session.
+  const [expanded, setExpanded] = useState(() => {
+    if (!stateKey) return false;
+    try {
+      return window.sessionStorage.getItem(`workflow-input:${stateKey}`) === "expanded";
+    } catch {
+      return false;
+    }
+  });
   const fileInputs = useRef<Record<string, HTMLInputElement | null>>({});
-  // The form is a fresh one whenever the definition it asks changes.
   useEffect(() => {
     setDraft(emptyInputDraft(inputs));
     setFiles({});
   }, [inputs]);
+  const hadRun = useRef(run !== null);
   useEffect(() => {
-    if (run) setExpanded(false);
-  }, [run?.id]);
+    if (run && !hadRun.current) setExpanded(false);
+    hadRun.current = run !== null;
+  }, [run]);
+  useEffect(() => {
+    if (!stateKey) return;
+    try {
+      window.sessionStorage.setItem(
+        `workflow-input:${stateKey}`,
+        expanded ? "expanded" : "collapsed",
+      );
+    } catch {
+      // Expansion remains usable when storage is unavailable.
+    }
+  }, [expanded, stateKey]);
 
   const fields = useMemo(() => Object.entries(inputs.properties), [inputs]);
   const missing = useMemo(
@@ -138,6 +165,13 @@ export default function WorkflowInputCard({
         )}`,
     )
     .join(" · ");
+  const time = run?.createdAt
+    ? new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(run.createdAt * 1000))
+    : null;
+  const name = featureName?.trim();
 
   const setValue = (name: string, value: WorkflowInputValue) => {
     setDraft((current) => ({ ...current, [name]: value }));
@@ -170,8 +204,6 @@ export default function WorkflowInputCard({
           } satisfies ChatAttachment;
         }),
       );
-      // A single-file field holds one file: picking another replaces the first,
-      // which is what the caller picking a second file is asking for.
       const combined = [...(files[name] ?? []), ...uploaded];
       const kept =
         inputs.properties[name]?.multiple === true
@@ -215,43 +247,59 @@ export default function WorkflowInputCard({
   };
 
   return (
-    <section
-      className={`${styles.card} ${
-        readOnly && !expanded ? styles.collapsed : ""
-      }`}
-      aria-label={t("chat.workflow.inputTitle")}
-    >
+    <section className={styles.card} aria-label={t("chat.workflow.inputTitle")}>
       <div className={styles.header}>
-        <span className={styles.title}>{t("chat.workflow.inputTitle")}</span>
-        {readOnly ? (
-          <>
-            <span className={styles.badge}>{t("chat.workflow.submitted")}</span>
-            <span className={styles.summary} title={summary}>
-              {summary}
-              {fields.length > 2 ? ` · +${fields.length - 2}` : ""}
-            </span>
-            <button
-              type="button"
-              className={styles.toggle}
-              aria-expanded={expanded}
-              onClick={() => setExpanded((value) => !value)}
-            >
-              {t(
-                expanded
-                  ? "chat.workflow.collapseInputs"
-                  : "chat.workflow.expandInputs",
-              )}
-              <ChevronDown
-                className={expanded ? styles.chevronExpanded : ""}
-                size={14}
-                aria-hidden="true"
-              />
-            </button>
-          </>
-        ) : null}
+        <button
+          type="button"
+          className={styles.summaryButton}
+          aria-expanded={expanded}
+          aria-label={t(
+            expanded ? "chat.workflow.collapseInputs" : "chat.workflow.expandInputs",
+          )}
+          onClick={() => setExpanded((value) => !value)}
+        >
+          <ChevronDown
+            className={`${styles.chevron} ${expanded ? styles.chevronExpanded : ""}`}
+            size={14}
+            aria-hidden="true"
+          />
+          {readOnly ? (
+            <>
+              {name ? <span className={styles.runName}>{name}</span> : null}
+              <span className={styles.summaryMeta}>
+                {t("chat.workflow.inputCount", { count: fields.length })}
+              </span>
+              {time ? <span className={styles.summaryMeta}>{time}</span> : null}
+              <span className={busy ? styles.statusRunning : styles.statusSubmitted}>
+                <span className={styles.statusIcon} aria-hidden="true">
+                  {busy ? <LoaderCircle size={12} className={styles.spinIcon} /> : <Check size={12} />}
+                </span>
+                {t(busy ? "chat.workflow.running" : "chat.workflow.submitted")}
+              </span>
+            </>
+          ) : (
+            <span className={styles.runName}>{t("chat.workflow.fillInputs")}</span>
+          )}
+          <span className={styles.toggleLabel}>
+            {t(expanded ? "chat.workflow.collapseInputs" : "chat.workflow.expandInputs")}
+          </span>
+        </button>
       </div>
 
-      {(!readOnly || expanded) && (
+      {readOnly && expanded ? (
+        <div className={styles.readOnlySummary} title={summary}>
+          {fields.map(([fieldName, field]) => (
+            <div className={styles.readOnlyField} key={fieldName}>
+              <span className={styles.fieldLabel}>{fieldLabel(field, locale)}</span>
+              <p className={styles.readOnlyValue}>
+                {displayValue(field, run.inputs[fieldName], t)}
+              </p>
+            </div>
+          ))}
+        </div>
+      ) : null}
+
+      {!readOnly && expanded ? <div className={styles.formBody}>
         <div className={styles.fields}>
           {fields.map(([name, field]) => {
             const required = (inputs.required ?? []).includes(name);
@@ -266,23 +314,15 @@ export default function WorkflowInputCard({
                     {pickLocale(field.description, locale)}
                   </p>
                 ) : null}
-
-                {readOnly ? (
-                  <p className={styles.readOnlyValue}>
-                    {displayValue(field, run?.inputs[name], t)}
-                  </p>
-                ) : (
-                  <FieldControl
-                    id={`wf-${name}`}
-                    field={field}
-                    value={draft[name]}
-                    disabled={busy}
-                    t={t}
-                    onChange={(next) => setValue(name, next)}
-                  />
-                )}
-
-                {!readOnly && field.type === "file" ? (
+                <FieldControl
+                  id={`wf-${name}`}
+                  field={field}
+                  value={draft[name]}
+                  disabled={busy}
+                  t={t}
+                  onChange={(next) => setValue(name, next)}
+                />
+                {field.type === "file" ? (
                   <div className={styles.fileField}>
                     <input
                       ref={(element) => {
@@ -294,14 +334,12 @@ export default function WorkflowInputCard({
                       multiple={field.multiple === true}
                       onChange={(event) => {
                         const picked = event.target.files;
-                        if (picked && picked.length > 0) {
-                          void addFiles(name, picked);
-                        }
+                        if (picked && picked.length > 0) void addFiles(name, picked);
                         event.target.value = "";
                       }}
                     />
                     <Button
-                      id={`wf-${name}`}
+                      id={`wf-file-${name}`}
                       size="small"
                       icon={<Paperclip size={13} />}
                       loading={uploading[name] === true}
@@ -310,15 +348,10 @@ export default function WorkflowInputCard({
                     >
                       {t("chat.workflow.chooseFile")}
                     </Button>
-                    {field.accept ? (
-                      <span className={styles.fileHint}>{field.accept}</span>
-                    ) : null}
+                    {field.accept ? <span className={styles.fileHint}>{field.accept}</span> : null}
                     <ul className={styles.fileList}>
                       {(files[name] ?? []).map((file, index) => (
-                        <li
-                          className={styles.fileRow}
-                          key={`${file.url}-${index}`}
-                        >
+                        <li className={styles.fileRow} key={`${file.url}-${index}`}>
                           <span className={styles.fileName}>
                             {file.filename || file.workspacePath}
                           </span>
@@ -328,9 +361,7 @@ export default function WorkflowInputCard({
                             danger
                             disabled={busy}
                             icon={<Trash2 size={13} />}
-                            aria-label={t("chat.workflow.removeFile", {
-                              name: file.filename ?? "",
-                            })}
+                            aria-label={t("chat.workflow.removeFile", { name: file.filename ?? "" })}
                             onClick={() => removeFile(name, index)}
                           />
                         </li>
@@ -342,9 +373,7 @@ export default function WorkflowInputCard({
             );
           })}
         </div>
-      )}
 
-      {readOnly ? null : (
         <div className={styles.actions}>
           <Tooltip
             title={
@@ -365,10 +394,11 @@ export default function WorkflowInputCard({
             </span>
           </Tooltip>
         </div>
-      )}
+      </div> : null}
     </section>
   );
 }
+
 
 /** One field's control, by the type the definition gives it. */
 function FieldControl({

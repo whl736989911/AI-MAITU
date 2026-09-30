@@ -1194,7 +1194,6 @@ function ChatPageInner() {
               />
             )}
 
-            <div data-workflow-input-summary />
 
             {memoryMaintVisible && memoryMaint && (
               <MemoryMaintenanceBanner

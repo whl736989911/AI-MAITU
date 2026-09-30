@@ -16,9 +16,9 @@
  * the same authenticated download the attachment cards use.
  */
 
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { Button, Tooltip } from "antd";
-import { ChevronDown, Download, Eye, FileText } from "lucide-react";
+import { Download, Eye, FileText, MoreHorizontal } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { WorkflowOutput } from "../../../api/modules/featureWorkflow";
@@ -42,17 +42,49 @@ export interface WorkflowOutputCardProps {
   files: readonly string[];
   /** The definition's declared deliverables, when it declares any. */
   outputs?: readonly WorkflowOutput[];
+  featureName?: string | null;
+  createdAt?: number | null;
+}
+function OutputMeta({
+  label,
+  expanded,
+  onToggle,
+}: {
+  label: string;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { t } = useTranslation();
+  return (
+    <div className={styles.meta}>
+      {label ? <span className={styles.metaText}>{label}</span> : null}
+      <button
+        type="button"
+        className={styles.detailsButton}
+        aria-expanded={expanded}
+        aria-label={t(
+          expanded ? "chat.workflow.collapseDetails" : "chat.workflow.expandDetails",
+        )}
+        onClick={onToggle}
+      >
+        <MoreHorizontal size={16} aria-hidden="true" />
+      </button>
+    </div>
+  );
 }
 
-/** One produced file: what it is called, where it is, and what can be done with it. */
 function RunFileRow({
   entry,
   agentId,
   locale,
+  expanded,
+  trailingMeta,
 }: {
   entry: RunOutputFile;
   agentId: string;
   locale: UiLocale;
+  expanded: boolean;
+  trailingMeta?: ReactNode;
 }) {
   const { t } = useTranslation();
   const filePreview = useChatFilePreview();
@@ -93,17 +125,18 @@ function RunFileRow({
         aria-hidden
       />
       <span className={styles.fileText}>
-        <span className={styles.fileLabel}>
+        <span
+          className={styles.fileLabel}
+          title={entry.declared?.name || entry.filename}
+        >
           {entry.declared?.name || entry.filename}
         </span>
-        {/* The file's own path is shown whenever the label is not the filename —
-            the caller has to be able to find it in the workspace. */}
-        {entry.declared?.name && entry.declared.name !== entry.filename ? (
+        {expanded && entry.declared?.name && entry.declared.name !== entry.filename ? (
           <span className={styles.filePath} title={entry.path}>
             {entry.path}
           </span>
         ) : null}
-        {description ? (
+        {expanded && description ? (
           <span className={styles.fileDescription}>{description}</span>
         ) : null}
       </span>
@@ -128,6 +161,7 @@ function RunFileRow({
           onClick={() => void download()}
         />
       </Tooltip>
+      {trailingMeta}
     </li>
   );
 }
@@ -136,6 +170,8 @@ export default function WorkflowOutputCard({
   agentId,
   files,
   outputs,
+  featureName,
+  createdAt,
 }: WorkflowOutputCardProps) {
   const { t, i18n } = useTranslation();
   const locale: UiLocale = i18n.language?.startsWith("zh") ? "zh" : "en";
@@ -144,49 +180,52 @@ export default function WorkflowOutputCard({
     () => labelRunOutputs(files, outputs),
     [files, outputs],
   );
-
-  if (entries.length === 0) return null;
+  const name = featureName?.trim();
+  const time = createdAt != null
+    ? new Intl.DateTimeFormat(locale === "zh" ? "zh-CN" : "en", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(createdAt * 1000))
+    : null;
+  const metaLabel = [
+    name ? t("chat.workflow.generatedBy", { name }) : null,
+    time,
+    entries.length > 0 ? t("chat.workflow.outputCount", { count: entries.length }) : null,
+  ].filter(Boolean).join(" · ");
 
   return (
-    <section
-      className={`${styles.card} ${expanded ? "" : styles.collapsed}`}
-      aria-label={t("chat.workflow.outputTitle")}
-    >
-      <div className={styles.header}>
-        <span className={styles.title}>{t("chat.workflow.outputTitle")}</span>
-        <span className={styles.count}>
-          {t("chat.workflow.outputCount", { count: entries.length })}
-        </span>
-        <button
-          type="button"
-          className={styles.toggle}
-          aria-expanded={expanded}
-          onClick={() => setExpanded((value) => !value)}
-        >
-          {t(
-            expanded
-              ? "chat.workflow.collapseOutputs"
-              : "chat.workflow.expandOutputs",
-          )}
-          <ChevronDown
-            className={expanded ? styles.chevronExpanded : ""}
-            size={14}
-            aria-hidden="true"
-          />
-        </button>
-      </div>
-      {expanded ? (
+    <section className={styles.result} aria-label={t("chat.workflow.outputTitle")}>
+      {entries.length > 0 ? (
         <ul className={styles.fileList}>
-          {entries.map((entry) => (
+          {entries.map((entry, index) => (
             <RunFileRow
               key={entry.path}
               entry={entry}
               agentId={agentId}
               locale={locale}
+              expanded={expanded}
+              trailingMeta={
+                index === entries.length - 1 ? (
+                  <OutputMeta
+                    label={metaLabel}
+                    expanded={expanded}
+                    onToggle={() => setExpanded((value) => !value)}
+                  />
+                ) : undefined
+              }
             />
           ))}
         </ul>
-      ) : null}
+      ) : (
+        <div className={styles.emptyRow}>
+          <p className={styles.empty}>{t("chat.workflow.noOutputs")}</p>
+          <OutputMeta
+            label={metaLabel}
+            expanded={expanded}
+            onToggle={() => setExpanded((value) => !value)}
+          />
+        </div>
+      )}
     </section>
   );
 }

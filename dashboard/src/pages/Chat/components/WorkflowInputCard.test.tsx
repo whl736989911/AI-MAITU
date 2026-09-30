@@ -42,7 +42,7 @@ function runButton(): HTMLElement {
 }
 
 describe("<WorkflowInputCard />", () => {
-  it("keeps 运行 disabled until every required field is answered", async () => {
+  it("keeps the form collapsed until its keyboard-accessible entry is expanded", async () => {
     const user = userEvent.setup();
     render(
       <WorkflowInputCard
@@ -54,13 +54,32 @@ describe("<WorkflowInputCard />", () => {
       />,
     );
 
+    const expand = screen.getByRole("button", { name: "chat.workflow.expandInputs" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    await user.click(expand);
+    expect(screen.getByRole("button", { name: "chat.workflow.collapseInputs" }))
+      .toHaveAttribute("aria-expanded", "true");
+    expect(runButton()).toBeDisabled();
+  });
+
+  it("keeps 运行 disabled until every required field is answered", async () => {
+    const user = userEvent.setup();
+    render(
+      <WorkflowInputCard
+        inputs={INPUTS}
+        run={null}
+        agentId="feat-quote"
+        busy={false}
+        onRun={vi.fn()}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "chat.workflow.expandInputs" }));
     expect(runButton()).toBeDisabled();
 
     const customer = screen.getByRole("textbox");
     await user.type(customer, "ACME");
     expect(runButton()).toBeEnabled();
-
-    // A blank is not an answer, however much was typed before it.
     await user.clear(customer);
     expect(runButton()).toBeDisabled();
   });
@@ -77,6 +96,7 @@ describe("<WorkflowInputCard />", () => {
         onRun={onRun}
       />,
     );
+    await user.click(screen.getByRole("button", { name: "chat.workflow.expandInputs" }));
 
     await user.type(screen.getByRole("textbox"), "ACME");
     expect(onRun).not.toHaveBeenCalled();
@@ -93,8 +113,7 @@ describe("<WorkflowInputCard />", () => {
       },
     });
   });
-
-  it("keeps submitted values in a compact summary and makes every value reachable", async () => {
+  it("keeps submitted values reachable from a compact, accessible run summary", async () => {
     const user = userEvent.setup();
     render(
       <WorkflowInputCard
@@ -105,20 +124,41 @@ describe("<WorkflowInputCard />", () => {
           inputs: { customer_name: "ACME", count: 3 },
         }}
         agentId="feat-quote"
+        featureName="Report"
         busy={false}
         onRun={vi.fn()}
       />,
     );
 
-    expect(screen.getByText(/ACME/)).toBeInTheDocument();
-    expect(screen.queryByText("3")).not.toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: "chat.workflow.expandInputs" }),
-    );
+    const expand = screen.getByRole("button", { name: "chat.workflow.expandInputs" });
+    expect(expand).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("Report")).toBeInTheDocument();
+    expect(screen.getByText("chat.workflow.inputCount")).toBeInTheDocument();
+    expect(screen.queryByText("ACME")).not.toBeInTheDocument();
+    await user.click(expand);
     expect(screen.getByText("ACME")).toBeInTheDocument();
     expect(screen.getByText("3")).toBeInTheDocument();
-    expect(
-      screen.queryByRole("button", { name: "chat.workflow.run" }),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "chat.workflow.run" }))
+      .not.toBeInTheDocument();
+  });
+  it("remembers whether a thread summary is expanded for the browser session", async () => {
+    const user = userEvent.setup();
+    window.sessionStorage.removeItem("workflow-input:persisted-thread");
+    const props = {
+      inputs: INPUTS,
+      run: null,
+      agentId: "feat-quote",
+      stateKey: "persisted-thread",
+      busy: false,
+      onRun: vi.fn(),
+    } as const;
+    const first = render(<WorkflowInputCard {...props} />);
+    await user.click(screen.getByRole("button", { name: "chat.workflow.expandInputs" }));
+    first.unmount();
+
+    render(<WorkflowInputCard {...props} />);
+    expect(screen.getByRole("button", { name: "chat.workflow.collapseInputs" }))
+      .toHaveAttribute("aria-expanded", "true");
+    window.sessionStorage.removeItem("workflow-input:persisted-thread");
   });
 });
