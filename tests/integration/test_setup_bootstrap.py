@@ -33,10 +33,13 @@ async def test_bootstrap_creates_default_main_agent(patched_app_client: Any) -> 
     r = await c.get("/api/agents", headers=auth)
     assert r.status_code == 200
     agents = r.json()
-    assert len(agents) == 1
-    assert agents[0]["agent_id"] == "main"
-    assert agents[0]["name"] == "小通 · 通用助手"
-    assert agents[0]["state"] in {"created", "idle", "stopped", "failed", "running", "unknown"}
+    assert {(row["kind"], row["agent_id"]) for row in agents} == {
+        ("agent", "main"),
+        ("feature", "feat-general-assistant"),
+    }
+    main = next(row for row in agents if row["agent_id"] == "main")
+    assert main["name"] == "小通 · 通用助手"
+    assert main["state"] in {"created", "idle", "stopped", "failed", "running", "unknown"}
 
 
 async def test_main_not_created_until_finish(patched_app_client: Any) -> None:
@@ -63,8 +66,11 @@ async def test_main_not_created_until_finish(patched_app_client: Any) -> None:
     )
     assert finish.status_code == 200
     r = await c.get("/api/agents", headers=auth)
-    assert len(r.json()) == 1
-    assert r.json()[0]["agent_id"] == "main"
+    assert r.status_code == 200
+    assert {(row["kind"], row["agent_id"]) for row in r.json()} == {
+        ("agent", "main"),
+        ("feature", "feat-general-assistant"),
+    }
 
 
 async def test_double_bootstrap_returns_410(patched_app_client: Any) -> None:

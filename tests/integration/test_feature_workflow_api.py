@@ -112,7 +112,7 @@ async def test_enterprise_admin_can_inspect_unshared_drafts_only_in_own_enterpri
     listed = await client.get("/api/agents", headers=enterprise_auth)
     assert listed.status_code == 200, listed.text
     feature_rows = {row["agent_id"]: row for row in listed.json() if row["kind"] == "feature"}
-    assert set(feature_rows) == {"feat-quote-helper"}
+    assert set(feature_rows) == {"feat-general-assistant", "feat-quote-helper"}
     assert feature_rows["feat-quote-helper"]["can_manage"] is False
     assert (await client.get(path, headers=enterprise_auth)).json()["workflow"] == _draft()
     assert (
