@@ -78,4 +78,54 @@ def test_unicode_words_are_searchable_without_an_embedding_model(tmp_path, monke
         index.search_text(query_terms("Müller"), allowed_doc_ids=["names"])[0].text
         == "MÜLLER 新合同"
     )
+
     assert index.search_text(query_terms("合同"), allowed_doc_ids=["names"])[0].doc_id == "names"
+
+
+def test_chunk_batches_are_ordered_and_roll_back_on_failure(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    index = KnowledgeIndex("kb-batches")
+    index.replace_doc_chunks("doc", ["old"], [[1.0]])
+
+    def batches():
+        yield (["first", "second"], [[1.0, 0.0], [0.0, 1.0]], [{"page": 1}, {"page": 2}])
+        raise RuntimeError("later batch failed")
+
+    try:
+        index.replace_doc_chunk_batches("doc", batches())
+    except RuntimeError as exc:
+        assert str(exc) == "later batch failed"
+    else:
+        raise AssertionError("expected batch failure")
+    assert [row[0] for row in index.doc_chunks("doc")] == ["old"]
+
+    dimension = index.replace_doc_chunk_batches(
+        "doc",
+        iter(
+            [
+                (["first"], [[1.0, 0.0]], [{"page": 1}]),
+                (["second"], [[0.0, 1.0]], [{"page": 2}]),
+            ]
+        ),
+    )
+    assert dimension == 2
+    assert index.doc_chunks("doc") == [
+        ("first", [1.0, 0.0], {"page": 1}),
+        ("second", [0.0, 1.0], {"page": 2}),
+    ]
+
+
+def test_document_preview_is_bounded_and_ordinal_ordered(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    index = KnowledgeIndex("kb-preview")
+    assert index.document_preview("missing", max_chars=10) is None
+    index.replace_doc_segments(
+        "doc",
+        [
+            ParsedBlock(" second ", "line", {"line": 2}),
+            ParsedBlock("first", "line", {"line": 1}),
+        ],
+        version="v1",
+    )
+    assert index.document_preview("doc", max_chars=8) == "second\nf"
+    assert index.document_preview("doc", max_chars=0) == ""

@@ -30,6 +30,24 @@ export async function loadSharingResources(
       hint: base.owner_display_name ?? base.owner_username ?? null,
     }));
   }
+  if (resourceType === "knowledge_document") {
+    const bases = await knowledgeBasesApi.list();
+    const catalogs = await Promise.all(
+      bases.map(async (base) => {
+        const documents = await knowledgeBasesApi.listDocuments(
+          base.knowledge_base_id ?? base.id,
+        );
+        return documents.map((document) => ({
+          id: document.document_id ?? document.id,
+          name: `${document.path ?? document.filename}${
+            document.is_dir ? "/" : ""
+          }`,
+          hint: base.name,
+        }));
+      }),
+    );
+    return catalogs.flat();
+  }
   if (resourceType === "agent") {
     const agents = await request<OctopAgent[]>("/agents");
     return agents.map((agent) => ({

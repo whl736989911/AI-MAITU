@@ -20,6 +20,7 @@ from octop.infra.agents.kinds import feature_agent_id_for, is_feature_agent
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import now_ts
 from octop.infra.db.repos.agents import AgentRepo
+from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.resource_acl import (
     CHANGE_APPLIED,
@@ -68,6 +69,7 @@ class SharingService:
         self._users = UserRepo(db)
         self._agents = AgentRepo(db)
         self._units = OrgUnitRepo(db)
+        self._knowledge = KnowledgeRepo(db)
 
     # ------------------------------------------------------------------
     # Change pipeline
@@ -246,19 +248,21 @@ class SharingService:
     ) -> int | None:
         """Who owns a resource that has no ACL row of its own yet.
 
-        Every resource the ACL can hold is given its row when it is created, so
-        this is the first-share case: the request's own owner is the answer, which
-        is how a resource with no entry at all gets its first one.
-
-        ``feature`` is the exception, and the reason this is a method. A feature's
-        entry is filed under the *feature* id while a feature *is* its agent
-        (``feat-<feature_id>``), so its owner is on that agent's row and nowhere
-        the ACL table can see. Without reading it there, whoever asked first would
-        own the entry — and because the entry decides the feature's agent, that is
-        a grant of somebody else's feature to the asker. A feature with no agent
-        row (or one whose author is gone) resolves to no owner, which only an
-        admin may then change.
+        Most resources use the owner supplied by their creator for their first
+        share. Knowledge documents inherit the knowledge base owner's governance
+        identity, and ``feature`` entries are filed under a feature id while a
+        feature is its agent (``feat-<feature_id>``). Resolve those owners from
+        their authoritative rows instead of letting the first ACL requester
+        claim ownership.
         """
+        if resource_type == "knowledge_document":
+            document = self._knowledge.get_document(resource_id)
+            if document is None:
+                raise OctopError(
+                    ErrorCode.NOT_FOUND, f"knowledge document {resource_id!r} not found"
+                )
+            base = self._knowledge.get_base(document.kb_id)
+            return None if base is None else base.owner_user_id
         if resource_type == "feature":
             row = self._agents.get(feature_agent_id_for(resource_id))
             return None if row is None else row.user_id

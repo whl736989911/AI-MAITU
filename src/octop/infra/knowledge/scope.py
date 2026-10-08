@@ -1,28 +1,18 @@
-"""Runtime knowledge-base scope — one rule for "which bases may I mount?".
-
-Cron deliveries, the agent composer defaults, and the knowledge service each
-ask that question at a different moment. They answer it with
-``sharing.allowed_resource_ids``, so a new access rule lands in one place
-instead of in every caller's own ``list_all() if is_admin else list_visible()``
-branch — the role fork was redundant (``can_access`` rule 1 is the admin
-bypass) and every new rule had to be remembered at each fork.
-
-The single-base read check that needs more than an id stays here: what is
-knowledge-base specific about it is the caller's question, not the rule.
-
-Pure and IO-free: the caller loads the ``resource_type='knowledge_base'``
-entries and resolves the actor's scope with
-``ResourceAclRepo.scope_for_user`` (role + unit chain).
-"""
+"""Runtime knowledge-base and document permission scope."""
 
 from __future__ import annotations
 
-from collections.abc import Collection, Iterable
+from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
-from octop.infra.sharing import AclEntry, can_access
+from octop.infra.sharing import AclEntry, can_access, can_write
 
-__all__ = ["may_read_document", "may_read_knowledge_base", "readable_documents"]
+__all__ = [
+    "document_access_ids",
+    "may_read_document",
+    "may_read_knowledge_base",
+    "readable_documents",
+]
 
 
 def may_read_knowledge_base(
@@ -32,14 +22,70 @@ def may_read_knowledge_base(
     role: str,
     unit_keys: Collection[str],
 ) -> bool:
-    """Read check for a single base whose entry the caller already holds.
-
-    ``None`` denies: access is granted by a row, never by its absence.
-
-    ``unit_keys`` is the actor's unit chain, so a base shared with a department
-    reaches the members of its sub-departments (``sharing.can_access``).
-    """
+    """Read check for a single base whose entry the caller already holds."""
     return entry is not None and can_access(entry, user_id=user_id, role=role, unit_keys=unit_keys)
+
+
+def document_access_ids(
+    documents: Iterable[Any],
+    entries: Mapping[str, AclEntry],
+    *,
+    user_id: int,
+    role: str,
+    unit_keys: Collection[str],
+) -> tuple[set[str], set[str], set[str]]:
+    """Return restricted, readable and writable document ids for one base.
+
+    ACLs on explicit ancestor folders narrow descendants. A matching explicit
+    user/unit/role grant on a file may bypass those folder ACLs, but never the
+    file's own ACL or the knowledge-base ACL (checked by the caller).
+    """
+    rows = list(documents)
+    by_path = {str(row.path): row for row in rows}
+    restricted: set[str] = set()
+    readable: set[str] = set()
+    writable: set[str] = set()
+
+    for row in rows:
+        doc_id = str(row.id)
+        path = str(row.path)
+        own = entries.get(doc_id)
+        ancestors: list[AclEntry] = []
+        parent = path.rpartition("/")[0]
+        while parent:
+            ancestor = by_path.get(parent)
+            if ancestor is not None:
+                acl = entries.get(str(ancestor.id))
+                if acl is not None:
+                    ancestors.append(acl)
+            parent = parent.rpartition("/")[0]
+
+        if own is not None or ancestors:
+            restricted.add(doc_id)
+        own_read = own is None or can_access(own, user_id=user_id, role=role, unit_keys=unit_keys)
+        explicit_file_grant = bool(
+            not row.is_dir
+            and own is not None
+            and (
+                ("user", str(user_id)) in own.grants
+                or any(("unit", unit) in own.grants for unit in unit_keys)
+                or ("role", role) in own.grants
+            )
+        )
+        ancestors_read = explicit_file_grant or all(
+            can_access(acl, user_id=user_id, role=role, unit_keys=unit_keys) for acl in ancestors
+        )
+        if own_read and ancestors_read:
+            readable.add(doc_id)
+
+        own_write = own is None or can_write(own, user_id=user_id, role=role, unit_keys=unit_keys)
+        ancestors_write = explicit_file_grant or all(
+            can_write(acl, user_id=user_id, role=role, unit_keys=unit_keys) for acl in ancestors
+        )
+        if own_write and ancestors_write:
+            writable.add(doc_id)
+
+    return restricted, readable, writable
 
 
 def may_read_document(
@@ -48,24 +94,14 @@ def may_read_document(
     restricted: Collection[str],
     readable: Collection[str],
 ) -> bool:
-    """Read check for one document, given the file-level entries.
-
-    ``restricted`` is every document that carries an entry of its own and
-    ``readable`` the subset ``sharing.can_access`` allows this actor. A document
-    outside ``restricted`` wears no file-level rule, so the base's entry — which
-    the caller has already checked — is the whole answer.
-    """
+    """Read check for one document, given its effective ACL scope."""
     return document_id not in restricted or document_id in readable
 
 
 def readable_documents(
     documents: Iterable[Any], *, restricted: Collection[str], readable: Collection[str]
 ) -> list[Any]:
-    """The documents of *documents* this actor may read (design §14).
-
-    The list form of :func:`may_read_document`, so a listing, a search result,
-    and a chat citation cannot answer differently about the same file.
-    """
+    """The documents of *documents* this actor may read."""
     return [
         document
         for document in documents

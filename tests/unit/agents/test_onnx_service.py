@@ -253,18 +253,32 @@ def test_embedding_prerequisites_ignore_service_enabled(tmp_path, monkeypatch) -
     assert mod.embedding_prerequisites_ok(store.get) is True
 
 
-def test_embed_texts_returns_vectors(monkeypatch) -> None:
+def test_embed_texts_reuses_model_and_replaces_it_on_switch(monkeypatch) -> None:
     from octop.infra.agents.providers import onnx_service as mod
 
-    class FakeEmb:
+    calls: list[dict[str, object]] = []
+
+    class FakeEmbedding:
+        def __init__(self, **kwargs: object) -> None:
+            calls.append(kwargs)
+            self.model = str(kwargs["model_name"])
+
         def embed(self, texts):
             for _ in texts:
-                yield [0.1, 0.2, 0.3]
+                yield [1.0 if self.model == ONNX_PRESET_MODEL_IDS[0] else 2.0]
 
     monkeypatch.setattr(mod, "local_embedding_deps_available", lambda: True)
-    monkeypatch.setattr(mod, "_build_text_embedding", lambda _model: FakeEmb())
-    vectors = mod.embed_texts("BAAI/bge-small-zh-v1.5", ["hello"])
-    assert len(vectors) == 1 and len(vectors[0]) == 3
+    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=FakeEmbedding))
+    monkeypatch.setattr(mod, "_CACHED_EMBEDDING_MODEL", None)
+    monkeypatch.setattr(mod, "_CACHED_EMBEDDING", None)
+
+    first, second = ONNX_PRESET_MODEL_IDS[:2]
+    assert mod.embed_texts(first, ["a"]) == [[1.0]]
+    assert mod.embed_texts(first, ["b"]) == [[1.0]]
+    assert mod.embed_texts(second, ["c"]) == [[2.0]]
+    assert [call["model_name"] for call in calls] == [first, second]
+    mod._CACHED_EMBEDDING_MODEL = None
+    mod._CACHED_EMBEDDING = None
 
 
 def test_embed_texts_empty_input(monkeypatch) -> None:

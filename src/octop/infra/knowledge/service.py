@@ -6,7 +6,9 @@ legacy per-base share column is only still written as a compatibility mirror.
 
 from __future__ import annotations
 
+import json
 import logging
+import math
 import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
@@ -14,6 +16,7 @@ from typing import Any, cast
 
 from octop.config import DEFAULT_MAX_UPLOAD_MB, upload_mb_to_bytes
 from octop.infra.db.repos.knowledge import KnowledgeBaseRow, KnowledgeDocumentRow
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.embed import embed_knowledge_texts
 from octop.infra.knowledge.files import (
     delete_document_file,
@@ -25,12 +28,7 @@ from octop.infra.knowledge.files import (
 )
 from octop.infra.knowledge.gate import assert_knowledge_usable, get_capability
 from octop.infra.knowledge.index import KnowledgeIndex
-from octop.infra.knowledge.ocr import (
-    OCR_IMAGE_SUFFIXES,
-    load_ocr_config,
-    optional_ocr_extractor,
-)
-from octop.infra.knowledge.parse import parse_document
+from octop.infra.knowledge.ocr import OCR_IMAGE_SUFFIXES, load_ocr_config
 from octop.infra.knowledge.relpath import (
     ancestor_dirs,
     normalize_kb_path,
@@ -38,6 +36,7 @@ from octop.infra.knowledge.relpath import (
     path_parent,
 )
 from octop.infra.knowledge.scope import (
+    document_access_ids,
     may_read_document,
     may_read_knowledge_base,
     readable_documents,
@@ -61,6 +60,41 @@ MAX_DOCUMENT_BYTES = upload_mb_to_bytes(DEFAULT_MAX_UPLOAD_MB)
 MAX_KB_MAX_DOCUMENTS = 10_000
 ACCESS_READ = "read"
 ACCESS_WRITE = "write"
+
+_RULE_SEMANTIC_MIN_COSINE = 0.72
+
+
+def _similar_rule_keyword(query: Sequence[float], keyword: Sequence[float]) -> bool:
+    if not query or len(query) != len(keyword):
+        return False
+    query_norm = math.sqrt(sum(value * value for value in query))
+    keyword_norm = math.sqrt(sum(value * value for value in keyword))
+    return bool(
+        query_norm
+        and keyword_norm
+        and sum(a * b for a, b in zip(query, keyword, strict=True)) / (query_norm * keyword_norm)
+        >= _RULE_SEMANTIC_MIN_COSINE
+    )
+
+
+def _rule_embedding_model_key(services: Any, capability: dict[str, Any]) -> str:
+    provider_id = str(capability.get("provider_id") or "")
+    provider_repo = getattr(services, "provider_repo", None)
+    provider = (
+        provider_repo.get(int(provider_id))
+        if capability.get("backend") == "remote" and provider_repo and provider_id.isdigit()
+        else None
+    )
+    return json.dumps(
+        [
+            capability.get("backend", "onnx"),
+            capability["selected_model"],
+            provider_id,
+            getattr(provider, "updated_at", 0),
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
 
 
 class KnowledgeAccessDenied(PermissionError):
@@ -246,19 +280,16 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, path: str, is_admin: bool = False
     ) -> KnowledgeDocumentRow:
         self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        for parent in ancestor_dirs(normalize_kb_path(path)) + [normalize_kb_path(path)]:
+            existing = self._repo.get_document_by_path(kb_id, parent)
+            if existing is not None:
+                self.require_document_writable(existing, actor_user_id=actor_user_id)
         return cast(KnowledgeDocumentRow, self._repo.ensure_folder(kb_id, path))
 
     def preview_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> dict[str, Any]:
-        """Return extracted plain text for a readable knowledge document.
-
-        The document's own title and headings come with it: they are what the
-        parser already worked out (design §6.2), and a reader who is looking at
-        the text wants to know what the document calls itself. Tables are left
-        out on purpose — the text below already holds them, and a spreadsheet's
-        structure is the whole file twice over.
-        """
+        """Read a bounded indexed preview without repeating parsing or OCR."""
         self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
@@ -266,23 +297,48 @@ class KnowledgeService:
         if document.is_dir:
             raise LookupError("knowledge document not found")
         self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
-        path = document_path(kb_id, doc_id, document.filename)
-        parsed = parse_document(
-            path,
-            ocr=optional_ocr_extractor(self._services),
-            # The on-disk name is the document id, so the parser has to be told
-            # what the file is really called.
-            source_path=document.display_path,
-        )
-        text = parsed.text
-        if len(text) > _MAX_PREVIEW_CHARS:
-            text = text[:_MAX_PREVIEW_CHARS]
+        derived = document.derived
+        if document.status == "ready":
+            if document.data_source_id:
+                from octop.infra.knowledge.data_sources import DataSourceService
+                from octop.infra.knowledge.jobs import _source_path
+
+                source = self._services.data_sources_repo.get(document.data_source_id)
+                if source is None:
+                    raise FileNotFoundError("knowledge document source unavailable")
+                connector = DataSourceService(self._services).connector(source)
+                with _source_path(connector, document.source_path, document.filename) as original:
+                    digest = file_digest(original)
+            else:
+                digest = file_digest(document_path(kb_id, doc_id, document.filename))
+            if not document.content_hash or digest != document.content_hash:
+                raise OctopError.localized(ErrorCode.KNOWLEDGE_INDEX_NOT_READY)
+            text = KnowledgeIndex(kb_id).document_preview(doc_id, max_chars=_MAX_PREVIEW_CHARS)
+            current = self._repo.get_document(doc_id)
+            if (
+                text is None
+                or current is None
+                or current.status != "ready"
+                or current.content_hash != document.content_hash
+            ):
+                raise OctopError.localized(ErrorCode.KNOWLEDGE_INDEX_NOT_READY)
+        elif document.content_type in _TEXT_CONTENT_TYPES and not document.data_source_id:
+            path = document_path(kb_id, doc_id, document.filename)
+            try:
+                with path.open(encoding="utf-8-sig") as handle:
+                    text = handle.read(_MAX_PREVIEW_CHARS)
+            except UnicodeDecodeError:
+                with path.open(encoding="gb18030", errors="replace") as handle:
+                    text = handle.read(_MAX_PREVIEW_CHARS)
+        else:
+            raise OctopError.localized(ErrorCode.KNOWLEDGE_INDEX_NOT_READY)
+        self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
         return {
             "id": document.id,
             "filename": document.filename,
-            "title": parsed.title,
-            "pages": parsed.pages,
-            "sections": list(parsed.sections),
+            "title": document.title or Path(document.filename).stem,
+            "pages": derived.get("pages"),
+            "sections": derived.get("sections", []),
             "text": text,
         }
 
@@ -482,6 +538,9 @@ class KnowledgeService:
         restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
         search_vector = query_vector
         embedding_attempted = False
+        capability: dict[str, Any] | None = None
+        model_key: str | None = None
+        cached_vectors: dict[tuple[str, str], tuple[float, ...]] | None = None
         user_rules = self._services.knowledge_search_rules_repo.list_for_user(user_id=actor_user_id)
         alias_rules = {
             rule.document_id
@@ -531,6 +590,99 @@ class KnowledgeService:
                 for doc in ready.values()
                 if effective[doc.id] is None or effective[doc.id].mode != "keyword"
             }
+            candidate_rules = {
+                rule.document_id: rule
+                for document in searchable
+                if (rule := effective[document.id]) is not None
+                and rule.keywords
+                and rule.document_id not in alias_rules
+            }
+            needs_query = (
+                generate_query_vector
+                and search_vector is None
+                and not embedding_attempted
+                and bool(semantic_ids or candidate_rules)
+            )
+            if needs_query or (search_vector and candidate_rules):
+                if capability is None:
+                    capability = get_capability(
+                        self._services.settings_repo.get,
+                        getattr(self._services, "provider_repo", None),
+                    )
+                if needs_query:
+                    embedding_attempted = True
+                if capability["selected_model"] and capability["prerequisites_ok"]:
+                    missing: list[str] = []
+                    if candidate_rules:
+                        if cached_vectors is None:
+                            model_key = _rule_embedding_model_key(self._services, capability)
+                            cached_vectors = (
+                                self._services.knowledge_search_rules_repo.cached_vectors(
+                                    user_id=actor_user_id, model_key=model_key
+                                )
+                            )
+                        missing = list(
+                            dict.fromkeys(
+                                keyword
+                                for rule in candidate_rules.values()
+                                for keyword in rule.keywords
+                                if (rule.document_id, keyword) not in cached_vectors
+                                or (
+                                    search_vector is not None
+                                    and len(cached_vectors[(rule.document_id, keyword)])
+                                    != len(search_vector)
+                                )
+                            )
+                        )
+                    texts = ([cleaned] if needs_query else []) + missing
+                    if texts:
+                        try:
+                            vectors = embed_knowledge_texts(self._services, texts)
+                            if len(vectors) != len(texts):
+                                raise ValueError("knowledge embedding count mismatch")
+                        except Exception:
+                            logger.warning(
+                                "knowledge semantic query unavailable; using terms only",
+                                exc_info=True,
+                            )
+                        else:
+                            if needs_query:
+                                search_vector = vectors[0]
+                            if missing and cached_vectors is not None and model_key is not None:
+                                new_vectors = dict(
+                                    zip(missing, vectors[int(needs_query) :], strict=True)
+                                )
+                                for rule in candidate_rules.values():
+                                    updates = {
+                                        keyword: new_vectors[keyword]
+                                        for keyword in rule.keywords
+                                        if keyword in new_vectors
+                                    }
+                                    if updates:
+                                        self._services.knowledge_search_rules_repo.cache_vectors(
+                                            document_id=rule.document_id,
+                                            user_id=actor_user_id,
+                                            model_key=model_key,
+                                            vectors=updates,
+                                        )
+                                        cached_vectors.update(
+                                            {
+                                                (rule.document_id, keyword): tuple(vector)
+                                                for keyword, vector in updates.items()
+                                            }
+                                        )
+                    if search_vector and cached_vectors is not None:
+                        alias_rules.update(
+                            rule.document_id
+                            for rule in candidate_rules.values()
+                            if any(
+                                _similar_rule_keyword(
+                                    search_vector,
+                                    cached_vectors.get((rule.document_id, keyword), ()),
+                                )
+                                for keyword in rule.keywords
+                            )
+                        )
             alias_count = 0
             for document in searchable:
                 name = unicodedata.normalize(
@@ -577,25 +729,6 @@ class KnowledgeService:
                         )
                     )
                     alias_count += 1
-            if (
-                generate_query_vector
-                and search_vector is None
-                and semantic_ids
-                and not embedding_attempted
-            ):
-                embedding_attempted = True
-                capability = get_capability(
-                    self._services.settings_repo.get,
-                    getattr(self._services, "provider_repo", None),
-                )
-                if capability["selected_model"] and capability["prerequisites_ok"]:
-                    try:
-                        vectors = embed_knowledge_texts(self._services, [cleaned])
-                        search_vector = vectors[0] if vectors else None
-                    except Exception:
-                        logger.warning(
-                            "knowledge semantic query unavailable; using terms only", exc_info=True
-                        )
             for hit, document in search_base(
                 base.id,
                 query=cleaned,
@@ -743,6 +876,7 @@ class KnowledgeService:
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
+        self.require_document_writable(document, actor_user_id=actor_user_id)
         if document.is_dir:
             raise LookupError("knowledge document not found")
         if document.content_type not in _TEXT_CONTENT_TYPES:
@@ -766,29 +900,51 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         return cast(KnowledgeDocumentRow, refreshed)
 
+    def document_access_scope(self, actor_user_id: int) -> tuple[set[str], set[str], set[str]]:
+        """Resolve effective document ACLs using the actor's actual role."""
+        role, unit_keys = self._repo.scope_for_user(actor_user_id)
+        restricted: set[str] = set()
+        readable: set[str] = set()
+        writable: set[str] = set()
+        entries = self._repo.document_acl_entries()
+        for base in self._repo.list_all():
+            scoped = document_access_ids(
+                self._repo.list_documents(base.id),
+                entries,
+                user_id=actor_user_id,
+                role=role,
+                unit_keys=unit_keys,
+            )
+            restricted.update(scoped[0])
+            readable.update(scoped[1])
+            writable.update(scoped[2])
+        return restricted, readable, writable
+
     def document_read_scope(
         self, actor_user_id: int, *, is_admin: bool = False
     ) -> tuple[set[str], set[str]]:
-        """``(restricted, readable)`` document ids for this actor.
+        """Return restricted/readable ids; caller flags never elevate role."""
+        restricted, readable, _writable = self.document_access_scope(actor_user_id)
+        return restricted, readable
 
-        ``restricted`` is every document that carries a file-level entry of its
-        own; ``readable`` is the subset the actor may read. Both come from
-        ``resource_acl``'s list entry point, so this cannot answer differently
-        from the single-document check below it.
-        """
-        return (
-            set(self._repo.document_acl_entries()),
-            self._repo.readable_document_ids(user_id=actor_user_id, is_admin=is_admin),
-        )
+    def require_document_writable(
+        self, document: KnowledgeDocumentRow, *, actor_user_id: int
+    ) -> None:
+        """Require write access through the file and every explicit ancestor."""
+        _restricted, _readable, writable = self.document_access_scope(actor_user_id)
+        if document.id not in writable:
+            raise KnowledgeAccessDenied(
+                "knowledge document write access is required", access=ACCESS_WRITE
+            )
 
     def require_document_readable(
         self, document: KnowledgeDocumentRow, *, actor_user_id: int, is_admin: bool = False
     ) -> None:
-        """Refuse a document whose own file-level entry excludes the actor.
+        """Refuse a document denied by its file or any explicit ancestor ACL.
 
-        The base has already been checked by the caller; this is the second half
-        of design §5.2 — a file rule narrows what the base allows and never
-        widens it.
+        The base has already been checked by the caller and remains mandatory.
+        A matching explicit grant on a single file can bypass directory ACLs,
+        but not the file's own ACL or the base.
         """
         restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
         if not may_read_document(document.id, restricted=restricted, readable=readable):
@@ -807,7 +963,7 @@ class KnowledgeService:
         if may_read_knowledge_base(
             self._repo.acl_entry(kb_id),
             user_id=actor_user_id,
-            role="admin" if is_admin else role,
+            role=role,
             unit_keys=unit_keys,
         ):
             return base
@@ -817,10 +973,6 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
         base = self._require_base(kb_id)
-        # Write is the entry's other half: the owner and administrators always
-        # have it, and a share only carries it when the entry says ``write`` —
-        # which is why a ``public`` base is readable by everyone and writable
-        # only by its owner.
         entry = self._repo.acl_entry(kb_id)
         if entry is None:
             entry = AclEntry(
@@ -832,12 +984,7 @@ class KnowledgeService:
                 version=0,
             )
         role, unit_keys = self._repo.scope_for_user(actor_user_id)
-        if can_write(
-            entry,
-            user_id=actor_user_id,
-            role="admin" if is_admin else role,
-            unit_keys=unit_keys,
-        ):
+        if can_write(entry, user_id=actor_user_id, role=role, unit_keys=unit_keys):
             return base
         raise KnowledgeAccessDenied("knowledge base write access is required", access=ACCESS_WRITE)
 
@@ -845,7 +992,8 @@ class KnowledgeService:
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
         base = self._require_base(kb_id)
-        if is_admin or base.owner_user_id == actor_user_id:
+        role, _unit_keys = self._repo.scope_for_user(actor_user_id)
+        if role == "admin" or base.owner_user_id == actor_user_id:
             return base
         raise KnowledgeAccessDenied("knowledge base owner access is required", access=ACCESS_WRITE)
 
@@ -868,6 +1016,10 @@ class KnowledgeService:
         if len(content) > limit:
             raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
         rel = normalize_kb_path(path or filename)
+        for parent in ancestor_dirs(rel):
+            existing = self._repo.get_document_by_path(kb_id, parent)
+            if existing is not None:
+                self.require_document_writable(existing, actor_user_id=actor_user_id)
         name = path_basename(rel)
         if not name:
             raise ValueError("invalid knowledge document filename")
@@ -922,6 +1074,7 @@ class KnowledgeService:
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id or document.is_dir:
             raise ValueError(f"knowledge document {doc_id!r} is not in this knowledge base")
+        self.require_document_writable(document, actor_user_id=actor_user_id)
         limit = self.max_document_bytes()
         if len(content) > limit:
             raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
@@ -992,6 +1145,15 @@ class KnowledgeService:
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
+        self.require_document_writable(document, actor_user_id=actor_user_id)
+        if document.is_dir:
+            descendants = [
+                row
+                for row in self._repo.list_documents(kb_id)
+                if row.path.startswith(document.path + "/")
+            ]
+            for descendant in descendants:
+                self.require_document_writable(descendant, actor_user_id=actor_user_id)
         removed = self._repo.delete_document(doc_id)
         for row in removed:
             if row.is_dir:
@@ -1011,6 +1173,7 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         if document.is_dir:
             raise ValueError("folders cannot be reindexed")
+        self.require_document_writable(document, actor_user_id=actor_user_id)
         self._repo.update_document(doc_id, status="pending", error_message="", chunk_count=0)
         self._repo.set_derived(doc_id, None)
         refreshed = self._repo.get_document(doc_id)
@@ -1032,6 +1195,11 @@ class KnowledgeService:
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
+        self.require_document_writable(document, actor_user_id=actor_user_id)
+        if document.is_dir:
+            for descendant in self._repo.list_documents(kb_id):
+                if descendant.path.startswith(document.path + "/"):
+                    self.require_document_writable(descendant, actor_user_id=actor_user_id)
         cleaned = (new_name or "").strip()
         if not cleaned or "/" in cleaned or "\\" in cleaned:
             raise ValueError("invalid knowledge document name")

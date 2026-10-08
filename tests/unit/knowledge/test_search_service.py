@@ -340,6 +340,92 @@ def test_folder_alias_candidate_is_unverified_and_isolated_per_user(
     assert not any(hit.match_kind == "rule_keyword" for hit in other_hits)
 
 
+def test_folder_keyword_understands_synonym_without_exposing_other_users(
+    env: SimpleNamespace, people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = env.services.knowledge_repo.create_base(
+        owner_user_id=people.owner, name="Contracts", shared=True
+    )
+    folder = env.services.knowledge_repo.ensure_folder(base.id, "legal")
+    document = env.services.knowledge_repo.create_document(
+        kb_id=base.id,
+        filename="untitled.md",
+        path="legal/untitled.md",
+        content_type="text/markdown",
+        byte_size=1,
+        status="pending",
+    )
+    irrelevant = env.services.knowledge_repo.create_document(
+        kb_id=base.id,
+        filename="expenses.md",
+        path="legal/expenses.md",
+        content_type="text/markdown",
+        byte_size=1,
+        status="pending",
+    )
+    rules = env.services.knowledge_search_rules_repo
+    rules.set(document_id=folder.id, user_id=people.owner, mode="keyword", keywords=["劳动合同"])
+    rules.set(
+        document_id=irrelevant.id,
+        user_id=people.owner,
+        mode="keyword",
+        keywords=["费用报销"],
+    )
+    ready = False
+    monkeypatch.setattr(
+        service_module,
+        "get_capability",
+        lambda *_a, **_k: {
+            "selected_model": "test-model",
+            "backend": "onnx",
+            "provider_id": "",
+            "prerequisites_ok": ready,
+        },
+    )
+    calls: list[tuple[str, ...]] = []
+
+    def embed(_services: object, texts: list[str]) -> list[list[float]]:
+        calls.append(tuple(texts))
+        return [
+            [1.0, 0.0]
+            if text == "雇佣协议"
+            else ([-1.0, 0.0] if text == "费用报销" else [0.9, 0.1])
+            for text in texts
+        ]
+
+    monkeypatch.setattr(service_module, "embed_knowledge_texts", embed)
+
+    def search(query: str) -> list[SearchHit]:
+        return env.knowledge.search(
+            actor_user_id=people.owner,
+            kb_id=base.id,
+            query=query,
+            generate_query_vector=True,
+        )
+
+    assert search("雇佣协议") == []
+    assert any(hit.document_id == document.id for hit in search("劳动合同"))
+    assert calls == []
+
+    ready = True
+    matched = search("雇佣协议")
+    assert [(hit.document_id, hit.match_kind) for hit in matched] == [(document.id, "rule_keyword")]
+    assert matched[0].segment_id == "" and matched[0].snippet == ""
+    assert len(calls) == 1 and calls[0][0] == "雇佣协议"
+    assert set(calls[0][1:]) == {"劳动合同", "费用报销"}
+    assert search("雇佣协议") == matched
+    assert calls[1:] == [("雇佣协议",)]
+    assert (
+        env.knowledge.search(
+            actor_user_id=people.other,
+            kb_id=base.id,
+            query="雇佣协议",
+            query_vector=[1.0, 0.0],
+        )
+        == []
+    )
+
+
 def test_file_rule_overrides_folder_exclusion_keywords_and_restores_inheritance(
     env: SimpleNamespace, people: SimpleNamespace
 ) -> None:
@@ -538,4 +624,120 @@ def test_keyword_rule_uses_lexical_content_without_vectors(
         query="Distinctive lexical",
         query_vector=[1.0, 0.0, 0.0, 0.0],
     )
-    assert any(hit.document_id == document.id and hit.match_kind == "content" for hit in hits)
+    assert {hit.document_id for hit in hits} == {document.id}
+
+
+def test_restricted_folder_acl_also_hides_public_file(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+
+    base = env.services.knowledge_repo.create_base(
+        owner_user_id=people.owner, name="Docs", shared=True
+    )
+    folder = env.services.knowledge_repo.ensure_folder(base.id, "private")
+    document = env.knowledge.upload_document(
+        base.id,
+        actor_user_id=people.owner,
+        filename="private/public.md",
+        content_type="text/markdown",
+        content=b"ancestor secret phrase",
+    )
+    jobs_module.process_document(env.services, base.id, document.id)
+    acl = ResourceAclRepo(env.services.db)
+    acl.upsert(AclEntry("knowledge_document", folder.id, None, "private", None, 1))
+    acl.upsert(AclEntry("knowledge_document", document.id, None, "public", None, 1))
+
+    assert env.knowledge.list_documents(base.id, actor_user_id=people.other) == []
+    assert not env.knowledge.search(
+        actor_user_id=people.other, kb_id=base.id, query="ancestor secret"
+    )
+    with pytest.raises(PermissionError, match="document read"):
+        env.knowledge.read_segment(
+            base.id,
+            document.id,
+            f"{document.id}:1",
+            actor_user_id=people.other,
+        )
+
+
+def test_file_grant_bypasses_restricted_ancestors_but_not_library_acl(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+    base = env.services.knowledge_repo.create_base(
+        owner_user_id=people.owner, name="Docs", shared=True
+    )
+    folder = env.services.knowledge_repo.ensure_folder(base.id, "sealed")
+    document = env.knowledge.upload_document(
+        base.id,
+        actor_user_id=people.owner,
+        filename="sealed/exception.md",
+        content_type="text/markdown",
+        content=b"directly granted secret phrase",
+    )
+    jobs_module.process_document(env.services, base.id, document.id)
+    sibling = env.knowledge.upload_document(
+        base.id,
+        actor_user_id=people.owner,
+        filename="sealed/sibling.md",
+        content_type="text/markdown",
+        content=b"hidden sibling confidential content",
+    )
+    jobs_module.process_document(env.services, base.id, sibling.id)
+    acl = ResourceAclRepo(env.services.db)
+    acl.upsert(AclEntry("knowledge_document", folder.id, None, "private", None, 1))
+    acl.upsert(
+        AclEntry(
+            "knowledge_document",
+            document.id,
+            None,
+            "private",
+            None,
+            1,
+            grants=(("user", str(people.other)),),
+        )
+    )
+
+    assert [
+        row.id for row in env.knowledge.list_documents(base.id, actor_user_id=people.other)
+    ] == [document.id]
+    assert not any(
+        row.path == folder.path
+        for row in env.knowledge.list_documents(base.id, actor_user_id=people.other)
+    )
+    hits = env.knowledge.search(
+        actor_user_id=people.other,
+        kb_id=base.id,
+        query="directly granted secret hidden sibling confidential",
+    )
+    assert {row.document_id for row in hits} == {document.id}
+    assert env.knowledge.coverage(base.id, actor_user_id=people.other)["total"] == 1
+    hit = next(row for row in hits if row.document_id == document.id)
+    evidence = env.knowledge.read_segment(
+        base.id, document.id, hit.segment_id, actor_user_id=people.other
+    )
+    assert evidence["verified"] is True
+    assert "directly granted secret phrase" in evidence["text"]
+
+    private_base = env.services.knowledge_repo.create_base(
+        owner_user_id=people.owner, name="Private"
+    )
+    private_file = env.knowledge.upload_document(
+        private_base.id,
+        actor_user_id=people.owner,
+        filename="exception.md",
+        content_type="text/markdown",
+        content=b"library still required",
+    )
+    acl.upsert(
+        AclEntry(
+            "knowledge_document",
+            private_file.id,
+            None,
+            "private",
+            None,
+            1,
+            grants=(("user", str(people.other)),),
+        )
+    )
+    with pytest.raises(PermissionError, match="knowledge base read"):
+        env.knowledge.preview_document(private_base.id, private_file.id, actor_user_id=people.other)

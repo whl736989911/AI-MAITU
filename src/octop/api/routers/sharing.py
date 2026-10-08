@@ -208,6 +208,9 @@ def _resource_name(repos: Any, resource_type: str, resource_id: str) -> str | No
     if resource_type == "knowledge_base":
         row = repos.knowledge_repo.get_base(resource_id)
         return None if row is None else row.name
+    if resource_type == "knowledge_document":
+        row = repos.knowledge_repo.get_document(resource_id)
+        return None if row is None else row.display_path
     return None
 
 
@@ -283,8 +286,8 @@ async def get_resource_acl(
 ) -> dict[str, Any]:
     """The ACL entry in force, or ``entry: null`` when the resource has none.
 
-    A missing row is not an error: it means nobody has shared the resource, so
-    only its owner and admins may reach it (``sharing.can_access``).
+    A missing folder/file row inherits its knowledge-base and ancestor ACLs.
+    Other resource types use their existing owner/admin default.
     """
     _require_resource_type(resource_type)
     entry = _services(server).repos.resource_acl_repo.get(resource_type, resource_id)

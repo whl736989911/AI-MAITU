@@ -20,6 +20,7 @@ import type {
  */
 export const SHARING_RESOURCE_TYPE_ORDER: readonly SharingResourceType[] = [
   "knowledge_base",
+  "knowledge_document",
   "agent",
   "connector",
 ];
@@ -29,6 +30,7 @@ export const RESOURCE_TYPE_LABEL_KEYS: Record<SharingResourceType, string> = {
   agent: "sharing.resourceType.agent",
   connector: "sharing.resourceType.connector",
   knowledge_base: "sharing.resourceType.knowledge_base",
+  knowledge_document: "sharing.resourceType.knowledge_document",
   feature: "sharing.resourceType.feature",
 };
 

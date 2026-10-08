@@ -19,6 +19,7 @@ from octop.infra.knowledge.search import (
     query_terms,
     rank_hits,
 )
+from octop.infra.knowledge.service import KnowledgeService
 
 DEFAULT_RETRIEVAL_K = 8
 DEFAULT_CONTEXT_CHAR_BUDGET = 6000
@@ -76,19 +77,15 @@ def _retrieve_context_sync(
     query_vectors = _embed_query(services, query_text)
     terms = query_terms(query_text)
     phrase = normalize_query(query_text)
-
-    visible = visible_bases
-    if visible is None:
-        # One scope rule (``sharing.can_access``): ``list_visible`` resolves the
-        # actor's role and unit and applies the admin bypass itself, so the old
-        # ``list_all() if is_admin`` fork was a second answer to that question.
-        visible = services.knowledge_repo.list_visible(user_id)
-    visible_by_id = {base.id: base for base in visible}
+    # A prefiltered list is only a hint; the library ACL remains mandatory here.
+    authorized_bases = services.knowledge_repo.list_visible(user_id)
+    authorized_ids = {base.id for base in authorized_bases}
+    visible = authorized_bases if visible_bases is None else visible_bases
+    visible_by_id = {base.id: base for base in visible if base.id in authorized_ids}
     selected_ids = _unique_ids(knowledge_base_ids)
     # design §14: a citation is a read, so it answers to the same file-level
     # entries the preview and the download do.
-    restricted = set(services.knowledge_repo.document_acl_entries())
-    readable = services.knowledge_repo.readable_document_ids(user_id=user_id)
+    restricted, readable = KnowledgeService(services).document_read_scope(user_id)
 
     ranked: list[tuple[Any, Hit, Any]] = []
     for kb_id in selected_ids:

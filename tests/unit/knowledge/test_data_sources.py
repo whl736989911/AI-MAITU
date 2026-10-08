@@ -8,6 +8,7 @@ document status — is produced and asserted for real.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import shutil
@@ -17,7 +18,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from docx.opc.exceptions import PackageNotFoundError
 from langgraph.config import var_child_runnable_config
 
 from octop.infra.db.migrate import run_migrations
@@ -52,6 +52,7 @@ from octop.infra.knowledge.sources import (
 )
 from octop.infra.knowledge.tools import build_knowledge_tools
 from octop.infra.knowledge.url_fetch import FetchedDocument
+from octop.infra.sharing import AclEntry
 from octop.infra.utils.paths import PathLayout
 from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
 
@@ -516,6 +517,47 @@ def test_sync_after_the_document_is_deleted_reports_failure(
     row = env.services.data_sources_repo.get(source.id)
     assert row.sync_status == "failed"
     assert row.last_synced_at is None
+
+
+def test_upload_source_sync_respects_file_write_acl(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+    base, document = _uploaded_document(env, people.owner, shared=False)
+    acl = ResourceAclRepo(env.services.db)
+    acl.upsert(
+        AclEntry(
+            "knowledge_base",
+            base.id,
+            people.owner,
+            "private",
+            None,
+            1,
+            grants=(("user", str(people.viewer)),),
+            permission="write",
+        )
+    )
+    acl.upsert(
+        AclEntry(
+            "knowledge_document",
+            document.id,
+            None,
+            "private",
+            None,
+            1,
+            grants=(("user", str(people.viewer)),),
+            permission="read",
+        )
+    )
+    source = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Handbook",
+        kind="upload",
+        config={"document_id": document.id},
+    )
+
+    with pytest.raises(PermissionError, match="document write"):
+        env.sources.sync(source.id, actor_user_id=people.viewer)
 
 
 # ---------------------------------------------------------------------------
@@ -1073,27 +1115,36 @@ def test_a_viewer_can_read_the_runs_but_the_owner_alone_runs_them(
         env.sources.sync(source.id, actor_user_id=people.viewer)
 
 
-def test_a_file_that_cannot_be_parsed_records_why(
-    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+@pytest.mark.asyncio
+async def test_malformed_source_document_does_not_block_other_indexing(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """design §8.4: a failure has a reason to read, on the row and in the run."""
+    monkeypatch.setattr(jobs_module, "_index_semaphore", None)
     root = _local_root(tmp_path)
     (root / "broken.docx").write_bytes(b"this is not a docx")
+    _source_file(root, "healthy.md", "Recovered searchable evidence.")
     base, source = _scanned_source(env, people.owner, root)
     env.sources.sync(source.id, actor_user_id=people.owner)
     _settle(env, source.id)
-
     env.sources.sync(source.id, actor_user_id=people.owner)
-    with pytest.raises(PackageNotFoundError):
-        _finish_pending(env, source.id)
-
-    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/broken.docx")
-    assert document is not None
-    assert document.status == "failed"
-    assert document.error_message
-    assert _last_run(env, source.id).failed == 0
-    # Not marked processed, so the next scan retries it once it is fixed.
-    assert document.source_size == 0
+    broken = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/broken.docx")
+    healthy = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/healthy.md")
+    await asyncio.gather(
+        jobs_module.enqueue_index_document(env.services, base.id, broken.id),
+        jobs_module.enqueue_index_document(env.services, base.id, healthy.id),
+        return_exceptions=True,
+    )
+    failed = env.services.knowledge_repo.get_document(broken.id)
+    assert failed.status == "failed"
+    assert failed.source_size == 0
+    assert env.services.knowledge_repo.get_document(healthy.id).status == "ready"
+    hits = env.knowledge.search(
+        kb_id=base.id, actor_user_id=people.owner, query="Recovered searchable evidence"
+    )
+    assert {hit.document_id for hit in hits} == {healthy.id}
 
 
 def test_deleting_a_folder_source_takes_its_index_with_it(

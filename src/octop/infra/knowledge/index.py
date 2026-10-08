@@ -8,7 +8,8 @@ import re
 import sqlite3
 import struct
 import unicodedata
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -26,20 +27,16 @@ def search_tokens(text: str) -> Iterator[tuple[str, bool]]:
         yield match.group(), match.lastgroup == "cjk"
 
 
-def _index_terms(text: str) -> set[str]:
-    """Bounded substrings make short CJK queries indexable without scanning text."""
-    terms: set[str] = set()
+def _index_terms(text: str) -> Iterator[str]:
+    """Yield normalized words and short CJK substrings without a term buffer."""
     for word, cjk in search_tokens(text):
         if not cjk:
-            terms.add(word)
+            yield word
         else:
             for offset in range(len(word)):
-                terms.update(
-                    word[offset : offset + length]
-                    for length in range(1, 5)
-                    if offset + length <= len(word)
-                )
-    return terms
+                for length in range(1, 5):
+                    if offset + length <= len(word):
+                        yield word[offset : offset + length]
 
 
 @dataclass(frozen=True)
@@ -63,8 +60,14 @@ class KnowledgeIndex:
     def path(self) -> Path:
         return self._path
 
-    def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self._path)
+    @contextmanager
+    def _connect(self) -> Iterator[sqlite3.Connection]:
+        connection = sqlite3.connect(self._path)
+        try:
+            with connection:
+                yield connection
+        finally:
+            connection.close()
 
     def _initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -106,19 +109,19 @@ class KnowledgeIndex:
         *,
         metadata: Sequence[dict[str, object]] | None = None,
     ) -> None:
-        """Atomically replace all chunks belonging to one document."""
+        """Atomically replace chunks using a bounded row generator."""
         if len(texts) != len(embeddings):
             raise ValueError("texts and embeddings must have the same length")
         if metadata is not None and len(metadata) != len(texts):
             raise ValueError("metadata and texts must have the same length")
-        rows: list[tuple[str, str, int, str, bytes, str]] = []
-        for ordinal, (text, embedding) in enumerate(zip(texts, embeddings, strict=True)):
-            vector = [float(value) for value in embedding]
-            if not vector:
-                raise ValueError("embedding cannot be empty")
-            meta = metadata[ordinal] if metadata is not None else {}
-            rows.append(
-                (
+
+        def rows() -> Iterator[tuple[str, str, int, str, bytes, str]]:
+            for ordinal, (text, embedding) in enumerate(zip(texts, embeddings, strict=True)):
+                vector = [float(value) for value in embedding]
+                if not vector:
+                    raise ValueError("embedding cannot be empty")
+                meta = metadata[ordinal] if metadata is not None else {}
+                yield (
                     f"{doc_id}:{ordinal}",
                     doc_id,
                     ordinal,
@@ -126,14 +129,55 @@ class KnowledgeIndex:
                     struct.pack(f"<{len(vector)}f", *vector),
                     json.dumps(meta, ensure_ascii=False, separators=(",", ":")),
                 )
-            )
+
         with self._connect() as conn:
             conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
             conn.executemany(
                 "INSERT INTO chunks(chunk_id, doc_id, ordinal, text, embedding, meta_json) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                rows,
+                rows(),
             )
+
+    def replace_doc_chunk_batches(
+        self,
+        doc_id: str,
+        batches: Iterable[
+            tuple[
+                Sequence[str],
+                Sequence[Sequence[float]],
+                Sequence[dict[str, object]],
+            ]
+        ],
+    ) -> int:
+        """Atomically replace vectors from bounded batches; return vector dimension."""
+        dimension = 0
+        ordinal = 0
+        with self._connect() as conn:
+            conn.execute("DELETE FROM chunks WHERE doc_id = ?", (doc_id,))
+            for texts, embeddings, metadata in batches:
+                if len(texts) != len(embeddings) or len(metadata) != len(texts):
+                    raise ValueError("texts, embeddings, and metadata must have the same length")
+                for text, embedding, meta in zip(texts, embeddings, metadata, strict=True):
+                    vector = [float(value) for value in embedding]
+                    if not vector:
+                        raise ValueError("embedding cannot be empty")
+                    if dimension and len(vector) != dimension:
+                        raise ValueError("embedding dimensions must match")
+                    dimension = len(vector)
+                    conn.execute(
+                        "INSERT INTO chunks(chunk_id, doc_id, ordinal, text, embedding, meta_json) "
+                        "VALUES (?, ?, ?, ?, ?, ?)",
+                        (
+                            f"{doc_id}:{ordinal}",
+                            doc_id,
+                            ordinal,
+                            text,
+                            struct.pack(f"<{dimension}f", *vector),
+                            json.dumps(meta, ensure_ascii=False, separators=(",", ":")),
+                        ),
+                    )
+                    ordinal += 1
+        return dimension
 
     def doc_chunks(self, doc_id: str) -> list[tuple[str, list[float], dict[str, object]]]:
         """One document's chunks in order: text, vector, metadata.
@@ -158,35 +202,59 @@ class KnowledgeIndex:
         self, doc_id: str, blocks: Sequence[ParsedBlock], *, version: str
     ) -> int:
         """Publish one version's located text and postings in a single transaction."""
-        segments: list[tuple[str, str, int, str, str]] = []
-        postings: list[tuple[str, str, str]] = []
-        for ordinal, block in enumerate(blocks):
-            text = block.text.strip()
-            if not text:
-                continue
-            segment_id = f"{doc_id}:{ordinal}"
-            meta = {
-                "kind": block.kind,
-                "heading": block.heading,
-                "locator": block.locator,
-                "version": version,
-            }
-            segments.append(
-                (segment_id, doc_id, ordinal, text, json.dumps(meta, ensure_ascii=False))
-            )
-            postings.extend((term, doc_id, segment_id) for term in _index_terms(text))
+        count = 0
         with self._connect() as conn:
             conn.execute("DELETE FROM segment_terms WHERE doc_id = ?", (doc_id,))
             conn.execute("DELETE FROM segments WHERE doc_id = ?", (doc_id,))
-            conn.executemany(
-                "INSERT INTO segments(segment_id, doc_id, ordinal, text, meta_json) VALUES (?, ?, ?, ?, ?)",
-                segments,
+            for ordinal, block in enumerate(blocks):
+                text = block.text.strip()
+                if not text:
+                    continue
+                segment_id = f"{doc_id}:{ordinal}"
+                meta = {
+                    "kind": block.kind,
+                    "heading": block.heading,
+                    "locator": block.locator,
+                    "version": version,
+                }
+                conn.execute(
+                    "INSERT INTO segments(segment_id, doc_id, ordinal, text, meta_json) "
+                    "VALUES (?, ?, ?, ?, ?)",
+                    (segment_id, doc_id, ordinal, text, json.dumps(meta, ensure_ascii=False)),
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO segment_terms(term, doc_id, segment_id) VALUES (?, ?, ?)",
+                    ((term, doc_id, segment_id) for term in _index_terms(text)),
+                )
+                count += 1
+        return count
+
+    def document_preview(self, doc_id: str, *, max_chars: int) -> str | None:
+        """Return a bounded ordinal-ordered preview, or None when no segments exist."""
+        with self._connect() as conn:
+            if max_chars <= 0:
+                exists = conn.execute(
+                    "SELECT 1 FROM segments WHERE doc_id = ? LIMIT 1", (doc_id,)
+                ).fetchone()
+                return "" if exists else None
+            cursor = conn.execute(
+                "SELECT substr(text, 1, ?) FROM segments WHERE doc_id = ? ORDER BY ordinal LIMIT ?",
+                (max_chars, doc_id, max_chars),
             )
-            conn.executemany(
-                "INSERT INTO segment_terms(term, doc_id, segment_id) VALUES (?, ?, ?)",
-                postings,
-            )
-        return len(segments)
+            pieces: list[str] = []
+            remaining = max_chars
+            for (text,) in cursor:
+                if pieces:
+                    if remaining < 2:
+                        break
+                    pieces.append("\n")
+                    remaining -= 1
+                piece = str(text)[:remaining]
+                pieces.append(piece)
+                remaining -= len(piece)
+                if remaining == 0:
+                    break
+        return "".join(pieces) if pieces else None
 
     def get_segment(self, doc_id: str, segment_id: str) -> Hit | None:
         with self._connect() as conn:

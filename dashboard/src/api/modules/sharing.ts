@@ -5,6 +5,7 @@ export type SharingResourceType =
   | "agent"
   | "connector"
   | "knowledge_base"
+  | "knowledge_document"
   | "feature";
 
 /** Who may reach the resource by default. */

@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from html.parser import HTMLParser
@@ -17,6 +17,8 @@ from octop.infra.knowledge.ocr import OCR_IMAGE_SUFFIXES
 from octop.infra.knowledge.relpath import path_basename
 
 if TYPE_CHECKING:
+    from zipfile import ZipFile
+
     from octop.infra.knowledge.ocr import OcrExtractor
 
 _PLAIN_TEXT_SUFFIXES = {
@@ -41,7 +43,7 @@ class PasswordRequiredError(ValueError):
     """The document is encrypted and cannot be read without a password."""
 
 
-PARSE_VERSION = "1"
+PARSE_VERSION = "2"
 """Bumped when a parser's *output* changes (design §3.3 asks for it).
 
 Stored with the derived content so a later build can tell which documents were
@@ -142,7 +144,7 @@ def parse_document(
     administrator can act on it once it is named.
     """
     suffix = path.suffix.lower()
-    if _needs_password(path, suffix):
+    if suffix != ".pdf" and _needs_password(path, suffix):
         # Deliberately no file name in the message: a source's file is parsed
         # from a staged copy, so ``path.name`` is a temporary name, and the row
         # this reason lands on already shows which file it is.
@@ -190,11 +192,10 @@ def parse_document(
 
 
 def _needs_password(path: Path, suffix: str) -> bool:
-    """Whether a file is encrypted, read from the format's own marker.
+    """Whether an OOXML file is encrypted, read from its own marker.
 
     An encrypted OOXML document is not a ZIP at all — the container is an OLE
-    compound file — so the magic bytes answer exactly. A PDF states it in its
-    trailer, which ``pypdf`` reads.
+    compound file — so the magic bytes answer exactly.
 
     The binary formats (``.doc``/``.ppt``) are OLE compound files whether or not
     they are encrypted, so their magic says nothing here; there the conversion
@@ -207,14 +208,6 @@ def _needs_password(path: Path, suffix: str) -> bool:
             with path.open("rb") as handle:
                 return handle.read(len(_CFB_MAGIC)) == _CFB_MAGIC
         except OSError:
-            return False
-    if suffix == ".pdf":
-        from pypdf import PdfReader
-
-        try:
-            return bool(PdfReader(path).is_encrypted)
-        except Exception:
-            # A damaged PDF is not a locked one: let the parser report that.
             return False
     return False
 
@@ -398,24 +391,82 @@ def _local_name(tag: object) -> str:
 
 
 def _docx_document(path: Path, source_path: str) -> ParsedDocument:
-    from docx import Document
+    import zipfile
 
-    document = Document(str(path))
-    body = document.element.body
-    text = _docx_body_text(body, document.part)
-    blocks = list(_docx_blocks(body, document.part))
-    comments = _docx_comment_text(path)
-    if comments:
-        blocks.append(ParsedBlock(comments, "comment", {"part": "comments"}))
-    return _document(
-        text if not comments else f"{text}\n# Comments\n{comments}",
-        path,
-        source_path,
-        title=str(document.core_properties.title or ""),
-        sections=_docx_heading_lines(body),
-        tables=_docx_tables(body),
-        blocks=tuple(blocks),
-    )
+    from docx.oxml import parse_xml
+
+    with zipfile.ZipFile(path) as archive:
+        body = parse_xml(archive.read("word/document.xml")).body
+        part = _DocxPackagePart(archive)
+        core = (
+            _xml_root(archive.read("docProps/core.xml"))
+            if "docProps/core.xml" in archive.namelist()
+            else None
+        )
+        title = ""
+        if core is not None:
+            title = next(
+                (str(child.text or "") for child in core if _local_name(child.tag) == "title"), ""
+            )
+        text = _docx_body_text(body, part)
+        blocks = list(_docx_blocks(body, part))
+        comments = _docx_comment_text(path)
+        if comments:
+            blocks.append(ParsedBlock(comments, "comment", {"part": "comments"}))
+        return _document(
+            text if not comments else f"{text}\n# Comments\n{comments}",
+            path,
+            source_path,
+            title=title,
+            sections=_docx_heading_lines(body),
+            tables=_docx_tables(body),
+            blocks=tuple(blocks),
+        )
+
+
+class _DocxRelatedPart:
+    def __init__(self, archive: ZipFile, name: str, content_type: str) -> None:
+        self._archive = archive
+        self._name = name
+        self.content_type = content_type
+
+    @property
+    def blob(self) -> bytes:
+        return self._archive.read(self._name)
+
+
+class _DocxPackagePart:
+    def __init__(self, archive: ZipFile) -> None:
+        import posixpath
+
+        from docx.oxml import parse_xml
+
+        relationships = parse_xml(archive.read("word/_rels/document.xml.rels"))
+        types = parse_xml(archive.read("[Content_Types].xml"))
+        overrides = {
+            "/" + str(item.get("PartName", "")).lstrip("/"): str(item.get("ContentType", ""))
+            for item in types
+            if _local_name(item.tag) == "Override"
+        }
+        defaults = {
+            str(item.get("Extension", "")).lower(): str(item.get("ContentType", ""))
+            for item in types
+            if _local_name(item.tag) == "Default"
+        }
+        self.related_parts: dict[str, _DocxRelatedPart] = {}
+        for relation in relationships:
+            if _local_name(relation.tag) != "Relationship":
+                continue
+            target = str(relation.get("Target", ""))
+            if not target or relation.get("TargetMode") == "External":
+                continue
+            name = posixpath.normpath(posixpath.join("word", target))
+            content_type = overrides.get(
+                "/" + name, defaults.get(name.rpartition(".")[2].lower(), "")
+            )
+            self.related_parts[str(relation.get("Id", ""))] = _DocxRelatedPart(
+                archive, name, content_type
+            )
 
 
 def _docx_blocks(body: Any, part: Any) -> tuple[ParsedBlock, ...]:
@@ -670,11 +721,8 @@ def _docx_body_text(body: Any, part: Any) -> str:
 
 
 def _docx_alt_chunk_text(element: Any, part: Any) -> str:
-    """Expand a ``w:altChunk`` reference the way Word does when opening the file.
-
-    Converters keep the bulk of the text in an embedded HTML or Word part and leave
-    only a stub in ``document.xml``; unexpanded, that body is lost.
-    """
+    """Expand textual altChunks without loading unrelated package images."""
+    from docx.oxml import parse_xml
     from docx.oxml.ns import qn
 
     chunk = part.related_parts.get(element.get(qn("r:id")) or "")
@@ -687,10 +735,11 @@ def _docx_alt_chunk_text(element: Any, part: Any) -> str:
     if content_type == "text/plain":
         return blob.decode("utf-8-sig", errors="replace")
     if content_type == _DOCX_MAIN_TYPE:
-        from docx import Document
+        import zipfile
 
-        nested = Document(io.BytesIO(blob))
-        return _docx_body_text(nested.element.body, nested.part)
+        with zipfile.ZipFile(io.BytesIO(blob)) as archive:
+            body = parse_xml(archive.read("word/document.xml")).body
+            return _docx_body_text(body, _DocxPackagePart(archive))
     return ""
 
 
@@ -923,46 +972,91 @@ def _xls_document(path: Path, source_path: str) -> ParsedDocument:
     return _document(_tables_text(tables), path, source_path, tables=tables, blocks=tuple(blocks))
 
 
-def _pdf_document(path: Path, source_path: str, *, ocr: OcrExtractor | None) -> ParsedDocument:
-    """Extract searchable page blocks; OCR scanned pages when text is mixed."""
-    from pypdf import PdfReader, PdfWriter
+def _pdf_page_ocr_document(
+    path: Path, source_path: str, page_ocr: Callable[[Any], str]
+) -> ParsedDocument:
+    """Use one native reader; avoid retaining each scanned page's image stream."""
+    import pymupdf
 
-    reader = PdfReader(path)
-    page_texts = [page.extract_text() or "" for page in reader.pages]
+    api: Any = pymupdf
+
     blocks: list[ParsedBlock] = []
-    if not any(value.strip() for value in page_texts) and ocr is not None:
-        # Keep the existing whole-document OCR path when the PDF is entirely scanned.
-        text = ocr(path)
-        if text.strip():
-            blocks.append(ParsedBlock(text, "ocr", {"scope": "document", "image_ocr": True}))
-    else:
-        ocr_pages = {index for index, value in enumerate(page_texts, start=1) if not value.strip()}
-        if ocr is not None and ocr_pages:
-            from tempfile import TemporaryDirectory
-
-            with TemporaryDirectory(prefix="octop-pdf-page-") as temporary:
-                for index in ocr_pages:
-                    one_page = PdfWriter()
-                    one_page.add_page(reader.pages[index - 1])
-                    temp_path = Path(temporary) / f"page-{index}.pdf"
-                    with temp_path.open("wb") as handle:
-                        one_page.write(handle)
-                    page_texts[index - 1] = ocr(temp_path)
-        for index, value in enumerate(page_texts, start=1):
-            if value.strip():
-                kind = "ocr" if index in ocr_pages else "page"
+    page_texts: list[str] = []
+    with api.open(path) as document:
+        metadata = document.metadata or {}
+        if document.needs_pass or document.is_encrypted or metadata.get("encryption"):
+            raise PasswordRequiredError("the file is password-protected")
+        for index, page in enumerate(document, start=1):
+            text = page.get_text() or ""
+            kind = "page"
+            if not text.strip():
+                text = page_ocr(page)
+                kind = "ocr"
+            page_texts.append(text)
+            if text.strip():
                 locator: dict[str, object] = {"page": index}
                 if kind == "ocr":
                     locator["image_ocr"] = True
-                blocks.append(ParsedBlock(value, kind, locator))
-        text = "\n".join(page_texts)
-    metadata = reader.metadata
+                blocks.append(ParsedBlock(text, kind, locator))
+        return _document(
+            "\n".join(page_texts),
+            path,
+            source_path,
+            title=str(metadata.get("title") or ""),
+            pages=document.page_count,
+            blocks=tuple(blocks),
+        )
+
+
+def _pdf_document(path: Path, source_path: str, *, ocr: OcrExtractor | None) -> ParsedDocument:
+    """Extract searchable page blocks; OCR scanned pages when text is mixed."""
+    page_ocr = getattr(ocr, "ocr_pdf_page_object", None) if ocr is not None else None
+    if callable(page_ocr):
+        return _pdf_page_ocr_document(path, source_path, page_ocr)
+    from pypdf import PdfReader
+
+    blocks: list[ParsedBlock] = []
+    page_texts: list[str] = []
+    with path.open("rb") as source:
+        reader = PdfReader(source)
+        try:
+            if getattr(reader, "is_encrypted", False):
+                raise PasswordRequiredError("the file is password-protected")
+            pages = reader.pages
+            page_count = len(pages)
+            for index, page in enumerate(pages, start=1):
+                value = page.extract_text() or ""
+                kind = "page"
+                if not value.strip() and ocr is not None:
+                    from tempfile import TemporaryDirectory
+
+                    from pypdf import PdfWriter
+
+                    with TemporaryDirectory(prefix="octop-pdf-page-") as temporary:
+                        temp_path = Path(temporary) / f"page-{index}.pdf"
+                        writer = PdfWriter()
+                        writer.add_page(page)
+                        with temp_path.open("wb") as handle:
+                            writer.write(handle)
+                        value = ocr(temp_path)
+                    kind = "ocr"
+                page_texts.append(value)
+                if value.strip():
+                    locator: dict[str, object] = {"page": index}
+                    if kind == "ocr":
+                        locator["image_ocr"] = True
+                    blocks.append(ParsedBlock(value, kind, locator))
+            metadata = reader.metadata
+        finally:
+            close_reader = getattr(reader, "close", None)
+            if callable(close_reader):
+                close_reader()
     return _document(
-        text,
+        "\n".join(page_texts),
         path,
         source_path,
         title="" if metadata is None else str(metadata.title or ""),
-        pages=len(reader.pages),
+        pages=page_count,
         blocks=tuple(blocks),
     )
 

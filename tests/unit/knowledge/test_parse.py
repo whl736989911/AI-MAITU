@@ -186,6 +186,76 @@ def test_parse_docx_expands_word_alt_chunk(tmp_path: Path) -> None:
     assert parse_document(path).text == "发布说明\n嵌套正文"
 
 
+def test_parse_docx_does_not_load_unrelated_image_parts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = _docx_with_body(tmp_path / "image-heavy.docx", _docx_paragraph("文本保留"))
+    with zipfile.ZipFile(path, "a") as archive:
+        archive.writestr("word/media/large-image.bin", b"x" * (2 * 1024 * 1024))
+
+    original_read = zipfile.ZipFile.read
+
+    def reject_image_read(archive: zipfile.ZipFile, name: str, pwd: bytes | None = None) -> bytes:
+        if str(name).startswith("word/media/"):
+            raise AssertionError("text extraction must not read embedded image data")
+        return original_read(archive, name, pwd)
+
+    monkeypatch.setattr(zipfile.ZipFile, "read", reject_image_read)
+    assert parse_document(path).text == "文本保留"
+
+
+def test_parse_mixed_pdf_ocr_blocks_keep_actual_page_locators(tmp_path: Path) -> None:
+    pymupdf = pytest.importorskip("pymupdf")
+    path = tmp_path / "mixed.pdf"
+    with pymupdf.open() as document:
+        document.new_page().insert_text((72, 72), "embedded one")
+        document.new_page()
+        document.new_page().insert_text((72, 72), "embedded three")
+        document.save(path)
+
+    class FakeOcr:
+        calls: list[int] = []
+
+        def __call__(self, _path: Path) -> str:
+            raise AssertionError("page-aware OCR should be used")
+
+        def ocr_pdf_page_object(self, page: object) -> str:
+            self.calls.append(page.number)
+            return "recognized page two"
+
+    extractor = FakeOcr()
+    parsed = parse_document(path, ocr=extractor)
+    assert extractor.calls == [1]
+    assert [(block.text.strip(), block.locator) for block in parsed.blocks] == [
+        ("embedded one", {"page": 1}),
+        ("recognized page two", {"page": 2, "image_ocr": True}),
+        ("embedded three", {"page": 3}),
+    ]
+
+
+def test_parse_fully_scanned_pdf_keeps_each_ocr_page_locator(tmp_path: Path) -> None:
+    pymupdf = pytest.importorskip("pymupdf")
+    path = tmp_path / "scanned.pdf"
+    with pymupdf.open() as document:
+        document.new_page()
+        document.new_page()
+        document.save(path)
+
+    class FakeOcr:
+        def __call__(self, _path: Path) -> str:
+            raise AssertionError("page-aware OCR should be used")
+
+        @staticmethod
+        def ocr_pdf_page_object(page: object) -> str:
+            return f"recognized page {page.number + 1}"
+
+    parsed = parse_document(path, ocr=FakeOcr())
+    assert [(block.text, block.locator) for block in parsed.blocks] == [
+        ("recognized page 1", {"page": 1, "image_ocr": True}),
+        ("recognized page 2", {"page": 2, "image_ocr": True}),
+    ]
+
+
 def test_parse_csv_xlsx_and_xls(tmp_path: Path) -> None:
     import xlwt
     from openpyxl import Workbook

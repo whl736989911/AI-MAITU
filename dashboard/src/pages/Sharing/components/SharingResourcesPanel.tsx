@@ -34,6 +34,7 @@ const RESOURCE_TYPE_PERMISSION_KEYS: Record<
   readonly string[] | null
 > = {
   knowledge_base: PERM.knowledgeBasesPage,
+  knowledge_document: PERM.knowledgeBasesPage,
   agent: null,
   connector: PERM.connectors,
   feature: null,

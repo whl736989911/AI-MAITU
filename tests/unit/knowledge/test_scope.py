@@ -56,3 +56,34 @@ def test_may_read_document_lets_a_file_entry_narrow_but_never_widen() -> None:
     assert may_read_document("doc-1", restricted={"doc-1"}, readable={"doc-1"}) is True
     assert may_read_document("doc-1", restricted={"doc-1"}, readable=set()) is False
     assert may_read_document("doc-1", restricted={"doc-2"}, readable=set()) is True
+
+
+def test_folder_grant_does_not_bypass_its_parent() -> None:
+    from types import SimpleNamespace
+
+    from octop.infra.knowledge.scope import document_access_ids
+
+    parent = SimpleNamespace(id="folder-1", path="sealed", is_dir=True)
+    child = SimpleNamespace(id="folder-2", path="sealed/sub", is_dir=True)
+    entries = {
+        "folder-1": AclEntry("knowledge_document", "folder-1", None, "private", None, 1),
+        "folder-2": AclEntry(
+            "knowledge_document",
+            "folder-2",
+            None,
+            "private",
+            None,
+            1,
+            grants=(("user", "7"),),
+        ),
+    }
+
+    _restricted, readable, _writable = document_access_ids(
+        [parent, child],
+        entries,
+        user_id=7,
+        role="user",
+        unit_keys=(),
+    )
+
+    assert readable == set()

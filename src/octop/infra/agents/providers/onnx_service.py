@@ -50,6 +50,12 @@ _LOCAL_EMBEDDING_SPEC = PackageInstallSpec(
 _MODEL_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*(?:/[A-Za-z0-9][A-Za-z0-9._-]*)*$")
 _LOCAL_PROBE_TEXT = "octop onnx probe"
 
+# FastEmbed defaults to a machine-wide thread count; keep its worker pool bounded.
+_LOCAL_EMBEDDING_THREADS = 2
+_EMBEDDING_LOCK = threading.Lock()
+_CACHED_EMBEDDING_MODEL: str | None = None
+_CACHED_EMBEDDING: Any | None = None
+
 
 def runtime_pip_allowed() -> bool:
     """Runtime pip is off by default; set OCTOP_ALLOW_RUNTIME_PIP=1 to enable."""
@@ -389,7 +395,22 @@ def require_embedding_prerequisites(settings_get: Any) -> OnnxServiceConfig:
 def _build_text_embedding(model: str) -> Any:
     from fastembed import TextEmbedding
 
-    return TextEmbedding(model_name=model, cache_dir=str(embedding_models_dir()))
+    return TextEmbedding(
+        model_name=model,
+        cache_dir=str(embedding_models_dir()),
+        threads=_LOCAL_EMBEDDING_THREADS,
+    )
+
+
+def _cached_text_embedding(model: str) -> Any:
+    global _CACHED_EMBEDDING_MODEL, _CACHED_EMBEDDING
+    if model != _CACHED_EMBEDDING_MODEL or _CACHED_EMBEDDING is None:
+        _CACHED_EMBEDDING = None
+        _CACHED_EMBEDDING_MODEL = None
+        embedding = _build_text_embedding(model)
+        _CACHED_EMBEDDING = embedding
+        _CACHED_EMBEDDING_MODEL = model
+    return _CACHED_EMBEDDING
 
 
 def embed_texts(model: str, texts: Sequence[str]) -> list[list[float]]:
@@ -397,8 +418,8 @@ def embed_texts(model: str, texts: Sequence[str]) -> list[list[float]]:
         return []
     require_local_embedding_deps()
     model = assert_catalog_model(model)
-    emb = _build_text_embedding(model)
-    out = [[float(x) for x in vec] for vec in emb.embed(list(texts))]
+    with _EMBEDDING_LOCK:
+        out = [[float(x) for x in vec] for vec in _cached_text_embedding(model).embed(list(texts))]
     if len(out) != len(texts):
         raise RuntimeError("embedding count mismatch")
     return out
@@ -587,10 +608,10 @@ class OnnxDownloadManager:
             logger.info("ONNX model %s fetched from %s", model_name, winner)
             mark_model_downloaded(model_name)
             try:
-                from fastembed import TextEmbedding
-
                 self._set(status=OnnxDownloadStatus.LOADING)
-                TextEmbedding(model_name=model_name, cache_dir=str(cache))
+                model = assert_catalog_model(model_name)
+                with _EMBEDDING_LOCK:
+                    _cached_text_embedding(model)
             except ImportError:
                 pass
         finally:

@@ -59,6 +59,7 @@ def test_retrieve_context_filters_unreadable_knowledge_base(tmp_path, monkeypatc
             user_id=reader,
             query="What facts are available?",
             knowledge_base_ids=[allowed.id, hidden.id],
+            visible_bases=[allowed, hidden],
         )
     )
 
@@ -67,6 +68,63 @@ def test_retrieve_context_filters_unreadable_knowledge_base(tmp_path, monkeypatc
     assert CITATIONS_MARKER_PREFIX in context
     assert "secret fact" not in context
     assert "hidden.md" not in context
+
+
+def test_retrieve_context_honors_file_exception_over_hidden_folder_only(
+    tmp_path, monkeypatch
+) -> None:
+    services = _harness(tmp_path, monkeypatch)
+    reader = services.user_repo.create(username="reader", password_hash="h", role="user")
+    owner = services.user_repo.create(username="owner", password_hash="h", role="user")
+    base = services.knowledge_repo.create_base(owner_user_id=owner, name="Docs", shared=True)
+    folder = services.knowledge_repo.ensure_folder(base.id, "sealed")
+    granted = services.knowledge_repo.create_document(
+        kb_id=base.id,
+        filename="granted.md",
+        path="sealed/granted.md",
+        content_type="text/markdown",
+        byte_size=1,
+        status="ready",
+    )
+    hidden = services.knowledge_repo.create_document(
+        kb_id=base.id,
+        filename="hidden.md",
+        path="sealed/hidden.md",
+        content_type="text/markdown",
+        byte_size=1,
+        status="ready",
+    )
+    KnowledgeIndex(base.id).replace_doc_chunks(granted.id, ["granted secret content"], [[1.0, 0.0]])
+    KnowledgeIndex(base.id).replace_doc_chunks(hidden.id, ["hidden sibling content"], [[1.0, 0.0]])
+    ResourceAclRepo(services.db).upsert(
+        AclEntry("knowledge_document", folder.id, None, "private", None, 1)
+    )
+    ResourceAclRepo(services.db).upsert(
+        AclEntry(
+            "knowledge_document",
+            granted.id,
+            None,
+            "private",
+            None,
+            1,
+            grants=(("user", str(reader)),),
+        )
+    )
+    monkeypatch.setattr(
+        retrieve_module, "embed_knowledge_texts", lambda _services, _texts: [[1.0, 0.0]]
+    )
+
+    context = asyncio.run(
+        retrieve_module.retrieve_context(
+            services,
+            user_id=reader,
+            query="secret content",
+            knowledge_base_ids=[base.id],
+        )
+    )
+
+    assert "granted secret content" in context
+    assert "hidden sibling content" not in context
 
 
 def _harness(tmp_path, monkeypatch):

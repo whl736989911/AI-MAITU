@@ -119,6 +119,15 @@ class KnowledgeSegmentEvidence(BaseModel):
     reason: str | None = Field(description="stale or source_unavailable when verification failed.")
 
 
+class KnowledgeDocumentPreview(BaseModel):
+    id: str = Field(description="Public document identifier.")
+    filename: str
+    title: str = Field(description="Document title, with a filename fallback.")
+    pages: int | None = Field(description="Page count when provided by the document format.")
+    sections: list[str] = Field(description="Headings extracted during indexing.")
+    text: str = Field(description="Extracted text, limited to 200,000 characters.")
+
+
 class FeatureBody(BaseModel):
     enabled: bool = Field(description="Whether to enable the instance-wide knowledge-base feature.")
     model: str | None = Field(
@@ -185,20 +194,23 @@ class KnowledgeSearchRule(BaseModel):
     mode: Literal["keyword", "hybrid", "exclude"] = Field(
         description="Search strategy for a file or inherited by files within a folder."
     )
-    keywords: list[str] = Field(description="Aliases that produce unverified file candidates.")
+    keywords: list[str] = Field(
+        description="Personal search aliases: semantic candidates with a ready embedding model, otherwise literal matches."
+    )
 
 
 class KnowledgeSearchRuleBody(BaseModel):
     path: str = Field(min_length=1, max_length=500, description="Relative file or folder path.")
     mode: Literal["keyword", "hybrid", "exclude"] = Field(
         description=(
-            "keyword uses lexical search, hybrid also uses available vectors, exclude hides files."
+            "keyword searches names and text lexically while aliases may match semantically; "
+            "hybrid also searches text semantically; exclude hides files."
         )
     )
     keywords: list[str] = Field(
         default_factory=list,
         max_length=32,
-        description="Aliases that add matching files as candidates.",
+        description="Personal aliases that add readable files as unverified candidates.",
     )
 
 
@@ -936,7 +948,7 @@ async def read_knowledge_segment(
 @router.get(
     "/{kb_id}/search",
     response_model=list[SearchHit],
-    summary="Search readable file names and located document text",
+    summary="Search readable file names, personal aliases, and located document text",
 )
 async def search_documents(
     kb_id: str,
@@ -948,10 +960,11 @@ async def search_documents(
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> list[SearchHit]:
-    """Search metadata immediately and ready text, limited to readable files.
+    """Search readable names and indexed text under the current user's rules.
 
-    Hits with a segment ID support verified source reading; metadata-only hits
-    locate files not yet indexed. Inspect coverage for partial results.
+    Aliases use semantic similarity with a ready embedding model and literal
+    matching otherwise. Alias hits are unverified file candidates without a
+    segment ID; inspect coverage and read a source segment before citing text.
     """
     try:
         service = _knowledge_service(server)
@@ -1072,6 +1085,20 @@ async def delete_search_rule(
 @router.get(
     "/{kb_id}/documents/{doc_id}/preview",
     summary="Preview extracted document text",
+    response_model=KnowledgeDocumentPreview,
+    responses={
+        409: {
+            "description": (
+                "KNOWLEDGE_INDEX_NOT_READY: the current document index is unfinished, "
+                "unavailable, or stale; this request does not run parsing or OCR."
+            )
+        }
+    },
+    description=(
+        "Returns bounded text from the completed index without repeating OCR. "
+        "Unindexed markdown/text files can be previewed directly; other documents "
+        "return 409 until their current version is indexed."
+    ),
 )
 async def preview_document(
     kb_id: str,
@@ -1081,8 +1108,15 @@ async def preview_document(
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
     try:
-        return _knowledge_service(server).preview_document(
-            kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                _knowledge_service(server).preview_document,
+                kb_id,
+                doc_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
         )
     except Exception as exc:
         raise _map_knowledge_error(
@@ -1264,6 +1298,10 @@ async def reindex_base(
             )
             if not document.is_dir
         ]
+        # Preflight every selected document before resetting any status so a
+        # partially writable base cannot be left half reindexed.
+        for document in documents:
+            service.require_document_writable(document, actor_user_id=user.id)
         assert server.services is not None
         for document in documents:
             service.reindex_document(

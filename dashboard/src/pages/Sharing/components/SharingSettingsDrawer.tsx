@@ -243,7 +243,13 @@ export default function SharingSettingsDrawer({
                 )}
               </>
             ) : (
-              <Text type="secondary">{t("sharing.settings.notShared")}</Text>
+              <Text type="secondary">
+                {t(
+                  resourceType === "knowledge_document"
+                    ? "sharing.settings.knowledgeInherited"
+                    : "sharing.settings.notShared",
+                )}
+              </Text>
             )}
           </div>
         </div>
@@ -312,7 +318,11 @@ export default function SharingSettingsDrawer({
             ))}
           </Radio.Group>
           <Text type="secondary" className={styles.metaText}>
-            {t("sharing.settings.permissionHint")}
+            {t(
+              resourceType === "knowledge_document"
+                ? "sharing.settings.knowledgePermissionHint"
+                : "sharing.settings.permissionHint",
+            )}
           </Text>
         </div>
 
@@ -337,7 +347,11 @@ export default function SharingSettingsDrawer({
         <div className={styles.drawerSection}>
           <Text strong>{t("sharing.settings.grantsTitle")}</Text>
           <Text type="secondary" className={styles.metaText}>
-            {t("sharing.settings.grantsHint")}
+            {t(
+              resourceType === "knowledge_document"
+                ? "sharing.settings.knowledgeGrantsHint"
+                : "sharing.settings.grantsHint",
+            )}
           </Text>
           {grants.map((grant, index) => (
             <Space.Compact key={index} block className={styles.grantRow}>

@@ -1780,6 +1780,31 @@ def _ensure_knowledge_search_rules_schema(db: DatabasePool) -> None:
         conn.execute("UPDATE _schema_version SET version = ?", (38,))
 
 
+def _ensure_knowledge_rule_vectors_schema(db: DatabasePool) -> None:
+    """Repair a missing v39 cache table even if the version watermark skipped its DDL."""
+    blob_type = "BYTEA" if db.dialect == "postgresql" else "BLOB"
+    user_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+    with db.connect() as conn:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS knowledge_search_rule_vectors (
+              document_id TEXT NOT NULL,
+              user_id {user_type} NOT NULL,
+              model_key TEXT NOT NULL,
+              keyword TEXT NOT NULL,
+              embedding {blob_type} NOT NULL,
+              PRIMARY KEY (document_id, user_id, model_key, keyword),
+              FOREIGN KEY (document_id, user_id)
+                REFERENCES knowledge_search_rules(document_id, user_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_search_rule_vectors_user_model "
+            "ON knowledge_search_rule_vectors(user_id, model_key)"
+        )
+
+
 def _ensure_org_units_schema(db: DatabasePool) -> None:
     """Create org units + unit grants and the user scope columns (schema v17)."""
     if _table_exists(db, "users"):
@@ -3386,3 +3411,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_file_index_schema(db)
     _ensure_knowledge_sync_runs_schema(db)
     _ensure_knowledge_derived_schema(db)
+    _ensure_knowledge_rule_vectors_schema(db)

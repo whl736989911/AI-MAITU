@@ -438,6 +438,32 @@ or preview; other agents' files and shared temporary directories are not accessi
 See [ACP integration](./acp.md) for the runner object schema and the
 Zed setup example.
 
+## Knowledge-base indexing and permissions
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/knowledge-bases/enterprise` | user | the deployment's enterprise knowledge space |
+| `GET` | `/knowledge-bases/{kb}/documents` | reader | only documents in the caller's effective folder/file ACL scope |
+| `GET` | `/knowledge-bases/{kb}/coverage` | reader | counts only readable files, not hidden folders or siblings |
+| `GET` | `/knowledge-bases/{kb}/search?q=…` | reader | lexical/optional vector search filtered by the same effective ACL |
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/preview` | reader | up to 200,000 characters from the completed index; verifies the original hash, never repeats OCR |
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/segments/{segment}` | reader | revalidates the file and its permission before returning verified evidence |
+| `GET`/`POST` | `/sharing/acl/knowledge_document/{doc}` | governance | folders and files use the existing sharing ACL/change approval and audit flow |
+
+Folder ACLs intersect with ancestor restrictions by default. Only a matching
+explicit user, department, or role grant on a single file can bypass ancestor
+folder restrictions; the file ACL and knowledge-base ACL remain mandatory.
+Making a file public is not such an exception. Read and write access are separate:
+library-level write access does not override a read-only file. An explicitly
+granted file retains its actual path; denied folder rows, siblings and their
+counts remain hidden.
+
+For previews, unindexed local Markdown/plain-text documents can be read within
+the character limit. Other documents whose index is unfinished, unavailable or
+stale return HTTP 409 with `KNOWLEDGE_INDEX_NOT_READY`. Indexing scans all PDF
+pages sequentially with bounded OCR rendering and one heavy ingestion task per
+process. DOCX parsing does not load unrelated embedded images or OCR them.
+
 ## Storage backends
 
 | Method | Path | Auth | Notes |

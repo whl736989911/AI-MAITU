@@ -150,6 +150,7 @@
     "KNOWLEDGE_NOT_FOUND": "Knowledge base or document not found.",
     "KNOWLEDGE_FORBIDDEN": "You do not have access to this knowledge base.",
     "KNOWLEDGE_WRITE_FORBIDDEN": "You can read this knowledge base, but you do not have permission to change it.",
+    "KNOWLEDGE_INDEX_NOT_READY": "The current document has not finished indexing. Please wait for indexing or rebuild its index.",
     "KNOWLEDGE_DOC_LIMIT": "A knowledge base can contain at most 100 documents.",
     "KNOWLEDGE_DOC_TOO_LARGE": "This document exceeds the {{max_mb}} MB size limit.",
     "KNOWLEDGE_BASE_LIMIT": "You can create at most 20 knowledge bases.",
@@ -450,13 +451,13 @@
       "exclude": "Exclude from search"
     },
     "searchRuleModeDetails": {
-      "hybrid": "Search file names, indexed text and your aliases; include semantic search when an embedding model is configured.",
-      "keyword": "Search file names, indexed text and your aliases without vector-based semantic search.",
+      "hybrid": "Search names and indexed text; with a ready embedding model, also match the meaning of document text and your aliases.",
+      "keyword": "Search names and text lexically; your aliases still match semantically when an embedding model is ready.",
       "exclude": "Do not include this file or folder in search results."
     },
     "searchRuleKeywords": "Search keywords",
     "searchRuleKeywordsPlaceholder": "One keyword per line, e.g.:\nbudget\nexpense reports",
-    "searchRuleKeywordsHint": "A matching query can surface readable files as candidates; this does not verify or claim a match in their contents.",
+    "searchRuleKeywordsHint": "With a ready embedding model, aliases can match the meaning of a query; without one, matching is literal. Hits are unverified file candidates, not proof of their contents.",
     "searchRulePersonalHint": "These settings affect only your search. Folder rules are inherited by descendants unless a more specific file or folder rule overrides them.",
     "searchRuleDefault": "Using the default hybrid strategy. Save to override this item.",
     "searchRuleOwn": "Using this item's own search settings ({{kind}}).",
@@ -1339,6 +1340,7 @@
       "agent": "Agent",
       "connector": "Connector",
       "knowledge_base": "Knowledge base",
+      "knowledge_document": "Knowledge folders and files",
       "feature": "Feature"
     },
     "visibility": {
@@ -1412,15 +1414,18 @@
       "version": "Version {{version}}",
       "unitSnapshot": "Unit {{unit}}",
       "notShared": "Not shared yet — only the owner and administrators can reach it.",
+      "knowledgeInherited": "No independent ACL: access currently inherits from folders and the knowledge base. Saving creates an independent rule for this entry.",
       "visibilityLabel": "Who may reach it",
       "permissionLabel": "What they may do",
       "permissionHint": "Only the owner and administrators can always change a resource; everyone else needs the write level.",
+      "knowledgePermissionHint": "Read/write remains subject to knowledge-base and folder hierarchy rules. Library-level write access cannot override a read-only file.",
       "unitLabel": "Org unit",
       "unitPlaceholder": "Pick the org unit",
       "unitHint": "The unit is snapshotted now: a later move does not re-scope what you shared.",
       "noUnits": "No org units available",
       "grantsTitle": "Extra grantees",
       "grantsHint": "Grants only ever widen access; there is no deny.",
+      "knowledgeGrantsHint": "Folder permissions narrow access through every parent. Explicit user, department or role grants on a single file can bypass folder restrictions, but never knowledge-base access. A folder grant does not bypass its parents. Read/write applies to everyone matched by this entry.",
       "granteeType": {
         "user": "User",
         "unit": "Org unit",

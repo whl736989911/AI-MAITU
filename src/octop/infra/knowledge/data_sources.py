@@ -309,24 +309,18 @@ class DataSourceService:
             data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
         )
         if is_folder_kind(data_source.kind):
-            self._delete_source_files(base.id, ds_id)
+            self._delete_source_files(base.id, ds_id, actor_user_id=actor_user_id)
         self._repo.delete(ds_id)
 
-    def _delete_source_files(self, kb_id: str, data_source_id: str) -> None:
-        """Drop a folder source's index along with the source.
-
-        The rows are removed one by one rather than left to the schema's cascade,
-        because ``delete_document`` is what keeps ``doc_count`` and the chunk
-        index in step. The cascade stays as the guarantee that nothing is
-        orphaned if a source is ever deleted some other way.
-        """
+    def _delete_source_files(self, kb_id: str, data_source_id: str, *, actor_user_id: int) -> None:
+        """Drop a folder source's index along with its source rows."""
         rows = self._knowledge_repo.list_source_files(data_source_id)
+        for row in rows:
+            self._knowledge.require_document_writable(row, actor_user_id=actor_user_id)
         index = KnowledgeIndex(kb_id)
         for row in [entry for entry in rows if not entry.is_dir]:
             index.delete_doc(row.id)
             self._knowledge_repo.delete_document(row.id)
-        # Folders after their files: a folder row's own delete walks descendants,
-        # and doing it first would leave ``doc_count`` counting files twice.
         for row in [entry for entry in rows if entry.is_dir]:
             self._knowledge_repo.delete_document(row.id)
 
@@ -337,7 +331,7 @@ class DataSourceService:
             data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
         )
         if data_source.kind == KIND_UPLOAD:
-            return self._sync_upload(data_source, base)
+            return self._sync_upload(data_source, base, actor_user_id=actor_user_id)
         if data_source.kind == KIND_URL:
             return self._sync_url(data_source, base, actor_user_id=actor_user_id, is_admin=is_admin)
         if is_folder_kind(data_source.kind):
@@ -362,15 +356,20 @@ class DataSourceService:
     # Internals
     # ------------------------------------------------------------------
 
-    def _sync_upload(self, data_source: DataSourceRow, base: KnowledgeBaseRow) -> DataSourceRow:
+    def _sync_upload(
+        self,
+        data_source: DataSourceRow,
+        base: KnowledgeBaseRow,
+        *,
+        actor_user_id: int,
+    ) -> DataSourceRow:
         """Ingest the knowledge document an ``upload`` source points at."""
         try:
             document = self._upload_target(base.id, data_source.config)
         except ValueError as exc:
-            # The document it was created against is gone: report it as the
-            # failed sync it is instead of leaving a stale 'ok'.
             self._repo.mark_sync(data_source.id, status=SYNC_FAILED, error=str(exc))
             raise
+        self._knowledge.require_document_writable(document, actor_user_id=actor_user_id)
         return self._index(data_source, base, document)
 
     def _sync_url(
@@ -416,6 +415,7 @@ class DataSourceService:
         except Exception as exc:
             self._repo.mark_sync(data_source.id, status=SYNC_FAILED, error=str(exc))
             raise DataSourceSyncFailed(exc) from exc
+        del fetched
         return self._index(data_source, base, document)
 
     def _index(
@@ -583,6 +583,8 @@ class DataSourceService:
         The previous results — and every document already indexed — stay as they
         were, and the source is marked so an administrator can see why.
         """
+        for row in self._knowledge_repo.list_source_files(data_source.id):
+            self._knowledge.require_document_writable(row, actor_user_id=actor_user_id)
         run = self._runs.start(data_source_id=data_source.id, trigger=TRIGGER_MANUAL)
         self._repo.mark_sync(data_source.id, status=SYNC_RUNNING)
         try:

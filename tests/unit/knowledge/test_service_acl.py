@@ -14,6 +14,7 @@ from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.errors import OctopError
 from octop.infra.knowledge import service as service_module
 from octop.infra.knowledge.service import MAX_DOCS_PER_KB, KnowledgeService
 from octop.infra.sharing import AclEntry, can_access
@@ -518,3 +519,149 @@ def test_a_file_level_entry_that_reaches_the_actor_keeps_it_readable(
         "Shared with everyone."
         in service.preview_document(kb.id, doc.id, actor_user_id=viewer)["text"]
     )
+
+
+def test_child_department_file_grant_uses_existing_unit_chain(
+    service: KnowledgeService,
+) -> None:
+    units = OrgUnitRepo(service._services.db)
+    units.create(key="engineering", label_zh="研发", label_en="Engineering")
+    units.create(
+        key="platform",
+        label_zh="平台",
+        label_en="Platform",
+        parent_key="engineering",
+    )
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    child_member = users.create(
+        username="child-member", password_hash="h", role="user", org_unit="platform"
+    )
+    base = service._services.knowledge_repo.create_base(
+        owner_user_id=owner, name="Docs", shared=True
+    )
+    document = service.upload_document(
+        base.id,
+        actor_user_id=owner,
+        filename="unit.md",
+        content_type="text/markdown",
+        content=b"engineering material",
+    )
+    ResourceAclRepo(service._services.db).upsert(
+        AclEntry(
+            "knowledge_document",
+            document.id,
+            None,
+            "private",
+            None,
+            1,
+            grants=(("unit", "engineering"),),
+        )
+    )
+    assert [row.id for row in service.list_documents(base.id, actor_user_id=child_member)] == [
+        document.id
+    ]
+
+
+def test_read_only_file_acl_blocks_writer_of_knowledge_base(service: KnowledgeService) -> None:
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    writer = users.create(username="writer", password_hash="h", role="user")
+    base = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
+    sharing = SharingService(service._services.db)
+    result = sharing.apply_change(
+        owner,
+        "knowledge_base",
+        base.id,
+        AclEntry(
+            "knowledge_base",
+            base.id,
+            owner,
+            "private",
+            None,
+            0,
+            grants=(("user", str(writer)),),
+            permission="write",
+        ),
+    )
+    assert result.applied
+    document = service.upload_document(
+        base.id,
+        actor_user_id=owner,
+        filename="read-only.md",
+        content_type="text/markdown",
+        content=b"Read only.",
+    )
+    ResourceAclRepo(service._services.db).upsert(
+        AclEntry(
+            "knowledge_document",
+            document.id,
+            None,
+            "private",
+            None,
+            1,
+            grants=(("user", str(writer)),),
+            permission="read",
+        )
+    )
+    with pytest.raises(PermissionError, match="document write"):
+        service.update_text_document(
+            base.id, document.id, actor_user_id=writer, content="Cannot edit."
+        )
+    with pytest.raises(PermissionError, match="document write"):
+        service.reindex_document(base.id, document.id, actor_user_id=writer)
+
+
+def test_file_grants_use_audited_sharing_governance_and_real_base_owner(
+    service: KnowledgeService,
+) -> None:
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    grantee = users.create(username="grantee", password_hash="h", role="user")
+    base = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
+    document = service.upload_document(
+        base.id,
+        actor_user_id=owner,
+        filename="notes.md",
+        content_type="text/markdown",
+        content=b"notes",
+    )
+    sharing = SharingService(service._services.db)
+    result = sharing.apply_change(
+        owner,
+        "knowledge_document",
+        document.id,
+        AclEntry(
+            "knowledge_document",
+            document.id,
+            grantee,
+            "private",
+            None,
+            0,
+            grants=(("user", str(grantee)),),
+        ),
+        reason="explicit file exception",
+    )
+
+    assert result.applied
+    assert result.entry.owner_user_id == owner
+    changes = ResourceAclRepo(service._services.db).list_changes("knowledge_document", document.id)
+    assert len(changes) == 1
+    assert changes[0].actor_user_id == owner
+    assert changes[0].reason == "explicit file exception"
+
+    with pytest.raises(OctopError, match="may not change access"):
+        sharing.apply_change(
+            grantee,
+            "knowledge_document",
+            document.id,
+            AclEntry(
+                "knowledge_document",
+                document.id,
+                grantee,
+                "private",
+                None,
+                result.entry.version,
+                grants=(("user", str(grantee)),),
+            ),
+        )

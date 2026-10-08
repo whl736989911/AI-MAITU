@@ -29,7 +29,6 @@ from octop.infra.sharing import (
     VISIBILITY_PRIVATE,
     VISIBILITY_PUBLIC,
     AclEntry,
-    allowed_resource_ids,
 )
 from octop.infra.utils.ulid import new_short_id, new_ulid
 
@@ -317,39 +316,12 @@ class KnowledgeRepo:
         return self._acl.get("knowledge_base", kb_id)
 
     def scope_for_user(self, user_id: int) -> tuple[str, tuple[str, ...]]:
-        """``(role, unit_keys)`` for the access rules, via the repo that owns the ACL.
-
-        The knowledge service decides read and write itself, so it resolves the
-        actor's scope here — one caller-side resolution, exactly as
-        :meth:`readable_document_ids` does for the document lists.
-        """
+        """``(role, unit_keys)`` for the knowledge ACL evaluator."""
         return self._acl.scope_for_user(user_id)
 
     def document_acl_entries(self) -> dict[str, AclEntry]:
-        """Every document that carries a file-level entry, by document id.
-
-        A document absent from here is not restricted: its knowledge base's
-        entry is the whole answer, because a file rule only ever narrows what
-        the base already allows (design §5.2). The two are therefore always read
-        together, and ``infra.knowledge.scope`` is where that pairing lives.
-        """
+        """Every document that carries an explicit ACL entry, by document id."""
         return {entry.resource_id: entry for entry in self._acl.list_for_type("knowledge_document")}
-
-    def readable_document_ids(self, *, user_id: int, is_admin: bool = False) -> set[str]:
-        """The subset of :meth:`document_acl_entries` ``user_id`` may read.
-
-        ``is_admin`` is the same override every other read path takes, and it
-        needs no branch: the administrator bypass is rule 1 of
-        ``sharing.can_access``, so an administrator resolves to every document
-        through the rule set rather than around it.
-        """
-        role, unit_keys = self._acl.scope_for_user(user_id)
-        return allowed_resource_ids(
-            self._acl.list_for_type("knowledge_document"),
-            user_id=user_id,
-            role="admin" if is_admin else role,
-            unit_keys=unit_keys,
-        )
 
     def public_base_ids(self, kb_ids: Collection[str] | None = None) -> set[str]:
         """Ids of knowledge bases published to everyone, per ``resource_acl``.

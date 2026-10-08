@@ -54,6 +54,55 @@ def test_rules_are_user_scoped_and_cascade_with_documents(pool: SqlitePool) -> N
     assert rules.get(document_id=folder.id, user_id=owner) is None
 
 
+def test_rule_vectors_survive_rename_but_not_keyword_edit_or_rule_removal(
+    pool: SqlitePool,
+) -> None:
+    owner = UserRepo(pool).create(username="vector-owner", password_hash="h", role="user")
+    other = UserRepo(pool).create(username="vector-other", password_hash="h", role="user")
+    knowledge = KnowledgeRepo(pool)
+    base = knowledge.get_enterprise_space()
+    assert base is not None
+    folder = knowledge.ensure_folder(base.id, "contracts")
+    rules = KnowledgeSearchRulesRepo(pool)
+    rules.set(document_id=folder.id, user_id=owner, mode="keyword", keywords=["劳动合同"])
+    rules.cache_vectors(
+        document_id=folder.id,
+        user_id=owner,
+        model_key="onnx/model-a",
+        vectors={"劳动合同": [1.0, 0.0]},
+    )
+    key = (folder.id, "劳动合同")
+    assert rules.cached_vectors(user_id=owner, model_key="onnx/model-a")[key] == (
+        1.0,
+        0.0,
+    )
+    assert rules.cached_vectors(user_id=other, model_key="onnx/model-a") == {}
+    knowledge.rename_document(base.id, folder.id, "legal")
+    rules.set(document_id=folder.id, user_id=owner, mode="hybrid", keywords=["劳动合同"])
+    assert key in rules.cached_vectors(user_id=owner, model_key="onnx/model-a")
+    rules.set(document_id=folder.id, user_id=owner, mode="hybrid", keywords=["雇佣协议"])
+    assert rules.cached_vectors(user_id=owner, model_key="onnx/model-a") == {}
+    rules.cache_vectors(
+        document_id=folder.id,
+        user_id=owner,
+        model_key="onnx/model-b",
+        vectors={"雇佣协议": [0.0, 1.0]},
+    )
+    knowledge.delete_document(folder.id)
+    assert rules.cached_vectors(user_id=owner, model_key="onnx/model-b") == {}
+
+
+def test_current_watermark_repairs_missing_rule_vector_cache(pool: SqlitePool) -> None:
+    with pool.connect() as conn:
+        conn.execute("DROP TABLE knowledge_search_rule_vectors")
+    run_migrations(pool)
+    with pool.connect() as conn:
+        assert conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='knowledge_search_rule_vectors'"
+        ).fetchone()
+
+
 def test_v37_upgrade_preserves_folder_rules_and_removes_extraction_data(
     tmp_path: Path, upgrade_through, monkeypatch
 ) -> None:
@@ -88,7 +137,7 @@ def test_v37_upgrade_preserves_folder_rules_and_removes_extraction_data(
             row["name"]
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 38
+    assert version == 39
     assert {row["table"] for row in foreign_keys} == {"knowledge_documents", "users"}
     assert "knowledge_folder_search_rules" not in tables
     assert {

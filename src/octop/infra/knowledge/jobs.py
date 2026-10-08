@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 import tempfile
+import threading
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
@@ -26,8 +27,11 @@ logger = logging.getLogger(__name__)
 _running_jobs: dict[tuple[str, str], asyncio.Task[None]] = {}
 
 
-INDEX_CONCURRENCY = 2
+INDEX_CONCURRENCY = 1
 _index_semaphore: asyncio.Semaphore | None = None
+# Also covers synchronous data-source ingestion outside the async queue.
+_processing_lock = threading.Lock()
+_EMBEDDING_BATCH_SIZE = 20
 
 ParsePath = Callable[[Any], AbstractContextManager[Path]]
 """How the document being indexed becomes something to parse.
@@ -116,42 +120,32 @@ def process_source_file(
     )
 
 
-def document_text(services: Any, document: Any) -> str:
-    """The document's text, re-parsed (design §12.6).
-
-    Re-parsed rather than rebuilt from the stored chunks: chunks overlap by
-    design, so joining them would repeat a slice of the document at every
-    boundary. A source file is staged in a temporary copy exactly as indexing
-    stages it, and a ``.doc`` is converted again — the cost is why the derived
-    *structure* is stored, but the text itself is kept nowhere else.
-
-    The import is local because ``data_sources`` imports this module, and the
-    connector it provides is the whole point: extraction must reach a source's
-    file the same way a scan did.
-    """
-    from octop.infra.knowledge.data_sources import DataSourceService
-
-    source = (
-        services.data_sources_repo.get(document.data_source_id) if document.data_source_id else None
-    )
-    if document.data_source_id and source is None:
-        raise ValueError("the data source this file came from no longer exists")
-    if source is None:
-        with _platform_file(document.kb_id, document.id, document.filename) as path:
-            return _parse_document_text(services, path, document)
-    connector = DataSourceService(services).connector(source)
-    with _source_path(connector, document.source_path, document.filename) as path:
-        return _parse_document_text(services, path, document)
-
-
-def _parse_document_text(services: Any, path: Path, document: Any) -> str:
-    return parse_document(
-        path, ocr=optional_ocr_extractor(services), source_path=document.display_path
-    ).text
-
-
 def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> None:
     """Index original-located text; embeddings are an optional ranking layer."""
+    with _processing_lock:
+        _process_locked(services, kb_id, doc_id, parse_path=parse_path)
+
+
+def _embedding_batches(
+    services: Any, doc_id: str, blocks: tuple[ParsedBlock, ...], knobs: dict[str, int]
+) -> Iterator[tuple[list[str], list[list[float]], list[dict[str, object]]]]:
+    texts: list[str] = []
+    metadata: list[dict[str, object]] = []
+    for ordinal, block in enumerate(blocks):
+        for piece in chunk_text(
+            block.text, size=knobs["chunk_size"], overlap=knobs["chunk_overlap"]
+        ):
+            texts.append(piece)
+            metadata.append({"segment_id": f"{doc_id}:{ordinal}"})
+            if len(texts) == _EMBEDDING_BATCH_SIZE:
+                yield texts, embed_knowledge_texts(services, texts), metadata
+                texts, metadata = [], []
+    if texts:
+        yield texts, embed_knowledge_texts(services, texts), metadata
+
+
+def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> None:
+    """Run one ingestion at a time, including its native model allocations."""
     repo = services.knowledge_repo
     document = repo.get_document(doc_id)
     base = repo.get_base(kb_id)
@@ -187,22 +181,13 @@ def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -
                 services.settings_repo.get, getattr(services, "provider_repo", None)
             )
             knobs = get_advanced_settings(services.settings_repo.get)
-            chunks = []
-            vector_metadata: list[dict[str, object]] = []
-            for ordinal, block in enumerate(blocks):
-                for piece in chunk_text(
-                    block.text, size=knobs["chunk_size"], overlap=knobs["chunk_overlap"]
-                ):
-                    chunks.append(piece)
-                    vector_metadata.append({"segment_id": f"{doc_id}:{ordinal}"})
-            embeddings = embed_knowledge_texts(services, chunks)
+            dimension = index.replace_doc_chunk_batches(
+                doc_id, _embedding_batches(services, doc_id, blocks, knobs)
+            )
         except Exception:
             # A missing or unavailable model must not prevent local lexical search.
             logger.info("optional knowledge embeddings unavailable for %s", doc_id)
             index.delete_doc_chunks(doc_id)
-        else:
-            index.replace_doc_chunks(doc_id, chunks, embeddings, metadata=vector_metadata)
-            dimension = len(embeddings[0]) if embeddings else 0
         repo.set_derived(doc_id, parsed.derived())
         repo.update_document(
             doc_id,

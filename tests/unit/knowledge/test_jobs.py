@@ -194,3 +194,83 @@ def test_resume_pending_index_jobs_resets_processing_and_enqueues(
 
     assert repo.get_document(doc.id).status == "pending"
     assert enqueued == [(kb.id, doc.id)]
+
+
+def test_direct_ingestion_shares_the_background_resource_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    entered = threading.Event()
+    release = threading.Event()
+    second_started = threading.Event()
+    second_entered = threading.Event()
+    active = 0
+    peak = 0
+    observed = threading.Lock()
+
+    def ingest(*_args: object, **_kwargs: object) -> None:
+        nonlocal active, peak
+        with observed:
+            active += 1
+            peak = max(peak, active)
+        entered.set()
+        if _args[2] == "second":
+            second_entered.set()
+        try:
+            assert release.wait(timeout=5)
+        finally:
+            with observed:
+                active -= 1
+
+    monkeypatch.setattr(jobs, "_process_locked", ingest)
+
+    def second() -> None:
+        second_started.set()
+        jobs.process_document(object(), "kb", "second")
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(jobs.process_document, object(), "kb", "first")
+        try:
+            assert entered.wait(timeout=5)
+            other = executor.submit(second)
+            assert second_started.wait(timeout=5)
+            assert not second_entered.wait(timeout=0.1)
+        finally:
+            release.set()
+        first.result(timeout=5)
+        other.result(timeout=5)
+    assert peak == 1
+
+
+def test_large_document_keeps_all_vectors_with_a_bounded_embedding_backend(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "home"))
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = KnowledgeRepo(pool)
+    owner_id = UserRepo(pool).create(username="owner", password_hash="h", role="user")
+    kb = repo.create_base(owner_user_id=owner_id, name="Large document")
+    lines = [f"Section {number}: document resource policy." for number in range(45)]
+    content = "\n".join(lines).encode()
+    doc = repo.create_document(
+        kb_id=kb.id, filename="policy.txt", content_type="text/plain", byte_size=len(content)
+    )
+    write_document(kb.id, doc.id, doc.filename, content)
+    services = SimpleNamespace(knowledge_repo=repo, settings_repo=SettingsRepo(pool))
+    monkeypatch.setattr(jobs, "assert_embedding_usable", lambda *_args: None)
+
+    def bounded_backend(_services: object, texts: list[str]) -> list[list[float]]:
+        if len(texts) > 20:
+            raise ValueError("backend input capacity exceeded")
+        return [[1.0, 0.0] for _ in texts]
+
+    monkeypatch.setattr(jobs, "embed_knowledge_texts", bounded_backend)
+    jobs.process_document(services, kb.id, doc.id)
+    vectors = KnowledgeIndex(kb.id).doc_chunks(doc.id)
+    assert [text for text, _vector, _metadata in vectors] == lines
+    assert [metadata["segment_id"] for _text, _vector, metadata in vectors] == [
+        f"{doc.id}:{number}" for number in range(45)
+    ]
+    assert repo.get_document(doc.id).status == "ready"

@@ -91,7 +91,8 @@ def test_image_and_blank_pdf_use_ocr(tmp_path: Path) -> None:
 
     assert parse_document(image, ocr=fake_ocr).text == "recognized text"
     assert parse_document(pdf, ocr=fake_ocr).text == "recognized text"
-    assert calls == [image, pdf]
+    assert calls[0] == image
+    assert len(calls) == 2 and calls[1] != pdf and calls[1].suffix == ".pdf"
 
 
 def test_text_pdf_does_not_require_ocr(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -136,6 +137,22 @@ def test_local_ocr_joins_rapidocr_text_lines(
     monkeypatch.setattr(ocr, "_rapidocr_engine", lambda: engine)
 
     assert ocr._extract_local(image) == "第一行\nSecond line"
+
+
+def test_pdf_rendering_caps_page_dimensions_and_preserves_colors() -> None:
+    pymupdf = pytest.importorskip("pymupdf")
+    np = pytest.importorskip("numpy")
+    cv2 = pytest.importorskip("cv2")
+    with pymupdf.open() as document:
+        page = document.new_page(width=10_000, height=8_000)
+        page.draw_rect(page.rect, fill=(1, 0, 0))
+        image = ocr._render_page(page)
+    height, width, channels = image.shape
+    assert max(width, height) <= 2000
+    assert width * height <= 4_000_000
+    assert channels == 3
+    decoded = cv2.imdecode(np.frombuffer(ocr._png_bytes(image), dtype=np.uint8), cv2.IMREAD_COLOR)
+    assert tuple(decoded[height // 2, width // 2]) == (0, 0, 255)
 
 
 def test_remote_ocr_sends_image_block(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
