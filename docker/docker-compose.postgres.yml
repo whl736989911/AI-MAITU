@@ -1,5 +1,5 @@
 # =============================================================================
-# Local PostgreSQL (+ pgvector) for Octop dual-backend development / tests
+# Local PostgreSQL (+ pgvector) for MAITU dual-backend development / tests
 #
 # From repo root:
 #   docker compose -f docker/docker-compose.postgres.yml up -d
@@ -21,7 +21,7 @@
 services:
   postgres:
     image: pgvector/pgvector:pg16
-    container_name: octop-postgres
+    container_name: maitu-postgres
     restart: unless-stopped
     ports:
       - "${OCTOP_PG_PORT:-5432}:5432"

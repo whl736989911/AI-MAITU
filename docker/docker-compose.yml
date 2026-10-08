@@ -1,5 +1,5 @@
 # =============================================================================
-# Octop — Docker Compose
+# 麦途智造 — Docker Compose
 #
 # 用法（在仓库根目录执行）:
 #   docker compose -f docker/docker-compose.yml up -d
@@ -19,18 +19,20 @@
 # 后续计划：首次启动可改为随机生成密码并写入 credential.txt。
 # =============================================================================
 
+name: maitu
+
 services:
-  octop:
+  maitu:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: octop:latest
-    container_name: octop
+    image: maitu:latest
+    container_name: maitu
     restart: unless-stopped
     ports:
       - "${OCTOP_PORT:-8088}:${OCTOP_PORT:-8088}"
     volumes:
-      - ${OCTOP_DATA:-~/.octop}:/data/.octop
+      - ${OCTOP_DATA:-~/.maitu}:/data/.octop
     environment:
       - HOME=/data
       - OCTOP_BIND_HOST=0.0.0.0

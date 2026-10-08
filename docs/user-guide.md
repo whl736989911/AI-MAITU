@@ -117,11 +117,12 @@ docker compose -f docker/docker-compose.yml up -d
 # 或手动构建后运行
 bash docker/docker_build.sh
 docker run -d \
+  --name maitu \
   -p 8088:8088 \
-  -v octop-data:/data/.octop \
+  -v maitu-data:/data/.octop \
   -e HOME=/data \
   -e OCTOP_DEFAULT_PASSWORD="<自定义强密码，留空则自动生成随机密码>" \
-  octop:latest
+  maitu:latest
 ```
 
 完整环境变量见 [.env.example](.env.example)：
@@ -131,7 +132,7 @@ docker run -d \
 | `OCTOP_PORT` | `8088` | HTTP 监听端口 |
 | `OCTOP_DEFAULT_PASSWORD` | _(空)_ | 首次运行管理员密码（Docker 引导；≥8 位且含字母+数字；留空则自动生成随机密码并写入 credential.txt） |
 | `OCTOP_ADMIN_USERNAME` | `admin` | 首次运行管理员用户名 |
-| `OCTOP_DATA` | `~/.octop` | 宿主机数据目录（compose 挂载） |
+| `OCTOP_DATA` | `~/.maitu` | 宿主机数据目录（compose 挂载）；已有部署须指定原目录，见 [升级说明](../docker/README_CN.md#已有部署升级必须保留原数据挂载) |
 
 > 后续计划：Docker 首次启动可改为随机生成管理员密码，并仅写入 `credential.txt`。
 
