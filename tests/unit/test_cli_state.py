@@ -29,3 +29,18 @@ def test_load_ignores_legacy_token_and_base_url(tmp_path: Path) -> None:
     out = load(p)
     assert out.default_user == "u"
     assert out.default_agent == "a"
+
+
+def test_load_corrupt_file_raises_typed_config_error(tmp_path: Path) -> None:
+    from octop.infra.errors import ErrorCode, OctopError
+
+    path = tmp_path / "state.json"
+    path.write_text('{"default_user":', encoding="utf-8")
+
+    try:
+        load(path)
+    except OctopError as exc:
+        assert exc.code is ErrorCode.CONFIG_FILE_CORRUPT
+        assert exc.details["path"] == str(path)
+    else:
+        raise AssertionError("corrupt CLI state must raise CONFIG_FILE_CORRUPT")

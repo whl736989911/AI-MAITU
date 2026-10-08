@@ -107,16 +107,45 @@ def parse_hitl_session_policy(raw: object) -> HitlSessionPolicy:
     return HitlSessionPolicy()
 
 
-def thread_id_from_request(request: dict[str, Any]) -> str | None:
-    raw = request.get("thread_id")
-    if isinstance(raw, str) and raw.strip():
-        return raw.strip()
-    cfg = request.get("configurable")
+def _thread_id_from_mapping(raw: object) -> str | None:
+    if not isinstance(raw, dict):
+        return None
+    direct = raw.get("thread_id")
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    cfg = raw.get("configurable")
     if isinstance(cfg, dict):
         nested = cfg.get("thread_id")
         if isinstance(nested, str) and nested.strip():
             return nested.strip()
     return None
+
+
+def thread_id_from_request(request: dict[str, Any]) -> str | None:
+    """Read ``thread_id`` from a harness request dict."""
+    return _thread_id_from_mapping(request)
+
+
+def thread_id_from_interrupt_request(req: Any) -> str | None:
+    """Resolve the thread in LangGraph's interrupt predicate context."""
+    bound = current_hitl_thread_id()
+    if bound:
+        return bound
+    runtime = getattr(req, "runtime", None)
+    from_runtime = _thread_id_from_mapping(getattr(runtime, "config", None))
+    if from_runtime:
+        return from_runtime
+    from_req = _thread_id_from_mapping(req)
+    if from_req:
+        return from_req
+    try:
+        from langgraph.config import get_config
+    except ImportError:
+        return None
+    try:
+        return _thread_id_from_mapping(get_config())
+    except RuntimeError:
+        return None
 
 
 @contextmanager
@@ -164,8 +193,8 @@ class HitlSessionPolicyStore:
     def allows(self, thread_id: str, tool_name: str) -> bool:
         return self.get(thread_id).allows(tool_name)
 
-    def allows_current(self, tool_name: str) -> bool:
-        tid = current_hitl_thread_id()
+    def allows_interrupt(self, tool_name: str, req: Any = None) -> bool:
+        tid = thread_id_from_interrupt_request(req)
         return bool(tid and self.allows(tid, tool_name))
 
     def _load(self, thread_id: str) -> HitlSessionPolicy:
@@ -193,7 +222,7 @@ def apply_session_bypass(
         original_when = entry.get("when")
 
         def _when(req: Any, *, _tool: str = name, _orig: Any = original_when) -> bool:
-            if store.allows_current(_tool):
+            if store.allows_interrupt(_tool, req):
                 return False
             return True if _orig is None else bool(_orig(req))
 
@@ -211,4 +240,5 @@ __all__ = [
     "hitl_thread_scope",
     "parse_hitl_session_policy",
     "thread_id_from_request",
+    "thread_id_from_interrupt_request",
 ]

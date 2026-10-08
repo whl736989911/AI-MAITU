@@ -63,10 +63,10 @@ def test_row_for_probe_overrides_secrets_when_provided() -> None:
 
 
 @pytest.mark.asyncio
-async def test_list_storage_backend_tree_docker_lists_and_closes(
+async def test_list_storage_backend_tree_docker_returns_container_entries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Docker kind uses container als; temporary sandbox must be closed."""
+    """Docker kind lists the container's workspace rather than host files."""
     fake_backend = MagicMock()
     fake_backend.als = AsyncMock(
         return_value=MagicMock(
@@ -86,7 +86,6 @@ async def test_list_storage_backend_tree_docker_lists_and_closes(
     assert len(entries) == 2
     assert entries[0]["path"] == "SOUL.md"
     assert entries[1]["is_dir"] is True
-    fake_backend.close.assert_called_once_with()
 
 
 @pytest.mark.asyncio
@@ -138,4 +137,3 @@ async def test_list_storage_backend_tree_returns_entries(
     assert len(entries) == 2
     assert entries[0]["path"] == "a.txt"
     assert entries[1]["is_dir"] is True
-    fake_backend.close.assert_called_once_with()

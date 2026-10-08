@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Checkbox, Drawer, Empty, Modal, Spin, Switch } from "antd";
 import { Copy, Info } from "lucide-react";
 import { message } from "@/utils/antdMessage";
@@ -13,6 +13,7 @@ import { useAgent } from "../../../../context/AgentContext";
 import { PackageIcon } from "../../../SkillPackages/PackageIcon";
 import { showApiError } from "../../../../utils/showApiToast";
 import { supportsHostSkillPackagesFromConfig } from "../../../Experts/components/agentBackendForm";
+import { createDetailRequestGate } from "../../../../utils/detailRequestGate";
 import type { SkillSpec } from "../useSkills";
 import styles from "../index.module.less";
 
@@ -81,6 +82,10 @@ export default function SkillPackagesTab({
   const [copyLoading, setCopyLoading] = useState(false);
   const [copying, setCopying] = useState(false);
   const [selectedCopySlugs, setSelectedCopySlugs] = useState<string[]>([]);
+  // Keep the detail drawer and copy modal independent while dropping stale
+  // responses from earlier selections in either surface.
+  const detailRequestGate = useRef(createDetailRequestGate());
+  const copyRequestGate = useRef(createDetailRequestGate());
   const [copyOverwrite, setCopyOverwrite] = useState(false);
 
   useEffect(() => {
@@ -145,21 +150,28 @@ export default function SkillPackagesTab({
   };
 
   const openDetail = async (pack: SkillPackage) => {
+    const requestId = detailRequestGate.current.begin();
     setDetailOpen(true);
     setDetailLoading(true);
     setDetailPackage(null);
     try {
       const detail = await skillPackagesApi.get(pack.id);
-      setDetailPackage(detail);
+      if (detailRequestGate.current.isCurrent(requestId)) {
+        setDetailPackage(detail);
+      }
     } catch (error) {
+      if (!detailRequestGate.current.isCurrent(requestId)) return;
       showApiError(error, t("skills.packagesLoadFailed"), t);
       setDetailOpen(false);
     } finally {
-      setDetailLoading(false);
+      if (detailRequestGate.current.isCurrent(requestId)) {
+        setDetailLoading(false);
+      }
     }
   };
 
   const openCopyModal = async (pack: SkillPackage) => {
+    const requestId = copyRequestGate.current.begin();
     setCopyModalOpen(true);
     setCopyLoading(true);
     setCopyPackage(null);
@@ -167,13 +179,17 @@ export default function SkillPackagesTab({
     setCopyOverwrite(false);
     try {
       const detail = await skillPackagesApi.get(pack.id);
+      if (!copyRequestGate.current.isCurrent(requestId)) return;
       setCopyPackage(detail);
       setSelectedCopySlugs(detail.skills.map((skill) => skill.slug));
     } catch (error) {
+      if (!copyRequestGate.current.isCurrent(requestId)) return;
       showApiError(error, t("skills.packagesLoadFailed"), t);
       setCopyModalOpen(false);
     } finally {
-      setCopyLoading(false);
+      if (copyRequestGate.current.isCurrent(requestId)) {
+        setCopyLoading(false);
+      }
     }
   };
 

@@ -21,6 +21,10 @@ export type StreamErrorAction = {
   labelKey: string;
 };
 
+const MODEL_RETRY_FAILURE_MARK = "[model_call_failed]";
+const RETRY_WRAPPER_RE = /^model call failed after \d+ attempts?\s+with\s+/i;
+const TECHNICAL_DETAIL_RE = /technical detail:\s*([\s\S]+)$/i;
+
 const STREAM_ERROR_ACTIONS: Partial<Record<StreamErrorKey, StreamErrorAction>> =
   {
     "stream_errors.auth": {
@@ -49,13 +53,24 @@ function normalizeMessage(message: string): string {
   return msg;
 }
 
+function unwrapModelRetryMessage(message: string): string {
+  let msg = normalizeMessage(message)
+    .replaceAll(MODEL_RETRY_FAILURE_MARK, " ")
+    .trim();
+  const technical = msg.match(TECHNICAL_DETAIL_RE);
+  if (technical?.[1]) return technical[1].trim();
+  msg = msg.replace(RETRY_WRAPPER_RE, "").trim();
+  return msg || normalizeMessage(message);
+}
+
 /** Return a stable i18n key for known model/stream failures, else null. */
 export function classifyChatStreamError(
   message: string | null | undefined,
 ): StreamErrorKey | null {
   if (!message) return null;
-  const msg = normalizeMessage(message);
-  if (!msg) return null;
+  const raw = normalizeMessage(message);
+  const msg = unwrapModelRetryMessage(message);
+  if (!msg && !raw) return null;
   const lower = msg.toLowerCase();
   const compact = lower.replace(/[_\s]/g, "");
 
@@ -150,15 +165,25 @@ export function classifyChatStreamError(
     return "stream_errors.timeout_network";
   }
 
-  if (lower.includes("model call failed after")) {
+  const original = raw.toLowerCase();
+  if (
+    original.includes("model call failed after") ||
+    original.includes(MODEL_RETRY_FAILURE_MARK)
+  ) {
     return "stream_errors.model_call_failed";
   }
 
   return null;
 }
 
+/** True only for ModelRetryMiddleware failure envelopes, not ordinary text. */
 export function isChatStreamError(message: string | null | undefined): boolean {
-  return classifyChatStreamError(message) !== null;
+  if (!message) return false;
+  const raw = normalizeMessage(message);
+  return (
+    raw.toLowerCase().includes("model call failed after") ||
+    raw.includes(MODEL_RETRY_FAILURE_MARK)
+  );
 }
 
 /** Localized guidance for known failures; otherwise the original text. */
@@ -168,10 +193,19 @@ export function formatChatStreamError(
 ): string {
   if (!message) return "";
   const key = classifyChatStreamError(message);
-  if (!key) return message;
-  return t(key, { defaultValue: message });
+  const detail = unwrapModelRetryMessage(message);
+  if (key && key !== "stream_errors.model_call_failed") {
+    return t(key, { defaultValue: message });
+  }
+  if (detail && detail !== normalizeMessage(message)) {
+    return t("stream_errors.model_call_failed_detail", {
+      detail,
+      defaultValue: detail,
+    });
+  }
+  if (key) return t(key, { defaultValue: message });
+  return message;
 }
-
 /** Optional settings deep-link for known stream failures. */
 export function chatStreamErrorAction(
   message: string | null | undefined,

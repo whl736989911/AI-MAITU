@@ -20,8 +20,23 @@ _OPTION_KEYS = string.ascii_lowercase
 _SELECTION_RE = re.compile(r"^[0-9a-z]+(?:[,，、/\s]+[0-9a-z]+)*$")
 
 
+def normalize_hitl_request(raw: Any) -> dict[str, Any]:
+    """Unwrap LangGraph v2 Interrupt envelopes around an HITL request."""
+    current: Any = raw
+    for _ in range(3):
+        if not isinstance(current, dict):
+            break
+        if isinstance(current.get("action_requests"), list):
+            return current
+        nested = current.get("value")
+        if not isinstance(nested, dict):
+            break
+        current = nested
+    return raw if isinstance(raw, dict) else {}
+
+
 def parse_action_requests(raw: dict[str, Any]) -> list[dict[str, Any]]:
-    requests = raw.get("action_requests")
+    requests = normalize_hitl_request(raw).get("action_requests")
     if not isinstance(requests, list):
         return []
     out: list[dict[str, Any]] = []
@@ -29,7 +44,13 @@ def parse_action_requests(raw: dict[str, Any]) -> list[dict[str, Any]]:
         if not isinstance(item, dict):
             continue
         name = str(item.get("name") or "tool")
-        args = item.get("args") if isinstance(item.get("args"), dict) else {}
+        raw_args = item.get("args")
+        if isinstance(raw_args, str):
+            try:
+                raw_args = json.loads(raw_args)
+            except ValueError:
+                raw_args = None
+        args = raw_args if isinstance(raw_args, dict) else {}
         description = item.get("description")
         row: dict[str, Any] = {"name": name, "args": args}
         if isinstance(description, str) and description.strip():
@@ -39,7 +60,7 @@ def parse_action_requests(raw: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def parse_review_configs(raw: dict[str, Any]) -> list[dict[str, Any]] | None:
-    configs = raw.get("review_configs")
+    configs = normalize_hitl_request(raw).get("review_configs")
     if not isinstance(configs, list):
         return None
     out = [c for c in configs if isinstance(c, dict)]
@@ -269,6 +290,7 @@ __all__ = [
     "format_ask_card",
     "format_hitl_card",
     "is_ask_action_requests",
+    "normalize_hitl_request",
     "parse_action_requests",
     "parse_ask_reply",
     "parse_review_configs",

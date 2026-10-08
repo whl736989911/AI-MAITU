@@ -12,7 +12,11 @@ from octop.infra.gateway.hitl.coordinator import (
     HitlSlashOutcome,
     HitlStreamContext,
 )
-from octop.infra.gateway.hitl.format import format_hitl_card, parse_action_requests
+from octop.infra.gateway.hitl.format import (
+    format_hitl_card,
+    normalize_hitl_request,
+    parse_action_requests,
+)
 from octop.infra.gateway.hitl.store import HitlPendingStore
 from octop.infra.gateway.process.stream_project import (
     StreamProjectionState,
@@ -31,6 +35,28 @@ def test_parse_action_requests() -> None:
     assert len(actions) == 1
     assert actions[0]["name"] == "execute"
     assert actions[0]["args"] == {"command": "ls"}
+
+
+def test_parse_v2_interrupt_request_envelope() -> None:
+    raw = {
+        "value": {
+            "action_requests": [
+                {
+                    "name": "ask_user_question",
+                    "args": '{"questions":[{"question":"Which?"}]}',
+                },
+            ],
+            "review_configs": [{"action_name": "ask_user_question"}],
+        },
+        "id": "interrupt-1",
+    }
+
+    normalized = normalize_hitl_request(raw)
+    actions = parse_action_requests(raw)
+
+    assert actions[0]["name"] == "ask_user_question"
+    assert actions[0]["args"]["questions"][0]["question"] == "Which?"
+    assert normalized["review_configs"][0]["action_name"] == "ask_user_question"
 
 
 def test_hitl_store_register_and_resolve() -> None:

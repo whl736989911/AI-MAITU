@@ -93,6 +93,7 @@ interface ChatInputProps {
   onConversationModeChange?: (mode: ConversationMode) => void;
   hitlPolicy?: HitlSessionPolicy;
   onHitlPolicyChange?: (policy: HitlSessionPolicy) => void;
+  hitlEnabled?: boolean | null;
   reasoningMode?: "auto" | "enabled" | "disabled";
   reasoningEffort?: string | null;
   onReasoningChange?: (
@@ -154,6 +155,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       onConversationModeChange,
       hitlPolicy = { mode: "ask" },
       onHitlPolicyChange,
+      hitlEnabled,
       reasoningMode = "auto",
       reasoningEffort = null,
       onReasoningChange,
@@ -863,6 +865,7 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
             onConversationModeChange={onConversationModeChange}
             hitlPolicy={hitlPolicy}
             onHitlPolicyChange={onHitlPolicyChange}
+            hitlEnabled={hitlEnabled}
             reasoningMode={reasoningMode}
             reasoningEffort={reasoningEffort}
             onReasoningChange={onReasoningChange}

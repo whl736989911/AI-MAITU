@@ -24,3 +24,25 @@ describe("parseHarnessChunk usage", () => {
     });
   });
 });
+
+describe("parseHarnessChunk LangGraph v2 HITL interrupts", () => {
+  it("unwraps a question request from the Interrupt value envelope", () => {
+    const chunk = parseHarnessChunk(
+      'data: {"type":"hitl_required","request":{"id":"interrupt-1","value":{"action_requests":[{"name":"ask_user_question","args":"{\\"questions\\":[{\\"question\\":\\"Which option?\\"}]}"}],"review_configs":[]}}}',
+    );
+
+    expect(chunk).toEqual({
+      type: "hitl_required",
+      request: {
+        action_requests: [
+          {
+            name: "ask_user_question",
+            args: { questions: [{ question: "Which option?" }] },
+          },
+        ],
+        review_configs: [],
+        pending_id: undefined,
+      },
+    });
+  });
+});

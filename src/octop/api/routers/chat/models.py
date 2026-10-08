@@ -6,6 +6,18 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
+from octop.api.routers.experts import LocalizedTextResponse, QuickPromptResponse
+
+
+class ChatWelcomeResponse(BaseModel):
+    welcome_message: LocalizedTextResponse
+    quick_prompts: list[QuickPromptResponse]
+    task_examples: dict[str, list[str]] | None
+    hitl_enabled: bool = Field(
+        description="Whether global tool approvals are enabled. User-question interrupts remain independent."
+    )
+
+
 # Decision types understood by langchain's HumanInTheLoopMiddleware.
 _DECISION_TYPES: frozenset[str] = frozenset({"approve", "edit", "reject", "respond"})
 # One decision per interrupted tool call; the model cannot fan out further.

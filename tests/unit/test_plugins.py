@@ -140,6 +140,15 @@ def test_sanitize_truncates_overlong_names() -> None:
     assert len(sanitized) <= 64
 
 
+def test_sanitize_max_length_collisions_preserve_valid_unique_names() -> None:
+    tools = [_make_tool("x" * 64) for _ in range(12)]
+    sanitize_plugin_tool_names(tools)
+    names = [tool.name for tool in tools]
+    assert len(set(names)) == len(names)
+    assert all(1 <= len(name) <= 64 and name.isascii() for name in names)
+    assert all(tool.invoke({"message": "payload"}) == "payload" for tool in tools)
+
+
 def test_sanitize_falls_back_to_underscores_without_pypinyin(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

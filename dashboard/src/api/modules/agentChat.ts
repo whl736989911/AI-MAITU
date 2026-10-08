@@ -11,6 +11,7 @@ export interface ChatWelcomeResponse {
     icon_name?: string | null;
   }>;
   task_examples?: { zh?: string[]; en?: string[] } | null;
+  hitl_enabled?: boolean;
 }
 
 export const agentChatApi = {

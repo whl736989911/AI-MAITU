@@ -96,7 +96,16 @@ async def test_dashboard_hitl_resume_registers_without_prior_pending() -> None:
         yield {
             "type": "hitl_required",
             "request": {
-                "action_requests": [{"name": "execute", "args": {"command": "echo hi"}}],
+                "id": "interrupt-1",
+                "value": {
+                    "action_requests": [
+                        {
+                            "name": "ask_user_question",
+                            "args": '{"questions":[{"question":"Which?"}]}',
+                        },
+                    ],
+                    "review_configs": [],
+                },
             },
         }
 
@@ -104,20 +113,22 @@ async def test_dashboard_hitl_resume_registers_without_prior_pending() -> None:
     processor.iter_hitl_resume_chunks = _resume
     hitl = HitlChannelCoordinator()
 
-    async for _ in iter_dashboard_hitl_resume_sse(
-        processor=processor,
-        hitl_coordinator=hitl,
-        agent_id="agent-1",
-        thread_id="thr-orphan",
-        user_id=9,
-        decisions=[{"type": "approve"}],
-        pending=None,
-        session_key="sk-orphan",
-        channel_type="dashboard",
-        locale="en",
-        is_disconnected=AsyncMock(return_value=False),
-    ):
-        pass
+    frames = [
+        frame
+        async for frame in iter_dashboard_hitl_resume_sse(
+            processor=processor,
+            hitl_coordinator=hitl,
+            agent_id="agent-1",
+            thread_id="thr-orphan",
+            user_id=9,
+            decisions=[{"type": "approve"}],
+            pending=None,
+            session_key="sk-orphan",
+            channel_type="dashboard",
+            locale="en",
+            is_disconnected=AsyncMock(return_value=False),
+        )
+    ]
 
     pending = hitl.store.resolve_pending_for_thread(
         "thr-orphan",
@@ -125,7 +136,22 @@ async def test_dashboard_hitl_resume_registers_without_prior_pending() -> None:
         user_id=9,
     )
     assert pending is not None
-    assert pending.action_requests[0]["args"]["command"] == "echo hi"
+    assert pending.action_requests[0]["name"] == "ask_user_question"
+    assert pending.action_requests == [
+        {
+            "name": "ask_user_question",
+            "args": {"questions": [{"question": "Which?"}]},
+        }
+    ]
+    hitl_chunk = next(
+        chunk
+        for chunk in _parse_sse_chunks("".join(frames))
+        if chunk.get("type") == "hitl_required"
+    )
+    assert hitl_chunk["request"]["pending_id"] == pending.pending_id
+    assert (
+        hitl_chunk["request"]["action_requests"][0]["args"]["questions"][0]["question"] == "Which?"
+    )
 
 
 @pytest.mark.asyncio

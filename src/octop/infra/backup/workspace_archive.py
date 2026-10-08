@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Literal
 
 from harness_agent.backends.utils import materialize_storage_path
 
+from octop.infra.agents.builtin_skills import OCTOP_BUILTIN_SKILLS_ROOT
+
 if TYPE_CHECKING:
     from harness_agent.backends.workspace import BackendWorkspace
 
@@ -100,7 +102,11 @@ def _clear_local_workspace(workspace_dir: Path) -> None:
     if not workspace_dir.is_dir():
         return
     for child in workspace_dir.iterdir():
-        if child.name in _SKIP_DIR_NAMES or child.name.startswith("."):
+        if (
+            child.name in _SKIP_DIR_NAMES
+            or child.name == OCTOP_BUILTIN_SKILLS_ROOT
+            or child.name.startswith(".")
+        ):
             continue
         if child.is_symlink():
             child.unlink()
@@ -199,7 +205,17 @@ async def import_workspace_zip(
             "replace mode cleared only the local harness workspace; remote-only files may remain"
         )
 
-    pairs = [(rel_path, blob) for rel_path, blob in entries]
+    pairs = [
+        (rel, blob)
+        for rel, blob in entries
+        if rel != OCTOP_BUILTIN_SKILLS_ROOT and not rel.startswith(f"{OCTOP_BUILTIN_SKILLS_ROOT}/")
+    ]
+    skipped = len(entries) - len(pairs)
+    if skipped:
+        warnings.append(
+            f"skipped {skipped} {OCTOP_BUILTIN_SKILLS_ROOT!r} entry/entries (owned by Octop)"
+        )
+
     if pairs:
         await workspace.aupload_many(pairs)
 

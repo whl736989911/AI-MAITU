@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 
 from octop.api.common.agent import assert_agent_access
 from octop.api.deps import current_user, get_server
-from octop.api.routers.chat.models import HitlResumeBody, PolishBody
+from octop.api.routers.chat.models import ChatWelcomeResponse, HitlResumeBody, PolishBody
 from octop.api.routers.chat.sse import format_sse
 from octop.i18n.domains.stream import format_stream_error
 from octop.infra.agents.experts.catalog import (
@@ -29,6 +29,7 @@ from octop.infra.gateway.hitl.coordinator import (
     HitlStreamContext,
     decision_rejection_reason,
 )
+from octop.infra.gateway.hitl.format import normalize_hitl_request, parse_action_requests
 from octop.infra.gateway.hitl.store import HitlPendingRecord
 from octop.infra.utils.llm_text import ainvoke_text
 from octop.infra.utils.locale import resolve_request_locale
@@ -51,7 +52,11 @@ _POLISH_SYSTEM_PROMPT = (
 )
 
 
-@router.get("/agents/{agent_id}/chat/welcome", summary="Chat welcome quick cards")
+@router.get(
+    "/agents/{agent_id}/chat/welcome",
+    summary="Chat welcome quick cards",
+    response_model=ChatWelcomeResponse,
+)
 async def get_chat_welcome(
     agent_id: str,
     user: Any = Depends(current_user),
@@ -87,7 +92,12 @@ async def get_chat_welcome(
     db_welcome = welcome_from_row(row) if row is not None else None
     if db_welcome is not None:
         payload = {**payload, "welcome_message": {"zh": db_welcome, "en": db_welcome}}
-    return {**payload, "task_examples": task_examples}
+    hitl_enabled = bool(registry.security.load().hitl.enabled)
+    return {
+        **payload,
+        "task_examples": task_examples,
+        "hitl_enabled": hitl_enabled,
+    }
 
 
 async def iter_dashboard_hitl_resume_sse(
@@ -137,12 +147,16 @@ async def iter_dashboard_hitl_resume_sse(
             if isinstance(chunk, dict) and chunk.get("type") == "hitl_required":
                 request_payload = chunk.get("request")
                 if isinstance(request_payload, dict):
+                    request_payload = {
+                        **normalize_hitl_request(request_payload),
+                        "action_requests": parse_action_requests(request_payload),
+                    }
                     record = hitl_coordinator.register_from_request(
                         request_payload,
                         ctx=hitl_ctx,
                     )
                     request_payload["pending_id"] = record.pending_id
-
+                    chunk["request"] = request_payload
             if not disconnected:
                 yield format_sse("chunk", chunk)
 
