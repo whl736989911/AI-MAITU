@@ -81,4 +81,38 @@ describe("classifyChatStreamError", () => {
       "translated:stream_errors.stream_stall",
     );
   });
+
+  it("does not treat ordinary assistant text mentioning errors as a failure", () => {
+    expect(
+      isChatStreamError("If you see Error code: 429, wait and try again."),
+    ).toBe(false);
+    expect(isChatStreamError("The request timed out; try again later.")).toBe(
+      false,
+    );
+  });
+
+  it("marks an exhausted retry envelope as failed and preserves its cause", () => {
+    const message =
+      "[model_call_failed]\nThe model API request failed.\n\n" +
+      "Technical detail: Error code: 400 - maximum context length exceeded";
+    expect(isChatStreamError(message)).toBe(true);
+    expect(classifyChatStreamError(message)).toBe(
+      "stream_errors.context_length",
+    );
+    expect(formatChatStreamError(message, t)).toBe(
+      "translated:stream_errors.context_length",
+    );
+  });
+
+  it("renders details when exhausted retries have an unknown cause", () => {
+    const message =
+      "Model call failed after 3 attempts with RuntimeError: boom";
+    expect(isChatStreamError(message)).toBe(true);
+    expect(classifyChatStreamError(message)).toBe(
+      "stream_errors.model_call_failed",
+    );
+    expect(formatChatStreamError(message, t)).toBe(
+      "translated:stream_errors.model_call_failed_detail",
+    );
+  });
 });

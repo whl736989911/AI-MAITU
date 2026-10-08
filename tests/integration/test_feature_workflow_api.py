@@ -9,6 +9,7 @@ and writes nothing, and a draft may be half-written where an active one may not.
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -229,7 +230,9 @@ async def test_publication_transfers_feature_to_enterprise_role_and_survives_aut
     assert shared_write.status_code == 403
 
 
-async def test_existing_active_feature_is_adopted_before_author_can_be_deleted(env) -> None:
+async def test_existing_active_feature_is_adopted_before_author_can_be_deleted(
+    env, monkeypatch: pytest.MonkeyPatch
+) -> None:
     client, srv, admin_auth = env
     author_auth = await create_user(client, admin_auth, username="legacy_active_author")
     manager_auth = await create_user(
@@ -250,8 +253,27 @@ async def test_existing_active_feature_is_adopted_before_author_can_be_deleted(e
     await wf.save_workflow(workspace, definition)  # Simulates a pre-transfer published document.
     author_id = await resolve_user_id(client, admin_auth, "legacy_active_author")
     assert srv.services.agent_repo.get("feat-quote-helper").user_id == author_id
+    assert (
+        await _create_feature(client, author_auth, feature_id="hung", name="阻塞功能")
+    ).status_code == 201
+    original_workspace_for = registry.workspace_for_agent
 
-    await registry._claim_existing_active_features()
+    class HungWorkspace:
+        async def aread_text(self, path: str) -> None:
+            await asyncio.Event().wait()
+
+    monkeypatch.setattr(
+        registry,
+        "workspace_for_agent",
+        lambda agent_id: (
+            HungWorkspace() if agent_id == "feat-hung" else original_workspace_for(agent_id)
+        ),
+    )
+    monkeypatch.setattr("octop.infra.agents.manager._AGENT_BOOT_START_TIMEOUT", 0.2)
+
+    await asyncio.wait_for(registry._claim_existing_active_features(), timeout=2)
+    unclaimed = srv.services.agent_repo.get("feat-hung")
+    assert unclaimed is not None and unclaimed.user_id == author_id
     adopted = srv.services.agent_repo.get("feat-quote-helper")
     assert adopted is not None and adopted.user_id is None
     assert adopted.enterprise_unit_key == TEST_ORG_UNIT

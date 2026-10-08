@@ -9,10 +9,54 @@ export interface HitlReviewConfig {
   allowed_decisions: string[];
 }
 
-export interface HitlPendingPayload {
+export interface HitlPendingPayload extends Record<string, unknown> {
   pending_id?: string;
   action_requests: HitlActionRequest[];
   review_configs?: HitlReviewConfig[];
+}
+
+/** Unwrap LangGraph v2 Interrupt envelopes used in HITL stream payloads. */
+export function normalizeHitlRequest(raw: unknown): HitlPendingPayload | null {
+  let current: unknown = raw;
+  for (let depth = 0; depth < 3; depth += 1) {
+    if (!current || typeof current !== "object" || Array.isArray(current)) {
+      break;
+    }
+    const value = current as Record<string, unknown>;
+    if (Array.isArray(value.action_requests)) {
+      return {
+        action_requests: value.action_requests
+          .filter((item): item is Record<string, unknown> =>
+            Boolean(item && typeof item === "object" && !Array.isArray(item)),
+          )
+          .map((item) => {
+            let args = item.args;
+            if (typeof args === "string") {
+              try {
+                args = JSON.parse(args);
+              } catch {
+                args = {};
+              }
+            }
+            return {
+              ...item,
+              name: typeof item.name === "string" ? item.name : "tool",
+              args:
+                args && typeof args === "object" && !Array.isArray(args)
+                  ? (args as Record<string, unknown>)
+                  : {},
+            };
+          }),
+        review_configs: Array.isArray(value.review_configs)
+          ? (value.review_configs as HitlReviewConfig[])
+          : undefined,
+        pending_id:
+          typeof value.pending_id === "string" ? value.pending_id : undefined,
+      };
+    }
+    current = value.value;
+  }
+  return null;
 }
 
 /** Tool whose HITL pause is a question for the user, not an approval. */

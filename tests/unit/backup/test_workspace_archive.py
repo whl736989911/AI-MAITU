@@ -242,3 +242,47 @@ async def test_export_includes_hidden_files_from_mountless_backend(tmp_path: Pat
         assert zf.read("outbound/output.json") == b"output"
         assert ".git/config" not in zf.namelist()
         assert "node_modules/pkg/index.js" not in zf.namelist()
+
+
+@pytest.mark.asyncio
+async def test_import_skips_octop_owned_builtin_skills(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    ws.mkdir()
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("_builtin_skills/custom/SKILL.md", b"archive override")
+        zf.writestr("skills/custom/SKILL.md", b"user skill")
+        zf.writestr("notes.md", b"notes")
+    workspace = BackendWorkspace(LocalShellBackend(root_dir=str(ws), virtual_mode=False), ws)
+
+    result = await import_workspace_zip(
+        workspace, buf.getvalue(), mode="merge", local_workspace_dir=None
+    )
+
+    assert result["imported"] == 2
+    assert len(result["warnings"]) == 1
+    assert not (ws / "_builtin_skills" / "custom" / "SKILL.md").exists()
+    assert (ws / "skills" / "custom" / "SKILL.md").read_bytes() == b"user skill"
+
+
+@pytest.mark.asyncio
+async def test_replace_preserves_existing_octop_builtin_skills(tmp_path: Path) -> None:
+    ws = tmp_path / "ws"
+    builtin = ws / "_builtin_skills" / "owned" / "SKILL.md"
+    builtin.parent.mkdir(parents=True)
+    builtin.write_bytes(b"managed built-in")
+    (ws / "old.txt").write_bytes(b"old")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        zf.writestr("_builtin_skills/owned/SKILL.md", b"archive override")
+        zf.writestr("new.txt", b"new")
+    workspace = BackendWorkspace(LocalShellBackend(root_dir=str(ws), virtual_mode=False), ws)
+
+    result = await import_workspace_zip(
+        workspace, buf.getvalue(), mode="replace", local_workspace_dir=ws
+    )
+
+    assert result["imported"] == 1
+    assert not (ws / "old.txt").exists()
+    assert (ws / "new.txt").read_bytes() == b"new"
+    assert builtin.read_bytes() == b"managed built-in"

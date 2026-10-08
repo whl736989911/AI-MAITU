@@ -101,6 +101,7 @@ interface ChatInputActionsRowProps {
   onConversationModeChange?: (mode: ConversationMode) => void;
   hitlPolicy?: HitlSessionPolicy;
   onHitlPolicyChange?: (policy: HitlSessionPolicy) => void;
+  hitlEnabled?: boolean | null;
   reasoningMode?: "auto" | "enabled" | "disabled";
   reasoningEffort?: string | null;
   onReasoningChange?: (
@@ -162,6 +163,7 @@ export default function ChatInputActionsRow({
   onConversationModeChange,
   hitlPolicy = { mode: "ask" },
   onHitlPolicyChange,
+  hitlEnabled,
   reasoningMode = "auto",
   reasoningEffort = null,
   onReasoningChange,
@@ -816,7 +818,7 @@ export default function ChatInputActionsRow({
               onChange={onConversationModeChange}
             />
           )}
-          {onHitlPolicyChange && (
+          {hitlEnabled !== false && onHitlPolicyChange && (
             <HitlPolicyPicker
               policy={hitlPolicy}
               onChange={onHitlPolicyChange}
@@ -894,7 +896,7 @@ export default function ChatInputActionsRow({
             onChange={onConversationModeChange}
           />
         )}
-        {onHitlPolicyChange && (
+        {hitlEnabled !== false && onHitlPolicyChange && (
           <HitlPolicyPicker policy={hitlPolicy} onChange={onHitlPolicyChange} />
         )}
         {showModelPicker && (

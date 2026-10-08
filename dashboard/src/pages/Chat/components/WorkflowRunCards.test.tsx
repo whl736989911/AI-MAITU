@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 
 const { useWorkflowRunMock, useRunArtifactsMock } = vi.hoisted(() => ({
   useWorkflowRunMock: vi.fn(),
@@ -60,7 +60,9 @@ describe("WorkflowRunCards placement", () => {
 
     renderCards();
 
-    expect(await screen.findByTestId("submitted-workflow-input")).toBeInTheDocument();
+    expect(
+      await screen.findByTestId("submitted-workflow-input"),
+    ).toBeInTheDocument();
     expect(screen.getByTestId("workflow-output")).toBeInTheDocument();
     expect(screen.queryByTestId("workflow-input-form")).not.toBeInTheDocument();
     expect(screen.getByTestId("chat-header")).toBeEmptyDOMElement();

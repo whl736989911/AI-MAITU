@@ -187,6 +187,8 @@ async def test_attachment_frame_uses_workspace_media_preview() -> None:
         assert len(frames) == 1
         assert frames[0]["type"] == "attachment"
         assert frames[0]["kind"] == "image"
+        assert frames[0]["filename"] == "harness.png"
+        assert frames[0]["mime_type"] == "image/png"
         assert "data" not in frames[0]
         assert frames[0]["preview_url"].startswith("/api/agents/agent-1/media/preview")
         assert "file%" in frames[0]["preview_url"] or "source=" in frames[0]["preview_url"]

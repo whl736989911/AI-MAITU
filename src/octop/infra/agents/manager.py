@@ -20,7 +20,11 @@ from harness_agent import HarnessAgent, HarnessAgentConfig, HarnessAgentManager
 from harness_agent.registry import AgentEntry
 from harness_agent.security.models import SecurityPolicy
 
-from octop.i18n.domains.agents import NO_MODELS_CONFIGURED, format_agent_start_error
+from octop.i18n.domains.agents import (
+    AGENT_START_TIMEOUT,
+    NO_MODELS_CONFIGURED,
+    format_agent_start_error,
+)
 from octop.infra.agents import feature_workflow as feature_wf
 from octop.infra.agents.acp_settings import ACPSettingsStore
 from octop.infra.agents.kinds import KIND_AGENT, KIND_TEAM, KINDS, is_feature_agent
@@ -36,6 +40,7 @@ from octop.infra.agents.memory_backend import (
     open_memory_kwargs,
 )
 from octop.infra.agents.memory_slim import MemorySlimCoordinator
+from octop.infra.agents.plugin_tool_names import sanitize_plugin_tool_names
 from octop.infra.agents.profile import (
     dump_id_list,
     dump_skill_package_ids,
@@ -106,6 +111,8 @@ logger = logging.getLogger(__name__)
 
 # Bounded parallelism for awaited provider/active-model reload batches.
 _PROVIDER_RELOAD_CONCURRENCY = 6
+# A stalled remote workspace must not prevent the HTTP service from starting.
+_AGENT_BOOT_START_TIMEOUT = 60.0
 
 # harness-memory builds SQLite table names as ``{namespace}_*``. The namespace
 # must be a valid bare SQL identifier: start with a letter, only [A-Za-z0-9_].
@@ -538,7 +545,32 @@ class AgentManager:
         for row in rows:
             if row.last_state == "stopped":
                 continue
-            await self._start_agent(row)
+            try:
+                await asyncio.wait_for(
+                    self._start_agent(row),
+                    timeout=_AGENT_BOOT_START_TIMEOUT,
+                )
+            except TimeoutError:
+                try:
+                    self._harness_manager.get_agent(row.agent_id)
+                except KeyError:
+                    self._repos.agent_repo.set_state(
+                        row.agent_id,
+                        "failed",
+                        error=AGENT_START_TIMEOUT,
+                    )
+                    logger.error(
+                        "Agent %s start timed out after %.0fs; continuing boot",
+                        row.agent_id,
+                        _AGENT_BOOT_START_TIMEOUT,
+                    )
+                else:
+                    self._repos.agent_repo.set_state(row.agent_id, "running", error=None)
+                    logger.warning(
+                        "Agent %s start exceeded %.0fs but is already registered",
+                        row.agent_id,
+                        _AGENT_BOOT_START_TIMEOUT,
+                    )
 
     async def _claim_existing_active_features(self) -> None:
         """Bring pre-transfer active workflows under enterprise management.
@@ -547,19 +579,44 @@ class AgentManager:
         stopped features must be inspected before user deletion can cascade
         their rows. A draft remains author-owned until its first activation.
         """
+        from octop.infra.backend.compat import is_adapted_backend
+
+        def load(agent_id: str) -> feature_wf.WorkflowLoad:
+            workspace = self.workspace_for_agent(agent_id)
+            if workspace is None:
+                return feature_wf.WorkflowLoad()
+            temporary = True
+            if self._harness_manager is not None:
+                with suppress(KeyError):
+                    temporary = (
+                        self._harness_manager.get_agent(agent_id).agent.workspace is not workspace
+                    )
+
+            async def read() -> feature_wf.WorkflowLoad:
+                async with asyncio.timeout(_AGENT_BOOT_START_TIMEOUT):
+                    return await feature_wf.load_workflow(workspace)
+
+            try:
+                return asyncio.run(read())
+            finally:
+                backend = getattr(workspace, "backend", None)
+                if temporary and backend is not None and is_adapted_backend(backend):
+                    backend.close()
+
         for row in self._repos.agent_repo.list_all(include_disabled=True):
             if not is_feature_agent(row.kind) or row.user_id is None or row.enterprise_unit_key:
                 continue
             try:
-                workspace = self.workspace_for_agent(row.agent_id)
-                if workspace is None:
-                    continue
-                loaded = await feature_wf.load_workflow(workspace)
-                if (
-                    loaded.definition is not None
-                    and feature_wf.workflow_status(loaded.definition) == feature_wf.STATUS_ACTIVE
-                ):
-                    self._repos.agent_repo.publish_feature(row.agent_id)
+                async with asyncio.timeout(_AGENT_BOOT_START_TIMEOUT):
+                    loaded = await asyncio.get_running_loop().run_in_executor(
+                        None, load, row.agent_id
+                    )
+                    if (
+                        loaded.definition is not None
+                        and feature_wf.workflow_status(loaded.definition)
+                        == feature_wf.STATUS_ACTIVE
+                    ):
+                        self._repos.agent_repo.publish_feature(row.agent_id)
             except Exception:
                 logger.warning(
                     "Could not reconcile ownership for feature %s; will retry on next boot",
@@ -1581,6 +1638,7 @@ class AgentManager:
             global_env = load_env_file(env_file_path(self._paths.root))
             load_spec = overlay_stdio_spec_env(spec, global_env)
             raw = await aload_mcp_tools({server_name: load_spec})
+            sanitize_plugin_tool_names(raw)
             server_lock = await self._server_lock(user_id, server_name)
             wrapped = wrap_tools_for_shared_use(raw, server_lock)
             self._mcp_tool_cache[cache_key] = wrapped
@@ -1779,6 +1837,7 @@ class AgentManager:
                     global_env = load_env_file(env_file_path(self._paths.root))
                     extra = await aload_mcp_tools(overlay_stdio_mcp_configs(subset, global_env))
                     if extra:
+                        sanitize_plugin_tool_names(extra)
                         agent.append_mcp_tools(extra)
 
             # Full reload drops previously appended custom tools — re-inject from cache.
@@ -2733,6 +2792,12 @@ class AgentManager:
                 agent_id=row.agent_id,
                 mcp_server_configs=cfg.mcp_server_configs,
             )
+        if not team_host:
+            tools = list(agent._mcp_tools)
+            original_names = [tool.name for tool in tools]
+            sanitize_plugin_tool_names(tools)
+            if original_names != [tool.name for tool in tools]:
+                agent.replace_mcp_tools(tools)
         if team_host:
             self.strip_team_host_runtime_tools(row.agent_id)
         tool_set: frozenset[str] = getattr(agent, "_mcp_tool_name_set", frozenset())
@@ -2881,6 +2946,7 @@ class AgentManager:
         from harness_agent.backends.workspace import BackendWorkspace  # noqa: PLC0415
 
         from octop.infra.agents.workspace_dir import system_files_path_from_config  # noqa: PLC0415
+        from octop.infra.backend.compat import adapt_backend_protocol  # noqa: PLC0415
         from octop.infra.backend.opensandbox_deps import ensure_opensandbox_deps  # noqa: PLC0415
 
         if cfg is None:
@@ -2901,7 +2967,7 @@ class AgentManager:
         elif self._spec_is_opensandbox(backend):
             ensure_opensandbox_deps(allow_install=True)
         return BackendWorkspace(
-            resolve_backend(backend, workspace_dir=workspace_dir),
+            adapt_backend_protocol(resolve_backend(backend, workspace_dir=workspace_dir)),
             workspace_dir,
             system_files_path=system_files_path_from_config(cfg),
         )
@@ -3616,7 +3682,17 @@ class AgentManager:
         )
         # OpenSandbox.create is not idempotent — reuse the instance already
         # wrapped by ``ws`` so start does not spawn a second remote sandbox.
-        harness_backend: Any = ws.backend if self._spec_is_opensandbox(backend) else backend
+        from octop.infra.backend.compat import is_adapted_backend, is_remote_backend_spec
+
+        harness_backend: Any = (
+            ws.backend
+            if (
+                self._spec_is_opensandbox(backend)
+                or is_adapted_backend(ws.backend)
+                or is_remote_backend_spec(backend)
+            )
+            else backend
+        )
 
         harness_cfg = HarnessAgentConfig(
             name=memory_namespace(row.agent_id),

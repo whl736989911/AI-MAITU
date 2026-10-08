@@ -54,12 +54,17 @@ def _transliterate(name: str) -> str:
 
 
 def _dedupe(candidate: str, used: set[str]) -> str:
-    if candidate not in used:
+    if candidate not in used and len(candidate) <= _MAX_NAME_LEN:
         return candidate
     suffix = 2
-    while f"{candidate}_{suffix}" in used:
+    while True:
+        extra = f"_{suffix}"
+        room = _MAX_NAME_LEN - len(extra)
+        stem = candidate[:room].rstrip("_") or "tool"
+        next_name = f"{stem}{extra}"
+        if next_name not in used:
+            return next_name
         suffix += 1
-    return f"{candidate}_{suffix}"
 
 
 def sanitize_plugin_tool_name(name: str, *, used: set[str] | None = None) -> str:

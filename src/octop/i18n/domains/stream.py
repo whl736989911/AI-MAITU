@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import re
+
 from octop.i18n.loader import lookup, tr
 from octop.infra.utils.locale import Locale
 
 _PREFIX = "octop:"
+MODEL_RETRY_FAILURE_MARK = "[model_call_failed]"
+
 
 STREAM_STALL = f"{_PREFIX}stream_errors.stream_stall"
 RATE_LIMIT = f"{_PREFIX}stream_errors.rate_limit"
@@ -16,12 +20,16 @@ RECURSION_LIMIT = f"{_PREFIX}stream_errors.recursion_limit"
 TIMEOUT_NETWORK = f"{_PREFIX}stream_errors.timeout_network"
 PROVIDER_UNAVAILABLE = f"{_PREFIX}stream_errors.provider_unavailable"
 MODEL_CALL_FAILED = f"{_PREFIX}stream_errors.model_call_failed"
+_RETRY_WRAPPER_RE = re.compile(r"(?is)^model call failed after \d+ attempts? with\s+")
+_TECHNICAL_DETAIL_RE = re.compile(r"(?is)technical detail:\s*(.+)$")
+
 
 __all__ = [
     "AUTH",
     "CONTEXT_LENGTH",
     "INSUFFICIENT_BALANCE",
     "MODEL_CALL_FAILED",
+    "MODEL_RETRY_FAILURE_MARK",
     "PROVIDER_UNAVAILABLE",
     "RATE_LIMIT",
     "RECURSION_LIMIT",
@@ -31,12 +39,22 @@ __all__ = [
     "exception_display_message",
     "format_stream_error",
     "stream_error_message",
+    "unwrap_model_retry_message",
 ]
 
 _STRIP_PREFIXES = (
     "agent error:",
     "error:",
 )
+
+
+def unwrap_model_retry_message(message: str) -> str:
+    """Strip retry-wrapper/recovery prompt chrome before classifying a cause."""
+    msg = _normalize_message(message).replace(MODEL_RETRY_FAILURE_MARK, " ").strip()
+    technical = _TECHNICAL_DETAIL_RE.search(msg)
+    if technical:
+        return technical.group(1).strip()
+    return _RETRY_WRAPPER_RE.sub("", msg, count=1).strip() or msg
 
 
 def _normalize_message(message: str) -> str:
@@ -51,8 +69,7 @@ def _normalize_message(message: str) -> str:
 
 
 def classify_stream_error_message(message: str) -> str | None:
-    """Return a stable ``octop:stream_errors.*`` key for known model failures."""
-    msg = _normalize_message(message)
+    msg = unwrap_model_retry_message(message)
     if not msg:
         return None
     lower = msg.lower()
@@ -141,9 +158,9 @@ def classify_stream_error_message(message: str) -> str | None:
     ):
         return TIMEOUT_NETWORK
 
-    if "model call failed after" in lower:
+    original = _normalize_message(message).lower()
+    if "model call failed after" in original or MODEL_RETRY_FAILURE_MARK in original:
         return MODEL_CALL_FAILED
-
     return None
 
 
@@ -176,16 +193,20 @@ def stream_error_message(error: str | None, locale: str | Locale = "en") -> str:
         key = error.removeprefix(_PREFIX)
         if lookup(key, locale) is not None:
             return tr(key, locale)
-    classified = classify_stream_error_message(error)
-    if classified is not None:
+    inner = unwrap_model_retry_message(error)
+    classified = classify_stream_error_message(inner)
+    if classified is not None and classified != MODEL_CALL_FAILED:
         return tr(classified.removeprefix(_PREFIX), locale)
     return error
 
 
 def format_stream_error(exc: BaseException | str, locale: str | Locale = "en") -> str:
-    """Classify an exception or raw message; fall back to a generic localized message."""
+    """Classify an exception or raw message while preserving its concrete cause."""
     message = exception_display_message(exc)
-    classified = classify_stream_error_message(message)
-    if classified is not None:
+    inner = unwrap_model_retry_message(message)
+    classified = classify_stream_error_message(inner)
+    if classified is not None and classified != MODEL_CALL_FAILED:
         return tr(classified.removeprefix(_PREFIX), locale)
+    if inner:
+        return tr("stream_errors.model_call_failed_detail", locale, detail=inner)
     return tr(MODEL_CALL_FAILED.removeprefix(_PREFIX), locale)

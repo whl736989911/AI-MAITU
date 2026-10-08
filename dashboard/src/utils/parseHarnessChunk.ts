@@ -1,3 +1,4 @@
+import { normalizeHitlRequest } from "../api/types/hitl";
 /**
  * Typed parser for harness chat stream chunks.
  *
@@ -213,16 +214,13 @@ export function parseHarnessChunk(line: string): HarnessChunk | null {
         error_code:
           typeof obj.error_code === "string" ? obj.error_code : undefined,
       };
-    case "hitl_required":
+    case "hitl_required": {
+      const request = normalizeHitlRequest(obj.request);
       return {
         type: "hitl_required",
-        request:
-          obj.request &&
-          typeof obj.request === "object" &&
-          !Array.isArray(obj.request)
-            ? (obj.request as Record<string, unknown>)
-            : {},
+        request: request ?? {},
       };
+    }
     case "slash_action":
       return {
         type: "slash_action",

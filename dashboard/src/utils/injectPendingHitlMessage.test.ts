@@ -56,4 +56,27 @@ describe("injectPendingHitlMessage", () => {
     ];
     expect(injectPendingHitlMessage(existing, pending)).toEqual(existing);
   });
+
+  it("restores a question card from a LangGraph v2 interrupt envelope", () => {
+    const result = injectPendingHitlMessage([], {
+      value: {
+        pending_id: "nested-1",
+        action_requests: [
+          {
+            name: "ask_user_question",
+            args: '{"questions":[{"question":"Which?"}]}',
+          },
+        ],
+      },
+    });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("hitl-nested-1");
+    expect(result[0].hitlData?.action_requests[0]?.name).toBe(
+      "ask_user_question",
+    );
+    expect(result[0].hitlData?.action_requests[0]?.args?.questions).toEqual([
+      { question: "Which?" },
+    ]);
+  });
 });

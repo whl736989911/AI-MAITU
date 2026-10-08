@@ -265,6 +265,46 @@ async def test_boot_passes_process_log_dir_to_harness_manager(manager: AgentMana
         await manager.shutdown()
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("registered_before_timeout", [False, True])
+async def test_boot_continues_after_agent_timeout(
+    manager: AgentManager,
+    monkeypatch: pytest.MonkeyPatch,
+    registered_before_timeout: bool,
+) -> None:
+    from octop.i18n.domains.agents import AGENT_START_TIMEOUT
+
+    for agent_id in ("hung", "healthy", "stopped"):
+        manager._repos.agent_repo.create(agent_id=agent_id, user_id=None, name=agent_id)
+    manager._repos.agent_repo.set_state("stopped", "stopped")
+    harness_manager = MagicMock()
+    harness_manager.get_agent.side_effect = None if registered_before_timeout else KeyError("hung")
+    monkeypatch.setattr(
+        "octop.infra.agents.manager.HarnessAgentManager",
+        lambda **kwargs: harness_manager,
+    )
+    monkeypatch.setattr("octop.infra.agents.manager._AGENT_BOOT_START_TIMEOUT", 0.02)
+    started: list[str] = []
+
+    async def start(row: AgentRow) -> None:
+        started.append(row.agent_id)
+        if row.agent_id == "hung":
+            await asyncio.Event().wait()
+        manager._repos.agent_repo.set_state(row.agent_id, "running")
+
+    monkeypatch.setattr(manager, "_start_agent", start)
+    await asyncio.wait_for(manager.boot(), timeout=1)
+    assert set(started) == {"hung", "healthy"}
+    hung = manager.get_row("hung")
+    healthy = manager.get_row("healthy")
+    stopped = manager.get_row("stopped")
+    assert hung is not None and healthy is not None and stopped is not None
+    assert healthy.last_state == "running"
+    assert stopped.last_state == "stopped"
+    assert hung.last_state == ("running" if registered_before_timeout else "failed")
+    assert hung.last_error == (None if registered_before_timeout else AGENT_START_TIMEOUT)
+
+
 def test_build_harness_config_enables_bootstrap_for_expert_template(manager: AgentManager) -> None:
     from dataclasses import replace
 

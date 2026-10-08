@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createInstance } from "i18next";
 import en from "./en.json";
 import zh from "./zh.json";
 
@@ -49,27 +50,6 @@ function flattenBranches(
   return out;
 }
 
-/**
- * A bare "not equal" on a 5k-key bundle is useless, so the report names the
- * offenders; the assertion diff still prints both full lists.
- */
-function mismatchSummary(enOnly: string[], zhOnly: string[]): string {
-  if (!enOnly.length && !zhOnly.length) return "";
-  const lines = ["en.json and zh.json must expose the same keys."];
-  for (const [label, keys] of [
-    ["en-only", enOnly],
-    ["zh-only", zhOnly],
-  ] as const) {
-    if (!keys.length) continue;
-    lines.push(`${label} (${keys.length}):`);
-    for (const key of keys.slice(0, 20)) lines.push(`  ${key}`);
-    if (keys.length > 20) lines.push(`  … ${keys.length - 20} more`);
-  }
-  lines.push("Add the missing translation to the other bundle, or delete a");
-  lines.push("key from both when nothing references it any more.");
-  return lines.join("\n");
-}
-
 /** One side nests an object where the other side has a string, or holds an empty object. */
 function collectStructureProblems(
   branches: Map<string, string[]>,
@@ -92,24 +72,29 @@ function collectStructureProblems(
 }
 
 describe("locale bundle parity (en / zh)", () => {
-  it("exposes the same leaf keys on both sides", () => {
-    const enLeaves = flattenLeaves(en as Bundle);
-    const zhLeaves = flattenLeaves(zh as Bundle);
-    // Guards against a broken import (namespace object, empty file) quietly
-    // turning this comparison into a no-op.
-    expect(enLeaves.size).toBeGreaterThan(1000);
-
-    const enOnly = [...enLeaves.keys()]
-      .filter((key) => !zhLeaves.has(key))
-      .sort();
-    const zhOnly = [...zhLeaves.keys()]
-      .filter((key) => !enLeaves.has(key))
-      .sort();
-
-    expect({ enOnly, zhOnly }, mismatchSummary(enOnly, zhOnly)).toEqual({
-      enOnly: [],
-      zhOnly: [],
+  it("resolves every translation in each locale, including locale-specific plurals", async () => {
+    const instance = createInstance();
+    await instance.init({
+      fallbackLng: false,
+      resources: { en: { translation: en }, zh: { translation: zh } },
     });
+    const keys = new Set(
+      [
+        ...flattenLeaves(en as Bundle).keys(),
+        ...flattenLeaves(zh as Bundle).keys(),
+      ].map((key) => key.replace(/_(zero|one|two|few|many|other)$/, "")),
+    );
+    const missing: string[] = [];
+    for (const key of keys) {
+      for (const lng of ["en", "zh"]) {
+        for (const count of [0, 1, 2]) {
+          if (!instance.exists(key, { lng, count })) {
+            missing.push(`${lng}: ${key} (count=${count})`);
+          }
+        }
+      }
+    }
+    expect(missing).toEqual([]);
   });
 
   it("keeps object and leaf structure aligned on both sides", () => {

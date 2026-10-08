@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import contextlib
+import inspect
+import shutil
 import tempfile
 from typing import Any
 
 from harness_agent.backends import resolve_backend
 
 from octop.infra.backend.adapter import row_to_backend_spec
+from octop.infra.backend.compat import adapt_backend_protocol
+from octop.infra.backend.tree_listing import dedupe_tree_rows, normalize_storage_path
 from octop.infra.db.repos.backends import BackendRow
 
 
@@ -19,20 +23,34 @@ def resolve_storage_backend(row: BackendRow) -> Any:
         raise ValueError("configuration incomplete")
     workspace = tempfile.mkdtemp(prefix="octop-storage-browse-")
     try:
-        return resolve_backend(spec, workspace_dir=workspace)
+        backend = adapt_backend_protocol(resolve_backend(spec, workspace_dir=workspace))
+        backend._octop_browse_workspace = workspace
+        return backend
     except ValueError:
+        shutil.rmtree(workspace, ignore_errors=True)
         raise
     except Exception as exc:
+        shutil.rmtree(workspace, ignore_errors=True)
         # ImportError (missing extra), RuntimeError (image/pull), DockerException, …
         raise ValueError(str(exc)) from exc
 
 
-def _close_backend(backend: Any) -> None:
-    """Best-effort close for backends that own external resources (e.g. Docker)."""
-    close = getattr(backend, "close", None)
-    if callable(close):
+async def _close_backend(backend: Any) -> None:
+    """Best-effort close and remove temporary resources owned by a browse backend."""
+    aclose = getattr(backend, "aclose", None)
+    if callable(aclose):
         with contextlib.suppress(Exception):
-            close()
+            await aclose()
+    else:
+        close = getattr(backend, "close", None)
+        if callable(close):
+            with contextlib.suppress(Exception):
+                result = close()
+                if inspect.isawaitable(result):
+                    await result
+    workspace = getattr(backend, "_octop_browse_workspace", None)
+    if workspace:
+        shutil.rmtree(workspace, ignore_errors=True)
 
 
 async def list_storage_backend_tree(row: BackendRow, path: str = "/") -> list[dict[str, Any]]:
@@ -42,15 +60,16 @@ async def list_storage_backend_tree(row: BackendRow, path: str = "/") -> list[di
     ``als`` (in-container ``workspace_path``, default ``/workspace``), then
     stops the container.
     """
+    path = normalize_storage_path(path)
     backend = resolve_storage_backend(row)
     try:
         result = await backend.als(path)
         if err := getattr(result, "error", None):
             raise ValueError(str(err))
         entries = getattr(result, "entries", None) or []
-        return [_entry_to_dict(e) for e in entries]
+        return dedupe_tree_rows([_entry_to_dict(entry) for entry in entries], parent=path)
     finally:
-        _close_backend(backend)
+        await _close_backend(backend)
 
 
 def _entry_to_dict(info: Any) -> dict[str, Any]:

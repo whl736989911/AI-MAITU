@@ -41,6 +41,7 @@ import { useChatSessionActions } from "./hooks/useChatSessionActions";
 import { useChatComposerResources } from "./hooks/useChatComposerResources";
 import { useChatContextWindow } from "./hooks/useChatContextWindow";
 import { useBrowserToolDetection } from "./hooks/useBrowserToolDetection";
+import { useHitlEnabled } from "./hooks/useHitlEnabled";
 import { useSkillRecordingWorkflow } from "./hooks/useSkillRecordingWorkflow";
 import { listDockFilePathsForTree } from "./utils/dockFilePath";
 import {
@@ -464,6 +465,7 @@ function ChatPageInner() {
     ],
   );
   const hitlPolicy = composerSession?.hitlPolicy ?? { mode: "ask" as const };
+  const hitlEnabled = useHitlEnabled(resolvedAgentId);
   const handleHitlPolicyChange = useCallback(
     (policy: HitlSessionPolicy) => {
       if (!resolvedAgentId || !activeThreadId) return;
@@ -1194,7 +1196,6 @@ function ChatPageInner() {
               />
             )}
 
-
             {memoryMaintVisible && memoryMaint && (
               <MemoryMaintenanceBanner
                 status={memoryMaint}
@@ -1552,6 +1553,7 @@ function ChatPageInner() {
               conversationMode={conversationMode}
               onConversationModeChange={handleConversationModeChange}
               hitlPolicy={hitlPolicy}
+              hitlEnabled={hitlEnabled}
               onHitlPolicyChange={handleHitlPolicyChange}
             />
           </div>

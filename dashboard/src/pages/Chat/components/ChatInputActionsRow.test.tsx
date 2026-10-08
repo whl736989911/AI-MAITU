@@ -114,4 +114,29 @@ describe("ChatInputActionsRow compact pickers", () => {
     fireEvent.click(overflow!);
     expect(await screen.findByText("chat.agentPicker")).toBeInTheDocument();
   });
+
+  it("hides the HITL policy picker only when approvals are disabled", () => {
+    const onHitlPolicyChange = vi.fn();
+    const { rerender } = render(
+      <MemoryRouter>
+        <ChatInputActionsRow
+          {...baseProps}
+          hitlEnabled={false}
+          onHitlPolicyChange={onHitlPolicyChange}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByTestId("hitl-policy-picker")).toBeNull();
+
+    rerender(
+      <MemoryRouter>
+        <ChatInputActionsRow
+          {...baseProps}
+          hitlEnabled={null}
+          onHitlPolicyChange={onHitlPolicyChange}
+        />
+      </MemoryRouter>,
+    );
+    expect(screen.getByTestId("hitl-policy-picker")).toBeInTheDocument();
+  });
 });
