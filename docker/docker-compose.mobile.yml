@@ -1,11 +1,11 @@
 # =============================================================================
-# Octop — Remote Phone (mobile) compose overlay for local / DinD testing
+# MAITU — Remote Phone (mobile) compose overlay for local / DinD testing
 #
 # Usage (from repo root):
 #   # once: download platform-tools next to the repo
 #   mkdir -p .tools && cd /tmp && curl -fsSL -o pt.zip \
 #     https://dl.google.com/android/repository/platform-tools-latest-linux.zip \
-#     && unzip -qo pt.zip -d /workspace/Octop/.tools
+#     && unzip -qo pt.zip -d /workspace/maitu/.tools
 #
 #   docker compose -f docker/docker-compose.mobile.yml up -d --build
 #
@@ -18,18 +18,20 @@
 # - Enough free disk for the Redroid image
 # =============================================================================
 
+name: maitu
+
 services:
-  octop:
+  maitu:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    image: octop:latest
-    container_name: octop
+    image: maitu:latest
+    container_name: maitu
     restart: unless-stopped
     privileged: true
     network_mode: host
     volumes:
-      - ${OCTOP_DATA:-~/.octop}:/data/.octop
+      - ${OCTOP_DATA:-~/.maitu}:/data/.octop
       - /var/run/docker.sock:/var/run/docker.sock
       - /dev/binderfs:/dev/binderfs
       - ${OCTOP_PLATFORM_TOOLS:-../.tools/platform-tools}:/opt/android-sdk/platform-tools:ro
@@ -41,7 +43,7 @@ services:
       - OCTOP_DEFAULT_PASSWORD=${OCTOP_DEFAULT_PASSWORD:-}
       - OCTOP_ADMIN_USERNAME=${OCTOP_ADMIN_USERNAME:-admin}
       - OCTOP_MOBILE_ADB_HOST=${OCTOP_MOBILE_ADB_HOST:-127.0.0.1:5555}
-      - OCTOP_MOBILE_CONTAINER=${OCTOP_MOBILE_CONTAINER:-octop-mobile-android}
+      - OCTOP_MOBILE_CONTAINER=${OCTOP_MOBILE_CONTAINER:-maitu-mobile-android}
       - OCTOP_ENABLE_MOBILE=${OCTOP_ENABLE_MOBILE:-1}
       - ANDROID_HOME=/opt/android-sdk
       - ANDROID_SDK_ROOT=/opt/android-sdk

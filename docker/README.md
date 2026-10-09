@@ -1,8 +1,8 @@
-# Octop Docker Deployment
+# MAITU Docker Deployment
 
 ---
 
-This directory contains the Docker build and deployment assets for Octop.
+This directory contains the Docker build and deployment assets for MAITU Smart Manufacturing. Operational names use `maitu`; the Python package, `octop` CLI, `OCTOP_*` environment variables, and in-container `/data/.octop` remain unchanged.
 
 ### Files
 
@@ -20,7 +20,7 @@ This directory contains the Docker build and deployment assets for Octop.
 
 **Option 1: Compose (recommended)**
 
-From the repository root:
+The source checkout may be named `/opt/maitu`. From that repository root:
 
 ```bash
 docker compose -f docker/docker-compose.yml up -d --build
@@ -33,11 +33,11 @@ Open `http://localhost:8088`. If `OCTOP_DEFAULT_PASSWORD` is unset, a strong ran
 ```bash
 bash docker/docker_build.sh
 docker run -d \
-  --name octop \
+  --name maitu \
   -p 8088:8088 \
-  -v octop-data:/data/.octop \
+  -v maitu-data:/data/.octop \
   -e HOME=/data \
-  octop:latest
+  maitu:latest
 ```
 
 ### Faster downloads (China mirrors)
@@ -57,6 +57,7 @@ bash docker/docker_build.sh
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `HOME` | `/data` | Must be `/data` so `~/.octop` maps to the data volume |
+| `OCTOP_DATA` | `~/.maitu` | Compose host data directory; existing deployments must specify their original directory |
 | `OCTOP_PORT` | `8088` | HTTP listen port |
 | `OCTOP_DEFAULT_PASSWORD` | _(unset)_ | First-run admin password (≥8 chars, letters + digits). When unset, a random password is generated and written to `credential.txt` |
 | `OCTOP_ADMIN_USERNAME` | `admin` | Initial admin username |
@@ -69,9 +70,24 @@ For Compose, put these in `docker/.env`. Values only reach the container if list
 
 ### Data persistence
 
-- Compose mounts host `~/.octop` → container `/data/.octop`
-- `docker run` example uses named volume `octop-data`
+- Compose project, service, and container names are `maitu`; the image is `maitu:latest`. Host `~/.maitu` is mounted at container `/data/.octop` by default.
+- The `docker run` example uses named volume `maitu-data`.
 - First boot runs `octop init`; credentials are written to `/data/.octop/credential.txt`. With `OCTOP_DEFAULT_PASSWORD` unset a random password is generated; a specified password that the app password policy rejects falls back to a random one automatically (the container must never fail its first init because of a weak default).
+
+### Upgrading an existing deployment
+
+The default host directory has changed. Starting with the new default creates an empty instance, not a migration. Back up existing data, stop the old container, and reuse its original mount:
+
+```bash
+docker stop octop
+OCTOP_DATA="$HOME/.octop" docker compose -f docker/docker-compose.yml up -d --build
+```
+
+Save the actual absolute `OCTOP_DATA` path in `docker/.env` for subsequent operations. Substitute the original custom directory if applicable. For an existing named volume, use `docker run --name maitu -v <original-volume>:/data/.octop -e HOME=/data -p 8088:8088 maitu:latest` instead of creating an empty volume. Do not delete old data, use `down -v`, or run both instances against the same data simultaneously.
+
+Mobile Compose also uses `maitu` and `~/.maitu`; set `OCTOP_MOBILE_CONTAINER` to reuse an existing Android container name. The PostgreSQL helper container is now `maitu-postgres`; stop the old `octop-postgres` before upgrading. Its `octop_pgdata` volume, database user, and database name remain unchanged; retain the original Compose project name to reuse that volume.
+
+This is operational branding, not source-origin concealment. Internal commands, tracebacks, and dependencies may still contain upstream identifiers. The image retains `LICENSE` and copyright notices.
 
 ### Health check
 
@@ -84,8 +100,8 @@ curl http://localhost:8088/api/health
 ### Operations
 
 ```bash
-docker logs -f octop
-docker exec -it octop octop --version
+docker logs -f maitu
+docker exec -it maitu octop --version
 docker compose -f docker/docker-compose.yml down
 docker compose -f docker/docker-compose.yml up -d --build
 ```

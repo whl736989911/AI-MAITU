@@ -29,6 +29,7 @@ class _Siteverify(BaseHTTPRequestHandler):
         self.wfile.write(raw)
 
     def do_POST(self) -> None:
+        self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self._reply()
 
     def do_GET(self) -> None:

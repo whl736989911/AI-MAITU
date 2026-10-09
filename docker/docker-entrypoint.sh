@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# Octop 容器入口脚本
+# 麦途智造容器入口脚本
 #
 # 环境变量:
 #   HOME                      — 必须为 /data，使 ~/.octop 映射到数据卷
@@ -46,7 +46,7 @@ octop_random_password() {
 DEFAULT_PASSWORD="${OCTOP_DEFAULT_PASSWORD:-}"
 
 if [ ! -f "$DB_FILE" ]; then
-    echo "[entrypoint] 首次启动，正在初始化 Octop..."
+    echo "[entrypoint] 首次启动，正在初始化麦途智造..."
 
     if [ -z "$DEFAULT_PASSWORD" ]; then
         DEFAULT_PASSWORD="$(octop_random_password)"
@@ -82,7 +82,7 @@ if [ ! -f "$DB_FILE" ]; then
     rm -f "$init_log"
 
     cat > "$CREDENTIAL_FILE" << EOF
-Octop Login Credential
+MAITU Login Credential
 ======================
 URL:      http://<host>:${PORT}
 Username: ${ADMIN_USERNAME}
@@ -100,7 +100,7 @@ EOF
 fi
 
 if [ $# -eq 0 ]; then
-    echo "[entrypoint] 正在启动 Octop，端口 $PORT..."
+    echo "[entrypoint] 正在启动麦途智造，端口 $PORT..."
     exec octop run --host 0.0.0.0 --port "$PORT"
 fi
 

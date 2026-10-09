@@ -228,11 +228,12 @@ docker compose -f docker/docker-compose.yml up -d
 # 或手动构建后运行
 bash docker/docker_build.sh
 docker run -d \
+  --name maitu \
   -p 8088:8088 \
-  -v octop-data:/data/.octop \
+  -v maitu-data:/data/.octop \
   -e HOME=/data \
   -e OCTOP_DEFAULT_PASSWORD=changeme \
-  octop:latest
+  maitu:latest
 </code></pre>
 <p>完整环境变量见 <a href=".env.example">.env.example</a>：</p>
 <table>
@@ -261,8 +262,8 @@ docker run -d \
 </tr>
 <tr>
 <td><code>OCTOP_DATA</code></td>
-<td><code>~/.octop</code></td>
-<td>宿主机数据目录（compose 挂载）</td>
+<td><code>~/.maitu</code></td>
+<td>宿主机数据目录（compose 挂载）；已有部署须指定原目录，见 <a href="../docker/README_CN.md">Docker 升级说明</a></td>
 </tr>
 </tbody>
 </table>
