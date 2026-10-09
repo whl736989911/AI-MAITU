@@ -137,7 +137,7 @@ def test_v37_upgrade_preserves_folder_rules_and_removes_extraction_data(
             row["name"]
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 39
+    assert version == 40
     assert {row["table"] for row in foreign_keys} == {"knowledge_documents", "users"}
     assert "knowledge_folder_search_rules" not in tables
     assert {

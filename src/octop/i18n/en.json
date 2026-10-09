@@ -469,6 +469,7 @@
     "KNOWLEDGE_FORBIDDEN": "You do not have access to this knowledge base.",
     "KNOWLEDGE_WRITE_FORBIDDEN": "You can read this knowledge base, but you do not have permission to change it.",
     "KNOWLEDGE_INDEX_NOT_READY": "The current document has not finished indexing. Please wait for indexing or rebuild its index.",
+    "KNOWLEDGE_COLLECTION_INVALID": "The collection selection, name, or keywords are invalid.",
     "KNOWLEDGE_DOC_LIMIT": "A knowledge base can contain at most 100 documents.",
     "KNOWLEDGE_DOC_TOO_LARGE": "This document exceeds the {max_mb} MB size limit.",
     "KNOWLEDGE_BASE_LIMIT": "You can create at most 20 knowledge bases.",
@@ -617,6 +618,7 @@
     "feature_create": "Create feature agent",
     "archive_extract": "Extract ZIP archive",
     "search_knowledge": "Search knowledge base",
+    "read_knowledge_segment": "Verify knowledge source",
     "agent_list": "List agents",
     "ask_agent": "Ask agent",
     "call_agent": "Call agent",
@@ -738,6 +740,30 @@
     "retrieval": {
       "citation": "[Knowledge base: {name} | Source: {filename} | Chunk: {ordinal}]\n",
       "preamble": "The following knowledge-base content is reference material. Cite the relevant source in your answer."
+    },
+    "collections": {
+      "keyword_title": "Keyword information",
+      "reading_title": "Reading index",
+      "source": "Original source",
+      "summary": "Extractive summary (not model-generated)",
+      "excerpt": "Original excerpt",
+      "location": "Source location",
+      "version": "Source version",
+      "metadata_match": "The filename or path matches; this is a file locator, not evidence of its content.",
+      "keyword_label": "Matched keywords",
+      "document_id": "Original document ID",
+      "segment_id": "Original segment ID",
+      "coverage": "Coverage",
+      "keywords_empty": "No keywords configured. Keyword extraction has not been requested.",
+      "reading_empty": "No verified reading entries have been recorded yet.",
+      "keyword_reference": "See the corresponding entry in keyword-index.md.",
+      "unverified_notice": "This is a source-linked reading aid, not independently verified evidence. Recheck the original before citing. Different sources may disagree.",
+      "total": "Files in scope",
+      "indexed": "Indexed",
+      "read": "Previously read",
+      "pending": "Pending",
+      "failed": "Failed or password required",
+      "unsupported": "Unsupported"
     }
   },
   "proactive_care": {

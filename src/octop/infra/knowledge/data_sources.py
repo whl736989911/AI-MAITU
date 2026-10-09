@@ -323,6 +323,7 @@ class DataSourceService:
             self._knowledge_repo.delete_document(row.id)
         for row in [entry for entry in rows if entry.is_dir]:
             self._knowledge_repo.delete_document(row.id)
+        self._knowledge._refresh_collections(kb_id, "")
 
     def sync(self, ds_id: str, *, actor_user_id: int, is_admin: bool = False) -> DataSourceRow:
         """Ingest what the source points at, and record the outcome on the row."""
@@ -612,6 +613,7 @@ class DataSourceService:
         self._repo.mark_scan(data_source.id, at=now, ok=True)
         self._runs.finish(run.id, status=RUN_OK, counts=counts)
         self._audit(actor_user_id, "knowledge.source.scan", data_source.id, _summary(counts))
+        self._knowledge._refresh_collections(base.id, "")
         return self._require(data_source.id)
 
     def _fail_scan(
@@ -758,6 +760,7 @@ class DataSourceService:
         """Drop a confirmed-missing file and the chunks it was indexed into."""
         KnowledgeIndex(kb_id).delete_doc(doc_id)
         self._knowledge_repo.delete_document(doc_id)
+        self._knowledge._refresh_collections(kb_id, doc_id)
 
     def _validated_folder(self, *, kind: str, folder: FolderSettings) -> None:
         """Refuse a folder source that could not work, by building it.

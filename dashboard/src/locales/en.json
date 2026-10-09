@@ -198,7 +198,8 @@
     "TEAM_MEMBER_BUSY": "This expert has an in-flight team job. Wait until it finishes.",
     "TEAM_NOT_SHAREABLE": "Teams cannot be shared in this version.",
     "ORG_UNIT_HAS_CHILDREN": "This department still has sub-departments; move or delete them first.",
-    "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first."
+    "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first.",
+    "KNOWLEDGE_COLLECTION_INVALID": "The collection selection, name, or keywords are invalid."
   },
   "nav": {
     "chat": "Conversation",
@@ -324,6 +325,38 @@
   "knowledgeBases": {
     "title": "Knowledge Bases",
     "subtitle": "Index documents for chat retrieval. Optionally share them with users on this instance.",
+    "collections": {
+      "open": "Collections",
+      "title": "Personal document collections",
+      "selectTitle": "Create independent collections",
+      "selectHint": "Each selected file or folder becomes its own collection. Selecting a folder and a child explicitly creates two independent collections. Keywords start empty.",
+      "searchPlaceholder": "Search full document paths",
+      "noDocuments": "No loaded documents match.",
+      "create": "Create selected ({{count}})",
+      "manageTitle": "Your collections",
+      "empty": "No collections yet",
+      "loadFailed": "Could not load collections. Check access and retry.",
+      "actionFailed": "The collection action failed.",
+      "name": "Collection name",
+      "keywords": "Keywords",
+      "keywordsPlaceholder": "One keyword per line. Leave empty for no keyword matches.",
+      "saved": "Collection saved",
+      "generated": "Collection refreshed",
+      "generate": "Generate / refresh",
+      "inspect": "Inspect documents",
+      "openOriginal": "Open original",
+      "deleteConfirm": "Delete collection “{{name}}”?",
+      "deleteHint": "Only the collection views are deleted. Original knowledge documents are not changed.",
+      "storageHint": "Generated Markdown views are stored separately from source documents; nothing is written into source folders.",
+      "keywordDocument": "Keyword view",
+      "readingDocument": "Reading view",
+      "coverage": "{{read}} read · {{indexed}} indexed · {{pending}} pending · {{failed}} failed · {{unsupported}} unsupported / {{total}} total",
+      "status": {
+        "ready": "Ready",
+        "partial": "Partial",
+        "pending": "Pending"
+      }
+    },
     "featureTitle": "Enable Knowledge Bases",
     "settingsTitle": "Knowledge base settings",
     "settingsLead": "Enable local text search instance-wide. Embeddings are optional for semantic results; disabling the feature makes knowledge bases unavailable to everyone.",
@@ -2084,6 +2117,7 @@
     "feature_create": "Create feature agent",
     "archive_extract": "Extract ZIP archive",
     "search_knowledge": "Search knowledge base",
+    "read_knowledge_segment": "Verify knowledge source",
     "agent_list": "List agents",
     "ask_agent": "Ask agent",
     "call_agent": "Call agent",

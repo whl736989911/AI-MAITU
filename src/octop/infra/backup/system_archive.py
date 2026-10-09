@@ -55,6 +55,7 @@ _WORKSPACES_DIR = "workspaces"
 _SKILL_PACKAGES_DIR = "skill-packages"
 _PLUGINS_DIR = "plugins"
 _KNOWLEDGE_DIR = "knowledge"
+_KNOWLEDGE_COLLECTIONS_DIR = "knowledge-collections"
 _MANIFEST_NAME = "manifest.json"
 _SQLITE_DB_ARC = f"{_DB_DIR}/octop.db"
 _PG_DUMP_ARC = f"{_DB_DIR}/octop.dump"
@@ -338,6 +339,13 @@ def create_system_backup(
                         tf,
                         paths.knowledge_dir,
                         _KNOWLEDGE_DIR,
+                        skip_chats=False,
+                    )
+                if include_knowledge and paths.knowledge_collections_dir.is_dir():
+                    _add_dir(
+                        tf,
+                        paths.knowledge_collections_dir,
+                        _KNOWLEDGE_COLLECTIONS_DIR,
                         skip_chats=False,
                     )
 
@@ -628,6 +636,11 @@ def restore_system_backup(
                 extracted,
                 paths.knowledge_dir,
                 _KNOWLEDGE_DIR,
+            )
+            restored_knowledge_files += _replace_tree_from_archive(
+                extracted,
+                paths.knowledge_collections_dir,
+                _KNOWLEDGE_COLLECTIONS_DIR,
             )
 
         preserved_chat_rows, skipped_chat_rows = (

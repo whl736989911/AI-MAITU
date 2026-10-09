@@ -464,6 +464,55 @@ stale return HTTP 409 with `KNOWLEDGE_INDEX_NOT_READY`. Indexing scans all PDF
 pages sequentially with bounded OCR rendering and one heavy ingestion task per
 process. DOCX parsing does not load unrelated embedded images or OCR them.
 
+### Personal two-document collections
+
+These are owner-private reading aids over authorized original files, not new
+knowledge bases or file-processing tiers. Each explicitly selected file or folder
+gets its own collection; selecting a parent and child preserves both. Keywords
+start empty, and descendants included by a folder do not get extra collections.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/knowledge-bases/{kb}/collections` | reader | current user's collections only |
+| `POST` | `/knowledge-bases/{kb}/collections` | reader | body `{document_ids: string[]}` → `201`; validates the entire selection before creating independent collections |
+| `PATCH` | `/knowledge-bases/{kb}/collections/{collection}` | owner + reader | body `{keywords: string[], name?: string}`; reclassifies existing indexed content, without parsing new source files |
+| `POST` | `/knowledge-bases/{kb}/collections/{collection}/generate` | owner + reader | refresh both views, using current extraction when available; nonempty keywords require the knowledge feature to be enabled |
+| `GET` | `/knowledge-bases/{kb}/collections/{collection}/documents` | owner + reader | `{collection, keyword_document, reading_document, storage_path}` |
+| `DELETE` | `/knowledge-bases/{kb}/collections/{collection}` | owner + reader | `204`; deletes derived artifacts, never originals |
+
+Collections expose stable target document identity, current target path, keywords,
+`ready`/`partial`/`pending` status, and readable coverage (`total`, `indexed`,
+`read`, `pending`, `failed`, `unsupported`). `read` counts files with at least one
+verified recorded segment, not completely read files. Keywords are normalized and
+case-insensitively deduplicated, with at most 32 nonempty terms of 200 characters
+each. Names must be nonempty and no longer than 200 characters.
+
+If source extraction rejects a file (for example, a PDF with no extractable text),
+generation returns `409 KNOWLEDGE_INDEX_NOT_READY`, not a collection-settings
+validation error. Successfully processed sources remain available in the two
+documents; coverage reports the failed sources and the collection remains partial.
+
+Artifacts live under
+`<OCTOP_HOME>/knowledge-collections/<owner_user_id>/<collection_id>/`.
+`keyword-index.md` holds matching excerpts and source locations;
+`reading-index.md` accumulates verified reads and extractive summaries. A read
+already owned by the keyword view refers to that view by source segment ID instead
+of duplicating its body. Filename/path-only matches remain metadata locators.
+
+Existing search checks these materializations first and fills remaining candidates
+from original indexes. Hits may include `collection_id` and
+`collection_document: "keyword" | "reading"`; overlapping collections do not
+duplicate a source segment in the result set. Every candidate still requires the
+existing verified segment-read operation before citation. Successful Agent or HTTP
+segment reads update all of the caller's collections containing that source.
+
+Current library/file ACLs, personal exclusion rules, source versions, and the
+Agent's current `knowledge_base_ids` remain authoritative. There is no administrator
+bypass for another user's collection ownership. Renames preserve stable target IDs;
+deletion followed by same-path replacement does not retarget a collection. Source
+updates invalidate old-version excerpts and reading records. System backups include
+these artifacts when `include_knowledge` is enabled.
+
 ## Storage backends
 
 | Method | Path | Auth | Notes |

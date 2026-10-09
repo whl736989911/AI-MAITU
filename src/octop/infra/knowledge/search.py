@@ -61,6 +61,8 @@ class SearchHit:
     locator: dict[str, object]
     version: str
     match_kind: Literal["content", "filename", "rule_keyword"] = "content"
+    collection_id: str = ""
+    collection_document: Literal["keyword", "reading"] | None = None
 
 
 def query_terms(query: str) -> tuple[str, ...]:

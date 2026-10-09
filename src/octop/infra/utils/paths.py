@@ -79,6 +79,11 @@ class PathLayout:
         """Global knowledge base files: ``~/.octop/knowledge/``."""
         return self.root / "knowledge"
 
+    @property
+    def knowledge_collections_dir(self) -> Path:
+        """Private collection Markdown snapshots, never ingested as source."""
+        return self.root / "knowledge-collections"
+
     def agent_workspace(self, agent_id: str) -> Path:
         """Global agent workspace: ~/.octop/agents/<agent_id>/"""
         return self.agents_dir / agent_id

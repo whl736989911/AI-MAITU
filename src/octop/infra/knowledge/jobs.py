@@ -122,8 +122,14 @@ def process_source_file(
 
 def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> None:
     """Index original-located text; embeddings are an optional ranking layer."""
-    with _processing_lock:
-        _process_locked(services, kb_id, doc_id, parse_path=parse_path)
+    try:
+        with _processing_lock:
+            _process_locked(services, kb_id, doc_id, parse_path=parse_path)
+    finally:
+        if getattr(services, "knowledge_collections_repo", None) is not None:
+            from octop.infra.knowledge.collections import KnowledgeCollectionService
+
+            KnowledgeCollectionService(services).refresh_for_document(kb_id, doc_id)
 
 
 def _embedding_batches(

@@ -126,6 +126,7 @@ import TextDocumentEditorModal, {
   type TextDocumentFormat,
 } from "./TextDocumentEditorModal";
 import DataSourcesPanel from "./components/DataSourcesPanel";
+import KnowledgeCollections from "./components/KnowledgeCollections";
 import styles from "./index.module.less";
 
 type BaseFormValues = {
@@ -2634,6 +2635,20 @@ export default function KnowledgeBasesPage() {
                             {t("knowledgeBases.upload")}
                           </Button>
                         ) : null}
+                        <KnowledgeCollections
+                          key={selected.id}
+                          baseId={selected.id}
+                          documents={documents}
+                          onOpenTarget={(documentId) => {
+                            const target = documents.find(
+                              (document) => document.id === documentId,
+                            );
+                            if (!target) return;
+                            if (target.is_dir)
+                              setCurrentFolder(target.path || target.filename);
+                            else void openDocumentPreview(target);
+                          }}
+                        />
                       </div>
                     </div>
                     <div className={styles.docsPathRow}>

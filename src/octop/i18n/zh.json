@@ -469,6 +469,7 @@
     "KNOWLEDGE_FORBIDDEN": "您没有此知识库的访问权限。",
     "KNOWLEDGE_WRITE_FORBIDDEN": "您可读取此知识库，但没有修改权限。",
     "KNOWLEDGE_INDEX_NOT_READY": "当前文档尚未完成索引，请等待索引完成或重新建立索引。",
+    "KNOWLEDGE_COLLECTION_INVALID": "资料整理项的选择、名称或关键词无效。",
     "KNOWLEDGE_DOC_LIMIT": "每个知识库最多可包含 100 个文档。",
     "KNOWLEDGE_DOC_TOO_LARGE": "文档超过 {max_mb} MB 大小限制。",
     "KNOWLEDGE_BASE_LIMIT": "每个用户最多可创建 20 个知识库。",
@@ -617,6 +618,7 @@
     "feature_create": "创建功能型智能体",
     "archive_extract": "解压 ZIP 压缩包",
     "search_knowledge": "检索知识库",
+    "read_knowledge_segment": "核验知识原文",
     "agent_list": "列出 Agent",
     "ask_agent": "咨询 Agent",
     "call_agent": "调用 Agent",
@@ -738,6 +740,30 @@
     "retrieval": {
       "citation": "[知识库：{name}｜来源：{filename}｜片段：{ordinal}]\n",
       "preamble": "以下知识库内容仅供参考；回答时请引用对应来源。"
+    },
+    "collections": {
+      "keyword_title": "关键词信息文档",
+      "reading_title": "资料阅读索引文档",
+      "source": "原始来源",
+      "summary": "摘录式摘要（非模型生成）",
+      "excerpt": "原文摘录",
+      "location": "原文位置",
+      "version": "源文件版本",
+      "metadata_match": "文件名称或路径命中；这是文件定位线索，不代表正文命中。",
+      "keyword_label": "命中关键词",
+      "document_id": "原文档 ID",
+      "segment_id": "原文片段 ID",
+      "coverage": "整理覆盖情况",
+      "keywords_empty": "尚未设置关键词，未请求关键词内容抽取。",
+      "reading_empty": "尚未积累经原文核验的阅读条目。",
+      "keyword_reference": "见 keyword-index.md 中的对应条目。",
+      "unverified_notice": "本文是带来源的阅读辅助资料，不等于已核验的当前证据；引用前请核对原件。不同来源可能存在分歧。",
+      "total": "范围内文件",
+      "indexed": "已索引",
+      "read": "曾核验读取",
+      "pending": "待处理",
+      "failed": "处理失败或需要密码",
+      "unsupported": "不支持的格式"
     }
   },
   "proactive_care": {

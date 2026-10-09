@@ -1694,7 +1694,7 @@ class GlobalProcessor:
                         limit=3,
                     )
                 )
-            matches.sort(key=lambda hit: hit.score, reverse=True)
+            matches.sort(key=lambda hit: (not bool(hit.collection_id), -hit.score))
             return [
                 {
                     "kb_id": hit.kb_id,

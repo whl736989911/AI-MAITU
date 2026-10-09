@@ -92,7 +92,6 @@ export interface KnowledgeDocument {
   /** True when the uploaded original still exists on disk. */
   has_original?: boolean;
 }
-
 export interface KnowledgeOnnxModel {
   id: string;
   name: string;
@@ -161,6 +160,8 @@ export interface KnowledgeSearchHit {
   locator: Record<string, unknown>;
   version: string;
   match_kind?: "content" | "filename" | "rule_keyword";
+  collection_id?: string;
+  collection_document?: "keyword" | "reading" | null;
 }
 
 export interface KnowledgeCoverage {
@@ -170,6 +171,33 @@ export interface KnowledgeCoverage {
   indexing: number;
   failed: number;
   unsupported: number;
+}
+export interface KnowledgeCollection {
+  id: string;
+  kb_id: string;
+  target_document_id: string;
+  target_path: string;
+  target_kind: "file" | "folder";
+  name: string;
+  keywords: string[];
+  status: "ready" | "partial" | "pending";
+  coverage: {
+    total: number;
+    indexed: number;
+    read: number;
+    pending: number;
+    failed: number;
+    unsupported: number;
+  };
+  created_at: number;
+  updated_at: number;
+}
+
+export interface KnowledgeCollectionDocuments {
+  collection: KnowledgeCollection;
+  keyword_document: string;
+  reading_document: string;
+  storage_path: string;
 }
 
 export interface KnowledgeEvidence {
@@ -253,6 +281,40 @@ export const knowledgeBasesApi = {
    * base is the model the design replaced.
    */
   getEnterprise: () => request<KnowledgeBase>("/knowledge-bases/enterprise"),
+  listCollections: (id: string) =>
+    request<KnowledgeCollection[]>(`/knowledge-bases/${id}/collections`),
+
+  createCollections: (id: string, documentIds: string[]) =>
+    request<KnowledgeCollection[]>(`/knowledge-bases/${id}/collections`, {
+      method: "POST",
+      body: JSON.stringify({ document_ids: documentIds }),
+    }),
+
+  updateCollection: (
+    id: string,
+    collectionId: string,
+    body: { keywords: string[]; name?: string },
+  ) =>
+    request<KnowledgeCollection>(
+      `/knowledge-bases/${id}/collections/${collectionId}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
+
+  generateCollection: (id: string, collectionId: string) =>
+    request<KnowledgeCollection>(
+      `/knowledge-bases/${id}/collections/${collectionId}/generate`,
+      { method: "POST" },
+    ),
+
+  getCollectionDocuments: (id: string, collectionId: string) =>
+    request<KnowledgeCollectionDocuments>(
+      `/knowledge-bases/${id}/collections/${collectionId}/documents`,
+    ),
+
+  deleteCollection: (id: string, collectionId: string) =>
+    request<void>(`/knowledge-bases/${id}/collections/${collectionId}`, {
+      method: "DELETE",
+    }),
 
   update: (
     id: string,

@@ -229,6 +229,19 @@ class KnowledgeIndex:
                 count += 1
         return count
 
+    def iter_segments(self, doc_id: str) -> Iterator[Hit]:
+        """Yield a document's located segments in ordinal order with bounded memory."""
+        with self._connect() as conn:
+            cursor = conn.execute(
+                "SELECT segment_id, doc_id, ordinal, text, meta_json FROM segments "
+                "WHERE doc_id = ? ORDER BY ordinal",
+                (doc_id,),
+            )
+            for row in cursor:
+                yield Hit(
+                    str(row[0]), str(row[1]), int(row[2]), str(row[3]), 0.0, json.loads(row[4])
+                )
+
     def document_preview(self, doc_id: str, *, max_chars: int) -> str | None:
         """Return a bounded ordinal-ordered preview, or None when no segments exist."""
         with self._connect() as conn:

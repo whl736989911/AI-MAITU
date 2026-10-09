@@ -201,6 +201,12 @@ class KnowledgeService:
     def _repo(self) -> Any:
         return self._services.knowledge_repo
 
+    def _refresh_collections(self, kb_id: str, doc_id: str) -> None:
+        if getattr(self._services, "knowledge_collections_repo", None) is not None:
+            from octop.infra.knowledge.collections import KnowledgeCollectionService
+
+            KnowledgeCollectionService(self._services).refresh_for_document(kb_id, doc_id)
+
     def enterprise_space(self) -> KnowledgeBaseRow:
         """The deployment's one enterprise knowledge space.
 
@@ -415,9 +421,17 @@ class KnowledgeService:
             evidence["reason"] = "source_unavailable"
             return evidence
         if current != version:
+            self._repo.update_document(doc_id, status="pending", chunk_count=0)
+            self._refresh_collections(kb_id, doc_id)
             return evidence
         self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
         evidence.update(text=hit.text, verified=True, reason=None)
+        if getattr(self._services, "knowledge_collections_repo", None) is not None:
+            from octop.infra.knowledge.collections import KnowledgeCollectionService
+
+            KnowledgeCollectionService(self._services).record_read(
+                kb_id, doc_id, evidence, actor_user_id=actor_user_id, is_admin=is_admin
+            )
         return evidence
 
     def list_search_rules(
@@ -533,6 +547,19 @@ class KnowledgeService:
             bases = [self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)]
         else:
             bases = self.list_visible_bases(actor_user_id=actor_user_id)
+        collected: list[SearchHit] = []
+        if getattr(self._services, "knowledge_collections_repo", None) is not None:
+            from octop.infra.knowledge.collections import KnowledgeCollectionService
+
+            collected = KnowledgeCollectionService(self._services).search(
+                [base.id for base in bases],
+                cleaned,
+                actor_user_id=actor_user_id,
+                limit=limit,
+                is_admin=is_admin,
+            )
+            if len(collected) >= limit:
+                return collected[:limit]
         terms = query_terms(cleaned)
         normalized_query = normalize_query(cleaned)
         restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
@@ -765,7 +792,20 @@ class KnowledgeService:
                 row.ordinal,
             )
         )
-        return hits[:limit]
+        seen = {(hit.kb_id, hit.document_id, hit.segment_id, hit.version) for hit in collected}
+        for candidate in hits:
+            identity = (
+                candidate.kb_id,
+                candidate.document_id,
+                candidate.segment_id,
+                candidate.version,
+            )
+            if identity not in seen:
+                collected.append(candidate)
+                seen.add(identity)
+                if len(collected) >= limit:
+                    break
+        return collected[:limit]
 
     def resolve_document_file(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
@@ -895,6 +935,7 @@ class KnowledgeService:
         )
         # The old structure described the old text.
         self._repo.set_derived(doc_id, None)
+        self._refresh_collections(kb_id, doc_id)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
             raise LookupError("knowledge document not found")
@@ -1105,6 +1146,7 @@ class KnowledgeService:
             error_message="",
             chunk_count=0,
         )
+        self._refresh_collections(kb_id, doc_id)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
             raise RuntimeError(f"knowledge document update failed: {doc_id}")
@@ -1160,6 +1202,7 @@ class KnowledgeService:
                 continue
             KnowledgeIndex(kb_id).delete_doc(row.id)
             delete_document_file(kb_id, row.id, row.filename)
+        self._refresh_collections(kb_id, doc_id)
 
     def reindex_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
@@ -1176,6 +1219,7 @@ class KnowledgeService:
         self.require_document_writable(document, actor_user_id=actor_user_id)
         self._repo.update_document(doc_id, status="pending", error_message="", chunk_count=0)
         self._repo.set_derived(doc_id, None)
+        self._refresh_collections(kb_id, doc_id)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
             raise LookupError("knowledge document not found")
@@ -1211,6 +1255,7 @@ class KnowledgeService:
         result = self._repo.rename_document(kb_id, doc_id, cleaned)
         if result is None:
             raise LookupError("knowledge document not found")
+        self._refresh_collections(kb_id, doc_id)
         return cast(KnowledgeDocumentRow, result)
 
     def delete_base(self, kb_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:
