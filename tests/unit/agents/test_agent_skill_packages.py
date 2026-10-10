@@ -68,7 +68,7 @@ async def test_persist_skill_package_ids_hot_syncs_without_reload(
 
 
 @pytest.mark.asyncio
-async def test_persist_skill_package_ids_rejects_non_host_root_backend(
+async def test_persist_skill_package_ids_rejects_non_workspace_backend(
     manager: AgentManager,
 ) -> None:
     agent_id = "AGENT01"
@@ -84,7 +84,7 @@ async def test_persist_skill_package_ids_rejects_non_host_root_backend(
     with pytest.raises(OctopError) as exc_info:
         await manager.persist_skill_package_ids(agent_id, [package_id])
 
-    assert exc_info.value.code is ErrorCode.SKILL_PACKAGE_BACKEND_UNSUPPORTED
+    assert exc_info.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
 
 
 def test_assert_backend_supports_skill_packages_rejects_non_host_root(
@@ -95,14 +95,6 @@ def test_assert_backend_supports_skill_packages_rejects_non_host_root(
             {"type": "local_shell", "root_dir": "/tmp/octop", "virtual_mode": True}
         )
     assert exc_info.value.code is ErrorCode.SKILL_PACKAGE_BACKEND_UNSUPPORTED
-
-
-def test_assert_backend_supports_skill_packages_accepts_host_root(
-    manager: AgentManager,
-) -> None:
-    manager.assert_backend_supports_skill_packages(
-        {"type": "local_shell", "root_dir": "/", "virtual_mode": True}
-    )
 
 
 def test_assert_backend_supports_skill_packages_accepts_workspace_scoped_default(

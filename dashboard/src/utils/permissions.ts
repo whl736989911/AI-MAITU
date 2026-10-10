@@ -132,26 +132,48 @@ export function isSystemAdmin(
   return user?.role === "admin";
 }
 
-/** True when the user may access the module ``key`` (admin bypasses). */
+/**
+ * Host capabilities are determined by the server's effective deployment
+ * profile, including for administrators. Business permissions retain the
+ * normal administrator bypass.
+ */
+const HOST_CAPABILITY_KEYS: Record<string, true> = {
+  terminal: true,
+  browser: true,
+  desktop: true,
+  mobile: true,
+  acp: true,
+  plugins: true,
+  storage_backends: true,
+  envs: true,
+};
+
+function explicitlyHasPermission(user: PermissionHolder, key: string): boolean {
+  const held = user.permissions ?? [];
+  return held.includes(key) || held.includes(ALL_PERMISSIONS_KEY);
+}
+
 export function userCan(
   user: PermissionHolder | null | undefined,
   key: string,
 ): boolean {
   if (!user) return false;
+  if (HOST_CAPABILITY_KEYS[key]) return explicitlyHasPermission(user, key);
   if (isSystemAdmin(user)) return true;
-  const held = user.permissions ?? [];
-  return held.includes(key) || held.includes(ALL_PERMISSIONS_KEY);
+  return explicitlyHasPermission(user, key);
 }
 
-/** True when the user holds any of the given keys (admin bypasses). */
 export function userCanAny(
   user: PermissionHolder | null | undefined,
   keys: readonly string[],
 ): boolean {
   if (!user) return false;
-  if (isSystemAdmin(user)) return true;
-  const held = new Set(user.permissions ?? []);
-  return held.has(ALL_PERMISSIONS_KEY) || keys.some((k) => held.has(k));
+  if (!isSystemAdmin(user)) {
+    return keys.some((key) => explicitlyHasPermission(user, key));
+  }
+  return keys.some(
+    (key) => !HOST_CAPABILITY_KEYS[key] || explicitlyHasPermission(user, key),
+  );
 }
 
 export function canAccessKeys(

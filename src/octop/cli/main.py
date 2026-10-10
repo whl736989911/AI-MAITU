@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib
 import sys
+from functools import wraps
 from typing import Any, ClassVar
 
 import click
@@ -58,6 +59,18 @@ class _LazyCLI(click.Group):
     """Click group that imports command modules only when invoked."""
 
     _registry: ClassVar[dict[str, tuple[str, str, str]]] = COMMANDS
+    _LOCKED_ALLOWED_COMMANDS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "license",
+            "init",
+            "run",
+            "service",
+            "captcha",
+            "completion",
+            "version",
+            "update",
+        }
+    )
 
     def list_commands(self, ctx: click.Context) -> list[str]:
         return sorted(self._registry)
@@ -70,6 +83,8 @@ class _LazyCLI(click.Group):
         result = getattr(mod, attr)
         if not isinstance(result, click.Command):
             return None
+        if name not in self._LOCKED_ALLOWED_COMMANDS:
+            self._guard_business_callbacks(result)
         return result
 
     def format_commands(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
@@ -78,6 +93,37 @@ class _LazyCLI(click.Group):
         if rows:
             with formatter.section("Commands"):
                 formatter.write_dl(rows)
+
+    @staticmethod
+    def _guard_business_callbacks(command: click.Command) -> None:
+        """Check at execution, after Click has handled even nested help options."""
+        if isinstance(command, click.Group):
+            for child in command.commands.values():
+                _LazyCLI._guard_business_callbacks(child)
+        callback = command.callback
+        if callback is None or getattr(callback, "_instance_license_guarded", False):
+            return
+
+        @wraps(callback)
+        def guarded(*args: Any, **kwargs: Any) -> Any:
+            ctx = click.get_current_context()
+            if not isinstance(command, click.Group) or ctx.invoked_subcommand is None:
+                from octop.i18n import license_reason_message
+                from octop.infra.errors import OctopError
+                from octop.infra.licensing import current_license
+
+                service = current_license()
+                service.load_cached()
+                try:
+                    service.require_business_access()
+                except OctopError as exc:
+                    raise click.ClickException(
+                        license_reason_message(service.status().get("reason"), "en")
+                    ) from exc
+            return callback(*args, **kwargs)
+
+        guarded._instance_license_guarded = True  # type: ignore[attr-defined]
+        command.callback = guarded
 
 
 @click.group(cls=_LazyCLI, context_settings={"help_option_names": ["-h", "--help"]})

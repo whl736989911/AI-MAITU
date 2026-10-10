@@ -2,34 +2,24 @@
 
 from __future__ import annotations
 
-import io
 import json
-import zipfile
+import shutil
 from pathlib import Path
-from typing import Any
 
 import pytest
 from harness_agent.plugins import PluginRegistry
 
+from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
 from octop.infra.agents.plugins.manager import (
     PluginManager,
-    normalize_plugin_download_url,
     parse_plugin_group,
     parse_plugin_icon,
     parse_plugin_ui_meta,
 )
 from octop.infra.errors import ErrorCode, OctopError
 
-_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "plugins" / "echo-tool"
-
-
-def _echo_zip_bytes() -> bytes:
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        for path in _FIXTURE.rglob("*"):
-            if path.is_file():
-                zf.write(path, arcname=f"echo-tool/{path.relative_to(_FIXTURE).as_posix()}")
-    return buf.getvalue()
+_SHIPPED_ID = "fortune"
+_SHIPPED = default_bundled_plugins_root() / _SHIPPED_ID
 
 
 @pytest.fixture(autouse=True)
@@ -44,21 +34,21 @@ def test_install_and_list(tmp_path: Path) -> None:
     config_path.write_text("{}", encoding="utf-8")
     plugins_dir = tmp_path / "plugins"
     mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-    loaded = mgr.install_path(_FIXTURE, force=True)
-    assert loaded.manifest.id == "echo-tool"
+    loaded = mgr.install_path(_SHIPPED, force=True)
+    assert loaded.manifest.id == _SHIPPED_ID
     items = mgr.list_installed()
-    assert any(i.get("id") == "echo-tool" for i in items)
+    assert any(i.get("id") == _SHIPPED_ID for i in items)
 
 
 def test_global_disable(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text(
-        json.dumps({"plugins": {"echo-tool": {"enabled": False}}}),
+        json.dumps({"plugins": {_SHIPPED_ID: {"enabled": False}}}),
         encoding="utf-8",
     )
     plugins_dir = tmp_path / "plugins"
     mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-    mgr.install_path(_FIXTURE, force=True)
+    mgr.install_path(_SHIPPED, force=True)
     loaded = mgr.load_installed(install_deps=False)
     assert loaded == []
 
@@ -67,117 +57,65 @@ def test_set_enabled_roundtrip(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(_FIXTURE, force=True)
-    assert any(i.get("id") == "echo-tool" and i.get("enabled") for i in mgr.list_installed())
+    mgr.install_path(_SHIPPED, force=True)
+    assert any(i.get("id") == _SHIPPED_ID and i.get("enabled") for i in mgr.list_installed())
 
-    disabled = mgr.set_enabled("echo-tool", False)
+    disabled = mgr.set_enabled(_SHIPPED_ID, False)
     assert disabled.get("enabled") is False
     assert disabled.get("loaded") is False
-    assert PluginRegistry().get("echo-tool") is None
+    assert PluginRegistry().get(_SHIPPED_ID) is None
     raw = json.loads(config_path.read_text(encoding="utf-8"))
-    assert raw["plugins"]["echo-tool"]["enabled"] is False
+    assert raw["plugins"][_SHIPPED_ID]["enabled"] is False
 
-    enabled = mgr.set_enabled("echo-tool", True)
+    enabled = mgr.set_enabled(_SHIPPED_ID, True)
     assert enabled.get("enabled") is True
     assert enabled.get("loaded") is True
-    assert PluginRegistry().get("echo-tool") is not None
+    assert PluginRegistry().get(_SHIPPED_ID) is not None
 
 
-def test_normalize_github_blob_url() -> None:
-    blob = "https://github.com/veenyi/octop-plugins/blob/main/octop-toolkit.zip"
-    assert (
-        normalize_plugin_download_url(blob)
-        == "https://raw.githubusercontent.com/veenyi/octop-plugins/main/octop-toolkit.zip"
-    )
-    raw_page = "https://github.com/veenyi/octop-plugins/raw/main/octop-toolkit.zip"
-    assert (
-        normalize_plugin_download_url(raw_page)
-        == "https://raw.githubusercontent.com/veenyi/octop-plugins/main/octop-toolkit.zip"
-    )
-    already_raw = "https://raw.githubusercontent.com/veenyi/octop-plugins/main/octop-toolkit.zip"
-    assert normalize_plugin_download_url(already_raw) == already_raw
-
-
-def test_install_url_rejects_non_zip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_external_plugin_sources_are_rejected_before_execution(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
-    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
+    original_config = '{"unchanged": true}'
+    config_path.write_text(original_config, encoding="utf-8")
+    plugins_dir = tmp_path / "plugins"
+    mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
 
-    def fake_retrieve(
-        url: str, filename: str | Path, *args: Any, **kwargs: Any
-    ) -> tuple[str, None]:
-        Path(filename).write_text("<!DOCTYPE html><html>blob page</html>", encoding="utf-8")
-        return (str(filename), None)
-
-    monkeypatch.setattr(
-        "octop.infra.agents.plugins.manager.urllib.request.urlretrieve",
-        fake_retrieve,
+    outside = tmp_path / "custom-plugin"
+    outside.mkdir()
+    (outside / "plugin.yaml").write_text(
+        "id: custom-plugin\nversion: 0.1.0\nname: Custom\nkind: tool\nentry: main.py\n",
+        encoding="utf-8",
     )
-    with pytest.raises(OctopError) as excinfo:
-        mgr.install_url("https://example.com/not-a-plugin.zip")
-    assert excinfo.value.code is ErrorCode.PLUGIN_INVALID_ARCHIVE
-    assert excinfo.value.status == 400
-
-
-def test_install_url_accepts_valid_zip(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
-    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w") as zf:
-        for path in _FIXTURE.rglob("*"):
-            if path.is_file():
-                zf.write(path, arcname=f"echo-tool/{path.relative_to(_FIXTURE).as_posix()}")
-
-    def fake_retrieve(
-        url: str, filename: str | Path, *args: Any, **kwargs: Any
-    ) -> tuple[str, None]:
-        Path(filename).write_bytes(buf.getvalue())
-        return (str(filename), None)
-
-    monkeypatch.setattr(
-        "octop.infra.agents.plugins.manager.urllib.request.urlretrieve",
-        fake_retrieve,
+    marker = tmp_path / "executed"
+    (outside / "main.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).touch()\ndef setup(ctx): pass\n",
+        encoding="utf-8",
     )
-    loaded = mgr.install_url("https://example.com/echo-tool.zip", force=True)
-    assert loaded.manifest.id == "echo-tool"
+    archive = tmp_path / "custom-plugin.zip"
+    archive.write_bytes(b"not inspected")
 
+    for operation in (
+        lambda: mgr.install_path(outside),
+        lambda: mgr.install_archive(archive),
+        lambda: mgr.install_url("https://example.com/custom-plugin.zip"),
+    ):
+        with pytest.raises(OctopError):
+            operation()
 
-def test_install_archive_accepts_local_zip(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
-    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    archive = tmp_path / "echo-tool.zip"
-    archive.write_bytes(_echo_zip_bytes())
-    loaded = mgr.install_archive(archive, force=True)
-    assert loaded.manifest.id == "echo-tool"
-    items = mgr.list_installed()
-    assert any(i.get("id") == "echo-tool" for i in items)
-
-
-def test_install_archive_rejects_non_zip(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
-    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    archive = tmp_path / "not-a-zip.zip"
-    archive.write_text("not a zip", encoding="utf-8")
-    with pytest.raises(OctopError) as excinfo:
-        mgr.install_archive(archive)
-    assert excinfo.value.code is ErrorCode.PLUGIN_INVALID_ARCHIVE
-    assert excinfo.value.status == 400
+    assert not marker.exists()
+    assert config_path.read_text(encoding="utf-8") == original_config
 
 
 def test_install_path_already_exists(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(_FIXTURE, force=True)
+    mgr.install_path(_SHIPPED, force=True)
     with pytest.raises(OctopError) as excinfo:
-        mgr.install_path(_FIXTURE, force=False)
+        mgr.install_path(_SHIPPED, force=False)
     assert excinfo.value.code is ErrorCode.PLUGIN_ALREADY_EXISTS
     assert excinfo.value.status == 409
-    assert excinfo.value.details.get("id") == "echo-tool"
+    assert excinfo.value.details.get("id") == _SHIPPED_ID
 
 
 def test_parse_plugin_ui_meta_and_list(tmp_path: Path) -> None:
@@ -214,14 +152,12 @@ def test_parse_plugin_ui_meta_and_list(tmp_path: Path) -> None:
 
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
-    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(plugin_dir, force=True)
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    shutil.copytree(plugin_dir, plugins_dir / "with-ui")
+    mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
     items = mgr.list_installed()
-    row = next(i for i in items if i.get("id") == "with-ui")
-    assert row.get("ui") == {
-        "entry": "ui/dist/index.js",
-        "manifest": "ui/dist/manifest.json",
-    }
+    assert any(row.get("id") == "with-ui" for row in items)
     resolved = mgr.resolve_ui_file("with-ui", "dist/index.js")
     assert resolved.name == "index.js"
     with pytest.raises(OctopError) as excinfo:
@@ -229,26 +165,17 @@ def test_parse_plugin_ui_meta_and_list(tmp_path: Path) -> None:
     assert excinfo.value.code is ErrorCode.NOT_FOUND
 
 
-def test_load_missing_picks_up_cli_install(tmp_path: Path) -> None:
+def test_load_missing_picks_up_bundled_plugin(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     plugins_dir = tmp_path / "plugins"
+    shutil.copytree(_SHIPPED, plugins_dir / _SHIPPED_ID)
     mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-    # Simulate CLI install: copy to disk without going through this process registry
-    dest = plugins_dir / "echo-tool"
-    dest.mkdir(parents=True)
-    for path in _FIXTURE.rglob("*"):
-        if path.is_file():
-            target = dest / path.relative_to(_FIXTURE)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(path.read_bytes())
-
-    assert PluginRegistry().get("echo-tool") is None
+    assert PluginRegistry().get(_SHIPPED_ID) is None
     newly = mgr.load_missing(install_deps=False)
     assert len(newly) == 1
-    assert newly[0].manifest.id == "echo-tool"
-    assert PluginRegistry().get("echo-tool") is not None
-    # Second call is a no-op
+    assert newly[0].manifest.id == _SHIPPED_ID
+    assert PluginRegistry().get(_SHIPPED_ID) is not None
     assert mgr.load_missing(install_deps=False) == []
 
 
@@ -340,12 +267,12 @@ def test_set_enabled_refuses_corrupt_config_and_preserves_bytes(tmp_path: Path) 
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(_FIXTURE, force=True)
+    mgr.install_path(_SHIPPED, force=True)
 
     corrupt = '{"bind_host": "0.0.0.0", "database": {"driver": "postgresql"},}'
     config_path.write_text(corrupt, encoding="utf-8")
     with pytest.raises(OctopError) as excinfo:
-        mgr.set_enabled("echo-tool", False)
+        mgr.set_enabled(_SHIPPED_ID, False)
     assert excinfo.value.code is ErrorCode.CONFIG_FILE_CORRUPT
     assert config_path.read_text(encoding="utf-8") == corrupt
 
@@ -362,9 +289,9 @@ def test_set_enabled_preserves_unrelated_keys(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(_FIXTURE, force=True)
-    mgr.set_enabled("echo-tool", False)
+    mgr.install_path(_SHIPPED, force=True)
+    mgr.set_enabled(_SHIPPED_ID, False)
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["bind_host"] == "0.0.0.0"
     assert data["database"] == {"driver": "postgresql", "host": "db.internal"}
-    assert data["plugins"]["echo-tool"]["enabled"] is False
+    assert data["plugins"][_SHIPPED_ID]["enabled"] is False

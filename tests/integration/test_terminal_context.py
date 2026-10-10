@@ -1,67 +1,26 @@
-"""Integration tests for GET /api/agents/{agent_id}/terminal/context."""
+"""Deployment lockdown regression for host terminal context."""
 
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import patch
 
-import httpx
 import pytest
 
-
-@pytest.fixture
-async def env(env_terminal):
-    yield env_terminal
+from tests.support.auth import create_user
 
 
-@pytest.mark.anyio
-async def test_context_returns_expected_fields(env: Any) -> None:
-    _srv, app, tok, agent_id = env
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app),
-        base_url="http://testserver",
-    ) as c:
-        resp = await c.get(
-            f"/api/agents/{agent_id}/terminal/context",
-            headers={"Authorization": f"Bearer {tok}"},
-        )
-    assert resp.status_code == 200
-    data = resp.json()
-    for key in (
-        "os",
-        "shell",
-        "hostname",
-        "username",
-        "workspace_dir",
-        "agent_id",
-        "agent_name",
-        "terminal_supported",
-        "terminal_unsupported_reason",
-    ):
-        assert key in data, f"missing field: {key}"
-    assert data["agent_id"] == agent_id
-    assert isinstance(data["terminal_supported"], bool)
+@pytest.mark.asyncio
+async def test_terminal_context_is_denied_before_host_inspection(env: Any) -> None:
+    client, _server, admin_auth = env
+    member_auth = await create_user(client, admin_auth, username="terminal-member")
 
+    with patch("octop.api.routers.terminal.platform.system") as host_probe:
+        for auth in (admin_auth, member_auth):
+            response = await client.get(
+                "/api/agents/agent-not-created/terminal/context", headers=auth
+            )
+            assert response.status_code == 403, response.text
+            assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
 
-@pytest.mark.anyio
-async def test_context_requires_auth(env: Any) -> None:
-    _srv, app, _tok, agent_id = env
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app),
-        base_url="http://testserver",
-    ) as c:
-        resp = await c.get(f"/api/agents/{agent_id}/terminal/context")
-    assert resp.status_code == 401
-
-
-@pytest.mark.anyio
-async def test_context_unknown_agent(env: Any) -> None:
-    _srv, app, tok, _aid = env
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app),
-        base_url="http://testserver",
-    ) as c:
-        resp = await c.get(
-            "/api/agents/nonexistent/terminal/context",
-            headers={"Authorization": f"Bearer {tok}"},
-        )
-    assert resp.status_code == 404
+    host_probe.assert_not_called()

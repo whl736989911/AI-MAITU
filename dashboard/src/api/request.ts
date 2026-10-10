@@ -12,6 +12,14 @@ const AUTH_TOKEN_KEY = "auth_token";
 export const UNAUTHORIZED_EVENT = "octop:unauthorized";
 /** Fired when an agent-scoped API request is forbidden. */
 export const FORBIDDEN_EVENT = "octop:forbidden";
+/** Fired when the server denies a business request because the instance is locked. */
+export const INSTANCE_LICENSE_LOCKED_EVENT = "octop:instance-license-locked";
+export class InstanceLicenseLockedError extends Error {
+  constructor() {
+    super("Instance license locked");
+    this.name = "InstanceLicenseLockedError";
+  }
+}
 
 /** Response header used by the server for JWT sliding renewal. */
 export const ACCESS_TOKEN_RESPONSE_HEADER = "X-Octop-Access-Token";
@@ -294,6 +302,26 @@ async function throwIfUnauthorized(
   }
   throw new Error(message);
 }
+async function throwIfLicenseLocked(response: Response): Promise<void> {
+  if (response.status !== 403) return;
+  let body: unknown;
+  try {
+    body = await response.clone().json();
+  } catch {
+    return;
+  }
+  if (!body || typeof body !== "object" || !("error" in body)) return;
+  const error = body.error;
+  if (
+    !error ||
+    typeof error !== "object" ||
+    !("code" in error) ||
+    error.code !== "INSTANCE_LICENSE_LOCKED"
+  )
+    return;
+  window.dispatchEvent(new Event(INSTANCE_LICENSE_LOCKED_EVENT));
+  throw new InstanceLicenseLockedError();
+}
 
 export async function request<T = unknown>(
   path: string,
@@ -315,6 +343,7 @@ export async function request<T = unknown>(
   }
 
   await throwIfUnauthorized(path, response);
+  await throwIfLicenseLocked(response);
   applyRenewedAccessToken(response);
 
   if (!response.ok) {
@@ -369,6 +398,7 @@ export async function requestBlob(
   }
 
   await throwIfUnauthorized(path, response);
+  await throwIfLicenseLocked(response);
   applyRenewedAccessToken(response);
 
   if (!response.ok) {
@@ -422,6 +452,7 @@ export async function probeAuthResource(
   }
 
   await throwIfUnauthorized(path, response);
+  await throwIfLicenseLocked(response);
   applyRenewedAccessToken(response);
 
   if (!response.ok) {
@@ -462,6 +493,7 @@ export async function requestStream(
   }
 
   await throwIfUnauthorized(path, response);
+  await throwIfLicenseLocked(response);
   applyRenewedAccessToken(response);
 
   if (!response.ok) {

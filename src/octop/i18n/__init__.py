@@ -11,6 +11,7 @@ from octop.i18n.domains.channel import (
     channel_tool_hint_start,
 )
 from octop.i18n.domains.errors import error_message
+from octop.i18n.domains.license import license_reason_message
 from octop.i18n.domains.skills import all_skill_labels, skill_display_name
 from octop.i18n.domains.tools import all_tool_labels, hitl_tool_catalog, tool_display_name
 from octop.i18n.loader import all_keys_for_locale, flatten_keys, lookup, tr
@@ -37,6 +38,7 @@ __all__ = [
     "channel_tool_hint_end",
     "channel_tool_hint_start",
     "error_message",
+    "license_reason_message",
     "flatten_keys",
     "lookup",
     "normalize_locale",

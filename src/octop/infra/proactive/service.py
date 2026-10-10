@@ -115,6 +115,15 @@ class ProactiveCareService:
         self._care_push_repo = care_push_repo
 
     async def run(self, agent_id: str, session_key: str) -> None:
+        from octop.infra.licensing import current_license
+
+        license_service = current_license()
+        if not license_service.allowed:
+            return
+        async with license_service.business_task():
+            await self._run(agent_id, session_key)
+
+    async def _run(self, agent_id: str, session_key: str) -> None:
         """Run one proactive care push.
 
         Args:

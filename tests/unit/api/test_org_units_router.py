@@ -229,14 +229,14 @@ async def test_unit_permissions_roundtrip(world: SimpleNamespace) -> None:
 
     stored = await set_org_unit_permissions(
         "ops",
-        OrgUnitPermissionsBody(permissions=["browser", "knowledge_bases"]),
+        OrgUnitPermissionsBody(permissions=["features", "knowledge_bases"]),
         actor=world.admin,
         server=world.server,
     )
-    assert stored == {"unit_key": "ops", "permissions": ["browser", "knowledge_bases"]}
+    assert stored == {"unit_key": "ops", "permissions": ["features", "knowledge_bases"]}
     assert await get_org_unit_permissions("ops", actor=world.admin, server=world.server) == {
         "unit_key": "ops",
-        "permissions": ["browser", "knowledge_bases"],
+        "permissions": ["features", "knowledge_bases"],
     }
 
     # Replace, not merge: dropping a key is the only way to revoke it.

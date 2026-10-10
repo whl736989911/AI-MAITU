@@ -1,0 +1,33 @@
+name: maitu-license-center
+services:
+  license-center:
+    build: .
+    image: maitu-license-center:local
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${LICENSE_CENTER_PORT:-8090}:8090"
+    environment:
+      LICENSE_CENTER_DATA: /data
+      LICENSE_CENTER_COOKIE_SECURE: "1"
+      LICENSE_CENTER_TIMEZONE: ${LICENSE_CENTER_TIMEZONE:-Asia/Shanghai}
+      LICENSE_CENTER_TLS_CERT: /run/certificates/fullchain.pem
+      LICENSE_CENTER_TRUSTED_PROXY_IPS: ${LICENSE_CENTER_TRUSTED_PROXY_IPS:?Set the reverse proxy source address}
+    volumes:
+      - type: bind
+        source: ${LICENSE_CENTER_DATA:?Set a persistent protected authorization-center data directory}
+        target: /data
+      - type: bind
+        source: ${LICENSE_CENTER_TLS_CERT_HOST:?Set the public TLS certificate file path}
+        target: /run/certificates/fullchain.pem
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,nodev,size=16m
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    stop_grace_period: 30s
+networks:
+  default:
+    name: maitu-license-center
+    external: true

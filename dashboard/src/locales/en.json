@@ -2,6 +2,41 @@
   "app": {
     "pageTitle": "MAITU Smart Manufacturing - An intelligent partner that understands you, helps you, and grows with you"
   },
+  "license": {
+    "locked": "Instance locked",
+    "title": "License activation required",
+    "defaultReason": "Business features are unavailable until this instance has a valid license.",
+    "reason": {
+      "unactivated": "This instance has not been activated yet.",
+      "expired": "The license has expired.",
+      "revoked": "The license has been revoked.",
+      "customerDisabled": "The customer account associated with this license is disabled.",
+      "cacheExpired": "The locally cached license is no longer valid. Reconnect to check the license.",
+      "invalidCredential": "The license credential could not be verified. Contact your service provider.",
+      "clockAnomaly": "The system clock needs to be corrected before this license can be verified.",
+      "configurationRequired": "License service configuration is required.",
+      "networkError": "The license service could not be reached and no valid cached license is available."
+    },
+    "expires": "License expiration",
+    "notAvailable": "Not available",
+    "displayTimezone": "Server timezone",
+    "contact": "License support",
+    "adminTools": "Administrator actions",
+    "activationCode": "Activation code",
+    "activate": "Activate instance",
+    "checkAgain": "Check license",
+    "activationFailed": "Activation failed. Check the code and try again.",
+    "refreshFailed": "License check failed. The current server status is shown.",
+    "checkingPermissions": "Checking your account permissions…",
+    "adminRequired": "Sign in with a system administrator account to manage this license.",
+    "signIn": "Sign in",
+    "accessRestoredByServer": "Access returns only after the server confirms an active license.",
+    "loading": "Checking license status",
+    "loadingDescription": "Business services will remain closed until the server confirms license status.",
+    "unavailable": "License status unavailable",
+    "unavailableDescription": "The dashboard cannot confirm this instance license. No business services were started.",
+    "retry": "Try again"
+  },
   "layout": {
     "collapsePanel": "Collapse panel",
     "expandPanel": "Expand panel"
@@ -77,6 +112,9 @@
     "BACKUP_IN_PROGRESS": "A backup or restore is already in progress. Try again shortly.",
     "FORBIDDEN": "Permission denied.",
     "NOT_FOUND": "Not found.",
+    "INSTANCE_LICENSE_LOCKED": "This instance license is locked. Business features are unavailable.",
+    "INSTANCE_LICENSE_RATE_LIMITED": "Too many license requests. Try again shortly.",
+    "INSTANCE_DEPLOYMENT_RESTRICTED": "This management action is unavailable in the deployed customer instance.",
     "USER_DISABLED": "This account has been disabled.",
     "LOGIN_LOCKED": "Too many failed sign-in attempts. Try again in {{minutes}} minutes.",
     "USERNAME_TAKEN": "Username is already taken.",

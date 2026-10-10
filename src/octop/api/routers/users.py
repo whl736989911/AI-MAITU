@@ -42,6 +42,7 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role, User, role_level
 from octop.infra.users.permissions import (
     PERMISSIONS,
+    RESTRICTED_DEPLOYMENT_PERMISSIONS,
     assert_can_grant,
     effective_permissions,
     validate_permission_keys,
@@ -313,6 +314,8 @@ async def list_permission_catalog(
     items: list[dict[str, Any]] = []
     zh = locale.startswith("zh")
     for key, p in PERMISSIONS.items():
+        if key in RESTRICTED_DEPLOYMENT_PERMISSIONS:
+            continue
         labels = [(p.label_zh, p.label_en), *p.extra_tabs]
         for label_zh, label_en in labels:
             items.append(
@@ -458,6 +461,16 @@ async def patch_user(
                 "this role requires a department binding",
                 details={"reason": "this role requires a department binding"},
             )
+    # Deployment-restricted policy fields are refused before *anything* is
+    # written: a patch that mixes a custom workspace root with legitimate
+    # updates (quota, profile, grants) must fail whole, not half-apply. The
+    # same normalization runs again inside ``set_resource_policy`` — this
+    # early pass is what puts the boundary ahead of every write below.
+    policy_kwargs = _policy_kwargs_from_body(body)
+    if "workspace_root_dir" in policy_kwargs:
+        normalize_workspace_root_dir(policy_kwargs["workspace_root_dir"])
+    if "token_quota" in policy_kwargs:
+        normalize_token_quota(policy_kwargs["token_quota"])
     if body.permissions is not None:
         _assert_can_assign(request, server, actor, body.permissions)
         _assert_not_last_user_manager(
@@ -507,7 +520,6 @@ async def patch_user(
         # a channel that lost its type key stops now rather than at its next
         # restart (design §2.3/§2.4).
         await sync_channel_runtime(server, user_ids=[user_id])
-    policy_kwargs = _policy_kwargs_from_body(body)
     if policy_kwargs:
         await server.user_manager.set_resource_policy(row.username, **policy_kwargs)
     updated = server.user_manager.get_row(user_id)

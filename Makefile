@@ -18,6 +18,8 @@ REPO_ROOT     := $(shell pwd)
 DASHBOARD_DIR := $(REPO_ROOT)/dashboard
 DASHBOARD_DEST := $(REPO_ROOT)/src/octop/dashboard
 DIST_DIR      := $(REPO_ROOT)/dist
+LICENSE_CENTER_DIR := $(REPO_ROOT)/services/license-center
+LICENSE_DASHBOARD_DIR := $(LICENSE_CENTER_DIR)/dashboard
 
 # PyPI repository (override: make publish PYPI_REPO=testpypi)
 PYPI_REPO  ?= pypi
@@ -205,7 +207,7 @@ run-online:
 # the writers in ``format-all`` above cannot pass the gate on their own say-so:
 # what they rewrote is checked right after.
 .PHONY: all
-all: format-all lint lint-frontend typecheck test test-frontend
+all: format-all lint lint-frontend typecheck test test-frontend check-license-center
 
 .PHONY: lint
 lint:
@@ -304,13 +306,31 @@ test-frontend-affected:
 lint-all: lint lint-frontend
 
 .PHONY: format-all
-format-all: format format-frontend
+format-all: format format-frontend format-license-center
 
 .PHONY: typecheck-all
 typecheck-all: typecheck typecheck-frontend
 
 .PHONY: check-all
 check-all: lint-all typecheck-all test test-frontend
+
+# Independent license issuer: no dependency on Octop runtime or business DB.
+.PHONY: format-license-center check-license-center build-license-center
+format-license-center:
+	$(RUN) ruff check --fix services/license-center/license_center services/license-center/tests
+	$(RUN) ruff format services/license-center/license_center services/license-center/tests
+	cd $(LICENSE_DASHBOARD_DIR) && npm run format
+
+check-license-center:
+	$(RUN) ruff check services/license-center/license_center services/license-center/tests
+	$(RUN) ruff format --check services/license-center/license_center services/license-center/tests
+	cd $(LICENSE_DASHBOARD_DIR) && npm run format:check
+	cd $(LICENSE_CENTER_DIR) && uv run --frozen pytest
+	cd $(LICENSE_DASHBOARD_DIR) && npm run build
+
+build-license-center:
+	cd $(LICENSE_DASHBOARD_DIR) && npm ci && npm run build
+	cd $(LICENSE_CENTER_DIR) && uv build
 
 # ─── Utilities ───────────────────────────────────────────────────────────────
 

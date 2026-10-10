@@ -1,0 +1,1 @@
+"""Maitu instance licensing center."""

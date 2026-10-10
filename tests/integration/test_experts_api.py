@@ -355,19 +355,20 @@ async def test_create_from_expert_default_name_uses_expert_label(env: Any) -> No
     assert r.json()["name"] == "运维工程师 Ops"
 
 
-async def test_create_from_expert_stores_backend(env: Any) -> None:
+async def test_create_from_expert_rejects_host_backend_override(env: Any) -> None:
     c, _srv, auth = env
-    backend_spec = {"type": "local_shell", "virtual_mode": True, "root_dir": "/"}
-    r = await c.post(
+    before = (await c.get("/api/agents", headers=auth)).json()
+    response = await c.post(
         "/api/agents/from-expert/default",
         headers=auth,
-        json={"name": "backend-agent", "backend": backend_spec},
+        json={
+            "name": "backend-agent",
+            "backend": {"type": "local_shell", "virtual_mode": True, "root_dir": "/"},
+        },
     )
-    assert r.status_code == 201
-    agent_id = r.json()["id"]
-    rows = (await c.get("/api/agents", headers=auth)).json()
-    agent = next(a for a in rows if a["id"] == agent_id)
-    assert agent["config"].get("backend") == backend_spec
+    assert response.status_code == 403, response.text
+    assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    assert (await c.get("/api/agents", headers=auth)).json() == before
 
 
 async def test_create_agent_from_expert_stores_composer_defaults(env: Any) -> None:

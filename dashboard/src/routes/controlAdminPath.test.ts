@@ -160,7 +160,7 @@ describe("pathPermissionKeys", () => {
     ).toBe(true);
     expect(canAccessPath(user, "/admin/users")).toBe(false);
     expect(canAccessPath({ role: "admin", permissions: [] }, "/acp")).toBe(
-      true,
+      false,
     );
     // A non-administrator holding the key passes the same guard. What stays
     // administrator-only is the runner *definition* write inside the panel —

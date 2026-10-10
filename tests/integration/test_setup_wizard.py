@@ -359,21 +359,29 @@ async def test_finish_saves_provider_with_admin_jwt(env: Any) -> None:
 # ─── 410 guard ─────────────────────────────────────────────────────
 
 
-async def test_setup_410_after_admin_exists(env: Any) -> None:
+async def test_setup_410_after_setup_is_completed(env: Any) -> None:
     c, _srv, home = env
-    pw = read_password(Path.home())
+    pw = read_password(home.parent)
+    assert pw is not None
     tok = (await c.post("/api/setup/verify-password", json={"password": pw})).json()["wizard_token"]
-    await c.post(
+    created = await c.post(
         "/api/setup/initial-admin",
         json={"username": "admin", "password": "TestPass12"},
         headers={"Authorization": f"Bearer {tok}"},
     )
+    assert created.status_code == 201
+    finished = await c.post(
+        "/api/setup/finish",
+        json={"provider_draft": None},
+        headers={"Authorization": f"Bearer {tok}"},
+    )
+    assert finished.status_code == 200
     # Plant a stale file to verify the 410 guard does not touch it.
-    (Path.home() / WIZARD_FILE_NAME).write_text("stale\n", encoding="utf-8")
+    (home.parent / WIZARD_FILE_NAME).write_text("stale\n", encoding="utf-8")
     r = await c.post("/api/setup/verify-password", json={"password": "stale"})
     assert r.status_code == 410
     # The wizard password file is never deleted by the app, even on the 410 path.
-    assert (Path.home() / WIZARD_FILE_NAME).exists()
+    assert (home.parent / WIZARD_FILE_NAME).exists()
 
 
 # ─── lockdown middleware ───────────────────────────────────────────

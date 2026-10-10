@@ -385,6 +385,19 @@
     "plan_ready": "计划已写入 `{path}`。回复「按计划执行」开始执行，或继续改计划。",
     "execute": "请按 {path} 执行"
   },
+  "license": {
+    "reason": {
+      "unactivated": "此实例尚未激活。",
+      "expired": "实例授权已到期。",
+      "revoked": "实例授权已撤销。",
+      "customer_disabled": "客户授权已停用。",
+      "cache_expired": "本地授权缓存已过期，请重新联网检查授权。",
+      "invalid_credential": "本地授权凭证无效，请重新联网检查授权。",
+      "clock_anomaly": "系统时钟异常，请联网验证授权。",
+      "configuration_required": "尚未配置授权验证。",
+      "network_error": "无法连接授权服务，请重新联网检查授权。"
+    }
+  },
   "errors": {
     "AUTH_FAILED": "认证失败。",
     "TOKEN_EXPIRED": "登录已过期，请重新登录。",
@@ -393,6 +406,9 @@
     "BACKUP_DRIVER_MISMATCH": "该备份与当前数据库引擎不一致（SQLite 与 PostgreSQL 不能互恢）。请将运行时切回备份所用引擎后再恢复，或在当前引擎上重新备份。暂不支持跨引擎恢复。",
     "BACKUP_SCHEMA_INCOMPATIBLE": "该备份使用数据库结构版本 {archive_schema_version}，当前麦途智造版本无法恢复（最高支持版本：{runtime_schema_version}）。",
     "BACKUP_IN_PROGRESS": "已有备份或恢复任务正在进行，请稍后再试。",
+    "INSTANCE_LICENSE_LOCKED": "此实例因授权状态而锁定。",
+    "INSTANCE_LICENSE_RATE_LIMITED": "授权请求过于频繁，请稍后重试。",
+    "INSTANCE_DEPLOYMENT_RESTRICTED": "此客户部署已禁用该管理能力。",
     "FORBIDDEN": "没有权限。",
     "NOT_FOUND": "未找到。",
     "USER_DISABLED": "账号已禁用。",

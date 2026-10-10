@@ -36,21 +36,23 @@ def test_normalize_workspace_root_dir_unlimited(monkeypatch: pytest.MonkeyPatch)
     assert normalize_workspace_root_dir("  ") is None
 
 
-def test_normalize_workspace_root_dir_must_be_directory(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
+def test_normalize_workspace_root_dir_refuses_any_custom_root(tmp_path: Path) -> None:
+    """The workspace root is deployment-owned: any non-empty value is refused.
+
+    The refusal is the stable host-floor denial and must not depend on whether
+    the deployment runs in a container.
+    """
     root = tmp_path / "jail"
     root.mkdir()
-    assert normalize_workspace_root_dir(str(root)) == root.resolve().as_posix()
-    file_path = tmp_path / "not-a-dir"
-    file_path.write_text("x", encoding="utf-8")
     with pytest.raises(OctopError) as exc:
-        normalize_workspace_root_dir(str(file_path))
-    assert exc.value.code is ErrorCode.WORKSPACE_ROOT_RESTRICTED
+        normalize_workspace_root_dir(str(root))
+    assert exc.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+    with pytest.raises(OctopError) as exc:
+        normalize_workspace_root_dir(str(tmp_path / "no-such-dir"))
+    assert exc.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
 
 
-def test_normalize_workspace_root_dir_rejected_in_container(
+def test_normalize_workspace_root_dir_container_ignores_stored_value(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from octop.infra.users.resource_policy import effective_workspace_root_dir
@@ -61,7 +63,8 @@ def test_normalize_workspace_root_dir_rejected_in_container(
     assert normalize_workspace_root_dir(None) is None
     with pytest.raises(OctopError) as exc:
         normalize_workspace_root_dir(str(root))
-    assert exc.value.code is ErrorCode.WORKSPACE_ROOT_CONTAINER_UNSUPPORTED
+    assert exc.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+    # Read path unchanged: a container deployment never applies a stored root.
     assert effective_workspace_root_dir(str(root)) is None
 
 

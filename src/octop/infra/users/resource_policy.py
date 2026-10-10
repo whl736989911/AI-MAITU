@@ -9,7 +9,6 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.host_dirs import (
     assert_backend_root_dirs_allowed,
     assert_safe_host_path,
-    host_path_text,
     iter_local_backend_root_dirs,
     running_in_container,
 )
@@ -92,25 +91,20 @@ def public_policy_fields(rows: Sequence[Any] | Mapping[str, str] | None) -> dict
 
 
 def normalize_workspace_root_dir(raw: str | None) -> str | None:
-    """Return a canonical host path, or ``None`` when unrestricted.
+    """Return ``None`` when unrestricted; refuse custom roots at the host boundary.
 
-    Setting a non-empty root is refused in container deployments — the
-    container filesystem is already the isolation boundary.
+    The workspace root is deployment-owned (the host floor): no role — system
+    admin included — may point an account at a custom host directory, and no
+    license state re-opens this. Only *clearing* the policy (``null``/blank, a
+    narrowing move) passes; any non-empty value is rejected here, before the
+    caller persists anything.
     """
     if raw is None or not str(raw).strip():
         return None
-    if running_in_container():
-        raise OctopError(
-            ErrorCode.WORKSPACE_ROOT_CONTAINER_UNSUPPORTED,
-            "workspace root policy is unavailable in container deployments",
-        )
-    path = assert_safe_host_path(str(raw).strip(), restrict_to_home=False)
-    if not path.is_dir():
-        raise OctopError(
-            ErrorCode.WORKSPACE_ROOT_RESTRICTED,
-            "workspace root must be a directory",
-        )
-    return host_path_text(path)
+    raise OctopError(
+        ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+        "workspace root policy is deployment-managed and cannot be set",
+    )
 
 
 def normalize_token_quota(raw: int | None) -> int | None:

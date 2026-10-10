@@ -12,6 +12,7 @@ from octop.infra.users.identity import Role, User
 from octop.infra.users.permissions import (
     ALL_PERMISSION_KEYS,
     BASELINE_PERMISSIONS,
+    RESTRICTED_DEPLOYMENT_PERMISSIONS,
     assert_can_grant,
     effective_permissions,
     resolve_permissions,
@@ -89,18 +90,18 @@ def test_resolve_permissions_unit_none_is_empty_set() -> None:
 
 
 def test_unit_permissions_none_or_unknown_key_is_empty() -> None:
-    repo = _UnitRepo({"eng": ["browser", "terminal"]})
+    repo = _UnitRepo({"eng": ["features", "users"]})
     assert unit_permissions(None, repo) == set()
     assert unit_permissions("", repo) == set()
     assert unit_permissions("sales", repo) == set()
-    assert unit_permissions("eng", repo) == {"browser", "terminal"}
+    assert unit_permissions("eng", repo) == {"features", "users"}
 
 
 def test_unit_permissions_returns_detached_copy() -> None:
-    repo = _UnitRepo({"eng": ["browser"]})
+    repo = _UnitRepo({"eng": ["features"]})
     got = unit_permissions("eng", repo)
     got.add("users")
-    assert unit_permissions("eng", repo) == {"browser"}
+    assert unit_permissions("eng", repo) == {"features"}
 
 
 def test_resolve_permissions_unit_grant_applies() -> None:
@@ -116,11 +117,11 @@ def test_resolve_permissions_unit_grant_applies() -> None:
 def test_resolve_permissions_deny_outranks_grant() -> None:
     resolved = resolve_permissions(
         role=Role.USER,
-        permissions=["browser", "users"],
-        denied=["browser"],
+        permissions=["features", "users"],
+        denied=["features"],
         unit_grants=None,
     )
-    assert "browser" not in resolved
+    assert "features" not in resolved
     assert "users" in resolved
 
 
@@ -128,11 +129,11 @@ def test_resolve_permissions_deny_outranks_unit_grant() -> None:
     resolved = resolve_permissions(
         role=Role.USER,
         permissions=None,
-        denied=["terminal"],
-        unit_grants={"terminal", "desktop"},
+        denied=["features"],
+        unit_grants={"features", "users"},
     )
-    assert "terminal" not in resolved
-    assert "desktop" in resolved
+    assert "features" not in resolved
+    assert "users" in resolved
 
 
 def test_teams_permission_requires_effective_experts_across_grant_sources() -> None:
@@ -181,28 +182,29 @@ def test_resolve_permissions_admin_bypasses_deny_and_empty_permissions() -> None
     resolved = resolve_permissions(
         role=Role.ADMIN,
         permissions=[],
-        denied=["browser", "users"],
+        denied=["features", "users"],
         unit_grants=set(),
     )
-    assert resolved == ALL_PERMISSION_KEYS
+    assert resolved == ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS
 
 
 def test_resolve_permissions_difference_is_exact() -> None:
     resolved = resolve_permissions(
         role=Role.USER,
-        permissions=["browser", "users"],
+        permissions=["features", "users"],
         denied=["users", "envs"],
         unit_grants=None,
     )
-    # Granted keys lose exactly the denied ones; a deny for a key that was never
-    # granted (here ``envs``) removes nothing else.
-    assert resolved == {"browser"}
+    # A deny subtracts exactly its own keys: ``users`` is taken away, a deny
+    # for a key that was never granted (``envs``) removes nothing else, and
+    # ``features`` survives untouched.
+    assert resolved == {"features"}
 
 
 def test_resolve_permissions_is_pure() -> None:
-    permissions = ["browser"]
+    permissions = ["users"]
     denied = ["users"]
-    unit_grants = {"terminal"}
+    unit_grants = {"users"}
     first = resolve_permissions(
         role=Role.USER,
         permissions=permissions,
@@ -216,27 +218,27 @@ def test_resolve_permissions_is_pure() -> None:
         unit_grants=unit_grants,
     )
     assert first == second
-    assert permissions == ["browser"]
+    assert permissions == ["users"]
     assert denied == ["users"]
-    assert unit_grants == {"terminal"}
+    assert unit_grants == {"users"}
     assert first is not unit_grants
 
 
 def test_user_has_permission_uses_unit_grants() -> None:
-    member = _user(Role.USER, permissions=["browser"], org_unit="eng")
+    member = _user(Role.USER, permissions=["features"], org_unit="eng")
     assert user_has_permission(member, "providers") is False
     assert user_has_permission(member, "providers", unit_grants={"providers"}) is True
-    assert user_has_permission(member, "browser") is True
+    assert user_has_permission(member, "features") is True
 
 
 def test_user_has_permission_deny_outranks_unit_grant() -> None:
-    member = _user(Role.UNIT_ADMIN, denied=["terminal"], org_unit="eng")
-    assert user_has_permission(member, "terminal", unit_grants={"terminal"}) is False
-    assert "terminal" not in effective_permissions(member, unit_grants={"terminal"})
+    member = _user(Role.UNIT_ADMIN, denied=["features"], org_unit="eng")
+    assert user_has_permission(member, "features", unit_grants={"features"}) is False
+    assert "features" not in effective_permissions(member, unit_grants={"features"})
 
 
 def test_user_has_permission_denies_unknown_key() -> None:
-    member = _user(Role.USER, permissions=["browser"])
+    member = _user(Role.USER, permissions=["features"])
     assert user_has_permission(member, "not_a_real_key") is False
     assert user_has_permission(member, "not_a_real_key", unit_grants={"not_a_real_key"}) is False
 
@@ -244,25 +246,29 @@ def test_user_has_permission_denies_unknown_key() -> None:
 def test_effective_permissions_matches_formula() -> None:
     member = _user(
         Role.USER,
-        permissions=sorted(BASELINE_PERMISSIONS | {"browser"}),
+        permissions=sorted(BASELINE_PERMISSIONS | {"users"}),
         denied=["channels"],
         org_unit="eng",
     )
-    expected = sorted((BASELINE_PERMISSIONS - {"channels"}) | {"browser", "users"})
+    expected = sorted((BASELINE_PERMISSIONS - {"channels"}) | {"users"})
     assert effective_permissions(member, unit_grants={"users"}) == expected
 
 
 def test_effective_permissions_admin_bypasses_deny() -> None:
-    admin = _user(Role.ADMIN, permissions=[], denied=["browser"])
-    assert effective_permissions(admin) == sorted(ALL_PERMISSION_KEYS)
+    admin = _user(Role.ADMIN, permissions=[], denied=["features"])
+    assert effective_permissions(admin) == sorted(
+        ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS
+    )
 
 
 def test_wrappers_accept_legacy_user_shape_without_role_or_denied() -> None:
     admin = _LegacyUser(is_admin=True, permissions=[])
-    assert effective_permissions(admin) == sorted(ALL_PERMISSION_KEYS)
-    member = _LegacyUser(is_admin=False, permissions=["browser"])
-    assert effective_permissions(member) == ["browser"]
-    assert user_has_permission(member, "browser") is True
+    assert effective_permissions(admin) == sorted(
+        ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS
+    )
+    member = _LegacyUser(is_admin=False, permissions=["users", "features"])
+    assert effective_permissions(member) == ["features", "users"]
+    assert user_has_permission(member, "features") is True
     assert user_has_permission(member, "providers") is False
 
 
@@ -274,15 +280,15 @@ def test_assert_can_grant_uses_the_effective_set() -> None:
     assert_can_grant(holder, ["users"])
     # Department grant: held, and the reason the two grant surfaces share this
     # function.
-    assert_can_grant(holder, ["browser"], unit_grants={"browser"})
-    # Denied: subtracted, so not grantable — even though it is still stored.
+    assert_can_grant(holder, ["providers"], unit_grants={"providers"})
+    # Restricted even when held in the stored column.
     with pytest.raises(OctopError) as exc:
         assert_can_grant(holder, ["terminal"])
-    assert exc.value.code is ErrorCode.FORBIDDEN
-    assert exc.value.details["missing"] == ["terminal"]
+    assert exc.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
     # Neither stored nor granted.
     with pytest.raises(OctopError) as exc:
-        assert_can_grant(holder, ["users", "security"], unit_grants={"browser"})
+        assert_can_grant(holder, ["users", "security"], unit_grants={"providers"})
+    assert exc.value.code is ErrorCode.FORBIDDEN
     assert exc.value.details["missing"] == ["security"]
     # Caller context rides along with the missing keys.
     with pytest.raises(OctopError) as exc:
@@ -290,6 +296,9 @@ def test_assert_can_grant_uses_the_effective_set() -> None:
     assert exc.value.details == {"missing": ["security"], "unit_key": "eng"}
 
 
-def test_assert_can_grant_admin_bypasses() -> None:
-    admin = _user(Role.ADMIN, permissions=[], denied=["browser"])
-    assert_can_grant(admin, ["browser", "security"])
+def test_assert_can_grant_admin_bypasses_for_allowed_keys() -> None:
+    admin = _user(Role.ADMIN, permissions=[], denied=["features"])
+    assert_can_grant(admin, ["providers", "security"])
+    with pytest.raises(OctopError) as exc:
+        assert_can_grant(admin, ["terminal"])
+    assert exc.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED

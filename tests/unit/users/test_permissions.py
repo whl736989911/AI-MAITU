@@ -7,11 +7,14 @@ from dataclasses import dataclass
 import pytest
 from harness_gateway.channels import SUPPORTED_CHANNEL_KINDS
 
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import (
     ALL_PERMISSION_KEYS,
     BASELINE_PERMISSIONS,
     CHANNEL_PERMISSION_KEYS,
     PERMISSIONS,
+    RESTRICTED_DEPLOYMENT_PERMISSIONS,
+    assert_can_grant,
     channel_permission_key,
     effective_permissions,
     user_has_permission,
@@ -64,15 +67,18 @@ def test_functional_modules_and_channel_types_are_catalogued() -> None:
     assert "acp" not in BASELINE_PERMISSIONS
 
 
-def test_user_has_permission_admin_bypass() -> None:
+def test_user_has_permission_admin_bypass_excludes_deployment_controls() -> None:
     admin = _FakeUser(is_admin=True, permissions=[])
-    for key in ALL_PERMISSION_KEYS:
+    for key in ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS:
         assert user_has_permission(admin, key) is True
+    for key in RESTRICTED_DEPLOYMENT_PERMISSIONS:
+        assert user_has_permission(admin, key) is False
 
 
 def test_user_has_permission_normal_hit_and_miss() -> None:
-    u = _FakeUser(is_admin=False, permissions=["browser", "users"])
-    assert user_has_permission(u, "browser") is True
+    u = _FakeUser(is_admin=False, permissions=["users", "browser"])
+    assert user_has_permission(u, "users") is True
+    assert user_has_permission(u, "browser") is False
     assert user_has_permission(u, "providers") is False
     assert user_has_permission(u, "unknown_key") is False
 
@@ -135,6 +141,15 @@ def test_validate_permission_keys_rejects_unknown() -> None:
         validate_permission_keys(["browser", "not_a_real_key"])
 
 
-def test_effective_permissions_admin_gets_catalog() -> None:
+def test_effective_permissions_admin_excludes_deployment_controls() -> None:
     admin = _FakeUser(is_admin=True, permissions=[])
-    assert effective_permissions(admin) == sorted(ALL_PERMISSION_KEYS)
+    assert effective_permissions(admin) == sorted(
+        ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS
+    )
+
+
+def test_admin_cannot_grant_deployment_controls() -> None:
+    admin = _FakeUser(is_admin=True, permissions=[])
+    with pytest.raises(OctopError) as exc:
+        assert_can_grant(admin, ["plugins"])
+    assert exc.value.code == ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED

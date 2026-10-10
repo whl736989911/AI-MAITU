@@ -1,9 +1,9 @@
-"""User-defined MCP servers (streamable_http / stdio) stored as one connector doc."""
+"""User-defined Streamable HTTP MCP servers stored as one connector doc."""
 
 from __future__ import annotations
 
 import re
-from typing import Any, Literal
+from typing import Any
 from urllib.parse import urlparse
 
 from octop.infra.utils.ssrf_guard import UnsafeOutboundUrl, validate_https_url
@@ -18,8 +18,6 @@ _SECRET_KEYS = frozenset({_OAUTH_KEY})
 _HARNESS_STRIP_KEYS = _META_KEYS | _SECRET_KEYS
 _DISPLAY_NAME_MAX = 64
 _MCP_STREAMABLE_HTTP_ACCEPT = "application/json, text/event-stream"
-
-Transport = Literal["streamable_http", "stdio"]
 
 
 def is_custom_mcp_kind(kind: str) -> bool:
@@ -85,31 +83,6 @@ def _normalize_headers(raw: Any) -> dict[str, str]:
     return out
 
 
-def _normalize_env(raw: Any) -> dict[str, str]:
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        raise ValueError("env must be an object of string keys/values")
-    out: dict[str, str] = {}
-    for key, value in raw.items():
-        k = str(key).strip()
-        if not k:
-            raise ValueError("env names must be non-empty")
-        out[k] = str(value)
-    return out
-
-
-def _normalize_args(raw: Any) -> list[str]:
-    if raw is None:
-        return []
-    if isinstance(raw, str):
-        lines = [line.strip() for line in raw.splitlines() if line.strip()]
-        return lines
-    if not isinstance(raw, list):
-        raise ValueError("args must be a list of strings")
-    return [str(item) for item in raw]
-
-
 def validate_mcp_http_url(url: str) -> str:
     """Validate a user-configured MCP/connector URL.
 
@@ -126,7 +99,7 @@ def validate_mcp_http_url(url: str) -> str:
     if not host:
         raise ValueError("url missing hostname")
 
-    # Loopback HTTP/HTTPS is allowed for local MCP servers (stdio alternative).
+    # Loopback HTTP/HTTPS is allowed for local network MCP deployments.
     if host in {"localhost", "127.0.0.1", "::1"}:
         return text
 
@@ -144,8 +117,13 @@ def normalize_server_spec(name: str, raw: Any) -> dict[str, Any]:
     if not isinstance(raw, dict):
         raise ValueError(f"server {name!r} must be an object")
     transport = str(raw.get("transport") or "").strip()
-    if transport not in ("streamable_http", "stdio", "http"):
-        raise ValueError(f"server {name!r}: transport must be streamable_http or stdio")
+    if transport == "stdio":
+        raise ValueError(
+            f"server {name!r}: stdio MCP is disabled because customer-defined processes "
+            "cannot be confined to the agent workspace"
+        )
+    if transport not in ("streamable_http", "http"):
+        raise ValueError(f"server {name!r}: transport must be streamable_http")
     if transport == "http":
         transport = "streamable_http"
 
@@ -164,23 +142,11 @@ def normalize_server_spec(name: str, raw: Any) -> dict[str, Any]:
             )
         spec["display_name"] = display_name
 
-    if transport == "streamable_http":
-        url = validate_mcp_http_url(str(raw.get("url") or ""))
-        spec["url"] = url
-        headers = _normalize_headers(raw.get("headers"))
-        if headers:
-            spec["headers"] = headers
-    else:
-        command = str(raw.get("command") or "").strip()
-        if not command:
-            raise ValueError(f"server {name!r}: command is required")
-        spec["command"] = command
-        args = _normalize_args(raw.get("args"))
-        if args:
-            spec["args"] = args
-        env = _normalize_env(raw.get("env"))
-        if env:
-            spec["env"] = env
+    url = validate_mcp_http_url(str(raw.get("url") or ""))
+    spec["url"] = url
+    headers = _normalize_headers(raw.get("headers"))
+    if headers:
+        spec["headers"] = headers
 
     oauth = raw.get(_OAUTH_KEY)
     if isinstance(oauth, dict):
@@ -340,20 +306,17 @@ def merge_preserved_oauth(
 
 
 def harness_spec_for_server(spec: dict[str, Any]) -> dict[str, Any]:
-    """Strip Octop meta keys; keep langchain-mcp-adapters connection fields."""
-    out = {k: v for k, v in spec.items() if k not in _HARNESS_STRIP_KEYS}
-    # Ensure stdio always has args list for adapters.
-    if out.get("transport") == "stdio" and "args" not in out:
-        out["args"] = []
+    """Build a validated customer Streamable HTTP MCP connection."""
+    normalized = normalize_server_spec("custom", spec)
+    out = {k: v for k, v in normalized.items() if k not in _HARNESS_STRIP_KEYS}
     # Streamable HTTP MCP requires both content types (same as built-in remote).
-    if out.get("transport") == "streamable_http":
-        headers = {str(k): str(v) for k, v in dict(out.get("headers") or {}).items()}
-        oauth = oauth_tokens_from_spec(spec)
-        token = str(oauth.get("access_token") or "").strip()
-        if token:
-            headers["Authorization"] = f"Bearer {token}"
-        headers.setdefault("Accept", _MCP_STREAMABLE_HTTP_ACCEPT)
-        out["headers"] = headers
+    headers = {str(k): str(v) for k, v in dict(out.get("headers") or {}).items()}
+    oauth = oauth_tokens_from_spec(normalized)
+    token = str(oauth.get("access_token") or "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    headers.setdefault("Accept", _MCP_STREAMABLE_HTTP_ACCEPT)
+    out["headers"] = headers
     return out
 
 

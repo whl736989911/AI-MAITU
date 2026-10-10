@@ -6,14 +6,12 @@ decrypted credential it was built with. An agent somebody else is allowed to use
 therefore cannot serve the tools its owner loaded — that was the leak this test
 locks down: the peer's turn ran with the owner's account.
 
-The probe MCP server answers with the credential it was launched with, so the
-answer to ``probe_whoami`` names the account the call actually went out with.
+The probe HTTP MCP tool reports the credential in its request headers, so the
+answer to ``probe_whoami`` identifies the account the call used.
 """
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from typing import Any
 
 import httpx
@@ -26,18 +24,16 @@ from tests.support.auth import (
 )
 from tests.support.http import ws_chat_turn
 
-PROBE_SCRIPT = Path(__file__).resolve().parents[1] / "fixtures" / "mcp_probe_stdio.py"
 OWNER_TOKEN = "TOKEN-OWNER"
 PEER_TOKEN = "TOKEN-PEER"
 
 
 def _probe_spec(token: str) -> dict[str, Any]:
-    """One user's own "probe" MCP server, launched with that user's credential."""
+    """One user's HTTP MCP server uses that user's own credential header."""
     return {
-        "transport": "stdio",
-        "command": sys.executable,
-        "args": [str(PROBE_SCRIPT)],
-        "env": {"PROBE_TOKEN": token},
+        "transport": "streamable_http",
+        "url": "https://mcp.example.com/mcp",
+        "headers": {"X-Probe-Token": token},
     }
 
 
@@ -76,8 +72,29 @@ async def _save_probe(client: httpx.AsyncClient, auth: dict[str, str], token: st
     assert response.status_code == 200, response.text
 
 
-async def test_shared_agent_serves_the_callers_own_mcp_connector(env) -> None:
+async def test_shared_agent_serves_the_callers_own_mcp_connector(env, monkeypatch) -> None:
     """The peer's turn resolves the peer's connector — never the owner's."""
+    from langchain_core.tools import StructuredTool
+
+    async def _load_http_tools(configs: dict[str, dict[str, Any]]) -> list[Any]:
+        tools = []
+        for server_name, spec in configs.items():
+            assert spec["transport"] == "streamable_http"
+            token = spec["headers"]["X-Probe-Token"]
+
+            async def _whoami(token: str = token) -> str:
+                return f"token={token}"
+
+            tools.append(
+                StructuredTool.from_function(
+                    coroutine=_whoami,
+                    name=f"{server_name}_whoami",
+                    description="Return the credential associated with this HTTP MCP server.",
+                )
+            )
+        return tools
+
+    monkeypatch.setattr("harness_agent.mcp.aload_mcp_tools", _load_http_tools)
     client, srv, admin_auth = env
     await seed_openai_provider(client, admin_auth)
     owner_auth = await create_user(client, admin_auth, username="mcp_owner")

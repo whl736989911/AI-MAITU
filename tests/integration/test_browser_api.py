@@ -14,30 +14,9 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
-import pytest
-from starlette.websockets import WebSocketDisconnect
-
 from tests.support.auth import create_user
-from tests.support.http import ws_connect, ws_token
 
 # --- env-status -------------------------------------------------------------
-
-
-async def test_env_status_returns_shape(env: Any) -> None:
-    c, _srv, auth = env
-    r = await c.get("/api/browser/env-status", headers=auth)
-    assert r.status_code == 200
-    body = r.json()
-    assert "playwright" in body
-    assert "browsers_ok" in body
-    assert isinstance(body["playwright"], bool)
-    assert isinstance(body["browsers_ok"], bool)
-
-
-async def test_env_status_requires_auth(env: Any) -> None:
-    c, _srv, _auth = env
-    r = await c.get("/api/browser/env-status")
-    assert r.status_code == 401
 
 
 def test_probe_env_when_playwright_missing() -> None:
@@ -127,26 +106,6 @@ def test_verify_browser_binary_ok(tmp_path: Path) -> None:
     assert "Chrome" in msg
 
 
-async def test_legacy_playwright_session_routes_removed(env: Any) -> None:
-    """In-process Playwright CRUD is gone; the product path is harness-sessions."""
-    c, _srv, auth = env
-    r = await c.get("/api/browser/sessions", headers=auth)
-    assert r.status_code in (404, 405)
-    r = await c.post("/api/browser/sessions", headers=auth)
-    assert r.status_code in (404, 405)
-    assert r.status_code != 201
-
-
-async def test_harness_sessions_shape(env: Any) -> None:
-    c, _srv, auth = env
-    r = await c.get("/api/browser/harness-sessions", headers=auth)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True
-    assert "sessions" in body
-    assert isinstance(body["sessions"], list)
-
-
 async def test_harness_list_tabs_uses_sticky_target_id(monkeypatch) -> None:
     import aiohttp
 
@@ -205,83 +164,32 @@ async def test_harness_list_tabs_uses_sticky_target_id(monkeypatch) -> None:
     assert [tab["active"] for tab in tabs] == [False, True]
 
 
-async def test_shutdown_requires_auth(env: Any) -> None:
-    c, _srv, _auth = env
-    r = await c.post("/api/browser/shutdown")
-    assert r.status_code == 401
-
-
-async def test_shutdown_ignores_client_profile(env: Any) -> None:
-    c, _srv, auth = env
-    result = SimpleNamespace(success=True, error=None)
-    with patch(
-        "harness_browser.tool_interface.browser_tool",
-        new=AsyncMock(return_value=result),
-    ) as tool:
-        r = await c.post("/api/browser/shutdown?profile=work", headers=auth)
-    assert r.status_code == 200
-    assert r.json() == {"ok": True, "profile": "user-1"}
-    tool.assert_awaited_once_with(
-        action="close_session",
-        profile="user-1",
-        kill=True,
-    )
-
-
-# --- install spawn ---------------------------------------------------------
-
-
-async def test_install_returns_pid(env: Any) -> None:
-    c, _srv, auth = env
-
-    async def fake_stream():
-        yield {"log": "downloading chromium"}
-        yield {"done": True, "success": True}
-
-    with patch(
-        "harness_browser.install_chromium_stream",
-        side_effect=lambda: fake_stream(),
-    ):
-        r = await c.post("/api/browser/install", headers=auth)
-    assert r.status_code in (200, 202)
-
-
-# --- the module gate (design §4.4) ------------------------------------------
-
-
-async def test_browser_surface_needs_the_key(env: Any) -> None:
-    """Every route of the surface answers to ``browser``, and so does the socket.
-
-    The admin (``env``) is the bypass and is covered by the cases above; what is
-    asserted here is the account that does *not* hold the key, which used to be
-    served: ``env-status``, the harness listing and the record/replay routes were
-    signed-in-only, and ``/api/browser-stream/ws`` checked no key at all, so the
-    socket was a stream of a capability the page was refusing (§2.4).
-    """
+async def test_browser_host_routes_are_denied_before_probe_install_or_shutdown(env: Any) -> None:
     c, _srv, admin_auth = env
-    outsider_auth = await create_user(c, admin_auth, username="browser_outsider")
+    member_auth = await create_user(c, admin_auth, username="browser-member")
+    from octop.api.routers.browser import env as browser_env
+    from octop.api.routers.browser import harness as browser_harness
 
-    refused = (
-        ("get", "/api/browser/env-status", None),
-        ("get", "/api/browser/harness-sessions", None),
-        ("post", "/api/browser/shutdown", None),
-        ("get", "/api/browser/record-replay/status", None),
-        ("post", "/api/browser/record-replay/start", {}),
-    )
-    for method, path, body in refused:
-        call = getattr(c, method)
-        r = await (
-            call(path, headers=outsider_auth, json=body)
-            if body is not None
-            else call(path, headers=outsider_auth)
-        )
-        assert r.status_code == 403, f"{method.upper()} {path}: {r.status_code} {r.text}"
-        assert r.json()["error"]["details"]["permission"] == "browser"
+    with (
+        patch.object(browser_env, "_probe_env") as probe,
+        patch.object(browser_env, "_verify_browser_binary") as verify,
+        patch.object(browser_harness, "user_browser_profile") as profile,
+        patch("harness_browser.tool_interface.browser_tool", new=AsyncMock()) as browser_tool,
+        patch("harness_browser.cdp.launcher.find_chrome", return_value="/fake/chrome"),
+    ):
+        verify.return_value = (True, "Chrome")
+        for auth in (admin_auth, member_auth):
+            for method, path in (
+                ("GET", "/api/browser/env-status"),
+                ("GET", "/api/browser/harness-sessions"),
+                ("POST", "/api/browser/install"),
+                ("POST", "/api/browser/shutdown"),
+            ):
+                response = await c.request(method, path, headers=auth)
+                assert response.status_code == 403, response.text
+                assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
 
-    app = c._octop_app  # type: ignore[attr-defined]
-    session = ws_connect(app, f"/api/browser-stream/ws?token={ws_token(outsider_auth)}")
-    with pytest.raises(WebSocketDisconnect) as refused_handshake:
-        async with session:
-            await session.connect()
-    assert refused_handshake.value.code == 4003
-    assert refused_handshake.value.reason == "permission required"
+    probe.assert_not_called()
+    verify.assert_not_called()
+    profile.assert_not_called()
+    browser_tool.assert_not_awaited()

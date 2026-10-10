@@ -59,6 +59,10 @@ OPENAPI_TAGS: list[dict[str, str]] = [
         "name": "setup",
         "description": "First-run wizard: create the admin user and optional LLM provider.",
     },
+    {
+        "name": "license",
+        "description": "Read public license status, inspect authenticated instance details, activate, and refresh a customer deployment.",
+    },
     {"name": "auth", "description": "Sign in, sign out, and manage the current user profile."},
     {"name": "health", "description": "Liveness probe for load balancers and monitoring."},
     {"name": "users", "description": "Admin user management (create, disable, reset passwords)."},

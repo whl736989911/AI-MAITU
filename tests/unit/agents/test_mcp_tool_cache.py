@@ -13,31 +13,32 @@ from octop.infra.connectors.mcp_tool_cache import (
     fingerprint_mcp_spec,
     wrap_tools_for_shared_use,
 )
+from octop.infra.errors import ErrorCode, OctopError
 
 
 def test_fingerprint_stable_and_ignores_enabled() -> None:
     a = fingerprint_mcp_spec(
         {
-            "transport": "stdio",
-            "command": "npx",
-            "args": ["-y", "pkg"],
+            "transport": "streamable_http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": {"Authorization": "Bearer a"},
             "enabled": True,
         }
     )
     b = fingerprint_mcp_spec(
         {
-            "transport": "stdio",
-            "command": "npx",
-            "args": ["-y", "pkg"],
+            "transport": "streamable_http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": {"Authorization": "Bearer a"},
             "enabled": False,
         }
     )
     assert a == b
     c = fingerprint_mcp_spec(
         {
-            "transport": "stdio",
-            "command": "npx",
-            "args": ["-y", "other"],
+            "transport": "streamable_http",
+            "url": "https://mcp.example.com/mcp",
+            "headers": {"Authorization": "Bearer b"},
         }
     )
     assert a != c
@@ -92,7 +93,7 @@ async def test_get_or_load_caches_and_reuses() -> None:
     fake.ainvoke = AsyncMock(return_value="ok")
     aload = AsyncMock(return_value=[fake])
 
-    spec = {"transport": "stdio", "command": "npx", "args": []}
+    spec = {"transport": "streamable_http", "url": "https://mcp.example.com/mcp"}
     with patch("harness_agent.mcp.aload_mcp_tools", aload):
         first = await mgr._get_or_load_mcp_tools(1, "s", spec)
         second = await mgr._get_or_load_mcp_tools(1, "s", spec)
@@ -101,6 +102,30 @@ async def test_get_or_load_caches_and_reuses() -> None:
     assert first is second
     assert isinstance(first[0], StructuredTool)
     assert first[0].name == "s_tool1"
+
+
+@pytest.mark.asyncio
+async def test_get_or_load_rejects_stdio_without_loading() -> None:
+    from octop.infra.agents.manager import AgentManager
+
+    mgr = object.__new__(AgentManager)
+    mgr._mcp_tool_cache = {}
+    mgr._mcp_tool_cache_locks = {}
+    mgr._mcp_tool_cache_guard = asyncio.Lock()
+    aload = AsyncMock()
+
+    with (
+        patch("harness_agent.mcp.aload_mcp_tools", aload),
+        pytest.raises(OctopError) as exc_info,
+    ):
+        await mgr._get_or_load_mcp_tools(
+            1,
+            "probe",
+            {"transport": "stdio", "command": "never-run"},
+        )
+
+    assert exc_info.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+    aload.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -126,10 +151,10 @@ async def test_get_or_load_misses_on_fingerprint_change() -> None:
 
     with patch("harness_agent.mcp.aload_mcp_tools", aload):
         a = await mgr._get_or_load_mcp_tools(
-            1, "s", {"transport": "stdio", "command": "npx", "args": ["a"]}
+            1, "s", {"transport": "streamable_http", "url": "https://mcp.example.com/a"}
         )
         b = await mgr._get_or_load_mcp_tools(
-            1, "s", {"transport": "stdio", "command": "npx", "args": ["b"]}
+            1, "s", {"transport": "streamable_http", "url": "https://mcp.example.com/b"}
         )
 
     assert aload.await_count == 2

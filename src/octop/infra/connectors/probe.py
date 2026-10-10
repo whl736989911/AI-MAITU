@@ -524,58 +524,15 @@ def format_probe_exception(exc: BaseException) -> str:
 
 
 async def probe_custom_mcp_server(spec: dict[str, Any]) -> dict[str, Any]:
-    """Probe one user-defined MCP server (streamable_http or stdio)."""
-    from octop.infra.connectors.custom_mcp import harness_spec_for_server, normalize_server_spec
+    """Probe one user-defined Streamable HTTP MCP server."""
+    from octop.infra.connectors.custom_mcp import harness_spec_for_server
 
     try:
-        normalized = normalize_server_spec("probe", spec)
+        connection = harness_spec_for_server(spec)
     except ValueError as exc:
         return {"ok": False, "error": str(exc)}
-
-    connection = harness_spec_for_server(normalized)
-    transport = str(connection.get("transport") or "")
-
-    if transport == "streamable_http":
-        url = str(connection["url"])
-        headers = {str(k): str(v) for k, v in dict(connection.get("headers") or {}).items()}
-        # Ensure streamable Accept if caller omitted it.
-        headers.setdefault("Accept", "application/json, text/event-stream")
-        result = await probe_streamable_http_mcp(url, headers, kind="custom-mcp")
-        return await _maybe_attach_oauth_discovery(result, url=url, headers=headers)
-
-    if transport == "stdio":
-        return await _probe_stdio_mcp(connection)
-
-    return {"ok": False, "error": f"unsupported transport: {transport}"}
-
-
-async def _probe_stdio_mcp(connection: dict[str, Any]) -> dict[str, Any]:
-    """List tools from a stdio MCP server with a short timeout."""
-    from mcp import ClientSession, StdioServerParameters
-    from mcp.client.stdio import stdio_client
-
-    command = str(connection.get("command") or "").strip()
-    if not command:
-        return {"ok": False, "error": "command is required"}
-    args = [str(a) for a in (connection.get("args") or [])]
-    env = connection.get("env")
-    env_map = {str(k): str(v) for k, v in dict(env or {}).items()} or None
-    params = StdioServerParameters(command=command, args=args, env=env_map)
-
-    try:
-        async with asyncio.timeout(25):
-            async with (
-                stdio_client(params) as (read, write),
-                ClientSession(read, write) as session,
-            ):
-                await session.initialize()
-                listed = await session.list_tools()
-                tools = normalize_tools(
-                    [{"name": t.name, "description": t.description or ""} for t in listed.tools]
-                )
-                return {"ok": True, "tool_count": len(tools), "tools": tools}
-    except TimeoutError:
-        return {"ok": False, "error": "stdio MCP probe timed out"}
-    except Exception as exc:
-        logger.exception("stdio MCP probe failed")
-        return {"ok": False, "error": format_probe_exception(exc)}
+    url = str(connection["url"])
+    headers = {str(k): str(v) for k, v in dict(connection.get("headers") or {}).items()}
+    headers.setdefault("Accept", "application/json, text/event-stream")
+    result = await probe_streamable_http_mcp(url, headers, kind="custom-mcp")
+    return await _maybe_attach_oauth_discovery(result, url=url, headers=headers)

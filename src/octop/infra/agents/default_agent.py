@@ -2,14 +2,15 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 from octop.infra.agents.experts.catalog import ExpertCatalog, build_create_spec_from_expert
 from octop.infra.agents.kinds import KIND_FEATURE, feature_agent_id_for
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.licensing import current_license
 from octop.infra.sharing import VISIBILITY_PUBLIC
-from octop.infra.utils.host_dirs import host_home_dir, host_path_text
 from octop.infra.utils.locale import normalize_locale
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_EXPERT_ID = "general-assistant"
 SETUP_DEFAULT_AGENT_ID = "main"
 BUILTIN_GENERAL_ASSISTANT_FEATURE_ID = "general-assistant"
+_SETUP_PENDING_AGENTS_KEY = "setup.default_agents_pending"
 BUILTIN_GENERAL_ASSISTANT_FEATURE_AGENT_ID = feature_agent_id_for(
     BUILTIN_GENERAL_ASSISTANT_FEATURE_ID
 )
@@ -74,15 +76,6 @@ async def ensure_builtin_general_assistant_feature(
     return created
 
 
-def default_home_local_backend() -> dict[str, Any]:
-    """Same local backend as the dashboard create-from-expert default (home-scoped)."""
-    return {
-        "type": "local_shell",
-        "root_dir": host_path_text(host_home_dir()),
-        "virtual_mode": True,
-    }
-
-
 async def bootstrap_default_agent(
     registry: Any,
     catalog: ExpertCatalog | None,
@@ -115,7 +108,6 @@ async def bootstrap_default_agent(
         user_id=user_id,
         agent_id=agent_id,
         locale=loc,
-        config_extra={"backend": default_home_local_backend()},
     )
     return await registry.create(spec, defer_bootstrap=True)
 
@@ -141,3 +133,47 @@ async def try_bootstrap_default_agent(
         )
     except Exception as exc:  # pragma: no cover - logged; user creation should still succeed
         logger.warning("could not auto-create default agent for user %s: %s", user_id, exc)
+
+
+async def bootstrap_setup_default_agents(server: Any, *, user_id: int, locale: str = "zh") -> None:
+    """Defer business initialization until activation without reopening setup."""
+    if server.services is None:
+        raise OctopError(ErrorCode.INTERNAL_ERROR, "setup database not bound")
+    if not current_license().allowed:
+        server.services.settings_repo.set(
+            _SETUP_PENDING_AGENTS_KEY,
+            json.dumps({"user_id": user_id, "locale": normalize_locale(locale)}),
+        )
+        return
+    current_license().require_business_access()
+    if server.app_runtime is None:
+        raise OctopError(ErrorCode.INTERNAL_ERROR, "app_runtime not ready")
+    await bootstrap_default_agent(
+        server.app_runtime.agent_registry,
+        server.expert_catalog,
+        user_id=user_id,
+        locale=locale,
+        agent_id=SETUP_DEFAULT_AGENT_ID,
+    )
+    await ensure_builtin_general_assistant_feature(
+        server.app_runtime.agent_registry,
+        server.expert_catalog,
+        server.services.repos.resource_acl_repo,
+        owner_user_id=user_id,
+        locale=locale,
+    )
+    current_license().require_business_access()
+    server.services.settings_repo.set(_SETUP_PENDING_AGENTS_KEY, "")
+
+
+async def resume_deferred_setup_agents(server: Any) -> None:
+    """Consume explicitly deferred first-run work without recreating deleted agents."""
+    if server.services is None:
+        return
+    raw = server.services.settings_repo.get(_SETUP_PENDING_AGENTS_KEY)
+    if not raw:
+        return
+    pending = json.loads(raw)
+    await bootstrap_setup_default_agents(
+        server, user_id=int(pending["user_id"]), locale=pending["locale"]
+    )

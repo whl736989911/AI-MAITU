@@ -385,6 +385,19 @@
     "plan_ready": "Plan saved at `{path}`. Reply “execute the plan” to run it, or keep editing in Plan mode.",
     "execute": "Execute {path}"
   },
+  "license": {
+    "reason": {
+      "unactivated": "This instance has not been activated.",
+      "expired": "The instance license has expired.",
+      "revoked": "The instance license has been revoked.",
+      "customer_disabled": "The customer license is disabled.",
+      "cache_expired": "The cached license has expired; reconnect to check the license.",
+      "invalid_credential": "The cached license is invalid; reconnect to check the license.",
+      "clock_anomaly": "The system clock changed unexpectedly; reconnect to verify the license.",
+      "configuration_required": "License verification is not configured.",
+      "network_error": "Could not reach the license service; reconnect to check the license."
+    }
+  },
   "errors": {
     "AUTH_FAILED": "Authentication failed.",
     "TOKEN_EXPIRED": "Session expired. Please sign in again.",
@@ -393,6 +406,9 @@
     "BACKUP_DRIVER_MISMATCH": "This backup was made with a different database engine (SQLite vs PostgreSQL). Switch the runtime to match the backup, or create a new backup on the current engine. Cross-engine restore is not supported.",
     "BACKUP_SCHEMA_INCOMPATIBLE": "This backup uses database schema version {archive_schema_version}, which cannot be restored by this MAITU Smart Manufacturing version (maximum supported: {runtime_schema_version}).",
     "BACKUP_IN_PROGRESS": "A backup or restore is already in progress. Try again shortly.",
+    "INSTANCE_LICENSE_LOCKED": "This instance is locked by its license.",
+    "INSTANCE_LICENSE_RATE_LIMITED": "Too many license requests. Try again shortly.",
+    "INSTANCE_DEPLOYMENT_RESTRICTED": "This management capability is disabled for this customer deployment.",
     "FORBIDDEN": "Permission denied.",
     "NOT_FOUND": "Not found.",
     "USER_DISABLED": "This account has been disabled.",
