@@ -388,6 +388,7 @@ class AgentManager:
         self._team_processor: Any | None = None
         self._hitl_session_store: HitlSessionPolicyStore | None = None
         self._harness_manager: HarnessAgentManager | None = None
+        self._business_resume_agent_ids: set[str] | None = None
         self.memory_slim = MemorySlimCoordinator(self)
         self._lock = asyncio.Lock()
         # A thread's LangGraph checkpoint must never be advanced by overlapping
@@ -520,6 +521,10 @@ class AgentManager:
         )
 
     async def boot(self) -> None:
+        """Initialize the runtime and resume agents eligible to run."""
+        await self.resume_business()
+
+    async def _initialize_harness_runtime(self) -> None:
         self._tool_guard_rules.ensure_seeded()
         providers = self._providers.build_harness_configs()
         self._harness_manager = HarnessAgentManager(
@@ -528,22 +533,38 @@ class AgentManager:
             team_processor=self._team_processor,
             log_dir=str(self.paths.logs_dir),
         )
-        if self._harness_manager is not None:
-            self._harness_manager.team.bind_peer_enrich(self._refresh_peer_entry)
-            proc = self._team_processor
-            if proc is not None:
-                prepare = getattr(proc, "prepare_peer_session", None)
-                after = getattr(proc, "record_peer_turn", None)
-                if prepare is not None or after is not None:
-                    self._harness_manager.team.bind_peer_session(prepare=prepare, after=after)
-            self._harness_manager.set_security_policy(self._security.harness_policy())
-            self._install_team_host_dispatch()
+        self._harness_manager.team.bind_peer_enrich(self._refresh_peer_entry)
+        proc = self._team_processor
+        if proc is not None:
+            prepare = getattr(proc, "prepare_peer_session", None)
+            after = getattr(proc, "record_peer_turn", None)
+            if prepare is not None or after is not None:
+                self._harness_manager.team.bind_peer_session(prepare=prepare, after=after)
+        self._harness_manager.set_security_policy(self._security.harness_policy())
+        self._install_team_host_dispatch()
 
-        await self._claim_existing_active_features()
-
-        rows = self._repos.agent_repo.list_all(include_disabled=False)
-        for row in rows:
-            if row.last_state == "stopped":
+    async def resume_business(self) -> None:
+        """Create runtime if needed and restore only agents active before pause."""
+        if self._harness_manager is None:
+            await self._initialize_harness_runtime()
+            await self._claim_existing_active_features()
+        harness_manager = self._harness_manager
+        assert harness_manager is not None, "harness runtime unavailable after initialization"
+        if self._business_resume_agent_ids is None:
+            agent_ids = {
+                row.agent_id
+                for row in self._repos.agent_repo.list_all(include_disabled=False)
+                if row.last_state != "stopped"
+            }
+        else:
+            agent_ids = self._business_resume_agent_ids
+        self._business_resume_agent_ids = set()
+        rows = {
+            row.agent_id: row for row in self._repos.agent_repo.list_all(include_disabled=False)
+        }
+        for agent_id in sorted(agent_ids):
+            row = rows.get(agent_id)
+            if row is None or row.last_state == "stopped":
                 continue
             try:
                 await asyncio.wait_for(
@@ -552,25 +573,41 @@ class AgentManager:
                 )
             except TimeoutError:
                 try:
-                    self._harness_manager.get_agent(row.agent_id)
+                    harness_manager.get_agent(agent_id)
                 except KeyError:
-                    self._repos.agent_repo.set_state(
-                        row.agent_id,
-                        "failed",
-                        error=AGENT_START_TIMEOUT,
-                    )
+                    self._repos.agent_repo.set_state(agent_id, "failed", error=AGENT_START_TIMEOUT)
                     logger.error(
                         "Agent %s start timed out after %.0fs; continuing boot",
-                        row.agent_id,
+                        agent_id,
                         _AGENT_BOOT_START_TIMEOUT,
                     )
                 else:
-                    self._repos.agent_repo.set_state(row.agent_id, "running", error=None)
-                    logger.warning(
-                        "Agent %s start exceeded %.0fs but is already registered",
-                        row.agent_id,
-                        _AGENT_BOOT_START_TIMEOUT,
-                    )
+                    self._repos.agent_repo.set_state(agent_id, "running", error=None)
+
+    async def pause_business(self) -> None:
+        """Close runtime agents without changing their persisted running state."""
+        async with self._lock:
+            manager = self._harness_manager
+            if manager is None:
+                return
+            active: set[str] = set()
+            for row in self._repos.agent_repo.list_all(include_disabled=False):
+                try:
+                    manager.get_agent(row.agent_id)
+                except KeyError:
+                    continue
+                active.add(row.agent_id)
+            self._business_resume_agent_ids = active
+            for agent_id in active:
+                await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
+                with suppress(Exception):
+                    await manager.aremove_agent(agent_id)
+                self.forget_turn_mcp_tools(agent_id)
+            try:
+                await manager.aclose()
+            except Exception:
+                logger.exception("harness_manager.aclose() failed during license pause")
+            self._harness_manager = None
 
     async def _claim_existing_active_features(self) -> None:
         """Bring pre-transfer active workflows under enterprise management.
@@ -713,21 +750,44 @@ class AgentManager:
                     raise RuntimeError("failed to allocate unique agent_id")
             if spec.kind == KIND_TEAM and spec.is_shared:
                 raise OctopError(ErrorCode.FORBIDDEN, "team hosts cannot be shared")
-            config = merge_agent_runtime_values(spec.config, spec.runtime_config)
+            config = dict(spec.config or {})
+            config.update(spec.runtime_config)
+            self._validate_configured_skill_dirs(
+                config, self._paths.agent_workspace(agent_id).resolve()
+            )
             if spec.persona_mbti:
                 config["persona"] = spec.persona_mbti.upper()
             from octop.infra.agents.workspace_dir import (  # noqa: PLC0415
                 DEFAULT_SYSTEM_FILES_PATH,
+                resolve_workspace_host_path,
                 seed_workspace_dir_on_create,
             )
             from octop.infra.users.resource_policy import raise_if_backend_outside_user_root
 
+            requested_backend = config.get("backend")
+            if requested_backend is not None:
+                resolved_backend = resolve_agent_backend_spec(
+                    requested_backend,
+                    repo=self._repos.storage_backend_repo,
+                )
+                self._constrain_agent_backend_roots(
+                    resolved_backend,
+                    self._paths.agent_workspace(agent_id),
+                )
             if spec.user_id is not None:
                 raise_if_backend_outside_user_root(
                     self._repos.user_policy_repo,
                     spec.user_id,
-                    config.get("backend"),
+                    requested_backend,
                 )
+            requested_workspace = config.get("workspace_dir")
+            if isinstance(requested_workspace, str) and requested_workspace.strip():
+                requested_host_workspace = resolve_workspace_host_path(requested_workspace, config)
+                if requested_host_workspace != self._paths.agent_workspace(agent_id).resolve():
+                    raise OctopError(
+                        ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                        "Agent workspaces must remain inside Octop's managed workspace directory.",
+                    )
             seed_workspace_dir_on_create(config, paths=self._paths, agent_id=agent_id)
             config.pop("system_files_path", None)
             config["system_files_path"] = DEFAULT_SYSTEM_FILES_PATH
@@ -895,6 +955,8 @@ class AgentManager:
             parsed_profile_cfg = parse_config_json(
                 kwargs["config_json"] if isinstance(kwargs["config_json"], str) else None
             )
+            workspace_dir = self._paths.agent_workspace(agent_id).resolve()
+            self._validate_configured_skill_dirs(parsed_profile_cfg, workspace_dir)
             parsed_profile_cfg = self._preserve_internal_layout(
                 agent_id, parsed_profile_cfg, pin_workspace_dir=True
             )
@@ -958,9 +1020,16 @@ class AgentManager:
         row = self._repos.agent_repo.get(agent_id)
         if row is None:
             raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-        self._teams.assert_can_delete_agent(agent_id)
         affected_teams: list[str] = []
-        workspace_dir = self.resolve_workspace_dir(agent_id, persist_if_missing=False)
+        try:
+            workspace_dir = self.resolve_workspace_dir(agent_id, persist_if_missing=False)
+        except OctopError as exc:
+            if exc.code is not ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED:
+                raise
+            # Do not let a legacy outside workspace path make agent deletion
+            # remove arbitrary host data. Only clean the managed workspace.
+            logger.warning("not deleting unmanaged workspace for agent %s", agent_id)
+            workspace_dir = self._paths.agent_workspace(agent_id)
         async with self._lock:
             if not is_team_agent(row):
                 affected_teams = await self._teams.adrop_member(agent_id)
@@ -1134,11 +1203,10 @@ class AgentManager:
         self._repos.agent_repo.update_config(agent_id, **kwargs)
 
     def resolve_workspace_dir(self, agent_id: str, *, persist_if_missing: bool = True) -> Path:
-        """On-disk workspace for Octop host FS ops (delete, memory path, …).
+        """On-disk workspace restricted to Octop's managed per-agent directory.
 
-        May map agent-facing ``/.octop/workspaces/…`` onto scoped ``root_dir``.
-        ``_build_harness_config`` parses the persisted string directly from
-        config — do not route harness through this host join.
+        Persisted workspace paths are validated before any directory is created;
+        legacy external paths are rejected rather than remapped or adopted.
         """
         from octop.infra.agents.workspace_dir import (  # noqa: PLC0415
             workspace_dir_from_config,
@@ -1147,7 +1215,14 @@ class AgentManager:
         cfg = self.get_config(agent_id)
         raw = cfg.get("workspace_dir")
         if isinstance(raw, str) and raw.strip():
-            return workspace_dir_from_config(cfg, paths=self._paths, agent_id=agent_id)
+            out = workspace_dir_from_config(cfg, paths=self._paths, agent_id=agent_id, ensure=False)
+            if out.resolve() != self._paths.agent_workspace(agent_id).resolve():
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    "Agent workspaces must remain inside Octop's managed workspace directory.",
+                )
+            out.mkdir(parents=True, exist_ok=True)
+            return out
 
         # Legacy / incomplete row: classic Octop layout only (not scoped create default).
         out = self._paths.ensure_agent_workspace(agent_id)
@@ -1317,8 +1392,11 @@ class AgentManager:
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
 
+        from octop.infra.licensing import current_license
+
         thread_id = str(request.get("thread_id") or "")
         async with (
+            current_license().business_task(),
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
         ):
@@ -1333,8 +1411,11 @@ class AgentManager:
         """Non-streaming harness invocation (one-shot agent call)."""
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
+        from octop.infra.licensing import current_license
+
         thread_id = str(request.get("thread_id") or "")
         async with (
+            current_license().business_task(),
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
         ):
@@ -1356,7 +1437,10 @@ class AgentManager:
         """Resume a paused HITL interrupt for *thread_id*."""
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
+        from octop.infra.licensing import current_license
+
         async with (
+            current_license().business_task(),
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
         ):
@@ -1602,7 +1686,16 @@ class AgentManager:
         server_name: str,
         spec: dict[str, Any],
     ) -> list[Any]:
-        """Load custom MCP tools once per user/server/fingerprint; share across agents."""
+        """Load a customer Streamable HTTP MCP server once per user/server/fingerprint."""
+        if spec.get("transport") != "streamable_http":
+            raise OctopError(
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                "Customer-defined stdio MCP processes are disabled in customer deployments.",
+            )
+
+        from octop.infra.connectors.custom_mcp import harness_spec_for_server
+
+        spec = harness_spec_for_server(spec)
         from harness_agent.mcp import aload_mcp_tools
 
         from octop.infra.connectors.mcp_tool_cache import (
@@ -1629,15 +1722,7 @@ class AgentManager:
             cached = self._mcp_tool_cache.get(cache_key)
             if cached is not None:
                 return cached
-            from octop.infra.utils.env_file import (  # noqa: PLC0415
-                env_file_path,
-                load_env_file,
-                overlay_stdio_spec_env,
-            )
-
-            global_env = load_env_file(env_file_path(self._paths.root))
-            load_spec = overlay_stdio_spec_env(spec, global_env)
-            raw = await aload_mcp_tools({server_name: load_spec})
+            raw = await aload_mcp_tools({server_name: spec})
             sanitize_plugin_tool_names(raw)
             server_lock = await self._server_lock(user_id, server_name)
             wrapped = wrap_tools_for_shared_use(raw, server_lock)
@@ -2138,9 +2223,14 @@ class AgentManager:
 
     async def update_config_json(self, agent_id: str, config_json: str) -> AgentRow:
         """Patch ``config_json`` and reload the harness runtime in the background."""
-        parsed = self._preserve_internal_layout(
-            agent_id, parse_config_json(config_json), pin_workspace_dir=True
+        row = self._repos.agent_repo.get(agent_id)
+        if row is None:
+            raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+        parsed = parse_config_json(config_json)
+        self._validate_configured_skill_dirs(
+            parsed, self._paths.agent_workspace(agent_id).resolve()
         )
+        parsed = self._preserve_internal_layout(agent_id, parsed, pin_workspace_dir=True)
         lifted = extract_profile_from_config(parsed)
         self._repos.agent_repo.update_config(
             agent_id,
@@ -2879,6 +2969,65 @@ class AgentManager:
         cfg = parse_config_json(row.config_json)
         return overlay_skill_package_ids(cfg, row)
 
+    @staticmethod
+    def _constrain_agent_backend_roots(spec: Any, workspace_dir: Path) -> Any:
+        """Keep customer backends from executing on the host or exposing host paths."""
+        if isinstance(spec, str):
+            kind = spec.lower()
+            if kind in {"filesystem", "local_shell"}:
+                return {
+                    "type": "filesystem",
+                    "root_dir": str(workspace_dir.resolve()),
+                    "virtual_mode": True,
+                }
+            if kind in {"docker", "opensandbox", "cos", "s3", "oss", "obs", "postgres"}:
+                return spec
+            raise OctopError(
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                f"Backend type {spec!r} is not supported in customer deployments.",
+            )
+        if not isinstance(spec, dict):
+            return spec
+        kind = str(spec.get("type") or "").lower()
+        workspace_root = workspace_dir.resolve()
+        root_dir = spec.get("root_dir")
+        configured_root = Path(root_dir).resolve() if root_dir else workspace_root
+        if kind in {"local_shell", "filesystem"}:
+            if configured_root != workspace_root:
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    "Filesystem backends must be rooted at the agent workspace.",
+                )
+            return {
+                **spec,
+                "type": "filesystem",
+                "root_dir": str(workspace_root),
+                "virtual_mode": True,
+            }
+        if kind == "docker":
+            unsafe_fields = {"volumes", "workspace_path", "environment_file"} & spec.keys()
+            if unsafe_fields:
+                fields_text = ", ".join(sorted(unsafe_fields))
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    f"Docker backend host-path overrides are disabled: {fields_text}.",
+                )
+            return spec
+        if kind == "composite":
+            constrained = dict(spec)
+            if "default" in constrained:
+                constrained["default"] = AgentManager._constrain_agent_backend_roots(
+                    constrained["default"], workspace_dir
+                )
+            routes = constrained.get("routes")
+            if isinstance(routes, dict):
+                constrained["routes"] = {
+                    key: AgentManager._constrain_agent_backend_roots(value, workspace_dir)
+                    for key, value in routes.items()
+                }
+            return constrained
+        return spec
+
     def _backend_spec_for_row(
         self,
         row: AgentRow,
@@ -2888,18 +3037,49 @@ class AgentManager:
     ) -> Any:
         if cfg is None:
             cfg = self._agent_config_dict(row)
-        backend_spec = cfg.get("backend")
         if workspace_dir is None:
             workspace_dir = self.resolve_workspace_dir(row.agent_id)
+        expected_workspace = self._paths.agent_workspace(row.agent_id).resolve()
+        if workspace_dir.resolve() != expected_workspace:
+            raise OctopError(
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                "Agent workspaces must remain inside Octop's managed workspace directory.",
+            )
+        configured_skill_dirs = self._validate_configured_skill_dirs(cfg, expected_workspace)
+        if configured_skill_dirs:
+            cfg["skills"] = configured_skill_dirs
+        backend_spec = cfg.get("backend")
         if backend_spec is None:
-            return default_agent_backend_spec(workspace_dir)
+            return {
+                "type": "filesystem",
+                "root_dir": str(workspace_dir.resolve()),
+                "virtual_mode": True,
+            }
         resolved = resolve_agent_backend_spec(
             backend_spec,
             repo=self._repos.storage_backend_repo,
         )
-        # Windows: the dashboard defaults local backends to root_dir "/", which
-        # resolves to a drive other than the workspace and breaks path checks.
-        return windows_neutralize_host_root(resolved, workspace_dir=workspace_dir)
+        constrained = self._constrain_agent_backend_roots(resolved, workspace_dir)
+        return windows_neutralize_host_root(constrained, workspace_dir=workspace_dir)
+
+    @classmethod
+    def _validate_configured_skill_dirs(
+        cls, cfg: dict[str, Any], expected_workspace: Path
+    ) -> list[str]:
+        """Resolve caller-configured skills directories within the managed workspace."""
+        scoped_skill_dirs: list[str] = []
+        for directory in cls._normalize_skills_dir_config(cfg.get("skills")):
+            candidate = Path(directory).expanduser()
+            if not candidate.is_absolute():
+                candidate = expected_workspace / candidate
+            candidate = candidate.resolve()
+            if not candidate.is_relative_to(expected_workspace):
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    "Configured skill roots must remain inside the agent workspace.",
+                )
+            scoped_skill_dirs.append(str(candidate))
+        return scoped_skill_dirs
 
     def resolved_backend_spec(self, agent_id: str) -> Any:
         """Backend spec for *agent_id* with Octop docker enrichments applied."""
@@ -3366,6 +3546,11 @@ class AgentManager:
             # Persisted value goes to harness as-is; host map is Octop-local only.
             harness_workspace = harness_workspace_path(raw, cfg)
             workspace_dir = resolve_workspace_host_path(raw, cfg)
+            if workspace_dir.resolve() != self._paths.agent_workspace(row.agent_id).resolve():
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    "Agent workspaces must remain inside Octop's managed workspace directory.",
+                )
             workspace_dir.mkdir(parents=True, exist_ok=True)
         else:
             # Legacy / incomplete row: backfill classic host workspace (also
@@ -3587,22 +3772,10 @@ class AgentManager:
         merged_tools.extend(plugin_tools)
         # agent_list / ask_agent: PeerAgentMiddleware (team_enabled=True), not config.tools.
 
-        acp_section = cfg.get("acp")
-        acp_raw: dict[str, Any] = acp_section if isinstance(acp_section, dict) else {}
         from harness_agent.acp.models import ACPConfig
 
-        if team_host:
-            acp_raw = {}
-            acp_config = ACPConfig.from_dict({"runners": {}})
-        else:
-            acp_user_id = row.user_id
-            if acp_user_id is None:
-                acp_user_id = self._connector_user_override.get(row.agent_id)
-            runners_dict = (
-                self._acp_settings.load_runners(acp_user_id) if acp_user_id is not None else {}
-            )
-            acp_config = ACPConfig.from_dict({"runners": runners_dict})
-
+        acp_config = ACPConfig.from_dict({"runners": {}})
+        acp_raw: dict[str, Any] = {}
         system_prompt: str | None
         if team_host:
             from octop.infra.agents.teams import host_system_prompt
@@ -3734,13 +3907,31 @@ class AgentManager:
         if "tools_disabled" in _HARNESS_AGENT_CONFIG_FIELDS:
             from octop.infra.agents.tool_catalog import effective_tools_disabled
 
-            disabled: set[str] | frozenset[str] = effective_tools_disabled(
-                cfg,
-                registered_plugin_tools=registered,
-                global_plugins=global_plugins,
+            disabled = set(
+                effective_tools_disabled(
+                    cfg,
+                    registered_plugin_tools=registered,
+                    global_plugins=global_plugins,
+                )
+            )
+            disabled.update(
+                {
+                    "execute",
+                    "acp_runner",
+                    "browser_use",
+                    "desktop_screenshot",
+                    "read_env_file",
+                    "write_env_file",
+                    "mobile_screenshot",
+                    "mobile_tap",
+                    "mobile_swipe",
+                    "mobile_launch_app",
+                    "mobile_ui_dump",
+                    "mobile_handoff_to_user",
+                }
             )
             if team_host:
-                disabled = host_tools_disabled(disabled)
+                disabled.update(host_tools_disabled(disabled))
             harness_cfg.tools_disabled = frozenset(disabled)
         applied = policy.apply_to_config(harness_cfg)
         interrupt_on = apply_session_bypass(applied.interrupt_on, self._hitl_session_store)

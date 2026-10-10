@@ -29,7 +29,7 @@ import {
   isNotFoundApiError,
 } from "../../../utils/apiError";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { isSystemAdmin } from "../../../utils/permissions";
+import { isSystemAdmin, userCan } from "../../../utils/permissions";
 import { isAgentChatReady } from "../../../utils/agentError";
 import { useAgentFormResources } from "../../../hooks/useAgentFormResources";
 import { octopAgentsApi } from "../../../api/modules/octopAgents";
@@ -237,7 +237,8 @@ function EditAgentDrawerBody({
   const skillDisplayName = useSkillDisplayName();
   const user = useCurrentUser();
   /** Host filesystem probing / bubblewrap setup are admin-only. */
-  const admin = isSystemAdmin(user);
+  const hostExecutionRestricted = !userCan(user, "terminal");
+  const admin = isSystemAdmin(user) && !hostExecutionRestricted;
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
   const [form] = Form.useForm<EditFormValues>();
   const [workspaceFiles, setWorkspaceFiles] = useState<string[]>([]);
@@ -432,19 +433,23 @@ function EditAgentDrawerBody({
         }
       }
 
-      const backendSpec = buildBackendSpec(
-        values.backend_choice,
-        values.composite_default ?? DEFAULT_BACKEND,
-        pathMappings,
-        values.root_dir,
-      );
+      const backendConfig = hostExecutionRestricted
+        ? {}
+        : {
+            backend: buildBackendSpec(
+              values.backend_choice,
+              values.composite_default ?? DEFAULT_BACKEND,
+              pathMappings,
+              values.root_dir,
+            ),
+          };
 
       const nextColor = isCuratedPalette(colorPalette)
         ? expertPaletteColor(colorPalette)
         : colorPalette;
       const nextConfig = omitAgentRuntimeConfig({
         ...agentConfig,
-        backend: backendSpec,
+        ...backendConfig,
         enable_trajectory: values.enable_trajectory === true,
       });
       delete nextConfig.color;
@@ -543,6 +548,7 @@ function EditAgentDrawerBody({
     onSaved,
     pathMappings,
     skillPackagesSupported,
+    hostExecutionRestricted,
     t,
   ]);
 
@@ -839,17 +845,19 @@ function EditAgentDrawerBody({
                 />
               </Form.Item>
 
-              <AgentBackendFields
-                backends={backends}
-                backendsLoading={backendsLoading}
-                backendChoice={backendChoice}
-                pathMappings={pathMappings}
-                rootDirMode="edit"
-                disabled
-                onAddPathMapping={addPathMapping}
-                onRemovePathMapping={removePathMapping}
-                onUpdatePathMapping={updatePathMapping}
-              />
+              {!hostExecutionRestricted ? (
+                <AgentBackendFields
+                  backends={backends}
+                  backendsLoading={backendsLoading}
+                  backendChoice={backendChoice}
+                  pathMappings={pathMappings}
+                  rootDirMode="edit"
+                  disabled
+                  onAddPathMapping={addPathMapping}
+                  onRemovePathMapping={removePathMapping}
+                  onUpdatePathMapping={updatePathMapping}
+                />
+              ) : null}
               <AgentTrajectoryField />
               <ExpertComposerDefaultsFields />
               {!skillPackagesSupported ? (

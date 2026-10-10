@@ -25,6 +25,13 @@ logger = logging.getLogger(__name__)
 
 _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _CAPTCHA_SECRET_KEYS = frozenset({"OCTOP_CAPTCHA_SECRET", "OCTOP_CAPTCHA_CAM_SECRET_KEY"})
+_PROTECTED_ENV_PREFIXES = ("OCTOP_LICENSE_",)
+
+
+def _is_protected_env_key(key: str) -> bool:
+    return key.upper().startswith(_PROTECTED_ENV_PREFIXES)
+
+
 _SECRET_SENTINEL = "********"
 
 
@@ -32,6 +39,7 @@ def _redact_env_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
     return [
         {**item, "value": _SECRET_SENTINEL} if item["key"] in _CAPTCHA_SECRET_KEYS else item
         for item in items
+        if not _is_protected_env_key(item["key"])
     ]
 
 
@@ -101,9 +109,12 @@ async def batch_save_envs(
             raise OctopError(ErrorCode.SLASH_BAD_ARGS, "env key cannot be empty")
         if not _KEY_RE.match(k):
             raise OctopError(ErrorCode.SLASH_BAD_ARGS, f"invalid env key: {k!r}")
+        if _is_protected_env_key(k):
+            raise OctopError(ErrorCode.FORBIDDEN, "deployment license settings are protected")
         cleaned[k] = str(value)
     path = env_file_path(server.paths.root)
     previous = load_env_file(path)
+    cleaned.update({key: value for key, value in previous.items() if _is_protected_env_key(key)})
     _restore_secret_sentinel(cleaned, previous)
     save_env_file(path, cleaned)
     apply_env_file_replace(path, previous=previous)
@@ -124,6 +135,8 @@ async def delete_env(
     k = key.strip()
     if not _KEY_RE.match(k):
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, f"invalid env key: {k!r}")
+    if _is_protected_env_key(k):
+        raise OctopError(ErrorCode.FORBIDDEN, "deployment license settings are protected")
     path = env_file_path(server.paths.root)
     previous = load_env_file(path)
     values = dict(previous)

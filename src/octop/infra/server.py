@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import logging
 import os
 import shutil
 import time
+from collections.abc import Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
@@ -23,6 +25,7 @@ from octop.infra.db.factory import open_database, should_defer_control_plane_db
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.services import SharedServices, build_shared_services
 from octop.infra.gateway.gateway import Gateway
+from octop.infra.licensing import LicenseService, set_current_license
 from octop.infra.mobile.config_probe import ensure_mobile_capabilities_probed
 from octop.infra.proactive.scheduler import ProactiveCareScheduler
 from octop.infra.proactive.service import ProactiveCareService
@@ -212,7 +215,6 @@ class AppRuntime:
     agent_registry: AgentManager
     gateway: Gateway
     cron_manager: CronManager
-    user_manager: UserManager
     proactive_scheduler: ProactiveCareScheduler
     trajectory_service: TrajectoryService | None = None
     history_archive: Any | None = None
@@ -224,7 +226,6 @@ class AppRuntime:
         """
         if self.history_archive is not None:
             raise ValueError("Restart the server to rebind a database with versioned history")
-        self.user_manager.replace_services(services)
         self.agent_registry.replace_persistence(services.repos, config)
         self.gateway.replace_repos(services.repos)
         self.cron_manager.replace_repos(services.repos)
@@ -253,11 +254,17 @@ class OctopServer:
         self._started = False
         self._started_at: int | None = None
         self._sso_service: SsoService | None = None
+        self.license_service: LicenseService | None = None
+        self._license_unsubscribe: Callable[[], None] | None = None
+        self._user_manager: UserManager | None = None
+        self._runtime_transition_lock = asyncio.Lock()
+        self._business_start_task: asyncio.Task[None] | None = None
+        self._business_running = False
 
-    # Backward compat: expose user_manager directly
     @property
     def user_manager(self) -> UserManager | None:
-        return self.app_runtime.user_manager if self.app_runtime else None
+        """Authentication stays available when the instance business is locked."""
+        return self._user_manager
 
     @property
     def sso_service(self) -> SsoService:
@@ -276,7 +283,7 @@ class OctopServer:
 
     @property
     def database_bound(self) -> bool:
-        return self.services is not None and self.app_runtime is not None
+        return self.services is not None and self._user_manager is not None
 
     async def start(self) -> None:
         if self._started:
@@ -291,7 +298,24 @@ class OctopServer:
 
         apply_env_file(env_file_path(self.paths.root))
         self._setup_logging()
-        config = ensure_mobile_capabilities_probed(self.paths.config)
+        try:
+            self.license_service = await asyncio.to_thread(LicenseService, self._home)
+        except (OSError, ValueError):
+            logger.exception(
+                "invalid license configuration; starting with the instance locked "
+                "until license settings are corrected"
+            )
+            self.license_service = await asyncio.to_thread(
+                LicenseService,
+                self._home,
+                server_url="",
+                trusted_keys={},
+                ca_file="",
+            )
+        set_current_license(self.license_service)
+        await self.license_service.start()
+        self._license_unsubscribe = self.license_service.add_listener(self._on_license_change)
+        config = load_config(self.paths.config)
         self.config = config
 
         self.expert_catalog = ExpertCatalog(
@@ -306,10 +330,6 @@ class OctopServer:
             plugins_dir=self.paths.plugins_dir,
             config_path=self.paths.config,
         )
-        self.plugin_manager.seed_bundled()
-        self.plugin_manager.load_installed(install_deps=True)
-
-        import time  # noqa: PLC0415
 
         self._started_at = int(time.time())
 
@@ -326,8 +346,9 @@ class OctopServer:
 
         boot_from_services(self.services.settings_repo, self.services.secret_repo)
         self._ensure_jwt_secret()
-        await self._boot_runtime(config)
+        await self._boot_management()
         self._started = True
+        await self._boot_runtime(config)
         assert self.user_manager is not None
         self._emit_wizard_password(user_count=self.user_manager.count())
 
@@ -353,11 +374,17 @@ class OctopServer:
 
         boot_from_services(self.services.settings_repo, self.services.secret_repo)
         self._ensure_jwt_secret()
+        await self._boot_management()
         await self._boot_runtime(config)
         logger.info(
             "control-plane database bound driver=%s",
             config.database.driver,
         )
+
+    async def _boot_management(self) -> None:
+        assert self.services is not None
+        self._user_manager = UserManager(self.services)
+        await self._user_manager.boot()
 
     async def _boot_runtime(self, config: OctopConfig) -> None:
         assert self.services is not None
@@ -472,42 +499,115 @@ class OctopServer:
         )
         registry.set_proactive_scheduler(proactive_scheduler)
 
-        await registry.boot()
-        await gateway.refresh_media_backends()
-
-        user_mgr = UserManager(self.services)
-        await user_mgr.boot()
-        await proactive_scheduler.start_all()
+        assert self._user_manager is not None
 
         self.app_runtime = AppRuntime(
             agent_registry=registry,
             gateway=gateway,
             cron_manager=cron_mgr,
-            user_manager=user_mgr,
             proactive_scheduler=proactive_scheduler,
             trajectory_service=trajectory_service,
             history_archive=history_archive,
         )
-        users = user_mgr.list()
-        admin = next((user for user in users if user.is_admin), None)
-        if admin is not None:
-            from octop.infra.agents.default_agent import (  # noqa: PLC0415
-                ensure_builtin_general_assistant_feature,
+        if self.license_service is not None and self.license_service.allowed:
+            await self._on_license_change(True)
+            if self._business_start_task is not None:
+                # Expiry during startup leaves a working locked management plane.
+                with suppress(asyncio.CancelledError):
+                    await self._business_start_task
+
+    async def _on_license_change(self, allowed: bool) -> None:
+        if not self._started or self.app_runtime is None:
+            return
+        if allowed:
+            if self._business_running or (
+                self._business_start_task is not None and not self._business_start_task.done()
+            ):
+                return
+            self._business_start_task = asyncio.create_task(
+                self._resume_business(), name="license-business-resume"
+            )
+            self._business_start_task.add_done_callback(self._business_start_finished)
+            return
+        await self._cancel_business_start()
+        async with self._runtime_transition_lock:
+            rt = self.app_runtime
+            if rt is None:
+                return
+            self._business_running = False
+            await rt.cron_manager.pause_business()
+            await rt.proactive_scheduler.pause_business()
+            await rt.gateway.pause_business()
+            from octop.infra.knowledge.jobs import pause_index_jobs  # noqa: PLC0415
+
+            await pause_index_jobs()
+            await rt.agent_registry.pause_business()
+            logger.info("instance business locked; authentication and maintenance remain active")
+
+    def _business_start_finished(self, task: asyncio.Task[None]) -> None:
+        if not task.cancelled() and task.exception() is not None:
+            logger.error("instance business resume failed", exc_info=task.exception())
+
+    async def _cancel_business_start(self) -> None:
+        task, self._business_start_task = self._business_start_task, None
+        if task is not None and not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+
+    async def _resume_business(self) -> None:
+        assert self.license_service is not None
+        async with self.license_service.business_task(), self._runtime_transition_lock:
+            rt = self.app_runtime
+            if rt is None or self._business_running:
+                return
+            self.license_service.require_business_access()
+            assert self.plugin_manager is not None
+            await asyncio.to_thread(self.plugin_manager.seed_bundled)
+            self.license_service.require_business_access()
+            await asyncio.to_thread(self.plugin_manager.load_installed, install_deps=False)
+            self.license_service.require_business_access()
+            config = await asyncio.to_thread(ensure_mobile_capabilities_probed, self.paths.config)
+            self.config = config
+            await rt.agent_registry.resume_business()
+            self.license_service.require_business_access()
+            from octop.infra.agents.default_agent import (
+                resume_deferred_setup_agents,  # noqa: PLC0415
             )
 
-            try:
-                await ensure_builtin_general_assistant_feature(
-                    registry,
-                    self.expert_catalog,
-                    self.services.repos.resource_acl_repo,
-                    owner_user_id=admin.id,
-                    locale=admin.locale,
+            await resume_deferred_setup_agents(self)
+            await rt.gateway.resume_business()
+            await rt.gateway.refresh_media_backends()
+            self.license_service.require_business_access()
+            await rt.cron_manager.resume_business()
+            await rt.proactive_scheduler.resume_business()
+            assert self._user_manager is not None
+            users = self._user_manager.list()
+            admin = next((user for user in users if user.is_admin), None)
+            if admin is not None:
+                from octop.infra.agents.default_agent import (  # noqa: PLC0415
+                    ensure_builtin_general_assistant_feature,
                 )
-            except Exception:
-                logger.exception("could not ensure built-in general-assistant feature")
-        from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
-        resume_pending_index_jobs(self.services)
+                assert self.expert_catalog is not None
+                assert self.services is not None
+                try:
+                    await ensure_builtin_general_assistant_feature(
+                        rt.agent_registry,
+                        self.expert_catalog,
+                        self.services.repos.resource_acl_repo,
+                        owner_user_id=admin.id,
+                        locale=admin.locale,
+                    )
+                except Exception:
+                    logger.exception("could not ensure built-in general-assistant feature")
+            from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
+
+            assert self.services is not None
+            self.license_service.require_business_access()
+            resume_pending_index_jobs(self.services)
+            self._business_running = True
+            logger.info("instance business resumed; overdue business jobs are not replayed")
 
     def _emit_wizard_password(self, *, user_count: int) -> None:
         config = self.config
@@ -542,6 +642,12 @@ class OctopServer:
     async def stop(self) -> None:
         if not self._started:
             return
+        if self._license_unsubscribe is not None:
+            self._license_unsubscribe()
+            self._license_unsubscribe = None
+        await self._cancel_business_start()
+        if self.license_service is not None:
+            await self.license_service.stop()
         try:
             if self.app_runtime is not None:
                 rt = self.app_runtime
@@ -549,14 +655,17 @@ class OctopServer:
                 await rt.cron_manager.shutdown()
                 await rt.gateway.shutdown()
                 await rt.agent_registry.shutdown()
-                await rt.user_manager.shutdown_all()
                 if rt.history_archive is not None:
                     rt.history_archive.store.close()
+            if self._user_manager is not None:
+                await self._user_manager.shutdown_all()
         finally:
             if self.services is not None:
                 self.services.db.close()
             self.services = None
             self.app_runtime = None
+            self._user_manager = None
+            self._business_running = False
             self._started = False
             logger.info("octop server stopped")
 

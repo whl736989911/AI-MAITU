@@ -47,6 +47,20 @@ def test_resolve_named_backend(repo: BackendRepo) -> None:
     }
 
 
+def test_resolve_named_backend_string_reference(repo: BackendRepo) -> None:
+    repo.create(
+        name="my-cos",
+        kind="cos",
+        access_key="AKID",
+        secret_key="SECRET",
+        bucket="b-125",
+        region="ap-guangzhou",
+    )
+    resolved = resolve_agent_backend_spec("named:my-cos", repo=repo)
+    assert resolved["type"] == "cos"
+    assert resolved["bucket"] == "b-125"
+
+
 def test_resolve_composite_with_named(repo: BackendRepo) -> None:
     repo.create(
         name="archive",
@@ -181,16 +195,27 @@ def test_enrich_docker_backend_spec_defaults() -> None:
     assert "agent_id" not in fixed or fixed.get("agent_id") == "ZE6GR2"
 
 
-def test_inject_docker_global_environment_sets_file() -> None:
+def test_inject_docker_global_environment_omits_host_file_and_license_settings(
+    tmp_path: Path,
+) -> None:
     from octop.infra.backend.docker_spec import inject_docker_global_environment
 
-    spec = inject_docker_global_environment(
-        {"type": "docker", "environment": {"FOO": "from-spec"}},
-        "/data/octop/env",
+    env_file = tmp_path / "env"
+    env_file.write_text(
+        "FOO=from-global\nOCTOP_LICENSE_TRUST_FILE=/etc/octop/license.json\n",
+        encoding="utf-8",
     )
-    assert spec["environment_file"] == "/data/octop/env"
+    spec = inject_docker_global_environment(
+        {
+            "type": "docker",
+            "environment": {"FOO": "from-spec"},
+            "environment_file": "/etc/octop/license.env",
+        },
+        env_file,
+    )
+    assert "environment_file" not in spec
     assert spec["environment"] == {"FOO": "from-spec"}
-    local = inject_docker_global_environment({"type": "local_shell"}, "/data/octop/env")
+    local = inject_docker_global_environment({"type": "local_shell"}, env_file)
     assert "environment_file" not in local
 
 

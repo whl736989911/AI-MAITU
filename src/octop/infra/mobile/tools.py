@@ -14,9 +14,9 @@ from pydantic import Field
 
 from octop.config import OctopConfig
 from octop.i18n import tr
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.mobile.adb import find_adb, list_devices, screencap_png, shell, swipe, tap
 from octop.infra.mobile.setup import mobile_status
-from octop.infra.users.permissions import unit_permissions, user_has_permission
 from octop.infra.utils.paths import PathLayout
 
 MOBILE_SCREENSHOT = "mobile_screenshot"
@@ -34,25 +34,29 @@ def _tool_ctx() -> dict[str, Any]:
     return get_config().get("configurable") or {}
 
 
+def _tool_error(exc: Exception) -> str:
+    if isinstance(exc, OctopError):
+        payload: dict[str, Any] = {
+            "error": {
+                "code": exc.code.value,
+                "message": exc.message,
+            }
+        }
+    else:
+        payload = {"error": str(exc)}
+    return json.dumps(payload, ensure_ascii=False)
+
+
 def _require_mobile_access(
     config: OctopConfig,
     ctx: dict[str, Any],
     user_repo: Any,
     org_unit_repo: Any,
 ) -> None:
-    if not config.capabilities.mobile.enabled:
-        raise ValueError("Remote Phone is not enabled on this host")
-    user_raw = ctx.get("user")
-    if user_raw is None:
-        raise ValueError("missing configurable.user")
-    if ctx.get("user_is_admin"):
-        return
-    row = user_repo.get(int(user_raw))
-    if row is None:
-        raise ValueError("mobile permission required")
-    grants = unit_permissions(getattr(row, "org_unit", None), org_unit_repo)
-    if not user_has_permission(row, "mobile", unit_grants=grants):
-        raise ValueError("mobile permission required")
+    raise OctopError(
+        ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+        "Remote Phone is disabled for this customer deployment",
+    )
 
 
 def _require_ready(config: OctopConfig, *, locale: str) -> None:
@@ -123,7 +127,7 @@ def build_mobile_tools(
             path.write_bytes(png)
             return json.dumps({"device": serial, "path": rel, "format": "png"}, ensure_ascii=False)
         except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return _tool_error(exc)
 
     async def mobile_tap(
         x: Annotated[int, Field(description="Horizontal tap coordinate in device pixels.")],
@@ -139,7 +143,7 @@ def build_mobile_tools(
             ok = await asyncio.to_thread(tap, serial, x, y)
             return json.dumps({"device": serial, "ok": ok}, ensure_ascii=False)
         except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return _tool_error(exc)
 
     async def mobile_swipe(
         x1: Annotated[int, Field(description="Swipe start X.")],
@@ -160,7 +164,7 @@ def build_mobile_tools(
             ok = await asyncio.to_thread(swipe, serial, x1, y1, x2, y2, duration_ms)
             return json.dumps({"device": serial, "ok": ok}, ensure_ascii=False)
         except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return _tool_error(exc)
 
     async def mobile_launch_app(
         package: Annotated[
@@ -186,7 +190,7 @@ def build_mobile_tools(
                 {"device": serial, "exit_code": code, "output": out}, ensure_ascii=False
             )
         except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return _tool_error(exc)
 
     async def mobile_ui_dump(
         device: Annotated[str | None, Field(description="adb device serial (optional).")] = None,
@@ -207,7 +211,7 @@ def build_mobile_tools(
                 out = out[:_MAX_UI_DUMP_CHARS] + "\n<!-- truncated -->"
             return json.dumps({"device": serial, "xml": out}, ensure_ascii=False)
         except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return _tool_error(exc)
 
     async def mobile_handoff_to_user(
         reason: Annotated[
@@ -226,7 +230,7 @@ def build_mobile_tools(
             )
             return json.dumps({"handoff": True, "message": msg}, ensure_ascii=False)
         except Exception as exc:
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            return _tool_error(exc)
 
     if not find_adb():
         return []

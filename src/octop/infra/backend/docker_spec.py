@@ -82,10 +82,20 @@ def inject_docker_global_environment(
     spec: dict[str, Any],
     env_file: str | Path | None,
 ) -> dict[str, Any]:
-    """Point a docker spec at Admin ``~/.octop/env`` (re-read on each execute)."""
+    """Inject global env values without exposing the host env file or license settings."""
     if str(spec.get("type") or "").lower() != "docker":
         return spec
+    from octop.infra.utils.env_file import load_env_file
+
     out = dict(spec)
+    out.pop("environment_file", None)
     if env_file is not None:
-        out["environment_file"] = str(env_file)
+        environment = {
+            key: value
+            for key, value in load_env_file(Path(env_file)).items()
+            if not key.startswith("OCTOP_LICENSE_")
+        }
+        environment.update({str(k): str(v) for k, v in dict(spec.get("environment") or {}).items()})
+        if environment:
+            out["environment"] = environment
     return out

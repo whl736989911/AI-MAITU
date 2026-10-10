@@ -29,6 +29,10 @@ def install(app: Any, server: Any) -> None:
             return await call_next(request)
         cfg = server.services.config if server.services else getattr(server, "config", None)
         open_exact = ["/api/health"]
+        if (request.method == "GET" and path == "/api/license/status") or (
+            request.method == "POST" and path in {"/api/license/activate", "/api/license/refresh"}
+        ):
+            return await call_next(request)
         if cfg and cfg.enable_api_docs:
             open_exact.extend(("/api/docs", "/api/openapi.json"))
         if path in open_exact or any(path.startswith(p) for p in _OPEN_PREFIXES):

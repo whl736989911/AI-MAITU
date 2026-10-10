@@ -319,6 +319,18 @@ PERMISSIONS.update(
 )
 
 ALL_PERMISSION_KEYS: set[str] = set(PERMISSIONS)
+RESTRICTED_DEPLOYMENT_PERMISSIONS: frozenset[str] = frozenset(
+    {
+        "terminal",
+        "browser",
+        "desktop",
+        "mobile",
+        "acp",
+        "plugins",
+        "storage_backends",
+        "envs",
+    }
+)
 
 # Settings-group keys are shown in the picker. ``teams`` is intentionally not
 # part of the pre-checked baseline: it is a new capability, unlike existing
@@ -370,16 +382,12 @@ def resolve_permissions(
     denied: list[str] | None,
     unit_grants: set[str] | None,
 ) -> set[str]:
-    """role ∪ unit ∪ grant − deny, with admin bypassing everything.
-
-    Team management is additionally scoped to expert management: ``teams`` is
-    effective only when ``experts`` survives the explicit-deny subtraction.
-    """
+    """Resolve normal permissions with the restricted-deployment floor applied."""
     if role_value(role) == Role.ADMIN:
-        return set(ALL_PERMISSION_KEYS)
+        return set(ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS)
     granted = role_default_permissions(role)
     granted |= _as_set(unit_grants) | _as_set(permissions)
-    granted -= _as_set(denied)
+    granted -= _as_set(denied) | RESTRICTED_DEPLOYMENT_PERMISSIONS
     if "experts" not in granted:
         granted.discard("teams")
     return granted
@@ -454,9 +462,17 @@ def assert_can_grant(
     department in the user editor, the department being edited for a unit admin
     — which lets that admin re-submit grants its department already has.
     """
+    requested = set(permissions)
+    restricted = sorted(requested & RESTRICTED_DEPLOYMENT_PERMISSIONS)
+    if restricted:
+        raise OctopError(
+            ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+            "unsafe deployment capabilities cannot be granted",
+            details={"permissions": restricted},
+        )
     if getattr(user, "is_admin", False):
         return
-    missing = sorted(set(permissions) - _resolve_user(user, unit_grants))
+    missing = sorted(requested - _resolve_user(user, unit_grants))
     if not missing:
         return
     payload: dict[str, Any] = {"missing": missing}

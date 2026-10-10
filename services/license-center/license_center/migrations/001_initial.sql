@@ -1,0 +1,14 @@
+PRAGMA foreign_keys=ON;
+CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS customers(id TEXT PRIMARY KEY, name TEXT NOT NULL, contact TEXT NOT NULL DEFAULT '', notes TEXT NOT NULL DEFAULT '', active INTEGER NOT NULL DEFAULT 1, version INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS instances(id TEXT PRIMARY KEY, customer_id TEXT NOT NULL REFERENCES customers(id), public_key TEXT NOT NULL, fingerprint TEXT NOT NULL UNIQUE, status TEXT NOT NULL DEFAULT 'active', last_seen_at INTEGER);
+CREATE TABLE IF NOT EXISTS licenses(id TEXT PRIMARY KEY, instance_id TEXT NOT NULL UNIQUE REFERENCES instances(id), expires_at INTEGER NOT NULL, revoked INTEGER NOT NULL DEFAULT 0, expired INTEGER NOT NULL DEFAULT 0, revision INTEGER NOT NULL DEFAULT 1, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS activation_codes(id TEXT PRIMARY KEY, digest TEXT NOT NULL UNIQUE, customer_id TEXT NOT NULL REFERENCES customers(id), license_expires_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, used_at INTEGER, bound_instance_id TEXT, revoked_at INTEGER);
+CREATE TABLE IF NOT EXISTS instance_challenges(digest TEXT PRIMARY KEY, instance_id TEXT NOT NULL, operation TEXT NOT NULL, fingerprint TEXT NOT NULL, expires_at INTEGER NOT NULL, consumed_at INTEGER);
+CREATE TABLE IF NOT EXISTS admin_users(id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, role TEXT NOT NULL CHECK(role IN ('owner','operator','reader')), totp_ciphertext BLOB NOT NULL, active INTEGER NOT NULL DEFAULT 1, last_totp_counter INTEGER NOT NULL DEFAULT -1, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS admin_sessions(token_hash TEXT PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES admin_users(id), csrf_hash TEXT NOT NULL, csrf_ciphertext BLOB NOT NULL, expires_at INTEGER NOT NULL, recent_mfa_at INTEGER NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS signing_keys(kid TEXT PRIMARY KEY, private_path TEXT NOT NULL, public_pem TEXT NOT NULL, state TEXT NOT NULL CHECK(state IN ('staged','active','retired')), created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS audit_log(id INTEGER PRIMARY KEY AUTOINCREMENT, actor TEXT NOT NULL, action TEXT NOT NULL, object_type TEXT NOT NULL, object_id TEXT NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, reason TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE INDEX IF NOT EXISTS idx_challenge_expiry ON instance_challenges(expires_at);
+CREATE INDEX IF NOT EXISTS idx_activation_customer ON activation_codes(customer_id);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at);

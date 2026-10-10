@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from scalar_fastapi import get_scalar_api_reference
 
+from octop.api.middleware.instance_license import install as install_instance_license
 from octop.api.middleware.jwt_auth import install as install_jwt_auth
 from octop.api.middleware.setup_lockdown import install as install_setup_lockdown
 from octop.api.openapi_meta import API_DESCRIPTION, OPENAPI_TAGS, configure_openapi
@@ -134,6 +135,7 @@ def build_app(server: OctopServer) -> FastAPI:
 
     install_jwt_auth(app, server)
     install_setup_lockdown(app, server)
+    install_instance_license(app)
 
     from octop.infra.setup.tls.challenge import challenge_store
 
@@ -172,6 +174,7 @@ def build_app(server: OctopServer) -> FastAPI:
         invites,
         knowledge_bases,
         knowledge_collections,
+        license,
         mbti,
         media_generation,
         memory,
@@ -221,6 +224,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(invites.public_router, "/api/auth/invite", ["auth"]),
             _RouterMount(preferences.router, "/api", ["auth"]),
             _RouterMount(i18n.router, "/api", ["i18n"]),
+            _RouterMount(license.router, "/api", ["license"]),
             _RouterMount(health.router, "/api/health", ["health"]),
             _RouterMount(invites.admin_router, "/api/users/invites", ["users"]),
             _RouterMount(users.router, "/api/users", ["users"]),

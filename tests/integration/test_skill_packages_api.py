@@ -288,14 +288,7 @@ async def test_delete_package_strips_agent_mounts(env_with_main_agent: Any) -> N
     created = await client.post(
         "/api/agents/from-expert/general-assistant",
         headers=auth,
-        json={
-            "name": "Package Mount Agent",
-            "backend": {
-                "type": "local_shell",
-                "root_dir": "/",
-                "virtual_mode": True,
-            },
-        },
+        json={"name": "Package Mount Agent"},
     )
     assert created.status_code == 201, created.text
     agent_id = created.json()["agent_id"]

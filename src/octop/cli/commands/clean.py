@@ -25,7 +25,13 @@ def _all_targets() -> list[Path]:
 @click.option("--dry-run", is_flag=True, default=False, help="Show targets without deleting.")
 def clean(wipe_all: bool, yes: bool, dry_run: bool) -> None:
     """Remove the CLI state file (default) or wipe everything (--all)."""
-    targets = _all_targets() if wipe_all else _cli_targets()
+    if wipe_all:
+        root = PathLayout.from_env().root
+        targets = (
+            [child for child in root.iterdir() if child.name != "license"] if root.is_dir() else []
+        )
+    else:
+        targets = _cli_targets()
     for t in targets:
         click.echo(("would remove " if dry_run else "removing ") + str(t))
     if dry_run:

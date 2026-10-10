@@ -9,13 +9,13 @@
 
 Create-time defaults when unset:
 
-* Host-rooted backend → on-disk ``{OCTOP_HOME}/agents/<id>/``, persist that
-  host absolute path.
-* Scoped ``root_dir`` → on-disk ``{root_dir}/.octop/workspaces/<id>/`` (so files
-  land inside the jail), but persist ``/.octop/workspaces/<id>`` — the
-  agent-facing workspace path. Harness gets that persisted string as-is.
+* Default workspace → on-disk ``{OCTOP_HOME}/agents/<id>/`` and persisted as
+  that host absolute path.
+* Scoped ``root_dir`` mapping is retained for legacy path resolution only;
+  customer runtime rejects roots outside the managed per-agent workspace.
 
-User-assigned ``workspace_dir`` always wins (strip only).
+An explicitly supplied ``workspace_dir`` is accepted only when its resolved
+host path equals ``{OCTOP_HOME}/agents/<id>/``; external paths are rejected.
 
 :func:`resolve_workspace_host_path` is only for Octop host FS ops (delete,
 memory sqlite path, etc.) when the persisted value is the agent-facing

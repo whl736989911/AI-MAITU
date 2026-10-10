@@ -139,3 +139,39 @@ jobs:
           FEISHU_APP_ID: ${{ secrets.LIVE_FEISHU_APP_ID }}
           FEISHU_APP_SECRET: ${{ secrets.LIVE_FEISHU_APP_SECRET }}
         run: make test-live
+
+  license-center:
+    name: "License center / ${{ matrix.os }}"
+    runs-on: ${{ matrix.os }}
+    if: ${{ !startsWith(github.head_ref, 'chore/sync-develop-after-') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v4
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: services/license-center/dashboard/package-lock.json
+      - name: Install issuer dependencies
+        run: uv sync --frozen --project services/license-center
+      - name: Check issuer Python
+        working-directory: services/license-center
+        run: |
+          uv run --frozen ruff check license_center tests
+          uv run --frozen ruff format --check license_center tests
+          uv run --frozen pytest
+      - name: Install issuer dashboard
+        working-directory: services/license-center/dashboard
+        run: npm ci
+      - name: Check and build issuer dashboard
+        working-directory: services/license-center/dashboard
+        run: |
+          npm run format:check
+          npm run build

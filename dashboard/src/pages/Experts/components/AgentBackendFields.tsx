@@ -24,7 +24,9 @@ interface AgentBackendFieldsProps {
   backendsLoading: boolean;
   backendChoice: string;
   pathMappings: PathMapping[];
-  /** ``create`` fills empty root_dir with home; ``edit`` leaves existing values. */
+  /** Hide host backend controls when excluded by the effective server profile. */
+  hostExecutionRestricted?: boolean;
+  /** In unrestricted create mode, fills an empty root_dir from filesystem defaults. */
   rootDirMode?: "create" | "edit";
   disabled?: boolean;
   onAddPathMapping: () => void;
@@ -42,6 +44,7 @@ export default function AgentBackendFields({
   backendChoice,
   pathMappings,
   rootDirMode = "create",
+  hostExecutionRestricted = false,
   disabled = false,
   onAddPathMapping,
   onRemovePathMapping,
@@ -52,7 +55,7 @@ export default function AgentBackendFields({
   const user = useCurrentUser();
   const [fsDefaults, setFsDefaults] = useState<FilesystemDefaults | null>(null);
   const watchedRootDir = Form.useWatch("root_dir", form) as string | undefined;
-  const admin = isSystemAdmin(user);
+  const admin = isSystemAdmin(user) && !hostExecutionRestricted;
 
   useEffect(() => {
     // ``/filesystem/defaults`` requires the admin role — plain users type the
@@ -83,22 +86,35 @@ export default function AgentBackendFields({
   }, [fsDefaults, form, watchedRootDir, rootDirMode]);
 
   const treeRoot = fsDefaults?.tree_root ?? HOST_FS_ROOT;
+  const configuredBackends = backends.filter((b) => b.enabled);
   const routeBackendOptions = useMemo(() => {
     const builtins = BUILTIN_BACKENDS.map((mode) => ({
       value: mode,
       label: builtinLabel(mode, t),
     }));
-    const configured = backends
-      .filter((b) => b.enabled)
-      .map((b) => ({
-        value: `named:${b.name}` as const,
-        label: `${b.name} (${b.kind})`,
-      }));
+    const configured = configuredBackends.map((b) => ({
+      value: `named:${b.name}` as const,
+      label: `${b.name} (${b.kind})`,
+    }));
     return [...builtins, ...configured];
-  }, [backends, t]);
+  }, [configuredBackends, t]);
 
-  const backendSelectOptions = useMemo(
-    () => [
+  const backendSelectOptions = useMemo(() => {
+    const configured = configuredBackends.map((b) => ({
+      value: `named:${b.name}`,
+      label: `${b.name} (${b.kind})`,
+    }));
+    if (hostExecutionRestricted) {
+      return configured.length
+        ? [
+            {
+              label: t("experts.backendGroups.configured"),
+              options: configured,
+            },
+          ]
+        : [];
+    }
+    return [
       {
         label: t("experts.backendGroups.builtin"),
         options: [
@@ -112,22 +128,16 @@ export default function AgentBackendFields({
           },
         ],
       },
-      ...(backends.filter((b) => b.enabled).length > 0
+      ...(configured.length
         ? [
             {
               label: t("experts.backendGroups.configured"),
-              options: backends
-                .filter((b) => b.enabled)
-                .map((b) => ({
-                  value: `named:${b.name}`,
-                  label: `${b.name} (${b.kind})`,
-                })),
+              options: configured,
             },
           ]
         : []),
-    ],
-    [backends, t],
-  );
+    ];
+  }, [configuredBackends, hostExecutionRestricted, t]);
 
   const desc = builtinDesc(backendChoice, t);
 
@@ -135,12 +145,13 @@ export default function AgentBackendFields({
     path.trim() === "/" ||
     (path.trim().length > 0 && !isValidCompositePath(path));
 
+  if (hostExecutionRestricted && configuredBackends.length === 0) return null;
   return (
     <>
       <Form.Item
         name="backend_choice"
         label={t("experts.backendLabel")}
-        initialValue={DEFAULT_BACKEND}
+        initialValue={hostExecutionRestricted ? undefined : DEFAULT_BACKEND}
       >
         <Select
           disabled={disabled}
@@ -169,68 +180,69 @@ export default function AgentBackendFields({
         </div>
       ) : null}
 
-      {(backendChoice === "local_shell" || backendChoice === "filesystem") && (
-        <>
-          <Form.Item
-            name="root_dir"
-            label={t("experts.backendRootDir")}
-            initialValue={
-              rootDirMode === "create"
-                ? fsDefaults?.default_root_dir
-                : undefined
-            }
-          >
-            <RootDirSelect
-              treeRoot={treeRoot}
-              disabled={disabled || rootDirMode === "edit"}
-            />
-          </Form.Item>
-          <div style={{ margin: "-8px 0 12px" }}>
-            {rootDirMode === "edit" ? (
-              <p
-                style={{
-                  fontSize: 12,
-                  color: "var(--fn-text-tertiary)",
-                  margin: 0,
-                }}
-              >
-                {t("experts.backendRootDirImmutableHint")}
-              </p>
-            ) : (
-              <>
-                {/* Browsing is admin-only; without the defaults probe the
-                    "you may browse" promise is false for plain users. */}
-                {admin ? (
-                  <p
-                    style={{
-                      fontSize: 12,
-                      color: "var(--fn-text-tertiary)",
-                      margin: 0,
-                    }}
-                  >
-                    {fsDefaults?.in_container
-                      ? t("experts.backendRootDirDescContainer")
-                      : t("experts.backendRootDirDesc", {
-                          home: fsDefaults?.home ?? "~",
-                        })}
-                  </p>
-                ) : null}
+      {!hostExecutionRestricted &&
+        (backendChoice === "local_shell" || backendChoice === "filesystem") && (
+          <>
+            <Form.Item
+              name="root_dir"
+              label={t("experts.backendRootDir")}
+              initialValue={
+                rootDirMode === "create"
+                  ? fsDefaults?.default_root_dir
+                  : undefined
+              }
+            >
+              <RootDirSelect
+                treeRoot={treeRoot}
+                disabled={disabled || rootDirMode === "edit"}
+              />
+            </Form.Item>
+            <div style={{ margin: "-8px 0 12px" }}>
+              {rootDirMode === "edit" ? (
                 <p
                   style={{
                     fontSize: 12,
                     color: "var(--fn-text-tertiary)",
-                    margin: "4px 0 0",
+                    margin: 0,
                   }}
                 >
-                  {t("experts.backendRootDirJailHint")}
+                  {t("experts.backendRootDirImmutableHint")}
                 </p>
-              </>
-            )}
-          </div>
-        </>
-      )}
+              ) : (
+                <>
+                  {/* Browsing is admin-only; without the defaults probe the
+                    "you may browse" promise is false for plain users. */}
+                  {admin ? (
+                    <p
+                      style={{
+                        fontSize: 12,
+                        color: "var(--fn-text-tertiary)",
+                        margin: 0,
+                      }}
+                    >
+                      {fsDefaults?.in_container
+                        ? t("experts.backendRootDirDescContainer")
+                        : t("experts.backendRootDirDesc", {
+                            home: fsDefaults?.home ?? "~",
+                          })}
+                    </p>
+                  ) : null}
+                  <p
+                    style={{
+                      fontSize: 12,
+                      color: "var(--fn-text-tertiary)",
+                      margin: "4px 0 0",
+                    }}
+                  >
+                    {t("experts.backendRootDirJailHint")}
+                  </p>
+                </>
+              )}
+            </div>
+          </>
+        )}
 
-      {backendChoice === "composite" && (
+      {!hostExecutionRestricted && backendChoice === "composite" && (
         <>
           <Form.Item
             name="composite_default"

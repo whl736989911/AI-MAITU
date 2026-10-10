@@ -75,7 +75,13 @@ def init(
             ):
                 click.echo("aborted", err=True)
                 raise SystemExit(1)
-        shutil.rmtree(home)
+        for child in home.iterdir():
+            if child.name == "license":
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
 
     paths.ensure_root()
     PluginManager(plugins_dir=paths.plugins_dir, config_path=paths.config).seed_bundled()

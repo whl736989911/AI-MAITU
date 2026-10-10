@@ -14,7 +14,13 @@ from octop.api.deps import get_server, require_database, resolve_user_from_token
 from octop.infra.agents.providers.presets import load_provider_presets
 from octop.infra.agents.providers.probe import make_probe_provider_row, probe_provider_row
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.licensing import current_license
 from octop.infra.setup import password_file as _wizard
+from octop.infra.setup.state import (
+    is_setup_pending,
+    mark_setup_completed,
+    mark_setup_pending,
+)
 from octop.infra.setup.wizard_tokens import RateLimited
 from octop.infra.users.identity import Role
 from octop.infra.utils.locale import normalize_locale, resolve_request_locale
@@ -103,15 +109,13 @@ def _setup_password_required(server: Any) -> bool:
 
 
 def _enforce_wizard_open(server: Any) -> None:
-    um = server.user_manager
-    if um is not None and um.count() != 0:
+    if not is_setup_pending(server):
         raise OctopError(ErrorCode.SETUP_REQUIRED, "setup already completed", status=410)
 
 
 def _enforce_wizard_token_phase(server: Any) -> None:
-    """Allow wizard token operations while initial setup is still in progress."""
-    um = server.user_manager
-    if um is not None and um.count() > 1:
+    """Allow wizard token operations only while persistent setup is pending."""
+    if not is_setup_pending(server):
         raise OctopError(ErrorCode.SETUP_REQUIRED, "setup already completed", status=410)
 
 
@@ -125,6 +129,7 @@ def _extract_bearer(authorization: str | None) -> str:
 
 
 def _require_wizard_token(authorization: str | None, server: Any) -> str:
+    _enforce_wizard_open(server)
     token = _extract_bearer(authorization)
     if not server.wizard_tokens.validate(token):
         raise OctopError(ErrorCode.SETUP_TOKEN_INVALID, "invalid or expired wizard token")
@@ -138,6 +143,7 @@ def _authorize_setup_provider_test(authorization: str | None, server: Any) -> No
 
 def _authorize_setup_mid_wizard(authorization: str | None, server: Any) -> str | None:
     """Return wizard token when present; None when admin JWT is valid mid-setup."""
+    _enforce_wizard_token_phase(server)
     token = _extract_bearer(authorization)
     if server.wizard_tokens.validate(token):
         return token
@@ -153,30 +159,10 @@ def _authorize_setup_mid_wizard(authorization: str | None, server: Any) -> str |
 
 
 async def _bootstrap_default_agent(server: Any, *, user_id: int, locale: str = "zh") -> None:
-    """Create the first default agent for a fresh install (pinned id ``main``)."""
-    from octop.infra.agents.default_agent import (
-        SETUP_DEFAULT_AGENT_ID,
-        bootstrap_default_agent,
-    )
+    """Bootstrap first-run business defaults or defer them until license activation."""
+    from octop.infra.agents.default_agent import bootstrap_setup_default_agents
 
-    if server.app_runtime is None:
-        raise OctopError(ErrorCode.INTERNAL_ERROR, "app_runtime not ready")
-    await bootstrap_default_agent(
-        server.app_runtime.agent_registry,
-        server.expert_catalog,
-        user_id=user_id,
-        locale=locale,
-        agent_id=SETUP_DEFAULT_AGENT_ID,
-    )
-    from octop.infra.agents.default_agent import ensure_builtin_general_assistant_feature
-
-    await ensure_builtin_general_assistant_feature(
-        server.app_runtime.agent_registry,
-        server.expert_catalog,
-        server.services.repos.resource_acl_repo,
-        owner_user_id=user_id,
-        locale=locale,
-    )
+    await bootstrap_setup_default_agents(server, user_id=user_id, locale=locale)
 
 
 async def _apply_provider_draft(server: Any, draft: ProviderDraftBody) -> None:
@@ -215,7 +201,7 @@ async def _apply_provider_draft(server: Any, draft: ProviderDraftBody) -> None:
         extra_json=json.dumps(draft.extras) if draft.extras else None,
     )
     server.services.settings_repo.set_active_model(draft.name, models[0]["id"])
-    if server.app_runtime is not None:
+    if server.app_runtime is not None and current_license().allowed:
         await server.app_runtime.agent_registry.on_provider_changed()
 
 
@@ -359,6 +345,7 @@ async def initial_admin(
     require_database(server)
     _require_wizard_token(authorization, server)
     locale = normalize_locale(body.locale or resolve_request_locale(request))
+    mark_setup_pending(server)
     assert server.user_manager is not None
     assert server.services is not None
     user = await server.user_manager.create(
@@ -447,6 +434,7 @@ async def finish(
             await _bootstrap_default_agent(server, user_id=admin.id, locale=admin.locale)
         except Exception as exc:  # pragma: no cover
             logger.warning("could not auto-create default agent: %s", exc)
+    mark_setup_completed(server)
     if wizard_token is not None:
         server.wizard_tokens.consume(wizard_token)
     return {"ok": True}

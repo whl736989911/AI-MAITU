@@ -1,12 +1,4 @@
-/**
- * ToolsTabs — the ACP tab answers to the ``acp`` module key.
- *
- * It used to be filtered on the ``admin`` role alone, which both hid it from a
- * granted account and said nothing about the key the route and the nav entry
- * read (design §4.4). The agent's own tool toggle behind it, and the runner
- * list, need only the key; the runner *definitions* stay an administrator's
- * and are refused inside the panel.
- */
+/** ACP navigation obeys effective permissions, including system administrators. */
 
 import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
@@ -51,7 +43,7 @@ describe("<ToolsTabs /> ACP tab", () => {
     ).toBeInTheDocument();
   });
 
-  it("hides it from an account without the key, the administrator aside", async () => {
+  it("hides ACP when the deployment strips the grant, including for administrators", async () => {
     const { unmount } = renderTabs({
       id: 2,
       username: "other",
@@ -75,8 +67,9 @@ describe("<ToolsTabs /> ACP tab", () => {
       locale: "zh",
       permissions: [],
     });
+    await screen.findByRole("tab", { name: BUILTIN_TAB });
     expect(
-      await screen.findByRole("tab", { name: ACP_TAB }),
-    ).toBeInTheDocument();
+      screen.queryByRole("tab", { name: ACP_TAB }),
+    ).not.toBeInTheDocument();
   });
 });

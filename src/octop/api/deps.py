@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any, cast
@@ -62,40 +63,75 @@ ACCESS_TOKEN_RESPONSE_HEADER = "X-Octop-Access-Token"
 _SLIDING_RENEW_REMAINING_FRACTION = 1 / 3
 
 
-# Paths that bypass JWT middleware (setup wizard, health, login).
-_JWT_EXEMPT_PREFIXES = (
-    "/api/branding",
-    "/api/setup/",
-    "/api/health/",
-    "/api/i18n/",
-    "/api/connectors/oauth/callback",
-    "/api/internal/mcp/",
+_JWT_EXEMPT_METHOD_PATHS = frozenset(
+    {
+        ("GET", "/api/health"),
+        ("GET", "/api/health/"),
+        ("HEAD", "/api/health"),
+        ("HEAD", "/api/health/"),
+        ("GET", "/api/branding"),
+        ("GET", "/api/branding/manifest.webmanifest"),
+        ("GET", "/api/i18n/tools"),
+        ("GET", "/api/i18n/skills"),
+        ("POST", "/api/auth/login"),
+        ("GET", "/api/auth/captcha"),
+        ("GET", "/api/auth/oidc/status"),
+        ("POST", "/api/auth/oidc/start"),
+        ("GET", "/api/auth/oidc/callback"),
+        ("POST", "/api/auth/oidc/exchange"),
+        ("GET", "/api/auth/oauth/status"),
+        ("POST", "/api/auth/oauth/start"),
+        ("GET", "/api/auth/oauth/callback"),
+        ("POST", "/api/auth/oauth/exchange"),
+        ("POST", "/api/auth/invite/validate"),
+        ("POST", "/api/auth/invite/redeem"),
+        ("GET", "/api/connectors/oauth/callback"),
+        ("GET", "/api/docs"),
+        ("HEAD", "/api/docs"),
+        ("GET", "/api/openapi.json"),
+        ("HEAD", "/api/openapi.json"),
+        ("GET", "/api/setup/presets"),
+        ("GET", "/api/setup/validate-token"),
+        ("GET", "/api/setup/status"),
+        ("POST", "/api/setup/test-database"),
+        ("POST", "/api/setup/database"),
+        ("POST", "/api/setup/begin"),
+        ("POST", "/api/setup/verify-password"),
+        ("POST", "/api/setup/initial-admin"),
+        ("POST", "/api/setup/resume-wizard"),
+        ("POST", "/api/setup/test-provider"),
+        ("POST", "/api/setup/finish"),
+        # These license endpoints validate either an administrator JWT or the
+        # narrowly scoped first-run WizardToken themselves.
+        ("GET", "/api/license/status"),
+        ("POST", "/api/license/activate"),
+        ("POST", "/api/license/refresh"),
+    }
 )
-_JWT_EXEMPT_EXACT = (
-    "/api/health",
-    "/api/auth/login",
-    "/api/auth/captcha",
-    "/api/auth/oidc/status",
-    "/api/auth/oidc/start",
-    "/api/auth/oidc/callback",
-    "/api/auth/oidc/exchange",
-    "/api/auth/oauth/status",
-    "/api/auth/oauth/start",
-    "/api/auth/oauth/callback",
-    "/api/auth/oauth/exchange",
-    "/api/auth/invite/validate",
-    "/api/auth/invite/redeem",
-    "/api/docs",
-    "/api/openapi.json",
+
+_JWT_EXEMPT_METHOD_PATTERNS = (
+    ("GET", re.compile(r"/api/branding/assets/[^/]+/[^/]+")),
+    ("GET", re.compile(r"/api/internal/mcp/[^/]+/[^/]+")),
+    ("POST", re.compile(r"/api/internal/mcp/[^/]+/[^/]+")),
+    ("DELETE", re.compile(r"/api/internal/mcp/[^/]+/[^/]+")),
 )
+
+_JWT_EXEMPT_PATHS = frozenset(path for _, path in _JWT_EXEMPT_METHOD_PATHS)
 
 
 def is_jwt_exempt_path(path: str) -> bool:
-    return path in _JWT_EXEMPT_EXACT or any(path.startswith(p) for p in _JWT_EXEMPT_PREFIXES)
+    """Whether an OpenAPI path template is part of the explicit public allowlist."""
+    return path in _JWT_EXEMPT_PATHS or any(
+        pattern.fullmatch(path) for _, pattern in _JWT_EXEMPT_METHOD_PATTERNS
+    )
 
 
 def is_jwt_exempt_request(request: Request) -> bool:
-    return is_jwt_exempt_path(request.url.path)
+    method, path = request.method.upper(), request.url.path
+    return (method, path) in _JWT_EXEMPT_METHOD_PATHS or any(
+        expected == method and pattern.fullmatch(path)
+        for expected, pattern in _JWT_EXEMPT_METHOD_PATTERNS
+    )
 
 
 def get_server(request: Request) -> OctopServer:

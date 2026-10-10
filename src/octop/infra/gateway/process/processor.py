@@ -694,6 +694,13 @@ class GlobalProcessor:
     # -- IM channel entry (MessageEvent stream) --------------------------------
 
     async def __call__(self, msg: InboundMessage) -> AsyncIterator[MessageEvent]:
+        from octop.infra.licensing import current_license
+
+        async with current_license().business_task():
+            async for event in self._process_message(msg):
+                yield event
+
+    async def _process_message(self, msg: InboundMessage) -> AsyncIterator[MessageEvent]:
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
         METRICS.inc("messages_total")

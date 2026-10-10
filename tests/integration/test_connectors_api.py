@@ -449,36 +449,24 @@ async def test_catalog_weknora_dify_last(env):
 async def test_install_cli_forbidden_for_non_admin(env):
     c, _, admin_auth, _ = env
     user_auth = await create_user(c, admin_auth, username="cli_user", permissions=[])
-    r = await c.post("/api/connectors/feishu-cli/install-cli", headers=user_auth)
-    assert r.status_code == 403
-    assert r.json()["error"]["code"] == "FORBIDDEN"
+    response = await c.post("/api/connectors/feishu-cli/install-cli", headers=user_auth)
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
 
 
-async def test_install_cli_admin_ok_mocked(env, monkeypatch: pytest.MonkeyPatch):
+async def test_install_cli_is_restricted_even_for_admin(env, monkeypatch: pytest.MonkeyPatch):
     c, _, auth, _ = env
-
-    def _fake_install(kind: str) -> dict:
-        return {
-            "ok": True,
-            "kind": kind,
-            "installed": True,
-            "already_installed": True,
-            "binary": "lark-cli",
-            "version": "0.0.0-test",
-            "install_command": "npm install -g @larksuite/cli",
-            "doc_url": "https://example.com",
-            "guide_url": "https://example.com",
-        }
-
+    calls: list[str] = []
     monkeypatch.setattr(
         "octop.api.routers.connectors.install_connector_cli",
-        _fake_install,
+        lambda kind: calls.append(kind),
     )
-    r = await c.post("/api/connectors/feishu-cli/install-cli", headers=auth)
-    assert r.status_code == 200
-    body = r.json()
-    assert body["ok"] is True
-    assert body["already_installed"] is True
+
+    response = await c.post("/api/connectors/feishu-cli/install-cli", headers=auth)
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    assert calls == []
 
 
 async def test_cli_status_available_to_non_admin(env, monkeypatch: pytest.MonkeyPatch):

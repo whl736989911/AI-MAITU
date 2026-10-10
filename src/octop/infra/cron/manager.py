@@ -64,8 +64,9 @@ class CronManager:
         self._timezone = timezone
         self._scheduler: AsyncIOScheduler = AsyncIOScheduler(timezone=timezone)
         self._lock = asyncio.Lock()
-        # Process-level jobs (e.g. TLS auto-renew) that must survive reload_from_db.
+        # Process-level jobs (e.g. TLS auto-renew) must survive business pauses.
         self._system_job_ids: set[str] = set()
+        self._business_paused = False
 
     def replace_repos(self, repos: RepoBundle) -> None:
         """Point cron persistence at a rebound control-plane pool."""
@@ -73,11 +74,36 @@ class CronManager:
         self._delivery_service.replace_repos(repos)
 
     async def boot(self) -> None:
+        from octop.infra.licensing import current_license
+
         self._scheduler.start()
+        self._business_paused = not current_license().allowed
         rows = self._repos.cron_repo.list_all(include_disabled=False)
-        for row in rows:
-            self._schedule(row)
-        logger.info("CronManager booted; scheduled %d jobs", len(rows))
+        if not self._business_paused:
+            for row in rows:
+                self._schedule(row)
+        logger.info(
+            "CronManager booted; scheduled %d user jobs (business_paused=%s)",
+            0 if self._business_paused else len(rows),
+            self._business_paused,
+        )
+
+    async def pause_business(self) -> None:
+        """Remove user jobs without pausing trusted maintenance scheduling."""
+        async with self._lock:
+            self._business_paused = True
+            for job in list(self._scheduler.get_jobs()):
+                job_id = getattr(job, "id", None)
+                if job_id is not None and job_id not in self._system_job_ids:
+                    self._scheduler.remove_job(job_id)
+
+    async def resume_business(self) -> None:
+        """Re-arm user jobs at their next trigger; missed jobs are not replayed."""
+        async with self._lock:
+            self._business_paused = False
+            rows = self._repos.cron_repo.list_all(include_disabled=False)
+            for row in rows:
+                self._schedule(row)
 
     async def reload_from_db(self) -> None:
         """Drop user cron schedules and re-register enabled jobs from the DB.
@@ -93,9 +119,13 @@ class CronManager:
                     continue
                 self._scheduler.remove_job(job_id)
             rows = self._repos.cron_repo.list_all(include_disabled=False)
-            for row in rows:
-                self._schedule(row)
-            logger.info("CronManager reloaded from DB; scheduled %d jobs", len(rows))
+            if not self._business_paused:
+                for row in rows:
+                    self._schedule(row)
+            logger.info(
+                "CronManager reloaded from DB; scheduled %d user jobs",
+                0 if self._business_paused else len(rows),
+            )
 
     async def shutdown(self) -> None:
         if self._scheduler.running:
@@ -234,7 +264,7 @@ class CronManager:
         )
 
     def _schedule(self, row: Any) -> None:
-        if not row.enabled:
+        if not row.enabled or self._business_paused:
             return
         try:
             trigger = build_trigger(row.trigger, timezone=self._timezone)

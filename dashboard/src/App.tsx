@@ -13,6 +13,7 @@ import OidcComplete from "./pages/Login/OidcComplete";
 import SetupPage from "./pages/Setup";
 import InvitePage from "./pages/Invite";
 import AuthGuard from "./components/AuthGuard";
+import LicenseGate from "./components/LicenseGate";
 import OctopSpinner from "./components/OctopSpinner";
 import { AntdAppProvider } from "./components/AntdAppProvider";
 import GlobalErrorBoundary from "./components/ErrorBoundary";
@@ -136,15 +137,17 @@ function ThemedApp() {
           <Route
             path="/*"
             element={
-              <AuthGuard>
-                <AgentProvider>
-                  <LayoutModeProvider>
-                    <VoiceOutputProvider>
-                      <MainLayout />
-                    </VoiceOutputProvider>
-                  </LayoutModeProvider>
-                </AgentProvider>
-              </AuthGuard>
+              <LicenseGate>
+                <AuthGuard>
+                  <AgentProvider>
+                    <LayoutModeProvider>
+                      <VoiceOutputProvider>
+                        <MainLayout />
+                      </VoiceOutputProvider>
+                    </LayoutModeProvider>
+                  </AgentProvider>
+                </AuthGuard>
+              </LicenseGate>
             }
           />
         </Routes>

@@ -33,7 +33,7 @@ import {
   adminOnlyErrorMessage,
 } from "../../../utils/apiError";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
-import { isSystemAdmin } from "../../../utils/permissions";
+import { isSystemAdmin, userCan } from "../../../utils/permissions";
 import {
   expertPaletteColor,
   parseStoredColor,
@@ -186,7 +186,8 @@ export default function CreateFromExpertDrawer({
   const { t } = useTranslation();
   const user = useCurrentUser();
   /** Host filesystem probing / bubblewrap setup are admin-only. */
-  const admin = isSystemAdmin(user);
+  const hostExecutionRestricted = !userCan(user, "terminal");
+  const admin = isSystemAdmin(user) && !hostExecutionRestricted;
   const [form] = Form.useForm<
     {
       name: string;
@@ -269,7 +270,7 @@ export default function CreateFromExpertDrawer({
       agent_id: undefined,
       welcome_message: defaults.welcome_message,
       default_model: MODEL_AUTO_VALUE,
-      backend_choice: DEFAULT_BACKEND,
+      backend_choice: hostExecutionRestricted ? "" : DEFAULT_BACKEND,
       composite_default: DEFAULT_BACKEND,
       skill_package_ids: [],
       knowledge_base_ids: [],
@@ -321,7 +322,7 @@ export default function CreateFromExpertDrawer({
     return () => {
       cancelled = true;
     };
-  }, [open, source, sourceKey, lang, form]);
+  }, [open, source, sourceKey, lang, form, hostExecutionRestricted]);
 
   useEffect(() => {
     if (!open) return;
@@ -346,17 +347,18 @@ export default function CreateFromExpertDrawer({
   const handleCreate = async () => {
     if (!source) return;
     const values = await form.validateFields();
+    const selectedBackendChoice = values.backend_choice || "";
     const stored = form.getFieldsValue(true) as {
       welcome_message?: string;
     };
-    if (values.backend_choice === "composite") {
+    if (selectedBackendChoice === "composite") {
       const pathError = validatePathMappings(pathMappings, t);
       if (pathError) {
         message.error(pathError);
         return;
       }
     }
-    if (admin && shouldProbeRootDir(values.backend_choice, values.root_dir)) {
+    if (admin && shouldProbeRootDir(selectedBackendChoice, values.root_dir)) {
       let probe;
       try {
         probe = await probeRootDir(values.root_dir ?? "/");
@@ -377,7 +379,7 @@ export default function CreateFromExpertDrawer({
     let bwrapToast: { kind: "success" | "warning"; text: string } | null = null;
     try {
       // Host-root probing and bubblewrap setup are admin-only endpoints.
-      if (admin && shouldProbeRootDir(values.backend_choice, values.root_dir)) {
+      if (admin && shouldProbeRootDir(selectedBackendChoice, values.root_dir)) {
         const bwrap = await ensureBubblewrapAfterProbe();
         const kind = ensureBwrapToastKind(bwrap.status);
         if (kind !== "none") {
@@ -385,12 +387,6 @@ export default function CreateFromExpertDrawer({
         }
       }
 
-      const backendSpec = buildBackendSpec(
-        values.backend_choice,
-        values.composite_default ?? DEFAULT_BACKEND,
-        pathMappings,
-        values.root_dir,
-      );
       const composerPatch = diffComposerFiles(
         originalFileContents,
         fileContents,
@@ -401,7 +397,17 @@ export default function CreateFromExpertDrawer({
         description: values.description || undefined,
         agent_id: values.agent_id?.trim() || undefined,
         default_model: defaultModelFromForm(values.default_model) ?? undefined,
-        backend: backendSpec,
+        ...(hostExecutionRestricted &&
+        !selectedBackendChoice.startsWith("named:")
+          ? {}
+          : {
+              backend: buildBackendSpec(
+                selectedBackendChoice,
+                values.composite_default ?? DEFAULT_BACKEND,
+                pathMappings,
+                values.root_dir,
+              ),
+            }),
         skill_package_ids: skillPackagesSupported
           ? values.skill_package_ids ?? []
           : [],
@@ -716,6 +722,7 @@ export default function CreateFromExpertDrawer({
           backendChoice={backendChoice}
           pathMappings={pathMappings}
           rootDirMode="create"
+          hostExecutionRestricted={hostExecutionRestricted}
           onAddPathMapping={addPathMapping}
           onRemovePathMapping={removePathMapping}
           onUpdatePathMapping={updatePathMapping}

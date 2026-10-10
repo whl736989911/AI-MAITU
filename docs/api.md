@@ -29,7 +29,7 @@ admin can clear the lockout with `POST /api/users/{id}/unlock-login`.
 
 ### Public endpoints (no token)
 
-`/api/docs`, `/api/openapi.json`, `/api/health`, `/api/setup/*`,
+`/api/docs`, `/api/openapi.json`, `/api/health`, `/api/license/status`, `/api/setup/*`,
 `/api/auth/login`, `/api/auth/captcha`, `/api/auth/oidc/status`, `/api/auth/oidc/start`,
 `/api/auth/oidc/callback`, `/api/auth/oidc/exchange`, `/api/auth/oauth/status`,
 `/api/auth/oauth/start`, `/api/auth/oauth/callback`, `/api/auth/oauth/exchange`,
@@ -64,6 +64,27 @@ If you serve the dashboard behind a CSP, allow
 `turing.captcha.qcloud.com`, `captcha.qq.com`, `ssl.captcha.qq.com`. Octop
 does not set these headers itself.
 
+## Instance licensing
+
+Instance authorization is independent of login and account permissions. An expired,
+revoked, unactivated, or otherwise invalid instance rejects business reads, writes,
+streams, and tasks with HTTP `403` and `INSTANCE_LICENSE_LOCKED`, including requests
+with an existing administrator JWT. Login, license recovery, and the minimal setup
+and maintenance routes remain available. Finishing setup does not grant a license.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/license/status` | public | Minimal state, lock reason, deadlines, operator contact, and server timezone; no instance identity or credentials |
+| `GET` | `/license/details` | system/enterprise admin | Public instance ID and key fingerprint, accepted revision, and latest sync attempt/result; never returns private keys or signed credentials |
+| `POST` | `/license/activate` | system/enterprise admin or pending first-run wizard | Body `{activation_code}`; one-time center registration and signed response validation; rate-limited |
+| `POST` | `/license/refresh` | system/enterprise admin or pending first-run wizard | Body `{}`; sync with the operator-controlled center; rate-limited and single-flight |
+
+Customer host capabilities remain restricted even with a valid license. This includes
+host terminal/filesystem access, deployment environment changes, custom executable
+plugins, stdio MCP servers, and arbitrary host workspace policies. Business permissions
+cannot override this deployment floor. See [deployment and recovery operations](instance-license-operations.md)
+for trusted-key configuration, activation, renewal, revocation, and backup boundaries.
+
 ## Setup & auth
 
 | Method | Path | Auth | Notes |
@@ -76,7 +97,7 @@ does not set these headers itself.
 | `POST`   | `/setup/initial-admin` | public | body `{username, password, display_name?, email?}` → `201` |
 | `POST`   | `/setup/resume-wizard` | public | Issue a fresh wizard token mid-setup |
 | `POST`   | `/setup/test-provider` | public | Ping a provider draft (kind/base_url/api_key/model) |
-| `POST`   | `/setup/finish` | public | Finalise setup and unlock the rest of the API |
+| `POST`   | `/setup/finish` | public | Finalise setup; business initialization remains deferred until the instance license is valid |
 | `GET`    | `/auth/captcha` | public | `{provider, site_key?}` for the login widget; 503 while setup is required |
 | `POST`   | `/auth/login` | public | body `{username, password, captcha_token?}` (`username` may be email) → `{access_token, role, user, ...}` |
 | `GET`    | `/auth/oidc/status` | public | OIDC login availability and provider display name |

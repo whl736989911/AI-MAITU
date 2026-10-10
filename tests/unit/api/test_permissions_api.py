@@ -59,25 +59,25 @@ def test_unknown_key_raises_at_construction() -> None:
 
 
 async def test_dependency_denies_without_permission() -> None:
-    dep = require_permission("browser")
+    dep = require_permission("users")
     with pytest.raises(OctopError) as exc:
         await dep(_request(), _user(False, []))
     assert exc.value.code is ErrorCode.FORBIDDEN
-    assert exc.value.details.get("permission") == "browser"
+    assert exc.value.details.get("permission") == "users"
 
 
 async def test_dependency_allows_admin_and_holder() -> None:
-    dep = require_permission("browser")
+    dep = require_permission("users")
     assert await dep(_request(), _user(True)) is not None
-    assert await dep(_request(), _user(False, ["browser"])) is not None
+    assert await dep(_request(), _user(False, ["users"])) is not None
 
 
 async def test_dependency_honors_org_unit_grants_and_denies() -> None:
-    dep = require_permission("browser")
-    request = _request({"eng": ["browser"]})
+    dep = require_permission("users")
+    request = _request({"eng": ["users"]})
     # A direct call does not run FastAPI's DI, so the server must be passed in.
     server = request.app.state.octop_server
     assert await dep(request, _user(False, [], org_unit="eng"), server) is not None
     with pytest.raises(OctopError) as exc:
-        await dep(request, _user(False, [], org_unit="eng", denied=["browser"]), server)
+        await dep(request, _user(False, [], org_unit="eng", denied=["users"]), server)
     assert exc.value.code is ErrorCode.FORBIDDEN

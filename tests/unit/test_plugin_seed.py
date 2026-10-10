@@ -142,37 +142,44 @@ def test_seed_adds_new_bundled_id(tmp_path: Path) -> None:
     assert set(raw["bundled_plugins_seeded"]) == {"weather", "qrcode"}
 
 
-def test_load_installed_skips_disabled_before_import(tmp_path: Path) -> None:
+def test_load_installed_skips_disabled_shipped_plugin(tmp_path: Path) -> None:
+    from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
+
+    plugin_id = "fortune"
     plugins_dir = tmp_path / "plugins"
-    _write_plugin(plugins_dir, "weather")
+    shutil.copytree(default_bundled_plugins_root() / plugin_id, plugins_dir / plugin_id)
     config_path = tmp_path / "config.json"
     config_path.write_text(
-        json.dumps({"plugins": {"weather": {"enabled": False}}}),
+        json.dumps({"plugins": {plugin_id: {"enabled": False}}}),
         encoding="utf-8",
     )
     mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-    loaded = mgr.load_installed(install_deps=False)
-    assert loaded == []
-    assert PluginRegistry().get("weather") is None
+    assert mgr.load_installed(install_deps=False) == []
+    assert PluginRegistry().get(plugin_id) is None
 
 
 def test_load_installed_clears_stale_registry_entries(tmp_path: Path) -> None:
-    other_dir = tmp_path / "other"
-    _write_plugin(other_dir, "stale")
-    PluginManager(plugins_dir=other_dir, config_path=tmp_path / "other.json").load_installed(
+    from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
+
+    bundled = default_bundled_plugins_root()
+    stale_id = "fortune"
+    stale_dir = tmp_path / "stale"
+    shutil.copytree(bundled / stale_id, stale_dir / stale_id)
+    PluginManager(plugins_dir=stale_dir, config_path=tmp_path / "stale.json").load_installed(
         install_deps=False,
     )
-    assert PluginRegistry().get("stale") is not None
+    assert PluginRegistry().get(stale_id) is not None
 
+    fresh_id = "qrcode"
     plugins_dir = tmp_path / "plugins"
-    _write_plugin(plugins_dir, "weather")
+    shutil.copytree(bundled / fresh_id, plugins_dir / fresh_id)
     loaded = PluginManager(
         plugins_dir=plugins_dir,
         config_path=tmp_path / "config.json",
     ).load_installed(install_deps=False)
-    assert [item.manifest.id for item in loaded] == ["weather"]
-    assert PluginRegistry().get("stale") is None
-    assert PluginRegistry().get("weather") is not None
+    assert [item.manifest.id for item in loaded] == [fresh_id]
+    assert PluginRegistry().get(stale_id) is None
+    assert PluginRegistry().get(fresh_id) is not None
 
 
 def test_seed_refuses_corrupt_config_and_preserves_bytes(tmp_path: Path) -> None:

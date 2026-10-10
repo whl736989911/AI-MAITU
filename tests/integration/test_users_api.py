@@ -126,12 +126,10 @@ async def test_admin_can_unlock_login(env):
     assert r.status_code == 200
 
 
-async def test_admin_can_create_user_with_resource_policy(env, tmp_path, monkeypatch):
-    monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
+async def test_admin_can_create_user_with_token_quota(env):
+    """Token quota stays a normal admin write; the workspace root is not."""
     c, _srv, auth = env
     await ensure_test_org_unit(c, auth)
-    jail = tmp_path / "jail"
-    jail.mkdir()
 
     r = await c.post(
         "/api/users",
@@ -141,23 +139,22 @@ async def test_admin_can_create_user_with_resource_policy(env, tmp_path, monkeyp
             "password": "TestPass12",
             "role": "user",
             "org_unit": "test-unit",
-            "workspace_root_dir": jail.as_posix(),
             "token_quota": 2000,
         },
     )
     assert r.status_code == 201, r.text
     body = r.json()
-    assert body["workspace_root_dir"] == jail.resolve().as_posix()
+    assert body["workspace_root_dir"] is None
     assert body["token_quota"] == 2000
 
     listed = (await c.get("/api/users", headers=auth)).json()
     row = next(u for u in listed if u["username"] == "policy_create")
-    assert row["workspace_root_dir"] == jail.resolve().as_posix()
+    assert row["workspace_root_dir"] is None
     assert row["token_quota"] == 2000
 
 
-async def test_create_user_rejects_workspace_root_in_container(env, tmp_path, monkeypatch):
-    monkeypatch.setenv("OCTOP_IN_CONTAINER", "1")
+async def test_create_user_rejects_workspace_root_policy(env, tmp_path):
+    """A custom workspace root is a host-floor violation on the create path too."""
     c, _srv, auth = env
     await ensure_test_org_unit(c, auth)
     jail = tmp_path / "jail"
@@ -174,80 +171,53 @@ async def test_create_user_rejects_workspace_root_in_container(env, tmp_path, mo
             "workspace_root_dir": jail.as_posix(),
         },
     )
-    assert r.status_code == 400, r.text
-    assert r.json()["error"]["code"] == "WORKSPACE_ROOT_CONTAINER_UNSUPPORTED"
+    assert r.status_code == 403, r.text
+    assert r.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
     listed = (await c.get("/api/users", headers=auth)).json()
     assert "policy_container" not in [u["username"] for u in listed]
 
 
-async def test_create_user_rejects_invalid_workspace_root(env, tmp_path, monkeypatch):
-    monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
-    c, _srv, auth = env
-    await ensure_test_org_unit(c, auth)
-    missing = tmp_path / "no-such-dir"
-
-    r = await c.post(
-        "/api/users",
-        headers=auth,
-        json={
-            "username": "bad_root",
-            "password": "TestPass12",
-            "role": "user",
-            "org_unit": "test-unit",
-            "workspace_root_dir": missing.as_posix(),
-        },
-    )
-    assert r.status_code == 400, r.text
-    listed = (await c.get("/api/users", headers=auth)).json()
-    assert "bad_root" not in [u["username"] for u in listed]
-
-
-async def test_admin_can_set_resource_policy(env, tmp_path, monkeypatch):
-    monkeypatch.setenv("OCTOP_IN_CONTAINER", "0")
+async def test_admin_cannot_set_host_resource_policy(env, tmp_path):
     from tests.support.auth import TEST_PASSWORD, create_user
 
     c, _srv, auth = env
-    jail = tmp_path / "jail"
-    nested = jail / "ok"
-    outside = tmp_path / "outside"
-    jail.mkdir()
-    nested.mkdir()
-    outside.mkdir()
-
+    root = tmp_path / "customer-root"
+    root.mkdir()
     user_auth = await create_user(c, auth, username="policy_user", password=TEST_PASSWORD)
-    listed = (await c.get("/api/users", headers=auth)).json()
-    row = next(u for u in listed if u["username"] == "policy_user")
+    row = next(
+        user
+        for user in (await c.get("/api/users", headers=auth)).json()
+        if user["username"] == "policy_user"
+    )
     uid = row["id"]
     assert row["workspace_root_dir"] is None
-    assert row["token_quota"] is None
 
-    r = await c.patch(
+    denied = await c.patch(
         f"/api/users/{uid}",
         headers=auth,
-        json={"workspace_root_dir": jail.as_posix(), "token_quota": 1000},
+        json={"workspace_root_dir": root.as_posix()},
     )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["workspace_root_dir"] == jail.resolve().as_posix()
-    assert body["token_quota"] == 1000
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    current = await c.get(f"/api/users/{uid}", headers=auth)
+    assert current.json()["workspace_root_dir"] is None
 
-    ok = await c.post(
-        "/api/agents",
-        headers=user_auth,
-        json={
-            "name": "inside-root",
-            "config": {
-                "backend": {
-                    "type": "local_shell",
-                    "virtual_mode": True,
-                    "root_dir": nested.as_posix(),
-                }
-            },
-        },
+    # A patch mixing the forbidden field with a legitimate one must fail whole:
+    # the rejection happens before any write, so not even the fields that would
+    # have been fine on their own are applied.
+    denied_mixed = await c.patch(
+        f"/api/users/{uid}",
+        headers=auth,
+        json={"workspace_root_dir": root.as_posix(), "token_quota": 5000},
     )
-    assert ok.status_code == 201, ok.text
+    assert denied_mixed.status_code == 403, denied_mixed.text
+    assert denied_mixed.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    unchanged = await c.get(f"/api/users/{uid}", headers=auth)
+    assert unchanged.json()["workspace_root_dir"] is None
+    assert unchanged.json()["token_quota"] is None
 
-    denied = await c.post(
+    before = (await c.get("/api/agents", headers=user_auth)).json()
+    denied_backend = await c.post(
         "/api/agents",
         headers=user_auth,
         json={
@@ -256,22 +226,14 @@ async def test_admin_can_set_resource_policy(env, tmp_path, monkeypatch):
                 "backend": {
                     "type": "local_shell",
                     "virtual_mode": True,
-                    "root_dir": outside.as_posix(),
+                    "root_dir": root.as_posix(),
                 }
             },
         },
     )
-    assert denied.status_code == 400, denied.text
-    assert denied.json()["error"]["code"] == "WORKSPACE_ROOT_RESTRICTED"
-
-    r = await c.patch(
-        f"/api/users/{uid}",
-        headers=auth,
-        json={"workspace_root_dir": None, "token_quota": None},
-    )
-    assert r.status_code == 200
-    assert r.json()["workspace_root_dir"] is None
-    assert r.json()["token_quota"] is None
+    assert denied_backend.status_code == 403, denied_backend.text
+    assert denied_backend.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    assert (await c.get("/api/agents", headers=user_auth)).json() == before
 
 
 async def test_user_org_unit_roundtrip(env):
@@ -505,12 +467,12 @@ async def test_users_key_alone_cannot_move_the_authorization_boundary(env):
     # itself away from a colleague — same tier as the binding above.
     assert (
         await c.patch(
-            f"/api/users/{victim_id}", headers=support, json={"denied_permissions": ["browser"]}
+            f"/api/users/{victim_id}", headers=support, json={"denied_permissions": ["features"]}
         )
     ).status_code == 403
     assert (
         await c.patch(
-            f"/api/users/{me['id']}", headers=support, json={"denied_permissions": ["browser"]}
+            f"/api/users/{me['id']}", headers=support, json={"denied_permissions": ["features"]}
         )
     ).status_code == 403
     assert (
@@ -649,8 +611,8 @@ async def test_admin_can_still_administer_accounts(env):
 
     # Denies are the admin's write too, at creation and by later edit.
     assert (
-        await c.patch(f"/api/users/{uid}", headers=auth, json={"denied_permissions": ["browser"]})
-    ).json()["denied_permissions"] == ["browser"]
+        await c.patch(f"/api/users/{uid}", headers=auth, json={"denied_permissions": ["features"]})
+    ).json()["denied_permissions"] == ["features"]
 
     resident = await c.post(
         "/api/users",
@@ -704,24 +666,24 @@ async def test_denied_permissions_roundtrip_and_tristate(env):
             "password": TEST_PASSWORD,
             "role": "user",
             "org_unit": "test-unit",
-            "permissions": ["browser"],
-            "denied_permissions": ["browser"],
+            "permissions": ["features"],
+            "denied_permissions": ["features"],
         },
     )
     assert created.status_code == 201, created.text
-    assert created.json()["denied_permissions"] == ["browser"]
+    assert created.json()["denied_permissions"] == ["features"]
     uid = created.json()["id"]
 
     listed = (await c.get("/api/users", headers=auth)).json()
-    assert next(u for u in listed if u["id"] == uid)["denied_permissions"] == ["browser"]
+    assert next(u for u in listed if u["id"] == uid)["denied_permissions"] == ["features"]
     assert (await c.get(f"/api/users/{uid}", headers=auth)).json()["denied_permissions"] == [
-        "browser"
+        "features"
     ]
 
     # Omitted field: kept (an unrelated edit does not hand the key back).
     kept = await c.patch(f"/api/users/{uid}", headers=auth, json={"display_name": "Alice"})
     assert kept.json()["display_name"] == "Alice"
-    assert kept.json()["denied_permissions"] == ["browser"]
+    assert kept.json()["denied_permissions"] == ["features"]
 
     # Explicit ``null`` and an empty list both clear.
     assert (
@@ -746,7 +708,7 @@ async def test_deny_outranks_department_and_grant(env):
         headers=auth,
         json={"key": "sales", "label_zh": "销售部", "label_en": "Sales"},
     )
-    alice = await create_user(c, auth, username="alice", permissions=["browser", "channels"])
+    alice = await create_user(c, auth, username="alice", permissions=["features", "channels"])
     uid = await resolve_user_id(c, auth, "alice")
 
     # Department leg: the unit grants ``users``; alice carries two direct grants.
@@ -759,17 +721,17 @@ async def test_deny_outranks_department_and_grant(env):
         await c.patch(f"/api/users/{uid}", headers=auth, json={"org_unit": "sales"})
     ).status_code == 200
     before = set((await c.get("/api/auth/me", headers=alice)).json()["permissions"])
-    assert {"browser", "channels", "users"} <= before
+    assert {"features", "channels", "users"} <= before
     assert (await c.get("/api/users", headers=alice)).status_code == 200
 
     denied = await c.patch(
-        f"/api/users/{uid}", headers=auth, json={"denied_permissions": ["users", "browser"]}
+        f"/api/users/{uid}", headers=auth, json={"denied_permissions": ["users", "features"]}
     )
     assert denied.status_code == 200, denied.text
 
     after = set((await c.get("/api/auth/me", headers=alice)).json()["permissions"])
     assert "users" not in after  # outranks the department grant
-    assert "browser" not in after  # outranks the direct grant
+    assert "features" not in after  # outranks the direct grant
     assert "channels" in after  # a key the deny does not name is untouched
     # The module really closes, not just the profile payload.
     assert (await c.get("/api/users", headers=alice)).status_code == 403
@@ -778,7 +740,7 @@ async def test_deny_outranks_department_and_grant(env):
     # hands both back, department grant included.
     await c.patch(f"/api/users/{uid}", headers=auth, json={"denied_permissions": None})
     restored = set((await c.get("/api/auth/me", headers=alice)).json()["permissions"])
-    assert {"browser", "channels", "users"} <= restored
+    assert {"features", "channels", "users"} <= restored
     assert (await c.get("/api/users", headers=alice)).status_code == 200
 
 
@@ -812,7 +774,7 @@ async def test_deny_rejects_unknown_key_and_stores_nothing(env):
                 "password": TEST_PASSWORD,
                 "role": "user",
                 "org_unit": "test-unit",
-                "denied_permissions": ["browser"],
+                "denied_permissions": ["features"],
             },
         )
     ).json()["id"]
@@ -823,7 +785,7 @@ async def test_deny_rejects_unknown_key_and_stores_nothing(env):
     assert bad.status_code == 400, bad.text
     # The refused write left the stored denies exactly as they were.
     assert (await c.get(f"/api/users/{uid}", headers=auth)).json()["denied_permissions"] == [
-        "browser"
+        "features"
     ]
 
     refused = await c.post(
@@ -860,7 +822,7 @@ async def test_department_granted_key_is_assignable(env):
     granted = await c.put(
         "/api/org-units/sales/permissions",
         headers=auth,
-        json={"permissions": ["terminal"]},
+        json={"permissions": ["features"]},
     )
     assert granted.status_code == 200, granted.text
 
@@ -877,13 +839,13 @@ async def test_department_granted_key_is_assignable(env):
     ).status_code == 200
 
     # Exactly the set the editor renders as checkboxes: department included.
-    assert "terminal" in (await c.get("/api/auth/me", headers=lead)).json()["permissions"]
+    assert "features" in (await c.get("/api/auth/me", headers=lead)).json()["permissions"]
 
     patched = await c.patch(
-        f"/api/users/{member_id}", headers=lead, json={"permissions": ["terminal"]}
+        f"/api/users/{member_id}", headers=lead, json={"permissions": ["features"]}
     )
     assert patched.status_code == 200, patched.text
-    assert "terminal" in patched.json()["permissions"]
+    assert "features" in patched.json()["permissions"]
 
     # The same grant through the other call site (create).
     created = await c.post(
@@ -893,28 +855,28 @@ async def test_department_granted_key_is_assignable(env):
             "username": "handover",
             "password": TEST_PASSWORD,
             "role": "user",
-            "permissions": ["terminal"],
+            "permissions": ["features"],
             "org_unit": "sales",
         },
     )
     assert created.status_code == 201, created.text
-    assert created.json()["permissions"] == ["terminal"]
+    assert created.json()["permissions"] == ["features"]
 
     # Held keys only, still: the department grant does not widen the guard into
     # "anything goes".
     refused = await c.patch(
-        f"/api/users/{member_id}", headers=lead, json={"permissions": ["terminal", "security"]}
+        f"/api/users/{member_id}", headers=lead, json={"permissions": ["features", "security"]}
     )
     assert refused.status_code == 403, refused.text
     assert refused.json()["error"]["details"]["missing"] == ["security"]
     assert (await c.get(f"/api/users/{member_id}", headers=auth)).json()["permissions"] == [
-        "terminal"
+        "features"
     ]
 
-    # Both grant surfaces resolve the same set for this actor now: the editor's
-    # PATCH accepts ``terminal``, and the department's own PUT re-submits it.
+    # Both grant surfaces resolve the same allowed business key: the editor's
+    # PATCH accepts it, and the department's own PUT re-submits it.
     re_granted = await c.put(
-        "/api/org-units/sales/permissions", headers=lead, json={"permissions": ["terminal"]}
+        "/api/org-units/sales/permissions", headers=lead, json={"permissions": ["features"]}
     )
     assert re_granted.status_code == 200, re_granted.text
 
@@ -938,7 +900,7 @@ async def test_denied_key_cannot_be_passed_on(env):
         json={"key": "ops2", "label_zh": "运维二组", "label_en": "Ops Two"},
     )
     operator = await create_user(
-        c, auth, username="operator", role="unit_admin", permissions=["users", "terminal"]
+        c, auth, username="operator", role="unit_admin", permissions=["users", "features"]
     )
     operator_id = await resolve_user_id(c, auth, "operator")
     await create_user(c, auth, username="member")
@@ -950,20 +912,20 @@ async def test_denied_key_cannot_be_passed_on(env):
         await c.patch(f"/api/users/{member_id}", headers=auth, json={"org_unit": "ops2"})
     ).status_code == 200
     denied = await c.patch(
-        f"/api/users/{operator_id}", headers=auth, json={"denied_permissions": ["terminal"]}
+        f"/api/users/{operator_id}", headers=auth, json={"denied_permissions": ["features"]}
     )
     assert denied.status_code == 200, denied.text
 
     held = (await c.get("/api/auth/me", headers=operator)).json()["permissions"]
-    assert "terminal" not in held
+    assert "features" not in held
     assert "users" in held
     before = (await c.get(f"/api/users/{member_id}", headers=auth)).json()["permissions"]
 
     refused = await c.patch(
-        f"/api/users/{member_id}", headers=operator, json={"permissions": ["terminal"]}
+        f"/api/users/{member_id}", headers=operator, json={"permissions": ["features"]}
     )
     assert refused.status_code == 403, refused.text
-    assert refused.json()["error"]["details"]["missing"] == ["terminal"]
+    assert refused.json()["error"]["details"]["missing"] == ["features"]
     # Refused means nothing was written.
     assert (await c.get(f"/api/users/{member_id}", headers=auth)).json()["permissions"] == before
 
@@ -1107,7 +1069,7 @@ async def test_enterprise_admin_is_bounded_to_its_enterprise(env):
     staff = await resolve_user_id(c, auth, "acme-staff")
     assert (
         await c.patch(
-            f"/api/users/{staff}", headers=leader, json={"denied_permissions": ["browser"]}
+            f"/api/users/{staff}", headers=leader, json={"denied_permissions": ["features"]}
         )
     ).status_code == 403
 
@@ -1249,26 +1211,52 @@ async def test_admin_scope_is_unchanged_and_it_creates_unbound_accounts(env):
 
 async def test_permission_catalog_reports_can_grant_and_dynamic(env):
     """Design §4.1: key, label, dynamic flag, and whether *this* operator may grant it."""
-    from tests.support.auth import create_user
+    from tests.support.auth import TEST_PASSWORD, create_user
 
     c, _srv, auth = env
     catalog = (await c.get("/api/users/permissions", headers=auth)).json()
     by_key = {item["key"]: item for item in catalog}
     # Every item carries the shape the editor needs, and the keys the catalog
     # gained in this round are all there.
-    for key in ("mbti", "experts", "features", "acp", "channel_feishu"):
+    for key in ("mbti", "experts", "features", "channel_feishu"):
         assert key in by_key
         assert by_key[key]["label"]
         assert by_key[key]["category"] in {"settings", "control", "admin"}
         assert by_key[key]["can_grant"] is True  # a system administrator grants all
     assert by_key["channel_feishu"]["dynamic"] is True
     assert by_key["channels"]["dynamic"] is False
+    assert not {"terminal", "desktop", "browser", "mobile", "acp", "plugins"} & by_key.keys()
 
     # A department administrator sees what it may hand out, and only that: the
     # department's ``users`` grant is inside its held set, ``providers`` is not.
-    await c.post(
-        "/api/org-units", headers=auth, json={"key": "cat-ops", "label_zh": "甲", "label_en": "A"}
+    org_unit = await c.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "cat-ops", "label_zh": "甲", "label_en": "A"},
     )
+    assert org_unit.status_code == 201
+    unsafe = await c.put(
+        "/api/org-units/cat-ops/permissions",
+        headers=auth,
+        json={"permissions": ["terminal"]},
+    )
+    assert unsafe.status_code == 403, unsafe.text
+    assert unsafe.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    unsafe_user = await c.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "unsafe-grant",
+            "password": TEST_PASSWORD,
+            "role": "user",
+            "permissions": ["terminal"],
+        },
+    )
+    assert unsafe_user.status_code == 403, unsafe_user.text
+    assert unsafe_user.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    assert "unsafe-grant" not in [
+        user["username"] for user in (await c.get("/api/users", headers=auth)).json()
+    ]
     await c.put("/api/org-units/cat-ops/permissions", headers=auth, json={"permissions": ["users"]})
     lead = await create_user(c, auth, username="cat-lead", role="unit_admin", permissions=["users"])
     uid = next(

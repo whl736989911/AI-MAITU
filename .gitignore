@@ -108,6 +108,10 @@ scripts/lh_image_install_octop_tencentos.sh
 # Local dev runtime home (OCTOP_HOME) — never commit
 .runtime/
 
+# Standalone license-center frontend build outputs (not its source dashboard/)
+services/license-center/license_center/dashboard/
+services/license-center/dashboard/*.tsbuildinfo
+
 # Tool scratch directories (session-local, never part of the product)
 .jspace/
 .omx/

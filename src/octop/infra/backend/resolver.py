@@ -84,6 +84,13 @@ def resolve_agent_backend_spec(
     """Expand ``named`` refs (and composite trees) into harness-ready specs."""
     if spec is None:
         return None
+    if isinstance(spec, str):
+        if spec.startswith("named:"):
+            return resolve_agent_backend_spec(
+                {"type": "named", "name": spec.partition(":")[2]},
+                repo=repo,
+            )
+        return spec
     if not isinstance(spec, dict):
         return spec
 

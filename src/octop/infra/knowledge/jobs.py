@@ -25,6 +25,7 @@ from octop.infra.knowledge.sources import SourceConnector
 logger = logging.getLogger(__name__)
 
 _running_jobs: dict[tuple[str, str], asyncio.Task[None]] = {}
+_index_paused = False
 
 
 INDEX_CONCURRENCY = 1
@@ -95,6 +96,9 @@ def _source_path(
 
 def process_document(services: Any, kb_id: str, doc_id: str) -> None:
     """Synchronously parse, embed, and atomically replace one platform document."""
+    from octop.infra.licensing import current_license
+
+    current_license().require_business_access()
     _process(
         services,
         kb_id,
@@ -112,6 +116,9 @@ def process_source_file(
     source_path: str,
 ) -> None:
     """The same chain for a file that lives in a source rather than in storage."""
+    from octop.infra.licensing import current_license
+
+    current_license().require_business_access()
     _process(
         services,
         kb_id,
@@ -268,11 +275,27 @@ def enqueue_index_document(services: Any, kb_id: str, doc_id: str) -> asyncio.Ta
     sem = _get_index_semaphore()
 
     async def _run() -> None:
-        async with sem:
-            while await loop.run_in_executor(
-                None, _process_current_document, services, kb_id, doc_id
-            ):
-                pass
+        from octop.infra.licensing import current_license
+
+        if _index_paused:
+            return
+        license_service = current_license()
+        if not license_service.allowed:
+            return
+        async with license_service.business_task(), sem:
+            while not _index_paused:
+                worker = loop.run_in_executor(
+                    None, _process_current_document, services, kb_id, doc_id
+                )
+                try:
+                    more = await asyncio.shield(worker)
+                except asyncio.CancelledError:
+                    # A running thread cannot be stopped. Let its transaction finish
+                    # before the tracked business task exits.
+                    await asyncio.shield(worker)
+                    raise
+                if not more:
+                    return
 
     task = asyncio.create_task(_run())
     _running_jobs[key] = task
@@ -289,8 +312,33 @@ def enqueue_index_document(services: Any, kb_id: str, doc_id: str) -> asyncio.Ta
     return task
 
 
+async def pause_index_jobs() -> None:
+    """Stop queued indexing and await in-flight document transactions."""
+    global _index_paused
+    _index_paused = True
+    running = tuple(_running_jobs.values())
+    for task in running:
+        if not task.done():
+            task.cancel()
+    if running:
+        await asyncio.gather(*running, return_exceptions=True)
+
+
+def resume_index_jobs(services: Any) -> None:
+    """Resume durable pending indexing after business access is restored."""
+    global _index_paused
+    from octop.infra.licensing import current_license
+
+    current_license().require_business_access()
+    _index_paused = False
+    resume_pending_index_jobs(services)
+
+
 def reindex_all_documents(services: Any, embedding_model: str) -> None:
     """Reset every index to use ``embedding_model`` and schedule fresh work."""
+    from octop.infra.licensing import current_license
+
+    current_license().require_business_access()
     documents = services.knowledge_repo.reindex_all_documents(embedding_model)
     for document in documents:
         enqueue_index_document(services, document.kb_id, document.id)
@@ -298,6 +346,10 @@ def reindex_all_documents(services: Any, embedding_model: str) -> None:
 
 def resume_pending_index_jobs(services: Any) -> None:
     """Resume pending work and jobs interrupted by a prior process shutdown."""
+    from octop.infra.licensing import current_license
+
+    if not current_license().allowed:
+        return
     documents = services.knowledge_repo.resume_pending_documents()
     for document in documents:
         enqueue_index_document(services, document.kb_id, document.id)

@@ -88,6 +88,10 @@ def _isolated_user_home(
         "OCTOP_CAPTCHA_SITE_KEY",
         "OCTOP_CAPTCHA_SECRET",
         "OCTOP_CAPTCHA_V3_MIN_SCORE",
+        "OCTOP_LICENSE_SERVER_URL",
+        "OCTOP_LICENSE_TRUST_FILE",
+        "OCTOP_LICENSE_CA_FILE",
+        "OCTOP_LICENSE_CONTACT",
     ):
         monkeypatch.delenv(key, raising=False)
     return home
@@ -99,3 +103,35 @@ def tmp_octop_home(_isolated_user_home: Path) -> Iterator[Path]:
     octop = _isolated_user_home / ".octop"
     octop.mkdir(exist_ok=True)
     yield octop
+
+
+@pytest.fixture
+def signed_active_license(_isolated_user_home: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Use real signed credentials for business tests, never a fake allow gate."""
+    import json
+
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+
+    import octop.infra.licensing.service as license_module
+    import octop.infra.server as server_module
+    from tests.support.licensing import provision_license, public_key_pem
+
+    signer = Ed25519PrivateKey.generate()
+    trust_file = _isolated_user_home / "test-license-public.json"
+    trust_file.write_text(json.dumps({"test": public_key_pem(signer)}), encoding="utf-8")
+    monkeypatch.setenv("OCTOP_LICENSE_TRUST_FILE", str(trust_file))
+    service = provision_license(_isolated_user_home / "test-license-state", signer=signer)
+    monkeypatch.setattr(license_module, "_CURRENT", service)
+
+    def licensed_service(home: Path, **kwargs: Any) -> Any:
+        return provision_license(home, signer=signer, server_url=kwargs.get("server_url"))
+
+    monkeypatch.setattr(server_module, "LicenseService", licensed_service)
+    return service
+
+
+@pytest.fixture(autouse=True)
+def _signed_business_authorization(request: pytest.FixtureRequest) -> None:
+    if "/licensing/" in request.node.nodeid or request.node.get_closest_marker("license_isolation"):
+        return
+    request.getfixturevalue("signed_active_license")

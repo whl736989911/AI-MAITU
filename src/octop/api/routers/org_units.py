@@ -345,19 +345,21 @@ async def set_org_unit_permissions(
     except ValueError as exc:
         # Same 400 shape the user editor uses for an unknown module key.
         raise OctopError(ErrorCode.FORBIDDEN, str(exc), status=400) from exc
-    if not scope.is_system_admin:
-        # Delegation, not self-escalation: an administrator may only hand out
-        # keys it holds. Same rule and same function as the user editor
-        # (``users._assert_can_assign``), resolved in the scope of *this*
-        # department — its own grants and its ancestors' — because ``PUT``
-        # replaces the whole set, so its admin must be able to re-submit the
-        # grants the department already carries.
-        assert_can_grant(
-            actor,
-            keys,
-            unit_grants=unit_permissions(unit_key, repo),
-            details={"unit_key": unit_key},
-        )
+    # Delegation, not self-escalation: an administrator may only hand out keys
+    # it holds — and *nobody*, system admin included, may hand out a restricted
+    # deployment capability. The host-floor check inside ``assert_can_grant``
+    # runs before its admin bypass, which is exactly why this call is
+    # unconditional. Same rule and same function as the user editor
+    # (``users._assert_can_assign``), resolved in the scope of *this*
+    # department — its own grants and its ancestors' — because ``PUT``
+    # replaces the whole set, so its admin must be able to re-submit the
+    # grants the department already carries.
+    assert_can_grant(
+        actor,
+        keys,
+        unit_grants=unit_permissions(unit_key, repo),
+        details={"unit_key": unit_key},
+    )
     repo.set_grants(unit_key, keys)
     # A department grant is the "unit" leg of every member's effective set, so
     # this write can revoke a ``channel_<kind>`` for a whole subtree at once;

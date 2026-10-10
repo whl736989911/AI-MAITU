@@ -61,7 +61,6 @@ _SQLITE_DB_ARC = f"{_DB_DIR}/octop.db"
 _PG_DUMP_ARC = f"{_DB_DIR}/octop.dump"
 _MIGRATION_VERSION_SUFFIX = "-migrated-from-lightclaw"
 
-# Align with workspace zip export; keep backups smaller / faster.
 _SKIP_DIR_NAMES = frozenset(
     {
         ".git",
@@ -77,8 +76,63 @@ _SKIP_DIR_NAMES = frozenset(
         ".turbo",
         "dist",
         "build",
+        "license",
     }
 )
+
+_PROTECTED_ENV_PREFIX = "OCTOP_LICENSE_"
+_PROTECTED_ENV_NAMES = frozenset(
+    {
+        "OCTOP_LICENSE_SERVER_URL",
+        "OCTOP_LICENSE_TRUST_FILE",
+        "OCTOP_LICENSE_CA_FILE",
+        "OCTOP_LICENSE_CONTACT",
+    }
+)
+
+
+def _filtered_env_file(source: Path, dest: Path) -> None:
+    """Copy ordinary deployment variables without exporting license trust config."""
+    lines = source.read_text(encoding="utf-8").splitlines()
+    kept = [
+        line
+        for line in lines
+        if not any(line.lstrip().startswith(f"{name}=") for name in _PROTECTED_ENV_NAMES)
+        and not line.lstrip().startswith(_PROTECTED_ENV_PREFIX)
+    ]
+    dest.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+
+
+def _filtered_config_file(source: Path, dest: Path) -> None:
+    """Drop license/trust configuration if present in legacy config archives."""
+    raw = json.loads(source.read_text(encoding="utf-8"))
+    if isinstance(raw, dict):
+        for key in tuple(raw):
+            normalized = str(key).casefold().replace("-", "_")
+            if normalized.startswith(("license", "instance_license")) or normalized in {
+                "trust_file",
+                "ca_file",
+            }:
+                raw.pop(key, None)
+    dest.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _restore_env_preserving_license(source: Path, dest: Path) -> None:
+    """Restore archived environment settings while retaining local trust values."""
+    preserved: dict[str, str] = {}
+    if dest.is_file():
+        for line in dest.read_text(encoding="utf-8").splitlines():
+            stripped = line.lstrip()
+            if stripped.startswith(_PROTECTED_ENV_PREFIX) and "=" in stripped:
+                name = stripped.split("=", 1)[0]
+                preserved[name] = line
+    lines = [
+        line
+        for line in source.read_text(encoding="utf-8").splitlines()
+        if not line.lstrip().startswith(_PROTECTED_ENV_PREFIX)
+    ]
+    lines.extend(preserved.values())
+    dest.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
 def _timestamp() -> str:
@@ -275,11 +329,11 @@ def create_system_backup(
             if include_config and paths.config.is_file():
                 cfg_dir = root / _CONFIG_DIR
                 cfg_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(paths.config, cfg_dir / "config.json")
+                _filtered_config_file(paths.config, cfg_dir / "config.json")
             if include_config and env_path.is_file():
                 cfg_dir = root / _CONFIG_DIR
                 cfg_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(env_path, cfg_dir / "env")
+                _filtered_env_file(env_path, cfg_dir / "env")
 
             with tarfile.open(partial, mode="w:gz") as tf:
                 tf.add(manifest_path, arcname=_MANIFEST_NAME)
@@ -556,12 +610,12 @@ def restore_system_backup(
             cfg_path = extracted / _CONFIG_DIR / "config.json"
             if cfg_path.is_file():
                 paths.config.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(cfg_path, paths.config)
+                _filtered_config_file(cfg_path, paths.config)
             env_blob_path = extracted / _CONFIG_DIR / "env"
             if env_blob_path.is_file():
                 env_path = env_file_path(paths.root)
                 env_path.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(env_blob_path, env_path)
+                _restore_env_preserving_license(env_blob_path, env_path)
 
         # Migration ownership remap must run after the target owner exists and
         # before pruning backup placeholder users (avoids ON DELETE CASCADE).

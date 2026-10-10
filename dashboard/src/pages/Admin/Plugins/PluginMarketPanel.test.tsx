@@ -10,9 +10,8 @@
  * the card data (name / kind / requirements) still on screen, and retrying
  * recovers.
  *
- * Also pins the admin-only rule for the market's write action: without the
- * `plugins` permission the install button is absent — not rendered disabled —
- * while the read-only card stays browsable.
+ * Without the effective `plugins` grant, installation is unavailable even
+ * to system administrators.
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -144,47 +143,22 @@ describe("<PluginMarketPanel />", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("does not call a landed install failed when the drawer refresh fails", async () => {
-    marketList.mockResolvedValue({ items: [plugin({ installed: false })] });
-    marketGet.mockRejectedValue(new Error("market detail unavailable"));
-    marketInstall.mockResolvedValue({
-      ...plugin(),
-      installed: true,
-      enabled: true,
-    });
-
-    renderPanel(ADMIN);
-    await userEvent.click(await screen.findByText("plugins.viewDetails"));
-    await detailAlert();
-
-    // Install from the open drawer, then fail only the follow-up re-read.
-    await userEvent.click(
-      within(screen.getByRole("dialog")).getByRole("button", {
-        name: "plugins.marketInstall",
-      }),
-    );
-
-    await detailAlert();
-    expect(
-      screen.queryByText("plugins.marketToolsPending"),
-    ).not.toBeInTheDocument();
-    expect(marketInstall).toHaveBeenCalledWith("fortune");
-  });
-
-  it("offers install to a plugin admin and only browsing without the permission", async () => {
-    marketList.mockResolvedValue({ items: [plugin({ installed: false })] });
-
-    const { unmount } = renderPanel(ADMIN);
-    expect(
-      await screen.findByRole("button", { name: "plugins.marketInstall" }),
-    ).toBeEnabled();
-    unmount();
-
-    renderPanel(READER);
-    await screen.findByText(ZH_NAME);
-    expect(
-      screen.queryByRole("button", { name: "plugins.marketInstall" }),
-    ).not.toBeInTheDocument();
-    expect(screen.getByText("plugins.viewDetails")).toBeInTheDocument();
-  });
+  it.each([ADMIN, READER])(
+    "does not expose installation without the effective grant ($role)",
+    async (user) => {
+      marketList.mockResolvedValue({ items: [plugin({ installed: false })] });
+      renderPanel(user);
+      await screen.findByText(ZH_NAME);
+      expect(
+        screen.queryByRole("button", { name: "plugins.marketInstall" }),
+      ).not.toBeInTheDocument();
+      await userEvent.click(screen.getByText("plugins.viewDetails"));
+      expect(
+        within(screen.getByRole("dialog")).queryByRole("button", {
+          name: "plugins.marketInstall",
+        }),
+      ).not.toBeInTheDocument();
+      expect(marketInstall).not.toHaveBeenCalled();
+    },
+  );
 });

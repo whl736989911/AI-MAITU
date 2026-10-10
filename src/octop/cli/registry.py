@@ -45,5 +45,10 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
         "acp_cmd",
         "Run MAITU Smart Manufacturing agent as ACP server (stdio).",
     ),
+    "license": (
+        ".commands.license",
+        "license",
+        "Check, activate, and refresh this instance license.",
+    ),
     "plugin": (".commands.plugin", "plugin", "Install and manage plugins."),
 }
