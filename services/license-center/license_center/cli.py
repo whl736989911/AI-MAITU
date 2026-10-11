@@ -14,6 +14,8 @@ import typer
 import uvicorn
 from argon2 import PasswordHasher
 
+from . import storage
+from .connection import create_bundle, encode_bundle, validate_ca_file
 from .crypto import encrypt_secret, generate_signing_key, new_totp_secret, valid_totp
 from .storage import DATA_DIR, DB_PATH, audit, connect, migrate, now, transaction
 
@@ -259,6 +261,68 @@ def export_trust(
         temporary.chmod(0o644)
     os.replace(temporary, destination)
     typer.echo(f"Public trust set exported to {destination}")
+
+
+@app.command("export-connection")
+def export_connection(
+    destination: Annotated[Path, typer.Argument(writable=True)],
+    server_url: str = typer.Option(..., "--server-url"),
+    ca_file: Annotated[Path | None, typer.Option("--ca-file", exists=True, dir_okay=False)] = None,
+    confirm: bool = typer.Option(False, "--confirm"),
+) -> None:
+    """Export public center connection settings for platform deployment."""
+    try:
+        ca_certificate_pem = validate_ca_file(ca_file) if ca_file is not None else None
+        if not storage.DB_PATH.is_file():
+            raise typer.BadParameter("No signing keys are initialized")
+        reader = sqlite3.connect(storage.DB_PATH.as_uri() + "?mode=ro", uri=True)
+        try:
+            reader.row_factory = sqlite3.Row
+            rows = reader.execute(
+                "SELECT kid,public_pem FROM signing_keys ORDER BY created_at"
+            ).fetchall()
+        finally:
+            reader.close()
+        bundle = create_bundle(
+            server_url,
+            {row["kid"]: row["public_pem"] for row in rows},
+            ca_certificate_pem,
+        )
+        encoded = encode_bundle(bundle)
+    except (ValueError, OSError, sqlite3.Error) as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    destination = destination.expanduser().absolute()
+    if destination.is_symlink():
+        raise typer.BadParameter("Refusing to overwrite a symbolic link")
+    if destination.exists():
+        if not destination.is_file():
+            raise typer.BadParameter("Destination exists and is not a regular file")
+        try:
+            if destination.read_text(encoding="utf-8") == encoded:
+                typer.echo(f"Connection bundle already up to date at {destination}")
+                return
+        except (OSError, UnicodeDecodeError) as exc:
+            raise typer.BadParameter(f"Cannot read existing destination: {destination}") from exc
+        if not confirm:
+            raise typer.BadParameter(
+                "Destination differs; pass --confirm to replace the existing file"
+            )
+    temporary = destination.with_name(destination.name + ".tmp-" + secrets.token_hex(8))
+    try:
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with temporary.open("x", encoding="utf-8", newline="") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+        with suppress(OSError):
+            temporary.chmod(0o644)
+        os.replace(temporary, destination)
+    except OSError as exc:
+        raise typer.BadParameter(f"Could not write connection bundle: {destination}") from exc
+    finally:
+        with suppress(OSError):
+            temporary.unlink()
+    typer.echo(f"Public connection bundle exported to {destination}")
 
 
 @app.command()

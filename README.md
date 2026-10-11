@@ -74,6 +74,25 @@ The first boot prints a one-time setup password and a path to `octop-login.txt`.
 
 For a local embedding model (knowledge bases), download one from the admin UI — the smallest is ~90 MB.
 
+### Licensed customer deployment (Ubuntu)
+
+For an office platform connected to a separate headless license center, use the local deployment wizard on each Ubuntu host:
+
+```bash
+# License-center host: HTTPS, administrator/MFA, public connection bundle, encrypted backups
+sudo bash ./deploy.sh center
+
+# Office platform host: import the verified public bundle, preserve existing data, activate
+sudo bash ./deploy.sh platform
+
+# Either host: read-only configuration, TLS, runtime and license diagnostics
+sudo bash ./deploy.sh check
+```
+
+The connection bundle carries only the center URL, public signing keys and optional CA certificate. Never transfer the center's signing/encryption private keys, administrator MFA material or SSH private key to the customer platform.
+
+See the [deployment guide](docs/license-center-deployment.md#0-推荐入口两台主机各运行一次部署向导) and [license operations](docs/instance-license-operations.md) for prerequisites, adoption, renewal, recovery and unlocking.
+
 ### Development
 
 ```bash
