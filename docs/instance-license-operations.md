@@ -14,6 +14,8 @@
 
 无桌面 Ubuntu 服务器、固定 IP 证书、Docker/Nginx、MFA 初始化、备份恢复和 systemd 替代方案的逐步操作，见 [授权中心详细部署说明](license-center-deployment.md)。
 
+推荐使用根目录统一终端入口 `deploy.sh`：腾讯云 Ubuntu 运行 `sudo bash ./deploy.sh center`，办公室 Ubuntu 导入公开接入包后运行 `sudo bash ./deploy.sh platform`；两端各完成一次向导，再用 `check --role center`／`check --role platform` 进行只读诊断。备份接收方公钥、接管旧数据、秘密输入、配置备份和失败恢复的完整步骤，见 [两机一体化部署向导](license-center-deployment.md#0-推荐入口两台主机各运行一次部署向导)。下文的手工安装仍适用于不使用向导的受控运维场景。
+
 ### 2.1 本地安装
 
 在该目录执行：

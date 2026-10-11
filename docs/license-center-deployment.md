@@ -6,6 +6,143 @@
 
 > 本功能源于本项目的 `feature/instance-licensing` 开发分支；上游 `TencentCloud/Octop` 不保证包含它。生产部署应使用交付方确认过的本项目版本，并核对具体提交和交付包。不要直接替换现有客户实例：该版本默认需要授权，缺少有效授权时业务会锁定。
 
+## 0. 推荐入口：两台主机各运行一次部署向导
+
+本项目根目录提供 `deploy.sh`，支持 `center`、`platform`、`check`；不带子命令时显示终端菜单。脚本运行在**当前登录的主机**，不自动 SSH、不读取腾讯云 SSH 私钥、不操作云安全组、不拉取或升级 Git 源码。先把经过确认的本项目交付版本放到两台主机，再分别运行对应角色。
+
+自动部署支持 Ubuntu 24.04／22.04、Python 3.10 以上和本机 Docker；平台需要 Docker Compose **2.24.4 以上**，才能用 `!override` 替换原来的全网卡端口映射。缺少 Docker、Compose、Buildx、Nginx、OpenSSL 或 GPG 时会先列出需要安装的包，由运维人员确认；不会静默卸载已有运行时。Docker 必须指向本机 Unix socket，不支持将本地数据目录交给远程 Docker context。
+
+两端必须使用真实同步的时钟，MFA、签名截止时间与版本栅栏都依赖它。向导检查 `timedatectl` 的同步状态，未同步时须先按提示修复 NTP；允许访问企业 NTP 或可靠公网 NTP（通常 UDP 123）。构建还需要 DNS、软件仓库和镜像源的出站访问，证书签发/续期需要 CA 网络访问；这些网络条件和云安全组由运维人员准备。
+
+### 0.1 先在运维电脑准备备份接收方
+
+向导会安装每日加密备份。需要一把**可用于加密的 GPG 公钥**；解密私钥和恢复口令留在独立运维电脑或受控密码库，不能上传到中心服务器。
+
+在运维电脑使用 GPG，例如交互选择 RSA 签名及加密密钥：
+
+```bash
+gpg --full-generate-key
+gpg --list-keys --with-fingerprint
+BACKUP_RECIPIENT=REPLACE_WITH_VERIFIED_FULL_GPG_FINGERPRINT
+gpg --armor --export "$BACKUP_RECIPIENT" > center-backup-recipient.asc
+```
+
+只把 `center-backup-recipient.asc` 上传到中心，在中心以运行向导的同一 root 身份导入并核对指纹：
+
+```bash
+sudo gpg --import center-backup-recipient.asc
+BACKUP_RECIPIENT=REPLACE_WITH_VERIFIED_FULL_GPG_FINGERPRINT
+sudo gpg --list-keys --with-fingerprint "$BACKUP_RECIPIENT"
+```
+
+不要上传 `--export-secret-keys` 的结果。向导检查 root keyring 中是否已有对应解密私钥；有则拒绝继续。GPG 不是腾讯云 SSH 密钥，也不是 TLS 私钥或授权签发私钥。
+
+### 0.2 腾讯云无头服务器：部署中心
+
+先用自己的 SSH 私钥登录腾讯云 Ubuntu，再在**交付代码根目录**执行：
+
+```bash
+sudo bash ./deploy.sh center
+```
+
+按终端提示填写：
+
+| 输入 | 作用 |
+| --- | --- |
+| 新装或接管已有 Compose | 接管须提供原源码、实际 Compose 文件、环境文件及项目名 |
+| 固定公网 IP 或域名 | 生成 HTTPS 地址；不要填写 SSH 地址或业务主机地址 |
+| 管理来源 IP/CIDR | 中心登录、管理 API、页面和静态资源的白名单；不限制客户实例接口 |
+| 持久数据目录 | 默认 `/srv/maitu-license-center/data`；接管原实例必须复用原目录 |
+| 证书方式 | `existing` 使用已有证书，或 `certbot` 自动签发并安装续期钩子 |
+| GPG 完整公钥指纹 | 用于加密一致性备份；私钥留在独立运维端 |
+| 中心后端端口 | 默认 `8090`，仅绑定 `127.0.0.1`，外部统一访问 HTTPS `443` |
+| 首个 owner 与 MFA | 只在尚无管理员和签发身份时初始化；密码隐藏输入 |
+| 可选 CA 与导出位置 | 公共 CA 选择 `system`；私有 CA 提供根 CA 文件，不是服务器叶证书 |
+
+现有证书须包含目标 IP/域名、匹配私钥，且剩余有效期大于 24 小时。TLS 私钥须由 root 持有、权限 `0600`，不得放到被挂载进应用的中心数据目录；只把公开证书链挂载到应用容器。六天 IP 证书不会被误判为必须有七天以上有效期。
+
+自动 IP 证书使用 Snap Certbot 5.4 以上、`webroot`、`--ip-address` 和 `shortlived`。公网 80/TCP 必须在申请与续期时可达，443/TCP 必须允许客户及运维访问。域名使用域名证书流程；私网 IP 无法申请公开 CA 的公网 IP 证书，应由可信私有 CA 提供已有证书。续期会更新公开证书副本、重载 Nginx，并重建中心容器；不会把 TLS 私钥挂载到应用中。详见 [Let's Encrypt 官方说明](https://letsencrypt.org/2026/03/11/shorter-certs-certbot)。
+
+首次 owner 初始化会显示一次 TOTP 密钥和配对 URI；立即加入自己的身份验证器，并输入其当前验证码。不要把 MFA 配对材料交给客户或保存到公开部署日志。取消或失败后可重入；原 owner、签发私钥、TOTP 加密密钥不会被重新生成。数据库丢失但密钥仍在、数据库损坏，或已有签发身份却没有管理员时，必须恢复原中心，不能自动创建第二个身份。
+
+向导生成项目专属 Nginx 站点，不覆盖没有项目所有权标记的已有站点；创建独立 Docker 网络，并把**实际网关地址**写入可信代理配置，不要求手工猜测代理 IP。实际管理白名单以服务器看到的来源 IP 为准，经过 VPN/NAT 时可能不同于电脑的局域网地址。
+
+完成后会导出 `/srv/maitu-license-center/data/connection.json`，并显示公钥 SHA256 指纹。文件只包含 HTTPS 根地址、Ed25519 验签公钥与可选根 CA；不包含激活码、账号、密码、SSH/TLS/签发私钥或 MFA 材料。
+
+数据目录受保护，普通 SSH 用户可能无法直接下载其中的文件。只复制这个公开 JSON，不要放宽整个中心数据目录权限：
+
+```bash
+sudo install -m 0644 /srv/maitu-license-center/data/connection.json \
+  "$HOME/maitu-connection.json"
+```
+
+通过已验证的 SSH/SCP 通道把公开文件交付业务主机，并通过可信运维通道核对指纹。
+
+### 0.3 办公室 Ubuntu：部署业务平台
+
+中心管理界面创建客户并签发一次性激活码。把公开接入包放到业务主机，再在本项目代码根目录执行：
+
+```bash
+sudo bash ./deploy.sh platform
+```
+
+全新安装选择 `new`，确认新数据目录、访问端口和首次初始化；已有部署选择 `adopt`，提供原 Compose 环境文件、项目名及额外覆盖文件。接管会解析原数据挂载，并核对现有容器实际挂载；不一致就停止，不会悄悄创建空数据库。支持本地 bind 及 Docker 本地 named volume，不猜测远程卷或自定义挂载布局。
+
+平台导入接入包后自动填写中心地址、验签公钥及可选 CA。核对屏幕上的中心地址与公钥指纹后确认信任，不需要再手填 URL、kid 或 Docker 代理地址。还可设置锁定页的支持联系方式、服务器显示时区及宿主机绑定地址；默认只绑定 `127.0.0.1`，办公网访问须明确选择主机私有 LAN 地址，不允许 `0.0.0.0` 或公网全网卡暴露。
+
+激活前会核对实际运行容器的 URL、CA 路径和公钥指纹是否与已确认配置一致。原业务数据目录中的 `env`（应用持久环境文件）等覆盖来源若导致不一致，向导拒绝激活/同步并报告配置冲突；修正覆盖项后重入，不通过清除实例身份解决。
+
+激活码在可隐藏输入的 SSH 终端填写，通过标准输入传给授权 CLI，不出现在进程命令参数中。没有可隐藏输入的终端会拒绝秘密输入，不回退到日志或明文管道。向导会使用真实 HTTPS challenge、实例签名及凭据同步；成功后重建业务服务以重新载入磁盘授权，并检查实际运行进程的授权状态，不以一次性 CLI 容器的成功代替服务已生效。
+
+首次管理员凭据由已有容器初始化逻辑生成，保存在业务数据目录的 `credential.txt`，权限 `0600`；不在部署日志显示密码。交付客户前改密码并建立 `enterprise_admin` 账号，不交付平台系统管理员、中心 owner 或主机/Docker 权限。
+
+### 0.4 重入、变更及只读检查
+
+```bash
+# 分别在对应主机执行；check 不安装、重启、激活、同步或修改配置
+sudo bash ./deploy.sh check --role center
+sudo bash ./deploy.sh check --role platform
+
+# 同一入口再次运行，按提示保留原部署或明确调整设置
+sudo bash ./deploy.sh center
+sudo bash ./deploy.sh platform
+
+# 自定义部署记录目录时，所有后续操作都使用同一路径
+sudo bash ./deploy.sh check --role platform --config-dir /etc/my-maitu-deploy
+```
+
+默认记录位于 `/etc/maitu-deploy/center.json` 或 `platform.json`。这只是本机运维记录，不是中心账号、授权数据库或实例身份文件。两台主机各自保存自己的记录；不要把中心记录和数据复制给客户。
+
+`check` 按层报告时钟、来源路径、HTTPS/TLS、容器出站网络、实例接口只读路由、实际环境变量、公钥/证书挂载、当前凭据 kid 与业务进程授权状态。中心还检查实际签发公钥、管理员是否已初始化及备份/续期定时器。不会通过刷新授权来伪装“只读检查”；实际签名协议由部署时的激活/同步验证。`UNACTIVATED` 显示为正常锁定待激活，不等于业务可用；到期、撤销、无效凭据和配置不一致报告失败。
+
+重复运行平台默认复用实例身份和原信任。需要变更中心地址、CA 或轮换公钥时，选择不继续使用原信任，导入新接入包并重新核对指纹；原业务数据和实例私钥不会被重建。中心迁移保留原数据和密钥，接管时填写新 HTTPS 地址与证书，再导出新包；不能重新初始化中心来代替迁移。
+
+配置先写临时文件再原子替换；变化时保存 `*.backup-<UTC时间>-<随机串>`，相同内容不重复备份。Compose/Nginx 校验失败会恢复旧配置。服务启动或激活失败后保留已确认的配置和 `CONFIGURED` 记录，可重入或运行 `check`，不需要清空数据重装。业务是否可用仍由实际签名凭据决定：未激活、到期、撤销保持锁定，已有有效缓存只在规定窗口内继续使用；向导不会把失败报告为新配置已部署成功。部署目录使用进程锁，禁止两个向导同时覆盖同一配置。
+
+需要回滚配置时，先停止正在进行的向导，核对备份属于哪次变更，将对应旧文件恢复到原位置，再校验并重建原服务。**不要**删除 `license/state.json`、业务数据卷或中心 `keys/`；配置备份不能代替数据备份。
+
+公钥轮换后不要回滚为只包含旧 kid 的信任文件：若客户已收到新 kid 签发的凭据，必须保留其验签公钥。配置回滚不能降低授权版本栅栏，也不能替代中心数据库与密钥的成对恢复。
+
+### 0.5 向导生成的加密一致性备份
+
+中心向导安装：
+
+- `/usr/local/sbin/maitu-license-center-backup`；
+- `maitu-license-center-backup.service` 与每日 `maitu-license-center-backup.timer`；
+- `/srv/maitu-license-center/backups/center-*.tar.gpg`，保留最近约 30 天。
+
+备份会短暂停止中心，用 SQLite backup API 生成一致性快照，将快照与 `keys/` 一起加密给已核对的 GPG 公钥，再恢复中心；异常退出会清理临时明文并尝试恢复原运行状态。首次部署会实际执行一次备份，并在恢复后再次检查 HTTPS health。客户在有效签名缓存范围内仍可使用，但首次激活或在线同步在短暂停机期间可能不可用。
+
+```bash
+sudo systemctl start maitu-license-center-backup.service
+sudo systemctl status maitu-license-center-backup.service --no-pager
+sudo systemctl list-timers maitu-license-center-backup.timer
+```
+
+把 `.tar.gpg` 复制到异地。在持有解密私钥的独立运维端解密，检查并解包到受保护目录；包中数据库快照名称为 `center-backup-*.sqlite3`，不是固定的 `center.sqlite3`。按本手册第 12 节停止中心、保留当前数据、恢复该数据库和**同批次完整 `keys/`**，修正 UID/GID 10001 与 `0600/0700` 后启动。不能把旧数据库与新密钥混用，也不能同时运行两个共享同一签发身份的中心。
+
+下文保留手工部署、恢复和维护命令，供不使用自动向导或排障时参考。
+
 ## 目录
 
 1. [部署边界与拓扑](#1-部署边界与拓扑)
@@ -781,11 +918,15 @@ df -h
 
 ### 16.2 当前证据不是生产验收替代品
 
-本项目已以隔离原生进程验证中心初始化/MFA、管理角色、激活、撤销、恢复、可信 IP HTTPS、密钥轮换、备份异目录恢复和客户版本栅栏；独立 wheel 已安装运行，Compose 配置解析已通过。现有本机测试服务仍使用回环 HTTP，不应直接公开到网络。
+此前已以隔离原生进程验证中心初始化/MFA、管理角色、激活、撤销、恢复、可信 IP HTTPS、密钥轮换、备份异目录恢复和客户版本栅栏；独立 wheel 已安装运行。保留的原生试用服务使用回环 HTTP，不能直接公开到网络，本次未重启或替换它们的数据。
 
-本次文档校验已完成：31 个 Bash 示例通过 `bash -n`，17 个目录锚点和本地文档链接有效；9 个真实 CLI 入口的 `--help` 成功执行，按文档参数运行 `docker compose config --quiet` 通过。这些检查不执行 apt、CA 签发、Nginx 或 systemd，也不启动或停止现有测试服务。本次仅修改文档，未重新运行全仓库 `make all`。
+本次统一部署入口已在两个隔离的 Ubuntu 24.04/systemd 环境中运行真实交付镜像，两端使用相互独立的 Docker 引擎及持久 Docker 存储，并实际启用 NTP。已验证终端菜单、六天 IP TLS 证书（受控 CA）、中心 owner/MFA 初始化、Nginx 管理 ACL、公开接入包导入、隐藏标准输入激活、业务门禁激活前 403／激活后 200；向导重入和原 Compose 接管保留实例私钥及首次管理员凭据。错误数据目录在服务重启前被拒绝，持久 `env` 覆盖冲突在向导激活/同步前被拒绝，实际 Compose 校验失败可恢复旧配置。只读检查前后客户身份/栅栏文件逐字节不变。
 
-编写本手册时本地只有 Docker CLI，Docker 引擎未运行；尚未在 Ubuntu 主机实际构建/运行此容器，也没有可用的生产公网 IP 完成 CA 签发、Nginx、自动续期、systemd 和办公室网络验收。以上 Linux 生产步骤是依据仓库实现和官方说明编写的部署流程，应逐项执行第 16.1 节，不能声称它们已在生产实测。
+已通过真实 HTTPS/MFA/CSRF 管理请求撤销并恢复现有授权：同一实例和既有登录凭证在撤销后业务返回 403、恢复后返回 200。每日一致性归档实际加密，中心仅持有 GPG 公钥，独立离线运维环境成功解密；成对恢复 SQLite 与签发/加密密钥后，客户绑定、授权版本和 owner/MFA 身份不变，现有客户继续同步并访问业务。重启两个隔离 Ubuntu/systemd 环境后，Docker、代理和应用自动恢复，签发密钥与客户实例身份不变。
+
+完整 `make all` 已通过：后端 4085 项通过、121 项跳过，业务前端 1080 项通过，独立授权中心 29 项通过，中心管理前端完成 TypeScript 检查及生产构建；Ruff、前端 lint 和 573 个源文件的严格类型检查通过。最终部署模块专项验证为 19 项通过、2 项 Windows 下 POSIX 专用跳过，接入包导出契约为 15 项通过。更新后的 38 个 Bash 示例通过语法检查，README 与两份运维说明中的 27 个本地链接/标题锚点有效。未来交付仍须重新执行完整 `make all`，不能以这些历史证据代替当前版本验收。
+
+尚无交付方提供的真实公网 IP/域名及云主机，因此没有实际申请公网 CA 证书、演练公网 Certbot 自动续期，或验收腾讯云安全组、办公室真实网络及物理主机重启。Certbot 参数和版本要求依据官方资料实现；这些生产步骤仍须逐项执行第 16.1 节，隔离环境证据不能替代生产验收。
 
 ## 17. 参考资料
 

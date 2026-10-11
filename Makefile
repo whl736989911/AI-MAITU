@@ -212,15 +212,15 @@ all: format-all lint lint-frontend typecheck test test-frontend check-license-ce
 .PHONY: lint
 lint:
 	@echo "[lint] Ruff check..."
-	$(RUN) ruff check src tests
+	$(RUN) ruff check src tests scripts/deploy.py scripts/deployment
 	@echo "[lint] Ruff format check..."
-	$(RUN) ruff format --check src tests
+	$(RUN) ruff format --check src tests scripts/deploy.py scripts/deployment
 
 .PHONY: format
 format:
 	@echo "[format] Ruff fix + format..."
-	$(RUN) ruff check --fix src tests
-	$(RUN) ruff format src tests
+	$(RUN) ruff check --fix src tests scripts/deploy.py scripts/deployment
+	$(RUN) ruff format src tests scripts/deploy.py scripts/deployment
 
 .PHONY: typecheck
 typecheck:

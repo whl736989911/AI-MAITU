@@ -55,10 +55,9 @@ if [ ! -f "$DB_FILE" ]; then
 
     init_log="$(mktemp)"
     run_init() {
-        octop init \
+        OCTOP_ADMIN_PASSWORD="$DEFAULT_PASSWORD" octop init \
             --yes \
             --admin-username "$ADMIN_USERNAME" \
-            --admin-password "$DEFAULT_PASSWORD" \
             ${ADMIN_DISPLAY_NAME:+--admin-display-name "$ADMIN_DISPLAY_NAME"} \
             >"$init_log" 2>&1
     }
