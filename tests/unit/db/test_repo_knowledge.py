@@ -310,7 +310,7 @@ def test_migration_007_rebuilds_text_primary_keys(tmp_path: Path, upgrade_throug
             (
                 Path(__file__).resolve().parents[3]
                 / "src/octop/infra/db/migrations/001_initial.sql"
-            ).read_text()
+            ).read_text(encoding="utf-8")
         )
         conn.execute("UPDATE _schema_version SET version = 6")
         conn.executescript(
