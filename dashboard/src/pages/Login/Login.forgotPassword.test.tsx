@@ -1,7 +1,27 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { createInstance } from "i18next";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type * as I18nModule from "react-i18next";
+import en from "../../locales/en.json";
+import zh from "../../locales/zh.json";
 
+const { brand } = vi.hoisted(() => ({
+  brand: {
+    name: { zh: "演示平台", en: "Demo Workspace" },
+    logos: { wordmark_dark: "/dark.svg", wordmark_light: "/light.svg" },
+  },
+}));
+
+const i18n = createInstance();
+
+vi.mock("react-i18next", async (importOriginal) => {
+  const actual = await importOriginal<typeof I18nModule>();
+  return { ...actual, useTranslation: () => ({ t: i18n.t.bind(i18n), i18n }) };
+});
+vi.mock("../../context/BrandingContext", () => ({
+  useBranding: () => brand,
+}));
 vi.mock("../../context/ThemeContext", () => ({
   useTheme: () => ({ isDark: false }),
 }));
@@ -24,18 +44,36 @@ vi.mock("./CaptchaField", () => ({ default: () => null }));
 
 import LoginPage from "./index";
 
-describe("Login password recovery hint", () => {
-  it("shows the host CLI and administrator reset paths", () => {
-    render(
-      <MemoryRouter>
-        <LoginPage />
-      </MemoryRouter>,
-    );
-    expect(screen.getByTestId("login-forgot-password").textContent).toMatch(
-      /octop user passwd/,
-    );
-    expect(screen.getByTestId("login-forgot-password").textContent).toMatch(
-      /administrator|管理员/,
-    );
+beforeEach(async () => {
+  await i18n.init({
+    lng: "en",
+    fallbackLng: "en",
+    resources: { en: { translation: en }, zh: { translation: zh } },
   });
+});
+
+function renderLogin() {
+  render(
+    <MemoryRouter>
+      <LoginPage />
+    </MemoryRouter>,
+  );
+  return screen.getByTestId("login-forgot-password");
+}
+
+describe("Login password recovery", () => {
+  it.each([
+    ["en", "Demo Workspace", "administrator"],
+    ["zh", "演示平台", "管理员"],
+  ])(
+    "uses the deployment identity for recovery in %s",
+    async (locale, name, admin) => {
+      await i18n.changeLanguage(locale);
+      const hint = renderLogin();
+      expect(hint).toHaveTextContent(name);
+      expect(hint).toHaveTextContent(admin);
+      expect(hint).not.toHaveTextContent(/octop|maitu|user passwd/i);
+      expect(hint).not.toHaveTextContent(/\{\{/);
+    },
+  );
 });

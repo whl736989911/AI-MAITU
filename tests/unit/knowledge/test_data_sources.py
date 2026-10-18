@@ -26,7 +26,7 @@ from octop.infra.db.repos._base import now_ts
 from octop.infra.db.repos.audit import AuditRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
-from octop.infra.db.repos.knowledge_search_rules import KnowledgeSearchRulesRepo
+from octop.infra.db.repos.knowledge_collections import KnowledgeCollectionsRepo
 from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.secrets import SecretRepo
@@ -73,7 +73,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         config=SimpleNamespace(max_upload_bytes=1_000_000, max_upload_mb=1),
         paths=PathLayout.from_env(),
         knowledge_repo=KnowledgeRepo(pool),
-        knowledge_search_rules_repo=KnowledgeSearchRulesRepo(pool),
+        knowledge_collections_repo=KnowledgeCollectionsRepo(pool),
         data_sources_repo=DataSourceRepo(pool),
         knowledge_sync_runs_repo=KnowledgeSyncRunRepo(pool),
         settings_repo=SettingsRepo(pool),
@@ -1244,35 +1244,28 @@ async def test_source_evidence_rechecks_version_and_authorization(
     assert evidence["locator"]
     assert evidence["version"] == located.version
 
-    env.services.settings_repo.set("knowledge_bases_enabled", "true")
     token = var_child_runnable_config.set(
-        {"configurable": {"user": str(people.owner), "knowledge_base_ids": [base.id]}}
+        {"configurable": {"user": people.owner, "knowledge_base_ids": [base.id]}}
     )
     try:
-        tools = {tool.name: tool for tool in build_knowledge_tools(env.services)}
-        candidates = json.loads(await tools["search_knowledge"].ainvoke({"query": "business days"}))
-        assert candidates["status"] == "found"
-        assert any(hit["segment_id"] == located.segment_id for hit in candidates["hits"])
+        tools = {
+            tool.name: tool for tool in build_knowledge_tools(env.services, workspace=object())
+        }
+        listed = json.loads(await tools["browse_knowledge"].ainvoke({"kb_id": base.id}))
+        assert any(item["document_id"] == located.document_id for item in listed["documents"])
         verified = json.loads(
-            await tools["read_knowledge_segment"].ainvoke(
-                {
-                    "kb_id": base.id,
-                    "document_id": located.document_id,
-                    "segment_id": located.segment_id,
-                }
+            await tools["read_knowledge_document"].ainvoke(
+                {"kb_id": base.id, "document_id": located.document_id}
             )
         )
-        assert verified["verified"] is True
+        assert verified["status"] == "read"
+        assert "business days" in verified["text"]
         denied = json.loads(
-            await tools["read_knowledge_segment"].ainvoke(
-                {
-                    "kb_id": "not-selected",
-                    "document_id": located.document_id,
-                    "segment_id": located.segment_id,
-                }
+            await tools["read_knowledge_document"].ainvoke(
+                {"kb_id": "not-selected", "document_id": located.document_id}
             )
         )
-        assert denied["verified"] is False
+        assert denied["status"] == "out_of_scope"
     finally:
         var_child_runnable_config.reset(token)
     with pytest.raises(PermissionError):

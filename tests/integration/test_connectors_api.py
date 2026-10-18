@@ -446,27 +446,53 @@ async def test_catalog_weknora_dify_last(env):
     assert kinds[-2:] == ["weknora", "dify"]
 
 
-async def test_install_cli_forbidden_for_non_admin(env):
+@pytest.mark.parametrize("permissions", [[], ["connectors"]])
+async def test_install_cli_forbidden_for_non_admin(env, permissions):
     c, _, admin_auth, _ = env
-    user_auth = await create_user(c, admin_auth, username="cli_user", permissions=[])
+    user_auth = await create_user(c, admin_auth, username="cli_user", permissions=permissions)
     response = await c.post("/api/connectors/feishu-cli/install-cli", headers=user_auth)
     assert response.status_code == 403
-    assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    assert response.json()["error"]["code"] == "FORBIDDEN"
 
 
-async def test_install_cli_is_restricted_even_for_admin(env, monkeypatch: pytest.MonkeyPatch):
+async def test_install_cli_is_restricted_for_managed_admin(
+    env, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+):
     c, _, auth, _ = env
     calls: list[str] = []
     monkeypatch.setattr(
         "octop.api.routers.connectors.install_connector_cli",
         lambda kind: calls.append(kind),
     )
+    monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", str(tmp_path / "trusted-keys.json"))
 
     response = await c.post("/api/connectors/feishu-cli/install-cli", headers=auth)
 
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
     assert calls == []
+
+
+async def test_native_install_cli_returns_structured_failure_when_npm_missing(
+    env, monkeypatch: pytest.MonkeyPatch
+):
+    c, _, auth, _ = env
+    monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
+    monkeypatch.setattr("octop.infra.connectors.gateway.cli_install.ensure_cli_path", lambda: "")
+    monkeypatch.setattr(
+        "octop.infra.connectors.gateway.cli_install.shutil.which", lambda _binary: None
+    )
+
+    response = await c.post("/api/connectors/feishu-cli/install-cli", headers=auth)
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["ok"] is False
+    assert body["installed"] is False
+    assert body["already_installed"] is False
+    assert body["kind"] == "feishu-cli"
+    assert body["install_command"] == "npm install -g @larksuite/cli"
+    assert body["error"]
 
 
 async def test_cli_status_available_to_non_admin(env, monkeypatch: pytest.MonkeyPatch):

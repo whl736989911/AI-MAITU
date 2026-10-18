@@ -13,13 +13,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
 from octop.api.deps import get_server, require_admin
-from octop.branding_defaults import DEFAULTS
+from octop.branding import BRAND_SETTINGS_KEY, branding_defaults, configure_branding
 
 router = APIRouter()
 
-SLOTS = frozenset(DEFAULTS["logos"])
+SLOTS = frozenset(branding_defaults()["logos"])
 MAX_LOGO_BYTES = 5 * 1024 * 1024
-BRAND_SETTINGS_KEY = "runtime_branding"
 _SLOT_EXTENSIONS = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -33,9 +32,12 @@ def _state(server: Any) -> dict[str, Any]:
     repo = server.services.settings_repo if server.services else None
     try:
         custom = json.loads((repo.get(BRAND_SETTINGS_KEY) if repo else None) or "{}")
+        if not isinstance(custom, dict):
+            custom = {}
     except (TypeError, ValueError):
         custom = {}
-    value: dict[str, Any] = {group: fields.copy() for group, fields in DEFAULTS.items()}
+    configure_branding(custom)
+    value: dict[str, Any] = {group: fields.copy() for group, fields in branding_defaults().items()}
     for group in ("name", "full_name", "short_name", "description", "colors", "pwa"):
         value[group].update(custom.get(group, {}))
     stored_logos = custom.get("logos", {})
@@ -59,6 +61,7 @@ def _validate_text(value: Any, field: str) -> str:
 
 
 def _merge(server: Any, data: dict[str, Any]) -> dict[str, Any]:
+    defaults = branding_defaults()
     stored_raw = server.services.settings_repo.get(BRAND_SETTINGS_KEY)
     try:
         custom = json.loads(stored_raw or "{}")
@@ -75,7 +78,7 @@ def _merge(server: Any, data: dict[str, Any]) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail=f"Invalid {group}")
         custom_group = custom.setdefault(group, {})
         for key, val in supplied.items():
-            if key not in DEFAULTS[group]:
+            if key not in defaults[group]:
                 raise HTTPException(status_code=422, detail=f"Unknown {group} field")
             if val is None or val == "":
                 custom_group.pop(key, None)
@@ -102,7 +105,7 @@ def _merge(server: Any, data: dict[str, Any]) -> dict[str, Any]:
             for slot, url in supplied_logos.items():
                 if slot not in SLOTS:
                     raise HTTPException(status_code=422, detail=f"Unknown logo slot: {slot}")
-                if url is None or url == "" or url == DEFAULTS["logos"][slot]:
+                if url is None or url == "" or url == defaults["logos"][slot]:
                     logos.pop(slot, None)
                 else:
                     m = re.fullmatch(

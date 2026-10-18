@@ -35,23 +35,26 @@ vi.mock("react-i18next", async (importOriginal) => {
     );
   };
 
+  // Match the real hook's stable identity: [t] load effects must not restart
+  // after every state update while a test keeps the same language.
+  const translation = {
+    t: (
+      key: string,
+      fallback?: string | TOptions,
+      options?: TOptions,
+    ): string => {
+      if (typeof fallback === "string") return interpolate(fallback, options);
+      if (fallback && typeof fallback === "object") {
+        const template = fallback.defaultValue ?? key;
+        return interpolate(template, fallback);
+      }
+      return key;
+    },
+    i18n: { language: "zh", changeLanguage: () => Promise.resolve() },
+  };
   return {
     ...actual,
-    useTranslation: () => ({
-      t: (
-        key: string,
-        fallback?: string | TOptions,
-        options?: TOptions,
-      ): string => {
-        if (typeof fallback === "string") return interpolate(fallback, options);
-        if (fallback && typeof fallback === "object") {
-          const template = fallback.defaultValue ?? key;
-          return interpolate(template, fallback);
-        }
-        return key;
-      },
-      i18n: { language: "zh", changeLanguage: () => Promise.resolve() },
-    }),
+    useTranslation: () => translation,
     Trans: ({ children }: { children?: React.ReactNode }) => children,
   };
 });

@@ -175,14 +175,10 @@ describe("<ChannelsPanel /> create-flow default", () => {
     await user.click(
       screen.getByLabelText("channels.discord_allow_all_channels"),
     );
-    await user.type(
-      screen.getByLabelText("channels.discord_channel_ids"),
-      "123456789012345678",
-    );
-    await user.type(
-      screen.getByLabelText("channels.discord_user_ids"),
-      "987654321098765432",
-    );
+    await user.click(screen.getByLabelText("channels.discord_channel_ids"));
+    await user.paste("123456789012345678");
+    await user.click(screen.getByLabelText("channels.discord_user_ids"));
+    await user.paste("987654321098765432");
     await user.click(screen.getByRole("button", { name: "common.save" }));
 
     await waitFor(() => {

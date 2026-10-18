@@ -1,4 +1,9 @@
 import { request } from "../../../api/request";
+import {
+  nativeSandboxApi,
+  type BubblewrapStatus,
+  type BubblewrapStatusResult,
+} from "../../../api/modules/nativeSandbox";
 
 export const BUILTIN_BACKENDS = ["local_shell", "filesystem", "state"] as const;
 export const DEFAULT_BACKEND: BuiltinBackend = "local_shell";
@@ -181,29 +186,21 @@ export async function probeRootDir(path: string): Promise<RootDirProbeResult> {
   });
 }
 
-export type EnsureBwrapStatus = "ready" | "installed" | "skipped" | "degraded";
+export type EnsureBwrapStatus = BubblewrapStatus;
 
-export interface EnsureBwrapResult {
-  status: EnsureBwrapStatus;
-  reason?: string;
-  detail?: string;
-}
+export type EnsureBwrapResult = BubblewrapStatusResult;
 
-export async function ensureBubblewrap(): Promise<EnsureBwrapResult> {
-  return request<EnsureBwrapResult>("/filesystem/ensure-bwrap", {
-    method: "POST",
-  });
-}
-
-/** After a successful root_dir probe: ensure bwrap without blocking save. */
-export async function ensureBubblewrapAfterProbe(): Promise<EnsureBwrapResult> {
+/** After a successful root_dir probe, read the sandbox status without installing. */
+export async function getBubblewrapStatusAfterProbe(): Promise<EnsureBwrapResult> {
   try {
-    return await ensureBubblewrap();
+    return await nativeSandboxApi.getBubblewrapStatus();
   } catch {
     return {
       status: "degraded",
-      reason: "install_failed",
+      reason: "status_unavailable",
       detail: "",
+      diagnosis: null,
+      commands: [],
     };
   }
 }

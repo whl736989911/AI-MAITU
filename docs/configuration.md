@@ -53,6 +53,51 @@ The root can be overridden with `OCTOP_HOME` (absolute path). Most
 sub-paths are exposed as properties on `PathLayout` in
 `octop.infra.utils.paths`.
 
+## Deployment brand and runtime identity
+
+Set `MAITU_BRAND_CONFIG_FILE` to a deployment-owned JSON file before starting
+the process. Docker reads its bundled `/app/brand.config.json` by default;
+`docker/docker-compose.branding.yml` mounts an external brand file read-only,
+so changing company identity does not require editing Python source.
+
+```json
+{
+  "name": {"zh": "公司 AI 平台", "en": "Company AI Platform"},
+  "full_name": {"zh": "公司全称", "en": "Company Limited"},
+  "short_name": {"zh": "公司简称", "en": "Company"}
+}
+```
+
+`name` is the platform display name, `full_name` is the company identity, and
+`short_name` is the short display name. Existing dashboard branding settings
+in the database override these deployment defaults; resetting branding returns
+to the deployment file. File defaults load at process startup, so restart after
+changing the file. Dashboard branding changes update subsequent runtime messages.
+Malformed explicitly configured files fail visibly rather than silently selecting
+a different brand.
+
+Agent model requests receive the configured platform identity in the current
+turn's locale. Platform-owned prompt tokens, bundled expert/skill descriptions,
+tool labels, slash status/help, CLI version text, API documentation, and bot
+creation greetings use that identity. Existing user SOUL files and historical
+messages are not rewritten. An LLM's final wording is not guaranteed merely by
+changing its system instructions.
+
+Package names, API fields, environment keys (`OCTOP_*`, `MAITU_*`), actual commands,
+storage paths, and upstream copyright/license notices remain technical identifiers.
+Do not globally replace them: that breaks integrations and makes upstream merges
+unnecessarily difficult. Frontend static assets and PWA build-time copy continue
+to use the existing `scripts/apply_brand.py` workflow.
+
+After merging upstream updates, check new platform-owned display copy for the same
+branding helpers/tokens. Technical compatibility reduces merge churn; it does not
+guarantee that every future upstream change merges without conflicts.
+
+On license-managed installs, business environment settings cannot replace or remove
+deployment trust/configuration (`MAITU_*`) or host interpreter/loader settings such
+as `PATH`, `PYTHONPATH`, and `LD_PRELOAD`. Configure those in the operator's service
+environment instead, outside the writable application data directory.
+
 ## `config.json`
 
 Generated with defaults on first run; merged with environment overrides
@@ -246,3 +291,36 @@ Per-agent provider credentials (e.g. API keys) live in the SQLite
 `history_v2_enabled` 默认 `false`，可用 `OCTOP_HISTORY_V2_ENABLED=true` 开启。
 该开关只决定下一完整回合的写入格式，关闭后仍读取已经保存的新格式。
 启用前请阅读 [分段历史归档与回退](versioned-history.md)，尤其是配套版本与备份恢复边界。
+
+## Execution sandbox (native installs)
+
+On POSIX source installs, agent `execute` runs inside a bubblewrap directory
+jail rooted at the agent workspace. The jail mounts the platform Python
+environment read-only (`sys.prefix` plus the real interpreter runtime behind
+it, e.g. a uv-managed interpreter under `~/.local/share/uv`) and prepends its
+`bin` to `PATH` / appends its `site-packages` to `PYTHONPATH`, so skill
+scripts resolve the platform interpreter instead of the system one. Home,
+project and license directories are never mounted. Host-rooted
+(`root_dir: "/"`) or `virtual_mode: false` local shells keep executing on the
+host by explicit choice.
+
+### Diagnosis and installation
+
+- `GET /api/filesystem/bwrap-status` (admin): read-only probe; never installs.
+- `POST /api/filesystem/ensure-bwrap` (admin): explicit install attempt plus
+  diagnosis. The server never installs packages on its own at startup.
+
+Both return `{status, reason, detail, diagnosis, commands}`. `diagnosis` is
+one of `missing_binary`, `install_permission_denied`, `userns_denied` (the
+kernel / AppArmor / seccomp refused the user namespace — on Ubuntu 24.04+
+seen as `bwrap: setting up uid map: Permission denied`), `runtime_failure`,
+or `null` when healthy. `commands` lists minimal-privilege operator commands
+(display only — nothing is executed automatically). The AppArmor templates
+live in `scripts/security/`; `scripts/setup-host-sandbox.sh` applies and
+reverts them.
+
+### Fail-closed behavior
+
+A scoped `local_shell` backend without a working `bwrap` fails explicitly —
+at agent start and at execute time (`INSTANCE_DEPLOYMENT_RESTRICTED`). The
+platform never silently downgrades a configured sandbox to host execution.

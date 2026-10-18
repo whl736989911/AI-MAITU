@@ -5,8 +5,8 @@
     "en": "Default Scene"
   },
   "description": {
-    "zh": "恢复 Octop 的默认配置 — 通用 AI 助手，无特定场景偏向。适合在使用了其他场景后想回到初始状态时使用。",
-    "en": "Restore Octop to its default configuration — a general-purpose AI assistant with no scene-specific bias. Use this to reset after applying another scene."
+    "zh": "恢复 {{platform_name}} 的默认配置 — 通用 AI 助手，无特定场景偏向。适合在使用了其他场景后想回到初始状态时使用。",
+    "en": "Restore {{platform_name}} to its default configuration — a general-purpose AI assistant with no scene-specific bias. Use this to reset after applying another scene."
   },
   "welcome_message": {
     "zh": "无论工作还是生活，说出你的想法",

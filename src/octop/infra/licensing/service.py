@@ -1,760 +1,967 @@
-"""Protected Ed25519 identity, cache, and strict instance-license client."""
+"""Persistent Ed25519 instance licensing and coherent online/offline grants."""
 
 from __future__ import annotations
 
 import asyncio
-import base64
 import hashlib
-import inspect
+import importlib
 import json
-import math
+import logging
 import os
-import secrets
-import ssl
+import re
+import tempfile
+import threading
 import time
-import urllib.parse
 import urllib.request
-from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Mapping
-from contextlib import asynccontextmanager, suppress
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager, suppress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
+from zoneinfo import ZoneInfo
 
-from cryptography.exceptions import InvalidSignature
+import jwt
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.utils.paths import PathLayout
 
-_ACTIVE = "ACTIVE"
-_CACHED = "CACHED_ACTIVE"
-_LOCKED = "LOCKED"
-_UNACTIVATED = "UNACTIVATED"
-_TYP = "maitu-license"
-_PROOF_TYP = "maitu-instance-proof"
+logger = logging.getLogger(__name__)
+_PROTOCOL = 1
 _PRODUCT = "maitu"
 _ISSUER = "maitu-license-center"
-_AUDIENCE = "maitu-license-center"
+_AUDIENCE = "maitu-instance"
+_KID = "maitu-license-1"
+_STATE_NAME = "license-state.json"
+_REMINDER_NAME = "license-reminders.json"
+_MAX_FUTURE_SKEW = 300
 
 
-def _b64d(value: str) -> bytes:
-    if (
-        not isinstance(value, str)
-        or not value
-        or any(
-            c not in "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
-            for c in value
-        )
-    ):
-        raise ValueError("invalid base64url")
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
+def _canonical(value: Any) -> bytes:
+    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
-def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON member")
-        result[key] = value
-    return result
-
-
-def _b64e(value: bytes) -> str:
-    return base64.urlsafe_b64encode(value).rstrip(b"=").decode("ascii")
-
-
-def _canonical(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True).encode(
-        "utf-8"
-    )
-
-
-def _atomic_private(path: Path, data: bytes) -> None:
+def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    with suppress(OSError):
-        path.parent.chmod(0o700)
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
+    fd, name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        if os.name != "nt":
+            os.chmod(name, 0o600)
         with os.fdopen(fd, "wb") as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(tmp, path)
-        with suppress(OSError):
-            path.chmod(0o600)
+        os.replace(name, path)
+        if os.name != "nt":
+            os.chmod(path, 0o600)
     finally:
         with suppress(FileNotFoundError):
-            tmp.unlink()
+            os.unlink(name)
 
 
-def _endpoint_allowed(url: str) -> str:
-    parsed = urllib.parse.urlsplit(url)
-    if (
-        parsed.query
-        or parsed.fragment
-        or parsed.username is not None
-        or parsed.password is not None
-    ):
-        raise ValueError("license server URL must not include credentials, query, or fragment")
-    if parsed.scheme == "https" and parsed.hostname:
-        return url.rstrip("/")
-    if (
-        parsed.scheme == "http"
-        and parsed.hostname
-        and parsed.hostname.lower() in {"localhost", "127.0.0.1", "::1"}
-    ):
-        return url.rstrip("/")
-    raise ValueError("license server must use HTTPS or loopback HTTP")
+def _read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        obj = json.loads(path.read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else None
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        return None
 
 
-class LicenseService:
-    """Mandatory instance license gate with signed online synchronization."""
+def _fingerprint(public_key: Ed25519PublicKey) -> str:
+    der = public_key.public_bytes(
+        serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    )
+    return hashlib.sha256(der).hexdigest()
+
+
+def _strict_int(claims: dict[str, Any], key: str, minimum: int = 0) -> int:
+    value = claims.get(key)
+    if type(value) is not int or value < minimum:
+        raise ValueError(f"invalid {key}")
+    return value
+
+
+@contextmanager
+def _process_file_lock(path: Path) -> Iterator[None]:
+    """Serialize reminder read/modify/write claims across processes."""
+    lock_path = path.with_suffix(path.suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    with lock_path.open("a+b") as stream:
+        stream.seek(0, os.SEEK_END)
+        if stream.tell() == 0:
+            stream.write(b"\0")
+            stream.flush()
+        stream.seek(0)
+        if os.name == "nt":
+            msvcrt = importlib.import_module("msvcrt")
+
+            stream.seek(0)
+            msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            fcntl = importlib.import_module("fcntl")
+
+            flock = fcntl.flock
+            flock(stream.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+class LicenseManager:
+    """Owns a machine identity, signed credentials, and a durable entitlement ledger."""
 
     def __init__(
         self,
-        home: Path,
-        *,
-        server_url: str | None = None,
-        trusted_keys: Mapping[str, str] | None = None,
-        ca_file: str | None = None,
-        contact: str = "",
+        state_dir: Path,
+        trusted_keys_file: Path | None,
+        center_url: str | None = None,
+        allow_loopback: bool = False,
     ) -> None:
-        self.home = Path(home).expanduser()
-        self.license_dir = self.home / "license"
-        self._server_configured = (
-            server_url if server_url is not None else os.environ.get("OCTOP_LICENSE_SERVER_URL")
+        self.state_dir = Path(state_dir).expanduser()
+        self.trusted_keys_file = (
+            Path(trusted_keys_file).expanduser() if trusted_keys_file is not None else None
         )
-        self.server_url = (
-            _endpoint_allowed(self._server_configured) if self._server_configured else None
+        self.center_url = center_url.rstrip("/") if center_url else None
+        self.allow_loopback = allow_loopback
+        self._managed = self.trusted_keys_file is not None
+        self._state_path = self.state_dir / _STATE_NAME
+        self._reminder_path = self.state_dir / _REMINDER_NAME
+        self._lock = threading.RLock()
+        self._network_lock = asyncio.Lock()
+        self._persist_lock = asyncio.Lock()
+        self._callback_lock = asyncio.Lock()
+        self._callback: Callable[[bool], Awaitable[None]] | None = None
+        self._tasks: list[asyncio.Task[None]] = []
+        self._state: dict[str, Any] = {}
+        self._load_error: str | None = None
+        self._configured_keys: dict[str, Ed25519PublicKey] = {}
+        self._private_key: Ed25519PrivateKey | None = None
+        self._mono_anchor = time.monotonic()
+        self._time_anchor = int(time.time())
+        self._observed_highwater = self._time_anchor
+        self._time_anomaly = False
+        self._stopping = False
+        self._verified_cache: dict[tuple[str, str], dict[str, Any]] = {}
+        self._last_allowed: bool | None = None
+        self._initialize()
+
+    @classmethod
+    def from_env(cls, default_state_dir: Path) -> LicenseManager:
+        state = Path(os.environ.get("MAITU_LICENSE_STATE_DIR", str(default_state_dir)))
+        keyring = os.environ.get("MAITU_LICENSE_TRUSTED_KEYS_FILE")
+        allow = os.environ.get("MAITU_LICENSE_ALLOW_LOOPBACK", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }
+        return cls(
+            state,
+            Path(keyring) if keyring else None,
+            os.environ.get("MAITU_LICENSE_CENTER_URL"),
+            allow,
         )
-        self.ca_file = ca_file if ca_file is not None else os.environ.get("OCTOP_LICENSE_CA_FILE")
-        self.contact = contact if contact else os.environ.get("OCTOP_LICENSE_CONTACT", "")
-        if trusted_keys is None:
-            trust_path = os.environ.get("OCTOP_LICENSE_TRUST_FILE")
-            if trust_path:
-                raw = json.loads(Path(trust_path).expanduser().read_text("utf-8"))
-                if not isinstance(raw, dict):
-                    raise ValueError("license trust file must be a kid-to-PEM object")
-                trusted_keys = raw
-        self.trusted_keys: dict[str, Ed25519PublicKey] = {}
-        for kid, pem in (trusted_keys or {}).items():
-            if not isinstance(kid, str) or not isinstance(pem, str):
-                raise ValueError("invalid trusted license key entry")
-            key = serialization.load_pem_public_key(pem.encode("utf-8"))
-            if not isinstance(key, Ed25519PublicKey):
-                raise ValueError("license trust keys must be Ed25519")
-            self.trusted_keys[kid] = key
-        self._state = _UNACTIVATED
-        self._reason: str | None = (
-            "unactivated" if self.server_url and self.trusted_keys else "configuration_required"
-        )
-        self._claims: dict[str, Any] | None = None
-        self._token: str | None = None
-        self._private: Ed25519PrivateKey | None = None
-        self._instance_id: str | None = None
-        self._fingerprint: str | None = None
-        self._revision = 0
-        self._last_sync_at: int | None = None
-        self._last_sync_error: str | None = None
-        self._valid_until: int | None = None
-        self._monotonic_until: float | None = None
-        self._last_wall = 0
-        self._seen_challenges: list[str] = []
-        self._listeners: set[Callable[[bool], Awaitable[None]]] = set()
-        self._connections: set[Callable[[], Any]] = set()
-        self._tasks: set[asyncio.Task[Any]] = set()
-        self._lock = asyncio.Lock()
-        self._operation_lock = asyncio.Lock()
-        self._refresh_task: asyncio.Task[dict[str, Any]] | None = None
-        self._maintenance_task: asyncio.Task[None] | None = None
-        self._sync_task: asyncio.Task[None] | None = None
-        self._running = False
-        self._initialized = False
-        self._loop: asyncio.AbstractEventLoop | None = None
-        self._notify_pending = False
-        self._notify_lock = asyncio.Lock()
-        self._notified_allowed: bool | None = None
-        self._identity_invalid = False
-        self._persisted_fence: dict[str, Any] = {}
-        self._trusted_epoch: int | None = None
-        self._trusted_monotonic = 0.0
+
+    def _initialize(self) -> None:
+        try:
+            self.state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if os.name != "nt":
+                os.chmod(self.state_dir, 0o700)
+            private_path = self.state_dir / "instance-ed25519.pem"
+            exists_private = private_path.exists()
+            if exists_private:
+                key = serialization.load_pem_private_key(private_path.read_bytes(), password=None)
+                if not isinstance(key, Ed25519PrivateKey):
+                    raise ValueError("instance key is not Ed25519")
+                self._private_key = key
+            else:
+                key = Ed25519PrivateKey.generate()
+                pem = key.private_bytes(
+                    serialization.Encoding.PEM,
+                    serialization.PrivateFormat.PKCS8,
+                    serialization.NoEncryption(),
+                )
+                _atomic_write(private_path, pem)
+                self._private_key = key
+            if os.name != "nt":
+                os.chmod(private_path, 0o600)
+            public_key = key.public_key()
+            self._identity = _fingerprint(public_key)
+            self._instance_id = hashlib.sha256(
+                public_key.public_bytes(
+                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+                )
+            ).hexdigest()[:32]
+            state = _read_json(self._state_path)
+            if state is None:
+                if self._managed and exists_private:
+                    self._load_error = "missing_ledger"
+                    self._state = self._empty_state()
+                else:
+                    self._state = self._empty_state()
+                    self._persist_sync()
+            else:
+                if (
+                    state.get("instance_id") != self._instance_id
+                    or state.get("key_fingerprint") != self._identity
+                ):
+                    raise ValueError("ledger identity mismatch")
+                for field in (
+                    "license_version",
+                    "license_expires_at",
+                    "revocation_floor",
+                    "trusted_time",
+                ):
+                    if type(state.get(field)) is not int or state[field] < 0:
+                        raise ValueError(f"invalid ledger {field}")
+                if type(state.get("restored")) is not bool:
+                    raise ValueError("invalid ledger restored flag")
+                if state.get("status") not in {None, "active", "revoked", "expired"}:
+                    raise ValueError("invalid ledger status")
+                if any(
+                    state.get(name) is not None and not isinstance(state.get(name), str)
+                    for name in ("online", "offline")
+                ):
+                    raise ValueError("invalid ledger credential")
+                if state["license_version"]:
+                    if not re.fullmatch(
+                        r"[0-9a-f]{32}", state.get("license_id", "")
+                    ) or not state.get("status"):
+                        raise ValueError("invalid ledger entitlement")
+                    if not state.get("online") and not state.get("offline"):
+                        raise ValueError("ledger entitlement has no signed credential")
+                elif state.get("license_id") is not None:
+                    raise ValueError("invalid fresh ledger")
+                self._state = state
+            if self._managed:
+                if not self.trusted_keys_file or not self.trusted_keys_file.is_file():
+                    raise ValueError("configured license trusted-key file is missing")
+                try:
+                    value = json.loads(self.trusted_keys_file.read_text(encoding="utf-8"))
+                    if not isinstance(value, dict) or not value:
+                        raise ValueError("trusted keys must be a non-empty JSON object")
+                    keys: dict[str, Ed25519PublicKey] = {}
+                    for kid, pem in value.items():
+                        if not isinstance(kid, str) or not kid or not isinstance(pem, str):
+                            raise ValueError("trusted keys must map key IDs to PEM strings")
+                        parsed = serialization.load_pem_public_key(pem.encode("utf-8"))
+                        if not isinstance(parsed, Ed25519PublicKey):
+                            raise ValueError(f"trusted key {kid!r} is not Ed25519")
+                        keys[kid] = parsed
+                    self._configured_keys = keys
+                except Exception as exc:
+                    raise ValueError("configured license trusted-key file is invalid") from exc
+            self._time_anchor = max(int(time.time()), int(self._state.get("trusted_time", 0)))
+            self._mono_anchor = time.monotonic()
+            self._time_anomaly = bool(
+                self._state.get("trusted_time", 0) > int(time.time()) + _MAX_FUTURE_SKEW
+            )
+            self._observed_highwater = max(
+                int(time.time()), int(self._state.get("trusted_time", 0))
+            )
+        except Exception as exc:
+            self._load_error = str(exc)
+            if not getattr(self, "_state", None):
+                self._state = self._empty_state()
+            self._private_key = getattr(self, "_private_key", None)
+            self._identity = getattr(self, "_identity", "")
+            self._instance_id = getattr(self, "_instance_id", "")
+
+    def _empty_state(self) -> dict[str, Any]:
+        return {
+            "instance_id": getattr(self, "_instance_id", ""),
+            "key_fingerprint": getattr(self, "_identity", ""),
+            "license_id": None,
+            "license_version": 0,
+            "license_expires_at": 0,
+            "status": None,
+            "restored": False,
+            "revocation_floor": 0,
+            "online": None,
+            "offline": None,
+            "trusted_time": 0,
+            "last_sync_at": None,
+            "sync_error": None,
+        }
 
     @property
-    def allowed(self) -> bool:
-        self._check_deadline()
-        return self._state in (_ACTIVE, _CACHED)
+    def managed(self) -> bool:
+        return self._managed
 
     @property
-    def restricted(self) -> bool:
-        return True
+    def instance_id(self) -> str:
+        return self._instance_id
 
-    def _now(self) -> int:
+    def _trusted_now(self) -> int:
         wall = int(time.time())
-        if self._trusted_epoch is None:
-            return wall
-        return max(wall, self._trusted_epoch + int(time.monotonic() - self._trusted_monotonic))
+        monotonic = self._time_anchor + max(0, int(time.monotonic() - self._mono_anchor))
+        self._observed_highwater = max(
+            self._observed_highwater, wall, monotonic, int(self._state.get("trusted_time", 0))
+        )
+        return self._observed_highwater
 
-    def _check_deadline(self) -> None:
-        if self._last_wall and self._now() < self._last_wall - 300:
-            self._state, self._reason = _LOCKED, "clock_anomaly"
-            self._valid_until = self._monotonic_until = None
-            self._schedule_notify()
-        elif (
-            self._state in (_ACTIVE, _CACHED)
-            and self._valid_until is not None
-            and (
-                self._now() >= self._valid_until
-                or (self._monotonic_until is not None and time.monotonic() >= self._monotonic_until)
+    def _credential_valid(
+        self, token: str | None, purpose: str, now: int, *, calibrating: bool = False
+    ) -> dict[str, Any] | None:
+        if token is None or not self._configured_keys:
+            return None
+        if not isinstance(token, str) or not token:
+            raise ValueError("invalid license token type")
+        cached = None if calibrating else self._verified_cache.get((token, purpose))
+        if cached is not None:
+            if now >= cached["valid_until"] or (
+                cached["status"] == "active" and now >= cached["license_expires_at"]
+            ):
+                return None
+            return cached
+        try:
+            h = jwt.get_unverified_header(token)
+            if (
+                not isinstance(h, dict)
+                or set(h) != {"alg", "kid", "typ"}
+                or h.get("alg") != "EdDSA"
+                or h.get("typ") != "JWT"
+                or not isinstance(h.get("kid"), str)
+            ):
+                raise ValueError("unexpected token header")
+            key = self._configured_keys.get(h["kid"])
+            if key is None:
+                raise ValueError("unknown license signing key")
+            claims = jwt.decode(
+                token,
+                key,
+                algorithms=["EdDSA"],
+                audience=_AUDIENCE,
+                issuer=_ISSUER,
+                options={"verify_exp": False, "verify_iat": False, "verify_nbf": False},
             )
+            if (
+                claims.get("protocol") != _PROTOCOL
+                or type(claims.get("protocol")) is not int
+                or claims.get("product") != _PRODUCT
+            ):
+                raise ValueError("wrong license protocol")
+            if claims.get("purpose") != purpose or claims.get("instance_id") != self.instance_id:
+                raise ValueError("license purpose or identity mismatch")
+            if claims.get("key_fingerprint") != self._identity:
+                raise ValueError("license key fingerprint mismatch")
+            if purpose == "online-license" and (
+                not isinstance(claims.get("challenge"), str) or not claims["challenge"]
+            ):
+                raise ValueError("missing online challenge binding")
+            for name in (
+                "issued_at",
+                "not_before",
+                "license_expires_at",
+                "valid_until",
+                "license_version",
+            ):
+                _strict_int(claims, name, 1 if name == "license_version" else 0)
+            if not re.fullmatch(r"[0-9a-f]{32}", claims.get("license_id", "")):
+                raise ValueError("invalid license id")
+            if (
+                claims.get("status") not in {"active", "revoked", "expired"}
+                or type(claims.get("restored")) is not bool
+            ):
+                raise ValueError("invalid entitlement status")
+            validation_now = claims["issued_at"] if calibrating else now
+            if (
+                not calibrating and now + _MAX_FUTURE_SKEW < claims["issued_at"]
+            ) or validation_now < claims["not_before"]:
+                raise ValueError("license is not yet valid")
+            if claims["valid_until"] < claims["issued_at"] or (
+                claims["status"] == "active" and claims["license_expires_at"] < claims["not_before"]
+            ):
+                raise ValueError("inconsistent license times")
+            if claims["status"] == "expired" and claims["license_expires_at"] > claims["issued_at"]:
+                raise ValueError("expired entitlement precedes its deadline")
+            if purpose == "online-license":
+                max_cache = 86400 if claims["status"] == "active" else 300
+                if claims["valid_until"] > claims["issued_at"] + max_cache:
+                    raise ValueError("online cache validity exceeds protocol limit")
+                if (
+                    claims["status"] == "active"
+                    and claims["valid_until"] > claims["license_expires_at"]
+                ):
+                    raise ValueError("online cache outlives the entitlement")
+            elif claims["valid_until"] > claims["license_expires_at"]:
+                raise ValueError("offline validity outlives the entitlement")
+            if validation_now >= claims["valid_until"] or (
+                claims["status"] == "active" and validation_now >= claims["license_expires_at"]
+            ):
+                return None
+            if len(self._verified_cache) >= 4:
+                self._verified_cache.clear()
+            self._verified_cache[(token, purpose)] = claims
+            return claims
+        except Exception as exc:
+            raise ValueError(f"invalid signed {purpose}: {exc}") from exc
+
+    def _reason(self) -> str | None:
+        if not self.managed:
+            return None
+        if self._load_error:
+            if "configured" in self._load_error or "trusted-key" in self._load_error:
+                return "configuration"
+            return "invalid_credential"
+        state = self._state
+        if not state.get("license_id"):
+            return "unactivated"
+        now = self._trusted_now()
+        if self._time_anomaly:
+            return "time_anomaly"
+        if now >= int(state.get("license_expires_at", 0)):
+            return "expired"
+        if state.get("status") == "revoked":
+            return "revoked"
+        if state.get("status") == "expired":
+            return "expired"
+        if state.get("status") != "active":
+            return "invalid_credential"
+        if (
+            int(state.get("revocation_floor", 0)) >= int(state.get("license_version", 0))
+            and int(state.get("revocation_floor", 0)) > 0
         ):
-            reason = (
-                "expired"
-                if self._claims and self._claims["license_expires_at"] <= self._now()
-                else "cache_expired"
+            return "revoked"
+        for typ in ("online", "offline"):
+            try:
+                claims = self._credential_valid(state.get(typ), f"{typ}-license", now)
+            except ValueError:
+                return "invalid_credential"
+            if claims:
+                canonical = (
+                    claims["license_id"],
+                    claims["license_version"],
+                    claims["status"],
+                    claims["license_expires_at"],
+                    claims["restored"],
+                )
+                current = (
+                    state.get("license_id"),
+                    state.get("license_version"),
+                    state.get("status"),
+                    state.get("license_expires_at"),
+                    state.get("restored", False),
+                )
+                if canonical != current:
+                    return "invalid_credential"
+                if claims["status"] == "active":
+                    return None
+        if state.get("online") or state.get("offline"):
+            return "cache_expired"
+        return "invalid_credential"
+
+    @property
+    def business_allowed(self) -> bool:
+        with self._lock:
+            return not self.managed or self._reason() is None
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            reason = self._reason()
+            allowed = not self.managed or reason is None
+            state = self._state
+            remaining = (
+                int(state.get("license_expires_at", 0)) - self._trusted_now()
+                if state.get("license_expires_at")
+                else None
             )
-            self._state, self._reason = _LOCKED, reason
-            self._schedule_notify()
+            typ = None
+            if allowed and self.managed:
+                for candidate in ("online", "offline"):
+                    if self._credential_valid(
+                        state.get(candidate), f"{candidate}-license", self._trusted_now()
+                    ):
+                        typ = candidate
+                        break
+            state_name = (
+                "UNACTIVATED"
+                if not self.managed
+                else "ACTIVE"
+                if allowed and typ == "online"
+                else "CACHED_ACTIVE"
+                if allowed and typ == "offline"
+                else "UNACTIVATED"
+                if reason == "unactivated"
+                else "LOCKED"
+            )
+            return {
+                "managed": self.managed,
+                "state": state_name,
+                "business_allowed": allowed,
+                "reason": reason,
+                "instance_id": self.instance_id,
+                "license_id": state.get("license_id"),
+                "license_version": state.get("license_version") or None,
+                "license_expires_at": state.get("license_expires_at") or None,
+                "credential_type": typ,
+                "expiring_soon": bool(remaining is not None and 0 < remaining <= 259200),
+                "last_sync_at": state.get("last_sync_at"),
+                "sync_error": state.get("sync_error"),
+            }
 
     def require_business_access(self) -> None:
-        self._check_deadline()
-        if not self.allowed:
-            raise OctopError(ErrorCode.INSTANCE_LICENSE_LOCKED, "Instance license is not active")
-
-    def status(self) -> dict[str, Any]:
-        self._check_deadline()
-        return {
-            "state": self._state,
-            "allowed": self.allowed,
-            "reason": None if self.allowed else self._reason,
-            "license_expires_at": self._claims.get("license_expires_at") if self._claims else None,
-            "valid_until": self._valid_until,
-            "last_sync_at": self._last_sync_at,
-            "last_sync_error": self._last_sync_error,
-            "contact": self.contact,
-        }
-
-    def details(self) -> dict[str, Any]:
-        return {
-            **self.status(),
-            "instance_id": self._instance_id,
-            "public_key_fingerprint": self._fingerprint,
-            "license_revision": self._revision,
-        }
-
-    def add_listener(self, callback: Callable[[bool], Awaitable[None]]) -> Callable[[], None]:
-        self._listeners.add(callback)
-        return lambda: self._listeners.discard(callback)
-
-    def register_connection(self, close_async_callback: Callable[[], Any]) -> Callable[[], None]:
-        self._connections.add(close_async_callback)
-        return lambda: self._connections.discard(close_async_callback)
-
-    def _schedule_notify(self) -> None:
-        loop = self._loop
-        if not self._initialized or loop is None or not loop.is_running() or self._notify_pending:
-            return
-        self._notify_pending = True
-        loop.call_soon_threadsafe(lambda: asyncio.create_task(self._notify()))
-
-    async def _notify(self) -> None:
-        async with self._notify_lock:
-            self._notify_pending = False
-            self._check_deadline()
-            is_allowed = (
-                self._state in (_ACTIVE, _CACHED)
-                and self._valid_until is not None
-                and self._now() < self._valid_until
+        if self.managed and not self.business_allowed:
+            raise OctopError(
+                ErrorCode.INSTANCE_LICENSE_LOCKED,
+                "instance license is not active",
+                status=423,
+                details={"reason": self.snapshot()["reason"]},
             )
-            if self._notified_allowed is is_allowed:
-                return
-            self._notified_allowed = is_allowed
-            failure: Exception | None = None
-            if not is_allowed:
-                for close_callback in tuple(self._connections):
-                    try:
-                        result = close_callback()
-                        if inspect.isawaitable(result):
-                            await result
-                    except Exception as exc:
-                        failure = failure or exc
-                current = asyncio.current_task()
-                for task in tuple(self._tasks):
-                    if task is not current:
-                        task.cancel()
-            for listener in tuple(self._listeners):
-                try:
-                    await listener(is_allowed)
-                except Exception as exc:
-                    failure = failure or exc
-            if failure is not None:
-                raise failure
 
-    def _serialize_private(self) -> str:
-        assert self._private is not None
-        pem = self._private.private_bytes(
-            serialization.Encoding.PEM,
-            serialization.PrivateFormat.PKCS8,
-            serialization.NoEncryption(),
-        )
-        return _b64e(pem)
+    def _persist_sync(self) -> None:
+        _atomic_write(self._state_path, _canonical(self._state))
 
     async def _persist(self) -> None:
-        data = {
-            "instance_id": self._instance_id,
-            "private_key": self._serialize_private() if self._private else None,
-            "token": self._token,
-            "last_wall": self._now(),
-            "fence": {
-                "revision": self._revision,
-                "entitlement": self._persisted_fence.get("entitlement"),
-                "challenges": self._seen_challenges[-128:],
-            },
-        }
-        raw = _canonical(data)
-        await asyncio.to_thread(_atomic_private, self.license_dir / "state.json", raw)
+        async with self._persist_lock:
+            with self._lock:
+                payload = _canonical(dict(self._state))
+            await asyncio.to_thread(_atomic_write, self._state_path, payload)
 
-    async def _ensure_identity(self) -> None:
-        if self._identity_invalid:
-            raise ValueError("protected license identity is invalid")
-        if self._private is None:
-            self._private = Ed25519PrivateKey.generate()
-            self._instance_id = secrets.token_hex(16)
-            pub = self._private.public_key().public_bytes(
-                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    def _transition(self, claims: dict[str, Any], token: str, token_type: str) -> None:
+        old = self._state
+        ver = claims["license_version"]
+        current = int(old.get("license_version", 0))
+        canonical = (
+            claims["license_id"],
+            ver,
+            claims["status"],
+            claims["license_expires_at"],
+            claims["restored"],
+        )
+        existing = (
+            old.get("license_id"),
+            current,
+            old.get("status"),
+            old.get("license_expires_at"),
+            old.get("restored", False),
+        )
+        if ver < current:
+            raise ValueError("license version rollback")
+        if ver == current and current:
+            derived_expiry = (
+                claims["status"] == "expired"
+                and old.get("status") == "active"
+                and claims["license_id"] == old.get("license_id")
+                and claims["license_expires_at"] == old.get("license_expires_at")
+                and claims["restored"] == old.get("restored", False)
+                and claims["license_expires_at"] <= claims["issued_at"]
             )
-            self._fingerprint = hashlib.sha256(pub).hexdigest()
-            await self._persist()
-        elif self._instance_id is None:
-            self._instance_id = secrets.token_hex(16)
-            await self._persist()
+            if canonical != existing and not derived_expiry:
+                raise ValueError("equal-version canonical entitlement conflict")
+            if int(old.get("revocation_floor", 0)) >= ver and not (
+                claims["restored"] and claims["status"] == "active"
+            ):
+                raise ValueError("same-version credential cannot override revocation")
+        if (
+            ver > current
+            and int(old.get("revocation_floor", 0)) >= current
+            and current
+            and not (claims["restored"] and claims["status"] == "active")
+            and claims["status"] == "active"
+        ):
+            raise ValueError("revoked entitlement requires explicit restored grant")
+        state = dict(old)
+        if ver > current:
+            state.update(
+                license_id=claims["license_id"],
+                license_version=ver,
+                license_expires_at=claims["license_expires_at"],
+                status=claims["status"],
+                restored=claims["restored"],
+                online=None,
+                offline=None,
+            )
+        state[token_type] = token
+        if claims["status"] == "revoked":
+            state["revocation_floor"] = max(int(state.get("revocation_floor", 0)), ver)
+            state["status"] = "revoked"
+        elif claims["status"] == "expired":
+            state["status"] = "expired"
+        elif (
+            claims["restored"]
+            and ver > int(state.get("revocation_floor", 0))
+            or not state.get("status")
+        ):
+            state["status"] = "active"
+        self._state = state
 
-    def _public_pem(self) -> str:
-        assert self._private is not None
-        return (
-            self._private.public_key()
+    def export_request(self) -> dict[str, str]:
+        if self._private_key is None:
+            raise RuntimeError("instance private key unavailable")
+        pub = (
+            self._private_key.public_key()
             .public_bytes(
                 serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
             )
-            .decode("ascii")
+            .decode()
         )
-
-    def _accept_token(
-        self,
-        token: str,
-        *,
-        persist: bool = True,
-        expected_challenge: str | None = None,
-        cached: bool = False,
-        elapsed: float | None = None,
-    ) -> dict[str, Any]:
-        if len(token) > 65536 or token.count(".") != 2:
-            raise ValueError("invalid signed license")
-        h, p, s = token.split(".")
-        header, claims = (
-            json.loads(_b64d(h), object_pairs_hook=_unique_object),
-            json.loads(_b64d(p), object_pairs_hook=_unique_object),
-        )
-        if (
-            not isinstance(header, dict)
-            or header.get("alg") != "EdDSA"
-            or header.get("typ") != _TYP
-            or set(header) - {"alg", "typ", "kid"}
-        ):
-            raise ValueError("invalid signed license header")
-        kid = header.get("kid")
-        if not isinstance(kid, str) or not kid:
-            raise ValueError("invalid license signing key id")
-        key = self.trusted_keys.get(kid)
-        if key is None:
-            raise ValueError("untrusted license signing key")
-        try:
-            key.verify(_b64d(s), f"{h}.{p}".encode("ascii"))
-        except InvalidSignature as exc:
-            raise ValueError("invalid license signature") from exc
-        required = {
-            "protocol_version",
-            "product",
-            "iss",
-            "aud",
-            "instance_id",
-            "instance_key_fingerprint",
-            "challenge",
-            "license_id",
-            "license_revision",
-            "status",
-            "iat",
-            "exp",
-            "license_expires_at",
-        }
-        if not isinstance(claims, dict) or not required <= claims.keys() or set(claims) - required:
-            raise ValueError("invalid license claims")
-        if (
-            type(claims["protocol_version"]) is not int
-            or claims["protocol_version"] != 1
-            or claims["product"] != _PRODUCT
-            or claims["iss"] != _ISSUER
-            or claims["aud"] != self._instance_id
-            or claims["instance_id"] != self._instance_id
-            or claims["instance_key_fingerprint"] != self._fingerprint
-        ):
-            raise ValueError("license identity or issuer mismatch")
-        if claims["status"] not in ("active", "revoked", "expired", "customer_disabled"):
-            raise ValueError("invalid license status")
-        for field in ("license_revision", "iat", "exp", "license_expires_at"):
-            if type(claims[field]) is not int:
-                raise ValueError("invalid license timestamp or revision")
-        revision = claims["license_revision"]
-        if revision < 1 or revision < self._revision:
-            raise ValueError("license revision rollback")
-        now = self._now()
-        if self._last_wall and now < self._last_wall - 300:
-            raise ValueError("clock anomaly")
-        if claims["iat"] > now + 300:
-            raise ValueError("license server clock is too far ahead")
-        if elapsed is not None:
-            now = max(now, claims["iat"] + math.ceil(elapsed) + 1)
-        if claims["exp"] <= now or claims["exp"] <= claims["iat"]:
-            raise ValueError("license envelope expired or invalid")
-        if expected_challenge is not None and claims["challenge"] != expected_challenge:
-            raise ValueError("license challenge mismatch")
-        challenge = claims["challenge"]
-        if not isinstance(challenge, str) or len(_b64d(challenge)) < 32:
-            raise ValueError("invalid license challenge")
-        if cached:
-            if not self._seen_challenges or challenge != self._seen_challenges[-1]:
-                raise ValueError("cached license challenge is missing from replay fence")
-        elif challenge in self._seen_challenges:
-            raise ValueError("license challenge replay")
-        if not isinstance(claims["license_id"], str) or not claims["license_id"]:
-            raise ValueError("invalid license identifier")
-        entitlement = [
-            claims["status"],
-            claims["license_expires_at"],
-            claims["instance_key_fingerprint"],
-        ]
-        old_entitlement = self._persisted_fence.get("entitlement")
-        expired_transition = (
-            revision == self._revision
-            and claims["status"] == "expired"
-            and isinstance(old_entitlement, list)
-            and len(old_entitlement) == 3
-            and old_entitlement[0] == "active"
-            and old_entitlement[1:] == entitlement[1:]
-        )
-        if (
-            revision == self._revision
-            and old_entitlement is not None
-            and entitlement != old_entitlement
-            and not expired_transition
-        ):
-            raise ValueError("license entitlement changed without revision")
-        if claims["status"] == "active":
-            if claims["license_expires_at"] <= now or claims["exp"] != min(
-                claims["iat"] + 86400, claims["license_expires_at"]
-            ):
-                raise ValueError("invalid active license expiry")
-            state, reason, deadline = (
-                _ACTIVE,
-                None,
-                min(claims["exp"], claims["license_expires_at"]),
-            )
-        else:
-            if claims["exp"] != claims["iat"] + 300:
-                raise ValueError("invalid deny envelope")
-            state, reason, deadline = _LOCKED, str(claims["status"]), None
-        if revision > self._revision or expired_transition:
-            self._persisted_fence["entitlement"] = entitlement
-        self._revision = revision
-        if not cached:
-            self._seen_challenges.append(challenge)
-            self._seen_challenges = self._seen_challenges[-128:]
-        self._claims, self._token = claims, token
-        self._state, self._reason, self._valid_until = state, reason, deadline
-        self._monotonic_until = (
-            time.monotonic() + max(0, deadline - now) if deadline is not None else None
-        )
-        if elapsed is not None:
-            self._trusted_epoch, self._trusted_monotonic = now, time.monotonic()
-        if persist:
-            self._last_sync_at = now
-        self._schedule_notify()
-        return claims
-
-    async def _save_accepted(self) -> None:
-        await self._persist()
-
-    def _http_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        assert self.server_url is not None
-        context = (
-            ssl.create_default_context(cafile=self.ca_file)
-            if self.ca_file
-            else ssl.create_default_context()
-        )
-        req = urllib.request.Request(
-            self.server_url + path,
-            data=_canonical(body),
-            headers={"Content-Type": "application/json", "Accept": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(req, timeout=10, context=context) as response:
-            data = json.loads(response.read(131073))
-        if not isinstance(data, dict):
-            raise ValueError("invalid licensing response")
-        return data
-
-    async def _request_json(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
-        return await asyncio.wait_for(asyncio.to_thread(self._http_json, path, body), timeout=10)
-
-    async def _online_exchange(
-        self, operation: str, activation_code: str | None = None
-    ) -> dict[str, Any]:
-        if not self.server_url or not self.trusted_keys:
-            raise RuntimeError("configuration_required")
-        started = time.monotonic()
-        await self._ensure_identity()
-        challenge_data = await self._request_json(
-            "/api/v1/instance/challenges",
-            {
-                "instance_id": self._instance_id,
-                "operation": operation,
-                "public_key": self._public_pem(),
-            },
-        )
-        challenge, expires_at = challenge_data.get("challenge"), challenge_data.get("expires_at")
-        if (
-            not isinstance(challenge, str)
-            or len(_b64d(challenge)) < 32
-            or type(expires_at) is not int
-            or expires_at <= self._now() - 300
-            or expires_at > self._now() + 360
-        ):
-            raise ValueError("invalid server challenge")
-        assert self._private is not None
-        claims: dict[str, Any] = {
-            "protocol_version": 1,
+        claims = {
+            "iss": self.instance_id,
+            "aud": "maitu-license-center",
+            "purpose": "offline-request",
+            "protocol": 1,
             "product": _PRODUCT,
-            "aud": _AUDIENCE,
-            "instance_id": self._instance_id,
-            "public_key": self._public_pem(),
-            "operation": operation,
-            "challenge": challenge,
+            "instance_id": self.instance_id,
+            "key_fingerprint": self._identity,
+            "iat": self._trusted_now(),
         }
-        if activation_code is not None:
-            claims["activation_code"] = activation_code
-        h, p = _b64e(_canonical({"typ": _PROOF_TYP, "alg": "EdDSA"})), _b64e(_canonical(claims))
-        proof = f"{h}.{p}.{_b64e(self._private.sign(f'{h}.{p}'.encode('ascii')))}"
-        reply = await self._request_json(f"/api/v1/instance/{operation}", {"proof": proof})
-        token = reply.get("token")
-        if not isinstance(token, str):
-            raise ValueError("license response missing token")
-        self._accept_token(token, expected_challenge=challenge, elapsed=time.monotonic() - started)
-        await self._save_accepted()
-        self._last_sync_at, self._last_sync_error = self._now(), None
-        return self.details()
-
-    def load_cached(self) -> dict[str, Any]:
-        """Synchronously load verified local identity/cache for CLI guards."""
-
-        def load() -> dict[str, Any] | None:
-            path = self.license_dir / "state.json"
-            if not path.exists():
-                return None
-            try:
-                data = json.loads(path.read_text("utf-8"))
-                if not isinstance(data, dict):
-                    raise ValueError("invalid cached license state")
-                return data
-            except (OSError, ValueError):
-                self._identity_invalid = True
-                return {}
-
-        data = load()
-        if data:
-            try:
-                private_raw = _b64d(data["private_key"])
-                private = serialization.load_pem_private_key(private_raw, password=None)
-                if not isinstance(private, Ed25519PrivateKey):
-                    raise ValueError("invalid identity")
-                self._private = private
-                self._instance_id = data.get("instance_id")
-                pub = private.public_key().public_bytes(
-                    serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
-                )
-                self._fingerprint = hashlib.sha256(pub).hexdigest()
-                self._persisted_fence = data.get("fence", {})
-                self._revision = int(self._persisted_fence.get("revision", 0))
-                self._seen_challenges = list(self._persisted_fence.get("challenges", []))[-128:]
-                self._last_wall = int(data.get("last_wall", 0))
-                token = data.get("token")
-                if token:
-                    try:
-                        self._accept_token(token, persist=False, cached=True)
-                        if self._state == _ACTIVE:
-                            self._state = _CACHED
-                    except ValueError as exc:
-                        self._claims = self._token = None
-                        self._state = _LOCKED
-                        message = str(exc)
-                        self._reason = (
-                            "clock_anomaly"
-                            if "clock anomaly" in message
-                            else ("cache_expired" if "expired" in message else "invalid_credential")
-                        )
-                        self._valid_until = self._monotonic_until = None
-            except Exception:
-                self._claims = self._token = None
-                self._state, self._reason, self._valid_until = _LOCKED, "invalid_credential", None
-                if self._private is None:
-                    self._identity_invalid = True
-        self._check_deadline()
-        if not self.trusted_keys:
-            self._reason = "configuration_required"
-        self._initialized = True
-        return self.status()
-
-    async def start(self) -> dict[str, Any]:
-        if self._running:
-            return self.status()
-        self._loop = asyncio.get_running_loop()
-        await asyncio.to_thread(self.load_cached)
-        await asyncio.to_thread(self._initialize_identity_sync)
-        self._initialized = True
-        self._running = True
-        self._maintenance_task = asyncio.create_task(
-            self._maintenance(), name="license-deadline-maintenance"
+        proof = jwt.encode(
+            claims, self._private_key, algorithm="EdDSA", headers={"kid": _KID, "typ": "JWT"}
         )
-        self._sync_task = asyncio.create_task(self._sync_loop(), name="license-sync")
-        return self.status()
+        return {
+            "instance_id": self.instance_id,
+            "public_key_pem": pub,
+            "key_fingerprint": self._identity,
+            "proof": proof,
+        }
 
-    def _initialize_identity_sync(self) -> None:
-        if self._identity_invalid:
-            self._state, self._reason = _LOCKED, "invalid_credential"
-            self._initialized = True
-            return
-        if self._private is None:
-            self._private = Ed25519PrivateKey.generate()
-            self._instance_id = secrets.token_hex(16)
-            pub = self._private.public_key().public_bytes(
-                serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    async def import_offline(self, token: str) -> dict[str, Any]:
+        if not self.managed or not self._configured_keys:
+            raise ValueError("licensing is not configured")
+        if self._load_error == "missing_ledger":
+            raise ValueError(
+                "existing instance ledger is missing; offline import cannot restore lost history"
             )
-            self._fingerprint = hashlib.sha256(pub).hexdigest()
-            _atomic_private(
-                self.license_dir / "state.json",
-                _canonical(
-                    {
-                        "instance_id": self._instance_id,
-                        "private_key": self._serialize_private(),
-                        "token": None,
-                        "last_wall": self._now(),
-                        "fence": {"revision": 0, "entitlement": None, "challenges": []},
-                    }
-                ),
-            )
-        self._initialized = True
-
-    async def stop(self) -> None:
-        self._running = False
-        tasks = [task for task in (self._maintenance_task, self._sync_task) if task is not None]
-        self._maintenance_task = self._sync_task = None
-        for task in tasks:
-            task.cancel()
-        for task in tasks:
-            with suppress(asyncio.CancelledError):
-                await task
-
-    async def activate(self, code: str) -> dict[str, Any]:
-        if not isinstance(code, str) or not code:
-            raise ValueError("activation code is required")
-        async with self._operation_lock:
-            return await asyncio.wait_for(self._online_exchange("activate", code), timeout=10)
-
-    async def refresh(self) -> dict[str, Any]:
-        return await self._single_flight(self._serialized_refresh)
-
-    async def _serialized_refresh(self) -> dict[str, Any]:
-        async with self._operation_lock:
+        async with self._network_lock:
             try:
-                return await asyncio.wait_for(self._online_exchange("sync"), timeout=10)
-            except Exception as exc:
-                self._last_sync_error = type(exc).__name__
-                self._last_sync_at = self._now()
-                if self.allowed:
-                    self._state = _CACHED
+                now = self._trusted_now()
+                claims = self._credential_valid(token, "offline-license", now)
+                if claims is None:
+                    raise ValueError("invalid offline token")
+                with self._lock:
+                    self._transition(claims, token, "offline")
+                    self._state["trusted_time"] = max(
+                        int(self._state.get("trusted_time", 0)), now, claims["issued_at"]
+                    )
+                    self._time_anchor = self._state["trusted_time"]
+                    self._mono_anchor = time.monotonic()
+                await self._persist()
+                self._load_error = None
+                await self._notify_if_changed()
+                return self.snapshot()
+            except Exception:
+                await self._notify_if_changed()
                 raise
 
-    async def _single_flight(
-        self, operation: Callable[[], Coroutine[Any, Any, dict[str, Any]]]
-    ) -> dict[str, Any]:
-        async with self._lock:
-            existing = self._refresh_task
-            if existing is None or existing.done():
-                task: asyncio.Task[dict[str, Any]] = asyncio.create_task(operation())
-                self._refresh_task = task
-            else:
-                task = existing
-        try:
-            return await asyncio.shield(task)
-        finally:
-            if task is self._refresh_task and task.done():
-                self._refresh_task = None
+    async def _request(self, path: str, body: dict[str, Any]) -> dict[str, Any]:
+        if not self.center_url:
+            raise RuntimeError("license center URL is not configured")
+        url = self.center_url + path
+        parsed = urlsplit(self.center_url)
+        loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
+        if parsed.scheme != "https" and not (
+            self.allow_loopback and loopback and parsed.scheme == "http"
+        ):
+            raise ValueError("license center must use HTTPS (or explicitly enabled loopback HTTP)")
+        raw = _canonical(body)
 
-    async def _maintenance(self) -> None:
-        while self._running:
-            self._check_deadline()
+        def send() -> dict[str, Any]:
+            req = urllib.request.Request(
+                url, raw, {"Content-Type": "application/json"}, method="POST"
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read())
+            if not isinstance(result, dict):
+                raise ValueError("invalid license center response")
+            return result
+
+        return await asyncio.to_thread(send)
+
+    async def _proof(self, operation: str, challenge: str, request: dict[str, Any]) -> str:
+        if self._private_key is None:
+            raise RuntimeError("instance private key unavailable")
+        unsigned = dict(request)
+        claims = {
+            "iss": self.instance_id,
+            "aud": "maitu-license-center",
+            "purpose": "instance-proof",
+            "protocol": 1,
+            "product": _PRODUCT,
+            "operation": operation,
+            "challenge": challenge,
+            "content_hash": hashlib.sha256(_canonical(unsigned)).hexdigest(),
+            "iat": int(time.time()) if self._time_anomaly else self._trusted_now(),
+        }
+        return jwt.encode(
+            claims, self._private_key, algorithm="EdDSA", headers={"kid": _KID, "typ": "JWT"}
+        )
+
+    async def _online(self, operation: str, code: str | None = None) -> dict[str, Any]:
+        if not self.managed:
+            return self.snapshot()
+        if not self.center_url:
+            raise RuntimeError("license center URL is not configured")
+        async with self._network_lock:
+            calibrating = self._time_anomaly
+            wall_started = int(time.time())
+            request_started_at = self._trusted_now()
+            started = time.monotonic()
+            try:
+                private_key = self._private_key
+                if private_key is None:
+                    raise RuntimeError("instance private key unavailable")
+                public = (
+                    private_key.public_key()
+                    .public_bytes(
+                        serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
+                    )
+                    .decode()
+                )
+                challenge_req = {
+                    "instance_id": self.instance_id,
+                    "operation": "activate" if code else "sync",
+                    "public_key_pem": public if code else None,
+                }
+                challenge = await self._request("/api/v1/instance/challenges", challenge_req)
+                base: dict[str, Any] = {
+                    "instance_id": self.instance_id,
+                    "public_key_pem": public,
+                }
+                if code:
+                    base["activation_code"] = code
+                base.update(challenge=challenge["challenge"])
+                proof = await self._proof(
+                    "activate" if code else "sync", challenge["challenge"], base
+                )
+                token_request_started = time.monotonic()
+                response = await self._request(
+                    "/api/v1/instance/activate" if code else "/api/v1/instance/sync",
+                    {**base, "proof": proof},
+                )
+                token_rtt = max(0, int(time.monotonic() - token_request_started))
+                token = response.get("token")
+                if not isinstance(token, str):
+                    raise ValueError("license center returned an invalid token")
+                validation_now = wall_started + token_rtt if calibrating else self._trusted_now()
+                claims = self._credential_valid(
+                    token, "online-license", validation_now, calibrating=calibrating
+                )
+                if claims is None:
+                    raise ValueError("license center returned an invalid token")
+                if claims.get("challenge") != challenge["challenge"]:
+                    raise ValueError("license response is not bound to the fresh challenge")
+                if (
+                    claims["issued_at"]
+                    > request_started_at + int(time.monotonic() - started) + _MAX_FUTURE_SKEW
+                    and not calibrating
+                ):
+                    raise ValueError("license center issued time exceeds bounded request interval")
+                if calibrating and claims["issued_at"] < int(self._state.get("last_sync_at") or 0):
+                    raise ValueError("license center signed time predates the last synchronization")
+                with self._lock:
+                    self._transition(claims, token, "online")
+                    self._state["last_sync_at"] = claims["issued_at"]
+                    self._state["sync_error"] = None
+                    if calibrating:
+                        calibrated_time = claims["issued_at"] + token_rtt
+                        self._state["trusted_time"] = calibrated_time
+                        self._time_anchor = calibrated_time
+                        self._observed_highwater = calibrated_time
+                    else:
+                        self._state["trusted_time"] = max(
+                            self._state["trusted_time"], claims["issued_at"]
+                        )
+                        self._time_anchor = claims["issued_at"]
+                        self._observed_highwater = max(
+                            self._observed_highwater, claims["issued_at"], int(time.time())
+                        )
+                    self._mono_anchor = time.monotonic()
+                    self._time_anomaly = False
+                await self._persist()
+                self._load_error = None
+                await self._notify_if_changed()
+                return self.snapshot()
+            except Exception as exc:
+                with self._lock:
+                    self._state["sync_error"] = str(exc)[:300]
+                await self._persist()
+                await self._notify_if_changed()
+                raise
+
+    async def activate(self, code: str) -> dict[str, Any]:
+        if not isinstance(code, str) or not code.strip():
+            raise ValueError("activation code is required")
+        return await self._online("activate", code.strip())
+
+    async def refresh(self) -> dict[str, Any]:
+        return await self._online("sync")
+
+    async def _notify_if_changed(self) -> None:
+        async with self._callback_lock:
+            if self._stopping:
+                return
+            after = self.business_allowed
+            previous = self._last_allowed
+            if previous is None:
+                callback = self._callback
+                if callback is not None:
+                    self._last_allowed = after
+                    await callback(after)
+                return
+            if previous == after:
+                return
+            if not after and self.managed:
+                with self._lock:
+                    self._state["trusted_time"] = max(
+                        int(self._state.get("trusted_time", 0)), self._trusted_now()
+                    )
+                await self._persist()
+            self._last_allowed = after
+            callback = self._callback
+            if callback is not None:
+                await callback(after)
+
+    async def start(self, on_change: Callable[[bool], Awaitable[None]] | None = None) -> None:
+        self._stopping = False
+        self._callback = on_change
+        current = self.business_allowed
+        if self._last_allowed is None:
+            self._last_allowed = current
+            if self._callback:
+                await self._callback(current)
+        self._tasks = [
+            asyncio.create_task(self._deadline_loop()),
+            asyncio.create_task(self._sync_loop()),
+            asyncio.create_task(self._time_loop()),
+        ]
+        if self.managed and self.center_url:
+            try:
+                await self.refresh()
+            except Exception:
+                logger.info("Initial license synchronization failed", exc_info=True)
+
+    async def stop(self) -> None:
+        self._stopping = True
+        tasks, self._tasks = self._tasks, []
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._callback = None
+
+    async def _deadline_loop(self) -> None:
+        while True:
             await asyncio.sleep(1)
+            await self._notify_if_changed()
 
     async def _sync_loop(self) -> None:
-        retry_delay = 30.0
-        while self._running:
-            delay: float | None = None
-            if self.server_url and self.trusted_keys:
+        while True:
+            await asyncio.sleep(3600)
+            if self.managed and self.center_url:
                 try:
-                    await asyncio.wait_for(self.refresh(), timeout=10)
-                except asyncio.CancelledError:
-                    raise
-                except Exception as exc:
-                    self._last_sync_error = type(exc).__name__
-                    self._last_sync_at = self._now()
-                    ceiling = 3600 if self.allowed else 300
-                    delay = min(
-                        ceiling, min(retry_delay, ceiling) * (90 + secrets.randbelow(21)) / 100
+                    await self.refresh()
+                except Exception:
+                    logger.info("Periodic license synchronization failed", exc_info=True)
+
+    async def _time_loop(self) -> None:
+        while True:
+            await asyncio.sleep(60)
+            if self.managed:
+                with self._lock:
+                    self._state["trusted_time"] = max(
+                        int(self._state.get("trusted_time", 0)), self._trusted_now()
                     )
-                    retry_delay = min(retry_delay * 2, 3600)
-                else:
-                    retry_delay = 30.0
-            await asyncio.sleep(delay if delay is not None else 3600 if self.allowed else 300)
+                await self._persist()
 
-    @asynccontextmanager
-    async def business_task(self) -> AsyncIterator[None]:
-        self.require_business_access()
-        task = asyncio.current_task()
-        owns_registration = task is not None and task not in self._tasks
-        if owns_registration:
-            assert task is not None
-            self._tasks.add(task)
+    async def claim_reminder(self, user_id: int, time_zone: str) -> dict[str, Any]:
+        with self._lock:
+            expiry = self._state.get("license_expires_at") if self.managed else None
+            now = self._trusted_now()
+            remaining = int(expiry) - now if expiry else None
+            if not self.business_allowed or remaining is None or not 0 < remaining <= 259200:
+                return {
+                    "show": False,
+                    "expires_at": expiry,
+                    "remaining_seconds": remaining,
+                    "date": None,
+                }
+            key = f"{self.instance_id}:{user_id}:{expiry}:{time_zone}"
+        show, today = await asyncio.to_thread(self._claim_reminder_sync, key, now, time_zone)
+        return {"show": show, "expires_at": expiry, "remaining_seconds": remaining, "date": today}
+
+    def _claim_reminder_sync(self, key: str, now: int, time_zone: str) -> tuple[bool, str]:
         try:
-            self.require_business_access()
-            yield
-        finally:
-            if owns_registration:
-                assert task is not None
-                self._tasks.discard(task)
+            today = (
+                datetime.fromtimestamp(now, UTC).astimezone(ZoneInfo(time_zone)).date().isoformat()
+            )
+        except Exception:
+            today = datetime.fromtimestamp(now, UTC).date().isoformat()
+        with _process_file_lock(self._reminder_path):
+            db = _read_json(self._reminder_path) or {"claims": {}}
+            claims = db.get("claims")
+            if not isinstance(claims, dict):
+                claims = {}
+            if claims.get(key) == today:
+                return False, today
+            claims[key] = today
+            db["claims"] = claims
+            _atomic_write(self._reminder_path, _canonical(db))
+            return True, today
 
 
-_CURRENT: LicenseService | None = None
+def _unmanaged() -> LicenseManager:
+    """Create the import-time no-op accessor without environment or filesystem access."""
+    manager = LicenseManager.__new__(LicenseManager)
+    manager.state_dir = Path()
+    manager.trusted_keys_file = None
+    manager.center_url = None
+    manager.allow_loopback = False
+    manager._managed = False
+    manager._state_path = Path()
+    manager._reminder_path = Path()
+    manager._lock = threading.RLock()
+    manager._network_lock = asyncio.Lock()
+    manager._persist_lock = asyncio.Lock()
+    manager._callback_lock = asyncio.Lock()
+    manager._callback = None
+    manager._tasks = []
+    manager._state = {
+        "license_id": None,
+        "license_version": 0,
+        "license_expires_at": 0,
+        "status": None,
+        "restored": False,
+        "revocation_floor": 0,
+        "online": None,
+        "offline": None,
+        "trusted_time": 0,
+        "last_sync_at": None,
+        "sync_error": None,
+    }
+    manager._load_error = None
+    manager._configured_keys = {}
+    manager._private_key = None
+    manager._identity = ""
+    manager._verified_cache = {}
+    manager._instance_id = ""
+    manager._mono_anchor = time.monotonic()
+    manager._time_anchor = int(time.time())
+    manager._observed_highwater = manager._time_anchor
+    manager._time_anomaly = False
+    manager._last_allowed = True
+    manager._stopping = False
+    return manager
 
 
-def current_license() -> LicenseService:
-    global _CURRENT
-    if _CURRENT is None:
-        _CURRENT = LicenseService(PathLayout.from_env().root)
-        _CURRENT.load_cached()
+_DEFAULT = _unmanaged()
+_CURRENT = _DEFAULT
+_CURRENT_LOCK = threading.Lock()
+
+
+def current_license() -> LicenseManager:
     return _CURRENT
 
 
-def set_current_license(service: LicenseService) -> None:
+def install_license_manager(manager: LicenseManager) -> None:
     global _CURRENT
-    if not isinstance(service, LicenseService):
-        raise TypeError("service must be a LicenseService")
-    _CURRENT = service
+    with _CURRENT_LOCK:
+        _CURRENT = manager

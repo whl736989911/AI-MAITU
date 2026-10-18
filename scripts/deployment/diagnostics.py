@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import shutil
 import ssl
 import stat
+import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -54,14 +56,14 @@ def _fetch_health(url: str, ca_file: Path | None) -> dict[str, Any]:
     return wait_http(url, ca_file=ca_file, timeout=8)
 
 
-def _current_kid(data_dir: Path) -> str | None:
-    state_file = data_dir / "license/state.json"
+def _current_kid(state_dir: Path) -> str | None:
+    state_file = state_dir / "license-state.json"
     if not _safe_path(state_file) or not state_file.is_file():
         return None
     try:
         state = json.loads(state_file.read_text(encoding="utf-8"))
-        token = state.get("token") if isinstance(state, dict) else None
-        header = token.split(".", 1)[0] if isinstance(token, str) else ""
+        tokens = state.get("online") or state.get("offline") if isinstance(state, dict) else None
+        header = tokens.split(".", 1)[0] if isinstance(tokens, str) else ""
         header += "=" * (-len(header) % 4)
         decoded = json.loads(base64.urlsafe_b64decode(header)) if header else {}
         kid = decoded.get("kid") if isinstance(decoded, dict) else None
@@ -70,32 +72,22 @@ def _current_kid(data_dir: Path) -> str | None:
         return None
 
 
-def _container_kid(config: dict[str, Any]) -> str | None:
-    script = (
-        "import base64,json,pathlib; "
-        "d=json.loads(pathlib.Path('/data/.octop/license/state.json').read_text()); "
-        "t=d.get('token') or ''; "
-        "h=t.split('.',1)[0]; "
-        "print(json.loads(base64.urlsafe_b64decode(h+'='*(-len(h)%4)).decode()).get('kid',''))"
-    )
-    result = compose(
-        config, "exec", "-T", "maitu", "python", "-c", script, capture=True, check=False
-    )
-    value = result.stdout.strip() if result.returncode == 0 else ""
-    return value if value and value.replace("-", "").replace("_", "").isalnum() else None
-
-
 def _trust_report(trust_dir: Path, expected: dict[str, str]) -> tuple[bool, set[str]]:
-    path = trust_dir / "trusted-keys.json"
-    if not _safe_path(path) or not path.is_file():
+    paths = (
+        trust_dir / "license-trusted-keys.json",
+        trust_dir / "release-trusted-keys.json",
+    )
+    if any(not _safe_path(path) or not path.is_file() for path in paths):
         return False, set()
     try:
-        trusted = json.loads(path.read_text(encoding="utf-8"))
-        if not isinstance(trusted, dict):
-            return False, set()
-        calculated = bundle.key_fingerprints({"trusted_keys": trusted})
+        calculated = bundle.key_fingerprints(
+            {
+                "license_trusted_keys": json.loads(paths[0].read_text(encoding="utf-8")),
+                "release_trusted_keys": json.loads(paths[1].read_text(encoding="utf-8")),
+            }
+        )
         return calculated == expected, set(calculated)
-    except (OSError, ValueError, DeploymentError):
+    except (OSError, UnicodeError, ValueError, DeploymentError):
         return False, set()
 
 
@@ -185,9 +177,12 @@ def _platform_check(config_dir: Path) -> int:
             actual = inspect_platform(compose_config)
             effective = actual.get("configuration", {})
             expected_configuration = {
-                "OCTOP_LICENSE_SERVER_URL": manifest["server_url"],
-                "OCTOP_LICENSE_TRUST_FILE": "/etc/maitu/license/trusted-keys.json",
-                "OCTOP_LICENSE_CA_FILE": "/etc/maitu/license/root-ca.pem" if ca_file else "",
+                "MAITU_LICENSE_CENTER_URL": manifest["server_url"],
+                "MAITU_LICENSE_TRUSTED_KEYS_FILE": "/run/maitu-trust/license-trusted-keys.json",
+                "MAITU_LICENSE_STATE_DIR": "/var/lib/maitu-license",
+                "MAITU_UPDATE_CENTER_URL": manifest["server_url"],
+                "MAITU_UPDATE_TRUSTED_KEYS_FILE": "/run/maitu-trust/release-trusted-keys.json",
+                "MAITU_UPDATE_QUEUE_DIR": "/var/lib/maitu-update-queue",
             }
             failures += not _report(
                 "容器实际连接配置",
@@ -221,14 +216,10 @@ def _platform_check(config_dir: Path) -> int:
             raise DeploymentError("平台容器未运行，无法只读读取本地许可状态。")
         license_state = _fetch_local_json(host, int(port), "/api/license/status")
         state = license_state["state"]
-        mount = manifest.get("data_mount", {})
-        current_kid = (
-            _current_kid(Path(data_dir))
-            if isinstance(mount, dict) and mount.get("type") == "bind"
-            else _container_kid(compose_config)
-        )
+        current_kid = _current_kid(Path(str(manifest["license_state_dir"])))
+        license_kids = {key.split(":", 1)[1] for key in kids if key.startswith("license:")}
         kid_ok = (state == "UNACTIVATED" and current_kid is None) or (
-            current_kid is not None and current_kid in kids
+            current_kid is not None and current_kid in license_kids
         )
         failures += not _report(
             "实例授权 current kid",
@@ -385,6 +376,84 @@ def _center_check(config_dir: Path) -> int:
             )
     except DeploymentError as exc:
         failures += not _report("备份/续期任务", False, type(exc).__name__)
+    return int(bool(failures))
+
+
+def check_native(
+    source: Path, python: Path, extras: list[str], health_url: str | None = None
+) -> int:
+    """Inspect the selected native interpreter without uv sync or application startup."""
+    source = source.expanduser().absolute()
+    python = python.expanduser().absolute()
+    failures = 0
+    for name in ("pyproject.toml", "uv.lock", "src/octop/dashboard/index.html"):
+        failures += not _report(name, (source / name).is_file(), str(source / name))
+    for name in ("uv", "node", "npm", "bwrap"):
+        failures += not _report(
+            name, shutil.which(name) is not None, shutil.which(name) or "未安装"
+        )
+    print("[INFO] make 非运行依赖；缺失时按 scripts/README.md 的直接命令验证。")
+    print(
+        "[INFO] bwrap 存在不代表 userns/AppArmor 已授权；请另运行 setup-host-sandbox.sh --status。"
+    )
+    modules = [
+        "octop",
+        "fastapi",
+        "uvicorn",
+        "harness_agent",
+        "pdfplumber",
+        "pandas",
+        "rapidocr",
+        "onnxruntime",
+    ]
+    if "local-embedding" in extras:
+        modules += ["fastembed", "huggingface_hub"]
+    if "desktop" in extras:
+        modules += ["mss", "pynput"]
+    else:
+        print(
+            "[INFO] desktop 未选用；不检查桌面会话，但当前 harness-agent[all] 仍传递安装 pynput/evdev。"
+        )
+    compiler = shutil.which("gcc")
+    print(
+        f"[INFO] evdev 构建编译器: {compiler or '未安装；源码安装前 Ubuntu: sudo apt-get install build-essential python3-dev linux-libc-dev'}"
+    )
+    if not python.is_file():
+        _report("服务 Python", False, str(python))
+        return 1
+    # Import in the service interpreter: metadata alone misses broken native libraries.
+    probe = (
+        "import importlib,json,sys; result={}; "
+        'exec("for name in sys.argv[1:]:\\n'
+        " try: importlib.import_module(name); result[name]='ok'\\n"
+        ' except Exception as exc: result[name]=type(exc).__name__\\n"); '
+        "print(json.dumps(result))"
+    )
+    try:
+        result = subprocess.run(
+            [str(python), "-I", "-B", "-c", probe, *modules],
+            cwd=source,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=90,
+        )
+        status = json.loads(result.stdout.strip().splitlines()[-1])
+        for name in modules:
+            failures += not _report(name, status.get(name) == "ok", status.get(name, "unknown"))
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError):
+        failures += not _report("依赖导入", False, "指定 Python 无法完成导入检查；未安装或修改依赖")
+    print("[INFO] 依赖导入不验证 OCR/向量模型下载、桌面会话权限、配置或授权身份。")
+    if health_url:
+        try:
+            response = _fetch_health(health_url, None)
+            failures += not _report(
+                "原生服务 health", response.get("ok") is True, json.dumps(response)
+            )
+        except (DeploymentError, OSError, ValueError):
+            failures += not _report("原生服务 health", False, "不可达或不是有效健康响应")
+    else:
+        print("[INFO] 未提供 --health-url；未验证运行中的服务、数据库或授权状态。")
     return int(bool(failures))
 
 

@@ -12,7 +12,7 @@ Create-time defaults when unset:
 * Default workspace → on-disk ``{OCTOP_HOME}/agents/<id>/`` and persisted as
   that host absolute path.
 * Scoped ``root_dir`` mapping is retained for legacy path resolution only;
-  customer runtime rejects roots outside the managed per-agent workspace.
+  runtime confines local backend roots to the managed per-agent workspace.
 
 An explicitly supplied ``workspace_dir`` is accepted only when its resolved
 host path equals ``{OCTOP_HOME}/agents/<id>/``; external paths are rejected.
@@ -30,6 +30,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.paths import PathLayout
 
 DEFAULT_SYSTEM_FILES_PATH = ".octop"
@@ -88,9 +89,9 @@ def default_agent_workspace_dir(
     cfg: dict[str, Any] | None = None,
     ensure: bool = True,
 ) -> Path:
-    """Create-time on-disk workspace (mkdir -p unless ``ensure=False``).
+    """Resolve legacy on-disk defaults (mkdir -p unless ``ensure=False``).
 
-    Not what harness receives.
+    New agents use ``seed_workspace_dir_on_create`` and the managed directory.
     """
     root_raw = local_backend_root_dir(cfg)
     if root_raw is not None and not _is_host_root_sentinel(root_raw):
@@ -116,20 +117,18 @@ def seed_workspace_dir_on_create(
     agent_id: str,
 ) -> Path:
     """Ensure ``config["workspace_dir"]`` at create; return on-disk Path for seeding."""
+    expected = paths.agent_workspace(agent_id).resolve()
     raw = config.get("workspace_dir")
     if isinstance(raw, str) and raw.strip():
-        text = raw.strip()
-        host = resolve_workspace_host_path(text, config)
-        host.mkdir(parents=True, exist_ok=True)
-        config["workspace_dir"] = text
-        return host.resolve()
-
-    host = default_agent_workspace_dir(paths, agent_id, cfg=config).resolve()
-    if uses_scoped_workspace_default(config):
-        config["workspace_dir"] = scoped_workspace_dir_str(agent_id)
-    else:
-        config["workspace_dir"] = str(host)
-    return host
+        host = resolve_workspace_host_path(raw.strip(), config)
+        if host != expected:
+            raise OctopError(
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                "Agent workspaces must remain inside Octop's managed workspace directory.",
+            )
+    expected.mkdir(parents=True, exist_ok=True)
+    config["workspace_dir"] = str(expected)
+    return expected
 
 
 def _relative_under(child: Path, root: Path) -> Path:

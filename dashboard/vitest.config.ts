@@ -12,13 +12,9 @@ import os from "os";
  *    place without polluting the prod build config.
  */
 
-// Cap workers at the physical core count. jsdom tests here are dominated by
-// *synchronous* `getComputedStyle` work, so once the worker count exceeds the
-// physical cores the OS timeslices that work and stretches it 5-6x — a ~1 s
-// test turns into 5 s+ and trips the 5000 ms default timeout. Halving the
-// logical CPU count approximates physical cores on SMT machines and is merely
-// more conservative elsewhere; do not raise this back to the Vitest default.
-const maxWorkers = Math.max(1, Math.floor(os.cpus().length / 2));
+// jsdom's synchronous style work competes with Docker builds on developer hosts.
+// Bound both CPU oversubscription and per-worker memory without relaxing test deadlines.
+const maxWorkers = Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2)));
 
 export default defineConfig({
   plugins: [react()],

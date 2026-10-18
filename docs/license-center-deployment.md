@@ -96,6 +96,12 @@ sudo bash ./deploy.sh platform
 
 首次管理员凭据由已有容器初始化逻辑生成，保存在业务数据目录的 `credential.txt`，权限 `0600`；不在部署日志显示密码。交付客户前改密码并建立 `enterprise_admin` 账号，不交付平台系统管理员、中心 owner 或主机/Docker 权限。
 
+平台默认执行器使用容器内 Bubblewrap 沙箱；平台业务容器不挂载宿主机 Docker socket。部署向导仍要求本机 Docker Unix socket 来构建、启动和检查 Compose 服务，但不会把该 socket 写入平台覆盖配置。只有可信运维明确启用独立 Docker 执行后端时，才额外叠加 `docker/docker-compose.docker-exec.yml`；此配置会让 MAITU 服务获得宿主 Docker API 权限，不能把 socket 挂给 Agent 作业/子容器，也不能将只读挂载误认为 Docker API 只读。不要把腾讯云服务器 SSH 私钥或授权中心签发密钥交给业务平台。
+
+Word 文档使用镜像内 LibreOffice Writer 和 Python 文档库在无界面的隔离沙箱中处理，不在 Ubuntu 上启动 Microsoft Word 窗口。已有部署取得此修复后，重新运行平台向导并在镜像构建提示选择 `y`，复用原数据、信任和实例身份；仅重启旧镜像不能恢复执行。手动升级必须复用原环境文件、项目名及授权覆盖文件，用 `up -d --build` 重建平台。授权中心无需为文档执行增加权限或更换密钥。
+
+交付共享通用助手时，同时给客户配置助手的共享使用权和 `features` 权限。通过共享助手创建的新功能按当前登录用户归属，不写到系统管理员名下；不能借分享者身份修改其他企业功能。源助手所有权校验和目标功能管理权限是两件事，授权中心不负责分配这类平台业务权限。
+
 ### 0.4 重入、变更及只读检查
 
 ```bash
@@ -594,16 +600,20 @@ curl --fail https://203.0.113.10/health
 
 ## 10. 客户办公室主机接入
 
-只把公开 `trusted-keys.json` 交给主机运维人员。中心与客户是两个独立系统：
+将授权和发布两个信任域的公开 KID→PEM keyring 通过中心的 `export-connection` 导出为 bundle v2；接入包不含私钥、数据库或管理凭据。轮换期间，包中须保留仍用于验证有效实例凭据与已发布升级的旧 KID。
 
-| 客户配置 | 设置 |
+Docker 部署使用 `docker/docker-compose.managed.yml`，并通过宿主 Compose 环境文件配置中心 URL、两个 keyring 文件和持久状态/更新队列目录：
+
+| 环境变量 | 内容 |
 | --- | --- |
-| `OCTOP_LICENSE_SERVER_URL` | `https://203.0.113.10`，中心根地址，不附加 `/api/v1` |
-| `OCTOP_LICENSE_TRUST_FILE` | 只读公开验签 JSON 的实际路径 |
-| `OCTOP_LICENSE_CA_FILE` | 私有 CA 时填写可信根 PEM；公共 CA 通常不用设置 |
-| `OCTOP_LICENSE_CONTACT` | 交付方联系电话或支持方式 |
+| `MAITU_CENTER_URL` | `https://203.0.113.10`，中心根地址，不附加 API 路径 |
+| `MAITU_LICENSE_TRUSTED_KEYS_HOST_FILE` | 授权 KID→PEM JSON 文件，只读挂载为 `/run/maitu-trust/license-trusted-keys.json` |
+| `MAITU_UPDATE_TRUSTED_KEYS_HOST_FILE` | 发布 KID→PEM JSON 文件，只读挂载为 `/run/maitu-trust/release-trusted-keys.json` |
+| `MAITU_LICENSE_STATE_HOST_DIR` | 持久授权身份、在线/离线凭据、版本栅栏及提醒账本目录 |
+| `MAITU_UPDATE_QUEUE_HOST_DIR` | 平台更新请求/进度队列目录，须与宿主 updater 使用同一目录 |
+| `MAITU_CENTER_CLIENT_TOKEN` | 必须配置独立客户侧版本读取令牌，不能使用中心管理员凭据 |
 
-Linux Docker 客户使用 `docker/docker-compose.licensing.yml` 叠加原业务 Compose，并设置 `OCTOP_LICENSE_TRUST_DIR`；使用容器内路径，而不是宿主机路径配置验签文件。已有业务的 `OCTOP_DATA` 必须复用，升级前先备份并在隔离副本验证。
+授权 keyring 使用 `MAITU_LICENSE_TRUSTED_KEYS_FILE`，发布 keyring 使用 `MAITU_UPDATE_TRUSTED_KEYS_FILE`；两者不可互换。必须继续复用原 `OCTOP_DATA`、授权身份目录、队列目录和 Compose project name，升级前备份并在隔离副本验证。交付源码包的基础 Compose 不挂载宿主 Docker socket；默认使用 Bubblewrap，只有可信运维明确选择时才叠加 `docker/docker-compose.docker-exec.yml`，该覆盖会把宿主 Docker API 授权给业务容器，绝不可提供给不可信 agent worker。平台向导使用宿主本地 Docker socket 执行构建/Compose，但不会把该 socket 挂进平台服务容器。镜像、seccomp/AppArmor 与隔离执行说明见[ Docker 部署说明](../docker/README_CN.md#执行沙箱与浏览器linux)。
 
 中心创建客户，生成激活码时分别确认“授权截止时间”和“激活码使用期限”。客户管理员在业务平台锁定页输入激活码，或由主机运维执行 `octop license activate`。激活码只显示一次，不写到公共日志；同一激活码不用于多台不同主机。
 

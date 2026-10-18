@@ -37,8 +37,10 @@ def clean(wipe_all: bool, yes: bool, dry_run: bool) -> None:
     if dry_run:
         return
     if wipe_all and not yes:
+        from octop.branding import platform_name
+
         click.confirm(
-            "This deletes ALL MAITU Smart Manufacturing data (DB, configs, logs). Continue?",
+            f"This deletes all {platform_name()} data (DB, configs, logs). Continue?",
             abort=True,
         )
     elif not yes:

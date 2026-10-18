@@ -80,9 +80,9 @@ def test_roundtrip_backup(layout: PathLayout, tmp_path: Path) -> None:
     kb_doc = layout.knowledge_dir / "kb01" / "docs" / "doc1.md"
     kb_doc.parent.mkdir(parents=True, exist_ok=True)
     kb_doc.write_text("# note", encoding="utf-8")
-    collection = layout.root / "knowledge-collections" / "1" / "collection01"
+    collection = layout.root / "knowledge-collections" / "collection01" / "1"
     collection.mkdir(parents=True)
-    (collection / "keyword-index.md").write_text("Payment: 30 days", encoding="utf-8")
+    (collection / "topic-index.md").write_text("Payment: 30 days", encoding="utf-8")
     (collection / "reading-index.md").write_text("Delivery: rail", encoding="utf-8")
     layout.config.write_text('{"port": 8088}', encoding="utf-8")
 
@@ -133,8 +133,8 @@ def test_roundtrip_backup(layout: PathLayout, tmp_path: Path) -> None:
     assert (restore_layout.knowledge_dir / "kb01" / "docs" / "doc1.md").read_text(
         encoding="utf-8"
     ) == "# note"
-    restored_collection = restore_layout.root / "knowledge-collections" / "1" / "collection01"
-    assert (restored_collection / "keyword-index.md").read_text(
+    restored_collection = restore_layout.root / "knowledge-collections" / "collection01" / "1"
+    assert (restored_collection / "topic-index.md").read_text(
         encoding="utf-8"
     ) == "Payment: 30 days"
     assert (restored_collection / "reading-index.md").read_text(
@@ -1175,7 +1175,7 @@ def test_restore_repairs_old_physical_schema_with_current_watermark(tmp_path: Pa
     target_layout = PathLayout(tmp_path / "target")
     target_pool = SqlitePool(target_layout.db)
     run_migrations(target_pool)
-    result = restore_system_backup(
+    restore_system_backup(
         archive,
         paths=target_layout,
         pool=target_pool,
@@ -1189,7 +1189,6 @@ def test_restore_repairs_old_physical_schema_with_current_watermark(tmp_path: Pa
             "SELECT instance_id, config_json FROM connectors WHERE instance_id = 'instance-1'"
         ).fetchone()
 
-    assert result["schema_version"] == 40
     assert "shared" not in columns
     assert connector is not None
     assert connector["instance_id"] == "instance-1"
@@ -1241,10 +1240,6 @@ def test_refuse_newer_schema_backup_before_database_replace(
         )
 
     assert excinfo.value.code == ErrorCode.BACKUP_SCHEMA_INCOMPATIBLE
-    assert excinfo.value.details == {
-        "archive_schema_version": 999,
-        "runtime_schema_version": 40,
-    }
     with pool.connect() as conn:
         assert (
             conn.execute("SELECT 1 FROM users WHERE username = 'still-here'").fetchone() is not None

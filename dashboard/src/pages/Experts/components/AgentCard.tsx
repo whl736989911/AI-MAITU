@@ -503,27 +503,28 @@ export const AgentCard = memo(function AgentCard({
 
         {/* Footer actions */}
         <div className={styles.agentCard2Footer}>
+          {role === "admin" && (
+            <Tooltip
+              title={
+                chatReady
+                  ? t("pageShell.workspace.title")
+                  : t("workspace.requiresRunning")
+              }
+              mouseEnterDelay={0.5}
+            >
+              <button
+                type="button"
+                className={styles.agentCard2EditBtn}
+                disabled={!chatReady}
+                onClick={() => setWorkspaceDrawerOpen(true)}
+                aria-label={t("pageShell.workspace.title")}
+              >
+                <FolderOpen size={13} />
+              </button>
+            </Tooltip>
+          )}
           {canManage && (
             <>
-              <Tooltip
-                title={
-                  chatReady
-                    ? t("pageShell.workspace.title")
-                    : t("workspace.requiresRunning")
-                }
-                mouseEnterDelay={0.5}
-              >
-                <button
-                  type="button"
-                  className={styles.agentCard2EditBtn}
-                  disabled={!chatReady}
-                  onClick={() => setWorkspaceDrawerOpen(true)}
-                  aria-label={t("pageShell.workspace.title")}
-                >
-                  <FolderOpen size={13} />
-                </button>
-              </Tooltip>
-
               <Tooltip title={t("experts.reloadAgent")} mouseEnterDelay={0.5}>
                 <button
                   type="button"
@@ -647,11 +648,13 @@ export const AgentCard = memo(function AgentCard({
           ) : null}
         </div>
       </div>
-      <WorkspaceDrawer
-        agentId={agent.agent_id}
-        open={workspaceDrawerOpen}
-        onClose={() => setWorkspaceDrawerOpen(false)}
-      />
+      {role === "admin" && (
+        <WorkspaceDrawer
+          agentId={agent.agent_id}
+          open={workspaceDrawerOpen}
+          onClose={() => setWorkspaceDrawerOpen(false)}
+        />
+      )}
       <SubagentCatalogDrawer
         agentId={agent.agent_id}
         agentState={localState}

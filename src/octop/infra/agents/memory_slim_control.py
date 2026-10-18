@@ -56,7 +56,7 @@ class MemorySlimControl:
             runtime = self.server.app_runtime
             if runtime is None:
                 raise ValueError(tr("memory_slim.not_ready", locale))
-            coordinator = runtime.agent_registry.memory_slim
+            coordinator = runtime.require_agent_registry().memory_slim
             operation = request.get("operation", "slim")
             if operation == "list":
                 response = {"phase": "agents", "agents": coordinator.list_agents(locale=locale)}

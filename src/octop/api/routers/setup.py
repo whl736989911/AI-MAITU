@@ -201,7 +201,7 @@ async def _apply_provider_draft(server: Any, draft: ProviderDraftBody) -> None:
         extra_json=json.dumps(draft.extras) if draft.extras else None,
     )
     server.services.settings_repo.set_active_model(draft.name, models[0]["id"])
-    if server.app_runtime is not None and current_license().allowed:
+    if server.app_runtime is not None and current_license().business_allowed:
         await server.app_runtime.agent_registry.on_provider_changed()
 
 

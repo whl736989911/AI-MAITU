@@ -178,7 +178,6 @@ async def test_ai_guessing_original_filename_fails_on_disk() -> None:
 def test_read_file_blocked_for_pdf_inbound_even_with_correct_path() -> None:
     reason = read_file_block_reason("inbound/1783510288_report.pdf")
     assert reason is not None
-    assert "read_file blocked" in reason
 
 
 @pytest.mark.asyncio

@@ -44,7 +44,9 @@ def create(
 
     async def _run() -> Any:
         async with embedded_runtime() as server:
-            assert server.app_runtime is not None
+            runtime = server.app_runtime
+            if runtime is None:
+                raise OctopError(ErrorCode.INTERNAL_ERROR, "agent manager unavailable")
             spec = AgentCreateSpec(
                 name=name,
                 user_id=uid,
@@ -52,7 +54,7 @@ def create(
                 default_model=default_model,
                 template_name=template_name,
             )
-            return await server.app_runtime.agent_registry.create(spec)
+            return await runtime.require_agent_registry().create(spec)
 
     try:
         row = asyncio.run(_run())
@@ -81,7 +83,9 @@ def from_expert(expert_id: str, name: str | None, as_user: str | None) -> None:
 
     async def _run() -> Any:
         async with embedded_runtime() as server:
-            assert server.app_runtime is not None
+            runtime = server.app_runtime
+            if runtime is None:
+                raise OctopError(ErrorCode.INTERNAL_ERROR, "agent manager unavailable")
             assert server.services is not None
             catalog = server.expert_catalog
             expert = None if catalog is None else catalog.get(expert_id)
@@ -95,7 +99,7 @@ def from_expert(expert_id: str, name: str | None, as_user: str | None) -> None:
                 name=name,
                 locale=locale,
             )
-            return await server.app_runtime.agent_registry.create(spec, defer_bootstrap=True)
+            return await runtime.require_agent_registry().create(spec, defer_bootstrap=True)
 
     try:
         row = asyncio.run(_run())

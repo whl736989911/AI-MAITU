@@ -86,6 +86,9 @@ def migrate() -> None:
         except BaseException:
             conn.rollback()
             raise
+    from .legacy import migrate_legacy_licensing
+
+    migrate_legacy_licensing()
 
 
 @contextmanager

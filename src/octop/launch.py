@@ -13,30 +13,38 @@ from octop.infra.server import OctopServer
 logger = logging.getLogger(__name__)
 
 
-def _ensure_linux_bubblewrap() -> None:
-    """Best-effort startup provisioning; never fail the ``octop run`` process."""
+def _diagnose_linux_bubblewrap() -> None:
+    """Read-only startup diagnosis; installs stay behind explicit operator action."""
     try:
-        from octop.infra.utils.bwrap import ensure_bubblewrap
+        from octop.infra.utils.bwrap import bwrap_status
 
-        result = ensure_bubblewrap()
+        result = bwrap_status()
     except Exception:
-        logger.warning("background bubblewrap provisioning failed", exc_info=True)
+        logger.warning("background bubblewrap diagnosis failed", exc_info=True)
         return
     status = result.get("status")
     detail = result.get("detail")
+    diagnosis = result.get("diagnosis")
+    commands = result.get("commands") or []
     if status == "degraded":
-        logger.warning("background bubblewrap provisioning degraded: %s", detail or "unknown")
+        hint = f"; fix with: {commands[0]}" if commands else ""
+        logger.warning(
+            "bubblewrap sandbox degraded (diagnosis=%s): %s%s",
+            diagnosis or "unknown",
+            detail or "unknown",
+            hint,
+        )
     else:
-        logger.info("background bubblewrap provisioning status=%s", status)
+        logger.info("bubblewrap sandbox status=%s", status)
 
 
-def _schedule_linux_bubblewrap_ensure() -> asyncio.Task[None] | None:
-    """Run bubblewrap provisioning once in the background on Linux."""
+def _schedule_linux_bubblewrap_diagnosis() -> asyncio.Task[None] | None:
+    """Diagnose the bubblewrap jail once in the background on Linux."""
     if not sys.platform.startswith("linux"):
         return None
     return asyncio.create_task(
-        asyncio.to_thread(_ensure_linux_bubblewrap),
-        name="ensure-linux-bubblewrap",
+        asyncio.to_thread(_diagnose_linux_bubblewrap),
+        name="diagnose-linux-bubblewrap",
     )
 
 
@@ -73,7 +81,7 @@ async def run_foreground(
 
     srv = OctopServer()
     await srv.start()
-    bwrap_task = _schedule_linux_bubblewrap_ensure()
+    bwrap_task = _schedule_linux_bubblewrap_diagnosis()
     # Greenfield deferral leaves services unset until /setup/database binds.
     cfg = srv.services.config if srv.services is not None else srv.config
     assert cfg is not None

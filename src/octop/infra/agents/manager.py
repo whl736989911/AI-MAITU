@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import shutil
+import sys
 import threading
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
@@ -67,6 +68,10 @@ from octop.infra.agents.security.hitl_session import (
     apply_session_bypass,
     hitl_thread_scope,
     thread_id_from_request,
+)
+from octop.infra.agents.security.skill_market import (
+    inherit_market_approvals,
+    market_aware_security_policy,
 )
 from octop.infra.agents.teams import TeamJobTracker, TeamService
 from octop.infra.agents.teams.service import host_tools_disabled, is_team_agent, seed_team_template
@@ -388,7 +393,6 @@ class AgentManager:
         self._team_processor: Any | None = None
         self._hitl_session_store: HitlSessionPolicyStore | None = None
         self._harness_manager: HarnessAgentManager | None = None
-        self._business_resume_agent_ids: set[str] | None = None
         self.memory_slim = MemorySlimCoordinator(self)
         self._lock = asyncio.Lock()
         # A thread's LangGraph checkpoint must never be advanced by overlapping
@@ -521,10 +525,10 @@ class AgentManager:
         )
 
     async def boot(self) -> None:
-        """Initialize the runtime and resume agents eligible to run."""
-        await self.resume_business()
+        # Direct-entry license gate: registry boot is business execution.
+        from octop.infra.licensing import current_license
 
-    async def _initialize_harness_runtime(self) -> None:
+        current_license().require_business_access()
         self._tool_guard_rules.ensure_seeded()
         providers = self._providers.build_harness_configs()
         self._harness_manager = HarnessAgentManager(
@@ -533,81 +537,58 @@ class AgentManager:
             team_processor=self._team_processor,
             log_dir=str(self.paths.logs_dir),
         )
-        self._harness_manager.team.bind_peer_enrich(self._refresh_peer_entry)
-        proc = self._team_processor
-        if proc is not None:
-            prepare = getattr(proc, "prepare_peer_session", None)
-            after = getattr(proc, "record_peer_turn", None)
-            if prepare is not None or after is not None:
-                self._harness_manager.team.bind_peer_session(prepare=prepare, after=after)
-        self._harness_manager.set_security_policy(self._security.harness_policy())
-        self._install_team_host_dispatch()
+        if self._harness_manager is not None:
+            self._harness_manager.team.bind_peer_enrich(self._refresh_peer_entry)
+            proc = self._team_processor
+            if proc is not None:
+                prepare = getattr(proc, "prepare_peer_session", None)
+                after = getattr(proc, "record_peer_turn", None)
+                if prepare is not None or after is not None:
+                    self._harness_manager.team.bind_peer_session(prepare=prepare, after=after)
+            self._harness_manager.set_security_policy(
+                market_aware_security_policy(
+                    self._security.harness_policy(), lambda: self._hitl_session_store
+                )
+            )
+            self._install_team_host_dispatch()
 
-    async def resume_business(self) -> None:
-        """Create runtime if needed and restore only agents active before pause."""
-        if self._harness_manager is None:
-            await self._initialize_harness_runtime()
-            await self._claim_existing_active_features()
-        harness_manager = self._harness_manager
-        assert harness_manager is not None, "harness runtime unavailable after initialization"
-        if self._business_resume_agent_ids is None:
-            agent_ids = {
-                row.agent_id
-                for row in self._repos.agent_repo.list_all(include_disabled=False)
-                if row.last_state != "stopped"
-            }
-        else:
-            agent_ids = self._business_resume_agent_ids
-        self._business_resume_agent_ids = set()
-        rows = {
-            row.agent_id: row for row in self._repos.agent_repo.list_all(include_disabled=False)
-        }
-        for agent_id in sorted(agent_ids):
-            row = rows.get(agent_id)
-            if row is None or row.last_state == "stopped":
+        await self._claim_existing_active_features()
+
+        rows = self._repos.agent_repo.list_all(include_disabled=False)
+        for row in rows:
+            if row.last_state == "stopped":
                 continue
             try:
                 await asyncio.wait_for(
                     self._start_agent(row),
                     timeout=_AGENT_BOOT_START_TIMEOUT,
                 )
+            except OctopError as exc:
+                # Managed-confinement refusals (and any other start policy
+                # denial) must not abort business boot for every other agent.
+                self._repos.agent_repo.set_state(row.agent_id, "failed", error=str(exc.message))
+                logger.error("Agent %s refused at boot: %s", row.agent_id, exc.message)
             except TimeoutError:
                 try:
-                    harness_manager.get_agent(agent_id)
+                    self._harness_manager.get_agent(row.agent_id)
                 except KeyError:
-                    self._repos.agent_repo.set_state(agent_id, "failed", error=AGENT_START_TIMEOUT)
+                    self._repos.agent_repo.set_state(
+                        row.agent_id,
+                        "failed",
+                        error=AGENT_START_TIMEOUT,
+                    )
                     logger.error(
                         "Agent %s start timed out after %.0fs; continuing boot",
-                        agent_id,
+                        row.agent_id,
                         _AGENT_BOOT_START_TIMEOUT,
                     )
                 else:
-                    self._repos.agent_repo.set_state(agent_id, "running", error=None)
-
-    async def pause_business(self) -> None:
-        """Close runtime agents without changing their persisted running state."""
-        async with self._lock:
-            manager = self._harness_manager
-            if manager is None:
-                return
-            active: set[str] = set()
-            for row in self._repos.agent_repo.list_all(include_disabled=False):
-                try:
-                    manager.get_agent(row.agent_id)
-                except KeyError:
-                    continue
-                active.add(row.agent_id)
-            self._business_resume_agent_ids = active
-            for agent_id in active:
-                await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
-                with suppress(Exception):
-                    await manager.aremove_agent(agent_id)
-                self.forget_turn_mcp_tools(agent_id)
-            try:
-                await manager.aclose()
-            except Exception:
-                logger.exception("harness_manager.aclose() failed during license pause")
-            self._harness_manager = None
+                    self._repos.agent_repo.set_state(row.agent_id, "running", error=None)
+                    logger.warning(
+                        "Agent %s start exceeded %.0fs but is already registered",
+                        row.agent_id,
+                        _AGENT_BOOT_START_TIMEOUT,
+                    )
 
     async def _claim_existing_active_features(self) -> None:
         """Bring pre-transfer active workflows under enterprise management.
@@ -712,6 +693,42 @@ class AgentManager:
     @property
     def harness_manager(self) -> HarnessAgentManager | None:
         return self._harness_manager
+
+    def requires_shared_workspace_export_consent(self, agent_id: str, actor_user_id: int) -> bool:
+        """Whether exporting a source would expose it to this agent's other callers."""
+        row = self._repos.agent_repo.get(agent_id)
+        if row is None or row.user_id is None or int(row.user_id) != int(actor_user_id):
+            return True
+
+        scopes = [("agent", agent_id)]
+        if is_feature_agent(row.kind):
+            from octop.infra.agents.kinds import feature_id_of_agent
+
+            feature_id = feature_id_of_agent(agent_id)
+            if feature_id is None:
+                return True
+            scopes.append(("feature", feature_id))
+
+        entries = []
+        try:
+            for resource_type, resource_id in scopes:
+                entries.extend(
+                    self._repos.resource_acl_repo.list_for_type(
+                        resource_type, resource_ids=[resource_id]
+                    )
+                )
+        except Exception:
+            logger.warning("failed to resolve shared agent workspace ACL", exc_info=True)
+            return True
+        if not entries:
+            return True
+        owner = str(row.user_id)
+        for entry in entries:
+            if entry.owner_user_id != row.user_id or entry.visibility != "private":
+                return True
+            if any(kind != "user" or str(grantee) != owner for kind, grantee in entry.grants):
+                return True
+        return False
 
     @property
     def octop_config(self) -> OctopConfig:
@@ -867,10 +884,17 @@ class AgentManager:
                 self._repos.agent_repo.set_state(agent_id, "starting")
                 row = self._repos.agent_repo.get(agent_id)
                 assert row is not None
-                asyncio.create_task(
-                    self._complete_create_bootstrap(row),
-                    name=f"bootstrap-agent-{agent_id}",
-                )
+                # While the instance license blocks business the harness is not
+                # booted: leave the row in "starting" so AgentManager.boot()
+                # picks it up on the unlock transition instead of the deferred
+                # bootstrap failing on a missing harness manager.
+                from octop.infra.licensing import current_license  # noqa: PLC0415
+
+                if current_license().business_allowed:
+                    asyncio.create_task(
+                        self._complete_create_bootstrap(row),
+                        name=f"bootstrap-agent-{agent_id}",
+                    )
             else:
                 try:
                     agent = await self._start_agent(row, init_workspace=True)
@@ -1057,6 +1081,10 @@ class AgentManager:
 
     async def start(self, agent_id: str) -> None:
         """Load agent into harness runtime (no-op config merge)."""
+        # Direct-entry license gate: harness runtime load is business execution.
+        from octop.infra.licensing import current_license
+
+        current_license().require_business_access()
         async with self._lock:
             row = self._repos.agent_repo.get(agent_id)
             if row is None:
@@ -1215,16 +1243,19 @@ class AgentManager:
         cfg = self.get_config(agent_id)
         raw = cfg.get("workspace_dir")
         if isinstance(raw, str) and raw.strip():
-            out = workspace_dir_from_config(cfg, paths=self._paths, agent_id=agent_id, ensure=False)
-            if out.resolve() != self._paths.agent_workspace(agent_id).resolve():
+            resolved = workspace_dir_from_config(
+                cfg, paths=self._paths, agent_id=agent_id, ensure=False
+            )
+            if resolved != self._paths.agent_workspace(agent_id).resolve():
                 raise OctopError(
                     ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
                     "Agent workspaces must remain inside Octop's managed workspace directory.",
                 )
-            out.mkdir(parents=True, exist_ok=True)
-            return out
+            self._assert_managed_workspace_ok(agent_id, resolved)
+            resolved.mkdir(parents=True, exist_ok=True)
+            return resolved
 
-        # Legacy / incomplete row: classic Octop layout only (not scoped create default).
+        # Legacy / incomplete row: classic managed layout.
         out = self._paths.ensure_agent_workspace(agent_id)
         if persist_if_missing and self._repos.agent_repo.get(agent_id) is not None:
             new_cfg = dict(cfg)
@@ -1247,6 +1278,16 @@ class AgentManager:
                 exc_info=True,
             )
             return True
+
+    def knowledge_export_approval_ready(self, agent_id: str) -> bool:
+        """Fail closed until the running main graph has its approval policy."""
+        try:
+            return agent_id not in self._bootstrap_graph_refresh_pending and bool(
+                self.get_agent(agent_id).is_bootstrapped()
+            )
+        except Exception:
+            logger.warning("knowledge export approval graph unavailable for %s", agent_id)
+            return False
 
     def find_agents_using_provider(self, provider_name: str) -> list[dict[str, str]]:
         """Return agents referencing *provider_name* in config or default_model."""
@@ -1389,6 +1430,10 @@ class AgentManager:
 
     async def stream(self, agent_id: str, request: dict[str, Any]) -> AsyncIterator[Any]:
         """Stream harness chunks (Langfuse tracing handled inside harness-agent)."""
+        from octop.infra.licensing import current_license
+
+        current_license().require_business_access()
+
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
 
@@ -1396,7 +1441,6 @@ class AgentManager:
 
         thread_id = str(request.get("thread_id") or "")
         async with (
-            current_license().business_task(),
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
         ):
@@ -1408,14 +1452,16 @@ class AgentManager:
             self._apply_pending_bootstrap_graph_refresh(agent_id)
 
     async def call(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        """Non-streaming harness invocation (one-shot agent call)."""
+        """Invoke the harness without streaming."""
+        from octop.infra.licensing import current_license
+
+        current_license().require_business_access()
+
         if self._harness_manager is None:
             raise self._unavailable_error(agent_id)
-        from octop.infra.licensing import current_license
 
         thread_id = str(request.get("thread_id") or "")
         async with (
-            current_license().business_task(),
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
         ):
@@ -1435,12 +1481,14 @@ class AgentManager:
         decisions: list[dict[str, Any]],
     ) -> AsyncIterator[Any]:
         """Resume a paused HITL interrupt for *thread_id*."""
-        if self._harness_manager is None:
-            raise self._unavailable_error(agent_id)
         from octop.infra.licensing import current_license
 
+        current_license().require_business_access()
+
+        if self._harness_manager is None:
+            raise self._unavailable_error(agent_id)
+
         async with (
-            current_license().business_task(),
             self._thread_execution_lock(agent_id, thread_id),
             self._track_invocation(agent_id),
         ):
@@ -1686,16 +1734,7 @@ class AgentManager:
         server_name: str,
         spec: dict[str, Any],
     ) -> list[Any]:
-        """Load a customer Streamable HTTP MCP server once per user/server/fingerprint."""
-        if spec.get("transport") != "streamable_http":
-            raise OctopError(
-                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                "Customer-defined stdio MCP processes are disabled in customer deployments.",
-            )
-
-        from octop.infra.connectors.custom_mcp import harness_spec_for_server
-
-        spec = harness_spec_for_server(spec)
+        """Load custom MCP tools once per user/server/fingerprint; share across agents."""
         from harness_agent.mcp import aload_mcp_tools
 
         from octop.infra.connectors.mcp_tool_cache import (
@@ -1722,7 +1761,15 @@ class AgentManager:
             cached = self._mcp_tool_cache.get(cache_key)
             if cached is not None:
                 return cached
-            raw = await aload_mcp_tools({server_name: spec})
+            from octop.infra.utils.env_file import (  # noqa: PLC0415
+                env_file_path,
+                load_env_file,
+                overlay_stdio_spec_env,
+            )
+
+            global_env = load_env_file(env_file_path(self._paths.root))
+            load_spec = overlay_stdio_spec_env(spec, global_env)
+            raw = await aload_mcp_tools({server_name: load_spec})
             sanitize_plugin_tool_names(raw)
             server_lock = await self._server_lock(user_id, server_name)
             wrapped = wrap_tools_for_shared_use(raw, server_lock)
@@ -2181,7 +2228,11 @@ class AgentManager:
         resolved = self._security.save(policy)
         if self._harness_manager is not None:
             try:
-                self._harness_manager.set_security_policy(self._security.harness_policy())
+                self._harness_manager.set_security_policy(
+                    market_aware_security_policy(
+                        self._security.harness_policy(), lambda: self._hitl_session_store
+                    )
+                )
             except Exception:
                 logger.exception("failed to apply security policy to running harness agents")
         return resolved
@@ -2826,9 +2877,175 @@ class AgentManager:
         except Exception:
             logger.exception("Deferred bootstrap failed for agent %s", row.agent_id)
 
+    def _assert_managed_workspace_ok(self, agent_id: str, workspace: Path) -> None:
+        """Managed installs: refuse protected/escaping workspaces (start AND read).
+
+        An existing workspace pointed into the license identity/trust dirs or
+        outside the managed data root is refused wherever it is resolved — not
+        only in the picker that created it.
+        """
+        import os
+
+        from octop.infra.errors import ErrorCode, OctopError  # noqa: PLC0415
+        from octop.infra.utils.host_dirs import (  # noqa: PLC0415
+            assert_safe_host_path,
+            license_managed_install,
+        )
+
+        if not license_managed_install():
+            return
+        try:
+            assert_safe_host_path(str(workspace))
+        except ValueError as exc:
+            raise OctopError(
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                f"agent workspace is not allowed on managed installs: {exc}",
+                details={"agent_id": agent_id, "workspace_dir": str(workspace)},
+            ) from exc
+        data_root = Path(os.path.realpath(str(self._paths.root)))
+        try:
+            ws_real = workspace.resolve()
+        except OSError as exc:
+            raise OctopError(
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                f"agent workspace is not resolvable: {exc}",
+                details={"agent_id": agent_id},
+            ) from exc
+        if ws_real != data_root and data_root not in ws_real.parents:
+            raise OctopError(
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                "agent workspace escapes the managed data root; "
+                "workspace-scoped backends only on managed installs",
+                details={"agent_id": agent_id, "workspace_dir": str(workspace)},
+            )
+
+    def _enforce_managed_confinement(self, row: AgentRow) -> None:
+        """Accepted managed default: workspace-scoped, sandboxed backends only.
+
+        Refuses to start an agent whose workspace escapes the managed data
+        root, whose local backend roots are denylisted or host-root, or whose
+        execution cannot be sandboxed (no bubblewrap on Linux; any non-Linux
+        host). Fails closed — a managed install never silently runs
+        unconstrained local shells.
+        """
+        import sys
+
+        from octop.infra.agents.workspace_dir import (  # noqa: PLC0415
+            workspace_dir_from_config_json,
+        )
+        from octop.infra.utils.host_dirs import (  # noqa: PLC0415
+            assert_backend_root_dirs_allowed,
+            iter_local_backend_root_dirs,
+            license_managed_install,
+        )
+
+        if not license_managed_install():
+            return
+        workspace = workspace_dir_from_config_json(
+            row.config_json, paths=self._paths, agent_id=row.agent_id, ensure=False
+        )
+        self._assert_managed_workspace_ok(row.agent_id, workspace)
+        cfg: Any = {}
+        try:
+            parsed = json.loads(row.config_json or "{}")
+            if isinstance(parsed, dict):
+                cfg = parsed
+        except json.JSONDecodeError:
+            cfg = {}
+        backend = cfg.get("backend")
+        roots = iter_local_backend_root_dirs(backend)
+        if not roots:
+            return
+
+        def _local_shell_kinds(spec: Any) -> bool:
+            """True when the spec (recursively) can execute host shells."""
+            if not isinstance(spec, dict):
+                return False
+            kind = str(spec.get("type") or "").strip().lower()
+            if kind == "local_shell":
+                return True
+            if kind == "composite":
+                if _local_shell_kinds(spec.get("default")):
+                    return True
+                routes = spec.get("routes")
+                if isinstance(routes, dict):
+                    return any(_local_shell_kinds(rs) for rs in routes.values())
+            return False
+
+        def _require_virtual_mode(spec: Any) -> None:
+            """local_shell without virtual_mode silently executes on the host."""
+            if not isinstance(spec, dict):
+                return
+            kind = str(spec.get("type") or "").strip().lower()
+            if kind == "local_shell":
+                if not spec.get("virtual_mode"):
+                    raise OctopError(
+                        ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                        "local_shell backends must enable virtual_mode "
+                        "sandboxing on managed installs",
+                        details={"agent_id": row.agent_id},
+                    )
+            elif kind == "composite":
+                _require_virtual_mode(spec.get("default"))
+                routes = spec.get("routes")
+                if isinstance(routes, dict):
+                    for route_spec in routes.values():
+                        _require_virtual_mode(route_spec)
+
+        try:
+            assert_backend_root_dirs_allowed(backend, restrict_to_home=False)
+        except ValueError as exc:
+            raise OctopError(
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                f"agent backend root is not allowed on managed installs: {exc}",
+                details={"agent_id": row.agent_id},
+            ) from exc
+        from octop.infra.utils.host_dirs import (  # noqa: PLC0415
+            license_protected_dir_covered_by,
+        )
+
+        for root_dir in roots:
+            try:
+                resolved = Path(root_dir).resolve()
+            except OSError:
+                resolved = Path(root_dir)
+            if resolved == Path(resolved.anchor):
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    "host-root backend root_dir is not allowed on managed installs",
+                    details={"agent_id": row.agent_id},
+                )
+            if license_protected_dir_covered_by(str(resolved)):
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    "backend root covers protected license identity/trust "
+                    "locations on managed installs",
+                    details={"agent_id": row.agent_id, "root_dir": str(resolved)},
+                )
+        if _local_shell_kinds(backend):
+            # Installed harness evidence: local_shell resolves to a bubbled
+            # jail only on Linux with virtual_mode + non-host root + bwrap,
+            # and otherwise silently executes on the host. Fail closed.
+            _require_virtual_mode(backend)
+            if sys.platform.startswith("linux"):
+                if not shutil.which("bwrap"):
+                    raise OctopError(
+                        ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                        "bubblewrap is unavailable; managed installs require "
+                        "sandboxed agent execution (install bubblewrap)",
+                        details={"agent_id": row.agent_id},
+                    )
+            else:
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    "managed installs require Linux sandboxed agent execution",
+                    details={"agent_id": row.agent_id},
+                )
+
     async def _start_agent(
         self, row: AgentRow, *, init_workspace: bool = True
     ) -> HarnessAgent | None:
+        self._enforce_managed_confinement(row)
         assert self._harness_manager is not None, "_start_agent called before boot()"
         if self._harness_manager.shared_factory is None:
             self._repos.agent_repo.set_state(row.agent_id, "failed", error=NO_MODELS_CONFIGURED)
@@ -2976,7 +3193,7 @@ class AgentManager:
             kind = spec.lower()
             if kind in {"filesystem", "local_shell"}:
                 return {
-                    "type": "filesystem",
+                    "type": kind,
                     "root_dir": str(workspace_dir.resolve()),
                     "virtual_mode": True,
                 }
@@ -2994,13 +3211,15 @@ class AgentManager:
         configured_root = Path(root_dir).resolve() if root_dir else workspace_root
         if kind in {"local_shell", "filesystem"}:
             if configured_root != workspace_root:
-                raise OctopError(
-                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                    "Filesystem backends must be rooted at the agent workspace.",
+                logger.warning(
+                    "Clamping legacy %s backend root %s to managed workspace %s",
+                    kind,
+                    configured_root,
+                    workspace_root,
                 )
             return {
                 **spec,
-                "type": "filesystem",
+                "type": kind,
                 "root_dir": str(workspace_root),
                 "virtual_mode": True,
             }
@@ -3051,7 +3270,7 @@ class AgentManager:
         backend_spec = cfg.get("backend")
         if backend_spec is None:
             return {
-                "type": "filesystem",
+                "type": "local_shell" if sys.platform.startswith("linux") else "filesystem",
                 "root_dir": str(workspace_dir.resolve()),
                 "virtual_mode": True,
             }
@@ -3113,6 +3332,13 @@ class AgentManager:
         )
         return inject_docker_global_environment(enriched, env_file_path(self._paths.root))
 
+    def _execute_locale(self, row: AgentRow) -> str:
+        from octop.infra.utils.locale import DEFAULT_LOCALE, resolve_user_locale
+
+        if row.user_id is None:
+            return DEFAULT_LOCALE
+        return resolve_user_locale(user_repo=self._repos.user_repo, user_id=row.user_id)
+
     def _backend_workspace_for_row(
         self,
         row: AgentRow,
@@ -3127,6 +3353,8 @@ class AgentManager:
 
         from octop.infra.agents.workspace_dir import system_files_path_from_config  # noqa: PLC0415
         from octop.infra.backend.compat import adapt_backend_protocol  # noqa: PLC0415
+        from octop.infra.backend.isolated_execute import isolated_execute_enabled
+        from octop.infra.backend.managed_shell import managed_shell_spec  # noqa: PLC0415
         from octop.infra.backend.opensandbox_deps import ensure_opensandbox_deps  # noqa: PLC0415
 
         if cfg is None:
@@ -3146,11 +3374,95 @@ class AgentManager:
             }
         elif self._spec_is_opensandbox(backend):
             ensure_opensandbox_deps(allow_install=True)
+        from octop.infra.agents.execute_env import inject_agent_execute_env  # noqa: PLC0415
+
+        backend = inject_agent_execute_env(
+            backend,
+            paths=self._paths,
+            row=row,
+            workspace_dir=workspace_dir,
+            cfg=cfg,
+        )
+        resolved_backend = adapt_backend_protocol(
+            resolve_backend(
+                managed_shell_spec(
+                    backend,
+                    workspace_dir=workspace_dir,
+                    system_files_path=system_files_path_from_config(cfg),
+                ),
+                workspace_dir=workspace_dir,
+            )
+        )
+        if isolated_execute_enabled():
+            resolved_backend = self._isolate_workspace_backend(
+                resolved_backend, row=row, workspace_dir=workspace_dir, cfg=cfg
+            )
         return BackendWorkspace(
-            adapt_backend_protocol(resolve_backend(backend, workspace_dir=workspace_dir)),
+            resolved_backend,
             workspace_dir,
             system_files_path=system_files_path_from_config(cfg),
         )
+
+    def _isolate_workspace_backend(
+        self,
+        resolved_backend: Any,
+        *,
+        row: AgentRow,
+        workspace_dir: Path,
+        cfg: dict[str, Any],
+    ) -> Any:
+        """Opt-in Docker isolation for filesystem/composite workspace backends.
+
+        Wrap only when the resolved backend keeps file ops in-process; other
+        backend kinds (remote sandboxes, docker, managed-shell instances) own
+        their execution model already.
+        """
+        from deepagents.backends.composite import CompositeBackend
+        from deepagents.backends.filesystem import FilesystemBackend
+
+        from octop.infra.agents.workspace_dir import system_files_path_from_config
+
+        if not isinstance(resolved_backend, (FilesystemBackend, CompositeBackend)):
+            return resolved_backend
+        from octop.infra.backend.isolated_execute import (
+            IsolatedCompositeBackend,
+            IsolatedFilesystemBackend,
+        )
+
+        default = (
+            resolved_backend.default
+            if isinstance(resolved_backend, CompositeBackend)
+            else resolved_backend
+        )
+        if not isinstance(default, FilesystemBackend):
+            return resolved_backend
+        prefix = system_files_path_from_config(cfg)
+        readonly_dirs: list[Path] = []
+        if prefix:
+            readonly_dirs.extend(
+                (workspace_dir / prefix / "skills", workspace_dir / prefix / "auth")
+            )
+        else:
+            readonly_dirs.extend((workspace_dir / "skills", workspace_dir / ".octop-auth"))
+        for configured_dir in self._normalize_skills_dir_config(cfg.get("skills")):
+            candidate = Path(configured_dir)
+            readonly_dirs.append(
+                candidate if candidate.is_absolute() else workspace_dir / candidate
+            )
+        isolated = IsolatedFilesystemBackend(
+            filesystem=default,
+            managed_root=self._paths.agents_dir,
+            locale=self._execute_locale(row),
+            feature_agent=is_feature_agent(row.kind),
+            readonly_dirs=readonly_dirs,
+        )
+        if isinstance(resolved_backend, CompositeBackend):
+            return IsolatedCompositeBackend(
+                default=isolated,
+                routes=resolved_backend.routes,
+                artifacts_root=resolved_backend.artifacts_root,
+            )
+        return isolated
 
     async def _seed_expert_template(self, row: AgentRow, template_name: str) -> None:
         """Copy bundled expert files into the agent workspace before harness start."""
@@ -3388,11 +3700,11 @@ class AgentManager:
         *,
         connector_user_id: int | None = None,
     ) -> int | None:
+        if connector_user_id is not None:
+            return connector_user_id
         override = self._connector_user_override.get(row.agent_id)
         if override is not None:
             return override
-        if connector_user_id is not None:
-            return connector_user_id
         return row.user_id
 
     def _prepare_stream_request(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
@@ -3598,6 +3910,21 @@ class AgentManager:
                 repos=self._repos,
             )
 
+        skill_market_tools: list[Any] = []
+        if not team_host and (row.kind == KIND_AGENT or is_feature_agent(row.kind)):
+            from octop.infra.skills.agent_tools import (  # noqa: PLC0415
+                build_skill_market_tools,
+            )
+
+            skill_market_tools = build_skill_market_tools(
+                registry=self,
+                repos=self._repos,
+                workspace=ws,
+                backend=ws.backend,
+                agent_id=row.agent_id,
+                tool_locale=self._execute_locale(row),
+            )
+
         knowledge_tools: list[Any] = []
         if not team_host:
             from types import SimpleNamespace  # noqa: PLC0415
@@ -3606,10 +3933,16 @@ class AgentManager:
 
             knowledge_tools = build_knowledge_tools(
                 SimpleNamespace(
-                    knowledge_repo=self._repos.knowledge_repo,
-                    settings_repo=self._repos.settings_repo,
-                    provider_repo=self._repos.provider_repo,
-                )
+                    **vars(self._repos),
+                    repos=self._repos,
+                    paths=self.paths,
+                    config=self._config,
+                    agent_registry=self,
+                    agent_id=row.agent_id,
+                    shared_export_approval_enforced=True,
+                    workspace_dir=workspace_dir,
+                ),
+                workspace=ws,
             )
 
         mobile_tools: list[Any] = []
@@ -3665,6 +3998,7 @@ class AgentManager:
                         *(cron_tools or []),
                         *feature_workflow_tools,
                         *feature_creation_tools,
+                        *skill_market_tools,
                         *knowledge_tools,
                         *mobile_tools,
                     ]
@@ -3688,10 +4022,23 @@ class AgentManager:
         agent_override = cfg.get("security") if isinstance(cfg.get("security"), dict) else None
         policy = SecurityPolicy.merge(global_policy, agent_override)
 
+        from langchain.agents.middleware import ModelRequest
+        from langchain_core.language_models import BaseChatModel
+
         from octop.infra.agents.middleware.binary_read_guard import BinaryReadGuardMiddleware
         from octop.infra.agents.middleware.browser_profile import BrowserProfileMiddleware
         from octop.infra.agents.middleware.feature_workflow import (
             feature_workflow_chain,
+        )
+
+        # FilesystemGuard + ModelSettings live in harness-agent (auto-mounted).
+        # BinaryReadGuard stays Octop-specific (inbound/attachment product policy).
+        # ThreadArtifacts writes workspace paths onto threads after successful tools.
+        # WorkspaceImageMaterialize expands path-only vision refs at model-call time.
+        # TurnMcpTools serves a caller's own MCP tools on an agent they are not on.
+        # Resolve platform-owned identity at model-call time, not in user SOUL files.
+        from octop.infra.agents.middleware.platform_identity import (  # noqa: PLC0415
+            PlatformIdentityMiddleware,
         )
         from octop.infra.agents.middleware.reasoning import ReasoningRequestMiddleware
         from octop.infra.agents.middleware.shared_workspace_freeze import (
@@ -3706,13 +4053,58 @@ class AgentManager:
         from octop.infra.agents.middleware.workspace_image import (
             WorkspaceImageMaterializeMiddleware,
         )
-        from octop.infra.knowledge.hint import KnowledgeSearchHintMiddleware
+        from octop.infra.knowledge.hint import KnowledgeToolsHintMiddleware
 
-        # FilesystemGuard + ModelSettings live in harness-agent (auto-mounted).
-        # BinaryReadGuard stays Octop-specific (inbound/attachment product policy).
-        # ThreadArtifacts writes workspace paths onto threads after successful tools.
-        # WorkspaceImageMaterialize expands path-only vision refs at model-call time.
-        # TurnMcpTools serves a caller's own MCP tools on an agent they are not on.
+        alternate_image_models: dict[str, BaseChatModel] = {}
+
+        def model_for_images(request: ModelRequest[Any], alternate: bool = False) -> BaseChatModel:
+            from harness_agent.middleware.runtime import runtime_config
+
+            from octop.i18n import tr
+
+            configurable = runtime_config(request).get("configurable") or {}
+            current_ref = configurable.get("model")
+            ref = self._providers.resolve_model_for_multimodal_turn(
+                current_ref if isinstance(current_ref, str) else None,
+                needs_multimodal=True,
+            )
+            if ref is None:
+                locale = str(
+                    configurable.get("octop_feature_locale") or configurable.get("locale") or "en"
+                )
+                raise OctopError(
+                    ErrorCode.AGENT_FAILED, tr("agent_errors.vision_model_required", locale)
+                )
+            assert self._harness_manager is not None
+            agent = self._harness_manager.get_agent(row.agent_id).agent
+            if not alternate:
+                return agent.model_factory.get(ref).chat_model
+
+            cached = alternate_image_models.get(ref)
+            if cached is not None:
+                return cached
+            provider_id, separator, model_id = ref.partition("/")
+            if not separator or not provider_id or not model_id:
+                raise ValueError(f"Invalid model reference for alternate protocol: {ref!r}")
+            provider = next(
+                (item for item in agent.model_factory.provider_configs() if item.id == provider_id),
+                None,
+            )
+            if provider is None:
+                raise ValueError(f"Provider configuration not found for model reference {ref!r}")
+
+            from harness_agent.llm.factory import build_chat_model
+
+            from octop.infra.agents.providers.protocol import alternate_protocol_config
+
+            alternate_provider = alternate_protocol_config(provider)
+            alternate_model = alternate_provider.get_model(model_id)
+            if alternate_model is None:
+                raise ValueError(f"Model configuration not found for model reference {ref!r}")
+            result = build_chat_model(alternate_provider, alternate_model)
+            alternate_image_models[ref] = result
+            return result
+
         agent_middleware: list[Any] = [
             *plugin_middleware,
             TokenQuotaMiddleware(
@@ -3720,6 +4112,7 @@ class AgentManager:
                 usage_repo=self._repos.usage_repo,
             ),
             ReasoningRequestMiddleware(),
+            PlatformIdentityMiddleware(),
             # A feature serves every caller from one workspace: USER.md and
             # MEMORY.md are readable, but no turn may write either shared file.
             # Experts keep their own profile and memory behavior.
@@ -3734,10 +4127,10 @@ class AgentManager:
                 repos=self._repos,
             ),
             TurnMcpToolsMiddleware(agent_id=row.agent_id, source=self),
-            KnowledgeSearchHintMiddleware(),
+            KnowledgeToolsHintMiddleware(),
             BrowserProfileMiddleware(),
-            BinaryReadGuardMiddleware(),
-            WorkspaceImageMaterializeMiddleware(workspace=ws),
+            BinaryReadGuardMiddleware(workspace=ws),
+            WorkspaceImageMaterializeMiddleware(workspace=ws, model_for_images=model_for_images),
             ThreadArtifactsMiddleware(
                 thread_repo=self._repos.thread_repo,
                 workspace_dir=harness_workspace,
@@ -3767,15 +4160,28 @@ class AgentManager:
             merged_tools.extend(cron_tools)
         merged_tools.extend(feature_creation_tools)
         merged_tools.extend(feature_workflow_tools)
+        merged_tools.extend(skill_market_tools)
         merged_tools.extend(knowledge_tools)
         merged_tools.extend(mobile_tools)
         merged_tools.extend(plugin_tools)
         # agent_list / ask_agent: PeerAgentMiddleware (team_enabled=True), not config.tools.
 
+        acp_section = cfg.get("acp")
+        acp_raw: dict[str, Any] = acp_section if isinstance(acp_section, dict) else {}
         from harness_agent.acp.models import ACPConfig
 
-        acp_config = ACPConfig.from_dict({"runners": {}})
-        acp_raw: dict[str, Any] = {}
+        if team_host:
+            acp_raw = {}
+            acp_config = ACPConfig.from_dict({"runners": {}})
+        else:
+            acp_user_id = row.user_id
+            if acp_user_id is None:
+                acp_user_id = self._connector_user_override.get(row.agent_id)
+            runners_dict = (
+                self._acp_settings.load_runners(acp_user_id) if acp_user_id is not None else {}
+            )
+            acp_config = ACPConfig.from_dict({"runners": runners_dict})
+
         system_prompt: str | None
         if team_host:
             from octop.infra.agents.teams import host_system_prompt
@@ -3856,15 +4262,33 @@ class AgentManager:
         # OpenSandbox.create is not idempotent — reuse the instance already
         # wrapped by ``ws`` so start does not spawn a second remote sandbox.
         from octop.infra.backend.compat import is_adapted_backend, is_remote_backend_spec
+        from octop.infra.backend.isolated_execute import (
+            IsolatedCompositeBackend,
+            IsolatedFilesystemBackend,
+        )
 
+        filesystem_execute = isinstance(
+            ws.backend, (IsolatedFilesystemBackend, IsolatedCompositeBackend)
+        )
         harness_backend: Any = (
             ws.backend
-            if (
-                self._spec_is_opensandbox(backend)
-                or is_adapted_backend(ws.backend)
-                or is_remote_backend_spec(backend)
+            if filesystem_execute
+            else (
+                ws.backend
+                if (
+                    self._spec_is_opensandbox(backend)
+                    or is_adapted_backend(ws.backend)
+                    or is_remote_backend_spec(backend)
+                )
+                else backend
             )
-            else backend
+        )
+        from octop.infra.backend.managed_shell import managed_shell_spec
+
+        harness_backend = managed_shell_spec(
+            harness_backend,
+            workspace_dir=workspace_dir,
+            system_files_path=system_files_path_from_config(cfg),
         )
 
         harness_cfg = HarnessAgentConfig(
@@ -3916,7 +4340,6 @@ class AgentManager:
             )
             disabled.update(
                 {
-                    "execute",
                     "acp_runner",
                     "browser_use",
                     "desktop_screenshot",
@@ -3931,12 +4354,102 @@ class AgentManager:
                 }
             )
             if team_host:
+                disabled.add("execute")
                 disabled.update(host_tools_disabled(disabled))
             harness_cfg.tools_disabled = frozenset(disabled)
         applied = policy.apply_to_config(harness_cfg)
+        if skill_market_tools:
+            applied = replace(
+                applied,
+                interrupt_on=inherit_market_approvals(
+                    applied.interrupt_on, policy.hitl.allowed_decisions
+                ),
+            )
         interrupt_on = apply_session_bypass(applied.interrupt_on, self._hitl_session_store)
         if interrupt_on is not applied.interrupt_on:
             applied = replace(applied, interrupt_on=interrupt_on)
+        if not team_host:
+            forced_interrupts = dict(applied.interrupt_on or {})
+
+            def _requires_shared_export_approval(
+                req: Any, *, _agent_id: str = row.agent_id
+            ) -> bool:
+                runtime = getattr(req, "runtime", None)
+                request_config = getattr(runtime, "config", None)
+                configurable = (
+                    request_config.get("configurable") if isinstance(request_config, dict) else None
+                )
+                raw_actor = configurable.get("user") if isinstance(configurable, dict) else None
+                if raw_actor is None:
+                    return True
+                try:
+                    actor_user_id = int(raw_actor)
+                except (TypeError, ValueError):
+                    return True
+                return self.requires_shared_workspace_export_consent(_agent_id, actor_user_id)
+
+            def _shared_export_description(
+                tool_call: dict[str, Any],
+                _state: Any,
+                _runtime: Any,
+            ) -> str:
+                from langgraph.config import get_config
+
+                from octop.i18n import tr
+                from octop.infra.knowledge.source_access import KnowledgeSourceService
+
+                args = tool_call.get("args") if isinstance(tool_call, dict) else None
+                args = args if isinstance(args, dict) else {}
+                kb_id = str(args.get("kb_id") or "")
+                document_id = str(args.get("document_id") or "")
+                expected_version = str(args.get("expected_version") or "")
+                locale = "en"
+                actor = "?"
+                thread_id = "?"
+                try:
+                    run_config = get_config()
+                    configurable = run_config.get("configurable") or {}
+                    locale = str(configurable.get("locale") or "en")
+                    actor_user_id = int(configurable["user"])
+                    actor = str(actor_user_id)
+                    thread_id = str(
+                        configurable.get("thread_id") or run_config.get("thread_id") or "?"
+                    )
+                    if kb_id not in configurable.get("knowledge_base_ids", []):
+                        raise LookupError("knowledge base is not selected")
+                    source_services = SimpleNamespace(
+                        **vars(self._repos),
+                        repos=self._repos,
+                        paths=self.paths,
+                        config=self._config,
+                        agent_registry=self,
+                    )
+                    source = KnowledgeSourceService(source_services).describe_document(
+                        kb_id,
+                        document_id,
+                        actor_user_id=actor_user_id,
+                        is_admin=bool(configurable.get("user_is_admin")),
+                    )
+                    source_identity = str(source["path"] or source["filename"])
+                except Exception:
+                    source_identity = tr("knowledge.source_export.unknown_source", locale)
+                return tr(
+                    "knowledge.source_export.approval_warning",
+                    locale,
+                    source=source_identity,
+                    kb_id=kb_id,
+                    document_id=document_id,
+                    version=expected_version,
+                    actor=actor,
+                    thread=thread_id,
+                )
+
+            forced_interrupts["export_knowledge_original"] = {
+                "allowed_decisions": ["approve", "reject"],
+                "when": _requires_shared_export_approval,
+                "description": _shared_export_description,
+            }
+            applied = replace(applied, interrupt_on=forced_interrupts)
         updates: dict[str, Any] = {}
         if team_host:
             if "team_peers" in _HARNESS_AGENT_CONFIG_FIELDS:

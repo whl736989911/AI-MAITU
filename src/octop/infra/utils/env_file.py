@@ -118,9 +118,41 @@ def save_env_file(path: Path, values: dict[str, str]) -> None:
     path.write_text(format_env_file(values), encoding="utf-8")
 
 
+def validate_managed_environment(
+    values: Mapping[str, str], *, previous: Mapping[str, str] | None = None
+) -> None:
+    """Keep deployment trust and host executable loading outside business configuration."""
+    if not os.environ.get("MAITU_LICENSE_TRUSTED_KEYS_FILE", "").strip():
+        return
+    protected = {
+        "PATH",
+        "PYTHONPATH",
+        "PYTHONHOME",
+        "PYTHONSTARTUP",
+        "PYTHONINSPECT",
+        "LD_PRELOAD",
+        "LD_LIBRARY_PATH",
+        "BASH_ENV",
+        "ENV",
+        "SHELL",
+        "NODE_OPTIONS",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+        "PLAYWRIGHT_BROWSERS_PATH",
+        "BROWSER_USE_NO_SANDBOX",
+        "BROWSER_USE_CHROME_BIN",
+    }
+    for key in values.keys() | (previous or {}).keys():
+        if (key.upper().startswith("MAITU_") or key.upper() in protected) and values.get(
+            key
+        ) != os.environ.get(key):
+            raise ValueError(f"deployment-owned environment variable: {key}")
+
+
 def apply_env_file(path: Path) -> dict[str, str]:
     """Load ``path`` and merge into ``os.environ`` (does not unset missing keys)."""
     values = load_env_file(path)
+    validate_managed_environment(values)
     for key, value in values.items():
         os.environ[key] = value
     return values
@@ -129,6 +161,7 @@ def apply_env_file(path: Path) -> dict[str, str]:
 def apply_env_file_replace(path: Path, *, previous: Mapping[str, str]) -> dict[str, str]:
     """Apply the file to ``os.environ`` and drop keys that left the file."""
     values = load_env_file(path)
+    validate_managed_environment(values, previous=previous)
     for key in previous:
         if key not in values:
             os.environ.pop(key, None)

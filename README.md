@@ -51,20 +51,20 @@ Cross-cutting
 
 ## Quick start (from source)
 
-Requirements: **Python ≥ 3.12**, [`uv`](https://docs.astral.sh/uv/), **Node.js** (to build the dashboard).
+Requirements: **Python ≥ 3.12**, [`uv`](https://docs.astral.sh/uv/), **Node.js** (to build the dashboard). On Ubuntu, install `build-essential python3-dev linux-libc-dev` before syncing: the current core `orcakit-harness-agent[all]` dependency pulls pynput/evdev even without selecting the desktop extra.
 
 ```bash
 git clone https://github.com/whl736989911/AI-MAITU.git
 cd AI-MAITU
 
 # Backend deps
-uv sync
+uv sync --inexact --no-dev --extra office --extra knowledge-ocr
 
 # Dashboard (built output is served by the backend)
 cd dashboard && npm ci && npm run build && cd ..
 
 # Run
-uv run octop run --port 8088
+uv run --no-sync octop run --port 8088
 ```
 
 The first boot prints a one-time setup password and a path to `octop-login.txt`. Open `http://127.0.0.1:8088`, paste the password, and the wizard will:
@@ -72,7 +72,32 @@ The first boot prints a one-time setup password and a path to `octop-login.txt`.
 2. create the first administrator,
 3. optionally configure a model provider.
 
-For a local embedding model (knowledge bases), download one from the admin UI — the smallest is ~90 MB.
+For local embedding models, add `--extra local-embedding` to the sync command, then download a model from the admin UI. Desktop control is optional (`--extra desktop`) and requires a compatible graphical session; omitting it currently does not remove the transitive evdev build prerequisite.
+
+Always keep `--inexact` when synchronizing an existing deployment so previously installed optional packages are not pruned; repeat selected extras to update their dependencies. Release ZIP installations have no `.git`: follow the [native ZIP upgrade, dependency health checks, and no-make commands](scripts/README.md#原生-release-zip-升级不需要-git). That path retains the original environment and `OCTOP_HOME`, prepares new source without overwriting old source, and requires manual service cutover. Do not regenerate config or license identity during upgrades.
+
+### Native sandbox on Ubuntu (source installs)
+
+Agent `execute` runs inside a bubblewrap jail. On Ubuntu 24.04+ AppArmor restricts unprivileged user namespaces, and the jail fails with `bwrap: setting up uid map: Permission denied`. Fix it with the minimal, reversible grant from this repository; do **not** disable the AppArmor restriction globally.
+
+```bash
+sudo bash scripts/setup-host-sandbox.sh              # bubblewrap + userns profile (only /usr/bin/bwrap)
+sudo bash scripts/setup-host-sandbox.sh --status     # report current state
+sudo bash scripts/setup-host-sandbox.sh --revert     # remove the profile again
+```
+
+The dashboard's admin execution-sandbox view shows the live state: `GET /api/filesystem/bwrap-status` diagnoses without installing; the explicit action `POST /api/filesystem/ensure-bwrap` installs and reports the failure class (`missing_binary`, `install_permission_denied`, `userns_denied`, `runtime_failure`) plus display-only operator commands. The server never installs packages on its own at startup. A scoped `local_shell` backend is fail-closed: without a working sandbox the agent refuses to start instead of silently executing on the host.
+
+Skill scripts run against the platform Python environment inside the jail. Install office and OCR dependencies with `uv sync --inexact --no-dev --extra office --extra knowledge-ocr`.
+
+Browser/visual channel (optional): Chromium is no longer started with `--no-sandbox`, so Playwright's Chromium needs its own userns profile:
+
+```bash
+sudo bash scripts/setup-host-sandbox.sh --with-browser  # Chromium (as your user) + profile
+sudo bash scripts/setup-host-sandbox.sh --revert-browser
+```
+
+Run the browser step as the user that runs the service (systemd user units take `HOME`/`PATH` from that user); the profile only matches `~/.cache/ms-playwright/...` executables and keeps Chromium's own sandbox enabled. Adjust the glob in `scripts/security/apparmor-playwright-chromium` if the service `HOME` is not under `/home`.
 
 ### Licensed customer deployment (Ubuntu)
 
@@ -115,6 +140,11 @@ The brand is configured in `brand.config.json` and applied with:
 ```bash
 uv run python scripts/apply_brand.py
 ```
+
+Public login password-recovery guidance uses the current `/api/branding` display
+name and directs users to their administrator. Host-side recovery commands stay
+in the operational documentation rather than exposing a fixed vendor name on
+the public login page.
 
 ## License & attribution
 

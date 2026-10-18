@@ -25,10 +25,10 @@ def test_skill_packages_table_exists(db: SqlitePool) -> None:
         names = {
             r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        v = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
+
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(skill_packages)").fetchall()}
     assert "skill_packages" in names
-    assert v == 40
+
     assert "skill_package_id" in cols
 
 

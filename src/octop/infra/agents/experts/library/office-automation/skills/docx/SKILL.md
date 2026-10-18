@@ -15,8 +15,8 @@ metadata:
 ---
 
 > **重要:** 所有 `scripts/` 路径均相对于本技能目录。
-> 运行方式: `cd {this_skill_dir} && python scripts/...`
-> 或使用 `execute_shell_command` 的 `cwd` 参数。
+> 运行方式：`cd {this_skill_dir} && python scripts/...`
+> 可将 `cd {this_skill_dir} && python scripts/...` 命令直接传给平台的 `execute` 工具；该工具接收命令字符串，不单独提供 `cwd` 参数。第三方技能要求旧工具名时，同样改用 `execute`，不要尝试调用未注册的工具。
 
 # DOCX 创建、编辑与分析
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 # command name -> (relative module path, attribute name, short help)
 COMMANDS: dict[str, tuple[str, str, str]] = {
     "memory": (".commands.memory", "memory", "Live memory maintenance (backup and slim)."),
-    "init": (".commands.init", "init", "Bootstrap an MAITU Smart Manufacturing server install."),
+    "init": (".commands.init", "init", "Bootstrap an application server install."),
     "run": (".commands.run", "run", "Run octop-server in the foreground."),
     "service": (
         ".commands.service",
@@ -32,23 +32,23 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     "update": (
         ".commands.update",
         "update",
-        "Check for and install a newer MAITU Smart Manufacturing release.",
+        "Check for and install a newer application release.",
     ),
     "clean": (".commands.clean", "clean", "Remove CLI state or wipe all of ~/.octop."),
     "backup": (
         ".commands.backup",
         "backup",
-        "Export and restore MAITU Smart Manufacturing backups.",
+        "Export and restore application backups.",
     ),
     "acp": (
         ".commands.acp",
         "acp_cmd",
-        "Run MAITU Smart Manufacturing agent as ACP server (stdio).",
+        "Run an application agent as ACP server (stdio).",
     ),
+    "plugin": (".commands.plugin", "plugin", "Install and manage plugins."),
     "license": (
         ".commands.license",
         "license",
-        "Check, activate, and refresh this instance license.",
+        "Instance license status and activation (offline import supported).",
     ),
-    "plugin": (".commands.plugin", "plugin", "Install and manage plugins."),
 }

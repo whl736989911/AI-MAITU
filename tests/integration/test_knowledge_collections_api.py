@@ -1,16 +1,19 @@
-"""Consumer-visible independent selection, reading accumulation and source invalidation."""
+"""Consumer-visible prompt collections, shared views and honest generation state."""
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
-from octop.infra.knowledge.jobs import process_document
+from octop.infra.db.repos.knowledge_collections import KnowledgeCollectionsRepo
+from octop.infra.knowledge.collections import KnowledgeCollectionService
 from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.knowledge.source_access import KnowledgeSourceService
 from tests.support.auth import create_user, resolve_user_id
 
 
-async def test_independent_targets_reading_partition_and_source_update(env: Any) -> None:
+async def test_collections_register_prompt_and_share_by_source_acl(env: Any) -> None:
     client, server, auth = env
     services = server.services
     services.settings_repo.set("knowledge_bases_enabled", "true")
@@ -24,136 +27,185 @@ async def test_independent_targets_reading_partition_and_source_update(env: Any)
         filename="contract.md",
         path="legal/contract.md",
         content_type="text/markdown",
-        content=b"# Payment\n\nPayment is due in 30 days.\n\n# Delivery\n\nDelivery is by rail.\n",
+        content=b"# Payment\n\nPayment is due in 30 days.\n",
     )
-    process_document(services, kb_id, original.id)
     root = f"/api/knowledge-bases/{kb_id}"
     created = await client.post(
-        f"{root}/collections", headers=auth, json={"document_ids": [folder.id, original.id]}
+        root + "/collections",
+        headers=auth,
+        json={
+            "document_ids": [folder.id, original.id],
+            "prompt": "Extract every payment obligation",
+        },
     )
     assert created.status_code == 201, created.text
-    rows = {row["target_document_id"]: row for row in created.json()}
-    folder_collection, file_collection = rows[folder.id], rows[original.id]
-    assert folder_collection["id"] != file_collection["id"]
-    assert folder_collection["keywords"] == file_collection["keywords"] == []
-    collection_url = f"{root}/collections/{folder_collection['id']}"
-    changed = await client.patch(collection_url, headers=auth, json={"keywords": ["Payment"]})
+    rows = created.json()
+    assert {row["prompt"] for row in rows} == {"Extract every payment obligation"}
+    assert {row["generation"]["state"] for row in rows} == {"idle"}
+    folder_collection, file_collection = rows[0], rows[1]
+    # Nothing is read or parsed at creation: no evidence exists yet.
+    repo = KnowledgeCollectionsRepo(services.db)
+    assert repo.reads_for_documents(kb_id, [original.id]) == []
+    assert repo.topics(folder_collection["id"]) == []
+    # Re-registering the same target returns the existing collection unchanged
+    # (one collection per owner and target document).
+    silent = await client.post(
+        root + "/collections", headers=auth, json={"document_ids": [original.id]}
+    )
+    assert silent.status_code == 201, silent.text
+    assert silent.json()[0]["id"] == file_collection["id"]
+    # Collections are visible through the source ACL, not private to the creator.
+    other = await create_user(client, auth, username="collection-reader")
+    listed = await client.get(root + "/collections", headers=other)
+    assert listed.status_code == 200, listed.text
+    assert {row["id"] for row in listed.json()} >= {
+        folder_collection["id"],
+        file_collection["id"],
+    }
+    shared_view = await client.get(
+        f"{root}/collections/{folder_collection['id']}/documents", headers=other
+    )
+    assert shared_view.status_code == 200, shared_view.text
+    body = shared_view.json()
+    assert set(body) == {"collection", "topic_document", "reading_document", "storage_path"}
+    # Shared readers can view but never modify prompt, name or lifecycle.
+    denied = await client.patch(
+        f"{root}/collections/{file_collection['id']}",
+        headers=other,
+        json={"prompt": "override"},
+    )
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "KNOWLEDGE_WRITE_FORBIDDEN"
+    denied_delete = await client.delete(
+        f"{root}/collections/{file_collection['id']}", headers=other
+    )
+    assert denied_delete.status_code == 403, denied_delete.text
+    changed = await client.patch(
+        f"{root}/collections/{file_collection['id']}",
+        headers=auth,
+        json={"prompt": "Extract payment and delivery terms"},
+    )
     assert changed.status_code == 200, changed.text
-    generated = await client.post(f"{collection_url}/generate", headers=auth)
-    assert generated.status_code == 200, generated.text
-    documents = await client.get(f"{collection_url}/documents", headers=auth)
-    assert documents.status_code == 200, documents.text
-    initial = documents.json()
-    assert "Payment is due in 30 days." in initial["keyword_document"]
-    assert "Delivery is by rail." not in initial["keyword_document"]
-    assert "Delivery is by rail." not in initial["reading_document"]
-    storage = Path(initial["storage_path"])
-    assert storage.is_relative_to(services.paths.root / "knowledge-collections")
-    assert {entry.name for entry in storage.iterdir()} == {"keyword-index.md", "reading-index.md"}
-    found = await client.get(f"{root}/search", headers=auth, params={"q": "rail", "limit": 5})
-    assert found.status_code == 200, found.text
-    hit = next(
-        hit for hit in found.json() if hit["document_id"] == original.id and hit["segment_id"]
-    )
-    verified = await client.get(
-        f"{root}/documents/{original.id}/segments/{hit['segment_id']}", headers=auth
-    )
-    assert verified.status_code == 200, verified.text
-    assert verified.json()["verified"] is True
-    for collection in (folder_collection, file_collection):
-        result = await client.get(f"{root}/collections/{collection['id']}/documents", headers=auth)
-        assert "Delivery is by rail." in result.json()["reading_document"]
-    service.update_text_document(
-        kb_id,
-        original.id,
-        actor_user_id=actor,
-        content="# Payment\n\nPayment is due in 45 days.\n\n# Delivery\n\nDelivery is by road.\n",
-    )
-    pending = await client.get(f"{collection_url}/documents", headers=auth)
-    assert "Payment is due in 30 days." not in pending.json()["keyword_document"]
-    assert "Delivery is by rail." not in pending.json()["reading_document"]
-    process_document(services, kb_id, original.id)
-    updated = await client.get(f"{collection_url}/documents", headers=auth)
-    assert "Payment is due in 45 days." in updated.json()["keyword_document"]
-    assert "Delivery is by rail." not in updated.json()["reading_document"]
-    deleted = await client.delete(collection_url, headers=auth)
+    assert changed.json()["prompt"] == "Extract payment and delivery terms"
+    deleted = await client.delete(f"{root}/collections/{file_collection['id']}", headers=auth)
     assert deleted.status_code == 204, deleted.text
     assert services.knowledge_repo.get_document(original.id) is not None
-    remaining = await client.get(f"{root}/collections", headers=auth)
-    assert {row["id"] for row in remaining.json()} == {file_collection["id"]}
 
 
-async def test_collections_are_personal_and_creation_validates_all_targets(env: Any) -> None:
-    client, server, auth = env
-    services = server.services
-    kb_id = KnowledgeService(services).enterprise_space().id
-    folder = services.knowledge_repo.ensure_folder(kb_id, "reports")
-    root = f"/api/knowledge-bases/{kb_id}/collections"
-    invalid = await client.post(root, headers=auth, json={"document_ids": [folder.id, "missing"]})
-    assert invalid.status_code == 404, invalid.text
-    assert (await client.get(root, headers=auth)).json() == []
-    created = await client.post(root, headers=auth, json={"document_ids": [folder.id]})
-    assert created.status_code == 201, created.text
-    collection_id = created.json()[0]["id"]
-    other = await create_user(client, auth, username="collection-reader")
-    assert (await client.get(root, headers=other)).json() == []
-    leaked = await client.get(f"{root}/{collection_id}/documents", headers=other)
-    assert leaked.status_code in {403, 404}, leaked.text
-    own = await client.post(root, headers=other, json={"document_ids": [folder.id]})
-    assert own.status_code == 201, own.text
-    assert own.json()[0]["id"] != collection_id
-
-
-async def test_generation_failure_reports_source_index_state_and_keeps_completed_content(
-    env: Any,
-) -> None:
-    import asyncio
-    from io import BytesIO
-
-    from pypdf import PdfWriter
-
+async def test_source_read_updates_both_views_of_all_containing_collections(env: Any) -> None:
     client, server, auth = env
     services = server.services
     services.settings_repo.set("knowledge_bases_enabled", "true")
     actor = await resolve_user_id(client, auth, "admin")
     service = KnowledgeService(services)
     kb_id = service.enterprise_space().id
-    folder = services.knowledge_repo.ensure_folder(kb_id, "mixed")
-    readable = service.upload_document(
+    folder = services.knowledge_repo.ensure_folder(kb_id, "accruals")
+    original = service.upload_document(
         kb_id,
         actor_user_id=actor,
-        filename="readable.md",
-        path="mixed/readable.md",
+        filename="notes.md",
+        path="accruals/notes.md",
         content_type="text/markdown",
-        content=b"needle source evidence",
+        content=b"# Accrual\n\nInterest accrues monthly on outstanding balances.\n",
     )
-    await asyncio.get_running_loop().run_in_executor(
-        None, process_document, services, kb_id, readable.id
+    root = f"/api/knowledge-bases/{kb_id}"
+    created = await client.post(
+        root + "/collections",
+        headers=auth,
+        json={"document_ids": [folder.id, original.id], "prompt": "accrual rules"},
     )
-    pdf = PdfWriter()
-    pdf.add_blank_page(width=100, height=100)
-    payload = BytesIO()
-    pdf.write(payload)
+    assert created.status_code == 201, created.text
+    collections = created.json()
+    folder_collection, file_collection = collections
+    # One authorized source read fans out to every containing collection.
+    source = KnowledgeSourceService(services)
+
+    def read_once() -> dict[str, Any]:
+        return source.read_document(kb_id, original.id, actor_user_id=actor)
+
+    result = await asyncio.get_running_loop().run_in_executor(None, read_once)
+    assert result["status"] == "read", result
+    for row in collections:
+        view = await client.get(f"{root}/collections/{row['id']}/documents", headers=auth)
+        assert view.status_code == 200, view.text
+        document = view.json()
+        assert "Interest accrues monthly" in document["reading_document"]
+        assert document["collection"]["coverage"]["read"] >= 1
+        assert document["collection"]["coverage"]["total"] >= 1
+    # A repeated identical read dedups instead of duplicating evidence: the
+    # rendered reading view still shows the excerpt exactly once.
+    await asyncio.get_running_loop().run_in_executor(None, read_once)
+    deduped = await client.get(
+        f"{root}/collections/{file_collection['id']}/documents", headers=auth
+    )
+    assert deduped.status_code == 200, deduped.text
+    assert deduped.json()["reading_document"].count("Interest accrues monthly") == 1
+    # A stale version is refused and never rendered.
+    collections_api = KnowledgeCollectionService(services)
+
+    def record_stale() -> dict[str, Any]:
+        return collections_api.record_source_read(
+            kb_id,
+            original.id,
+            {
+                "status": "read",
+                "version": "stale-version",
+                "text": "fabricated",
+                "evidence_id": "source:stale",
+                "blocks": [],
+                "verified": True,
+            },
+            actor_user_id=actor,
+        )
+
+    outcome = await asyncio.get_running_loop().run_in_executor(None, record_stale)
+    assert outcome["reason"] == "stale_version"
+
+
+async def test_generate_is_honest_without_model_and_requires_prompt(env: Any) -> None:
+    client, server, auth = env
+    services = server.services
+    services.settings_repo.set("knowledge_bases_enabled", "true")
+    actor = await resolve_user_id(client, auth, "admin")
+    service = KnowledgeService(services)
+    kb_id = service.enterprise_space().id
+    folder = services.knowledge_repo.ensure_folder(kb_id, "org")
     service.upload_document(
         kb_id,
         actor_user_id=actor,
-        filename="blank.pdf",
-        path="mixed/blank.pdf",
-        content_type="application/pdf",
-        content=payload.getvalue(),
+        filename="terms.md",
+        path="org/terms.md",
+        content_type="text/markdown",
+        content=b"# Terms\n\nThe vendor invoices quarterly.\n",
     )
     root = f"/api/knowledge-bases/{kb_id}/collections"
     created = await client.post(root, headers=auth, json={"document_ids": [folder.id]})
-    assert created.status_code == 201
-    collection_url = f"{root}/{created.json()[0]['id']}"
-    saved = await client.patch(collection_url, headers=auth, json={"keywords": ["needle"]})
-    assert saved.status_code == 200
+    assert created.status_code == 201, created.text
+    collection = created.json()[0]
+    collection_url = f"{root}/{collection['id']}"
+    blocked = await client.post(f"{collection_url}/generate", headers=auth)
+    assert blocked.status_code == 400, blocked.text
+    assert blocked.json()["error"]["code"] == "KNOWLEDGE_COLLECTION_INVALID"
+    saved = await client.patch(
+        collection_url, headers=auth, json={"prompt": "List invoicing cadence"}
+    )
+    assert saved.status_code == 200, saved.text
     generated = await client.post(f"{collection_url}/generate", headers=auth)
-    assert generated.status_code == 409, generated.text
-    assert generated.json()["error"]["code"] == "KNOWLEDGE_INDEX_NOT_READY"
+    assert generated.status_code == 200, generated.text
+    payload = generated.json()
+    # No model is configured in this environment: the failure is explicit and
+    # the reads still accumulated reading evidence.
+    assert payload["generation"]["state"] == "error", payload
+    assert payload["coverage"]["failed"] >= 1
     documents = await client.get(f"{collection_url}/documents", headers=auth)
-    assert documents.status_code == 200
-    current = documents.json()
-    assert current["collection"]["status"] == "partial"
-    assert current["collection"]["coverage"]["failed"] == 1
-    assert "needle source evidence" in current["keyword_document"]
+    assert documents.status_code == 200, documents.text
+    body = documents.json()
+    assert "The vendor invoices quarterly." in body["reading_document"]
+    assert "topic model is not configured" in body["topic_document"]
+    assert "The vendor invoices quarterly." not in body["topic_document"]
+    storage = Path(body["storage_path"])
+    assert storage.is_relative_to(services.paths.root / "knowledge-collections")
+    assert {entry.name for entry in storage.iterdir()} == {
+        "topic-index.md",
+        "reading-index.md",
+    }

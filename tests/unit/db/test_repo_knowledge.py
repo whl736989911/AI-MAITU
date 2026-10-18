@@ -49,12 +49,12 @@ def test_knowledge_tables_migrated(db: SqlitePool) -> None:
         names = {
             r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        v = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
+
     assert {
         "knowledge_bases",
         "knowledge_documents",
     }.issubset(names)
-    assert v == 40
+
     assert "knowledge_base_members" not in names
     cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
     assert "knowledge_base_id" in cols

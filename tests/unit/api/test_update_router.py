@@ -1,63 +1,34 @@
-"""Tests for manual-only update API behavior and service restart."""
+"""Tests for update status, queue handoff, and service restart."""
 
 from __future__ import annotations
 
-from typing import Any
-
 import pytest
-from fastapi import BackgroundTasks
+from fastapi import BackgroundTasks, HTTPException, Request
 
 from octop.api.routers import update as update_router
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.setup import self_update
-
-
-@pytest.fixture(autouse=True)
-def _block_package_updater(monkeypatch: pytest.MonkeyPatch) -> None:
-    def unexpected(*args: Any, **kwargs: Any) -> None:
-        pytest.fail("manual-only update routes must not access PyPI or install packages")
-
-    monkeypatch.setattr(update_router, "fetch_pypi_info", unexpected, raising=False)
-    monkeypatch.setattr(update_router, "run_upgrade", unexpected, raising=False)
-    monkeypatch.setattr(self_update, "fetch_pypi_info", unexpected)
-    monkeypatch.setattr(self_update, "run_upgrade", unexpected)
-    monkeypatch.setattr(update_router, "get_local_version", lambda: "1.2.3")
-    monkeypatch.setattr(update_router, "get_editable_path", lambda: None)
-    monkeypatch.setattr(update_router, "detect_service_mode", lambda: "systemd")
-    monkeypatch.setattr(update_router, "_is_desktop_process", lambda: False)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("handler", ["update_status", "check_for_updates"])
-async def test_status_and_check_report_manual_only_status(handler: str) -> None:
-    payload = await getattr(update_router, handler)(_=None)
+async def test_upgrade_surfaces_queue_collision(monkeypatch: pytest.MonkeyPatch) -> None:
+    def collision(version: str | None) -> None:
+        raise update_router.UpdateQueueConflict("An upgrade request is already queued.")
 
-    assert payload == {
-        "current_version": "1.2.3",
-        "latest_version": None,
-        "has_update": False,
-        "error": None,
-        "source": None,
-        "release_notes": None,
-        "is_editable": False,
-        "service_mode": "systemd",
-        "desktop": False,
-    }
-
-
-@pytest.mark.asyncio
-async def test_upgrade_is_forbidden_without_starting_an_install() -> None:
-    with pytest.raises(OctopError) as exc_info:
-        await update_router.trigger_upgrade(_=None)
-
-    assert exc_info.value.code == ErrorCode.FORBIDDEN
-    assert update_router.UPGRADE_URL in str(exc_info.value)
+    monkeypatch.setattr(update_router.update_client, "queue_upgrade", collision)
+    with pytest.raises(HTTPException) as exc_info:
+        await update_router.trigger_upgrade(
+            Request({"type": "http", "headers": []}),
+            update_router.UpgradeRequest(version="1.3.0"),
+            _=None,
+        )
+    assert exc_info.value.status_code == 409
 
 
 @pytest.mark.asyncio
 async def test_restart_endpoint_schedules_background_restart(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("OCTOP_SERVICE_MODE", "systemd")
     restarted: list[object] = []
     fake_runtime = type(
         "Runtime",
@@ -83,6 +54,7 @@ async def test_restart_endpoint_schedules_background_restart(
 async def test_restart_endpoint_rejects_when_service_not_installed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    monkeypatch.setenv("OCTOP_SERVICE_MODE", "systemd")
     fake_runtime = type(
         "Runtime",
         (),

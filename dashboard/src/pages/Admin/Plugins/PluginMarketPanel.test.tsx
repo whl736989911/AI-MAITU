@@ -15,14 +15,18 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { render, screen, waitFor, within } from "@testing-library/react";
+import userEventLibrary, {
+  PointerEventsCheckLevel,
+  type UserEvent,
+} from "@testing-library/user-event";
 import type { OctopUser } from "../../../api/modules/auth";
 import type {
   MarketPlugin,
   MarketPluginDetail,
 } from "../../../api/modules/plugins";
 
+let userEvent: UserEvent;
 const { marketList, marketGet, marketInstall } = vi.hoisted(() => ({
   marketList: vi.fn(),
   marketGet: vi.fn(),
@@ -108,6 +112,10 @@ async function detailAlert(): Promise<HTMLElement> {
 
 describe("<PluginMarketPanel />", () => {
   beforeEach(() => {
+    userEvent = userEventLibrary.setup({
+      pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+      delay: null,
+    });
     vi.clearAllMocks();
   });
 
@@ -140,6 +148,35 @@ describe("<PluginMarketPanel />", () => {
     ).not.toBeInTheDocument();
     expect(
       screen.queryByText("plugins.marketToolsPending"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("does not call a landed install failed when the drawer refresh fails", async () => {
+    marketList.mockResolvedValue({ items: [plugin({ installed: false })] });
+    marketGet.mockRejectedValue(new Error("market detail unavailable"));
+    marketInstall.mockResolvedValue({
+      ...plugin(),
+      installed: true,
+      enabled: true,
+    });
+
+    const onInstalled = vi.fn();
+    renderPanel({ ...ADMIN, permissions: ["plugins"] }, onInstalled);
+    await userEvent.click(await screen.findByText("plugins.viewDetails"));
+    await detailAlert();
+
+    // Install from the open drawer, then fail only the follow-up re-read.
+    await userEvent.click(
+      within(screen.getByRole("dialog")).getByRole("button", {
+        name: "plugins.marketInstall",
+      }),
+    );
+
+    await waitFor(() => expect(onInstalled).toHaveBeenCalledOnce());
+    expect(marketInstall).toHaveBeenCalledWith("fortune");
+    await detailAlert();
+    expect(
+      screen.queryByText("plugins.marketInstallFailed"),
     ).not.toBeInTheDocument();
   });
 

@@ -1,22 +1,19 @@
-"""Unit tests for knowledge-base tool description enrichment."""
+"""Unit tests for source-tool visibility and attached knowledge-base catalogues."""
 
 from __future__ import annotations
 
 from contextlib import contextmanager
 from types import SimpleNamespace
-from typing import Annotated
 from unittest.mock import MagicMock
 
 from langchain.agents.middleware import ModelRequest
 from langchain_core.tools import StructuredTool
 from langgraph.config import var_child_runnable_config
-from pydantic import Field
 
 from octop.infra.knowledge.hint import (
-    KnowledgeSearchHintMiddleware,
+    KnowledgeToolsHintMiddleware,
     catalog_for_selected_bases,
 )
-from octop.infra.knowledge.tools import format_search_knowledge_description
 
 
 @contextmanager
@@ -28,20 +25,15 @@ def _configurable(**kwargs: object):
         var_child_runnable_config.reset(token)
 
 
-def _dummy_tool(description: str = "base") -> StructuredTool:
-    async def search_knowledge(
-        query: Annotated[str, Field(description="q")],
-    ) -> str:
-        return query
-
+def _dummy_tool(name: str, description: str = "base") -> StructuredTool:
     return StructuredTool.from_function(
-        coroutine=search_knowledge,
-        name="search_knowledge",
+        func=lambda: "x",
+        name=name,
         description=description,
     )
 
 
-def test_catalog_for_selected_bases_includes_name_and_description() -> None:
+def test_catalog_for_selected_bases_includes_visible_names() -> None:
     bases = [
         SimpleNamespace(id="kb-1", name="Refund policy", description="Retail refund rules"),
         SimpleNamespace(id="kb-2", name="", description=""),
@@ -52,98 +44,40 @@ def test_catalog_for_selected_bases_includes_name_and_description() -> None:
     ]
 
 
-def test_format_description_lists_titles_and_descriptions() -> None:
-    text = format_search_knowledge_description(
-        [
-            {"id": "kb-1", "name": "Refund policy", "description": "Retail refund rules"},
-            {"id": "kb-2", "name": "HR handbook", "description": ""},
-        ]
-    )
-    assert "Attached this turn:" in text
-    assert "- Refund policy: Retail refund rules" in text
-    assert "- HR handbook" in text
-    assert "read_knowledge_segment" in text
-
-
-def test_format_description_clips_long_fields() -> None:
-    text = format_search_knowledge_description(
-        [{"id": "kb-1", "name": "Policy", "description": "x" * 400}]
-    )
-    line = next(part for part in text.splitlines() if part.startswith("- Policy:"))
-    assert line.endswith("...")
-    assert len(line) < 260
-
-
-def test_middleware_rewrites_search_knowledge_description() -> None:
-    other = StructuredTool.from_function(
-        func=lambda: "x",
-        name="other",
-        description="keep",
-    )
+def test_middleware_keeps_source_tools_with_selected_visible_base() -> None:
     request = ModelRequest(
         model=MagicMock(),
         messages=[],
-        tools=[_dummy_tool("stale"), other],
+        tools=[_dummy_tool("browse_knowledge"), _dummy_tool("other", "keep")],
     )
     captured: list[ModelRequest] = []
-
-    def handler(req: ModelRequest) -> object:
-        captured.append(req)
-        return object()
 
     with _configurable(
-        knowledge_base_catalog=[
-            {
-                "id": "kb-1",
-                "name": "Refund policy",
-                "description": "Retail refund rules",
-            }
-        ],
-        knowledge_candidates=[
-            {
-                "kb_id": "kb-1",
-                "document_id": "doc-9",
-                "segment_id": "seg-3",
-                "filename": "policy.pdf",
-                "locator": {"kind": "page", "page": 9},
-            }
-        ],
+        knowledge_base_ids=["kb-1"],
+        knowledge_base_catalog=[{"id": "kb-1", "name": "Policy"}],
     ):
-        KnowledgeSearchHintMiddleware().wrap_model_call(request, handler)
+        KnowledgeToolsHintMiddleware().wrap_model_call(
+            request, lambda req: captured.append(req) or object()
+        )
 
-    tools = list(captured[0].tools or [])
-    kb_tool = next(t for t in tools if getattr(t, "name", None) == "search_knowledge")
-    assert "Refund policy: Retail refund rules" in kb_tool.description
-    assert "policy.pdf" in kb_tool.description
-    assert "seg-3" in kb_tool.description
-    assert next(t for t in tools if getattr(t, "name", None) == "other").description == "keep"
-    assert request.tools[0].description == "stale"
+    assert [tool.name for tool in captured[0].tools] == ["browse_knowledge", "other"]
 
 
-def test_middleware_hides_tool_when_catalog_empty() -> None:
-    other = StructuredTool.from_function(
-        func=lambda: "x",
-        name="other",
-        description="keep",
-    )
-    read_tool = StructuredTool.from_function(
-        func=lambda: "x",
-        name="read_knowledge_segment",
-        description="source",
-    )
+def test_middleware_hides_source_tools_when_no_base_selected() -> None:
     request = ModelRequest(
         model=MagicMock(),
         messages=[],
-        tools=[_dummy_tool("stale"), read_tool, other],
+        tools=[
+            _dummy_tool("browse_knowledge"),
+            _dummy_tool("read_knowledge_document"),
+            _dummy_tool("other", "keep"),
+        ],
     )
     captured: list[ModelRequest] = []
 
-    def handler(req: ModelRequest) -> object:
-        captured.append(req)
-        return object()
+    with _configurable(knowledge_base_ids=[], knowledge_base_catalog=[]):
+        KnowledgeToolsHintMiddleware().wrap_model_call(
+            request, lambda req: captured.append(req) or object()
+        )
 
-    with _configurable(knowledge_base_catalog=[]):
-        KnowledgeSearchHintMiddleware().wrap_model_call(request, handler)
-
-    names = [getattr(t, "name", None) for t in (captured[0].tools or [])]
-    assert names == ["other"]
+    assert [tool.name for tool in captured[0].tools] == ["other"]

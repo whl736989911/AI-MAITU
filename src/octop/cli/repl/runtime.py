@@ -39,12 +39,13 @@ class CliChatSession:
     """One CLI connection into Gateway.cli_hub for streaming turns."""
 
     def __init__(self, server: OctopServer, *, user_id: int) -> None:
-        if server.app_runtime is None:
+        runtime = server.app_runtime
+        if runtime is None:
             raise RuntimeError("server not started")
         self._server = server
         self._user_id = user_id
-        self._gateway = server.app_runtime.gateway
         self._connection_id = uuid.uuid4().hex
+        self._gateway = runtime.require_gateway()
         self._done = asyncio.Event()
         self._on_chunk: Callable[[dict[str, Any]], None] | None = None
         self._gateway.cli_hub.register(self._connection_id, self._deliver_chunk)

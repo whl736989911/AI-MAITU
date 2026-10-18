@@ -12,15 +12,12 @@ from langgraph.config import get_config
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from octop.i18n import tr
 from octop.infra.utils.browser_media import parse_octop_user_id, user_browser_profile
 
 logger = logging.getLogger(__name__)
 
 _BROWSER_TOOL = "browser_use"
-_MISSING_USER = (
-    "browser_use blocked: the current turn has no MAITU Smart Manufacturing user id, "
-    "so a browser profile cannot be isolated."
-)
 
 
 def _bind_browser_profile(request: ToolCallRequest) -> ToolCallRequest | ToolMessage:
@@ -33,7 +30,10 @@ def _bind_browser_profile(request: ToolCallRequest) -> ToolCallRequest | ToolMes
     if user_id is None:
         logger.warning("browser_use blocked: configurable.user is missing or invalid")
         return ToolMessage(
-            content=_MISSING_USER,
+            content=tr(
+                "agent_errors.browser_missing_user",
+                str(configurable.get("octop_feature_locale") or configurable.get("locale") or "en"),
+            ),
             tool_call_id=str(tool_call.get("id") or ""),
             status="error",
         )

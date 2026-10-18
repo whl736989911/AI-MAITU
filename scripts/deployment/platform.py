@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import os
 import re
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -67,6 +69,47 @@ def _safe_directory(path: Path, label: str) -> Path:
     if path.exists() and not path.is_dir():
         raise DeploymentError(f"{label}不是目录：{path}")
     return path
+
+
+def _service_state_directory(path: Path, label: str) -> Path:
+    path = _safe_directory(path, label)
+    if os.name != "posix":
+        ensure_directory(path, mode=0o700)
+        return path
+    if not path.exists():
+        ensure_directory(path, mode=0o700, uid=1000, gid=1000)
+        return path
+
+    entries = [path, *path.rglob("*")]
+    for entry in entries:
+        if entry.is_symlink() or not (entry.is_dir() or entry.is_file()):
+            raise DeploymentError(f"{label}目录包含链接或特殊文件，拒绝修改：{entry}")
+    needs_adoption = any(entry.stat().st_uid != 1000 for entry in entries)
+    if needs_adoption:
+        if not confirm(
+            f"{label}已有内容；保留所有内容并将目录树所有权调整为容器 UID/GID 1000？",
+            default=False,
+        ):
+            raise DeploymentError(f"{label}现有内容不属于 UID 1000；未更改数据。")
+        for entry in reversed(entries):
+            os.chown(entry, 1000, 1000)
+            if entry.is_dir():
+                entry.chmod(0o700)
+            else:
+                entry.chmod((entry.stat().st_mode & 0o777) | 0o600)
+    else:
+        path.chmod(0o700)
+    return path
+
+
+def _require_disjoint_state_paths(paths: tuple[Path, ...], labels: tuple[str, ...]) -> None:
+    for index, first in enumerate(paths):
+        for other_index in range(index + 1, len(paths)):
+            second = paths[other_index]
+            if first == second or first.is_relative_to(second) or second.is_relative_to(first):
+                raise DeploymentError(
+                    f"{labels[index]} 与 {labels[other_index]} 不能相同或互相嵌套。"
+                )
 
 
 def _compose_status(config: dict[str, Any]) -> dict[str, Any]:
@@ -132,14 +175,39 @@ def _confirm_bundle(bundle_data: dict[str, Any], fingerprints: dict[str, str]) -
         raise DeploymentError("未确认授权中心信任信息，未导入连接包。")
 
 
+def _local_docker_socket() -> Path:
+    endpoint = os.environ.get("DOCKER_HOST")
+    if not endpoint:
+        endpoint = run(
+            ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+            capture=True,
+        ).stdout.strip()
+    parsed_endpoint = urllib.parse.urlsplit(endpoint)
+    if parsed_endpoint.scheme != "unix" or parsed_endpoint.netloc:
+        raise DeploymentError(
+            "平台部署需要当前主机的 Docker Unix socket；远程 Docker 会使数据挂载错位，拒绝继续。"
+        )
+    socket_path = Path(urllib.parse.unquote(parsed_endpoint.path))
+    if not socket_path.is_absolute() or not socket_path.is_socket():
+        raise DeploymentError(
+            f"Docker Unix socket 不存在或不是 socket：{socket_path}。"
+            "请启动本机 Docker daemon 并确认当前 Docker context 使用本地 Unix socket。"
+        )
+    return socket_path
+
+
 def _data_mount(
     source_root: Path, env_file: Path, files: list[Path], project_name: str
 ) -> dict[str, str]:
     selected = [
         str(path)
         for path in files
-        if path.name != "docker-compose.licensing.yml"
-        and path.name != "platform.compose.override.yml"
+        if path.name
+        not in {
+            "docker-compose.licensing.yml",
+            "docker-compose.managed.yml",
+            "platform.compose.override.yml",
+        }
     ]
     config = {
         "source_root": str(source_root),
@@ -220,9 +288,11 @@ def _build_platform_override(
     published_port: int,
     target_port: int,
     server_url: str,
-    trust_dir: Path,
+    license_keys_path: Path,
+    release_keys_path: Path,
+    license_state_dir: Path,
+    update_queue_dir: Path,
     ca_path: Path | None,
-    contact: str = "",
     time_zone: str = "Asia/Shanghai",
 ) -> None:
     host_port = f"[{host}]:{published_port}" if ":" in host else f"{host}:{published_port}"
@@ -234,17 +304,81 @@ def _build_platform_override(
         f"      - {_public_yaml(f'{host_port}:{target_port}')} ",
         "    volumes:",
         "      - type: bind",
-        f"        source: {_public_yaml(str(trust_dir))}",
-        "        target: /etc/maitu/license",
+        f"        source: {_public_yaml(str(license_keys_path))}",
+        "        target: /run/maitu-trust/license-trusted-keys.json",
         "        read_only: true",
-        "    environment:",
-        f"      OCTOP_LICENSE_SERVER_URL: {_public_yaml(server_url)}",
-        "      OCTOP_LICENSE_TRUST_FILE: /etc/maitu/license/trusted-keys.json",
-        f"      OCTOP_LICENSE_CA_FILE: {_public_yaml('/etc/maitu/license/' + ca_path.name if ca_path else '')}",
-        f"      OCTOP_LICENSE_CONTACT: {_public_yaml(contact)}",
-        f"      OCTOP_DEFAULT_TIMEZONE: {_public_yaml(time_zone)}",
+        "      - type: bind",
+        f"        source: {_public_yaml(str(release_keys_path))}",
+        "        target: /run/maitu-trust/release-trusted-keys.json",
+        "        read_only: true",
+        "      - type: bind",
+        f"        source: {_public_yaml(str(license_state_dir))}",
+        "        target: /var/lib/maitu-license",
+        "      - type: bind",
+        f"        source: {_public_yaml(str(update_queue_dir))}",
+        "        target: /var/lib/maitu-update-queue",
     ]
+    if ca_path is not None:
+        lines.extend(
+            [
+                "      - type: bind",
+                f"        source: {_public_yaml(str(ca_path))}",
+                "        target: /run/maitu-trust/root-ca.pem",
+                "        read_only: true",
+            ]
+        )
+    lines.extend(
+        [
+            "    environment:",
+            "      MAITU_LICENSE_TRUSTED_KEYS_FILE: /run/maitu-trust/license-trusted-keys.json",
+            "      MAITU_LICENSE_STATE_DIR: /var/lib/maitu-license",
+            f"      MAITU_LICENSE_CENTER_URL: {_public_yaml(server_url)}",
+            "      MAITU_UPDATE_TRUSTED_KEYS_FILE: /run/maitu-trust/release-trusted-keys.json",
+            "      MAITU_UPDATE_QUEUE_DIR: /var/lib/maitu-update-queue",
+            f"      MAITU_UPDATE_CENTER_URL: {_public_yaml(server_url)}",
+            '      MAITU_UPDATE_CLIENT_TOKEN: "${MAITU_CENTER_CLIENT_TOKEN:-}"',
+            f"      OCTOP_DEFAULT_TIMEZONE: {_public_yaml(time_zone)}",
+        ]
+    )
+    if ca_path is not None:
+        lines.extend(
+            [
+                "      SSL_CERT_FILE: /run/maitu-trust/root-ca.pem",
+                "      REQUESTS_CA_BUNDLE: /run/maitu-trust/root-ca.pem",
+            ]
+        )
     atomic_write(path, "\n".join(lines) + "\n", mode=0o600)
+
+
+def _verify_runtime_mounts(
+    config: dict[str, Any],
+    data_mount: dict[str, str],
+    protected_mounts: dict[str, tuple[str, bool]],
+) -> None:
+    result = compose(config, "config", "--format", "json", capture=True)
+    try:
+        service = json.loads(result.stdout)["services"]["maitu"]
+        volumes = service.get("volumes", [])
+        data_mounts = [item for item in volumes if item.get("target") == "/data/.octop"]
+    except (ValueError, TypeError, KeyError) as exc:
+        raise DeploymentError("无法确认最终平台 Compose 的数据挂载。") from exc
+    if (
+        len(data_mounts) != 1
+        or data_mounts[0].get("type") != data_mount["type"]
+        or data_mounts[0].get("source") != data_mount["source"]
+    ):
+        raise DeploymentError(
+            "最终平台 Compose 的 /data/.octop 挂载与原部署数据不一致；拒绝切换数据或实例身份。"
+        )
+    for target, (source, read_only) in protected_mounts.items():
+        matches = [item for item in volumes if item.get("target") == target]
+        if (
+            len(matches) != 1
+            or matches[0].get("type") != "bind"
+            or matches[0].get("source") != source
+            or bool(matches[0].get("read_only")) != read_only
+        ):
+            raise DeploymentError(f"最终平台 Compose 的受保护挂载不一致：{target}。")
 
 
 def _owns_port(config: dict[str, Any], host: str, port: int) -> bool:
@@ -317,6 +451,7 @@ def deploy(config_dir: Path) -> None:
     require_host()
     check_time()
     ensure_tools(["docker", "openssl"])
+    _local_docker_socket()
     compose_version = run(["docker", "compose", "version", "--short"], capture=True).stdout.strip()
     match = re.search(r"(\d+)\.(\d+)\.(\d+)", compose_version)
     if not match or tuple(map(int, match.groups())) < (2, 24, 4):
@@ -366,10 +501,6 @@ def deploy(config_dir: Path) -> None:
                 Path(ask("原 Compose 环境文件绝对路径（没有时请先保存原部署变量）")), "环境"
             )
         compose_files = [base_compose]
-        existing_overlay = source_root / "docker/docker-compose.licensing.yml"
-        if existing_overlay.exists():
-            compose_files.append(_safe_existing_file(existing_overlay, "授权 Compose"))
-        project_name = ask("现有 Compose project name", "maitu")
         additional = ask("额外原 Compose 覆盖文件路径（逗号分隔；没有则 none）", "none")
         if additional.strip().lower() != "none":
             compose_files.extend(
@@ -411,6 +542,34 @@ def deploy(config_dir: Path) -> None:
         ):
             raise DeploymentError("未确认采用原数据卷，未启动服务。")
     data_location = str(data_dir) if data_dir is not None else f"volume:{mount['source']}"
+    license_state_dir = _safe_directory(
+        Path(
+            ask(
+                "独立授权身份及版本栅栏目录",
+                str(manifest.get("license_state_dir", "/var/lib/maitu-license"))
+                if manifest
+                else "/var/lib/maitu-license",
+            )
+        ),
+        "授权身份",
+    )
+    update_queue_dir = _safe_directory(
+        Path(
+            ask(
+                "独立更新请求队列目录",
+                str(manifest.get("update_queue_dir", "/var/lib/maitu-update-queue"))
+                if manifest
+                else "/var/lib/maitu-update-queue",
+            )
+        ),
+        "更新队列",
+    )
+    disjoint_paths = [license_state_dir, update_queue_dir, config_dir]
+    disjoint_labels = ["授权身份", "更新队列", "部署配置"]
+    if data_dir is not None:
+        disjoint_paths.append(data_dir)
+        disjoint_labels.append("业务数据")
+    _require_disjoint_state_paths(tuple(disjoint_paths), tuple(disjoint_labels))
     port = validate_port(
         ask(
             "平台宿主机访问端口",
@@ -441,38 +600,65 @@ def deploy(config_dir: Path) -> None:
         "compose_files": [
             str(item)
             for item in compose_files
-            if item.name not in {"docker-compose.licensing.yml", "platform.compose.override.yml"}
+            if item.name
+            not in {
+                "docker-compose.licensing.yml",
+                "docker-compose.managed.yml",
+                "platform.compose.override.yml",
+            }
         ],
         "project_name": project_name,
     }
     if not port_available(bind_host, port) and not _owns_port(original_config, bind_host, port):
         raise DeploymentError(f"宿主机端口 {port} 已被占用；未启动或停止任何服务。")
     bundle_data = None
-    if (
+    trust_dir = (
+        _safe_directory(Path(str(manifest["trust_dir"])), "授权信任")
+        if manifest and manifest.get("trust_dir")
+        else config_dir / "platform-trust"
+    )
+    license_keys_path = trust_dir / "license-trusted-keys.json"
+    release_keys_path = trust_dir / "release-trusted-keys.json"
+    reusable_trust = bool(
         manifest
         and manifest.get("trust_bundle")
-        and confirm("继续使用已确认的授权中心和公钥？", default=True)
-    ):
+        and isinstance(manifest.get("key_fingerprints"), dict)
+        and manifest.get("key_fingerprints")
+        and license_keys_path.is_file()
+        and release_keys_path.is_file()
+    )
+    if reusable_trust and confirm("继续使用已确认的授权和发布公钥 keyring？", default=True):
         server_url = check_url(str(manifest["server_url"]))
-        trust_dir = _safe_directory(Path(str(manifest["trust_dir"])), "授权信任")
-        trust_path = _safe_existing_file(trust_dir / "trusted-keys.json", "公钥信任")
+        license_keys_path = _safe_existing_file(license_keys_path, "授权签名公钥 keyring")
+        release_keys_path = _safe_existing_file(release_keys_path, "发布签名公钥 keyring")
         ca_path = (
             _safe_existing_file(Path(str(manifest["ca_file"])), "中心 CA")
             if manifest.get("ca_file")
             else None
         )
         try:
-            loaded_trust = json.loads(trust_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError) as exc:
+            license_keys = json.loads(license_keys_path.read_text(encoding="utf-8"))
+            release_keys = json.loads(release_keys_path.read_text(encoding="utf-8"))
+            key_data = bundle.validate_bundle(
+                {
+                    "format": bundle.FORMAT,
+                    "version": 2,
+                    "server_url": server_url,
+                    "license_trusted_keys": license_keys,
+                    "release_trusted_keys": release_keys,
+                    "ca_certificate_pem": (
+                        ca_path.read_text(encoding="ascii") if ca_path is not None else None
+                    ),
+                }
+            )
+            fingerprints = bundle.key_fingerprints(key_data)
+        except (OSError, UnicodeError, ValueError, DeploymentError) as exc:
             raise DeploymentError(
-                "原公钥文件损坏；没有重新初始化实例，请重新导入可信接入包。"
+                "原中心 keyring 损坏；未重新初始化实例，请重新导入可信接入包。"
             ) from exc
-        if not isinstance(loaded_trust, dict):
-            raise DeploymentError("原授权公钥信任文件不是映射；拒绝启动。")
-        fingerprints = bundle.key_fingerprints({"trusted_keys": loaded_trust})
-        if fingerprints != manifest.get("key_fingerprints", {}):
+        if fingerprints != manifest.get("key_fingerprints"):
             raise DeploymentError("磁盘公钥与已确认指纹不同；请选择重新导入并人工核对信任。")
-        print(f"使用原中心 {server_url}；原公钥指纹已核对。")
+        print(f"使用原中心 {server_url}；授权与发布 keyring 指纹均已核对。")
     else:
         bundle_path = Path(ask("导入授权中心接入包文件路径（JSON）")).expanduser()
         bundle_data, fingerprints = _trust_bundle(_safe_existing_file(bundle_path, "连接包"))
@@ -483,12 +669,9 @@ def deploy(config_dir: Path) -> None:
             raise DeploymentError("已取消中心连接变更。")
         server_url = bundle_data["server_url"]
         trust_dir = config_dir / "platform-trust"
+        license_keys_path = trust_dir / "license-trusted-keys.json"
+        release_keys_path = trust_dir / "release-trusted-keys.json"
         ca_path = trust_dir / "root-ca.pem" if bundle_data.get("ca_certificate_pem") else None
-    contact = ask(
-        "授权锁定后的支持联系方式（none 表示不设置）",
-        str(manifest.get("contact", "none")) if manifest else "none",
-    )
-    contact = "" if contact == "none" else contact
     time_zone = ask(
         "平台服务器显示时区",
         str(manifest.get("timezone", "Asia/Shanghai")) if manifest else "Asia/Shanghai",
@@ -497,12 +680,22 @@ def deploy(config_dir: Path) -> None:
         ZoneInfo(time_zone)
     except (ValueError, ZoneInfoNotFoundError) as exc:
         raise DeploymentError("服务器时区无效。") from exc
+    disjoint_paths = [license_state_dir, update_queue_dir, config_dir, trust_dir]
+    disjoint_labels = ["授权身份", "更新队列", "部署配置", "授权信任"]
+    if data_dir is not None:
+        disjoint_paths.append(data_dir)
+        disjoint_labels.append("业务数据")
+    _require_disjoint_state_paths(tuple(disjoint_paths), tuple(disjoint_labels))
     host_override = config_dir / "platform.compose.override.yml"
-    licensing_overlay = next(
-        (item for item in compose_files if item.name == "docker-compose.licensing.yml"), None
-    )
     effective_files = [
-        str(item) for item in compose_files if item != licensing_overlay and item != host_override
+        str(item)
+        for item in compose_files
+        if item.name
+        not in {
+            "docker-compose.licensing.yml",
+            "docker-compose.managed.yml",
+            "platform.compose.override.yml",
+        }
     ]
     effective_files.append(str(host_override))
     config: dict[str, Any] = {
@@ -512,7 +705,7 @@ def deploy(config_dir: Path) -> None:
         "project_name": project_name,
     }
     details = {
-        "version": 1,
+        "version": 2,
         "role": "platform",
         "source_root": str(source_root),
         "env_file": str(env_file),
@@ -525,37 +718,55 @@ def deploy(config_dir: Path) -> None:
         "trust_bundle": True,
         "ca_file": str(ca_path) if ca_path else None,
         "key_fingerprints": fingerprints,
+        "license_state_dir": str(license_state_dir),
+        "update_queue_dir": str(update_queue_dir),
         "host": bind_host,
         "port": port,
         "container_port": target_port,
         "platform_override": str(host_override),
         "state": "CONFIGURED",
-        "contact": contact,
         "timezone": time_zone,
     }
     files_to_restore = [
         host_override,
-        trust_dir / "trusted-keys.json",
+        trust_dir / "license-trusted-keys.json",
+        trust_dir / "release-trusted-keys.json",
         trust_dir / "root-ca.pem",
         config_dir / "platform.json",
     ]
     with configuration_transaction(files_to_restore):
         if bundle_data is not None:
             bundle.install_bundle(bundle_data, trust_dir)
+        license_state_dir = _service_state_directory(license_state_dir, "授权身份")
+        update_queue_dir = _service_state_directory(update_queue_dir, "更新队列")
         _build_platform_override(
             host_override,
             host=bind_host,
             published_port=port,
             target_port=target_port,
             server_url=server_url,
-            trust_dir=trust_dir,
+            license_keys_path=license_keys_path,
+            release_keys_path=release_keys_path,
+            license_state_dir=license_state_dir,
+            update_queue_dir=update_queue_dir,
             ca_path=ca_path,
-            contact=contact,
             time_zone=time_zone,
         )
         compose(config, "config", "--quiet", capture=True)
+        protected_mounts = {
+            "/run/maitu-trust/license-trusted-keys.json": (str(license_keys_path), True),
+            "/run/maitu-trust/release-trusted-keys.json": (str(release_keys_path), True),
+            "/var/lib/maitu-license": (str(license_state_dir), False),
+            "/var/lib/maitu-update-queue": (str(update_queue_dir), False),
+        }
+        if ca_path is not None:
+            protected_mounts["/run/maitu-trust/root-ca.pem"] = (str(ca_path), True)
+        _verify_runtime_mounts(config, mount, protected_mounts)
         save_manifest(config_dir, "platform", details)
-    if confirm("构建当前交付源码的平台镜像？（接管时可保留原镜像）", default=manifest is None):
+    if confirm(
+        "构建当前交付源码的平台镜像？本次 execute 隔离运行时升级需构建；保留旧镜像可能无法使用 execute。",
+        default=manifest is None,
+    ):
         compose(config, "build", "maitu", timeout=3600)
     compose(config, "up", "-d", timeout=3600)
     _health(bind_host, port)
@@ -575,9 +786,12 @@ def deploy(config_dir: Path) -> None:
         )
     probe = inspect_platform(config)
     expected_configuration = {
-        "OCTOP_LICENSE_SERVER_URL": server_url,
-        "OCTOP_LICENSE_TRUST_FILE": "/etc/maitu/license/trusted-keys.json",
-        "OCTOP_LICENSE_CA_FILE": f"/etc/maitu/license/{ca_path.name}" if ca_path else "",
+        "MAITU_LICENSE_CENTER_URL": server_url,
+        "MAITU_LICENSE_TRUSTED_KEYS_FILE": "/run/maitu-trust/license-trusted-keys.json",
+        "MAITU_LICENSE_STATE_DIR": "/var/lib/maitu-license",
+        "MAITU_UPDATE_CENTER_URL": server_url,
+        "MAITU_UPDATE_TRUSTED_KEYS_FILE": "/run/maitu-trust/release-trusted-keys.json",
+        "MAITU_UPDATE_QUEUE_DIR": "/var/lib/maitu-update-queue",
     }
     if (
         probe.get("configuration") != expected_configuration

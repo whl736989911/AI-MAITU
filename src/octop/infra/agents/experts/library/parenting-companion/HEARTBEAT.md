@@ -21,7 +21,7 @@
 **目的**：防止 AI 写完专项文件忘了同步 MEMORY.md。
 
 **步骤**：
-1. 调用 `execute_shell_command` 执行 `bash scripts/check_memory_freshness.sh`
+1. 调用 `execute` 执行 `bash scripts/check_memory_freshness.sh`
 2. 解析输出：
    - 退出码 0 = 已同步，结束（不发消息）
    - 退出码 2 = 有专项文件比 `MEMORY.md` 更新
@@ -43,7 +43,7 @@
 - 是否是不打扰时间段？是 → `[SKIP]`
 
 **动作**：
-1. 调 `execute_shell_command + date` 计算当前精确月龄
+1. 调 `execute` + `date` 计算当前精确月龄
 2. 读取本月 `memory/child/PROFILE.md` 中的最新身高体重
 3. 读取本月 `MILESTONES.md` 中的新里程碑
 4. 读取本月 `FEEDING.md` 中的新通过 / 新过敏食材

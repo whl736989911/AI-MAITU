@@ -25,6 +25,7 @@ from octop.infra.agents.workspace_dir import (
     uses_scoped_workspace_default,
 )
 from octop.infra.db.repos.agents import AgentRow
+from octop.infra.utils.env_file import validate_managed_environment
 from octop.infra.utils.paths import PathLayout
 
 _EXECUTE_BACKEND_KINDS = frozenset({"local_shell", "docker"})
@@ -122,6 +123,7 @@ def inject_agent_execute_env(
         return backend
 
     extra: dict[str, str] = {str(k): str(v) for k, v in dict(backend.get("env") or {}).items()}
+    validate_managed_environment(extra)
     extra.update(
         agent_execute_env_defaults(
             paths=paths,

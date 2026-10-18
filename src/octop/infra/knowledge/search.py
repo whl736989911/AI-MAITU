@@ -60,9 +60,7 @@ class SearchHit:
     segment_id: str
     locator: dict[str, object]
     version: str
-    match_kind: Literal["content", "filename", "rule_keyword"] = "content"
-    collection_id: str = ""
-    collection_document: Literal["keyword", "reading"] | None = None
+    match_kind: Literal["content", "filename"] = "content"
 
 
 def query_terms(query: str) -> tuple[str, ...]:
@@ -210,7 +208,6 @@ def search_base(
     ready_documents: dict[str, Any],
     limit: int,
     query_vector: Sequence[float] | None = None,
-    semantic_document_ids: set[str] | None = None,
 ) -> list[tuple[Hit, Any]]:
     """Rank one base's chunks and keep only hits on documents that may be shown.
 
@@ -235,17 +232,13 @@ def search_base(
         else []
     )
     ranked = lexical
-    if query_vector and (semantic_document_ids is None or semantic_document_ids):
+    if query_vector:
         semantic: list[Hit] = []
         seen: set[str] = set()
         for vector in index.search(
             query_vector,
             k=limit * 4,
-            allowed_doc_ids=(
-                list(semantic_document_ids & ready_documents.keys())
-                if semantic_document_ids is not None
-                else list(ready_documents)
-            ),
+            allowed_doc_ids=list(ready_documents),
         ):
             segment_id = vector.metadata.get("segment_id")
             if not isinstance(segment_id, str) or segment_id in seen:

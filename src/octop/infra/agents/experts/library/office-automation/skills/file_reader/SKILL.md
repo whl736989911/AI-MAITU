@@ -1,6 +1,6 @@
 ---
 name: file_reader
-description: "仅用于读取和总结文本类文件。文本格式优先使用 read_file；需要做类型探测时使用 execute_shell_command。PDF、Office、图片和压缩包由其他技能处理。"
+description: "仅用于读取和总结文本类文件。文本格式优先使用 read_file；需要做类型探测时使用 execute。PDF、Office、图片和压缩包由其他技能处理。"
 metadata:
   builtin_skill_version: "1.2"
   qwenpaw:

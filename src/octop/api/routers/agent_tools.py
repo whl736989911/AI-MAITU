@@ -75,7 +75,8 @@ async def get_tool_settings(
 
     locale = resolve_request_locale(request)
     assert server.app_runtime is not None
-    agent_cfg = server.app_runtime.agent_registry.get_config(agent_id)
+    registry = server.app_runtime.require_agent_registry()
+    agent_cfg = registry.get_config(agent_id)
     disabled = set(normalize_tools_disabled(agent_cfg.get("tools_disabled")))
     mobile_enabled = bool(server.config is not None and server.config.capabilities.mobile.enabled)
 
@@ -115,12 +116,11 @@ async def put_tool_settings(
     user: Any = Depends(current_user),
 ) -> ToolSettingsResponse:
     assert server.app_runtime is not None
-    row = server.app_runtime.agent_registry.get_row(agent_id)
+    registry = server.app_runtime.require_agent_registry()
+    row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION, server=server)
-
-    registry = server.app_runtime.agent_registry
     await registry.persist_tools_disabled(agent_id, set(body.disabled_builtin))
 
     if body.plugins is not None:
@@ -145,7 +145,8 @@ async def patch_tool_setting(
     user: Any = Depends(current_user),
 ) -> ToolSettingsResponse:
     assert server.app_runtime is not None
-    row = server.app_runtime.agent_registry.get_row(agent_id)
+    registry = server.app_runtime.require_agent_registry()
+    row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION, server=server)
@@ -154,7 +155,6 @@ async def patch_tool_setting(
     if not name:
         raise HTTPException(status_code=400, detail="tool name is required")
 
-    registry = server.app_runtime.agent_registry
     if body.source == "builtin":
         if name in CRITICAL_TOOLS:
             raise HTTPException(

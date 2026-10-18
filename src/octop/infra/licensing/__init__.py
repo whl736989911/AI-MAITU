@@ -1,5 +1,5 @@
-"""Mandatory per-instance licensing client."""
+"""Instance licensing service public API."""
 
-from .service import LicenseService, current_license, set_current_license
+from .service import LicenseManager, current_license, install_license_manager
 
-__all__ = ["LicenseService", "current_license", "set_current_license"]
+__all__ = ["LicenseManager", "current_license", "install_license_manager"]

@@ -67,26 +67,6 @@ async def test_persist_skill_package_ids_hot_syncs_without_reload(
     assert agent_id not in manager._reload_dirty
 
 
-@pytest.mark.asyncio
-async def test_persist_skill_package_ids_rejects_non_workspace_backend(
-    manager: AgentManager,
-) -> None:
-    agent_id = "AGENT01"
-    package_id = "PACK01"
-    manager._repos.agent_repo.create(
-        agent_id=agent_id,
-        user_id=None,
-        name="agent",
-        config_json='{"backend":{"type":"local_shell","root_dir":"/tmp/octop","virtual_mode":true}}',
-    )
-    manager._repos.skill_package_repo.create(id=package_id, name="Package", created_by="1")
-
-    with pytest.raises(OctopError) as exc_info:
-        await manager.persist_skill_package_ids(agent_id, [package_id])
-
-    assert exc_info.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
-
-
 def test_assert_backend_supports_skill_packages_rejects_non_host_root(
     manager: AgentManager,
 ) -> None:

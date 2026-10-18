@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.asymmetric.rsa import generate_private_key
 from cryptography.x509.oid import NameOID
 from typer.testing import CliRunner
 
-from license_center import cli, connection, crypto, storage
+from license_center import cli, connection, crypto, releases, storage
 
 
 def _ca_pem() -> str:
@@ -68,12 +68,22 @@ def test_bundle_validates_public_key_and_ca_types():
         .decode("ascii")
     )
     with pytest.raises(ValueError):
-        connection.create_bundle("https://center.example", {"rsa": rsa_pem})
+        connection.create_bundle(
+            "https://center.example", {"rsa": rsa_pem}, {"release": _public_pem()}
+        )
     with pytest.raises(ValueError):
         connection.create_bundle(
-            "https://center.example", {"key": _public_pem()}, "not a certificate"
+            "https://center.example",
+            {"license": _public_pem()},
+            {"release": _public_pem()},
+            "not a certificate",
         )
-    bundle = connection.create_bundle("https://center.example/", {"key": _public_pem()}, _ca_pem())
+    bundle = connection.create_bundle(
+        "https://center.example/",
+        {"license": _public_pem()},
+        {"release": _public_pem()},
+        _ca_pem(),
+    )
     assert bundle["server_url"] == "https://center.example"
     assert bundle["ca_certificate_pem"].startswith("-----BEGIN CERTIFICATE-----")
 
@@ -81,7 +91,12 @@ def test_bundle_validates_public_key_and_ca_types():
     oversized_ca = ca * (connection.MAX_BUNDLE_BYTES // len(ca) + 1)
     with pytest.raises(ValueError):
         connection.encode_bundle(
-            connection.create_bundle("https://center.example", {"key": _public_pem()}, oversized_ca)
+            connection.create_bundle(
+                "https://center.example",
+                {"license": _public_pem()},
+                {"release": _public_pem()},
+                oversized_ca,
+            )
         )
     with pytest.raises(ValueError):
         connection.create_bundle(
@@ -95,7 +110,12 @@ def test_bundle_validates_public_key_and_ca_types():
                 )
                 .decode("ascii")
             },
+            {"release": _public_pem()},
         )
+    assert bundle["format"] == "maitu-license-connection"
+    assert bundle["version"] == 2
+    assert bundle["license_trusted_keys"]["license"].startswith("-----BEGIN PUBLIC KEY-----")
+    assert bundle["release_trusted_keys"]["release"].startswith("-----BEGIN PUBLIC KEY-----")
 
 
 def test_export_connection_includes_retired_key_fingerprints_without_mutating_center(
@@ -106,6 +126,8 @@ def test_export_connection_includes_retired_key_fingerprints_without_mutating_ce
     monkeypatch.setattr(crypto, "DATA_DIR", tmp_path)
     monkeypatch.setattr(crypto, "KEY_DIR", tmp_path / "keys")
     monkeypatch.setattr(crypto, "ENC_KEY", tmp_path / "keys" / "encryption.key")
+    monkeypatch.setattr(releases, "_LEGACY_DB", tmp_path / "legacy-releases.sqlite3")
+    monkeypatch.setattr(releases, "_LEGACY_KEY", tmp_path / "legacy-release-key.pem")
     storage.migrate()
 
     private_path, public_pem = crypto.generate_signing_key("old")
@@ -143,13 +165,21 @@ def test_export_connection_includes_retired_key_fingerprints_without_mutating_ce
 
     assert result.exit_code == 0, result.output
     bundle = json.loads(destination.read_text(encoding="utf-8"))
-    assert set(bundle) == {"format", "version", "server_url", "trusted_keys", "ca_certificate_pem"}
-    assert bundle["format"] == "maitu-license-connection"
-    assert bundle["version"] == 1
-    assert set(bundle["trusted_keys"]) == set(keys)
-    assert {kid: crypto.fingerprint(pem) for kid, pem in bundle["trusted_keys"].items()} == {
-        kid: crypto.fingerprint(public_pem) for kid, (_, public_pem) in keys.items()
+    assert set(bundle) == {
+        "format",
+        "version",
+        "server_url",
+        "license_trusted_keys",
+        "release_trusted_keys",
+        "ca_certificate_pem",
     }
+    assert bundle["format"] == "maitu-license-connection"
+    assert bundle["version"] == 2
+    assert set(bundle["license_trusted_keys"]) == set(keys)
+    assert set(bundle["release_trusted_keys"]) == {"maitu-release-1"}
+    assert {
+        kid: crypto.fingerprint(pem) for kid, pem in bundle["license_trusted_keys"].items()
+    } == {kid: crypto.fingerprint(public_pem) for kid, (_, public_pem) in keys.items()}
     assert "PRIVATE KEY" not in destination.read_text(encoding="utf-8")
     assert all(path.exists() for path, _ in keys.values())
     with storage.connect() as conn:
@@ -179,6 +209,8 @@ def test_export_does_not_replace_different_file_without_confirmation(tmp_path, m
     monkeypatch.setattr(crypto, "DATA_DIR", tmp_path)
     monkeypatch.setattr(crypto, "KEY_DIR", tmp_path / "keys")
     monkeypatch.setattr(crypto, "ENC_KEY", tmp_path / "keys" / "encryption.key")
+    monkeypatch.setattr(releases, "_LEGACY_DB", tmp_path / "legacy-releases.sqlite3")
+    monkeypatch.setattr(releases, "_LEGACY_KEY", tmp_path / "legacy-release-key.pem")
     storage.migrate()
     private_path, public_pem = crypto.generate_signing_key("active")
     with storage.transaction() as conn:
@@ -201,6 +233,8 @@ def test_export_cleans_temporary_file_after_interrupted_replace(tmp_path, monkey
     monkeypatch.setattr(crypto, "DATA_DIR", tmp_path)
     monkeypatch.setattr(crypto, "KEY_DIR", tmp_path / "keys")
     monkeypatch.setattr(crypto, "ENC_KEY", tmp_path / "keys" / "encryption.key")
+    monkeypatch.setattr(releases, "_LEGACY_DB", tmp_path / "legacy-releases.sqlite3")
+    monkeypatch.setattr(releases, "_LEGACY_KEY", tmp_path / "legacy-release-key.pem")
     storage.migrate()
     private_path, public_pem = crypto.generate_signing_key("active")
     with storage.transaction() as conn:
@@ -231,9 +265,17 @@ def test_export_cleans_temporary_file_after_interrupted_replace(tmp_path, monkey
     assert not list(tmp_path.glob("connection.json.tmp-*"))
 
 
-def test_export_without_initialized_center_does_not_create_center_database(tmp_path, monkeypatch):
+def test_export_without_license_signer_refuses_bundle_after_schema_initialization(
+    tmp_path, monkeypatch
+):
     database = tmp_path / "center.sqlite3"
     monkeypatch.setattr(storage, "DB_PATH", database)
+    monkeypatch.setattr(storage, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(crypto, "DATA_DIR", tmp_path)
+    monkeypatch.setattr(crypto, "KEY_DIR", tmp_path / "keys")
+    monkeypatch.setattr(crypto, "ENC_KEY", tmp_path / "keys" / "encryption.key")
+    monkeypatch.setattr(releases, "_LEGACY_DB", tmp_path / "legacy-releases.sqlite3")
+    monkeypatch.setattr(releases, "_LEGACY_KEY", tmp_path / "legacy-release-key.pem")
     result = CliRunner().invoke(
         cli.app,
         [
@@ -244,5 +286,8 @@ def test_export_without_initialized_center_does_not_create_center_database(tmp_p
         ],
     )
     assert result.exit_code != 0
-    assert not database.exists()
+    assert "trusted Ed25519 public keys are required" in result.output
+    assert database.exists()
     assert not (tmp_path / "connection.json").exists()
+    with storage.connect() as conn:
+        assert conn.execute("SELECT COUNT(*) FROM signing_keys").fetchone()[0] == 0

@@ -12,8 +12,10 @@ from octop.infra.errors import ErrorCode, OctopError
 
 async def cron_run_now_async(agent_id: str, cron_id: str) -> None:
     async with embedded_runtime() as server:
-        assert server.app_runtime is not None
-        mgr = server.app_runtime.cron_manager
+        runtime = server.app_runtime
+        if runtime is None:
+            raise OctopError(ErrorCode.INTERNAL_ERROR, "cron manager unavailable")
+        mgr = runtime.require_cron_manager()
         row = mgr.get(cron_id)
         if row is None or row.agent_id != agent_id:
             raise OctopError(ErrorCode.NOT_FOUND, "cron job not found")
@@ -26,8 +28,10 @@ def cron_run_now(agent_id: str, cron_id: str) -> None:
 
 async def agent_action_async(agent_id: str, action: str) -> None:
     async with embedded_runtime() as server:
-        assert server.app_runtime is not None
-        registry = server.app_runtime.agent_registry
+        runtime = server.app_runtime
+        if runtime is None:
+            raise OctopError(ErrorCode.INTERNAL_ERROR, "agent manager unavailable")
+        registry = runtime.require_agent_registry()
         if action == "start":
             await registry.start(agent_id)
         elif action == "stop":
@@ -44,12 +48,15 @@ def agent_action(agent_id: str, action: str) -> None:
 
 async def fetch_thread_history_async(agent_id: str, thread_id: str, *, limit: int = 50) -> Any:
     async with embedded_runtime() as server:
-        assert server.app_runtime is not None
-        registry = server.app_runtime.gateway.thread_registry
+        runtime = server.app_runtime
+        if runtime is None:
+            raise OctopError(ErrorCode.INTERNAL_ERROR, "gateway unavailable")
+        gateway = runtime.require_gateway()
+        registry = gateway.thread_registry
         row = registry.get_thread(thread_id)
         if row is None or row.agent_id != agent_id:
             raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"thread {thread_id!r} not found")
-        agents = server.app_runtime.agent_registry
+        agents = runtime.require_agent_registry()
         try:
             harness = agents.get_agent(agent_id)
         except OctopError:
@@ -87,8 +94,10 @@ async def test_channel_async(
 
     loc = normalize_locale(locale)
     async with embedded_runtime() as server:
-        assert server.app_runtime is not None
-        gateway = server.app_runtime.gateway
+        runtime = server.app_runtime
+        if runtime is None:
+            raise OctopError(ErrorCode.INTERNAL_ERROR, "gateway unavailable")
+        gateway = runtime.require_gateway()
         existing = gateway.get_channel(channel_id)
         if existing is None or existing.agent_id != agent_id:
             raise OctopError(ErrorCode.NOT_FOUND, "channel not found")

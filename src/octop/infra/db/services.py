@@ -20,7 +20,6 @@ from octop.infra.db.repos.feature_workflow_changes import FeatureChangeRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.knowledge_collections import KnowledgeCollectionsRepo
-from octop.infra.db.repos.knowledge_search_rules import KnowledgeSearchRulesRepo
 from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
@@ -66,7 +65,6 @@ class RepoBundle:
     connector_repo: ConnectorRepo
     skill_package_repo: SkillPackageRepo
     published_expert_repo: PublishedExpertRepo
-    knowledge_search_rules_repo: KnowledgeSearchRulesRepo
     knowledge_collections_repo: KnowledgeCollectionsRepo
     knowledge_repo: KnowledgeRepo
     voice_provider_repo: VoiceProviderRepo
@@ -104,7 +102,6 @@ class RepoBundle:
             connector_repo=ConnectorRepo(db),
             skill_package_repo=SkillPackageRepo(db),
             published_expert_repo=PublishedExpertRepo(db),
-            knowledge_search_rules_repo=KnowledgeSearchRulesRepo(db),
             knowledge_collections_repo=KnowledgeCollectionsRepo(db),
             knowledge_repo=KnowledgeRepo(db),
             voice_provider_repo=VoiceProviderRepo(db),
@@ -237,10 +234,6 @@ class SharedServices:
     @property
     def data_sources_repo(self) -> DataSourceRepo:
         return self.repos.data_sources_repo
-
-    @property
-    def knowledge_search_rules_repo(self) -> KnowledgeSearchRulesRepo:
-        return self.repos.knowledge_search_rules_repo
 
     @property
     def knowledge_sync_runs_repo(self) -> KnowledgeSyncRunRepo:

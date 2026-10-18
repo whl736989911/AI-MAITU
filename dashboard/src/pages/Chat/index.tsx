@@ -1553,8 +1553,8 @@ function ChatPageInner() {
               conversationMode={conversationMode}
               onConversationModeChange={handleConversationModeChange}
               hitlPolicy={hitlPolicy}
-              hitlEnabled={hitlEnabled}
               onHitlPolicyChange={handleHitlPolicyChange}
+              hitlEnabled={hitlEnabled}
             />
           </div>
 

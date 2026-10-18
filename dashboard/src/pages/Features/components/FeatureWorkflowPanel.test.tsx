@@ -16,7 +16,9 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEvent, {
+  PointerEventsCheckLevel,
+} from "@testing-library/user-event";
 
 vi.mock("../../../api/request", () => ({
   request: vi.fn(),
@@ -43,6 +45,10 @@ import { showConfirmModal } from "../../../utils/confirmModal";
 import FeatureWorkflowPanel from "./FeatureWorkflowPanel";
 
 const api = vi.mocked(request, true);
+const userOptions = {
+  pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+  delay: null,
+};
 
 const DRAFT: FeatureWorkflow = {
   version: 1,
@@ -71,7 +77,7 @@ beforeEach(() => {
 
 describe("<FeatureWorkflowPanel /> refusal", () => {
   it("shows every problem the server refused the definition for", async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup(userOptions);
     const problems = [
       "steps[0].prompt is required for an active workflow",
       "outputs[0].form must be one of markdown, json, text, file",
@@ -108,7 +114,7 @@ describe("<FeatureWorkflowPanel /> refusal", () => {
   });
 
   it("never sends a document its own checks refuse", async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup(userOptions);
     // An active definition whose step says nothing: refused before any request.
     api.mockResolvedValue({
       workflow: {
@@ -133,7 +139,7 @@ describe("<FeatureWorkflowPanel /> refusal", () => {
   });
 
   it("refuses JSON that is not a document instead of switching to the form", async () => {
-    const user = userEvent.setup();
+    const user = userEvent.setup(userOptions);
     api.mockResolvedValueOnce({ workflow: DRAFT, error: null });
     await renderLoaded();
 
@@ -141,7 +147,7 @@ describe("<FeatureWorkflowPanel /> refusal", () => {
     await user.click(screen.getByText("features.workflow.modeJson"));
     const area = screen.getByLabelText("features.workflow.jsonArea");
     await user.clear(area);
-    await user.type(area, "{{not a document");
+    await user.paste("{not a document");
     await user.click(screen.getByText("features.workflow.modeForm"));
 
     expect(
@@ -165,7 +171,7 @@ describe("<FeatureWorkflowPanel /> refusal", () => {
       error: null,
     });
     await renderLoaded();
-    const user = userEvent.setup();
+    const user = userEvent.setup(userOptions);
 
     await user.click(screen.getByText("features.workflow.statusActive"));
     await user.click(screen.getByRole("button", { name: "common.save" }));
@@ -184,7 +190,7 @@ describe("<FeatureWorkflowPanel /> refusal", () => {
   it("keeps a new chat question readable in both locales without extra setup", async () => {
     api.mockResolvedValueOnce({ workflow: DRAFT, error: null });
     await renderLoaded();
-    const user = userEvent.setup();
+    const user = userEvent.setup(userOptions);
 
     await user.click(
       screen.getByRole("button", { name: "features.workflow.inputs.add" }),

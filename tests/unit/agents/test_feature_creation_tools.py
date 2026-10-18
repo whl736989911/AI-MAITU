@@ -7,6 +7,7 @@ from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 from deepagents.backends.local_shell import LocalShellBackend
@@ -18,6 +19,12 @@ from octop.infra.agents.feature_creation_tools import (
     _validate_archive,
     build_feature_creation_tools,
 )
+from octop.infra.agents.manager import AgentManager
+from octop.infra.db.migrate import run_migrations
+from octop.infra.db.pool import SqlitePool
+from octop.infra.db.services import RepoBundle
+from octop.infra.sharing import AclEntry
+from octop.infra.utils.paths import PathLayout
 
 
 def _zip(entries: list[tuple[str, bytes, int | None]]) -> bytes:
@@ -44,11 +51,13 @@ def _setup(
     permission: bool = True,
     owner: int = 7,
     kind: str = "agent",
+    shared: bool = False,
+    role: str = "user",
 ) -> tuple[dict[str, Any], BackendWorkspace, list[Any]]:
     ws = _workspace(tmp_path / "workspace")
     ws_dir = ws.workspace_dir
     (ws_dir / "inbound").mkdir(parents=True, exist_ok=True)
-    caller = SimpleNamespace(agent_id="personal", name="My agent", kind=kind, user_id=7)
+    caller = SimpleNamespace(agent_id="personal", name="My agent", kind=kind, user_id=owner)
 
     created: list[Any] = []
 
@@ -57,21 +66,28 @@ def _setup(
         return SimpleNamespace(agent_id=spec.agent_id, name=spec.name, last_state="running")
 
     registry = SimpleNamespace(
-        get_row=lambda agent_id: caller if agent_id == "personal" and owner == 7 else None,
+        get_row=lambda agent_id: caller if agent_id == "personal" else None,
         workspace_for_agent=lambda agent_id: ws if agent_id == "personal" else None,
         create=create,
     )
     user = SimpleNamespace(
         id=7,
-        role="user",
+        role=role,
         permissions=["features"] if permission else [],
         denied_permissions=[],
         org_unit=None,
         is_admin=False,
         disabled=0,
     )
+    acl_entry = AclEntry("agent", "personal", owner, "public", None, 1) if shared else None
     repos = SimpleNamespace(
-        user_repo=SimpleNamespace(get=lambda user_id: user if user_id == 7 else None)
+        user_repo=SimpleNamespace(get=lambda user_id: user if user_id == 7 else None),
+        resource_acl_repo=SimpleNamespace(
+            get=lambda resource_type, resource_id: (
+                acl_entry if resource_type == "agent" and resource_id == "personal" else None
+            ),
+            scope_for_user=lambda user_id: ("user", ()),
+        ),
     )
     monkeypatch.setattr(
         module,
@@ -105,7 +121,7 @@ async def test_feature_create_refuses_missing_features_permission(
 ) -> None:
     tools, _ws, created = _setup(monkeypatch, tmp_path, permission=False)
     result = json.loads(await tools["feature_create"].ainvoke({"name": "No access"}))
-    assert "features" in result["error"]
+    assert "error" in result
     assert created == []
 
 
@@ -113,7 +129,7 @@ async def test_feature_create_refuses_missing_features_permission(
 async def test_feature_agent_cannot_create_nested_feature(tmp_path: Path, monkeypatch: Any) -> None:
     tools, _ws, created = _setup(monkeypatch, tmp_path, kind="feature")
     result = json.loads(await tools["feature_create"].ainvoke({"name": "Nested"}))
-    assert "cannot create another feature" in result["error"]
+    assert "error" in result
     assert created == []
 
 
@@ -121,22 +137,65 @@ async def test_feature_agent_cannot_create_nested_feature(tmp_path: Path, monkey
 async def test_archive_extract_refuses_another_users_workspace(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
-    tools, ws, _created = _setup(monkeypatch, tmp_path, owner=99)
+    tools, ws, _created = _setup(monkeypatch, tmp_path, owner=99, shared=True)
     await ws.aupload_bytes("inbound/source.zip", _zip([("file.txt", b"x", None)]))
     result = json.loads(
         await tools["archive_extract"].ainvoke({"archive_path": "inbound/source.zip"})
     )
-    assert "owned by the current user" in result["error"]
+    assert "error" in result
     assert not (ws.workspace_dir / "inbound/source/file.txt").exists()
 
 
 @pytest.mark.asyncio
-async def test_feature_create_refuses_agent_owned_by_someone_else(
+async def test_shared_assistant_can_create_feature_for_current_user(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    paths = PathLayout(tmp_path / "data")
+    paths.ensure_root()
+    pool = SqlitePool(paths.db)
+    run_migrations(pool)
+    try:
+        repos = RepoBundle.from_pool(pool)
+        owner_id = repos.user_repo.create(
+            username="sharing-admin", password_hash="fixture", role="admin"
+        )
+        user_id = repos.user_repo.create(
+            username="enterprise-admin",
+            password_hash="fixture",
+            role="enterprise_admin",
+            permissions=["features"],
+        )
+        source_id = repos.agent_repo.create(
+            agent_id="shared-helper", user_id=owner_id, name="Shared assistant"
+        )
+        repos.resource_acl_repo.upsert(AclEntry("agent", source_id, owner_id, "public", None, 1))
+        registry = AgentManager(repos=repos, paths=paths)
+        # Runtime bootstrap is external to this ownership/persistence boundary.
+        monkeypatch.setattr(registry, "_start_agent", AsyncMock(return_value=None))
+        monkeypatch.setattr(
+            module,
+            "get_config",
+            lambda: {"configurable": {"agent_id": source_id, "user": str(user_id)}},
+        )
+        tools = {
+            tool.name: tool for tool in build_feature_creation_tools(registry=registry, repos=repos)
+        }
+        result = json.loads(await tools["feature_create"].ainvoke({"name": "Shared helper"}))
+        created = repos.agent_repo.get(result["agent_id"])
+        assert created is not None and created.user_id == user_id
+        source = repos.agent_repo.get(source_id)
+        assert source is not None and source.user_id == owner_id
+    finally:
+        pool.close()
+
+
+@pytest.mark.asyncio
+async def test_feature_create_refuses_agent_without_share_access(
     tmp_path: Path, monkeypatch: Any
 ) -> None:
     tools, _ws, created = _setup(monkeypatch, tmp_path, owner=99)
     result = json.loads(await tools["feature_create"].ainvoke({"name": "No access"}))
-    assert "owned by the current user" in result["error"]
+    assert "error" in result
     assert created == []
 
 

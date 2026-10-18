@@ -366,7 +366,6 @@ export default function MemoryPanel({
             tab.key === "conversations")
         ),
     );
-
     return offered.map((tab) => {
       const showBadge = tab.showPendingBadge && pendingCount > 0;
       const label = (
@@ -377,7 +376,6 @@ export default function MemoryPanel({
           ) : null}
         </TabLabel>
       );
-
       let children: ReactNode = null;
       switch (tab.key) {
         case "overview":
@@ -462,7 +460,6 @@ export default function MemoryPanel({
           children = <MemorySettings agentId={agentId} />;
           break;
       }
-
       return { key: tab.key, label, children };
     });
   }, [

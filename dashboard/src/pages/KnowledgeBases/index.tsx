@@ -75,10 +75,13 @@ import {
   type KnowledgeOnnxModel,
   type KnowledgeCoverage,
   type KnowledgeEvidence,
-  type SearchRuleMode,
-  type SearchRule,
   type KnowledgeSearchHit,
 } from "../../api/modules/knowledgeBases";
+import {
+  knowledgePermissionsApi,
+  type KnowledgePermissionMetadata,
+  type KnowledgePermissionsOverview,
+} from "../../api/modules/knowledgePermissions";
 import { EmptyStateIcon } from "../../components/EmptyState";
 import DocumentPreviewCore from "../../components/DocumentPreviewCore";
 import DocumentPreviewLoading from "../../components/DocumentPreviewLoading";
@@ -127,6 +130,7 @@ import TextDocumentEditorModal, {
 } from "./TextDocumentEditorModal";
 import DataSourcesPanel from "./components/DataSourcesPanel";
 import KnowledgeCollections from "./components/KnowledgeCollections";
+import KnowledgePermissionsDrawer from "./components/KnowledgePermissionsDrawer";
 import styles from "./index.module.less";
 
 type BaseFormValues = {
@@ -145,21 +149,6 @@ const OCR_DOCUMENT_TYPES = ".png,.jpg,.jpeg,.webp";
 function loadDocsViewMode(): DocsViewMode {
   const stored = localStorage.getItem(DOCS_VIEW_STORAGE_KEY);
   return stored === "table" ? "table" : "card";
-}
-
-function effectiveSearchRule(
-  rulesByPath: Map<string, SearchRule>,
-  path: string,
-): SearchRule | undefined {
-  let candidate = path;
-  while (candidate) {
-    const rule = rulesByPath.get(candidate);
-    if (rule) return rule;
-    const separator = candidate.lastIndexOf("/");
-    if (separator < 0) break;
-    candidate = candidate.slice(0, separator);
-  }
-  return undefined;
 }
 
 /**
@@ -343,6 +332,11 @@ export default function KnowledgeBasesPage() {
   const [bases, setBases] = useState<KnowledgeBase[]>([]);
   const [selected, setSelected] = useState<KnowledgeBase | null>(null);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
+  const [permissionsOverview, setPermissionsOverview] =
+    useState<KnowledgePermissionsOverview | null>(null);
+  const [permissionsError, setPermissionsError] = useState<unknown>(null);
+  const [permissionsTarget, setPermissionsTarget] =
+    useState<KnowledgePermissionMetadata | null>(null);
   const [currentFolder, setCurrentFolder] = useState("");
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -351,12 +345,6 @@ export default function KnowledgeBasesPage() {
     null,
   );
   const [renameName, setRenameName] = useState("");
-  const [searchRules, setSearchRules] = useState<SearchRule[]>([]);
-  const searchRulesRequestRef = useRef(0);
-  const [ruleTarget, setRuleTarget] = useState<KnowledgeDocument | null>(null);
-  const [ruleMode, setRuleMode] = useState<SearchRuleMode>("hybrid");
-  const [ruleKeywords, setRuleKeywords] = useState("");
-  const [ruleSaving, setRuleSaving] = useState(false);
   const [capability, setCapability] = useState<KnowledgeCapability | null>(
     null,
   );
@@ -432,6 +420,10 @@ export default function KnowledgeBasesPage() {
   const evidenceRequestRef = useRef(0);
   const [previewEvidence, setPreviewEvidence] =
     useState<KnowledgeEvidence | null>(null);
+  const [previewCitation, setPreviewCitation] = useState<{
+    version: string;
+    locator: Record<string, unknown>;
+  } | null>(null);
   const [evidenceLoadError, setEvidenceLoadError] = useState<
     "stale" | "unavailable" | "error" | null
   >(null);
@@ -644,6 +636,7 @@ export default function KnowledgeBasesPage() {
     evidenceRequestRef.current += 1;
     previewTextAbortRef.current = null;
     setPreviewEvidence(null);
+    setPreviewCitation(null);
     setEvidenceLoadError(null);
     setPreviewOpen(false);
     setPreviewKind(null);
@@ -763,9 +756,21 @@ export default function KnowledgeBasesPage() {
     useListPanelCollapsed("octop:knowledge-bases:list-collapsed");
 
   const canManageSelected = Boolean(
-    selected && canManageKnowledgeBase(selected, user),
+    permissionsOverview?.knowledge_base.can_manage,
   );
-  const canWriteSelected = canManageSelected;
+  const canWriteSelected = Boolean(
+    permissionsOverview?.knowledge_base.effective.write,
+  );
+  const permissionsByDocument = useMemo(
+    () =>
+      new Map(
+        (permissionsOverview?.documents ?? []).map((metadata) => [
+          metadata.resource_id,
+          metadata,
+        ]),
+      ),
+    [permissionsOverview],
+  );
   const usable = Boolean(capability?.usable);
   const supportedDocumentTypes = capability?.ocr?.usable
     ? `${BASE_DOCUMENT_TYPES},${OCR_DOCUMENT_TYPES}`
@@ -779,21 +784,6 @@ export default function KnowledgeBasesPage() {
   );
   const isAtDocumentLimit =
     documentLimit !== null && fileCount >= documentLimit;
-  const searchRulesByPath = useMemo(
-    () => new Map(searchRules.map((rule) => [rule.path, rule])),
-    [searchRules],
-  );
-  const searchRuleModeLabel = (path: string) =>
-    t(
-      `knowledgeBases.searchRuleModes.${
-        effectiveSearchRule(searchRulesByPath, path)?.mode ?? "hybrid"
-      }`,
-    );
-  const ruleTargetPath = ruleTarget?.path || ruleTarget?.filename || "";
-  const ruleTargetOwn = searchRulesByPath.get(ruleTargetPath);
-  const ruleTargetInherited = ruleTargetOwn
-    ? undefined
-    : effectiveSearchRule(searchRulesByPath, ruleTargetPath);
   const folderEntries = documents
     .filter((document) =>
       isDirectKnowledgeChild(document.path || document.filename, currentFolder),
@@ -1029,21 +1019,22 @@ export default function KnowledgeBasesPage() {
       setCoverageState("error");
     }
   }, []);
-  const loadSearchRules = useCallback(
-    async (id: string) => {
-      const requestId = ++searchRulesRequestRef.current;
-      try {
-        const rules = await knowledgeBasesApi.listSearchRules(id);
-        if (searchRulesRequestRef.current === requestId) setSearchRules(rules);
-      } catch (error) {
-        if (searchRulesRequestRef.current !== requestId) return;
-        message.error(
-          apiErrorMessage(error, t("knowledgeBases.searchRulesLoadFailed"), t),
-        );
+  const permissionsRequestRef = useRef(0);
+  const loadPermissions = useCallback(async (id: string) => {
+    const requestId = ++permissionsRequestRef.current;
+    try {
+      const result = await knowledgePermissionsApi.list(id);
+      if (permissionsRequestRef.current === requestId) {
+        setPermissionsOverview(result);
+        setPermissionsError(null);
       }
-    },
-    [message, t],
-  );
+    } catch (cause) {
+      if (permissionsRequestRef.current === requestId) {
+        setPermissionsOverview(null);
+        setPermissionsError(cause);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     setCurrentFolder("");
@@ -1071,14 +1062,13 @@ export default function KnowledgeBasesPage() {
     void loadCoverage(selectedId);
   }, [loadCoverage, selectedId]);
   useEffect(() => {
-    setSearchRules([]);
-    setRuleTarget(null);
     if (!selectedId) {
-      searchRulesRequestRef.current += 1;
+      permissionsRequestRef.current += 1;
+      setPermissionsOverview(null);
       return;
     }
-    void loadSearchRules(selectedId);
-  }, [loadSearchRules, selectedId]);
+    void loadPermissions(selectedId);
+  }, [loadPermissions, selectedId]);
   useEffect(() => {
     const indexing =
       (coverage?.indexing ?? 0) > 0 ||
@@ -1114,7 +1104,7 @@ export default function KnowledgeBasesPage() {
           ? Promise.all([
               loadDetail(selected.id),
               loadCoverage(selected.id),
-              loadSearchRules(selected.id),
+              loadPermissions(selected.id),
             ])
           : Promise.resolve(),
       ]);
@@ -1613,7 +1603,6 @@ export default function KnowledgeBasesPage() {
       setRenameTarget(null);
       setRenameName("");
       await loadDetail(selected.id);
-      await loadSearchRules(selected.id);
       message.success(t("knowledgeBases.renameFolderSuccess"));
     } catch (error) {
       message.error(
@@ -1628,7 +1617,6 @@ export default function KnowledgeBasesPage() {
       await knowledgeBasesApi.deleteDocument(selected.id, documentId);
       await loadDetail(selected.id);
       await loadBases();
-      await loadSearchRules(selected.id);
     } catch (error) {
       message.error(
         apiErrorMessage(error, t("knowledgeBases.deleteFailed"), t),
@@ -1660,6 +1648,7 @@ export default function KnowledgeBasesPage() {
       evidenceRequestRef.current += 1;
       const abort = new AbortController();
       setPreviewEvidence(null);
+      setPreviewCitation(null);
       setEvidenceLoadError(null);
       previewTextAbortRef.current = abort;
       setPreviewOpen(true);
@@ -1755,60 +1744,6 @@ export default function KnowledgeBasesPage() {
     },
     [loadCoverage, message, selectedId, t],
   );
-  const openSearchRule = (target: KnowledgeDocument) => {
-    const path = target.path || target.filename;
-    const own = searchRulesByPath.get(path);
-    const effective = own ?? effectiveSearchRule(searchRulesByPath, path);
-    setRuleTarget(target);
-    setRuleMode(effective?.mode ?? "hybrid");
-    setRuleKeywords(effective?.keywords.join("\n") ?? "");
-  };
-
-  const saveSearchRule = async () => {
-    if (!selected || !ruleTarget) return;
-    setRuleSaving(true);
-    try {
-      await knowledgeBasesApi.saveSearchRule(selected.id, {
-        path: ruleTarget.path || ruleTarget.filename,
-        mode: ruleMode,
-        keywords: ruleKeywords
-          .split(/\r?\n/)
-          .map((keyword) => keyword.trim())
-          .filter(Boolean),
-      });
-      await loadSearchRules(selected.id);
-      setRuleTarget(null);
-      if (searchSubmitted) void runSearch(searchQuery);
-      message.success(t("knowledgeBases.searchRuleSaved"));
-    } catch (error) {
-      message.error(
-        apiErrorMessage(error, t("knowledgeBases.searchRuleSaveFailed"), t),
-      );
-    } finally {
-      setRuleSaving(false);
-    }
-  };
-
-  const removeSearchRule = async () => {
-    if (!selected || !ruleTarget) return;
-    setRuleSaving(true);
-    try {
-      await knowledgeBasesApi.deleteSearchRule(
-        selected.id,
-        ruleTarget.path || ruleTarget.filename,
-      );
-      await loadSearchRules(selected.id);
-      setRuleTarget(null);
-      if (searchSubmitted) void runSearch(searchQuery);
-      message.success(t("knowledgeBases.searchRuleRemoved"));
-    } catch (error) {
-      message.error(
-        apiErrorMessage(error, t("knowledgeBases.searchRuleRemoveFailed"), t),
-      );
-    } finally {
-      setRuleSaving(false);
-    }
-  };
 
   const openSearchHit = useCallback(
     async (hit: KnowledgeSearchHit) => {
@@ -1919,15 +1854,18 @@ export default function KnowledgeBasesPage() {
   useEffect(() => {
     const kb = searchParams.get("kb");
     const doc = searchParams.get("doc");
+    const version = searchParams.get("v");
+    const locatorValue = searchParams.get("loc");
     if (!kb || !doc) return;
-    const key = `${kb}:${doc}`;
-    if (deepLinkConsumedRef.current === key) return;
+    const key = `${kb}:${doc}:${version ?? ""}:${locatorValue ?? ""}`;
     if (bases.length === 0) return;
 
     const clearDeepLinkParams = () => {
       const next = new URLSearchParams(searchParams);
       next.delete("kb");
       next.delete("doc");
+      next.delete("v");
+      next.delete("loc");
       setSearchParams(next, { replace: true });
     };
 
@@ -1964,6 +1902,19 @@ export default function KnowledgeBasesPage() {
     const full = documents.find((row) => row.id === resolved.document.id);
     if (full) {
       void openDocumentPreview(full);
+      if (version && locatorValue) {
+        try {
+          const parsed: unknown = JSON.parse(locatorValue);
+          if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+            setPreviewCitation({
+              version,
+              locator: parsed as Record<string, unknown>,
+            });
+          }
+        } catch {
+          setPreviewCitation({ version, locator: {} });
+        }
+      }
     }
     clearDeepLinkParams();
     // selectBase / openDocumentPreview are stable-enough for this one-shot deep link;
@@ -2070,6 +2021,8 @@ export default function KnowledgeBasesPage() {
 
   const renderDocumentActions = (document: KnowledgeDocument) => {
     const canPreview = canPreviewKnowledgeDocument(document);
+    const permissionMetadata = permissionsByDocument.get(document.id);
+    const canWriteThis = Boolean(permissionMetadata?.effective.write);
     const previewBtn = (
       <Button
         type="text"
@@ -2115,16 +2068,18 @@ export default function KnowledgeBasesPage() {
             ) : null}
           </>
         )}
-        <Tooltip title={t("knowledgeBases.searchRuleSettings")}>
-          <Button
-            type="text"
-            size="small"
-            icon={<Settings size={14} />}
-            aria-label={t("knowledgeBases.searchRuleSettings")}
-            onClick={() => openSearchRule(document)}
-          />
-        </Tooltip>
-        {canWriteSelected ? (
+        {permissionMetadata?.can_manage ? (
+          <Tooltip title={t("knowledgeBases.permissions.title")}>
+            <Button
+              type="text"
+              size="small"
+              icon={<Settings size={14} />}
+              aria-label={t("knowledgeBases.permissions.title")}
+              onClick={() => setPermissionsTarget(permissionMetadata)}
+            />
+          </Tooltip>
+        ) : null}
+        {canWriteThis ? (
           <>
             {!document.is_dir && isEditableKnowledgeDocument(document) ? (
               <Tooltip title={t("knowledgeBases.editDocument")}>
@@ -2488,6 +2443,19 @@ export default function KnowledgeBasesPage() {
                           {t("common.edit")}
                         </Button>
                       ) : null}
+                      {permissionsOverview?.knowledge_base.can_manage ? (
+                        <Button
+                          size="small"
+                          icon={<Settings size={14} />}
+                          onClick={() =>
+                            setPermissionsTarget(
+                              permissionsOverview.knowledge_base,
+                            )
+                          }
+                        >
+                          {t("knowledgeBases.permissions.title")}
+                        </Button>
+                      ) : null}
                     </div>
                     <Typography.Paragraph
                       type="secondary"
@@ -2496,6 +2464,55 @@ export default function KnowledgeBasesPage() {
                       {selected.description ||
                         t("knowledgeBases.noDescription")}
                     </Typography.Paragraph>
+                    {permissionsOverview?.knowledge_base ? (
+                      <div className={styles.detailPermissionSummary}>
+                        <Tag
+                          color={
+                            permissionsOverview.knowledge_base.access_scope ===
+                            "company"
+                              ? "green"
+                              : permissionsOverview.knowledge_base
+                                  .access_scope === "department"
+                              ? "blue"
+                              : permissionsOverview.knowledge_base
+                                  .access_scope === "custom"
+                              ? "purple"
+                              : "default"
+                          }
+                        >
+                          {permissionsOverview.knowledge_base.access_scope ===
+                          "department"
+                            ? permissionsOverview.knowledge_base
+                                .department_name ||
+                              t("knowledgeBases.permissions.department")
+                            : t(
+                                `knowledgeBases.permissions.${permissionsOverview.knowledge_base.access_scope}`,
+                              )}
+                        </Tag>
+                        <Typography.Text type="secondary">
+                          {t("knowledgeBases.permissions.read")}:{" "}
+                          {t(
+                            permissionsOverview.knowledge_base.effective.read
+                              ? "knowledgeBases.permissions.allowed"
+                              : "knowledgeBases.permissions.denied",
+                          )}
+                          {" · "}
+                          {t("knowledgeBases.permissions.write")}:{" "}
+                          {t(
+                            permissionsOverview.knowledge_base.effective.write
+                              ? "knowledgeBases.permissions.allowed"
+                              : "knowledgeBases.permissions.denied",
+                          )}
+                        </Typography.Text>
+                      </div>
+                    ) : null}
+                    {permissionsError ? (
+                      <Alert
+                        type="error"
+                        showIcon
+                        message={t("knowledgeBases.permissions.failed")}
+                      />
+                    ) : null}
                     <div className={styles.detailMeta}>
                       <CopyableResourceId
                         inline
@@ -2639,6 +2656,7 @@ export default function KnowledgeBasesPage() {
                           key={selected.id}
                           baseId={selected.id}
                           documents={documents}
+                          permissionsByDocument={permissionsByDocument}
                           onOpenTarget={(documentId) => {
                             const target = documents.find(
                               (document) => document.id === documentId,
@@ -2648,6 +2666,9 @@ export default function KnowledgeBasesPage() {
                               setCurrentFolder(target.path || target.filename);
                             else void openDocumentPreview(target);
                           }}
+                          onOpenCitation={(href) =>
+                            setSearchParams(new URL(href).searchParams)
+                          }
                         />
                       </div>
                     </div>
@@ -2692,23 +2713,6 @@ export default function KnowledgeBasesPage() {
                           );
                         })}
                       </nav>
-                      {currentFolder ? (
-                        <Button
-                          type="link"
-                          size="small"
-                          icon={<Settings size={14} />}
-                          onClick={() => {
-                            const folder = documents.find(
-                              (document) =>
-                                document.is_dir &&
-                                document.path === currentFolder,
-                            );
-                            if (folder) openSearchRule(folder);
-                          }}
-                        >
-                          {t("knowledgeBases.searchRuleSettings")}
-                        </Button>
-                      ) : null}
                       {canWriteSelected ? (
                         <Typography.Text
                           type="secondary"
@@ -2834,28 +2838,19 @@ export default function KnowledgeBasesPage() {
                                           hit.title || hit.filename,
                                         )}
                                       </span>
-                                      {hit.match_kind === "rule_keyword" ? (
-                                        <Tag color="gold">
-                                          {t(
-                                            "knowledgeBases.searchRuleCandidate",
-                                          )}
-                                        </Tag>
-                                      ) : null}
                                       <span className={styles.searchHitPath}>
                                         {hideAbsolutePath(
                                           hit.source_path || hit.path,
                                         )}
                                       </span>
                                     </span>
-                                    {hit.match_kind !== "rule_keyword" &&
-                                    Object.keys(hit.locator || {}).length >
-                                      0 ? (
+                                    {Object.keys(hit.locator || {}).length >
+                                    0 ? (
                                       <span className={styles.searchHitPath}>
-                                        {t("knowledgeBases.evidenceLocation")}:{" "}
                                         {formatEvidenceLocator(hit.locator)}
                                       </span>
                                     ) : null}
-                                    {hit.match_kind !== "rule_keyword" ? (
+                                    {hit.snippet ? (
                                       <span className={styles.searchHitSnippet}>
                                         {hit.snippet}
                                       </span>
@@ -2882,10 +2877,32 @@ export default function KnowledgeBasesPage() {
                           const name = knowledgeBasename(
                             document.path || document.filename,
                           );
+                          const permissionMetadata = permissionsByDocument.get(
+                            document.id,
+                          );
+                          const scopeClass =
+                            permissionMetadata?.access_scope === "company"
+                              ? styles.scopeCompany
+                              : permissionMetadata?.access_scope ===
+                                "department"
+                              ? styles.scopeDepartment
+                              : permissionMetadata?.access_scope === "personal"
+                              ? styles.scopePersonal
+                              : permissionMetadata?.access_scope === "custom"
+                              ? styles.scopeCustom
+                              : "";
+                          const scopeLabel = permissionMetadata
+                            ? permissionMetadata.access_scope === "department"
+                              ? permissionMetadata.department_name ||
+                                t("knowledgeBases.permissions.department")
+                              : t(
+                                  `knowledgeBases.permissions.${permissionMetadata.access_scope}`,
+                                )
+                            : null;
                           return (
                             <div
                               key={document.id}
-                              className={styles.docCard}
+                              className={`${styles.docCard} ${scopeClass}`}
                               role={document.is_dir ? "button" : undefined}
                               onClick={(event) => {
                                 if (
@@ -2901,6 +2918,28 @@ export default function KnowledgeBasesPage() {
                                 );
                               }}
                             >
+                              {permissionMetadata && scopeLabel ? (
+                                <div className={styles.docScopeLabel}>
+                                  <span>{scopeLabel}</span>
+                                  <span>
+                                    {t("knowledgeBases.permissions.read")}:{" "}
+                                    {t(
+                                      permissionMetadata.effective.read
+                                        ? "knowledgeBases.permissions.allowed"
+                                        : "knowledgeBases.permissions.denied",
+                                    )}
+                                    {" · "}
+                                    {t(
+                                      "knowledgeBases.permissions.write",
+                                    )}:{" "}
+                                    {t(
+                                      permissionMetadata.effective.write
+                                        ? "knowledgeBases.permissions.allowed"
+                                        : "knowledgeBases.permissions.denied",
+                                    )}
+                                  </span>
+                                </div>
+                              ) : null}
                               <div className={styles.docCardHeader}>
                                 <DocumentFormatIcon
                                   filename={name}
@@ -2924,18 +2963,12 @@ export default function KnowledgeBasesPage() {
                                   </div>
                                   <div className={styles.docCardMeta}>
                                     {document.is_dir
-                                      ? `${t(
-                                          "knowledgeBases.folder",
-                                        )} · ${searchRuleModeLabel(
-                                          document.path || document.filename,
-                                        )}`
+                                      ? t("knowledgeBases.folder")
                                       : `${formatBytes(
                                           document.byte_size,
                                         )} · ${t("knowledgeBases.chunkCount", {
                                           count: document.chunk_count,
-                                        })} · ${searchRuleModeLabel(
-                                          document.path || document.filename,
-                                        )}`}
+                                        })}`}
                                   </div>
                                 </div>
                                 <span
@@ -2947,11 +2980,6 @@ export default function KnowledgeBasesPage() {
                               </div>
                               {document.is_dir ? null : (
                                 <div className={styles.docCardFooter}>
-                                  <Tag color="blue">
-                                    {searchRuleModeLabel(
-                                      document.path || document.filename,
-                                    )}
-                                  </Tag>
                                   <Tooltip
                                     title={
                                       document.error_message ||
@@ -3021,8 +3049,34 @@ export default function KnowledgeBasesPage() {
                               const name = knowledgeBasename(
                                 document.path || document.filename,
                               );
+                              const permissionMetadata =
+                                permissionsByDocument.get(document.id);
+                              const scopeClass =
+                                permissionMetadata?.access_scope === "company"
+                                  ? styles.scopeListCompany
+                                  : permissionMetadata?.access_scope ===
+                                    "department"
+                                  ? styles.scopeListDepartment
+                                  : permissionMetadata?.access_scope ===
+                                    "personal"
+                                  ? styles.scopeListPersonal
+                                  : permissionMetadata?.access_scope ===
+                                    "custom"
+                                  ? styles.scopeListCustom
+                                  : "";
+                              const scopeLabel = permissionMetadata
+                                ? permissionMetadata.access_scope ===
+                                  "department"
+                                  ? permissionMetadata.department_name ||
+                                    t("knowledgeBases.permissions.department")
+                                  : t(
+                                      `knowledgeBases.permissions.${permissionMetadata.access_scope}`,
+                                    )
+                                : null;
                               return (
-                                <span className={styles.tableFilename}>
+                                <span
+                                  className={`${styles.tableFilename} ${scopeClass}`}
+                                >
                                   <DocumentFormatIcon
                                     filename={name}
                                     size={13}
@@ -3032,6 +3086,24 @@ export default function KnowledgeBasesPage() {
                                   <span title={document.path || name}>
                                     {name}
                                   </span>
+                                  {permissionMetadata && scopeLabel ? (
+                                    <Tag
+                                      color={
+                                        permissionMetadata.access_scope ===
+                                        "company"
+                                          ? "green"
+                                          : permissionMetadata.access_scope ===
+                                            "department"
+                                          ? "blue"
+                                          : permissionMetadata.access_scope ===
+                                            "custom"
+                                          ? "purple"
+                                          : "default"
+                                      }
+                                    >
+                                      {scopeLabel}
+                                    </Tag>
+                                  ) : null}
                                   {!document.is_dir &&
                                   fileExtensionLabel(name) ? (
                                     <span className={styles.docExtBadge}>
@@ -3049,16 +3121,8 @@ export default function KnowledgeBasesPage() {
                             render: (_, document) => (
                               <span>
                                 {document.is_dir
-                                  ? `${t(
-                                      "knowledgeBases.folder",
-                                    )} · ${searchRuleModeLabel(
-                                      document.path || document.filename,
-                                    )}`
-                                  : `${t(
-                                      "knowledgeBases.file",
-                                    )} · ${searchRuleModeLabel(
-                                      document.path || document.filename,
-                                    )}`}
+                                  ? t("knowledgeBases.folder")
+                                  : t("knowledgeBases.file")}
                               </span>
                             ),
                           },
@@ -3124,7 +3188,6 @@ export default function KnowledgeBasesPage() {
                         void loadDetail(selected.id, { silent: true });
                         void loadCoverage(selected.id, true);
                         void loadBases();
-                        void loadSearchRules(selected.id);
                       }}
                     />
                   </div>
@@ -3266,6 +3329,33 @@ export default function KnowledgeBasesPage() {
           },
         }}
       >
+        {previewCitation ? (
+          <Alert
+            type={
+              documents.find((document) => document.id === previewDocId)
+                ?.content_hash === previewCitation.version
+                ? "info"
+                : "warning"
+            }
+            showIcon
+            message={t(
+              documents.find((document) => document.id === previewDocId)
+                ?.content_hash === previewCitation.version
+                ? "knowledgeBases.permissions.citationVersionCurrent"
+                : "knowledgeBases.permissions.citationVersionStale",
+            )}
+            description={
+              <div>
+                <Typography.Text>
+                  {t("knowledgeBases.evidenceLocation")}
+                </Typography.Text>
+                <pre className={styles.previewBody}>
+                  {formatEvidenceLocator(previewCitation.locator)}
+                </pre>
+              </div>
+            }
+          />
+        ) : null}
         {previewEvidence ? (
           <div className={styles.mdPreviewWrap} data-preview-fullscreen-root="">
             <div className={styles.mdPreviewToolbar}>
@@ -3512,114 +3602,6 @@ export default function KnowledgeBasesPage() {
         ) : (
           <pre className={styles.previewBody}>{previewText}</pre>
         )}
-      </Modal>
-
-      <Modal
-        title={t("knowledgeBases.searchRuleSettings")}
-        open={Boolean(ruleTarget)}
-        onCancel={() => {
-          if (!ruleSaving) setRuleTarget(null);
-        }}
-        destroyOnHidden
-        footer={[
-          ruleTargetOwn ? (
-            <Button
-              key="remove"
-              danger
-              loading={ruleSaving}
-              onClick={() => void removeSearchRule()}
-            >
-              {t("knowledgeBases.searchRuleRemove")}
-            </Button>
-          ) : null,
-          <Button
-            key="cancel"
-            disabled={ruleSaving}
-            onClick={() => setRuleTarget(null)}
-          >
-            {t("common.cancel")}
-          </Button>,
-          <Button
-            key="save"
-            type="primary"
-            loading={ruleSaving}
-            onClick={() => void saveSearchRule()}
-          >
-            {t("common.save")}
-          </Button>,
-        ]}
-      >
-        {ruleTarget ? (
-          <Form layout="vertical">
-            <Typography.Paragraph strong>
-              {ruleTarget.path || ruleTarget.filename}
-            </Typography.Paragraph>
-            <Typography.Paragraph type="secondary">
-              {ruleTargetOwn
-                ? t("knowledgeBases.searchRuleOwn", {
-                    kind: t(
-                      ruleTarget.is_dir
-                        ? "knowledgeBases.folder"
-                        : "knowledgeBases.file",
-                    ),
-                  })
-                : ruleTargetInherited
-                ? t("knowledgeBases.searchRuleInherited", {
-                    path: ruleTargetInherited.path,
-                    mode: t(
-                      `knowledgeBases.searchRuleModes.${ruleTargetInherited.mode}`,
-                    ),
-                  })
-                : t("knowledgeBases.searchRuleDefault")}
-            </Typography.Paragraph>
-            <Form.Item label={t("knowledgeBases.searchRuleMode")}>
-              <Select<SearchRuleMode>
-                value={ruleMode}
-                onChange={setRuleMode}
-                options={(["hybrid", "keyword", "exclude"] as const).map(
-                  (mode) => ({
-                    value: mode,
-                    label: t(`knowledgeBases.searchRuleModes.${mode}`),
-                  }),
-                )}
-                optionRender={(option) => (
-                  <Tooltip
-                    title={t(
-                      `knowledgeBases.searchRuleModeDetails.${option.value}`,
-                    )}
-                    placement="right"
-                  >
-                    <span>
-                      <span>{option.label}</span>
-                      <span style={{ display: "block", whiteSpace: "normal" }}>
-                        {t(
-                          `knowledgeBases.searchRuleModeDetails.${option.value}`,
-                        )}
-                      </span>
-                    </span>
-                  </Tooltip>
-                )}
-              />
-              <Typography.Text type="secondary">
-                {t(`knowledgeBases.searchRuleModeDetails.${ruleMode}`)}
-              </Typography.Text>
-            </Form.Item>
-            <Form.Item
-              label={t("knowledgeBases.searchRuleKeywords")}
-              extra={t("knowledgeBases.searchRuleKeywordsHint")}
-            >
-              <Input.TextArea
-                value={ruleKeywords}
-                onChange={(event) => setRuleKeywords(event.target.value)}
-                placeholder={t("knowledgeBases.searchRuleKeywordsPlaceholder")}
-                autoSize={{ minRows: 3, maxRows: 6 }}
-              />
-            </Form.Item>
-            <Typography.Text type="secondary">
-              {t("knowledgeBases.searchRulePersonalHint")}
-            </Typography.Text>
-          </Form>
-        ) : null}
       </Modal>
 
       <Modal
@@ -4147,6 +4129,26 @@ export default function KnowledgeBasesPage() {
           {t("models.localDownloadBackgroundHint")}
         </Typography.Text>
       </Modal>
+      <KnowledgePermissionsDrawer
+        baseId={selected?.id ?? ""}
+        open={permissionsTarget !== null}
+        metadata={permissionsTarget}
+        onClose={() => setPermissionsTarget(null)}
+        onSaved={(updated) => {
+          setPermissionsTarget(updated);
+          setPermissionsOverview((current) => {
+            if (!current) return current;
+            return updated.resource_type === "knowledge_base"
+              ? { ...current, knowledge_base: updated }
+              : {
+                  ...current,
+                  documents: current.documents.map((item) =>
+                    item.resource_id === updated.resource_id ? updated : item,
+                  ),
+                };
+          });
+        }}
+      />
     </PageShell>
   );
 }

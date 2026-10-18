@@ -8,17 +8,20 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from scalar_fastapi import get_scalar_api_reference
 
-from octop.api.middleware.instance_license import install as install_instance_license
 from octop.api.middleware.jwt_auth import install as install_jwt_auth
+from octop.api.middleware.license_gate import install as install_license_gate
 from octop.api.middleware.setup_lockdown import install as install_setup_lockdown
-from octop.api.openapi_meta import API_DESCRIPTION, OPENAPI_TAGS, configure_openapi
+from octop.api.openapi_meta import OPENAPI_TAGS, api_description, configure_openapi
+from octop.api.routers.licenses import require_license_business
+from octop.branding import platform_name
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.server import OctopServer
+from octop.infra.setup.version_info import get_local_version
 from octop.infra.utils.locale import resolve_request_locale
 
 logger = logging.getLogger(__name__)
@@ -29,6 +32,9 @@ class _RouterMount:
     router: Any
     prefix: str
     tags: Sequence[str]
+    # Business mounts additionally enforce the instance-license gate at the
+    # route level (defense in depth under the ASGI middleware).
+    gated: bool = False
 
 
 _NO_CACHE_DASHBOARD_NAMES = frozenset({"sw.js", "manifest.json", "index.html"})
@@ -72,7 +78,13 @@ def _dashboard_fallback(index_file: Path, full_path: str) -> FileResponse:
 
 def _mount_routers(app: FastAPI, mounts: Sequence[_RouterMount]) -> None:
     for spec in mounts:
-        app.include_router(spec.router, prefix=spec.prefix, tags=list(spec.tags))
+        dependencies = [Depends(require_license_business)] if spec.gated else None
+        app.include_router(
+            spec.router,
+            prefix=spec.prefix,
+            tags=list(spec.tags),
+            dependencies=dependencies,
+        )
 
 
 def _install_exception_handlers(app: FastAPI) -> None:
@@ -112,8 +124,8 @@ def build_app(server: OctopServer) -> FastAPI:
     api_title = f"{_branding_state(server)['name']['en']} API"
     app = FastAPI(
         title=api_title,
-        version="0.1.0",
-        description=API_DESCRIPTION,
+        version=get_local_version(),
+        description=api_description(),
         openapi_url="/api/openapi.json" if enable_api_docs else None,
         openapi_tags=OPENAPI_TAGS,
     )
@@ -135,7 +147,8 @@ def build_app(server: OctopServer) -> FastAPI:
 
     install_jwt_auth(app, server)
     install_setup_lockdown(app, server)
-    install_instance_license(app)
+    # Outermost: denies/cancels business HTTP+WS before any other processing.
+    install_license_gate(app, server)
 
     from octop.infra.setup.tls.challenge import challenge_store
 
@@ -174,7 +187,8 @@ def build_app(server: OctopServer) -> FastAPI:
         invites,
         knowledge_bases,
         knowledge_collections,
-        license,
+        knowledge_permissions,
+        licenses,
         mbti,
         media_generation,
         memory,
@@ -224,69 +238,78 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(invites.public_router, "/api/auth/invite", ["auth"]),
             _RouterMount(preferences.router, "/api", ["auth"]),
             _RouterMount(i18n.router, "/api", ["i18n"]),
-            _RouterMount(license.router, "/api", ["license"]),
             _RouterMount(health.router, "/api/health", ["health"]),
+            _RouterMount(licenses.router, "/api/license", ["license"]),
             _RouterMount(invites.admin_router, "/api/users/invites", ["users"]),
             _RouterMount(users.router, "/api/users", ["users"]),
             _RouterMount(org_units.router, "/api/org-units", ["users"]),
-            _RouterMount(sharing.router, "/api/sharing", ["sharing"]),
-            _RouterMount(agents.router, "/api/agents", ["agents"]),
-            _RouterMount(agent_tools.router, "/api", ["agents"]),
-            _RouterMount(feature_workflow.router, "/api", ["agents"]),
-            _RouterMount(acp.router, "/api", ["agents"]),
-            _RouterMount(chat.router, "/api", ["chat"]),
-            _RouterMount(slash.router, "/api", ["slash"]),
-            _RouterMount(connectors.router, "/api", ["connectors"]),
-            _RouterMount(knowledge_bases.router, "/api", ["knowledge"]),
-            _RouterMount(knowledge_collections.router, "/api", ["knowledge"]),
-            _RouterMount(data_sources.router, "/api", ["knowledge"]),
-            _RouterMount(internal_mcp.router, "/api", ["internal-mcp"]),
-            _RouterMount(channels.router, "/api", ["channels"]),
-            _RouterMount(cron.router, "/api", ["cron"]),
+            _RouterMount(sharing.router, "/api/sharing", ["sharing"], gated=True),
+            _RouterMount(agents.router, "/api/agents", ["agents"], gated=True),
+            _RouterMount(agent_tools.router, "/api", ["agents"], gated=True),
+            _RouterMount(feature_workflow.router, "/api", ["agents"], gated=True),
+            _RouterMount(acp.router, "/api", ["agents"], gated=True),
+            _RouterMount(chat.router, "/api", ["chat"], gated=True),
+            _RouterMount(slash.router, "/api", ["slash"], gated=True),
+            _RouterMount(connectors.router, "/api", ["connectors"], gated=True),
+            _RouterMount(knowledge_bases.router, "/api", ["knowledge"], gated=True),
+            _RouterMount(knowledge_permissions.router, "/api", ["knowledge"], gated=True),
+            _RouterMount(knowledge_collections.router, "/api", ["knowledge"], gated=True),
+            _RouterMount(data_sources.router, "/api", ["knowledge"], gated=True),
+            _RouterMount(internal_mcp.router, "/api", ["internal-mcp"], gated=True),
+            _RouterMount(channels.router, "/api", ["channels"], gated=True),
+            _RouterMount(cron.router, "/api", ["cron"], gated=True),
             _RouterMount(settings.router, "/api", ["settings"]),
-            _RouterMount(envs.router, "/api", ["envs"]),
-            _RouterMount(search.router, "/api", ["search"]),
-            _RouterMount(providers.router, "/api/providers", ["providers"]),
-            _RouterMount(voice.router, "/api/voice", ["voice"]),
-            _RouterMount(admin.router, "/api/admin", ["admin"]),
-            _RouterMount(backup.router, "/api/admin", ["admin"]),
-            _RouterMount(admin_providers_router, "/api/admin/providers", ["admin"]),
-            _RouterMount(admin_voice_router, "/api/admin/voice/providers", ["admin"]),
-            _RouterMount(observability_router, "/api/admin/observability", ["observability"]),
+            _RouterMount(envs.router, "/api", ["envs"], gated=True),
+            _RouterMount(search.router, "/api", ["search"], gated=True),
+            _RouterMount(providers.router, "/api/providers", ["providers"], gated=True),
+            _RouterMount(voice.router, "/api/voice", ["voice"], gated=True),
+            _RouterMount(admin.router, "/api/admin", ["admin"], gated=True),
+            _RouterMount(backup.router, "/api/admin", ["admin"], gated=True),
+            _RouterMount(admin_providers_router, "/api/admin/providers", ["admin"], gated=True),
+            _RouterMount(admin_voice_router, "/api/admin/voice/providers", ["admin"], gated=True),
+            _RouterMount(
+                observability_router, "/api/admin/observability", ["observability"], gated=True
+            ),
             _RouterMount(
                 media_generation.router,
                 "/api/admin/media-generation",
                 ["providers"],
+                gated=True,
             ),
-            _RouterMount(tls_router, "/api/admin/tls", ["tls"]),
-            _RouterMount(security_router, "/api/admin/security", ["security"]),
-            _RouterMount(admin_storage_router, "/api/admin/storage-backends", ["admin"]),
+            _RouterMount(tls_router, "/api/admin/tls", ["tls"], gated=True),
+            _RouterMount(security_router, "/api/admin/security", ["security"], gated=True),
             _RouterMount(
-                storage_backends_user_router, "/api/storage-backends", ["storage-backends"]
+                admin_storage_router, "/api/admin/storage-backends", ["admin"], gated=True
             ),
-            _RouterMount(filesystem_router, "/api/filesystem", ["filesystem"]),
-            _RouterMount(mbti.router, "/api", ["mbti"]),
-            _RouterMount(experts.router, "/api", ["experts"]),
-            _RouterMount(teams.router, "/api", ["teams"]),
-            _RouterMount(features.router, "/api/features", ["features"]),
-            _RouterMount(workspace.router, "/api", ["workspace"]),
-            _RouterMount(agent_files.router, "/api", ["agent_files"]),
-            _RouterMount(memory.router, "/api", ["memory"]),
-            _RouterMount(memory_portable.router, "/api", ["memory"]),
-            _RouterMount(proactive_care.router, "/api", ["proactive-care"]),
-            _RouterMount(usage.router, "/api", ["usage"]),
-            _RouterMount(usage.admin_router, "/api/admin", ["admin"]),
-            _RouterMount(skill_packages.router, "/api", ["skill-packages"]),
-            _RouterMount(skills.router, "/api", ["skills"]),
-            _RouterMount(subagents.router, "/api", ["subagents"]),
-            _RouterMount(terminal.router, "/api", ["terminal"]),
-            _RouterMount(uploads.router, "/api", ["chat"]),
+            _RouterMount(
+                storage_backends_user_router,
+                "/api/storage-backends",
+                ["storage-backends"],
+                gated=True,
+            ),
+            _RouterMount(filesystem_router, "/api/filesystem", ["filesystem"], gated=True),
+            _RouterMount(mbti.router, "/api", ["mbti"], gated=True),
+            _RouterMount(experts.router, "/api", ["experts"], gated=True),
+            _RouterMount(teams.router, "/api", ["teams"], gated=True),
+            _RouterMount(features.router, "/api/features", ["features"], gated=True),
+            _RouterMount(workspace.router, "/api", ["workspace"], gated=True),
+            _RouterMount(agent_files.router, "/api", ["agent_files"], gated=True),
+            _RouterMount(memory.router, "/api", ["memory"], gated=True),
+            _RouterMount(memory_portable.router, "/api", ["memory"], gated=True),
+            _RouterMount(proactive_care.router, "/api", ["proactive-care"], gated=True),
+            _RouterMount(usage.router, "/api", ["usage"], gated=True),
+            _RouterMount(usage.admin_router, "/api/admin", ["admin"], gated=True),
+            _RouterMount(skill_packages.router, "/api", ["skill-packages"], gated=True),
+            _RouterMount(skills.router, "/api", ["skills"], gated=True),
+            _RouterMount(subagents.router, "/api", ["subagents"], gated=True),
+            _RouterMount(terminal.router, "/api", ["terminal"], gated=True),
+            _RouterMount(uploads.router, "/api", ["chat"], gated=True),
             _RouterMount(update.router, "/api", ["update"]),
-            _RouterMount(browser.router, "/api", ["browser"]),
-            _RouterMount(desktop.router, "/api", ["desktop"]),
-            _RouterMount(ollama_models.router, "/api", ["ollama"]),
-            _RouterMount(onnx_models.router, "/api", ["onnx"]),
-            _RouterMount(plugins.router, "/api", ["plugins"]),
+            _RouterMount(browser.router, "/api", ["browser"], gated=True),
+            _RouterMount(desktop.router, "/api", ["desktop"], gated=True),
+            _RouterMount(ollama_models.router, "/api", ["ollama"], gated=True),
+            _RouterMount(onnx_models.router, "/api", ["onnx"], gated=True),
+            _RouterMount(plugins.router, "/api", ["plugins"], gated=True),
         ],
     )
 
@@ -304,7 +327,7 @@ def build_app(server: OctopServer) -> FastAPI:
         async def api_docs() -> HTMLResponse:
             return get_scalar_api_reference(
                 openapi_url=app.openapi_url,
-                title=app.title,
+                title=f"{platform_name('en')} API",
             )
 
     if enable_dashboard:

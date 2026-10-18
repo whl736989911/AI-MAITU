@@ -282,7 +282,7 @@ def is_workspace_image_ref(block: object) -> bool:
 def workspace_path_from_image_ref(block: dict[str, Any]) -> str:
     path = str(block.get("workspace_path") or "").strip()
     if path:
-        return inbound_rel_path(path)
+        return path.replace("\\", "/")
     url_field = block.get("image_url")
     url = ""
     if isinstance(url_field, dict):

@@ -8,6 +8,7 @@ import {
   Variable,
   Activity,
   Palette,
+  Shield,
 } from "lucide-react";
 import EnvironmentsPage from "../Environments";
 import { ObservabilitySettingsPanel } from "../Observability";
@@ -15,6 +16,7 @@ import BackupRestorePanel from "../BackupRestore";
 import { HttpsSettingsPanel } from "../HttpsSettings";
 import UpdateConfig from "./UpdateConfig";
 import CaptchaSettingsPanel from "./CaptchaSettings";
+import BubblewrapSettings from "./BubblewrapSettings";
 import BrandingSettingsPage from "../Branding";
 import PageShell from "../../../layouts/PageShell";
 import TabBar, { type TabBarItem } from "../../../components/TabLabel/TabBar";
@@ -30,7 +32,8 @@ type TabKey =
   | "https"
   | "updates"
   | "captcha"
-  | "branding";
+  | "branding"
+  | "bwrap";
 
 const TABS: TabBarItem<TabKey>[] = [
   { key: "env-vars", labelKey: "nav.environments", icon: Variable },
@@ -39,6 +42,7 @@ const TABS: TabBarItem<TabKey>[] = [
   { key: "https", labelKey: "nav.https", icon: Lock },
   { key: "captcha", labelKey: "nav.loginCaptcha", icon: ShieldCheck },
   { key: "branding", labelKey: "nav.branding", icon: Palette },
+  { key: "bwrap", labelKey: "nav.executionSandbox", icon: Shield },
   { key: "updates", labelKey: "nav.checkUpdates", icon: RefreshCw },
 ];
 
@@ -49,7 +53,8 @@ function parseTab(raw: string | null): TabKey {
     raw === "https" ||
     raw === "updates" ||
     raw === "captcha" ||
-    raw === "branding"
+    raw === "branding" ||
+    raw === "bwrap"
   ) {
     return raw;
   }
@@ -87,6 +92,8 @@ export default function AdvancedSettingsPage() {
         return <UpdateConfig />;
       case "captcha":
         return <CaptchaSettingsPanel />;
+      case "bwrap":
+        return <BubblewrapSettings />;
       case "branding":
         return <BrandingSettingsPage />;
     }

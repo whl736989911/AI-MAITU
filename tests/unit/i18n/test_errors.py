@@ -87,6 +87,13 @@ def test_knowledge_doc_too_large_interpolates_max_mb():
     assert "{max_mb}" not in error_message("KNOWLEDGE_DOC_TOO_LARGE", "en", max_mb=100)
 
 
+def test_unprovided_placeholders_remain_in_localized_template():
+    message = error_message("BACKUP_SCHEMA_INCOMPATIBLE", "en")
+    assert "{archive_schema_version}" in message
+    assert "{runtime_schema_version}" in message
+    assert "{platform_name}" not in message
+
+
 def test_localized_message_falls_back_when_key_missing(monkeypatch: pytest.MonkeyPatch):
     err = OctopError(ErrorCode.AUTH_FAILED, "custom detail")
     monkeypatch.setattr(

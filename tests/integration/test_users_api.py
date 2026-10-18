@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from tests.support.auth import ensure_test_org_unit
 
 
@@ -216,24 +218,27 @@ async def test_admin_cannot_set_host_resource_policy(env, tmp_path):
     assert unchanged.json()["workspace_root_dir"] is None
     assert unchanged.json()["token_quota"] is None
 
-    before = (await c.get("/api/agents", headers=user_auth)).json()
-    denied_backend = await c.post(
+    created_backend = await c.post(
         "/api/agents",
         headers=user_auth,
         json={
             "name": "outside-root",
             "config": {
                 "backend": {
-                    "type": "local_shell",
+                    "type": "filesystem",
                     "virtual_mode": True,
                     "root_dir": root.as_posix(),
                 }
             },
         },
     )
-    assert denied_backend.status_code == 403, denied_backend.text
-    assert denied_backend.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
-    assert (await c.get("/api/agents", headers=user_auth)).json() == before
+    assert created_backend.status_code == 201, created_backend.text
+    agent_id = created_backend.json()["agent_id"]
+    registry = _srv.app_runtime.agent_registry
+    backend = registry.resolved_backend_spec(agent_id)
+    assert backend["root_dir"] == str(registry.resolve_workspace_dir(agent_id).resolve())
+    assert backend["type"] == "filesystem"
+    assert backend["virtual_mode"] is True
 
 
 async def test_user_org_unit_roundtrip(env):
@@ -1209,11 +1214,18 @@ async def test_admin_scope_is_unchanged_and_it_creates_unbound_accounts(env):
     }
 
 
-async def test_permission_catalog_reports_can_grant_and_dynamic(env):
+@pytest.mark.parametrize("managed", [False, True])
+async def test_permission_catalog_reports_can_grant_and_dynamic(
+    env, monkeypatch, tmp_path, managed
+):
     """Design §4.1: key, label, dynamic flag, and whether *this* operator may grant it."""
     from tests.support.auth import TEST_PASSWORD, create_user
 
     c, _srv, auth = env
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", str(tmp_path / "trusted-keys.json"))
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     catalog = (await c.get("/api/users/permissions", headers=auth)).json()
     by_key = {item["key"]: item for item in catalog}
     # Every item carries the shape the editor needs, and the keys the catalog
@@ -1225,7 +1237,12 @@ async def test_permission_catalog_reports_can_grant_and_dynamic(env):
         assert by_key[key]["can_grant"] is True  # a system administrator grants all
     assert by_key["channel_feishu"]["dynamic"] is True
     assert by_key["channels"]["dynamic"] is False
-    assert not {"terminal", "desktop", "browser", "mobile", "acp", "plugins"} & by_key.keys()
+    host_keys = {"terminal", "desktop", "browser", "mobile", "acp", "plugins"}
+    if managed:
+        assert not host_keys & by_key.keys()
+    else:
+        assert host_keys <= by_key.keys()
+        assert all(by_key[key]["can_grant"] for key in host_keys)
 
     # A department administrator sees what it may hand out, and only that: the
     # department's ``users`` grant is inside its held set, ``providers`` is not.
@@ -1240,8 +1257,9 @@ async def test_permission_catalog_reports_can_grant_and_dynamic(env):
         headers=auth,
         json={"permissions": ["terminal"]},
     )
-    assert unsafe.status_code == 403, unsafe.text
-    assert unsafe.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+    assert unsafe.status_code == (403 if managed else 200), unsafe.text
+    if managed:
+        assert unsafe.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
     unsafe_user = await c.post(
         "/api/users",
         headers=auth,
@@ -1250,13 +1268,16 @@ async def test_permission_catalog_reports_can_grant_and_dynamic(env):
             "password": TEST_PASSWORD,
             "role": "user",
             "permissions": ["terminal"],
+            "org_unit": "cat-ops",
         },
     )
-    assert unsafe_user.status_code == 403, unsafe_user.text
-    assert unsafe_user.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
-    assert "unsafe-grant" not in [
-        user["username"] for user in (await c.get("/api/users", headers=auth)).json()
-    ]
+    assert unsafe_user.status_code == (403 if managed else 201), unsafe_user.text
+    listed_names = {user["username"] for user in (await c.get("/api/users", headers=auth)).json()}
+    if managed:
+        assert unsafe_user.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+        assert "unsafe-grant" not in listed_names
+    else:
+        assert "unsafe-grant" in listed_names
     await c.put("/api/org-units/cat-ops/permissions", headers=auth, json={"permissions": ["users"]})
     lead = await create_user(c, auth, username="cat-lead", role="unit_admin", permissions=["users"])
     uid = next(

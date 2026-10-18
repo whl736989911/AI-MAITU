@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Thread
 from typing import Any
 
+import httpx
 import pytest
 
 from octop.infra.auth.captcha import set_test_siteverify_url
@@ -40,7 +41,11 @@ class _Siteverify(BaseHTTPRequestHandler):
 
 
 @pytest.fixture
-def siteverify() -> tuple[str, type[_Siteverify]]:
+def siteverify(monkeypatch: pytest.MonkeyPatch) -> tuple[str, type[_Siteverify]]:
+    from octop.infra.auth.captcha import verify
+
+    # The local HTTP stub shares loaded CI workers; keep production deadlines unchanged.
+    monkeypatch.setattr(verify, "_HTTP_TIMEOUT", httpx.Timeout(60.0, connect=30.0))
     _Siteverify.payload = {"success": True}
     _Siteverify.hits = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), _Siteverify)

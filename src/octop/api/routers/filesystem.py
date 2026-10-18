@@ -34,7 +34,7 @@ from octop.infra.users.resource_policy import (
     POLICY_WORKSPACE_ROOT_DIR,
     effective_workspace_root_dir,
 )
-from octop.infra.utils.bwrap import ensure_bubblewrap
+from octop.infra.utils.bwrap import bwrap_status, ensure_bubblewrap
 from octop.infra.utils.docker_env import docker_status, ensure_docker
 from octop.infra.utils.host_dirs import (
     assert_safe_host_path,
@@ -42,6 +42,7 @@ from octop.infra.utils.host_dirs import (
     host_fs_tree_root,
     host_home_dir,
     host_path_text,
+    license_managed_install,
     list_host_subdirs,
     mkdir_host_subdir,
     probe_host_root_dir,
@@ -49,7 +50,17 @@ from octop.infra.utils.host_dirs import (
     running_in_container,
 )
 
-router = APIRouter()
+
+async def _require_host_admin(user: User = Depends(require_admin())) -> User:
+    if license_managed_install():
+        raise OctopError(
+            ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+            "Host filesystem operations are disabled on license-managed installs.",
+        )
+    return user
+
+
+router = APIRouter(dependencies=[Depends(_require_host_admin)])
 
 
 def _user_workspace_root(server: Any, user: User) -> str | None:
@@ -159,6 +170,22 @@ async def ensure_bwrap(
     can warn without blocking agent config save.
     """
     return await asyncio.to_thread(ensure_bubblewrap)
+
+
+@router.get(
+    "/bwrap-status",
+    summary="Read-only bubblewrap sandbox capability report",
+)
+async def get_bwrap_status(
+    _: Any = Depends(require_admin()),
+) -> dict[str, Any]:
+    """Probe the sandbox without attempting installation.
+
+    Same response shape as ``POST /ensure-bwrap``: a missing binary is only
+    classified (``diagnosis`` + display-only ``commands``), never installed —
+    safe to call on dashboard entry.
+    """
+    return await asyncio.to_thread(bwrap_status)
 
 
 @router.get(

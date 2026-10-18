@@ -440,26 +440,28 @@ export default function AgentExpertsTable({
         const canManage = canManageExpert(row, role);
         return (
           <div className={styles.tableActions}>
+            {role === "admin" && (
+              <Tooltip
+                title={
+                  chatReady
+                    ? t("pageShell.workspace.title")
+                    : t("workspace.requiresRunning")
+                }
+                mouseEnterDelay={0.5}
+              >
+                <button
+                  type="button"
+                  className={styles.tableActionBtn}
+                  disabled={!chatReady}
+                  onClick={() => setWorkspaceAgentId(row.agent_id)}
+                  aria-label={t("pageShell.workspace.title")}
+                >
+                  <FolderOpen size={13} />
+                </button>
+              </Tooltip>
+            )}
             {canManage && (
               <>
-                <Tooltip
-                  title={
-                    chatReady
-                      ? t("pageShell.workspace.title")
-                      : t("workspace.requiresRunning")
-                  }
-                  mouseEnterDelay={0.5}
-                >
-                  <button
-                    type="button"
-                    className={styles.tableActionBtn}
-                    disabled={!chatReady}
-                    onClick={() => setWorkspaceAgentId(row.agent_id)}
-                    aria-label={t("pageShell.workspace.title")}
-                  >
-                    <FolderOpen size={13} />
-                  </button>
-                </Tooltip>
                 <Tooltip title={t("experts.reloadAgent")}>
                   <button
                     type="button"
@@ -570,11 +572,13 @@ export default function AgentExpertsTable({
           }}
         />
       </div>
-      <WorkspaceDrawer
-        agentId={workspaceAgentId ?? ""}
-        open={workspaceAgentId !== null}
-        onClose={() => setWorkspaceAgentId(null)}
-      />
+      {role === "admin" && (
+        <WorkspaceDrawer
+          agentId={workspaceAgentId ?? ""}
+          open={workspaceAgentId !== null}
+          onClose={() => setWorkspaceAgentId(null)}
+        />
+      )}
       <SkillCatalogDrawer
         agentId={skillCatalogAgentId ?? ""}
         open={skillCatalogAgentId !== null}

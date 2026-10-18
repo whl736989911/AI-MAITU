@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from octop.i18n import tr
 from octop.infra.utils.subprocess_io import parse_subprocess_json_lines
 
 ALLOWED_PLATFORMS = frozenset({"feishu", "lark"})
@@ -36,8 +37,17 @@ def start_feishu_creator(
     cmd = [sys.executable, str(script_path), "create", "--platform", platform]
     if avatar_url:
         cmd.extend(["--avatar-url", avatar_url])
-    if greeting:
-        cmd.extend(["--greeting", greeting])
+    locale = "en" if platform == "lark" else "zh"
+    channel_name = "Lark" if platform == "lark" else "飞书"
+    cmd.extend(
+        [
+            "--greeting",
+            greeting or tr("channel.bot_created_greeting", locale, channel_name=channel_name),
+        ]
+    )
+    cmd.extend(
+        ["--description", tr("channel.bot_created_description", locale, channel_name=channel_name)]
+    )
     # NOCA:DangerousSubprocessUseAudit(argv list with shell=False; platform allowlisted, script path validated)
     return subprocess.Popen(
         cmd,

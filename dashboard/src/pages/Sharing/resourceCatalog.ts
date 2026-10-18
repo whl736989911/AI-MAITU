@@ -1,6 +1,5 @@
 import { request } from "../../api/request";
 import { connectorsApi } from "../../api/modules/connectors";
-import { knowledgeBasesApi } from "../../api/modules/knowledgeBases";
 import type { SharingResourceType } from "../../api/modules/sharing";
 import type { OctopAgent } from "../../context/AgentContext";
 
@@ -22,32 +21,6 @@ export interface SharingResourceOption {
 export async function loadSharingResources(
   resourceType: SharingResourceType,
 ): Promise<SharingResourceOption[]> {
-  if (resourceType === "knowledge_base") {
-    const bases = await knowledgeBasesApi.list();
-    return bases.map((base) => ({
-      id: base.knowledge_base_id ?? base.id,
-      name: base.name,
-      hint: base.owner_display_name ?? base.owner_username ?? null,
-    }));
-  }
-  if (resourceType === "knowledge_document") {
-    const bases = await knowledgeBasesApi.list();
-    const catalogs = await Promise.all(
-      bases.map(async (base) => {
-        const documents = await knowledgeBasesApi.listDocuments(
-          base.knowledge_base_id ?? base.id,
-        );
-        return documents.map((document) => ({
-          id: document.document_id ?? document.id,
-          name: `${document.path ?? document.filename}${
-            document.is_dir ? "/" : ""
-          }`,
-          hint: base.name,
-        }));
-      }),
-    );
-    return catalogs.flat();
-  }
   if (resourceType === "agent") {
     const agents = await request<OctopAgent[]>("/agents");
     return agents.map((agent) => ({

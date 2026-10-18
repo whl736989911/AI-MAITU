@@ -110,6 +110,32 @@ describe("useUpdateStatus", () => {
     expect(result.current.status?.current_version).toBe("0.9.8");
   });
 
+  it("keeps an active phase visible and never infers success during server outage", async () => {
+    const active: UpdateStatus = {
+      ...sample,
+      upgrade_phase: "restarting",
+      upgrade_target: "0.9.7",
+    };
+    storeUpdateStatus(active);
+    getUpdateStatus.mockRejectedValue(new TypeError("Failed to fetch"));
+    const { result } = renderHook(() => useUpdateStatus());
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(result.current.isUnavailable).toBe(true);
+    expect(result.current.status?.upgrade_phase).toBe("restarting");
+
+    await act(async () => {
+      vi.advanceTimersByTime(2500);
+      await Promise.resolve();
+    });
+
+    expect(result.current.status?.upgrade_phase).toBe("restarting");
+    expect(result.current.status?.current_version).toBe(sample.current_version);
+    expect(result.current.isUnavailable).toBe(true);
+  });
+
   it("listens for the shared change event name", () => {
     expect(UPDATE_STATUS_CHANGED_EVENT).toBe("octop:update-status-changed");
   });

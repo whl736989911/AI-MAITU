@@ -131,15 +131,6 @@ export const DEFAULT_KNOWLEDGE_LIMITS: KnowledgeLimits = {
   max_document_bytes: 100 * 1024 * 1024,
 };
 
-export type SearchRuleMode = "keyword" | "hybrid" | "exclude";
-
-export interface SearchRule {
-  path: string;
-  mode: SearchRuleMode;
-  keywords: string[];
-  kind: "folder" | "file";
-}
-
 export interface KnowledgeSearchHit {
   kb_id: string;
   base_name: string;
@@ -155,13 +146,11 @@ export interface KnowledgeSearchHit {
   ordinal: number;
   snippet: string;
   score: number;
+  match_kind: "content" | "filename";
   /** Empty for metadata-only file candidates without verified text evidence. */
   segment_id: string;
   locator: Record<string, unknown>;
   version: string;
-  match_kind?: "content" | "filename" | "rule_keyword";
-  collection_id?: string;
-  collection_document?: "keyword" | "reading" | null;
 }
 
 export interface KnowledgeCoverage {
@@ -179,23 +168,28 @@ export interface KnowledgeCollection {
   target_path: string;
   target_kind: "file" | "folder";
   name: string;
-  keywords: string[];
-  status: "ready" | "partial" | "pending";
+  prompt: string;
+  created_by: number;
+  status: "ready" | "partial" | "pending" | "error";
   coverage: {
     total: number;
-    indexed: number;
     read: number;
-    pending: number;
+    generated: number;
     failed: number;
-    unsupported: number;
+    pending: number;
+  };
+  generation: {
+    state: "idle" | "running" | "ready" | "partial" | "error";
+    error: string | null;
+    generated_at: number | null;
+    model_ref: string | null;
   };
   created_at: number;
   updated_at: number;
 }
-
 export interface KnowledgeCollectionDocuments {
   collection: KnowledgeCollection;
-  keyword_document: string;
+  topic_document: string;
   reading_document: string;
   storage_path: string;
 }
@@ -284,16 +278,21 @@ export const knowledgeBasesApi = {
   listCollections: (id: string) =>
     request<KnowledgeCollection[]>(`/knowledge-bases/${id}/collections`),
 
-  createCollections: (id: string, documentIds: string[]) =>
+  createCollections: (
+    id: string,
+    documentIds: string[],
+    prompt: string,
+    name?: string,
+  ) =>
     request<KnowledgeCollection[]>(`/knowledge-bases/${id}/collections`, {
       method: "POST",
-      body: JSON.stringify({ document_ids: documentIds }),
+      body: JSON.stringify({ document_ids: documentIds, prompt, name }),
     }),
 
   updateCollection: (
     id: string,
     collectionId: string,
-    body: { keywords: string[]; name?: string },
+    body: { prompt?: string; name?: string },
   ) =>
     request<KnowledgeCollection>(
       `/knowledge-bases/${id}/collections/${collectionId}`,
@@ -410,26 +409,6 @@ export const knowledgeBasesApi = {
     request<KnowledgeDocument>(
       `/knowledge-bases/${id}/documents/${documentId}/reindex`,
       { method: "POST" },
-    ),
-
-  listSearchRules: (id: string) =>
-    request<SearchRule[]>(`/knowledge-bases/${id}/search-rules`),
-
-  saveSearchRule: (
-    id: string,
-    rule: Pick<SearchRule, "path" | "mode" | "keywords">,
-  ) =>
-    request<SearchRule>(`/knowledge-bases/${id}/search-rules`, {
-      method: "PUT",
-      body: JSON.stringify(rule),
-    }),
-
-  deleteSearchRule: (id: string, path: string) =>
-    request<void>(
-      `/knowledge-bases/${id}/search-rules?${new URLSearchParams({
-        path,
-      }).toString()}`,
-      { method: "DELETE" },
     ),
 
   /** Keyword and full-text search over what this base may show (design §9). */

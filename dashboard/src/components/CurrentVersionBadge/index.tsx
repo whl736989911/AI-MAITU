@@ -22,7 +22,16 @@ export default function CurrentVersionBadge({
   if (!version) return null;
 
   const canUpdate = userCan(user, "update");
-  const tooltip = canUpdate
+  const hasUpdate = Boolean(status?.has_update && status.latest_version);
+  const tooltip = hasUpdate
+    ? canUpdate
+      ? t("header.currentVersionUpdateAvailable", {
+          latest: status?.latest_version,
+        })
+      : t("header.currentVersionUpdateNotice", {
+          latest: status?.latest_version,
+        })
+    : canUpdate
     ? t("header.currentVersionAdmin", { version })
     : t("header.currentVersion", { version });
   const label = `v${version}`;
@@ -39,6 +48,9 @@ export default function CurrentVersionBadge({
           aria-label={tooltip}
         >
           {label}
+          {hasUpdate && (
+            <span className={styles.updateDot} aria-hidden="true" />
+          )}
         </button>
       </Tooltip>
     );
@@ -53,6 +65,7 @@ export default function CurrentVersionBadge({
         aria-label={tooltip}
       >
         {label}
+        {hasUpdate && <span className={styles.updateDot} aria-hidden="true" />}
       </span>
     </Tooltip>
   );

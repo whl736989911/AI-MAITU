@@ -1,4 +1,4 @@
-"""Host filesystem API is denied before privileged operations for every role."""
+"""Managed host filesystem APIs fail closed before privileged operations."""
 
 from __future__ import annotations
 
@@ -24,6 +24,7 @@ HOST_FS_ROUTES: tuple[tuple[str, str, dict[str, str] | None], ...] = (
 @pytest.mark.asyncio
 async def test_all_host_filesystem_routes_are_deployment_restricted_before_handlers(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     async with octop_client(tmp_path) as (client, _server):
         await bootstrap_admin(client, tmp_path)
@@ -31,6 +32,7 @@ async def test_all_host_filesystem_routes_are_deployment_restricted_before_handl
         member_auth = await create_user(
             client, admin_auth, username="fs-member", password=TEST_PASSWORD
         )
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", str(tmp_path / "trusted-keys.json"))
         from octop.api.routers import filesystem
 
         helper_names = (
@@ -56,7 +58,9 @@ async def test_all_host_filesystem_routes_are_deployment_restricted_before_handl
                 for method, path, payload in HOST_FS_ROUTES:
                     response = await client.request(method, path, headers=auth, json=payload)
                     assert response.status_code == 403, f"{method} {path}: {response.text}"
-                    assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+                    assert response.json()["error"]["code"] == (
+                        "INSTANCE_DEPLOYMENT_RESTRICTED" if auth == admin_auth else "FORBIDDEN"
+                    )
 
         for sentinel in sentinels.values():
             sentinel.assert_not_called()

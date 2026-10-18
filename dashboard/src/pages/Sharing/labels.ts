@@ -13,14 +13,11 @@ import type {
  */
 
 /**
- * Resource-type picker order; knowledge bases first — they are the entry point.
- *
- * Only the types this page can list are here; a stored change of another type
- * still renders its label below.
+ * Resource types the shared-settings picker can list. Knowledge ACLs are
+ * maintained in the Knowledge Bases page, but historical queue rows still
+ * use the resource labels below.
  */
 export const SHARING_RESOURCE_TYPE_ORDER: readonly SharingResourceType[] = [
-  "knowledge_base",
-  "knowledge_document",
   "agent",
   "connector",
 ];

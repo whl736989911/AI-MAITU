@@ -38,6 +38,8 @@ from lark_oapi.scene.registration.errors import (
     RegisterAppError,
 )
 
+from octop.i18n import tr
+
 _reconfigure = getattr(sys.stdout, "reconfigure", None)
 if callable(_reconfigure):
     _reconfigure(write_through=True)
@@ -49,16 +51,12 @@ _PLATFORM_CONFIGS = {
         "open_base": "https://open.feishu.cn",
         "accounts_domain": "https://accounts.feishu.cn",
         "lark_domain": "https://accounts.larksuite.com",
-        "default_greeting": "Hi，我是你刚刚使用麦途智造创建的飞书机器人，你现在可以跟我聊天了！",
-        "app_desc": "由麦途智造一键创建的飞书机器人",
         "state_file_prefix": "octop-feishu-bot",
     },
     "lark": {
         "open_base": "https://open.larksuite.com",
         "accounts_domain": "https://accounts.larksuite.com",
         "lark_domain": "https://accounts.larksuite.com",
-        "default_greeting": "Hi, I'm the bot you just created with MAITU Smart Manufacturing. You can chat with me now!",
-        "app_desc": "Lark bot created by MAITU Smart Manufacturing",
         "state_file_prefix": "octop-lark-bot",
     },
 }
@@ -222,11 +220,20 @@ def _on_status_change(info: dict[str, Any]) -> None:
         _log_info("login", "Waiting for scan confirmation...")
 
 
-def register_feishu_app(*, avatar_url: str = "", greeting: str = "") -> dict[str, Any]:
+def register_feishu_app(
+    *, avatar_url: str = "", greeting: str = "", description: str = ""
+) -> dict[str, Any]:
     """Run ``lark.register_app`` and return finish data (app_id / app_secret / …)."""
     avatar = avatar_url.strip()
-    greeting_text = greeting.strip() or str(_pcfg("default_greeting"))
-    app_preset: dict[str, Any] = {"desc": str(_pcfg("app_desc"))}
+    locale = "en" if PLATFORM == "lark" else "zh"
+    channel_name = "Lark" if PLATFORM == "lark" else "飞书"
+    greeting_text = greeting.strip() or tr(
+        "channel.bot_created_greeting", locale, channel_name=channel_name
+    )
+    app_preset: dict[str, Any] = {
+        "desc": description.strip()
+        or tr("channel.bot_created_description", locale, channel_name=channel_name)
+    }
     if avatar:
         app_preset["avatar"] = avatar
     result = lark.register_app(
@@ -288,11 +295,13 @@ def cmd_init() -> None:
     sys.exit(0)
 
 
-def cmd_create(avatar_url: str = "", greeting: str = "") -> None:
+def cmd_create(avatar_url: str = "", greeting: str = "", description: str = "") -> None:
     platform_label = "Lark" if PLATFORM == "lark" else "飞书"
     _log_info("login", f"Starting {platform_label} scan-to-create flow...")
     try:
-        finish = register_feishu_app(avatar_url=avatar_url, greeting=greeting)
+        finish = register_feishu_app(
+            avatar_url=avatar_url, greeting=greeting, description=description
+        )
     except AppAccessDeniedError as exc:
         _emit_error("login", f"User denied authorization: {exc.description}")
         sys.exit(1)
@@ -337,6 +346,7 @@ def main() -> None:
 
     avatar_url = ""
     greeting = ""
+    description = ""
     args = sys.argv[2:]
     i = 0
     while i < len(args):
@@ -345,6 +355,9 @@ def main() -> None:
             i += 2
         elif args[i] == "--greeting" and i + 1 < len(args):
             greeting = args[i + 1]
+            i += 2
+        elif args[i] == "--description" and i + 1 < len(args):
+            description = args[i + 1]
             i += 2
         elif args[i] == "--platform" and i + 1 < len(args):
             p = args[i + 1].lower()
@@ -357,7 +370,7 @@ def main() -> None:
             i += 1
 
     if cmd == "create":
-        cmd_create(avatar_url=avatar_url, greeting=greeting)
+        cmd_create(avatar_url=avatar_url, greeting=greeting, description=description)
     elif cmd == "cleanup":
         cmd_cleanup()
     else:

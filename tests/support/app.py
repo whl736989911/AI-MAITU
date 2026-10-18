@@ -57,7 +57,7 @@ async def octop_client(
         # Creating an agent now starts a random-interval sleep (default ON).
         # pytest-asyncio waits for leftover tasks before fixture teardown, so
         # those sleeps hang the suite. Production shutdown still cancels them.
-        if srv.app_runtime is not None:
+        if srv.app_runtime is not None and srv.app_runtime.proactive_scheduler is not None:
             await srv.app_runtime.proactive_scheduler.shutdown()
             srv.app_runtime.proactive_scheduler.suspend()
         app = build_app(srv)

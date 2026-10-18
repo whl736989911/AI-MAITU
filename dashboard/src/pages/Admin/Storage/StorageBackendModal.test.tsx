@@ -20,7 +20,10 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEventLibrary, {
+  PointerEventsCheckLevel,
+  type UserEvent,
+} from "@testing-library/user-event";
 
 vi.mock("../../../api/request", () => ({
   request: vi.fn(),
@@ -40,6 +43,7 @@ import { StorageBackendDrawer } from "./StorageBackendModal";
 import type { StorageBackendRow } from "./useStorageBackends";
 
 const api = vi.mocked(request, true);
+let userEvent: UserEvent;
 
 const DOCKER_ROW: StorageBackendRow = {
   id: 1,
@@ -84,6 +88,10 @@ async function save(): Promise<void> {
 }
 
 beforeEach(() => {
+  userEvent = userEventLibrary.setup({
+    pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+    delay: null,
+  });
   vi.clearAllMocks();
   api.mockResolvedValue({ id: 1, ok: false });
 });
@@ -111,7 +119,7 @@ describe("<StorageBackendDrawer /> docker config", () => {
 
     const textarea = await screen.findByPlaceholderText('{"path_style": true}');
     await userEvent.clear(textarea);
-    await userEvent.type(textarea, '{{"cpus":"2"}');
+    await userEvent.paste('{"cpus":"2"}');
     await save();
 
     await waitFor(() => expect(patchedConfig()).toBeTruthy());
@@ -130,7 +138,7 @@ describe("<StorageBackendDrawer /> docker config", () => {
 
     const textarea = await screen.findByPlaceholderText('{"path_style": true}');
     await userEvent.clear(textarea);
-    await userEvent.type(textarea, "{{not valid json");
+    await userEvent.paste("{not valid json");
     await save();
 
     expect(api.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(

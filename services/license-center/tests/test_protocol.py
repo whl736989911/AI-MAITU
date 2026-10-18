@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import shutil
 import sqlite3
 
@@ -27,19 +29,19 @@ def test_activation_race_binds_only_one_instance(center):
             .decode()
         )
         challenge = api._create_challenge(
-            ChallengeRequest(instance_id=instance_id, operation="activate", public_key=public_pem),
+            ChallengeRequest(
+                instance_id=instance_id, operation="activate", public_key_pem=public_pem
+            ),
             "127.0.0.1",
         )
         attempts.append(
-            ProofRequest(
-                proof=proof_for(
-                    private_key,
-                    challenge["challenge"],
-                    instance_id,
-                    public_pem,
-                    "activate",
-                    activation["code"],
-                )
+            proof_request(
+                private_key,
+                challenge["challenge"],
+                instance_id,
+                public_pem,
+                "activate",
+                activation["code"],
             )
         )
 
@@ -58,7 +60,7 @@ def test_activation_race_binds_only_one_instance(center):
         issued[0]["token"],
         serialization.load_pem_public_key(signing_pem.encode()),
         algorithms=["EdDSA"],
-        audience=["race-first", "race-second"],
+        audience="maitu-instance",
         issuer="maitu-license-center",
     )
     with storage.connect() as conn:
@@ -151,18 +153,48 @@ def test_migration_rejects_traversal_private_key_metadata(center):
 
 def proof_for(private_key, challenge, instance_id, public_pem, operation, activation_code=None):
     claims = {
-        "protocol_version": 1,
-        "product": "maitu",
+        "protocol": 1,
+        "purpose": "instance-proof",
+        "iss": instance_id,
         "aud": "maitu-license-center",
         "instance_id": instance_id,
+        "product": "maitu",
         "public_key": public_pem,
         "operation": operation,
         "challenge": challenge,
+        "content_hash": hashlib.sha256(
+            json.dumps(
+                {
+                    "instance_id": instance_id,
+                    "challenge": challenge,
+                    "public_key_pem": public_pem,
+                    **({"activation_code": activation_code} if activation_code else {}),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest(),
     }
     if activation_code:
         claims["activation_code"] = activation_code
     return jwt.encode(
-        claims, private_key, algorithm="EdDSA", headers={"typ": "maitu-instance-proof"}
+        claims,
+        private_key,
+        algorithm="EdDSA",
+        headers={"kid": "maitu-license-1", "typ": "JWT"},
+    )
+
+
+def proof_request(private_key, challenge, instance_id, public_pem, operation, activation_code=None):
+    return ProofRequest(
+        instance_id=instance_id,
+        challenge=challenge,
+        public_key_pem=public_pem,
+        proof=proof_for(
+            private_key, challenge, instance_id, public_pem, operation, activation_code
+        ),
+        activation_code=activation_code,
     )
 
 
@@ -176,23 +208,32 @@ def activate(center):
     )
     instance_id = "instance-test"
     challenge = api._create_challenge(
-        ChallengeRequest(instance_id=instance_id, operation="activate", public_key=public_pem),
+        ChallengeRequest(instance_id=instance_id, operation="activate", public_key_pem=public_pem),
         "127.0.0.1",
     )
     proof = proof_for(
         private_key, challenge["challenge"], instance_id, public_pem, "activate", activation["code"]
     )
-    response = api._activate(ProofRequest(proof=proof))
+    response = api._activate(
+        proof_request(
+            private_key,
+            challenge["challenge"],
+            instance_id,
+            public_pem,
+            "activate",
+            activation["code"],
+        )
+    )
     claims = jwt.decode(
         response["token"],
         serialization.load_pem_public_key(signing_pem.encode()),
         algorithms=["EdDSA"],
-        audience=instance_id,
+        audience="maitu-instance",
         issuer="maitu-license-center",
     )
     assert claims["status"] == "active"
-    assert claims["license_revision"] == 1
-    assert claims["instance_key_fingerprint"] == crypto.fingerprint(public_pem)
+    assert claims["license_version"] == 1
+    assert claims["key_fingerprint"] == crypto.fingerprint(public_pem)
     return private_key, public_pem, instance_id, challenge, proof, claims
 
 
@@ -203,6 +244,14 @@ def test_resource_key_upgrade_preserves_bound_instance_and_revocation(
     _, signing_pem = center
     with storage.connect() as conn:
         key = dict(conn.execute("SELECT * FROM signing_keys WHERE state='active'").fetchone())
+    private_key = Ed25519PrivateKey.generate()
+    public_pem = (
+        private_key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    instance_id = "legacy-instance"
+    license_id = "legacy-license"
     monkeypatch.setattr(storage, "DB_PATH", tmp_path / "legacy-center.sqlite3")
     with storage.connect() as conn:
         conn.executescript((storage.MIGRATIONS / "001_initial.sql").read_text(encoding="utf-8"))
@@ -217,13 +266,15 @@ def test_resource_key_upgrade_preserves_bound_instance_and_revocation(
             "INSERT INTO customers(id,name,created_at) VALUES('cus_test','Customer',?)",
             (storage.now(),),
         )
-    activation = api._create_activation(
-        ActivationCreate(customer_id="cus_test", expires_at=storage.now() + 86400), "test"
-    )
-    private_key, public_pem, instance_id, _, _, claims = activate((activation, signing_pem))
-    api._license_action(
-        claims["license_id"], "revoke", LicenseAction(reason="expired trial", version=1), "test"
-    )
+        conn.execute(
+            "INSERT INTO instances(id,customer_id,public_key,fingerprint) VALUES(?,?,?,?)",
+            (instance_id, "cus_test", public_pem, crypto.fingerprint(public_pem)),
+        )
+        conn.execute(
+            "INSERT INTO licenses(id,instance_id,expires_at,revoked,revision,created_at) "
+            "VALUES(?,?,?,1,2,?)",
+            (license_id, instance_id, storage.now() + 86400, storage.now()),
+        )
     storage.migrate()
     storage.migrate()
     with storage.connect() as conn:
@@ -233,34 +284,33 @@ def test_resource_key_upgrade_preserves_bound_instance_and_revocation(
         ).fetchone()
         assert binding["customer_id"] == "cus_test"
     challenge = api._create_challenge(
-        ChallengeRequest(instance_id=instance_id, operation="sync", public_key=public_pem),
+        ChallengeRequest(instance_id=instance_id, operation="sync"),
         "127.0.0.1",
     )
     response = api._sync(
-        ProofRequest(
-            proof=proof_for(private_key, challenge["challenge"], instance_id, public_pem, "sync")
-        )
+        proof_request(private_key, challenge["challenge"], instance_id, public_pem, "sync")
     )
     denied = jwt.decode(
         response["token"],
         serialization.load_pem_public_key(signing_pem.encode()),
         algorithms=["EdDSA"],
-        audience=instance_id,
+        audience="maitu-instance",
         issuer="maitu-license-center",
     )
     assert denied["status"] == "revoked"
-    assert denied["license_revision"] == 2
-    assert denied["license_id"] == claims["license_id"]
+    assert denied["license_version"] == 2
+    assert denied["license_id"] == license_id
 
 
 def test_activation_is_signed_and_challenge_is_one_time(center):
-    _, _, _, challenge, proof, claims = activate(center)
+    private_key, public_pem, instance_id, challenge, _, claims = activate(center)
     with pytest.raises(api.HTTPException) as rejected:
-        api._activate(ProofRequest(proof=proof))
+        api._activate(
+            proof_request(private_key, challenge["challenge"], instance_id, public_pem, "activate")
+        )
     assert rejected.value.status_code == 409
     assert rejected.value.detail["error"]["code"] == "challenge_invalid"
-    assert claims["exp"] <= claims["license_expires_at"]
-    assert challenge["expires_at"] > storage.now()
+    assert claims["valid_until"] <= claims["license_expires_at"]
 
 
 def test_sync_revocation_restore_and_revision_fence(center):
@@ -272,11 +322,12 @@ def test_sync_revocation_restore_and_revision_fence(center):
     assert revoked["revoked"] == 1 and revoked["revision"] == 2
 
     challenge = api._create_challenge(
-        ChallengeRequest(instance_id=instance_id, operation="sync", public_key=public_pem),
+        ChallengeRequest(instance_id=instance_id, operation="sync"),
         "127.0.0.1",
     )
-    proof = proof_for(private_key, challenge["challenge"], instance_id, public_pem, "sync")
-    deny = api._sync(ProofRequest(proof=proof))["token"]
+    deny = api._sync(
+        proof_request(private_key, challenge["challenge"], instance_id, public_pem, "sync")
+    )["token"]
     with storage.connect() as conn:
         signing_pem = conn.execute(
             "SELECT public_pem FROM signing_keys WHERE state='active'"
@@ -285,11 +336,11 @@ def test_sync_revocation_restore_and_revision_fence(center):
         deny,
         serialization.load_pem_public_key(signing_pem.encode()),
         algorithms=["EdDSA"],
-        audience=instance_id,
+        audience="maitu-instance",
         issuer="maitu-license-center",
     )
     assert denied_claims["status"] == "revoked"
-    assert denied_claims["exp"] <= denied_claims["iat"] + 300
+    assert denied_claims["valid_until"] <= denied_claims["issued_at"] + 300
 
     restored = api._license_action(
         license_id, "restore", LicenseAction(reason="approved", version=2), "test"
@@ -311,35 +362,31 @@ def test_activation_retry_same_instance_is_idempotent(center):
     )
     instance_id = "retry-instance"
     first_challenge = api._create_challenge(
-        ChallengeRequest(instance_id=instance_id, operation="activate", public_key=public_pem),
+        ChallengeRequest(instance_id=instance_id, operation="activate", public_key_pem=public_pem),
         "127.0.0.1",
     )
     first = api._activate(
-        ProofRequest(
-            proof=proof_for(
-                private_key,
-                first_challenge["challenge"],
-                instance_id,
-                public_pem,
-                "activate",
-                activation["code"],
-            )
+        proof_request(
+            private_key,
+            first_challenge["challenge"],
+            instance_id,
+            public_pem,
+            "activate",
+            activation["code"],
         )
     )
     second_challenge = api._create_challenge(
-        ChallengeRequest(instance_id=instance_id, operation="activate", public_key=public_pem),
+        ChallengeRequest(instance_id=instance_id, operation="activate", public_key_pem=public_pem),
         "127.0.0.1",
     )
     second = api._activate(
-        ProofRequest(
-            proof=proof_for(
-                private_key,
-                second_challenge["challenge"],
-                instance_id,
-                public_pem,
-                "activate",
-                activation["code"],
-            )
+        proof_request(
+            private_key,
+            second_challenge["challenge"],
+            instance_id,
+            public_pem,
+            "activate",
+            activation["code"],
         )
     )
     with storage.connect() as conn:
@@ -362,11 +409,12 @@ def test_expiry_creates_one_denial_revision(center):
 
     for expected_revision in (2, 2):
         challenge = api._create_challenge(
-            ChallengeRequest(instance_id=instance_id, operation="sync", public_key=public_pem),
+            ChallengeRequest(instance_id=instance_id, operation="sync"),
             "127.0.0.1",
         )
-        proof = proof_for(private_key, challenge["challenge"], instance_id, public_pem, "sync")
-        denied = api._sync(ProofRequest(proof=proof))["token"]
+        denied = api._sync(
+            proof_request(private_key, challenge["challenge"], instance_id, public_pem, "sync")
+        )["token"]
         with storage.connect() as conn:
             public_pem_signer = conn.execute(
                 "SELECT public_pem FROM signing_keys WHERE state='active'"
@@ -378,11 +426,11 @@ def test_expiry_creates_one_denial_revision(center):
             denied,
             serialization.load_pem_public_key(public_pem_signer.encode()),
             algorithms=["EdDSA"],
-            audience=instance_id,
+            audience="maitu-instance",
             issuer="maitu-license-center",
         )
         assert denied_claims["status"] == "expired"
-        assert denied_claims["license_revision"] == expected_revision
+        assert denied_claims["license_version"] == expected_revision
         assert license_row["expired"] == 1
 
 

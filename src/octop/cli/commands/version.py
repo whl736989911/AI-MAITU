@@ -14,4 +14,6 @@ def version() -> None:
         v = _v("octop")
     except Exception:
         v = "unknown"
-    click.echo(f"octop v{v}")
+    from octop.branding import platform_name
+
+    click.echo(f"{platform_name()} CLI (octop v{v})")

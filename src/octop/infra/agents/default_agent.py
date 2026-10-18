@@ -139,7 +139,7 @@ async def bootstrap_setup_default_agents(server: Any, *, user_id: int, locale: s
     """Defer business initialization until activation without reopening setup."""
     if server.services is None:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "setup database not bound")
-    if not current_license().allowed:
+    if not current_license().business_allowed:
         server.services.settings_repo.set(
             _SETUP_PENDING_AGENTS_KEY,
             json.dumps({"user_id": user_id, "locale": normalize_locale(locale)}),

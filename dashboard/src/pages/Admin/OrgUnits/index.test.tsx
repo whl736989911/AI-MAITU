@@ -11,7 +11,10 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEventLibrary, {
+  PointerEventsCheckLevel,
+  type UserEvent,
+} from "@testing-library/user-event";
 import type { OctopUser } from "../../../api/modules/auth";
 import type * as I18nModule from "react-i18next";
 import type * as RequestModule from "../../../api/request";
@@ -123,8 +126,13 @@ const CATALOG = [
 
 let stored: string[] = [];
 let saved: { url: string; method: string; body: unknown }[] = [];
+let userEvent: UserEvent;
 
 beforeEach(() => {
+  userEvent = userEventLibrary.setup({
+    pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+    delay: null,
+  });
   requestMock.mockReset();
   stored = [];
   saved = [];
@@ -158,9 +166,12 @@ function renderPage(user: OctopUser = ADMIN) {
 }
 
 async function openGrants() {
-  await userEvent.click(
-    await screen.findByRole("button", { name: "模块授权" }),
-  );
+  const button = await screen.findByRole("button", { name: "模块授权" });
+  await waitFor(() => {
+    expect(button).toBeEnabled();
+    expect(window.getComputedStyle(button).pointerEvents).not.toBe("none");
+  });
+  await userEvent.click(button);
 }
 
 describe("Admin → Org units: department module grants", () => {

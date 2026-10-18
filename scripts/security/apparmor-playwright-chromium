@@ -1,0 +1,28 @@
+# maitu: let Playwright's Chromium keep its OWN browser sandbox.
+#
+# Since the silent --no-sandbox fallback was removed, Chromium needs the
+# user-namespace permission to run its layered sandbox. Without this profile
+# the browser tool fails to launch on Ubuntu 24.04+ even after the bwrap
+# profile is installed.
+#
+# Scope: ONLY the Playwright-managed Chromium / headless-shell executables
+# under ~/.cache/ms-playwright. Nothing else is loosened; Chromium keeps its
+# internal sandbox (never run it with --no-sandbox).
+#
+# Install:  sudo install -m 0644 scripts/security/apparmor-playwright-chromium /etc/apparmor.d/maitu-playwright-chromium
+#           sudo apparmor_parser -r /etc/apparmor.d/maitu-playwright-chromium
+# Revert:   sudo apparmor_parser -R /etc/apparmor.d/maitu-playwright-chromium
+#           sudo rm -f /etc/apparmor.d/maitu-playwright-chromium
+#
+# NOTE: the attachment glob assumes the systemd user service runs with HOME
+# under /home/<user>. If the service home lives elsewhere (e.g. /opt/svc),
+# adjust the path below to that exact executable location.
+# (scripts/setup-host-sandbox.sh --with-browser automates the combined flow.)
+
+abi <abi/4.0>,
+include <tunables/global>
+
+profile maitu-playwright-chromium /home/*/.cache/ms-playwright/{chromium,chromium_headless_shell}-*/{chrome-linux*,chrome-headless-shell-linux*}/{chrome,headless_shell,chrome-headless-shell} flags=(unconfined) {
+  userns,
+  include if exists <local/maitu-playwright-chromium>
+}

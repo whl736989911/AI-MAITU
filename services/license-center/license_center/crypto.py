@@ -91,7 +91,7 @@ def sign_license(claims: dict[str, object]) -> str:
     private_pem = encryption_box().decrypt((KEY_DIR / filename).read_bytes())
     private_key = serialization.load_pem_private_key(private_pem, password=None)
     return jwt.encode(
-        claims, private_key, algorithm="EdDSA", headers={"typ": "maitu-license", "kid": row["kid"]}
+        claims, private_key, algorithm="EdDSA", headers={"typ": "JWT", "kid": row["kid"]}
     )
 
 
@@ -145,3 +145,69 @@ def valid_totp(secret: str, code: str, last_counter: int = -1) -> tuple[bool, in
         if candidate > last_counter and totp.verify(code, for_time=candidate * totp.interval):
             return True, candidate
     return False, counter
+
+
+def _store_release_key(kid: str, key: Ed25519PrivateKey) -> tuple[Path, str]:
+    if not kid or len(kid) > 128 or Path(kid).name != kid or kid in {".", ".."}:
+        raise ValueError("Invalid release signing key ID")
+    KEY_DIR.mkdir(parents=True, exist_ok=True)
+    path = KEY_DIR / f"{kid}.ed25519.fernet"
+    public_pem = (
+        key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode("ascii")
+    )
+    private_pem = key.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    )
+    if path.exists():
+        if encryption_box().decrypt(path.read_bytes()) != private_pem:
+            raise ValueError("Signing key ID already belongs to a different private key")
+        return path, public_pem
+    with path.open("xb") as stream:
+        stream.write(encryption_box().encrypt(private_pem))
+    _private_mode(path)
+    return path, public_pem
+
+
+def generate_release_signing_key(kid: str) -> tuple[Path, str]:
+    return _store_release_key(kid, Ed25519PrivateKey.generate())
+
+
+def import_release_signing_key(kid: str, private_pem: bytes) -> tuple[Path, str]:
+    key = serialization.load_pem_private_key(private_pem, password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError("Legacy release key is not Ed25519")
+    return _store_release_key(kid, key)
+
+
+def import_license_signing_key(kid: str, private_pem: bytes) -> tuple[Path, str]:
+    key = serialization.load_pem_private_key(private_pem, password=None)
+    if not isinstance(key, Ed25519PrivateKey):
+        raise ValueError("Legacy license key is not Ed25519")
+    return _store_release_key(kid, key)
+
+
+def sign_release(claims: dict[str, object]) -> str:
+    from .storage import connect
+
+    with connect() as conn:
+        row = conn.execute(
+            "SELECT kid,private_path FROM release_signing_keys "
+            "WHERE state='active' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+    if row is None:
+        raise RuntimeError("No active release signing key is initialized")
+    filename = f"{row['kid']}.ed25519.fernet"
+    if row["private_path"] != filename:
+        raise ValueError(f"Invalid release key path metadata for signing key {row['kid']}")
+    private_pem = encryption_box().decrypt((KEY_DIR / filename).read_bytes())
+    private_key = serialization.load_pem_private_key(private_pem, password=None)
+    return jwt.encode(
+        claims,
+        private_key,
+        algorithm="EdDSA",
+        headers={"typ": "JWT", "kid": row["kid"]},
+    )

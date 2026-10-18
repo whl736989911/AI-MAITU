@@ -76,15 +76,12 @@ class CronJob:
         )
 
     async def run(self) -> None:
+        # Cron execution is business work. Check at the final execution boundary
+        # so queued/manual invocations cannot deliver or record runs after lock.
         from octop.infra.licensing import current_license
 
-        license_service = current_license()
-        if not license_service.allowed:
-            return
-        async with license_service.business_task():
-            await self._run()
+        current_license().require_business_access()
 
-    async def _run(self) -> None:
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
         METRICS.inc("cron_runs_total")

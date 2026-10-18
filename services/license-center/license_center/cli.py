@@ -14,9 +14,15 @@ import typer
 import uvicorn
 from argon2 import PasswordHasher
 
-from . import storage
+from . import releases
 from .connection import create_bundle, encode_bundle, validate_ca_file
-from .crypto import encrypt_secret, generate_signing_key, new_totp_secret, valid_totp
+from .crypto import (
+    encrypt_secret,
+    generate_release_signing_key,
+    generate_signing_key,
+    new_totp_secret,
+    valid_totp,
+)
 from .storage import DATA_DIR, DB_PATH, audit, connect, migrate, now, transaction
 
 app = typer.Typer(
@@ -237,30 +243,67 @@ def activate_key(kid: str, confirm: bool = typer.Option(False, "--confirm")) -> 
     typer.echo(f"Active signing key: {kid}")
 
 
-@app.command("export-trust")
-def export_trust(
-    destination: Annotated[Path | None, typer.Argument(writable=True)] = None,
+@app.command("stage-release-key")
+def stage_release_key(reason: str = typer.Option(..., "--reason")) -> None:
+    """Stage a release signer; export its public keyring before activation."""
+    migrate()
+    releases._migrate_legacy_distribution()
+    kid = "release-" + secrets.token_hex(8)
+    path, public_pem = generate_release_signing_key(kid)
+    with transaction() as conn:
+        conn.execute(
+            "INSERT INTO release_signing_keys(kid,private_path,public_pem,state,created_at) "
+            "VALUES(?,?,?,'staged',?)",
+            (kid, path.name, public_pem, now()),
+        )
+        audit(
+            conn,
+            "local-cli",
+            "release_key.stage",
+            "release_signing_key",
+            kid,
+            "{}",
+            json.dumps({"public_pem": public_pem, "state": "staged"}),
+            reason,
+        )
+    typer.echo(json.dumps({"kid": kid, "public_pem": public_pem, "state": "staged"}))
+
+
+@app.command("activate-release-key")
+def activate_release_key(
+    kid: str,
+    reason: str = typer.Option(..., "--reason"),
+    confirm: bool = typer.Option(False, "--confirm"),
 ) -> None:
-    """Export all public verification keys, including retired keys for overlap; private keys are never exported."""
-    with connect() as conn:
-        rows = conn.execute(
-            "SELECT kid,public_pem FROM signing_keys ORDER BY created_at"
-        ).fetchall()
-    if not rows:
-        raise typer.BadParameter("No signing keys are initialized")
-    encoded = json.dumps({row["kid"]: row["public_pem"] for row in rows}, indent=2) + "\n"
-    if destination is None:
-        typer.echo(encoded, nl=False)
-        return
-    destination = destination.expanduser().resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_name(destination.name + ".tmp-" + secrets.token_hex(4))
-    with temporary.open("x", encoding="utf-8") as stream:
-        stream.write(encoded)
-    with suppress(OSError):
-        temporary.chmod(0o644)
-    os.replace(temporary, destination)
-    typer.echo(f"Public trust set exported to {destination}")
+    """Activate a staged release signer after distributing its keyring."""
+    if not confirm:
+        raise typer.BadParameter("Export the new connection bundle first, then pass --confirm")
+    migrate()
+    with transaction() as conn:
+        staged = conn.execute(
+            "SELECT kid FROM release_signing_keys WHERE kid=? AND state='staged'", (kid,)
+        ).fetchone()
+        if staged is None:
+            raise typer.BadParameter("Staged release signing key not found")
+        old = [
+            row["kid"]
+            for row in conn.execute(
+                "SELECT kid FROM release_signing_keys WHERE state='active'"
+            ).fetchall()
+        ]
+        conn.execute("UPDATE release_signing_keys SET state='retired' WHERE state='active'")
+        conn.execute("UPDATE release_signing_keys SET state='active' WHERE kid=?", (kid,))
+        audit(
+            conn,
+            "local-cli",
+            "release_key.activate",
+            "release_signing_key",
+            kid,
+            json.dumps({"active": old}),
+            json.dumps({"active": kid}),
+            reason,
+        )
+    typer.echo(f"Active release signing kid: {kid}")
 
 
 @app.command("export-connection")
@@ -272,24 +315,24 @@ def export_connection(
 ) -> None:
     """Export public center connection settings for platform deployment."""
     try:
+        migrate()
+        releases._migrate_legacy_distribution()
         ca_certificate_pem = validate_ca_file(ca_file) if ca_file is not None else None
-        if not storage.DB_PATH.is_file():
-            raise typer.BadParameter("No signing keys are initialized")
-        reader = sqlite3.connect(storage.DB_PATH.as_uri() + "?mode=ro", uri=True)
-        try:
-            reader.row_factory = sqlite3.Row
-            rows = reader.execute(
-                "SELECT kid,public_pem FROM signing_keys ORDER BY created_at"
+        with connect() as reader:
+            license_rows = reader.execute(
+                "SELECT kid,public_pem FROM signing_keys ORDER BY created_at,kid"
             ).fetchall()
-        finally:
-            reader.close()
+            release_rows = reader.execute(
+                "SELECT kid,public_pem FROM release_signing_keys ORDER BY created_at,kid"
+            ).fetchall()
         bundle = create_bundle(
             server_url,
-            {row["kid"]: row["public_pem"] for row in rows},
+            {row["kid"]: row["public_pem"] for row in license_rows},
+            {row["kid"]: row["public_pem"] for row in release_rows},
             ca_certificate_pem,
         )
         encoded = encode_bundle(bundle)
-    except (ValueError, OSError, sqlite3.Error) as exc:
+    except (ValueError, OSError, sqlite3.Error, RuntimeError) as exc:
         raise typer.BadParameter(str(exc)) from exc
     destination = destination.expanduser().absolute()
     if destination.is_symlink():

@@ -22,6 +22,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import releases
 from .crypto import (
     decrypt_secret,
     encrypt_secret,
@@ -29,7 +30,6 @@ from .crypto import (
     new_totp_secret,
     sign_license,
     valid_totp,
-    verify_proof,
 )
 from .models import (
     ActivationCreate,
@@ -50,6 +50,7 @@ from .models import (
     LicenseAction,
     LicenseView,
     LoginRequest,
+    OfflineLicenseCreate,
     OverviewView,
     ProofRequest,
     ReauthRequest,
@@ -90,6 +91,7 @@ async def _db(fn: Callable[..., Any], *args: Any) -> Any:
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await _db(migrate)
+    await _db(releases._migrate_legacy_distribution)
     yield
 
 
@@ -370,35 +372,28 @@ async def challenge(body: ChallengeRequest, request: Request) -> dict[str, int |
 
 def _create_challenge(body: ChallengeRequest, ip: str) -> dict[str, int | str]:
     _rate(f"challenge:{ip}", 60, 60)
-    try:
-        fp = fingerprint(body.public_key)
-    except Exception as exc:
-        raise HTTPException(
-            400,
-            detail={
-                "error": {
-                    "code": "invalid_public_key",
-                    "message": "Expected Ed25519 PEM public key",
-                }
-            },
-        ) from exc
     with transaction() as conn:
         conn.execute("DELETE FROM instance_challenges WHERE expires_at<=?", (now() - 300,))
-        if body.operation == "sync":
+        if body.operation == "activate":
+            if body.public_key_pem is None:
+                raise HTTPException(400, detail="Activation requires public_key_pem")
+            public_pem = body.public_key_pem
+        else:
+            if body.public_key_pem is not None:
+                raise HTTPException(400, detail="Sync challenge must not include public_key_pem")
             row = conn.execute(
-                "SELECT fingerprint FROM instances WHERE id=? AND status='active'",
+                "SELECT public_key,fingerprint FROM instances WHERE id=? AND status='active'",
                 (body.instance_id,),
             ).fetchone()
-            if row is None or not hmac.compare_digest(row["fingerprint"], fp):
-                raise HTTPException(
-                    401,
-                    detail={
-                        "error": {
-                            "code": "invalid_instance",
-                            "message": "Instance authentication failed",
-                        }
-                    },
-                )
+            if row is None:
+                raise HTTPException(401, detail="Instance authentication failed")
+            public_pem = row["public_key"]
+        try:
+            fp = fingerprint(public_pem)
+        except Exception as exc:
+            raise HTTPException(400, detail="Expected Ed25519 public_key_pem") from exc
+        if body.operation == "sync" and not hmac.compare_digest(row["fingerprint"], fp):
+            raise HTTPException(401, detail="Instance authentication failed")
         challenge_value = secrets.token_urlsafe(48)
         expires = now() + 60
         conn.execute(
@@ -411,7 +406,7 @@ def _create_challenge(body: ChallengeRequest, ip: str) -> dict[str, int | str]:
                 expires,
             ),
         )
-        return {"challenge": challenge_value, "expires_at": expires}
+        return {"challenge": challenge_value}
 
 
 def _consume_challenge(conn: Any, claims: dict[str, Any], op: str) -> Any:
@@ -475,7 +470,7 @@ def _mark_expired(conn: Any, instance: Any) -> Any:
             json.dumps(dict(after)),
         )
         instance = conn.execute(
-            "SELECT i.*,l.id AS license_id,l.expires_at,l.revoked,l.expired,l.revision,c.active AS customer_active FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
+            "SELECT i.*,l.id AS license_id,l.expires_at,l.revoked,l.expired,l.revision,l.restored,c.active AS customer_active FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
             (instance["id"],),
         ).fetchone()
     return instance
@@ -491,92 +486,88 @@ def _issue(instance: Any, challenge_value: str) -> str:
         and customer_active
         and instance["expires_at"] > current
         and instance["status"] == "active"
-        else (
-            "revoked"
-            if instance["revoked"] or instance["status"] != "active"
-            else "customer_disabled"
-            if not customer_active
-            else "expired"
-        )
+        else "revoked"
+        if instance["revoked"] or instance["status"] != "active" or not customer_active
+        else "expired"
     )
-    expires = min(current + 86400, instance["expires_at"]) if status == "active" else current + 300
+    valid_until = (
+        min(current + 86400, instance["expires_at"]) if status == "active" else current + 300
+    )
     claims = {
-        "protocol_version": 1,
+        "protocol": 1,
         "product": "maitu",
         "iss": "maitu-license-center",
-        "aud": instance["id"],
+        "aud": "maitu-instance",
+        "purpose": "online-license",
         "instance_id": instance["id"],
-        "instance_key_fingerprint": instance["fingerprint"],
+        "key_fingerprint": instance["fingerprint"],
         "challenge": challenge_value,
         "license_id": instance["license_id"],
-        "license_revision": instance["revision"],
+        "license_version": instance["revision"],
         "status": status,
-        "iat": current,
-        "exp": expires,
+        "restored": bool(instance["restored"]),
+        "issued_at": current,
+        "not_before": current,
+        "valid_until": valid_until,
         "license_expires_at": instance["expires_at"],
     }
     return sign_license(claims)
 
 
-def _prove(body: ProofRequest, op: str) -> str:
+def _prove(body: ProofRequest, op: str) -> tuple[str, dict[str, Any]]:
+    public_pem = body.public_key_pem
+    if not public_pem:
+        raise HTTPException(401, detail="Missing instance public key")
     try:
         header = jwt.get_unverified_header(body.proof)
-        unverified = jwt.decode(
+        claims = jwt.decode(
             body.proof,
-            options={"verify_signature": False, "verify_exp": False, "verify_aud": False},
+            public_pem,
+            algorithms=["EdDSA"],
+            issuer=body.instance_id,
+            audience="maitu-license-center",
+            options={"verify_exp": False},
         )
+        payload = body.model_dump(exclude={"proof"}, exclude_none=True)
+        canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        content_hash = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     except Exception as exc:
-        raise HTTPException(
-            401, detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}}
-        ) from exc
+        raise HTTPException(401, detail="Invalid instance proof") from exc
     if (
-        header.get("alg") != "EdDSA"
-        or header.get("typ") != "maitu-instance-proof"
-        or unverified.get("operation") != op
+        header != {"alg": "EdDSA", "kid": "maitu-license-1", "typ": "JWT"}
+        or claims.get("purpose") != "instance-proof"
+        or claims.get("protocol") != 1
+        or type(claims.get("protocol")) is not int
+        or claims.get("product") != "maitu"
+        or claims.get("operation") != op
+        or claims.get("challenge") != body.challenge
+        or claims.get("content_hash") != content_hash
     ):
-        raise HTTPException(
-            401, detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}}
-        )
-    return str(unverified.get("public_key", ""))
+        raise HTTPException(401, detail="Invalid instance proof")
+    claims["instance_id"] = body.instance_id
+    return public_pem, claims
 
 
 def _activate(body: ProofRequest) -> dict[str, str]:
-    public_pem = _prove(body, "activate")
+    public_pem, claims = _prove(body, "activate")
     try:
         fp = fingerprint(public_pem)
     except Exception as exc:
-        raise HTTPException(
-            401, detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}}
-        ) from exc
-    claims = jwt.decode(
-        body.proof, options={"verify_signature": False, "verify_exp": False, "verify_aud": False}
-    )
-    try:
-        verify_proof(body.proof, {"operation": "activate", "public_key": public_pem}, public_pem)
-    except Exception as exc:
-        raise HTTPException(
-            401, detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}}
-        ) from exc
+        raise HTTPException(401, detail="Invalid instance proof") from exc
     with transaction() as conn:
         challenge = _consume_challenge(conn, claims, "activate")
         if challenge["fingerprint"] != fp:
-            raise HTTPException(
-                401,
-                detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}},
-            )
-        instance_id = claims.get("instance_id")
-        code = claims.get("activation_code")
-        if not isinstance(instance_id, str) or not isinstance(code, str):
-            raise HTTPException(
-                401,
-                detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}},
-            )
+            raise HTTPException(401, detail="Invalid instance proof")
+        instance_id = body.instance_id
+        code = body.activation_code
+        if not isinstance(code, str):
+            raise HTTPException(400, detail="Activation code is required")
         code_hash = hashlib.sha256(code.encode()).hexdigest()
         activation = conn.execute(
             "SELECT * FROM activation_codes WHERE digest=?", (code_hash,)
         ).fetchone()
         existing = conn.execute(
-            "SELECT i.*,l.id AS license_id,l.expires_at,l.revoked,l.expired,l.revision,c.active AS customer_active FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
+            "SELECT i.*,l.id AS license_id,l.expires_at,l.revoked,l.expired,l.revision,l.restored,c.active AS customer_active FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
             (instance_id,),
         ).fetchone()
         if activation is None:
@@ -649,7 +640,7 @@ def _activate(body: ProofRequest) -> dict[str, str]:
                     "INSERT INTO instances(id,customer_id,public_key,fingerprint,status,last_seen_at) VALUES(?,?,?,?,?,?)",
                     (instance_id, customer["id"], public_pem, fp, "active", now()),
                 )
-                lid = public_id("lic")
+                lid = secrets.token_hex(16)
                 conn.execute(
                     "INSERT INTO licenses(id,instance_id,expires_at,revision,created_at) VALUES(?,?,?,1,?)",
                     (lid, instance_id, activation["license_expires_at"], now()),
@@ -672,7 +663,7 @@ def _activate(body: ProofRequest) -> dict[str, str]:
                 (now(), instance_id, activation["id"]),
             )
             instance = conn.execute(
-                "SELECT i.*,l.id AS license_id,l.expires_at,l.revoked,l.expired,l.revision,c.active AS customer_active FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
+                "SELECT i.*,l.id AS license_id,l.expires_at,l.revoked,l.expired,l.revision,l.restored,c.active AS customer_active FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
                 (instance_id,),
             ).fetchone()
         instance = _mark_expired(conn, instance)
@@ -698,48 +689,163 @@ async def activate(body: ProofRequest) -> dict[str, str]:
     return await _db(_activate, body)
 
 
+def _offline_grant(body: OfflineLicenseCreate, actor: str) -> dict[str, Any]:
+    request_data = body.request
+    instance_id = request_data.get("instance_id")
+    public_pem = request_data.get("public_key_pem")
+    proof = request_data.get("proof")
+    claimed_fingerprint = request_data.get("key_fingerprint")
+    if not all(isinstance(value, str) and value for value in (instance_id, public_pem, proof)):
+        raise HTTPException(400, detail="Invalid offline request")
+    try:
+        key_fingerprint = fingerprint(public_pem)
+        header = jwt.get_unverified_header(proof)
+        claims = jwt.decode(
+            proof,
+            public_pem,
+            algorithms=["EdDSA"],
+            audience="maitu-license-center",
+            issuer=instance_id,
+            options={"verify_exp": False},
+        )
+    except Exception as exc:
+        raise HTTPException(401, detail="Invalid offline request signature") from exc
+    if (
+        header.get("alg") != "EdDSA"
+        or header.get("typ") != "JWT"
+        or claimed_fingerprint != key_fingerprint
+        or instance_id != key_fingerprint[:32]
+        or claims.get("purpose") != "offline-request"
+        or claims.get("protocol") != 1
+        or type(claims.get("protocol")) is not int
+        or claims.get("product") != "maitu"
+        or claims.get("instance_id") != instance_id
+        or claims.get("key_fingerprint") != key_fingerprint
+    ):
+        raise HTTPException(401, detail="Offline request identity does not match")
+    current = now()
+    if body.offline_expires_at <= current or body.offline_expires_at > body.license_expires_at:
+        raise HTTPException(400, detail="Offline validity must be future and within license expiry")
+    with transaction() as conn:
+        customer = conn.execute(
+            "SELECT id,active FROM customers WHERE id=?", (body.customer_id,)
+        ).fetchone()
+        if customer is None or not customer["active"]:
+            raise HTTPException(404, detail="Active customer not found")
+        instance = conn.execute(
+            "SELECT * FROM instances WHERE id=? OR fingerprint=?",
+            (instance_id, key_fingerprint),
+        ).fetchone()
+        if instance is None:
+            conn.execute(
+                "INSERT INTO instances(id,customer_id,public_key,fingerprint,status,last_seen_at) VALUES(?,?,?,?,?,?)",
+                (instance_id, body.customer_id, public_pem, key_fingerprint, "active", current),
+            )
+            license_id = public_id("lic")
+            conn.execute(
+                "INSERT INTO licenses(id,instance_id,expires_at,revision,created_at) VALUES(?,?,?,1,?)",
+                (license_id, instance_id, body.license_expires_at, current),
+            )
+        else:
+            if (
+                instance["id"] != instance_id
+                or instance["customer_id"] != body.customer_id
+                or instance["fingerprint"] != key_fingerprint
+            ):
+                raise HTTPException(409, detail="Instance is already bound to another license")
+            license_row = conn.execute(
+                "SELECT * FROM licenses WHERE instance_id=?", (instance_id,)
+            ).fetchone()
+            if license_row is None:
+                raise HTTPException(409, detail="Instance has no license record")
+            if (
+                license_row["revoked"]
+                or license_row["expired"]
+                or license_row["expires_at"] <= current
+            ):
+                raise HTTPException(409, detail="Only an active license can receive offline access")
+            license_id = license_row["id"]
+        entitlement = conn.execute(
+            "SELECT l.*,i.fingerprint,c.active AS customer_active FROM licenses l JOIN instances i ON i.id=l.instance_id JOIN customers c ON c.id=i.customer_id WHERE l.id=?",
+            (license_id,),
+        ).fetchone()
+        if entitlement is None or not entitlement["customer_active"]:
+            raise HTTPException(409, detail="License is not active")
+        if body.license_expires_at != entitlement["expires_at"]:
+            raise HTTPException(409, detail="Offline request expiry does not match license expiry")
+        claims = {
+            "protocol": 1,
+            "product": "maitu",
+            "iss": "maitu-license-center",
+            "aud": "maitu-instance",
+            "purpose": "offline-license",
+            "instance_id": instance_id,
+            "key_fingerprint": key_fingerprint,
+            "issued_at": current,
+            "not_before": current,
+            "valid_until": body.offline_expires_at,
+            "license_expires_at": entitlement["expires_at"],
+            "license_version": entitlement["revision"],
+            "license_id": license_id,
+            "status": "active",
+            "restored": bool(entitlement["restored"]),
+        }
+        token = sign_license(claims)
+        audit(
+            conn,
+            actor,
+            "license.offline_issue",
+            "license",
+            license_id,
+            "{}",
+            json.dumps(
+                {
+                    "instance_id": instance_id,
+                    "license_version": entitlement["revision"],
+                    "offline_expires_at": body.offline_expires_at,
+                    "fingerprint": key_fingerprint,
+                }
+            ),
+            body.reason,
+        )
+        return {
+            "token": token,
+            "license_id": license_id,
+            "license_version": entitlement["revision"],
+        }
+
+
+@app.post("/api/v1/admin/offline-licenses")
+async def create_offline_license(
+    body: OfflineLicenseCreate,
+    user: dict[str, Any] = Depends(require_roles("owner", "operator")),
+    csrf: str | None = Header(default=None, alias="X-CSRF-Token"),
+) -> dict[str, Any]:
+    _csrf_check(user, csrf)
+    _recent_mfa(user)
+    return await _db(_offline_grant, body, user["username"])
+
+
 def _sync(body: ProofRequest) -> dict[str, str]:
-    public_pem = _prove(body, "sync")
+    public_pem, claims = _prove(body, "sync")
     try:
         fp = fingerprint(public_pem)
     except Exception as exc:
-        raise HTTPException(
-            401, detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}}
-        ) from exc
-    claims = jwt.decode(
-        body.proof, options={"verify_signature": False, "verify_exp": False, "verify_aud": False}
-    )
-    try:
-        verify_proof(body.proof, {"operation": "sync", "public_key": public_pem}, public_pem)
-    except Exception as exc:
-        raise HTTPException(
-            401, detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}}
-        ) from exc
+        raise HTTPException(401, detail="Invalid instance proof") from exc
     with transaction() as conn:
         challenge = _consume_challenge(conn, claims, "sync")
         if challenge["fingerprint"] != fp:
-            raise HTTPException(
-                401,
-                detail={"error": {"code": "invalid_proof", "message": "Invalid instance proof"}},
-            )
+            raise HTTPException(401, detail="Invalid instance proof")
         instance = conn.execute(
-            "SELECT i.*,l.id AS license_id,l.expires_at,l.revoked,l.expired,l.revision,c.active AS customer_active FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
-            (claims.get("instance_id"),),
+            "SELECT i.*,l.id AS license_id,l.expires_at,l.revoked,l.expired,l.revision,l.restored,c.active AS customer_active FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
+            (body.instance_id,),
         ).fetchone()
         if (
             instance is None
             or instance["fingerprint"] != fp
             or instance["public_key"] != public_pem
         ):
-            raise HTTPException(
-                401,
-                detail={
-                    "error": {
-                        "code": "invalid_instance",
-                        "message": "Instance authentication failed",
-                    }
-                },
-            )
+            raise HTTPException(401, detail="Instance authentication failed")
         instance = _mark_expired(conn, instance)
         conn.execute("UPDATE instances SET last_seen_at=? WHERE id=?", (now(), instance["id"]))
         return {"token": _issue(instance, claims["challenge"])}
@@ -1112,6 +1218,7 @@ def _license_action(
         exp = body.expires_at if body.expires_at is not None else old["expires_at"]
         revoked = 1 if action == "revoke" else 0 if action == "restore" else old["revoked"]
         expired = 0 if action in {"extend", "restore"} else old["expired"]
+        restored = 1 if action == "restore" else old["restored"]
         if action == "restore" and not old["revoked"]:
             raise HTTPException(
                 409,
@@ -1154,8 +1261,8 @@ def _license_action(
                 },
             )
         conn.execute(
-            "UPDATE licenses SET expires_at=?,revoked=?,expired=?,revision=revision+1 WHERE id=? AND revision=?",
-            (exp, revoked, expired, license_id, body.version),
+            "UPDATE licenses SET expires_at=?,revoked=?,expired=?,restored=?,revision=revision+1 WHERE id=? AND revision=?",
+            (exp, revoked, expired, restored, license_id, body.version),
         )
         after = conn.execute(
             "SELECT l.*,i.customer_id FROM licenses l JOIN instances i ON i.id=l.instance_id WHERE l.id=?",
@@ -1746,6 +1853,14 @@ def _database_health() -> None:
             raise RuntimeError("Database migrations are not initialized")
 
 
+app.include_router(
+    releases.create_router(
+        require_roles,
+        _csrf_check,
+        _recent_mfa,
+        os.environ.get("MAITU_CENTER_CLIENT_TOKEN", ""),
+    )
+)
 dashboard_override = os.environ.get("LICENSE_CENTER_DASHBOARD_DIR")
 dashboard_dir = (
     Path(dashboard_override).resolve()

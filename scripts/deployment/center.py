@@ -8,6 +8,7 @@ import ipaddress
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import sqlite3
@@ -750,6 +751,7 @@ def deploy(config_dir: Path) -> None:
             "LICENSE_CENTER_TLS_CERT_HOST": str(cert),
             "LICENSE_CENTER_TRUSTED_PROXY_IPS": gateway,
             "LICENSE_CENTER_TIMEZONE": "Asia/Shanghai",
+            "MAITU_CENTER_CLIENT_TOKEN": secrets.token_urlsafe(48),
         }
         with configuration_transaction([env_file]):
             atomic_write(env_file, env_text(values), mode=0o600)
@@ -757,6 +759,15 @@ def deploy(config_dir: Path) -> None:
     else:
         ensure_directory(env_file.parent, mode=0o700)
         existing = _parse_env(env_file)
+        client_token = existing.get("MAITU_CENTER_CLIENT_TOKEN", "")
+        if client_token and len(client_token) < 32:
+            raise DeploymentError(
+                "MAITU_CENTER_CLIENT_TOKEN 必须至少 32 字符；请通过可信渠道更换。"
+            )
+        if not client_token:
+            client_token = secrets.token_urlsafe(48)
+            with configuration_transaction([env_file]):
+                _set_env_value(env_file, "MAITU_CENTER_CLIENT_TOKEN", client_token)
         actual_data = Path(existing.get("LICENSE_CENTER_DATA", str(data))).absolute()
         if actual_data != data:
             raise DeploymentError(

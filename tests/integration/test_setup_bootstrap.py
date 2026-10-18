@@ -2,22 +2,18 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
 import httpx
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from octop.api.app import build_app
-from octop.infra import server as server_module
-from octop.infra.licensing import LicenseService
 from octop.infra.server import OctopServer
 from octop.infra.setup.password_file import read_password
 from tests.support.app import ensure_control_plane_bound, write_octop_config
 from tests.support.auth import auth_header, bootstrap_admin
 from tests.support.harness import patch_harness
-from tests.support.licensing import provision_license, public_key_pem
+from tests.support.licensing import CenterSigner
 
 
 async def test_locked_setup_defers_then_resumes_managed_defaults_once(
@@ -25,11 +21,12 @@ async def test_locked_setup_defers_then_resumes_managed_defaults_once(
     monkeypatch: Any,
 ) -> None:
     """A finished setup stays durable while signed-license business work is locked."""
-    signer = Ed25519PrivateKey.generate()
-    trust_file = Path.home() / "test-license-public.json"
-    trust_file.write_text(json.dumps({"test": public_key_pem(signer)}), encoding="utf-8")
-    monkeypatch.setenv("OCTOP_LICENSE_TRUST_FILE", str(trust_file))
-    monkeypatch.setattr(server_module, "LicenseService", LicenseService)
+    signer = CenterSigner()
+    keys_file = signer.write_trusted_keys(tmp_octop_home / "license-trust" / "trusted-keys.json")
+    monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", str(keys_file))
+    monkeypatch.setenv("MAITU_LICENSE_STATE_DIR", str(tmp_octop_home / "license-state"))
+    monkeypatch.delenv("MAITU_LICENSE_CENTER_URL", raising=False)
+    monkeypatch.delenv("MAITU_LICENSE_ALLOW_LOOPBACK", raising=False)
     write_octop_config(
         tmp_octop_home,
         database={"driver": "sqlite"},
@@ -40,6 +37,9 @@ async def test_locked_setup_defers_then_resumes_managed_defaults_once(
         await srv.start()
         await ensure_control_plane_bound(srv)
         try:
+            assert srv.license_manager is not None
+            manager = srv.license_manager
+            assert manager.managed and not manager.business_allowed
             app = build_app(srv)
             async with httpx.AsyncClient(
                 transport=httpx.ASGITransport(app=app),
@@ -60,18 +60,21 @@ async def test_locked_setup_defers_then_resumes_managed_defaults_once(
                 )
                 assert finished.status_code == 200, finished.text
                 assert (await c.get("/api/setup/status")).json()["setup_required"] is False
-                assert (await c.get("/api/agents", headers=auth)).status_code == 403
+                # Managed + locked: the business plane (and its routes) is denied.
+                assert (await c.get("/api/agents", headers=auth)).status_code == 423
                 assert srv.services is not None
                 assert srv.services.settings_repo.get("setup.default_agents_pending")
                 assert srv.app_runtime is not None
                 assert srv.app_runtime.agent_registry.get_row("main") is None
                 assert srv.app_runtime.agent_registry.get_row("feat-general-assistant") is None
-                provision_license(tmp_octop_home, signer=signer, status="active", revision=2)
-                assert srv.license_service is not None
-                srv.license_service.load_cached()
-                await srv.license_service._notify()
-                assert srv._business_start_task is not None
-                await srv._business_start_task
+
+                token_payload = signer.offline(
+                    manager.instance_id,
+                    manager._identity,
+                    status="active",
+                )
+                await manager.import_offline(token_payload)
+                await srv._on_license_change(True)
 
                 agents = await c.get("/api/agents", headers=auth)
                 assert agents.status_code == 200, agents.text
@@ -80,12 +83,14 @@ async def test_locked_setup_defers_then_resumes_managed_defaults_once(
                     ("feature", "feat-general-assistant"),
                 }
                 assert not srv.services.settings_repo.get("setup.default_agents_pending")
+                assert srv.app_runtime.business_running
                 assert srv.paths is not None
                 workspace = srv.paths.agent_workspace("main")
                 assert (workspace / "SOUL.md").is_file()
                 assert (workspace / ".octop" / "skills" / "octop-assistant" / "SKILL.md").is_file()
 
-                await srv.license_service._notify()
+                # An allowed transition while already running is a no-op.
+                await srv._on_license_change(True)
                 resumed_agents = await c.get("/api/agents", headers=auth)
                 assert resumed_agents.status_code == 200
                 assert {(a["kind"], a["agent_id"]) for a in resumed_agents.json()} == {

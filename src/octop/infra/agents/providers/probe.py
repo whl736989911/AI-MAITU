@@ -51,7 +51,8 @@ def build_probe_chat_model(row: Any, *, model_id: str | None = None) -> Any:
     mid = model_id or (models[0]["id"] if models else "gpt-4o-mini")
     entry = next((m for m in models if m.get("id") == mid), None)
     display_name = (entry or {}).get("name") or mid
-    model = ModelConfig(id=mid, name=display_name)
+    # Let the API validate image requests instead of harness silently stripping them.
+    model = ModelConfig(id=mid, name=display_name, input=["text", "image"])
 
     if _is_codex_base_url(base_url):
         from langchain_openai import ChatOpenAI

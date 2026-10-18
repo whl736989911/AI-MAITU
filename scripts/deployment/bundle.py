@@ -13,7 +13,14 @@ from .common import DeploymentError, atomic_write, check_url, ensure_directory
 
 FORMAT = "maitu-license-connection"
 MAX_BYTES = 256 * 1024
-FIELDS = {"format", "version", "server_url", "trusted_keys", "ca_certificate_pem"}
+FIELDS = {
+    "format",
+    "version",
+    "server_url",
+    "license_trusted_keys",
+    "release_trusted_keys",
+    "ca_certificate_pem",
+}
 _ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 _CERT = re.compile(r"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\s]+-----END CERTIFICATE-----")
 
@@ -63,28 +70,34 @@ def _validate_ca(pem: str) -> None:
             raise DeploymentError("接入包 CA 必须是具有 CA 约束的有效公开证书。")
 
 
-def validate_bundle(data: Any) -> dict[str, Any]:
-    if not isinstance(data, dict) or set(data) != FIELDS:
-        raise DeploymentError("接入包字段不完整或含未知字段；请从当前中心重新导出完整接入包。")
-    if data["format"] != FORMAT or type(data["version"]) is not int or data["version"] != 1:
-        raise DeploymentError("不兼容的接入包格式或版本。")
-    if not isinstance(data["server_url"], str):
-        raise DeploymentError("接入包中心地址必须是字符串。")
-    normalized = check_url(data["server_url"])
-    keys = data["trusted_keys"]
-    if not isinstance(keys, dict) or not keys or len(keys) > 128:
-        raise DeploymentError("接入包缺少可信公钥，或公钥数量超出限制。")
-    for kid, pem in keys.items():
+def _validate_key_map(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict) or not value or len(value) > 128:
+        raise DeploymentError("接入包授权与发布信任域均需包含 1–128 个 Ed25519 公钥。")
+    normalized: dict[str, str] = {}
+    for kid, pem in value.items():
         if (
             not isinstance(kid, str)
             or not kid.strip()
             or len(kid) > 256
-            or any(ord(c) < 32 for c in kid)
+            or any(ord(char) < 32 for char in kid)
+            or not isinstance(pem, str)
         ):
-            raise DeploymentError("签名公钥 kid 无效。")
-        if not isinstance(pem, str):
-            raise DeploymentError("公开密钥必须是 PEM 字符串。")
+            raise DeploymentError("接入包包含无效的签名公钥 KID 或 PEM。")
         _public_der(pem)
+        normalized[kid] = pem
+    return normalized
+
+
+def validate_bundle(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict) or set(data) != FIELDS:
+        raise DeploymentError("接入包字段不完整或含未知字段；请从当前中心重新导出完整接入包。")
+    if data["format"] != FORMAT or type(data["version"]) is not int or data["version"] != 2:
+        raise DeploymentError("不兼容的接入包格式或版本。")
+    if not isinstance(data["server_url"], str):
+        raise DeploymentError("接入包中心地址必须是字符串。")
+    normalized = check_url(data["server_url"])
+    license_keys = _validate_key_map(data["license_trusted_keys"])
+    release_keys = _validate_key_map(data["release_trusted_keys"])
     ca = data["ca_certificate_pem"]
     if ca is not None:
         if not isinstance(ca, str) or not ca:
@@ -92,7 +105,12 @@ def validate_bundle(data: Any) -> dict[str, Any]:
         _validate_ca(ca)
     if len(json.dumps(data, ensure_ascii=False).encode("utf-8")) > MAX_BYTES:
         raise DeploymentError("接入包超过 256 KiB 限制。")
-    return {**data, "server_url": normalized}
+    return {
+        **data,
+        "server_url": normalized,
+        "license_trusted_keys": license_keys,
+        "release_trusted_keys": release_keys,
+    }
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -120,19 +138,36 @@ def load_bundle(path: Path) -> dict[str, Any]:
 
 
 def key_fingerprints(bundle: dict[str, Any]) -> dict[str, str]:
-    return {
-        kid: hashlib.sha256(_public_der(pem)).hexdigest()
-        for kid, pem in bundle["trusted_keys"].items()
-    }
+    result = {}
+    for domain, field in (
+        ("license", "license_trusted_keys"),
+        ("release", "release_trusted_keys"),
+    ):
+        result.update(
+            {
+                f"{domain}:{kid}": hashlib.sha256(_public_der(pem)).hexdigest()
+                for kid, pem in bundle[field].items()
+            }
+        )
+    return result
 
 
-def install_bundle(bundle: dict[str, Any], trust_dir: Path) -> tuple[Path, Path | None]:
+def install_bundle(bundle: dict[str, Any], trust_dir: Path) -> tuple[Path, Path, Path | None]:
     validated = validate_bundle(bundle)
     ensure_directory(trust_dir, mode=0o755)
-    trust_path = trust_dir / "trusted-keys.json"
+    license_path = trust_dir / "license-trusted-keys.json"
+    release_path = trust_dir / "release-trusted-keys.json"
     ca_path = trust_dir / "root-ca.pem" if validated["ca_certificate_pem"] is not None else None
-    atomic_write(trust_path, json.dumps(validated["trusted_keys"], indent=2) + "\n", mode=0o644)
+    atomic_write(
+        license_path,
+        json.dumps(validated["license_trusted_keys"], indent=2) + "\n",
+        mode=0o644,
+    )
+    atomic_write(
+        release_path,
+        json.dumps(validated["release_trusted_keys"], indent=2) + "\n",
+        mode=0o644,
+    )
     if ca_path is not None:
         atomic_write(ca_path, validated["ca_certificate_pem"], mode=0o644)
-    # An old CA is not deleted: the effective configuration points to ca_path (or empty).
-    return trust_path, ca_path
+    return license_path, release_path, ca_path

@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
 
 FORMAT = "maitu-license-connection"
-VERSION = 1
+VERSION = 2
 MAX_BUNDLE_BYTES = 256 * 1024
 _CERTIFICATE_BLOCK = re.compile(
     rb"-----BEGIN CERTIFICATE-----\s+[A-Za-z0-9+/=\r\n]+?-----END CERTIFICATE-----"
@@ -130,14 +130,16 @@ def validate_ca_file(path: Path) -> str:
 
 def create_bundle(
     server_url: str,
-    trusted_keys: dict[str, str],
+    license_trusted_keys: dict[str, str],
+    release_trusted_keys: dict[str, str],
     ca_certificate_pem: str | None = None,
 ) -> dict[str, object]:
     return {
         "format": FORMAT,
         "version": VERSION,
         "server_url": validate_server_url(server_url),
-        "trusted_keys": validate_trusted_keys(trusted_keys),
+        "license_trusted_keys": validate_trusted_keys(license_trusted_keys),
+        "release_trusted_keys": validate_trusted_keys(release_trusted_keys),
         "ca_certificate_pem": validate_ca_certificate_pem(ca_certificate_pem),
     }
 

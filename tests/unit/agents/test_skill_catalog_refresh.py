@@ -150,6 +150,26 @@ async def test_a_skill_installed_after_the_first_turn_reaches_the_next_turn(
     assert update[SKILL_CATALOG_REVISION_KEY] == 8
 
 
+@pytest.mark.asyncio
+async def test_skill_installed_during_a_tool_call_refreshes_before_the_next_model_step(
+    tmp_path: Path,
+) -> None:
+    """A SkillHub install is visible to the next model request in the same turn."""
+    _install(tmp_path, "web-search", _BUILTIN_SKILL)
+    registry = _Registry(tmp_path, revision=7)
+    middleware = SkillCatalogRefreshMiddleware(registry=registry, agent_id="A1")
+    current_state = _scanned(["web-search"])
+
+    _install(tmp_path, "s4-sigil", _SIGIL_SKILL)
+    registry.revision += 1
+
+    update = await middleware.abefore_model(current_state, None)
+
+    assert update is not None
+    assert _names(update) == {"web-search", "s4-sigil"}
+    assert update[SKILL_CATALOG_REVISION_KEY] == 8
+
+
 class _FakeToolModel(GenericFakeChatModel):
     """A fake model that accepts tool binding — ``create_agent`` binds tools to it."""
 

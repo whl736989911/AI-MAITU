@@ -25,11 +25,13 @@ from tests.support.auth import (
 )
 from tests.support.fakes import FakeHarnessAgent
 from tests.support.harness import patch_harness
+from tests.support.licensing import license_center
 from tests.support.scenarios import bootstrap_boundary_env
 
 __all__ = [
     "bootstrap_admin",
     "patch_harness",
+    "license_center",
 ]
 
 

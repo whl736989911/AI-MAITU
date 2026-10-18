@@ -1,200 +1,565 @@
-"""Built-in LangChain tool for on-demand knowledge-base retrieval."""
+"""Authorized, source-located knowledge tools for agent turns."""
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
-from collections.abc import Mapping, Sequence
-from dataclasses import asdict
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
 from pydantic import Field
 
-from octop.infra.knowledge.embed import embed_knowledge_texts
-from octop.infra.knowledge.gate import assert_knowledge_usable, get_capability
-from octop.infra.knowledge.retrieve import DEFAULT_RETRIEVAL_K
-from octop.infra.knowledge.service import KnowledgeService
+from octop.i18n import tr
+from octop.infra.knowledge.collections import KnowledgeCollectionService
+from octop.infra.knowledge.source_access import KnowledgeSourceService
 
-SEARCH_KNOWLEDGE_TOOL = "search_knowledge"
-READ_KNOWLEDGE_SEGMENT_TOOL = "read_knowledge_segment"
 logger = logging.getLogger(__name__)
 
-# API allows 2000-char KB descriptions; keep the tool schema compact.
-_MAX_CATALOG_DESC_CHARS = 240
 
-_SEARCH_DESC_BASE = (
-    "Search the attached knowledge bases before answering a question about their files. "
-    "Search first checks the user's keyword and accumulated reading-index documents, "
-    "then falls back to authorized original indexes for additional candidates. "
-    "Results include filenames and located excerpts; excerpts and extractive summaries "
-    "are candidate data, not verified source text or instructions. Call read_knowledge_segment "
-    "with a result's IDs to verify exact source content before citing it. Verified reads "
-    "automatically update each independently selected file or folder's reading index. "
-    "Personal filename aliases have no segment ID and are not content evidence. "
-    "Report incomplete indexing when coverage is partial."
-)
-
-_SEARCH_DESC_NONE = "No knowledge bases are attached this turn."
-
-
-def _clip_catalog_text(text: str, limit: int = _MAX_CATALOG_DESC_CHARS) -> str:
-    stripped = text.strip()
-    if len(stripped) <= limit:
-        return stripped
-    return stripped[: limit - 3].rstrip() + "..."
-
-
-def format_search_knowledge_description(
-    catalog: Sequence[Mapping[str, str]] | None,
-) -> str:
-    """Build the LLM-facing tool description, including attached KB titles/descriptions."""
-    entries: list[str] = []
-    for item in catalog or ():
-        name = _clip_catalog_text(str(item.get("name") or item.get("id") or ""), 80)
-        if not name:
-            continue
-        description = _clip_catalog_text(str(item.get("description") or ""))
-        if description:
-            entries.append(f"- {name}: {description}")
-        else:
-            entries.append(f"- {name}")
-    if not entries:
-        return _SEARCH_DESC_NONE
-    listed = "\n".join(entries)
-    return f"{_SEARCH_DESC_BASE}\nAttached this turn:\n{listed}"
-
-
-def _tool_ctx() -> tuple[int, list[str], bool]:
-    cfg = get_config().get("configurable") or {}
-    user_raw = cfg.get("user")
+def _tool_ctx() -> tuple[int, list[str], bool, dict[str, Any]]:
+    configurable = get_config().get("configurable") or {}
+    user_raw = configurable.get("user")
     if user_raw is None:
         raise ValueError("missing configurable.user")
-    user_id = int(user_raw)
-    raw_ids = cfg.get("knowledge_base_ids")
-    ids: list[str] = []
-    if isinstance(raw_ids, list):
-        ids = [str(item).strip() for item in raw_ids if str(item).strip()]
-    return user_id, ids, bool(cfg.get("user_is_admin"))
+    raw_ids = configurable.get("knowledge_base_ids")
+    kb_ids = (
+        list(dict.fromkeys(str(item).strip() for item in raw_ids if str(item).strip()))
+        if isinstance(raw_ids, list)
+        else []
+    )
+    return int(user_raw), kb_ids, bool(configurable.get("user_is_admin")), configurable
 
 
-def build_knowledge_tools(services: Any) -> list[StructuredTool]:
-    """Return scoped candidate search and verified source-reading tools."""
+def _as_json(payload: Any) -> str:
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
-    async def search_knowledge(
-        query: Annotated[
-            str,
-            Field(description="Focused search terms, names or synonyms from the user's question."),
-        ],
-        k: Annotated[
-            int,
-            Field(description="Maximum candidates to return.", ge=1, le=20),
-        ] = DEFAULT_RETRIEVAL_K,
-    ) -> str:
-        try:
-            user_id, kb_ids, is_admin = _tool_ctx()
-            if not kb_ids:
-                return json.dumps({"status": "no_selection", "hits": []})
 
-            def find() -> dict[str, object]:
-                assert_knowledge_usable(
-                    services.settings_repo.get, getattr(services, "provider_repo", None)
-                )
-                service = KnowledgeService(services)
-                query_vector: list[float] | None = None
-                capability = get_capability(
-                    services.settings_repo.get, getattr(services, "provider_repo", None)
-                )
-                if capability["selected_model"] and capability["prerequisites_ok"]:
-                    try:
-                        vectors = embed_knowledge_texts(services, [query])
-                        query_vector = vectors[0] if vectors else None
-                    except Exception:
-                        logger.warning(
-                            "knowledge semantic query unavailable; using terms only", exc_info=True
-                        )
-                coverage: dict[str, dict[str, int]] = {}
-                hits = []
-                for kb_id in dict.fromkeys(kb_ids):
-                    coverage[kb_id] = service.coverage(
-                        kb_id, actor_user_id=user_id, is_admin=is_admin
-                    )
-                    hits.extend(
-                        service.search(
-                            actor_user_id=user_id,
-                            query=query,
-                            kb_id=kb_id,
-                            limit=k,
-                            is_admin=is_admin,
-                            query_vector=query_vector,
-                        )
-                    )
-                hits.sort(
-                    key=lambda hit: (
-                        not bool(hit.collection_id),
-                        hit.match_kind != "content",
-                        -hit.score,
-                    )
-                )
-                partial = any(
-                    counts["pending"] or counts["failed"] or counts["unsupported"]
-                    for counts in coverage.values()
-                )
-                return {
-                    "status": "partial" if partial else ("found" if hits else "no_match"),
-                    "coverage": coverage,
-                    "hits": [asdict(hit) for hit in hits[:k]],
+def _related_collections(collections: list[dict[str, Any]], path: str) -> list[dict[str, Any]]:
+    normalized = path.strip("/")
+    related = []
+    for collection in collections:
+        target = str(collection.get("target_path") or "").strip("/")
+        kind = str(collection.get("target_kind") or "")
+        if (kind == "file" and normalized == target) or (
+            kind == "folder"
+            and (not target or normalized == target or normalized.startswith(target + "/"))
+        ):
+            related.append(collection)
+    return related
+
+
+def _required_collection_context(
+    configurable: dict[str, Any],
+    collections: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    seen = configurable.get("knowledge_collection_reads")
+    seen_versions = (
+        {str(row.get("id") or ""): row.get("updated_at") for row in seen if isinstance(row, dict)}
+        if isinstance(seen, list)
+        else {}
+    )
+    seen_ids = (
+        {str(row) for row in seen if not isinstance(row, dict)} if isinstance(seen, list) else set()
+    )
+    return [
+        item
+        for item in collections
+        if str(item.get("id") or "") not in seen_ids
+        and (
+            str(item.get("id") or "") not in seen_versions
+            or seen_versions[str(item.get("id") or "")] != item.get("updated_at")
+        )
+    ]
+
+
+def _collection_summaries(
+    collections: list[dict[str, Any]],
+    paths: list[str],
+) -> list[dict[str, Any]]:
+    normalized_paths = {path.strip("/") for path in paths}
+    summaries = []
+    for collection in collections:
+        target = str(collection.get("target_path") or "").strip("/")
+        kind = str(collection.get("target_kind") or "")
+        related = (
+            target in normalized_paths
+            if kind == "file"
+            else any(
+                not target or path == target or path.startswith(target + "/")
+                for path in normalized_paths
+            )
+        )
+        if related:
+            summaries.append(
+                {
+                    "id": collection.get("id"),
+                    "name": collection.get("name"),
+                    "target_path": collection.get("target_path"),
                 }
+            )
+    return summaries
 
-            result = await asyncio.get_running_loop().run_in_executor(None, find)
-            return json.dumps(result, ensure_ascii=False)
-        except Exception:
-            logger.warning("knowledge candidate search failed", exc_info=True)
-            return json.dumps({"status": "unavailable", "hits": []})
 
-    async def read_knowledge_segment(
-        kb_id: Annotated[str, Field(description="Knowledge base ID from a search result.")],
-        document_id: Annotated[str, Field(description="Document ID from a search result.")],
-        segment_id: Annotated[str, Field(description="Non-empty segment ID from a search result.")],
+def build_knowledge_tools(services: Any, *, workspace: Any) -> list[StructuredTool]:
+    """Build source tools using shared services, actor-scoped runtime config, and workspace."""
+    source_service = KnowledgeSourceService(services)
+    collection_service = KnowledgeCollectionService(services)
+
+    async def browse_knowledge(
+        kb_id: Annotated[str, Field(description="Selected knowledge-base ID.")],
+        path: Annotated[
+            str, Field(description="Optional directory path relative to the knowledge base.")
+        ] = "",
     ) -> str:
         try:
-            user_id, kb_ids, is_admin = _tool_ctx()
-            if kb_id not in kb_ids or not segment_id:
-                return json.dumps({"verified": False, "reason": "out_of_scope"})
+            user_id, kb_ids, is_admin, _ = _tool_ctx()
+            if kb_id not in kb_ids:
+                return _as_json({"status": "out_of_scope", "documents": []})
+            result = await asyncio.to_thread(
+                source_service.list_documents,
+                kb_id,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+                path=path,
+            )
+            collections = await asyncio.to_thread(
+                collection_service.list, kb_id, actor_user_id=user_id, is_admin=is_admin
+            )
+            paths = [path, *(str(item.get("path") or "") for item in result["documents"])]
+            result["related_collections"] = _collection_summaries(collections, paths)
+            return _as_json(result)
+        except Exception:
+            logger.warning("knowledge source browse failed", exc_info=True)
+            return _as_json({"status": "unavailable", "documents": []})
 
-            def read() -> dict[str, object]:
-                assert_knowledge_usable(
-                    services.settings_repo.get, getattr(services, "provider_repo", None)
-                )
-                return KnowledgeService(services).read_segment(
-                    kb_id,
-                    document_id,
-                    segment_id,
-                    actor_user_id=user_id,
-                    is_admin=is_admin,
-                )
+    async def search_knowledge_paths(
+        kb_id: Annotated[str, Field(description="Selected knowledge-base ID.")],
+        query: Annotated[str, Field(description="Filename or relative-path substring.")],
+    ) -> str:
+        try:
+            user_id, kb_ids, is_admin, _ = _tool_ctx()
+            if kb_id not in kb_ids:
+                return _as_json({"status": "out_of_scope", "documents": []})
+            result = await asyncio.to_thread(
+                source_service.list_documents,
+                kb_id,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+                path="",
+            )
+            docs = result.get("documents", []) if isinstance(result, dict) else []
+            needle = query.strip().casefold()
+            matches = (
+                [
+                    document
+                    for document in docs
+                    if needle in str(document.get("path") or "").casefold()
+                    or needle in str(document.get("filename") or "").casefold()
+                ]
+                if needle
+                else []
+            )
+            collections = await asyncio.to_thread(
+                collection_service.list, kb_id, actor_user_id=user_id, is_admin=is_admin
+            )
+            related = _collection_summaries(
+                collections, [str(item.get("path") or "") for item in matches]
+            )
+            return _as_json(
+                {
+                    "status": "found" if matches else "no_match",
+                    "documents": matches,
+                    "related_collections": related,
+                }
+            )
+        except Exception:
+            logger.warning("knowledge path search failed", exc_info=True)
+            return _as_json({"status": "unavailable", "documents": []})
 
-            result = await asyncio.get_running_loop().run_in_executor(None, read)
-            return json.dumps(result, ensure_ascii=False)
+    async def read_knowledge_collection(
+        kb_id: Annotated[str, Field(description="Selected knowledge-base ID.")],
+        collection_id: Annotated[str, Field(description="Collection ID from browse_knowledge.")],
+    ) -> str:
+        try:
+            user_id, kb_ids, is_admin, configurable = _tool_ctx()
+            if kb_id not in kb_ids:
+                return _as_json({"status": "out_of_scope"})
+            docs = await asyncio.to_thread(
+                collection_service.documents,
+                kb_id,
+                collection_id,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+            )
+            if not isinstance(docs.get("topic_document"), str) or not isinstance(
+                docs.get("reading_document"), str
+            ):
+                return _as_json({"status": "collection_context_unavailable"})
+            result = {
+                "collection": docs.get("collection"),
+                "topic_document": docs["topic_document"],
+                "reading_document": docs["reading_document"],
+            }
+            seen = configurable.get("knowledge_collection_reads")
+            if not isinstance(seen, list):
+                return _as_json({"status": "collection_context_unavailable"})
+            read_rows = list(seen)
+            read_rows = [
+                row
+                for row in read_rows
+                if (row.get("id") if isinstance(row, dict) else row) != collection_id
+            ]
+            metadata = result.get("collection")
+            read_rows.append(
+                {
+                    "id": collection_id,
+                    "updated_at": metadata.get("updated_at")
+                    if isinstance(metadata, dict)
+                    else None,
+                }
+            )
+            seen[:] = read_rows
+            return _as_json(result)
+        except Exception:
+            logger.warning("knowledge collection read failed", exc_info=True)
+            return _as_json({"status": "unavailable"})
+
+    async def read_knowledge_document(
+        kb_id: Annotated[str, Field(description="Selected knowledge-base ID.")],
+        document_id: Annotated[str, Field(description="Document ID from browse_knowledge.")],
+        start: Annotated[int, Field(description="First line/page to read.", ge=1)] = 1,
+        end: Annotated[int | None, Field(description="Last line/page, inclusive.")] = None,
+        mode: Annotated[
+            Literal["text", "image", "metadata"],
+            Field(
+                description=(
+                    "Read text, return images multimodally, or compute only the actual "
+                    "source SHA-256 and byte size without parsing."
+                )
+            ),
+        ] = "text",
+        sheet: Annotated[str | None, Field(description="Optional spreadsheet sheet name.")] = None,
+    ) -> str | list[dict[str, Any]]:
+        try:
+            user_id, kb_ids, is_admin, configurable = _tool_ctx()
+            if kb_id not in kb_ids:
+                return _as_json({"status": "out_of_scope"})
+            document_listing = await asyncio.to_thread(
+                source_service.list_documents,
+                kb_id,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+                path="",
+            )
+            documents = document_listing.get("documents", [])
+            document = next(
+                (item for item in documents if item.get("document_id") == document_id), None
+            )
+            if document is None:
+                return _as_json({"status": "not_found"})
+            path = str(document.get("path") or "")
+            collections = await asyncio.to_thread(
+                collection_service.list, kb_id, actor_user_id=user_id, is_admin=is_admin
+            )
+            required = _required_collection_context(
+                configurable, _related_collections(collections, path)
+            )
+            if required:
+                return _as_json(
+                    {
+                        "status": "collection_context_required",
+                        "collection_ids": [str(item.get("id")) for item in required],
+                    }
+                )
+            result = await asyncio.to_thread(
+                source_service.read_document,
+                kb_id,
+                document_id,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+                start=start,
+                end=end,
+                mode=mode,
+                sheet=sheet,
+            )
+            if result.get("status") == "image_ready":
+                metadata = {k: v for k, v in result.items() if k != "images"}
+                metadata["image_locators"] = [
+                    image.get("locator") for image in result.get("images", [])
+                ]
+                blocks: list[dict[str, Any]] = [{"type": "text", "text": _as_json(metadata)}]
+                from octop.infra.gateway.media.attachment_hints import VISION_MAX_BYTES
+
+                for image in result.get("images", []):
+                    encoded = str(image.get("data_base64") or "")
+                    raw = base64.b64decode(encoded, validate=True)
+                    if len(raw) > VISION_MAX_BYTES:
+                        blocks.append(
+                            {
+                                "type": "text",
+                                "text": "Image exceeds the supported vision size; export the original instead.",
+                            }
+                        )
+                        continue
+                    mime = str(image.get("mime_type") or "image/png")
+                    blocks.append(
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:{mime};base64,{encoded}"},
+                        }
+                    )
+                return blocks
+            return _as_json(result)
         except Exception:
             logger.warning("knowledge source read failed", exc_info=True)
-            return json.dumps({"verified": False, "reason": "unavailable"})
+            return _as_json({"status": "unavailable"})
+
+    async def export_knowledge_original(
+        kb_id: Annotated[str, Field(description="Selected knowledge-base ID.")],
+        document_id: Annotated[str, Field(description="Document ID from browse_knowledge.")],
+        expected_version: Annotated[
+            str,
+            Field(
+                description="Exact SHA-256 source version from browse or metadata read.",
+                min_length=64,
+                max_length=64,
+                pattern="^[0-9a-f]{64}$",
+            ),
+        ],
+    ) -> str:
+        try:
+            try:
+                user_id, kb_ids, is_admin, configurable = _tool_ctx()
+            except ValueError:
+                return _as_json(
+                    {
+                        "status": "needs_shared_export_confirmation",
+                        "message": tr("knowledge.source_export.trusted_context_required", "en"),
+                    }
+                )
+            if kb_id not in kb_ids:
+                return _as_json({"status": "out_of_scope"})
+            document_listing = await asyncio.to_thread(
+                source_service.list_documents,
+                kb_id,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+                path="",
+            )
+            documents = document_listing.get("documents", [])
+            document = next(
+                (item for item in documents if item.get("document_id") == document_id), None
+            )
+            if document is None:
+                return _as_json({"status": "not_found"})
+            requires_consent = True
+            approval_ready = False
+            try:
+                registry = getattr(services, "agent_registry", None)
+                checker = getattr(registry, "requires_shared_workspace_export_consent", None)
+                agent_id = str(getattr(services, "agent_id", "") or "")
+                if callable(checker) and agent_id:
+                    requires_consent = bool(await asyncio.to_thread(checker, agent_id, user_id))
+                if requires_consent:
+                    readiness = getattr(registry, "knowledge_export_approval_ready", None)
+                    approval_ready = callable(readiness) and bool(
+                        await asyncio.to_thread(readiness, agent_id)
+                    )
+            except Exception:
+                logger.warning("shared knowledge export scope lookup failed", exc_info=True)
+            thread_id = str(configurable.get("thread_id") or "")
+            if requires_consent and (
+                not bool(getattr(services, "shared_export_approval_enforced", False))
+                or not thread_id
+                or not approval_ready
+                # Nested subagent graphs do not inherit the parent's HITL policy.
+                or "|" in str(configurable.get("checkpoint_ns") or "")
+            ):
+                return _as_json(
+                    {
+                        "status": "needs_shared_export_confirmation",
+                        "message": tr(
+                            "knowledge.source_export.confirmation_required",
+                            str(configurable.get("locale") or "en"),
+                        ),
+                        "document_id": document_id,
+                        "version": expected_version,
+                    }
+                )
+            collections = await asyncio.to_thread(
+                collection_service.list, kb_id, actor_user_id=user_id, is_admin=is_admin
+            )
+            required = _required_collection_context(
+                configurable,
+                _related_collections(collections, str(document.get("path") or "")),
+            )
+            if required:
+                return _as_json(
+                    {
+                        "status": "collection_context_required",
+                        "collection_ids": [str(item.get("id")) for item in required],
+                    }
+                )
+            result = await source_service.export_document(
+                kb_id,
+                document_id,
+                workspace=workspace,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+                expected_version=expected_version,
+            )
+            if requires_consent:
+                result["sharing_warning"] = tr(
+                    "knowledge.source_export.copy_notice",
+                    str(configurable.get("locale") or "en"),
+                )
+            return _as_json(result)
+        except (LookupError, PermissionError):
+            return _as_json({"status": "not_found"})
+        except ValueError as exc:
+            if "version" in str(exc).casefold() or "changed" in str(exc).casefold():
+                return _as_json({"status": "source_version_changed"})
+            logger.warning("knowledge original export validation failed", exc_info=True)
+            return _as_json({"status": "unavailable"})
+        except Exception:
+            logger.warning("knowledge original export failed", exc_info=True)
+            return _as_json({"status": "unavailable"})
+
+    async def record_knowledge_observation(
+        kb_id: Annotated[str, Field(description="Selected knowledge-base ID.")],
+        document_id: Annotated[str, Field(description="Image source document ID.")],
+        evidence_id: Annotated[
+            str, Field(description="Source-issued evidence ID from the image read.")
+        ],
+        version: Annotated[str, Field(description="Exact source version from the image read.")],
+        locator: Annotated[
+            dict[str, Any], Field(description="Exact image/page locator from that read.")
+        ],
+        observation: Annotated[
+            str,
+            Field(
+                description="Your visual interpretation, clearly distinct from source transcription.",
+                min_length=1,
+                max_length=20_000,
+            ),
+        ],
+    ) -> str:
+        try:
+            user_id, kb_ids, is_admin, configurable = _tool_ctx()
+            if kb_id not in kb_ids:
+                return _as_json({"status": "out_of_scope"})
+            documents = await asyncio.to_thread(
+                source_service.list_documents,
+                kb_id,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+                path="",
+            )
+            document = next(
+                (
+                    item
+                    for item in documents.get("documents", [])
+                    if item.get("document_id") == document_id
+                ),
+                None,
+            )
+            if document is None:
+                return _as_json({"status": "not_found"})
+            collections = await asyncio.to_thread(
+                collection_service.list, kb_id, actor_user_id=user_id, is_admin=is_admin
+            )
+            required = _required_collection_context(
+                configurable,
+                _related_collections(collections, str(document.get("path") or "")),
+            )
+            if required:
+                return _as_json(
+                    {
+                        "status": "collection_context_required",
+                        "collection_ids": [str(item.get("id")) for item in required],
+                    }
+                )
+            receipt = await asyncio.to_thread(
+                collection_service.record_source_observation,
+                kb_id,
+                document_id,
+                {"text": observation},
+                evidence_id=evidence_id,
+                version=version,
+                locator=locator,
+                actor_user_id=user_id,
+                is_admin=is_admin,
+            )
+            return _as_json(
+                {
+                    "status": "interpretation_recorded",
+                    "label": "interpretation_not_source_transcription",
+                    "receipt": receipt,
+                }
+            )
+        except (LookupError, PermissionError, ValueError):
+            return _as_json({"status": "evidence_not_valid"})
+        except Exception:
+            logger.warning("knowledge visual interpretation record failed", exc_info=True)
+            return _as_json({"status": "unavailable"})
 
     return [
         StructuredTool.from_function(
-            coroutine=search_knowledge,
-            name=SEARCH_KNOWLEDGE_TOOL,
-            description=format_search_knowledge_description([]),
+            coroutine=browse_knowledge,
+            name="browse_knowledge",
+            description=(
+                "Browse authorized directories and files in an attached knowledge base. "
+                "Paths are relative to that base."
+            ),
         ),
         StructuredTool.from_function(
-            coroutine=read_knowledge_segment,
-            name=READ_KNOWLEDGE_SEGMENT_TOOL,
+            coroutine=search_knowledge_paths,
+            name="search_knowledge_paths",
             description=(
-                "Read the exact located content of a search result after verifying that the "
-                "current source still matches its indexed version and the user has access. "
-                "If verified is false, do not use or cite the stale excerpt."
+                "Find authorized knowledge documents by a path or filename substring; "
+                "returns locations only."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=read_knowledge_collection,
+            name="read_knowledge_collection",
+            description=(
+                "Read both topic and reading Markdown documents for a related collection "
+                "before opening its source files."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=read_knowledge_document,
+            name="read_knowledge_document",
+            description=(
+                "Read source text with exact locator/version, line range, PDF pages, or "
+                "spreadsheet sheet; image mode returns actual multimodal content. Metadata "
+                "mode computes live source SHA-256 and byte size without parsing. "
+                "Do not cite stale, denied, or incomplete sources."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=export_knowledge_original,
+            name="export_knowledge_original",
+            description=(
+                "Export the exact authorized original source version to the agent workspace "
+                "after reading related collection context. When this agent workspace is "
+                "shared, every other caller of the agent can read the exported copy and "
+                "the source knowledge-base ACL no longer protects it; this exact export "
+                "requires human approval in the current thread. Export is not a verified read."
+            ),
+        ),
+        StructuredTool.from_function(
+            coroutine=record_knowledge_observation,
+            name="record_knowledge_observation",
+            description=(
+                "After visually inspecting a delivered image, optionally record a concise "
+                "interpretation as interpretation, never source transcription. Supply the "
+                "source evidence ID, current version, and exact image/page locator from the "
+                "image-read result; stale, arbitrary, or non-image evidence is rejected."
             ),
         ),
     ]

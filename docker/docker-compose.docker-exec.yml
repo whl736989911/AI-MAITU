@@ -1,0 +1,11 @@
+# Explicitly opt in to the isolated Docker executor only when it is selected by
+# trusted deployment configuration. This grants the MAITU service access to the
+# host Docker API; do not include this overlay in the default deployment.
+services:
+  maitu:
+    volumes:
+      - type: bind
+        source: ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}
+        target: /var/run/docker.sock
+        bind:
+          create_host_path: false

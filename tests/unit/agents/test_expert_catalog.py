@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 
 def _write_manifest(expert_dir: Path, *, extra: dict | None = None) -> None:
     payload: dict = {
@@ -230,6 +232,89 @@ def test_expert_prompt_files_metadata_only(tmp_path: Path) -> None:
         if item["name"] == "skills/my-skill/SKILL.md"
     )
     assert skill_body.startswith("# Skill")
+
+
+def test_bundled_identity_descriptions_are_rendered_by_locale() -> None:
+    from octop.branding import platform_name
+    from octop.infra.agents.experts.catalog import ExpertCatalog, default_library_root
+
+    catalog = ExpertCatalog(default_library_root())
+    catalog.refresh()
+
+    summary = catalog.get("default")
+    assert summary is not None
+    assert platform_name("zh") in summary.summary.description_zh
+    assert platform_name("en") in summary.summary.description_en
+    assert "{{platform_name}}" not in summary.summary.description_zh
+    assert "{{platform_name}}" not in summary.summary.description_en
+
+
+def test_expert_seed_renders_packaged_templates_only(tmp_path: Path) -> None:
+    import asyncio
+
+    from octop.branding import platform_name
+    from octop.infra.agents.experts.catalog import default_library_root, seed_expert_directory
+
+    class Workspace:
+        uploads: list[tuple[str, bytes]]
+
+        async def aupload_many(self, pairs: list[tuple[str, bytes]]) -> None:
+            self.uploads = pairs
+
+    async def seed(expert_dir: Path) -> list[tuple[str, bytes]]:
+        workspace = Workspace()
+        await seed_expert_directory(
+            expert_dir=expert_dir,
+            workspace=workspace,
+            seed_paths=["SOUL.md"],
+        )
+        return workspace.uploads
+
+    bundled = asyncio.run(seed(default_library_root() / "multi-agent-orchestrator"))
+    bundled_soul = dict(bundled)["SOUL.md"].decode("utf-8")
+    assert "{{platform_name}}" not in bundled_soul
+    assert platform_name("zh") in bundled_soul
+    assert platform_name("en") in bundled_soul
+
+    custom_dir = tmp_path / "customer"
+    custom_dir.mkdir()
+    (custom_dir / "SOUL.md").write_text("{{platform_name}}", encoding="utf-8")
+    custom = asyncio.run(seed(custom_dir))
+    assert dict(custom)["SOUL.md"] == b"{{platform_name}}"
+
+
+def test_bundled_seed_preserves_json_with_quoted_brand_names(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import asyncio
+
+    from octop.infra.agents.experts import catalog
+    from octop.infra.agents.middleware.platform_identity import _IDENTITY_TOKENS
+
+    root = tmp_path / "bundled"
+    expert_dir = root / "quoted"
+    expert_dir.mkdir(parents=True)
+    _write_manifest(
+        expert_dir, extra={"description": {"en": "Platform {{platform_name}}."}, "enabled": True}
+    )
+    monkeypatch.setattr(catalog, "default_library_root", lambda: root)
+    quoted = 'Aster "Maker" \\ Company'
+    monkeypatch.setitem(_IDENTITY_TOKENS, "{{platform_name}}", lambda _locale: quoted)
+    target = tmp_path / "workspace"
+
+    class Workspace:
+        async def aupload_many(self, pairs: list[tuple[str, bytes]]) -> None:
+            for relative, contents in pairs:
+                destination = target / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(contents)
+
+    asyncio.run(
+        catalog.seed_expert_directory(expert_dir=expert_dir, workspace=Workspace(), seed_paths=[])
+    )
+    manifest = json.loads((target / catalog.WORKSPACE_MANIFEST_PATH).read_text("utf-8"))
+    assert manifest["description"]["en"] == f"Platform {quoted} ({quoted})."
+    assert manifest["enabled"] is True
 
 
 def test_bundled_office_automation_discovers_skills() -> None:

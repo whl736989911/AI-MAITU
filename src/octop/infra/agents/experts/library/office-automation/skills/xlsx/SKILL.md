@@ -16,7 +16,7 @@ metadata:
 
 > **重要说明：** 所有 `scripts/` 路径均相对于此技能目录。
 > 运行方式：`cd {this_skill_dir} && python scripts/...`
-> 或使用 `execute_shell_command` 的 `cwd` 参数。
+> 可将 `cd {this_skill_dir} && python scripts/...` 命令直接传给平台的 `execute` 工具；该工具接收命令字符串，不单独提供 `cwd` 参数。第三方技能要求旧工具名时，同样改用 `execute`，不要尝试调用未注册的工具。
 
 # 输出要求
 
@@ -99,6 +99,7 @@ metadata:
 
 ### 使用 pandas 进行数据分析
 对于数据分析、可视化和基本操作，使用 **pandas** 提供的强大数据操作功能：
+若需要通过 Python 调用 pandas，请先在源码安装中启用平台 office extra：`uv sync --extra office`，或 `pip install -e ".[office]"`。
 
 ```python
 import pandas as pd

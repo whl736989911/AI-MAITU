@@ -15,7 +15,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field, model_validator
 
 from octop.api.common.public_base import resolve_public_base
-from octop.api.deps import get_server, require_permission
+from octop.api.deps import get_server, require_admin, require_permission
 from octop.i18n import tr
 from octop.infra.auth.sso.redirect_after import sanitize_redirect_after
 from octop.infra.connectors.builder import (
@@ -69,12 +69,28 @@ from octop.infra.connectors.probe import (
 from octop.infra.connectors.service import ConnectorNameTakenError, ConnectorService
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.utils.host_dirs import license_managed_install
 from octop.infra.utils.locale import resolve_request_locale
 from octop.infra.utils.ulid import new_ulid
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+class ConnectorCliInstallResponse(BaseModel):
+    ok: bool
+    already_installed: bool
+    kind: str
+    binary: str
+    npm_package: str
+    install_command: str
+    doc_url: str
+    guide_url: str | None = None
+    installed: bool
+    binary_path: str | None = None
+    version: str | None = None
+    error: str | None = None
 
 
 class CreateInstanceBody(BaseModel):
@@ -1030,16 +1046,23 @@ async def connector_cli_status(
 @router.post(
     "/connectors/{kind}/install-cli",
     summary="Install host CLI for Feishu/WeCom connectors",
+    response_model=ConnectorCliInstallResponse,
 )
 async def connector_install_cli(
     kind: str,
     _: Any = Depends(require_permission("connectors")),
+    _admin: Any = Depends(require_admin()),
 ) -> dict[str, Any]:
     """Run ``npm install -g`` for the connector CLI on the Octop host (admin only).
 
     Always returns a structured body (even on failure) including ``install_command``
     and documentation URLs so the UI can guide manual install.
     """
+    if license_managed_install():
+        raise OctopError(
+            ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+            "Host CLI installation is disabled on license-managed installs.",
+        )
     if get_cli_install_spec(kind) is None:
         raise OctopError(
             ErrorCode.CONNECTOR_KIND_UNSUPPORTED,

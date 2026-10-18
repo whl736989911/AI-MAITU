@@ -14,8 +14,10 @@ def not_applicable(
     suggestion: str | None = None,
     docs_url: str | None = None,
 ) -> NoReturn:
-    """Print a uniform "not applicable for Octop" error and exit 2."""
-    lines = [f"\u274c Not applicable for MAITU Smart Manufacturing: {reason}"]
+    """Print a uniform "not applicable" error and exit 2."""
+    from octop.branding import platform_name
+
+    lines = [f"\u274c Not applicable for {platform_name()}: {reason}"]
     if suggestion:
         lines.append(f"   Suggestion: {suggestion}")
     if docs_url:

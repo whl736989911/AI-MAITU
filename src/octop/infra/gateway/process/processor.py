@@ -20,6 +20,7 @@ from harness_gateway.models import (
 )
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
+from octop.i18n import tr
 from octop.i18n.domains.stream import format_stream_error
 from octop.infra.agents.conversation_mode import (
     execute_user_message,
@@ -47,7 +48,7 @@ from octop.infra.agents.middleware.feature_workflow import CONFIGURABLE_FEATURE_
 from octop.infra.agents.profile import parse_config_json
 from octop.infra.agents.providers.reasoning import reasoning_request_parameters
 from octop.infra.agents.security.hitl_session import HitlSessionPolicyStore, hitl_thread_scope
-from octop.infra.errors import OctopError
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.hitl.coordinator import (
     HitlAnswerOutcome,
     HitlChannelCoordinator,
@@ -628,12 +629,21 @@ class GlobalProcessor:
         if not model_ref:
             fallback = self._agent_manager.resolve_fallback_model_ref()
             model_ref = fallback.strip() if isinstance(fallback, str) and fallback.strip() else None
-        if not model_ref:
-            return None
-        return providers.resolve_model_for_multimodal_turn(
+        if not needs_multimodal:
+            return model_ref
+        resolved = providers.resolve_model_for_multimodal_turn(
             model_ref,
             needs_multimodal=needs_multimodal,
         )
+        if needs_multimodal and not resolved:
+            raise OctopError(
+                ErrorCode.AGENT_FAILED,
+                tr(
+                    "agent_errors.vision_model_required",
+                    resolve_user_locale(user_repo=self._user_repo, user_id=user_id),
+                ),
+            )
+        return resolved
 
     def _resolve_reasoning_overrides(
         self,
@@ -694,13 +704,6 @@ class GlobalProcessor:
     # -- IM channel entry (MessageEvent stream) --------------------------------
 
     async def __call__(self, msg: InboundMessage) -> AsyncIterator[MessageEvent]:
-        from octop.infra.licensing import current_license
-
-        async with current_license().business_task():
-            async for event in self._process_message(msg):
-                yield event
-
-    async def _process_message(self, msg: InboundMessage) -> AsyncIterator[MessageEvent]:
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
         METRICS.inc("messages_total")
@@ -903,12 +906,6 @@ class GlobalProcessor:
             explicit_ids=None,
             locale=locale,
             agent_id=agent_id,
-        )
-        await self._prefetch_turn_knowledge(
-            request,
-            user_id=user_id,
-            is_admin=False,
-            query=msg.text,
         )
         if mcp_servers:
             request["mcp_servers"] = mcp_servers
@@ -1403,12 +1400,6 @@ class GlobalProcessor:
             locale=locale,
             agent_id=agent_id,
         )
-        await self._prefetch_turn_knowledge(
-            request,
-            user_id=user_id,
-            is_admin=bool(meta.get("user_is_admin")),
-            query=msg.text,
-        )
 
         if mcp_servers:
             request["mcp_servers"] = mcp_servers
@@ -1641,7 +1632,7 @@ class GlobalProcessor:
         locale: str,
         agent_id: str | None = None,
     ) -> None:
-        """Expose selected knowledge-base ids for the search_knowledge tool."""
+        """Expose selected knowledge bases for collection-first source tools."""
         if self._knowledge_services is None:
             return
         # One scope rule (``sharing.can_access``): the visible list carries the
@@ -1659,67 +1650,6 @@ class GlobalProcessor:
             is_admin=is_admin,
             locale=locale,
         )
-
-    async def _prefetch_turn_knowledge(
-        self,
-        request: dict[str, Any],
-        *,
-        user_id: int,
-        is_admin: bool,
-        query: str,
-    ) -> None:
-        """Surface a few authorized locations to the model without reading source content."""
-        services = self._knowledge_services
-        if services is None or not query.strip():
-            return
-        configurable = request.get("configurable") or {}
-        kb_ids = configurable.get("knowledge_base_ids")
-        if not isinstance(kb_ids, list) or not kb_ids:
-            return
-
-        def candidates() -> list[dict[str, object]]:
-            from octop.infra.knowledge.gate import assert_knowledge_usable  # noqa: PLC0415
-
-            try:
-                assert_knowledge_usable(
-                    services.settings_repo.get,
-                    getattr(services, "provider_repo", None),
-                )
-            except RuntimeError:
-                return []
-            from octop.infra.knowledge.service import KnowledgeService  # noqa: PLC0415
-
-            service = KnowledgeService(services)
-            matches = []
-            for kb_id in kb_ids:
-                matches.extend(
-                    service.search(
-                        actor_user_id=user_id,
-                        is_admin=is_admin,
-                        kb_id=str(kb_id),
-                        query=query[:256],
-                        limit=3,
-                    )
-                )
-            matches.sort(key=lambda hit: (not bool(hit.collection_id), -hit.score))
-            return [
-                {
-                    "kb_id": hit.kb_id,
-                    "document_id": hit.document_id,
-                    "segment_id": hit.segment_id,
-                    "filename": hit.filename,
-                    "locator": hit.locator,
-                }
-                for hit in matches[:3]
-            ]
-
-        try:
-            found = await asyncio.get_running_loop().run_in_executor(None, candidates)
-        except Exception:
-            logger.warning("knowledge candidate prefetch failed", exc_info=True)
-            return
-        if found:
-            configurable["knowledge_candidates"] = found
 
     async def _resolve_turn_mcp_servers(
         self,

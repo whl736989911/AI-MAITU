@@ -291,7 +291,9 @@ def print_welcome(*, agent_id: str, model: str, session_key: str, thread_id: str
         ver = pkg_version("octop")
     except Exception:
         ver = "unknown"
-    console.print(f"  [bold green]MAITU Smart Manufacturing[/] [dim]v{ver}[/] — interactive chat")
+    from octop.branding import platform_name
+
+    console.print(f"  [bold green]{platform_name()}[/] [dim]v{ver}[/] — interactive chat")
     console.print(f"  [dim]Agent: {agent_id}  Model: {model or 'default'}[/]")
     console.print(f"  [dim]Session: {session_key}[/]", end="")
     if thread_id:

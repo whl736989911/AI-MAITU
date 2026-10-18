@@ -469,7 +469,10 @@ Zed setup example.
 | `GET` | `/knowledge-bases/{kb}/search?q=…` | reader | lexical/optional vector search filtered by the same effective ACL |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/preview` | reader | up to 200,000 characters from the completed index; verifies the original hash, never repeats OCR |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/segments/{segment}` | reader | revalidates the file and its permission before returning verified evidence |
-| `GET`/`POST` | `/sharing/acl/knowledge_document/{doc}` | governance | folders and files use the existing sharing ACL/change approval and audit flow |
+| `GET`/`PUT` | `/knowledge-bases/{kb}/permissions` | reader / ACL manager | effective scope metadata for the base and accessible documents; changes use existing approval/audit |
+| `GET`/`PUT` | `/knowledge-bases/{kb}/documents/{doc}/permissions` | reader / ACL manager | effective document scope, inheritance and read/write; only managers see grant details |
+| `GET` | `/knowledge-bases/{kb}/permission-principals` | ACL manager | safe user, department and role choices without requiring the users module |
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; does not require a completed index |
 
 Folder ACLs intersect with ancestor restrictions by default. Only a matching
 explicit user, department, or role grant on a single file can bypass ancestor
@@ -485,54 +488,66 @@ stale return HTTP 409 with `KNOWLEDGE_INDEX_NOT_READY`. Indexing scans all PDF
 pages sequentially with bounded OCR rendering and one heavy ingestion task per
 process. DOCX parsing does not load unrelated embedded images or OCR them.
 
-### Personal two-document collections
+### Source-authorized two-document collections
 
-These are owner-private reading aids over authorized original files, not new
-knowledge bases or file-processing tiers. Each explicitly selected file or folder
-gets its own collection; selecting a parent and child preserves both. Keywords
-start empty, and descendants included by a folder do not get extra collections.
+Collections follow their target original's current ACL, not their creator's
+identity. Each explicitly selected file or folder gets an independent collection;
+selecting a parent and child preserves both. Descendants included by a folder do
+not get extra collections.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| `GET` | `/knowledge-bases/{kb}/collections` | reader | current user's collections only |
-| `POST` | `/knowledge-bases/{kb}/collections` | reader | body `{document_ids: string[]}` → `201`; validates the entire selection before creating independent collections |
-| `PATCH` | `/knowledge-bases/{kb}/collections/{collection}` | owner + reader | body `{keywords: string[], name?: string}`; reclassifies existing indexed content, without parsing new source files |
-| `POST` | `/knowledge-bases/{kb}/collections/{collection}/generate` | owner + reader | refresh both views, using current extraction when available; nonempty keywords require the knowledge feature to be enabled |
-| `GET` | `/knowledge-bases/{kb}/collections/{collection}/documents` | owner + reader | `{collection, keyword_document, reading_document, storage_path}` |
-| `DELETE` | `/knowledge-bases/{kb}/collections/{collection}` | owner + reader | `204`; deletes derived artifacts, never originals |
+| `GET` | `/knowledge-bases/{kb}/collections` | reader | collections whose target the caller may read; coverage excludes inaccessible sources |
+| `POST` | `/knowledge-bases/{kb}/collections` | reader | body `{document_ids: string[], prompt?: string, name?: string}` → `201` list; no original parsing or automatic organization |
+| `PATCH` | `/knowledge-bases/{kb}/collections/{collection}` | source writer / manager | body `{prompt?: string, name?: string}`; changing the prompt invalidates old topical results |
+| `POST` | `/knowledge-bases/{kb}/collections/{collection}/generate` | source writer / manager | explicit prompt-directed organization; prompt required; concurrent run returns `409 KNOWLEDGE_COLLECTION_GENERATING` |
+| `GET` | `/knowledge-bases/{kb}/collections/{collection}/documents` | reader | `{collection, topic_document, reading_document, storage_path}`, filtered to current readable sources |
+| `DELETE` | `/knowledge-bases/{kb}/collections/{collection}` | source writer / manager | `204`; deletes derived artifacts, never originals |
 
-Collections expose stable target document identity, current target path, keywords,
-`ready`/`partial`/`pending` status, and readable coverage (`total`, `indexed`,
-`read`, `pending`, `failed`, `unsupported`). `read` counts files with at least one
-verified recorded segment, not completely read files. Keywords are normalized and
-case-insensitively deduplicated, with at most 32 nonempty terms of 200 characters
-each. Names must be nonempty and no longer than 200 characters.
+An empty prompt is valid for reading accumulation. Prompts are at most 2,000
+characters; names must be nonempty and at most 200 characters. Metadata includes
+the stable target ID/path, prompt, `coverage` (`total`, `read`, `generated`,
+`pending`, `failed`) and explicit `generation` state
+(`idle`, `running`, `ready`, `partial`, `error`), error, model and completion time.
+An HTTP success does not imply complete organization: inspect generation and
+coverage for extraction/model failures.
 
-If source extraction rejects a file (for example, a PDF with no extractable text),
-generation returns `409 KNOWLEDGE_INDEX_NOT_READY`, not a collection-settings
-validation error. Successfully processed sources remain available in the two
-documents; coverage reports the failed sources and the collection remains partial.
+`topic-index.md` contains prompt-directed results with evidence citations;
+`reading-index.md` accumulates actual source reads and separately labeled visual
+observations. Each item retains the relative file path, source version and exact
+line/page/sheet/image locator. Model conclusions are not verified transcriptions.
+Only metadata lookup or exporting an original does not count as reading it.
+One successful source read updates all containing collections without re-parsing
+the same source for each collection. New evidence supplements or flags existing
+topic results; ordinary reading does not automatically rescan the whole folder.
 
-Artifacts live under
-`<OCTOP_HOME>/knowledge-collections/<owner_user_id>/<collection_id>/`.
-`keyword-index.md` holds matching excerpts and source locations;
-`reading-index.md` accumulates verified reads and extractive summaries. A read
-already owned by the keyword view refers to that view by source segment ID instead
-of duplicating its body. Filename/path-only matches remain metadata locators.
+Agent tools browse and locate authorized originals without requiring vectors or
+completed indexes. Related collection Markdown must be read before source content.
+Receipt state is server-stamped for each turn, not trusted from client config.
+The original export tool binds approval to the actual source SHA-256; shared
+workspaces require explicit, non-bypassable confirmation because an exported copy
+can be read by other workspace users and is no longer protected by the source ACL.
+Shared originals must be exported through an initialized main conversation;
+child graphs and incomplete bootstrap cannot bypass that approval. A parent can
+approve a copy before delegating work on it to a child task.
 
-Existing search checks these materializations first and fills remaining candidates
-from original indexes. Hits may include `collection_id` and
-`collection_document: "keyword" | "reading"`; overlapping collections do not
-duplicate a source segment in the result set. Every candidate still requires the
-existing verified segment-read operation before citation. Successful Agent or HTTP
-segment reads update all of the caller's collections containing that source.
+Artifacts are caller-filtered materializations under
+`<OCTOP_HOME>/knowledge-collections/<collection_id>/<user_id>/`; database evidence
+is canonical. Revoked or old-version sources do not reappear through cached
+Markdown. Renames preserve stable targets; same-path replacement does not
+retarget an existing collection. Knowledge backups include the derived artifacts.
 
-Current library/file ACLs, personal exclusion rules, source versions, and the
-Agent's current `knowledge_base_ids` remain authoritative. There is no administrator
-bypass for another user's collection ownership. Renames preserve stable target IDs;
-deletion followed by same-path replacement does not retarget a collection. Source
-updates invalidate old-version excerpts and reading records. System backups include
-these artifacts when `include_knowledge` is enabled.
+Permission updates take `{expected_version, visibility, unit_key?, permission,
+grants?, reason?}`. `visibility` is `public` (company), `unit` (department), or
+`private` (personal; private with grants is custom). `permission` is `read` or
+`write`; grants identify users, units or roles. Responses include the effective
+permission and applied/pending change metadata. Stale versions return `409`.
+The knowledge-base owner and system administrator manage ACLs; content write
+permission alone does not grant ACL management. Sharing retains approvals/audit,
+but the knowledge page is the configuration entry point.
+
+Old personal keyword/search-rule endpoints and runtime policies are removed.
+Ordinary filename/index search and historical citation rendering remain.
 
 ## Storage backends
 

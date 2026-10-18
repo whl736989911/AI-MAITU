@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
 from harness_agent.plugins import PluginRegistry
 
-from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
 from octop.infra.agents.plugins.manager import (
     PluginManager,
     parse_plugin_group,
@@ -18,8 +16,7 @@ from octop.infra.agents.plugins.manager import (
 )
 from octop.infra.errors import ErrorCode, OctopError
 
-_SHIPPED_ID = "fortune"
-_SHIPPED = default_bundled_plugins_root() / _SHIPPED_ID
+_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "plugins" / "echo-tool"
 
 
 @pytest.fixture(autouse=True)
@@ -29,154 +26,145 @@ def _reset_registry() -> None:
     PluginRegistry.reset()
 
 
-def test_install_and_list(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
-    plugins_dir = tmp_path / "plugins"
-    mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-    loaded = mgr.install_path(_SHIPPED, force=True)
-    assert loaded.manifest.id == _SHIPPED_ID
-    items = mgr.list_installed()
-    assert any(i.get("id") == _SHIPPED_ID for i in items)
-
-
-def test_global_disable(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.json"
-    config_path.write_text(
-        json.dumps({"plugins": {_SHIPPED_ID: {"enabled": False}}}),
-        encoding="utf-8",
-    )
-    plugins_dir = tmp_path / "plugins"
-    mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-    mgr.install_path(_SHIPPED, force=True)
-    loaded = mgr.load_installed(install_deps=False)
-    assert loaded == []
-
-
-def test_set_enabled_roundtrip(tmp_path: Path) -> None:
+def test_install_rejects_unshipped_code(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(_SHIPPED, force=True)
-    assert any(i.get("id") == _SHIPPED_ID and i.get("enabled") for i in mgr.list_installed())
-
-    disabled = mgr.set_enabled(_SHIPPED_ID, False)
-    assert disabled.get("enabled") is False
-    assert disabled.get("loaded") is False
-    assert PluginRegistry().get(_SHIPPED_ID) is None
-    raw = json.loads(config_path.read_text(encoding="utf-8"))
-    assert raw["plugins"][_SHIPPED_ID]["enabled"] is False
-
-    enabled = mgr.set_enabled(_SHIPPED_ID, True)
-    assert enabled.get("enabled") is True
-    assert enabled.get("loaded") is True
-    assert PluginRegistry().get(_SHIPPED_ID) is not None
-
-
-def test_external_plugin_sources_are_rejected_before_execution(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.json"
-    original_config = '{"unchanged": true}'
-    config_path.write_text(original_config, encoding="utf-8")
-    plugins_dir = tmp_path / "plugins"
-    mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-
-    outside = tmp_path / "custom-plugin"
-    outside.mkdir()
-    (outside / "plugin.yaml").write_text(
-        "id: custom-plugin\nversion: 0.1.0\nname: Custom\nkind: tool\nentry: main.py\n",
-        encoding="utf-8",
-    )
-    marker = tmp_path / "executed"
-    (outside / "main.py").write_text(
-        f"from pathlib import Path\nPath({str(marker)!r}).touch()\ndef setup(ctx): pass\n",
-        encoding="utf-8",
-    )
-    archive = tmp_path / "custom-plugin.zip"
-    archive.write_bytes(b"not inspected")
-
-    for operation in (
-        lambda: mgr.install_path(outside),
-        lambda: mgr.install_archive(archive),
-        lambda: mgr.install_url("https://example.com/custom-plugin.zip"),
-    ):
-        with pytest.raises(OctopError):
-            operation()
-
-    assert not marker.exists()
-    assert config_path.read_text(encoding="utf-8") == original_config
-
-
-def test_install_path_already_exists(tmp_path: Path) -> None:
-    config_path = tmp_path / "config.json"
-    config_path.write_text("{}", encoding="utf-8")
-    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(_SHIPPED, force=True)
     with pytest.raises(OctopError) as excinfo:
-        mgr.install_path(_SHIPPED, force=False)
-    assert excinfo.value.code is ErrorCode.PLUGIN_ALREADY_EXISTS
-    assert excinfo.value.status == 409
-    assert excinfo.value.details.get("id") == _SHIPPED_ID
+        mgr.install_path(_FIXTURE, force=True)
+    assert excinfo.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+    assert not (tmp_path / "plugins" / "echo-tool").exists()
+
+
+def test_unshipped_plugins_are_not_loaded_or_enabled(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    plugins_dir = tmp_path / "plugins"
+    dest = plugins_dir / "echo-tool"
+    dest.mkdir(parents=True)
+    for source in _FIXTURE.rglob("*"):
+        if source.is_file():
+            target = dest / source.relative_to(_FIXTURE)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
+    mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
+    with pytest.raises(OctopError) as excinfo:
+        mgr.load_installed(install_deps=True)
+    assert excinfo.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+    assert mgr.load_installed(install_deps=False) == []
+    assert mgr.load_missing(install_deps=False) == []
+    assert PluginRegistry().get("echo-tool") is None
+    with pytest.raises(OctopError) as excinfo:
+        mgr.set_enabled("echo-tool", True)
+    assert excinfo.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+
+
+def test_shipped_bundle_is_installed_and_tampering_prevents_load(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
+    row = mgr.install_bundled("fun-facts")
+    assert row["id"] == "fun-facts"
+    assert row["enabled"] is True
+    installed = tmp_path / "plugins" / "fun-facts"
+    main_py = installed / "main.py"
+    main_py.write_text(
+        main_py.read_text(encoding="utf-8") + "\n# tampered\n",
+        encoding="utf-8",
+    )
+    assert all(
+        plugin.manifest.id != "fun-facts" for plugin in mgr.load_installed(install_deps=False)
+    )
+    assert PluginRegistry().get("fun-facts") is None
+
+
+def test_load_installed_clears_stale_registry_entries(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    initial = PluginManager(
+        plugins_dir=tmp_path / "stale_plugins",
+        config_path=config_path,
+    )
+    initial.install_bundled("fun-facts")
+    assert initial.load_installed(install_deps=False)
+    assert PluginRegistry().get("fun-facts") is not None
+
+    replacement = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
+    replacement.install_bundled("weather")
+    loaded = replacement.load_installed(install_deps=False)
+
+    assert [plugin.manifest.id for plugin in loaded] == ["weather"]
+    assert PluginRegistry().get("fun-facts") is None
+    assert PluginRegistry().get("weather") is not None
+
+
+def test_load_missing_does_not_clear_existing_registry_entries(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    plugins_dir = tmp_path / "plugins"
+    mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
+    mgr.install_bundled("fun-facts")
+    assert mgr.load_installed(install_deps=False)
+
+    assert mgr.load_missing(install_deps=False) == []
+    assert PluginRegistry().get("fun-facts") is not None
+
+
+def test_archive_and_url_plugin_installation_are_disabled(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
+    for install in (
+        lambda: mgr.install_url("https://example.com/plugin.zip"),
+        lambda: mgr.install_archive(tmp_path / "plugin.zip"),
+    ):
+        with pytest.raises(OctopError) as excinfo:
+            install()
+        assert excinfo.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+
+
+def test_unshipped_path_cannot_be_installed(tmp_path: Path) -> None:
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
+
+    with pytest.raises(OctopError) as excinfo:
+        mgr.install_path(_FIXTURE, force=False)
+    assert excinfo.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
 
 
 def test_parse_plugin_ui_meta_and_list(tmp_path: Path) -> None:
-    plugin_dir = tmp_path / "with-ui"
-    plugin_dir.mkdir()
-    (plugin_dir / "plugin.yaml").write_text(
-        "\n".join(
-            [
-                "id: with-ui",
-                "version: 0.1.0",
-                "name: With UI",
-                "kind: tool",
-                "entry: main.py",
-                "ui:",
-                "  entry: ui/dist/index.js",
-                "  manifest: ui/dist/manifest.json",
-            ],
-        ),
-        encoding="utf-8",
-    )
-    (plugin_dir / "main.py").write_text(
-        "def setup(ctx):\n    pass\n",
-        encoding="utf-8",
-    )
-    dist = plugin_dir / "ui" / "dist"
-    dist.mkdir(parents=True)
-    (dist / "index.js").write_text("export function setup() {}", encoding="utf-8")
-    (dist / "manifest.json").write_text("{}", encoding="utf-8")
+    from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
 
-    assert parse_plugin_ui_meta(plugin_dir) == {
-        "entry": "ui/dist/index.js",
-        "manifest": "ui/dist/manifest.json",
-    }
+    shipped = default_bundled_plugins_root() / "weather"
+    assert parse_plugin_ui_meta(shipped) == {"entry": "ui/index.js", "manifest": "ui/manifest.json"}
 
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
-    plugins_dir = tmp_path / "plugins"
-    plugins_dir.mkdir()
-    shutil.copytree(plugin_dir, plugins_dir / "with-ui")
-    mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-    items = mgr.list_installed()
-    assert any(row.get("id") == "with-ui" for row in items)
-    resolved = mgr.resolve_ui_file("with-ui", "dist/index.js")
-    assert resolved.name == "index.js"
+    mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
+    mgr.install_bundled("weather")
+    row = next(item for item in mgr.list_installed() if item.get("id") == "weather")
+    assert row["ui"] == {"entry": "ui/index.js", "manifest": "ui/manifest.json"}
+    assert mgr.resolve_ui_file("weather", "index.js").name == "index.js"
     with pytest.raises(OctopError) as excinfo:
-        mgr.resolve_ui_file("with-ui", "../plugin.yaml")
+        mgr.resolve_ui_file("weather", "../plugin.yaml")
     assert excinfo.value.code is ErrorCode.NOT_FOUND
 
 
-def test_load_missing_picks_up_bundled_plugin(tmp_path: Path) -> None:
+def test_load_missing_skips_unshipped_cli_install(tmp_path: Path) -> None:
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     plugins_dir = tmp_path / "plugins"
-    shutil.copytree(_SHIPPED, plugins_dir / _SHIPPED_ID)
+    dest = plugins_dir / "echo-tool"
+    dest.mkdir(parents=True)
+    for source in _FIXTURE.rglob("*"):
+        if source.is_file():
+            target = dest / source.relative_to(_FIXTURE)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(source.read_bytes())
     mgr = PluginManager(plugins_dir=plugins_dir, config_path=config_path)
-    assert PluginRegistry().get(_SHIPPED_ID) is None
-    newly = mgr.load_missing(install_deps=False)
-    assert len(newly) == 1
-    assert newly[0].manifest.id == _SHIPPED_ID
-    assert PluginRegistry().get(_SHIPPED_ID) is not None
     assert mgr.load_missing(install_deps=False) == []
+    assert PluginRegistry().get("echo-tool") is None
 
 
 def test_parse_plugin_ui_meta_missing_entry(tmp_path: Path) -> None:
@@ -267,12 +255,12 @@ def test_set_enabled_refuses_corrupt_config_and_preserves_bytes(tmp_path: Path) 
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
     mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(_SHIPPED, force=True)
+    mgr.install_bundled("weather")
 
     corrupt = '{"bind_host": "0.0.0.0", "database": {"driver": "postgresql"},}'
     config_path.write_text(corrupt, encoding="utf-8")
     with pytest.raises(OctopError) as excinfo:
-        mgr.set_enabled(_SHIPPED_ID, False)
+        mgr.set_enabled("weather", False)
     assert excinfo.value.code is ErrorCode.CONFIG_FILE_CORRUPT
     assert config_path.read_text(encoding="utf-8") == corrupt
 
@@ -289,9 +277,9 @@ def test_set_enabled_preserves_unrelated_keys(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     mgr = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config_path)
-    mgr.install_path(_SHIPPED, force=True)
-    mgr.set_enabled(_SHIPPED_ID, False)
+    mgr.install_bundled("weather")
+    mgr.set_enabled("weather", False)
     data = json.loads(config_path.read_text(encoding="utf-8"))
     assert data["bind_host"] == "0.0.0.0"
     assert data["database"] == {"driver": "postgresql", "host": "db.internal"}
-    assert data["plugins"][_SHIPPED_ID]["enabled"] is False
+    assert data["plugins"]["weather"]["enabled"] is False

@@ -57,6 +57,9 @@ def stamp_turn_knowledge_config(
     configurable = dict(request.get("configurable") or {})
     configurable["knowledge_base_ids"] = selected_ids
     configurable["knowledge_base_catalog"] = catalog_for_selected_bases(visible_bases, selected_ids)
+    # A shared mutable receipt survives per-tool config copies, but not turns.
+    # Never trust receipt IDs supplied by an HTTP or gateway client.
+    configurable["knowledge_collection_reads"] = []
     configurable["user_is_admin"] = is_admin
     configurable["locale"] = locale
     request["configurable"] = configurable

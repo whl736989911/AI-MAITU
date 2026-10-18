@@ -1,62 +1,76 @@
-"""Tests for manual-only `octop update` behavior."""
+"""Tests for the CLI authorization-center update flow."""
 
 from __future__ import annotations
 
 from typing import Any
 
-import pytest
 from click.testing import CliRunner
 
-from octop.infra.setup import self_update
 
-PROJECT_URL = "https://github.com/whl736989911/AI-MAITU"
+def test_update_check_reports_trusted_release_without_queue(monkeypatch: Any) -> None:
+    from octop.cli.commands import update as command
 
-
-def _block_package_updater(monkeypatch: pytest.MonkeyPatch) -> list[str]:
-    calls: list[str] = []
-
-    def unexpected(*args: Any, **kwargs: Any) -> None:
-        calls.append("called")
-        pytest.fail("octop update must not access PyPI or install packages")
-
-    monkeypatch.setattr(self_update, "fetch_pypi_info", unexpected)
-    monkeypatch.setattr(self_update, "run_upgrade", unexpected)
-    monkeypatch.setattr(self_update, "get_local_version", lambda: "1.2.3")
-
-    from octop.cli.commands import update as update_cmd
-
-    monkeypatch.setattr(update_cmd, "fetch_pypi_info", unexpected, raising=False)
-    monkeypatch.setattr(update_cmd, "run_upgrade", unexpected, raising=False)
-    monkeypatch.setattr(update_cmd, "get_local_version", lambda: "1.2.3")
-    return calls
-
-
-def test_update_check_prints_manual_source_without_checking_pypi(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _block_package_updater(monkeypatch)
-    from octop.cli.commands.update import update
-
-    monkeypatch.setattr("octop.cli.commands.update.resolve_cli_locale", lambda: "zh")
-
-    result = CliRunner().invoke(update, ["--check"])
-
+    status = {
+        "current_version": "1.2.3",
+        "latest_version": "1.3.0",
+        "has_update": True,
+        "error": None,
+        "install_available": True,
+        "center_configured": True,
+    }
+    monkeypatch.setattr(command.update_client, "check", lambda *, force: status)
+    queued: list[str] = []
+    monkeypatch.setattr(
+        command.update_client, "queue_upgrade", lambda target: queued.append(target)
+    )
+    monkeypatch.setattr(command, "resolve_cli_locale", lambda: "en")
+    result = CliRunner().invoke(command.update, ["--check"])
     assert result.exit_code == 0
-    assert "当前安装版本：1.2.3" in result.output
-    assert PROJECT_URL in result.output
-    assert calls == []
+    assert "1.3.0" in result.output
+    assert queued == []
 
 
-def test_update_manual_invocation_fails_without_installing(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    calls = _block_package_updater(monkeypatch)
-    from octop.cli.commands.update import update
+def test_update_yes_queues_only_center_release(monkeypatch: Any) -> None:
+    from octop.cli.commands import update as command
 
-    monkeypatch.setattr("octop.cli.commands.update.resolve_cli_locale", lambda: "en")
-    result = CliRunner().invoke(update, ["--yes"])
+    status = {
+        "current_version": "1.2.3",
+        "latest_version": "1.3.0",
+        "has_update": True,
+        "error": None,
+        "install_available": True,
+        "center_configured": True,
+    }
+    queued: list[str] = []
+    monkeypatch.setattr(command.update_client, "check", lambda *, force: status)
+    monkeypatch.setattr(
+        command.update_client,
+        "queue_upgrade",
+        lambda target: queued.append(target) or {"version": target},
+    )
+    monkeypatch.setattr(command, "resolve_cli_locale", lambda: "en")
+    result = CliRunner().invoke(command.update, ["--yes"])
+    assert result.exit_code == 0
+    assert queued == ["1.3.0"]
 
+
+def test_update_does_not_offer_upgrade_without_host_updater(monkeypatch: Any) -> None:
+    from octop.cli.commands import update as command
+
+    status = {
+        "current_version": "1.2.3",
+        "latest_version": "1.3.0",
+        "has_update": True,
+        "error": None,
+        "install_available": False,
+        "center_configured": True,
+    }
+    queued: list[str] = []
+    monkeypatch.setattr(
+        command.update_client, "queue_upgrade", lambda target: queued.append(target)
+    )
+    monkeypatch.setattr(command.update_client, "check", lambda *, force: status)
+    monkeypatch.setattr(command, "resolve_cli_locale", lambda: "en")
+    result = CliRunner().invoke(command.update, ["--yes"])
     assert result.exit_code != 0
-    assert PROJECT_URL in result.output
-    assert "Automatic upgrades are disabled" in result.output
-    assert calls == []
+    assert queued == []

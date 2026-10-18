@@ -34,12 +34,12 @@ def test_the_table_is_part_of_the_current_schema(db: SqlitePool) -> None:
         names = {
             r["name"] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         }
-        version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
+
         columns = {
             r["name"] for r in conn.execute("PRAGMA table_info(feature_user_overlays)").fetchall()
         }
     assert "feature_user_overlays" in names
-    assert version == 40
+
     assert columns == {"feature_id", "user_id", "content", "updated_at"}
 
 

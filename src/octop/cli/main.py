@@ -9,6 +9,7 @@ from typing import Any, ClassVar
 
 import click
 
+from octop.branding import platform_name
 from octop.cli.registry import COMMANDS
 
 
@@ -51,7 +52,9 @@ def _get_version() -> str:
 def _print_version(ctx: click.Context, _param: click.Parameter, value: bool) -> None:
     if not value or ctx.resilient_parsing:
         return
-    click.echo(f"octop v{_get_version()}")
+    from octop.branding import platform_name
+
+    click.echo(f"{platform_name()} CLI v{_get_version()}")
     ctx.exit()
 
 
@@ -112,21 +115,22 @@ class _LazyCLI(click.Group):
                 from octop.infra.errors import OctopError
                 from octop.infra.licensing import current_license
 
-                service = current_license()
-                service.load_cached()
                 try:
-                    service.require_business_access()
+                    current_license().require_business_access()
                 except OctopError as exc:
-                    raise click.ClickException(
-                        license_reason_message(service.status().get("reason"), "en")
-                    ) from exc
+                    reason = (exc.details or {}).get("reason") if exc.details else None
+                    raise click.ClickException(license_reason_message(reason, "en")) from exc
             return callback(*args, **kwargs)
 
         guarded._instance_license_guarded = True  # type: ignore[attr-defined]
         command.callback = guarded
 
 
-@click.group(cls=_LazyCLI, context_settings={"help_option_names": ["-h", "--help"]})
+@click.group(
+    cls=_LazyCLI,
+    context_settings={"help_option_names": ["-h", "--help"]},
+    help=f"{platform_name()} command-line interface.",
+)
 @click.option(
     "-v",
     "--version",
@@ -134,7 +138,7 @@ class _LazyCLI(click.Group):
     is_eager=True,
     expose_value=False,
     callback=_print_version,
-    help="Show the installed octop version.",
+    help="Show the installed platform version.",
 )
 @click.option(
     "--user",

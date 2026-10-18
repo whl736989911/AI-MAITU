@@ -1,4 +1,4 @@
-"""`octop update` — manual source-upgrade guidance."""
+"""`octop update` — check and queue trusted source releases."""
 
 from __future__ import annotations
 
@@ -6,41 +6,41 @@ import click
 
 from octop.cli.support.db import resolve_cli_locale
 from octop.i18n import tr
-from octop.infra.setup.self_update import get_local_version
-
-UPGRADE_URL = "https://github.com/whl736989911/AI-MAITU"
+from octop.infra.setup.update_client import UpdateClientError, update_client
 
 
 @click.command("update")
-@click.option("--check", is_flag=True, default=False, help="Show manual upgrade instructions only.")
 @click.option(
-    "--yes",
-    "-y",
-    is_flag=True,
-    default=False,
-    help="(Unsupported) automatic upgrades are disabled.",
+    "--check", is_flag=True, default=False, help="Check the configured authorization center only."
 )
 @click.option(
-    "--verbose",
-    "-v",
-    is_flag=True,
-    default=False,
-    help="(Unsupported) automatic upgrades are disabled.",
+    "--yes", "-y", is_flag=True, default=False, help="Confirm and queue an available upgrade."
 )
-@click.option(
-    "--allow-prerelease",
-    "allow_prerelease",
-    is_flag=True,
-    default=False,
-    help="(Unsupported) automatic upgrades are disabled.",
-)
-def update(check: bool, yes: bool, verbose: bool, allow_prerelease: bool) -> None:
-    """Show manual upgrade instructions; automatic package upgrades are disabled."""
-    del yes, verbose, allow_prerelease
+def update(check: bool, yes: bool) -> None:
+    """Check signed authorization-center releases and queue a host upgrade."""
     locale = resolve_cli_locale()
-    click.echo(tr("cli.update.installed", locale, version=get_local_version()))
-    click.echo(tr("cli.update.source", locale))
-    click.echo(UPGRADE_URL)
-    click.echo(tr("cli.update.instruction", locale))
-    if not check:
-        raise click.ClickException(tr("cli.update.automatic_disabled", locale))
+    status = update_client.check(force=True)
+    click.echo(tr("cli.update.installed", locale, version=status["current_version"]))
+    if status["error"]:
+        raise click.ClickException(status["error"])
+    if not status["center_configured"]:
+        raise click.ClickException(tr("cli.update.center_unconfigured", locale))
+    if not status["latest_version"]:
+        click.echo(tr("cli.update.none", locale))
+        return
+    click.echo(tr("cli.update.latest", locale, version=status["latest_version"]))
+    if not status["has_update"]:
+        return
+    if check:
+        return
+    if not status["install_available"]:
+        raise click.ClickException(tr("cli.update.updater_unavailable", locale))
+    if not yes and not click.confirm(
+        tr("cli.update.confirm", locale, version=status["latest_version"])
+    ):
+        return
+    try:
+        result = update_client.queue_upgrade(status["latest_version"])
+    except UpdateClientError as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(tr("cli.update.queued", locale, version=result["version"]))

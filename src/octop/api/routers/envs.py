@@ -18,6 +18,7 @@ from octop.infra.utils.env_file import (
     load_env_file,
     save_env_file,
     search_env_changed,
+    validate_managed_environment,
 )
 
 router = APIRouter(prefix="/envs", tags=["envs"])
@@ -90,7 +91,7 @@ async def list_envs(
     "",
     summary="Replace global environment variables",
     description=(
-        "Overwrite ~/.octop/env and align the MAITU Smart Manufacturing process environment "
+        "Overwrite ~/.octop/env and align the platform process environment "
         "(including deleting keys removed from the list). Running execute "
         "shells and Docker sandboxes pick up keys on the next command without "
         "an agent reload. Agents reload in the background only when search "
@@ -116,6 +117,10 @@ async def batch_save_envs(
     previous = load_env_file(path)
     cleaned.update({key: value for key, value in previous.items() if _is_protected_env_key(key)})
     _restore_secret_sentinel(cleaned, previous)
+    try:
+        validate_managed_environment(cleaned, previous=previous)
+    except ValueError as exc:
+        raise OctopError(ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED, str(exc)) from exc
     save_env_file(path, cleaned)
     apply_env_file_replace(path, previous=previous)
     _after_env_sync(server, previous, cleaned)
@@ -141,6 +146,10 @@ async def delete_env(
     previous = load_env_file(path)
     values = dict(previous)
     values.pop(k, None)
+    try:
+        validate_managed_environment(values, previous=previous)
+    except ValueError as exc:
+        raise OctopError(ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED, str(exc)) from exc
     save_env_file(path, values)
     apply_env_file_replace(path, previous=previous)
     _after_env_sync(server, previous, values)

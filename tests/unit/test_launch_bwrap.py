@@ -16,7 +16,7 @@ def test_schedule_skips_non_linux(
     platform: str,
 ) -> None:
     monkeypatch.setattr(launch.sys, "platform", platform)
-    assert launch._schedule_linux_bubblewrap_ensure() is None
+    assert launch._schedule_linux_bubblewrap_diagnosis() is None
 
 
 @pytest.mark.asyncio
@@ -29,9 +29,9 @@ async def test_schedule_runs_linux_ensure_in_background(monkeypatch: pytest.Monk
         release.wait(timeout=5)
 
     monkeypatch.setattr(launch.sys, "platform", "linux")
-    monkeypatch.setattr(launch, "_ensure_linux_bubblewrap", ensure)
+    monkeypatch.setattr(launch, "_diagnose_linux_bubblewrap", ensure)
 
-    task = launch._schedule_linux_bubblewrap_ensure()
+    task = launch._schedule_linux_bubblewrap_diagnosis()
     assert task is not None
     try:
         assert await asyncio.to_thread(started.wait, 1)
@@ -64,5 +64,5 @@ def test_background_ensure_swallows_failures(monkeypatch: pytest.MonkeyPatch) ->
     def fail() -> dict[str, str]:
         raise RuntimeError("boom")
 
-    monkeypatch.setattr("octop.infra.utils.bwrap.ensure_bubblewrap", fail)
-    launch._ensure_linux_bubblewrap()
+    monkeypatch.setattr("octop.infra.utils.bwrap.bwrap_status", fail)
+    launch._diagnose_linux_bubblewrap()

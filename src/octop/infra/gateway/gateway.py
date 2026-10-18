@@ -164,7 +164,6 @@ class Gateway:
         self._ws_channel: WebSocketChannel | None = None
         self._cli_channel: CliChannel | None = None
         self._runtime_status: dict[str, ChannelRuntimeStatus] = {}
-        self._business_paused = False
         self._history_backfill = HistoryBackfillQueue()
 
     def replace_repos(self, repos: RepoBundle) -> None:
@@ -260,9 +259,10 @@ class Gateway:
         }
 
     async def boot(self) -> None:
+        # Direct-entry license gate: connector/IM runtime boot is business execution.
         from octop.infra.licensing import current_license
 
-        self._business_paused = not current_license().allowed
+        current_license().require_business_access()
         self._processor = GlobalProcessor(
             agent_manager=self._agent_manager,
             thread_registry=self._thread_registry,
@@ -302,35 +302,11 @@ class Gateway:
         )
         await self._channel_manager.add_channel(self._cli_channel)
 
-        if not self._business_paused:
-            rows = self._repos.channel_repo.list_all(include_disabled=False)
-            if rows:
-                await asyncio.gather(*(self._start_channel(row) for row in rows))
-
-        logger.info("Gateway booted (business_paused=%s)", self._business_paused)
-
-    async def pause_business(self) -> None:
-        """Unregister external channels while retaining the processor and built-ins."""
-        self._business_paused = True
-        if self._channel_manager is None:
-            return
-        builtin = {WS_CHANNEL_ID, CLI_CHANNEL_ID}
-        external_ids = [
-            channel_id
-            for channel_id in self._channel_manager.channel_ids
-            if channel_id not in builtin
-        ]
-        await asyncio.gather(*(self._unregister(channel_id) for channel_id in external_ids))
-
-    async def resume_business(self) -> None:
-        """Reconnect persisted enabled external channels after license restoration."""
-        if self._channel_manager is None or self._processor is None:
-            return
-        self._business_paused = False
         rows = self._repos.channel_repo.list_all(include_disabled=False)
         if rows:
             await asyncio.gather(*(self._start_channel(row) for row in rows))
-        await self.refresh_media_backends()
+
+        logger.info("Gateway booted")
 
     async def refresh_media_backends(self) -> None:
         """Re-set media backends on all registered channels.
@@ -769,9 +745,6 @@ class Gateway:
         已存在的通道在类型权限被撤销后立即停止运行 (design §2.3) cannot hold on one of
         them and not on another.
         """
-        if self._business_paused:
-            await self._stop_channel(row.channel_id, reason="disabled")
-            return
         if not row.enabled:
             await self._stop_channel(row.channel_id, reason="disabled")
             return

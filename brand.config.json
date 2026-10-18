@@ -1,5 +1,5 @@
 {
-  "$comment": "品牌配置 —— 唯一来源。改这里 + 跑 `uv run python scripts/apply_brand.py` 即可换品牌。",
+  "$comment": "部署品牌配置。运行期通过 MAITU_BRAND_CONFIG_FILE 读取；Docker 默认读取 /app/brand.config.json。前端静态图标/PWA 等构建期产物仍使用 scripts/apply_brand.py。",
 
   "name": { "zh": "麦途智造", "en": "MAITU Smart Manufacturing" },
   "full_name": { "zh": "苏州麦途", "en": "Suzhou Maitou" },

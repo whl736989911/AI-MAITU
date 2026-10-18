@@ -6,9 +6,7 @@ legacy per-base share column is only still written as a compatibility mirror.
 
 from __future__ import annotations
 
-import json
 import logging
-import math
 import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
@@ -44,7 +42,6 @@ from octop.infra.knowledge.scope import (
 from octop.infra.knowledge.search import (
     DEFAULT_SEARCH_K,
     SearchHit,
-    normalize_query,
     query_terms,
     search_base,
     snippet,
@@ -60,41 +57,6 @@ MAX_DOCUMENT_BYTES = upload_mb_to_bytes(DEFAULT_MAX_UPLOAD_MB)
 MAX_KB_MAX_DOCUMENTS = 10_000
 ACCESS_READ = "read"
 ACCESS_WRITE = "write"
-
-_RULE_SEMANTIC_MIN_COSINE = 0.72
-
-
-def _similar_rule_keyword(query: Sequence[float], keyword: Sequence[float]) -> bool:
-    if not query or len(query) != len(keyword):
-        return False
-    query_norm = math.sqrt(sum(value * value for value in query))
-    keyword_norm = math.sqrt(sum(value * value for value in keyword))
-    return bool(
-        query_norm
-        and keyword_norm
-        and sum(a * b for a, b in zip(query, keyword, strict=True)) / (query_norm * keyword_norm)
-        >= _RULE_SEMANTIC_MIN_COSINE
-    )
-
-
-def _rule_embedding_model_key(services: Any, capability: dict[str, Any]) -> str:
-    provider_id = str(capability.get("provider_id") or "")
-    provider_repo = getattr(services, "provider_repo", None)
-    provider = (
-        provider_repo.get(int(provider_id))
-        if capability.get("backend") == "remote" and provider_repo and provider_id.isdigit()
-        else None
-    )
-    return json.dumps(
-        [
-            capability.get("backend", "onnx"),
-            capability["selected_model"],
-            provider_id,
-            getattr(provider, "updated_at", 0),
-        ],
-        ensure_ascii=False,
-        separators=(",", ":"),
-    )
 
 
 class KnowledgeAccessDenied(PermissionError):
@@ -403,25 +365,19 @@ class KnowledgeService:
         if document.status != "ready" or not version or version != document.content_hash:
             return evidence
         try:
-            if document.data_source_id:
-                from octop.infra.knowledge.data_sources import DataSourceService
-                from octop.infra.knowledge.jobs import _source_path
+            from octop.infra.knowledge.source_access import KnowledgeSourceService
 
-                source = self._services.data_sources_repo.get(document.data_source_id)
-                if source is None:
-                    evidence["reason"] = "source_unavailable"
-                    return evidence
-                connector = DataSourceService(self._services).connector(source)
-                with _source_path(connector, document.source_path, document.filename) as original:
-                    current = file_digest(original)
-            else:
-                original = document_path(kb_id, doc_id, document.filename)
+            with KnowledgeSourceService(self._services).open_original(
+                kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
+            ) as original:
                 current = file_digest(original)
         except (OSError, SourceError):
             evidence["reason"] = "source_unavailable"
             return evidence
         if current != version:
-            self._repo.update_document(doc_id, status="pending", chunk_count=0)
+            self._repo.update_document(
+                doc_id, content_hash=current, status="discovered", chunk_count=0
+            )
             self._refresh_collections(kb_id, doc_id)
             return evidence
         self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
@@ -429,104 +385,29 @@ class KnowledgeService:
         if getattr(self._services, "knowledge_collections_repo", None) is not None:
             from octop.infra.knowledge.collections import KnowledgeCollectionService
 
-            KnowledgeCollectionService(self._services).record_read(
-                kb_id, doc_id, evidence, actor_user_id=actor_user_id, is_admin=is_admin
+            KnowledgeCollectionService(self._services).record_source_read(
+                kb_id,
+                doc_id,
+                {
+                    **evidence,
+                    "status": "read",
+                    "kb_id": kb_id,
+                    "path": document.path,
+                    "evidence_id": segment_id,
+                    "blocks": [
+                        {
+                            "text": hit.text,
+                            "locator": evidence["locator"],
+                            "evidence_id": segment_id,
+                        }
+                    ],
+                    "images": [],
+                    "complete": False,
+                },
+                actor_user_id=actor_user_id,
+                is_admin=is_admin,
             )
         return evidence
-
-    def list_search_rules(
-        self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
-    ) -> list[dict[str, object]]:
-        base = self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
-        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
-        visible = {
-            document.id: document
-            for document in self._repo.list_documents(base.id)
-            if may_read_document(document.id, restricted=restricted, readable=readable)
-        }
-        return [
-            {
-                "path": visible[row.document_id].path,
-                "kind": "folder" if visible[row.document_id].is_dir else "file",
-                "mode": row.mode,
-                "keywords": list(row.keywords),
-            }
-            for row in self._services.knowledge_search_rules_repo.list_for_user(
-                user_id=actor_user_id
-            )
-            if row.document_id in visible
-        ]
-
-    def set_search_rule(
-        self,
-        kb_id: str,
-        *,
-        actor_user_id: int,
-        path: str,
-        mode: str,
-        keywords: Sequence[str],
-        is_admin: bool = False,
-    ) -> dict[str, object]:
-        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
-        normalized = normalize_kb_path(path)
-        if not normalized or normalized != path.replace("\\", "/").strip():
-            raise ValueError("invalid knowledge search path")
-        if mode not in {"keyword", "hybrid", "exclude"}:
-            raise ValueError("invalid knowledge search mode")
-        cleaned_keywords: list[str] = []
-        seen_keywords: set[str] = set()
-        for raw in keywords:
-            keyword = " ".join(unicodedata.normalize("NFKC", str(raw)).split())
-            if not keyword:
-                continue
-            if len(keyword) > 200:
-                raise ValueError("knowledge search keyword is too long")
-            folded = keyword.casefold()
-            if folded not in seen_keywords:
-                seen_keywords.add(folded)
-                cleaned_keywords.append(keyword)
-                if len(cleaned_keywords) > 32:
-                    raise ValueError("at most 32 knowledge search keywords are allowed")
-        document = self._repo.get_document_by_path(kb_id, normalized)
-        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
-        if document is None or not may_read_document(
-            document.id, restricted=restricted, readable=readable
-        ):
-            raise LookupError("knowledge document not found")
-        row = self._services.knowledge_search_rules_repo.set(
-            document_id=document.id,
-            user_id=actor_user_id,
-            mode=mode,
-            keywords=cleaned_keywords,
-        )
-        return {
-            "path": normalized,
-            "kind": "folder" if document.is_dir else "file",
-            "mode": row.mode,
-            "keywords": list(row.keywords),
-        }
-
-    def delete_search_rule(
-        self,
-        kb_id: str,
-        *,
-        actor_user_id: int,
-        path: str,
-        is_admin: bool = False,
-    ) -> None:
-        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
-        normalized = normalize_kb_path(path)
-        if not normalized or normalized != path.replace("\\", "/").strip():
-            raise ValueError("invalid knowledge search path")
-        document = self._repo.get_document_by_path(kb_id, normalized)
-        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
-        if document is None or not may_read_document(
-            document.id, restricted=restricted, readable=readable
-        ):
-            raise LookupError("knowledge document not found")
-        self._services.knowledge_search_rules_repo.delete(
-            document_id=document.id, user_id=actor_user_id
-        )
 
     def search(
         self,
@@ -539,181 +420,45 @@ class KnowledgeService:
         query_vector: Sequence[float] | None = None,
         generate_query_vector: bool = False,
     ) -> list[SearchHit]:
-        """Search readable filenames and indexed text under the caller's rules."""
+        """Find authorized filenames and existing content without personal policies."""
         cleaned = (query or "").strip()
         if not cleaned or limit <= 0:
             return []
-        if kb_id is not None:
-            bases = [self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)]
-        else:
-            bases = self.list_visible_bases(actor_user_id=actor_user_id)
+        bases = (
+            [self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)]
+            if kb_id is not None
+            else self.list_visible_bases(actor_user_id=actor_user_id)
+        )
         collected: list[SearchHit] = []
-        if getattr(self._services, "knowledge_collections_repo", None) is not None:
-            from octop.infra.knowledge.collections import KnowledgeCollectionService
-
-            collected = KnowledgeCollectionService(self._services).search(
-                [base.id for base in bases],
-                cleaned,
-                actor_user_id=actor_user_id,
-                limit=limit,
-                is_admin=is_admin,
-            )
-            if len(collected) >= limit:
-                return collected[:limit]
         terms = query_terms(cleaned)
-        normalized_query = normalize_query(cleaned)
         restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
         search_vector = query_vector
-        embedding_attempted = False
-        capability: dict[str, Any] | None = None
-        model_key: str | None = None
-        cached_vectors: dict[tuple[str, str], tuple[float, ...]] | None = None
-        user_rules = self._services.knowledge_search_rules_repo.list_for_user(user_id=actor_user_id)
-        alias_rules = {
-            rule.document_id
-            for rule in user_rules
-            if rule.mode != "exclude"
-            and any(normalize_query(alias) in normalized_query for alias in rule.keywords)
-        }
+        embedding_attempted = not generate_query_vector or search_vector is not None
         hits: list[SearchHit] = []
         for base in bases:
-            all_docs = self._repo.list_documents(base.id)
             documents = [
-                document
-                for document in readable_documents(
-                    all_docs, restricted=restricted, readable=readable
+                row
+                for row in readable_documents(
+                    self._repo.list_documents(base.id), restricted=restricted, readable=readable
                 )
-                if not document.is_dir
+                if not row.is_dir
             ]
-            by_path = {doc.path: doc for doc in all_docs if doc.is_dir}
-            by_id = {doc.id: doc for doc in all_docs}
-            rule_by_path: dict[str, Any] = {}
-            for rule in user_rules:
-                entry = by_id.get(rule.document_id)
-                if entry is not None and may_read_document(
-                    entry.id, restricted=restricted, readable=readable
-                ):
-                    rule_by_path[entry.path] = rule
-
-            effective: dict[str, Any] = {}
-            for document in documents:
-                selected = None
-                for folder_path in ancestor_dirs(document.path):
-                    folder = by_path.get(folder_path)
-                    if folder is None:
-                        selected = None
-                        break
-                    if folder_path in rule_by_path:
-                        selected = rule_by_path[folder_path]
-                effective[document.id] = rule_by_path.get(document.path) or selected
-            searchable = [
-                document
-                for document in documents
-                if effective[document.id] is None or effective[document.id].mode != "exclude"
-            ]
-            ready = {doc.id: doc for doc in searchable if doc.status == "ready"}
-            semantic_ids = {
-                doc.id
-                for doc in ready.values()
-                if effective[doc.id] is None or effective[doc.id].mode != "keyword"
-            }
-            candidate_rules = {
-                rule.document_id: rule
-                for document in searchable
-                if (rule := effective[document.id]) is not None
-                and rule.keywords
-                and rule.document_id not in alias_rules
-            }
-            needs_query = (
-                generate_query_vector
-                and search_vector is None
-                and not embedding_attempted
-                and bool(semantic_ids or candidate_rules)
-            )
-            if needs_query or (search_vector and candidate_rules):
-                if capability is None:
-                    capability = get_capability(
-                        self._services.settings_repo.get,
-                        getattr(self._services, "provider_repo", None),
-                    )
-                if needs_query:
-                    embedding_attempted = True
+            ready = {row.id: row for row in documents if row.status == "ready"}
+            if ready and not embedding_attempted:
+                embedding_attempted = True
+                capability = get_capability(
+                    self._services.settings_repo.get,
+                    getattr(self._services, "provider_repo", None),
+                )
                 if capability["selected_model"] and capability["prerequisites_ok"]:
-                    missing: list[str] = []
-                    if candidate_rules:
-                        if cached_vectors is None:
-                            model_key = _rule_embedding_model_key(self._services, capability)
-                            cached_vectors = (
-                                self._services.knowledge_search_rules_repo.cached_vectors(
-                                    user_id=actor_user_id, model_key=model_key
-                                )
-                            )
-                        missing = list(
-                            dict.fromkeys(
-                                keyword
-                                for rule in candidate_rules.values()
-                                for keyword in rule.keywords
-                                if (rule.document_id, keyword) not in cached_vectors
-                                or (
-                                    search_vector is not None
-                                    and len(cached_vectors[(rule.document_id, keyword)])
-                                    != len(search_vector)
-                                )
-                            )
-                        )
-                    texts = ([cleaned] if needs_query else []) + missing
-                    if texts:
-                        try:
-                            vectors = embed_knowledge_texts(self._services, texts)
-                            if len(vectors) != len(texts):
-                                raise ValueError("knowledge embedding count mismatch")
-                        except Exception:
-                            logger.warning(
-                                "knowledge semantic query unavailable; using terms only",
-                                exc_info=True,
-                            )
-                        else:
-                            if needs_query:
-                                search_vector = vectors[0]
-                            if missing and cached_vectors is not None and model_key is not None:
-                                new_vectors = dict(
-                                    zip(missing, vectors[int(needs_query) :], strict=True)
-                                )
-                                for rule in candidate_rules.values():
-                                    updates = {
-                                        keyword: new_vectors[keyword]
-                                        for keyword in rule.keywords
-                                        if keyword in new_vectors
-                                    }
-                                    if updates:
-                                        self._services.knowledge_search_rules_repo.cache_vectors(
-                                            document_id=rule.document_id,
-                                            user_id=actor_user_id,
-                                            model_key=model_key,
-                                            vectors=updates,
-                                        )
-                                        cached_vectors.update(
-                                            {
-                                                (rule.document_id, keyword): tuple(vector)
-                                                for keyword, vector in updates.items()
-                                            }
-                                        )
-                    if search_vector and cached_vectors is not None:
-                        alias_rules.update(
-                            rule.document_id
-                            for rule in candidate_rules.values()
-                            if any(
-                                _similar_rule_keyword(
-                                    search_vector,
-                                    cached_vectors.get((rule.document_id, keyword), ()),
-                                )
-                                for keyword in rule.keywords
-                            )
-                        )
-            alias_count = 0
-            for document in searchable:
+                    try:
+                        vectors = embed_knowledge_texts(self._services, [cleaned])
+                        search_vector = vectors[0] if vectors else None
+                    except Exception:
+                        logger.warning("knowledge semantic lookup unavailable", exc_info=True)
+            for document in documents:
                 name = unicodedata.normalize(
-                    "NFKC", f"{document.filename} {document.source_path or document.path}"
+                    "NFKC", f"{document.filename} {document.path}"
                 ).casefold()
                 matched = sum(term in name for term in terms)
                 if matched:
@@ -735,34 +480,12 @@ class KnowledgeService:
                             match_kind="filename",
                         )
                     )
-                rule = effective[document.id]
-                if alias_count < limit and rule is not None and rule.document_id in alias_rules:
-                    hits.append(
-                        SearchHit(
-                            kb_id=base.id,
-                            base_name=base.name,
-                            document_id=document.id,
-                            filename=document.filename,
-                            path=document.path,
-                            source_path=document.source_path,
-                            title=document.title or document.filename,
-                            ordinal=-1,
-                            snippet="",
-                            score=0.5,
-                            segment_id="",
-                            locator={"kind": "rule_keyword"},
-                            version=document.content_hash,
-                            match_kind="rule_keyword",
-                        )
-                    )
-                    alias_count += 1
             for hit, document in search_base(
                 base.id,
                 query=cleaned,
                 ready_documents=ready,
                 limit=limit,
                 query_vector=search_vector,
-                semantic_document_ids=semantic_ids,
             ):
                 locator = hit.metadata.get("locator")
                 hits.append(
@@ -785,7 +508,7 @@ class KnowledgeService:
                 )
         hits.sort(
             key=lambda row: (
-                0 if row.match_kind == "content" else 1,
+                row.match_kind != "content",
                 -row.score,
                 row.base_name,
                 row.path,
@@ -793,15 +516,10 @@ class KnowledgeService:
             )
         )
         seen = {(hit.kb_id, hit.document_id, hit.segment_id, hit.version) for hit in collected}
-        for candidate in hits:
-            identity = (
-                candidate.kb_id,
-                candidate.document_id,
-                candidate.segment_id,
-                candidate.version,
-            )
+        for result in hits:
+            identity = (result.kb_id, result.document_id, result.segment_id, result.version)
             if identity not in seen:
-                collected.append(candidate)
+                collected.append(result)
                 seen.add(identity)
                 if len(collected) >= limit:
                     break
@@ -828,9 +546,11 @@ class KnowledgeService:
         return path, document.filename, document.content_type
 
     def document_has_original(self, document: KnowledgeDocumentRow) -> bool:
-        """True when the uploaded original still exists on disk."""
+        """Whether an original is stored locally or has a registered source."""
         if document.is_dir:
             return False
+        if document.data_source_id:
+            return self._services.data_sources_repo.get(document.data_source_id) is not None
         return document_path(document.kb_id, document.id, document.filename).is_file()
 
     def read_text_document(

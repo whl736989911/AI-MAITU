@@ -72,6 +72,19 @@ function collectStructureProblems(
 }
 
 describe("locale bundle parity (en / zh)", () => {
+  it("exposes the same leaf keys on both sides", () => {
+    const enLeaves = flattenLeaves(en as Bundle);
+    const zhLeaves = flattenLeaves(zh as Bundle);
+    expect(enLeaves.size).toBeGreaterThan(1000);
+    const enOnly = [...enLeaves.keys()]
+      .filter((key) => !zhLeaves.has(key))
+      .sort();
+    const zhOnly = [...zhLeaves.keys()]
+      .filter((key) => !enLeaves.has(key))
+      .sort();
+    expect({ enOnly, zhOnly }).toEqual({ enOnly: [], zhOnly: [] });
+  });
+
   it("resolves every translation in each locale, including locale-specific plurals", async () => {
     const instance = createInstance();
     await instance.init({

@@ -58,7 +58,7 @@ describe("assistantTurnsFromEnd", () => {
   it("counts answer turns and skips tool messages", () => {
     const messages = [
       { id: "u1", role: "user" },
-      { id: "t1", role: "assistant", toolData: { name: "search_knowledge" } },
+      { id: "t1", role: "assistant", toolData: { name: "browse_knowledge" } },
       { id: "a1", role: "assistant" },
       { id: "u2", role: "user" },
       { id: "a2", role: "assistant" },

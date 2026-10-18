@@ -261,18 +261,27 @@ def test_ensure_profile_writable_recreates_when_not_writable(
     profile.mkdir()
     (profile / "Preferences").write_text("{}")
 
-    if os.name == "posix":
-        os.chmod(profile, 0o000)
-        monkeypatch.setattr(browser_setup, "_under_root_home", lambda _p: False)
-        try:
-            result = ensure_profile_writable(profile)
-            assert result == profile or "harness-browser-profiles" in str(result)
-            assert _probe_dir_writable(result)
-        finally:
-            if profile.exists():
-                os.chmod(profile, 0o700)
-    else:
-        assert ensure_profile_writable(profile) == profile
+    probe = browser_setup._probe_dir_writable
+    first_attempt = True
+
+    def initially_unwritable(directory: Path) -> bool:
+        nonlocal first_attempt
+        if directory == profile and first_attempt:
+            first_attempt = False
+            return False
+        return probe(directory)
+
+    monkeypatch.setattr(browser_setup, "_under_root_home", lambda _p: False)
+    monkeypatch.setattr(browser_setup, "_probe_dir_writable", initially_unwritable)
+
+    result = ensure_profile_writable(profile)
+
+    assert result == profile
+    assert probe(result)
+    assert not (profile / "Preferences").exists()
+    preserved = list(tmp_path.glob("default.stale-*/Preferences"))
+    assert len(preserved) == 1
+    assert preserved[0].read_text() == "{}"
 
 
 @posix_only

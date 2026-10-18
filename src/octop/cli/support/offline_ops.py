@@ -25,6 +25,13 @@ from octop.infra.utils.ulid import new_cron_id, new_ulid
 logger = logging.getLogger(__name__)
 
 
+def _require_business_access() -> None:
+    """License gate: direct CLI business ops must not bypass the server gate."""
+    from octop.infra.licensing import current_license
+
+    current_license().require_business_access()
+
+
 def _user_row_to_dict(row: Any) -> dict[str, Any]:
     return {
         "id": row.id,
@@ -174,6 +181,7 @@ async def _ensure_dashboard_session(
 
 
 def list_cron_offline(agent_id: str, *, home: Path | None = None) -> list[dict[str, Any]]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         rows = svc.cron_repo.list_by_agent(agent_id, include_disabled=True)
         return [r.to_public_dict(include_agent=True) for r in rows]
@@ -189,6 +197,7 @@ def create_cron_offline(
     task_type: str = "agent",
     home: Path | None = None,
 ) -> dict[str, Any]:
+    _require_business_access()
     build_trigger(trigger)
     cleaned_prompt = require_cron_prompt(prompt)
     session_key = ThreadRegistry.dashboard_key(agent_id=agent_id, user_id=user_id)
@@ -226,6 +235,7 @@ def create_cron_offline(
 
 
 def delete_cron_offline(agent_id: str, cron_id: str, *, home: Path | None = None) -> None:
+    _require_business_access()
     with open_cli_services(home) as svc:
         row = svc.cron_repo.get(cron_id)
         if row is None or row.agent_id != agent_id:
@@ -247,6 +257,7 @@ resolve_acting_user_id_offline = resolve_cron_user_id
 
 
 def delete_agent_offline(agent_id: str, *, home: Path | None = None) -> None:
+    _require_business_access()
     from octop.infra.agents.workspace_dir import workspace_dir_from_config_json
 
     with open_cli_services(home) as svc:
@@ -265,6 +276,7 @@ def delete_agent_offline(agent_id: str, *, home: Path | None = None) -> None:
 
 
 def list_experts_offline() -> list[dict[str, Any]]:
+    _require_business_access()
     catalog = ExpertCatalog(default_library_root())
     catalog.refresh()
     out: list[dict[str, Any]] = []
@@ -283,6 +295,7 @@ def list_experts_offline() -> list[dict[str, Any]]:
 
 
 def admin_overview_offline(*, home: Path | None = None) -> dict[str, Any]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         users = [
             {"username": r.username, "role": r.role, "agents": []}
@@ -311,6 +324,7 @@ def admin_audit_offline(
     limit: int = 50,
     home: Path | None = None,
 ) -> list[dict[str, Any]]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         rows = svc.audit_repo.query(actor=actor, action=action, limit=limit)
         return [
@@ -330,6 +344,7 @@ def admin_audit_offline(
 
 
 def list_providers_offline(*, home: Path | None = None) -> list[dict[str, Any]]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         return [_provider_row_to_dict(r) for r in svc.provider_repo.list_all()]
 
@@ -343,6 +358,7 @@ def create_provider_offline(
     models: list[dict[str, Any]] | None = None,
     home: Path | None = None,
 ) -> dict[str, Any]:
+    _require_business_access()
     models_json = json.dumps(models) if models is not None else None
     with open_cli_services(home) as svc:
         if svc.provider_repo.get_by_name(name) is not None:
@@ -360,6 +376,7 @@ def create_provider_offline(
 
 
 def delete_provider_offline(provider_id: int, *, home: Path | None = None) -> None:
+    _require_business_access()
     with open_cli_services(home) as svc:
         row = svc.provider_repo.get(provider_id)
         if row is None:
@@ -383,12 +400,14 @@ def delete_provider_offline(provider_id: int, *, home: Path | None = None) -> No
 
 
 def load_provider_presets_offline() -> list[dict[str, Any]]:
+    _require_business_access()
     from octop.infra.agents.providers.presets import load_provider_presets
 
     return load_provider_presets()
 
 
 def list_resolved_models_offline(*, home: Path | None = None) -> list[dict[str, Any]]:
+    _require_business_access()
     from octop.infra.agents.providers.resolved import list_resolved_models
 
     with open_cli_services(home) as svc:
@@ -396,6 +415,7 @@ def list_resolved_models_offline(*, home: Path | None = None) -> list[dict[str, 
 
 
 def get_active_model_offline(*, home: Path | None = None) -> dict[str, str]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         name, model = svc.settings_repo.get_active_model()
         return {"provider_name": name, "model": model}
@@ -404,6 +424,7 @@ def get_active_model_offline(*, home: Path | None = None) -> dict[str, str]:
 def set_active_model_offline(
     provider_name: str, model: str, *, home: Path | None = None
 ) -> dict[str, str]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         svc.settings_repo.set_active_model(provider_name, model)
         return {"provider_name": provider_name, "model": model}
@@ -413,6 +434,7 @@ def set_active_model_offline(
 
 
 def list_channels_offline(agent_id: str, *, home: Path | None = None) -> list[dict[str, Any]]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         return [_channel_row_to_dict(r) for r in svc.channel_repo.list_by_agent(agent_id)]
 
@@ -420,6 +442,7 @@ def list_channels_offline(agent_id: str, *, home: Path | None = None) -> list[di
 def get_channel_offline(
     agent_id: str, channel_id: str, *, home: Path | None = None
 ) -> dict[str, Any]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         row = svc.channel_repo.get(channel_id)
         if row is None or row.agent_id != agent_id:
@@ -436,6 +459,7 @@ def create_channel_offline(
     config: dict[str, Any],
     home: Path | None = None,
 ) -> dict[str, Any]:
+    _require_business_access()
     channel_id = new_ulid()
     with open_cli_services(home) as svc:
         if svc.agent_repo.get(agent_id) is None:
@@ -462,6 +486,7 @@ def patch_channel_offline(
     enabled: bool | None = None,
     home: Path | None = None,
 ) -> dict[str, Any]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         row = svc.channel_repo.get(channel_id)
         if row is None or row.agent_id != agent_id:
@@ -478,6 +503,7 @@ def patch_channel_offline(
 
 
 def delete_channel_offline(agent_id: str, channel_id: str, *, home: Path | None = None) -> None:
+    _require_business_access()
     with open_cli_services(home) as svc:
         row = svc.channel_repo.get(channel_id)
         if row is None or row.agent_id != agent_id:
@@ -494,6 +520,7 @@ def create_thread_offline(
     user_id: int,
     home: Path | None = None,
 ) -> dict[str, Any]:
+    _require_business_access()
     session_key = ThreadRegistry.dashboard_key(agent_id=agent_id, user_id=user_id)
     with open_cli_services(home) as svc:
         registry = ThreadRegistry(
@@ -526,6 +553,7 @@ def update_thread_offline(
     pinned: bool | None = None,
     home: Path | None = None,
 ) -> dict[str, Any]:
+    _require_business_access()
     with open_cli_services(home) as svc:
         row = svc.thread_repo.get(thread_id)
         if row is None or row.agent_id != agent_id:
@@ -544,6 +572,7 @@ def update_thread_offline(
 
 
 def delete_thread_offline(agent_id: str, thread_id: str, *, home: Path | None = None) -> None:
+    _require_business_access()
     with open_cli_services(home) as svc:
         row = svc.thread_repo.get(thread_id)
         if row is None or row.agent_id != agent_id:

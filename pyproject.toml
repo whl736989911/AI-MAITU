@@ -21,6 +21,7 @@ dependencies = [
     "apscheduler>=3.10,<4",
     "argon2-cffi>=23.1",
     "pyjwt>=2.8",
+    "packaging>=23.2",
     "orcakit-harness-agent[all]>=1.0.14",
     "harness-memory>=0.9.11",
     "lark-oapi>=1.7.3",
@@ -40,6 +41,7 @@ dependencies = [
     "mcp>=1.9,<2",
     "pillow>=10.0",
     "pypdf>=5.0",
+    "pymupdf>=1.24",
     "python-docx>=1.2.0",
     "python-pptx>=1.0",
     "pypinyin>=0.53",
@@ -74,6 +76,10 @@ knowledge-ocr = [
     "rapidocr>=3.4,<4",
     "onnxruntime>=1.17",
     "pymupdf>=1.24",
+]
+office = [
+    "pdfplumber>=0.11",
+    "pandas>=2.2",
 ]
 # NOTE (knowledge sources, WIP): SMB sources are implemented in
 # ``octop.infra.knowledge.sources.smb`` against ``smbprotocol``, but the extra
@@ -115,6 +121,7 @@ include = [
     "src/octop/**/*.md",
     "src/octop/**/*.sql",
     "src/octop/**/*.sh",
+    "src/octop/infra/backend/*LICENSE",
     "src/octop/**/*.png",
     "src/octop/dashboard/**/*",
     "src/octop/infra/agents/experts/library/**/*",

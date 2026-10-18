@@ -33,17 +33,16 @@ const RESOURCE_TYPE_PERMISSION_KEYS: Record<
   SharingResourceType,
   readonly string[] | null
 > = {
-  knowledge_base: PERM.knowledgeBasesPage,
-  knowledge_document: PERM.knowledgeBasesPage,
+  knowledge_base: null,
+  knowledge_document: null,
   agent: null,
   connector: PERM.connectors,
   feature: null,
 };
 
 /**
- * The sharing-settings entry point: pick a resource, then open its access
- * drawer. Knowledge bases come first — that is the surface this page exists to
- * give an entry to — and the other three ACL resource types follow.
+ * Knowledge ACLs are managed in the knowledge page. This panel retains the
+ * approval queue and settings for agents, connectors, and features.
  */
 export default function SharingResourcesPanel() {
   const { t } = useTranslation();

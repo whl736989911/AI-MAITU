@@ -34,6 +34,7 @@ from harness_gateway.channels import SUPPORTED_CHANNEL_KINDS
 
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role, resolved_role, role_value
+from octop.infra.utils.host_dirs import license_managed_install
 
 
 class PermissionUser(Protocol):
@@ -382,12 +383,13 @@ def resolve_permissions(
     denied: list[str] | None,
     unit_grants: set[str] | None,
 ) -> set[str]:
-    """Resolve normal permissions with the restricted-deployment floor applied."""
+    """Resolve normal permissions; restrict host capabilities only on managed installs."""
+    restricted = RESTRICTED_DEPLOYMENT_PERMISSIONS if license_managed_install() else frozenset()
     if role_value(role) == Role.ADMIN:
-        return set(ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS)
+        return set(ALL_PERMISSION_KEYS - restricted)
     granted = role_default_permissions(role)
     granted |= _as_set(unit_grants) | _as_set(permissions)
-    granted -= _as_set(denied) | RESTRICTED_DEPLOYMENT_PERMISSIONS
+    granted -= _as_set(denied) | restricted
     if "experts" not in granted:
         granted.discard("teams")
     return granted
@@ -464,7 +466,7 @@ def assert_can_grant(
     """
     requested = set(permissions)
     restricted = sorted(requested & RESTRICTED_DEPLOYMENT_PERMISSIONS)
-    if restricted:
+    if restricted and license_managed_install():
         raise OctopError(
             ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
             "unsafe deployment capabilities cannot be granted",

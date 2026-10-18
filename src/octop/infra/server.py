@@ -8,7 +8,7 @@ import logging
 import os
 import shutil
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from dataclasses import dataclass
 from logging.handlers import TimedRotatingFileHandler
@@ -24,8 +24,9 @@ from octop.infra.cron.manager import CronManager
 from octop.infra.db.factory import open_database, should_defer_control_plane_db
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.services import SharedServices, build_shared_services
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.gateway import Gateway
-from octop.infra.licensing import LicenseService, set_current_license
+from octop.infra.licensing import current_license
 from octop.infra.mobile.config_probe import ensure_mobile_capabilities_probed
 from octop.infra.proactive.scheduler import ProactiveCareScheduler
 from octop.infra.proactive.service import ProactiveCareService
@@ -37,7 +38,7 @@ from octop.infra.utils.paths import PathLayout
 
 if TYPE_CHECKING:
     from octop.infra.auth.sso.service import SsoService
-    from octop.infra.trajectory.service import TrajectoryService
+    from octop.infra.licensing import LicenseManager
 
 logger = logging.getLogger(__name__)
 
@@ -210,30 +211,64 @@ def _attach_log_handler(target: logging.Logger, handler: TimedRotatingFileHandle
 
 @dataclass
 class AppRuntime:
-    """Live singletons — constructed after boot."""
+    """Live singletons — constructed after boot.
 
-    agent_registry: AgentManager
-    gateway: Gateway
-    cron_manager: CronManager
-    proactive_scheduler: ProactiveCareScheduler
-    trajectory_service: TrajectoryService | None = None
+    ``user_manager`` (identity) is always present once the control-plane DB is
+    bound; the business singletons are constructed only while the instance
+    license (when managed) allows business execution, and are torn down /
+    rebuilt on effective license transitions.
+    """
+
+    user_manager: UserManager
+    agent_registry: AgentManager | None = None
+    gateway: Gateway | None = None
+    cron_manager: CronManager | None = None
+    proactive_scheduler: ProactiveCareScheduler | None = None
+    trajectory_service: Any | None = None
     history_archive: Any | None = None
+    business_running: bool = False
+
+    def require_agent_registry(self) -> AgentManager:
+        current_license().require_business_access()
+        if not self.business_running or self.agent_registry is None:
+            raise OctopError(ErrorCode.INTERNAL_ERROR, "agent manager unavailable")
+        return self.agent_registry
+
+    def require_gateway(self) -> Gateway:
+        current_license().require_business_access()
+        if not self.business_running or self.gateway is None:
+            raise OctopError(ErrorCode.INTERNAL_ERROR, "gateway unavailable")
+        return self.gateway
+
+    def require_cron_manager(self) -> CronManager:
+        current_license().require_business_access()
+        if not self.business_running or self.cron_manager is None:
+            raise OctopError(ErrorCode.INTERNAL_ERROR, "cron manager unavailable")
+        return self.cron_manager
 
     def replace_services(self, services: SharedServices, config: OctopConfig) -> None:
         """Retarget all runtime singletons onto a new SharedServices / config.
 
         Used when the setup wizard hot-swaps the control-plane DB while empty.
+        Business singletons are retargeted only when they are running; while
+        the license blocks business they are ``None`` and will pick up the new
+        repos when business boot runs.
         """
         if self.history_archive is not None:
             raise ValueError("Restart the server to rebind a database with versioned history")
-        self.agent_registry.replace_persistence(services.repos, config)
-        self.gateway.replace_repos(services.repos)
-        self.cron_manager.replace_repos(services.repos)
-        self.proactive_scheduler.replace_persistence(
-            config_repo=services.repos.proactive_care_config_repo,
-            session_repo=services.repos.session_repo,
-            care_push_repo=services.repos.care_push_repo,
-        )
+        self.user_manager.replace_services(services)
+        if self.agent_registry is not None:
+            self.agent_registry.replace_persistence(services.repos, config)
+        if self.gateway is not None:
+            self.gateway.replace_repos(services.repos)
+        if self.cron_manager is not None:
+            self.cron_manager.replace_repos(services.repos)
+        if self.proactive_scheduler is not None:
+            self.proactive_scheduler.replace_persistence(
+                config_repo=services.repos.proactive_care_config_repo,
+                session_repo=services.repos.session_repo,
+                care_push_repo=services.repos.care_push_repo,
+            )
         if self.trajectory_service is not None:
             from octop.infra.trajectory.store import TrajectoryStore  # noqa: PLC0415
 
@@ -254,17 +289,92 @@ class OctopServer:
         self._started = False
         self._started_at: int | None = None
         self._sso_service: SsoService | None = None
-        self.license_service: LicenseService | None = None
-        self._license_unsubscribe: Callable[[], None] | None = None
-        self._user_manager: UserManager | None = None
-        self._runtime_transition_lock = asyncio.Lock()
-        self._business_start_task: asyncio.Task[None] | None = None
-        self._business_running = False
+        # --- instance licensing (managed only when a public key is configured) ---
+        self.license_manager: LicenseManager | None = None
+        self._license_config_error = False
+        self._license_monitoring = False
+        self._business_lock = asyncio.Lock()
+        self._license_listeners: list[Callable[[bool], Awaitable[None]]] = []
+
+    @staticmethod
+    def default_license_state_dir(root: Path) -> Path:
+        """Sibling of the install root, outside customer data (Docker overrides via env)."""
+        return root.parent / ".maitu-license"
+
+    # ----- instance licensing -----
 
     @property
+    def license_managed(self) -> bool:
+        """True when this install is license-managed (including a broken config that locks)."""
+        return self._license_config_error or self.license_manager is not None
+
+    def license_allows_business(self) -> bool:
+        """Fast per-entry business gate used by middleware and domain guards."""
+        if self._license_config_error:
+            return False
+        manager = self.license_manager
+        return manager is None or bool(manager.business_allowed)
+
+    def add_license_listener(self, callback: Callable[[bool], Awaitable[None]]) -> None:
+        """Register a post-transition hook (e.g. the HTTP/WS gate cancellation)."""
+        self._license_listeners.append(callback)
+
+    def _init_license(self) -> None:
+        """Construct the managed license manager; install it for the plugin hook."""
+        from octop.infra.licensing import LicenseManager, install_license_manager
+
+        try:
+            manager = LicenseManager.from_env(
+                default_state_dir=self.default_license_state_dir(self.paths.root)
+            )
+        except Exception:
+            logger.exception("license manager construction failed; install stays locked")
+            self._license_config_error = True
+            return
+        if not manager.managed:
+            # Unmanaged developer installs keep existing behavior exactly.
+            self.license_manager = None
+            return
+        self.license_manager = manager
+        install_license_manager(manager)
+
+    async def _start_license_monitoring(self) -> None:
+        if self.license_manager is None or self._license_monitoring:
+            return
+        self._license_monitoring = True
+        await self.license_manager.start(on_change=self._on_license_change)
+
+    async def _on_license_change(self, allowed: bool) -> None:
+        """Apply one effective license transition: start/stop business exactly once."""
+        async with self._business_lock:
+            if not self._started:
+                return
+            running = self.app_runtime is not None and self.app_runtime.business_running
+            try:
+                if allowed and not running:
+                    if self.services is not None and self.config is not None:
+                        await self._boot_business(self.config)
+                elif not allowed and running:
+                    await self._shutdown_business()
+            except Exception:
+                logger.exception("license business transition failed (allowed=%s)", allowed)
+                if allowed and self.app_runtime is not None and self.app_runtime.business_running:
+                    with suppress(Exception):
+                        await self._shutdown_business()
+            finally:
+                await self._notify_license_listeners(allowed)
+
+    async def _notify_license_listeners(self, allowed: bool) -> None:
+        for callback in tuple(self._license_listeners):
+            try:
+                await callback(allowed)
+            except Exception:
+                logger.exception("license listener failed")
+
+    # Backward compat: expose user_manager directly
+    @property
     def user_manager(self) -> UserManager | None:
-        """Authentication stays available when the instance business is locked."""
-        return self._user_manager
+        return self.app_runtime.user_manager if self.app_runtime else None
 
     @property
     def sso_service(self) -> SsoService:
@@ -283,7 +393,7 @@ class OctopServer:
 
     @property
     def database_bound(self) -> bool:
-        return self.services is not None and self._user_manager is not None
+        return self.services is not None and self.app_runtime is not None
 
     async def start(self) -> None:
         if self._started:
@@ -298,25 +408,12 @@ class OctopServer:
 
         apply_env_file(env_file_path(self.paths.root))
         self._setup_logging()
-        try:
-            self.license_service = await asyncio.to_thread(LicenseService, self._home)
-        except (OSError, ValueError):
-            logger.exception(
-                "invalid license configuration; starting with the instance locked "
-                "until license settings are corrected"
-            )
-            self.license_service = await asyncio.to_thread(
-                LicenseService,
-                self._home,
-                server_url="",
-                trusted_keys={},
-                ca_file="",
-            )
-        set_current_license(self.license_service)
-        await self.license_service.start()
-        self._license_unsubscribe = self.license_service.add_listener(self._on_license_change)
-        config = load_config(self.paths.config)
+        config = ensure_mobile_capabilities_probed(self.paths.config)
         self.config = config
+
+        # Licensing first: a managed, locked install must never reach plugin
+        # executable imports or business runtime boot below.
+        self._init_license()
 
         self.expert_catalog = ExpertCatalog(
             default_library_root(),
@@ -326,15 +423,27 @@ class OctopServer:
         self.subagent_catalog = SubagentCatalog(default_package_root())
         self.subagent_catalog.refresh()
 
+        # Constructed early (plain state holder, no executable import);
+        # ``seed_bundled``/``load_installed`` — which install deps and import
+        # plugin code — are deferred into :meth:`_boot_business` so a locked
+        # instance never imports plugin executables.
         self.plugin_manager = PluginManager(
             plugins_dir=self.paths.plugins_dir,
             config_path=self.paths.config,
         )
 
+        import time  # noqa: PLC0415
+
         self._started_at = int(time.time())
 
         if should_defer_control_plane_db(config, self.paths):
             self._started = True
+            # Activation can happen before the wizard binds a database, so the
+            # license monitor runs in the deferred state too.
+            await self._start_license_monitoring()
+            from octop.infra.setup.tls.renewal import install_auto_renewal_job
+
+            install_auto_renewal_job(paths=self.paths, timezone=config.default_timezone)
             self._emit_wizard_password(user_count=0)
             logger.info("control-plane database deferred until setup wizard chooses a backend")
             return
@@ -346,9 +455,14 @@ class OctopServer:
 
         boot_from_services(self.services.settings_repo, self.services.secret_repo)
         self._ensure_jwt_secret()
-        await self._boot_management()
+        await self._boot_identity(config)
+        await self._start_license_monitoring()
+        if self.license_allows_business():
+            await self._boot_business(config)
         self._started = True
-        await self._boot_runtime(config)
+        from octop.infra.setup.tls.renewal import install_auto_renewal_job
+
+        install_auto_renewal_job(paths=self.paths, timezone=config.default_timezone)
         assert self.user_manager is not None
         self._emit_wizard_password(user_count=self.user_manager.count())
 
@@ -374,22 +488,25 @@ class OctopServer:
 
         boot_from_services(self.services.settings_repo, self.services.secret_repo)
         self._ensure_jwt_secret()
-        await self._boot_management()
-        await self._boot_runtime(config)
+        async with self._business_lock:
+            await self._boot_identity(config)
+            if self.license_allows_business():
+                await self._boot_business(config)
+        from octop.infra.setup.tls.renewal import install_auto_renewal_job
+
+        install_auto_renewal_job(paths=self.paths, timezone=config.default_timezone)
         logger.info(
             "control-plane database bound driver=%s",
             config.database.driver,
         )
 
-    async def _boot_management(self) -> None:
-        assert self.services is not None
-        self._user_manager = UserManager(self.services)
-        await self._user_manager.boot()
+    async def _boot_identity(self, config: OctopConfig) -> None:
+        """Identity plane: passive persistence stores + user management.
 
-    async def _boot_runtime(self, config: OctopConfig) -> None:
+        Runs for every bound deployment regardless of license state, so login,
+        activation, and administration work while business is locked.
+        """
         assert self.services is not None
-        assert self.expert_catalog is not None
-        assert self.plugin_manager is not None
 
         from octop.infra.utils.browser_media import (  # noqa: PLC0415
             configure_browser_idle_timeout,
@@ -397,13 +514,10 @@ class OctopServer:
 
         configure_browser_idle_timeout(config.browser_idle_timeout_minutes)
 
-        registry = AgentManager(
-            repos=self.services.repos,
-            paths=self.paths,
-            config=config,
-            expert_catalog=self.expert_catalog,
-            plugin_manager=self.plugin_manager,
-        )
+        # Runtime brand identity (DB-backed, platform-level config — not theme).
+        from octop.branding import BRAND_SETTINGS_KEY, configure_branding_from_json  # noqa: PLC0415
+
+        configure_branding_from_json(self.services.settings_repo.get(BRAND_SETTINGS_KEY))
 
         from octop.infra.trajectory.live import TrajectoryLiveBus  # noqa: PLC0415
         from octop.infra.trajectory.service import TrajectoryService  # noqa: PLC0415
@@ -436,12 +550,82 @@ class OctopServer:
             TrajectoryLiveBus(),
         )
 
+        user_mgr = UserManager(self.services)
+        await user_mgr.boot()
+
+        # Registry object exists from identity boot onward (cheap construction,
+        # no executable import) so wizard bootstrap/persistence works while the
+        # license blocks business; AgentManager.boot() stays business-gated.
+        if self.app_runtime is None:
+            assert self.expert_catalog is not None
+            registry = AgentManager(
+                repos=self.services.repos,
+                paths=self.paths,
+                config=config,
+                expert_catalog=self.expert_catalog,
+                plugin_manager=self.plugin_manager,
+            )
+            self.app_runtime = AppRuntime(
+                user_manager=user_mgr,
+                agent_registry=registry,
+                trajectory_service=trajectory_service,
+                history_archive=history_archive,
+            )
+        else:
+            self.app_runtime.user_manager = user_mgr
+            self.app_runtime.trajectory_service = trajectory_service
+            self.app_runtime.history_archive = history_archive
+
+    async def _boot_business(self, config: OctopConfig) -> None:
+        """Business plane: agents, gateway, cron, proactive care, index jobs.
+
+        Only runs while the managed license allows business (or unmanaged).
+        Callers must hold ``_business_lock``; idempotent via ``business_running``.
+        """
+        from octop.infra.licensing import current_license
+
+        current_license().require_business_access()
+
+        assert self.services is not None
+        assert self.expert_catalog is not None
+        rt = self.app_runtime
+        assert rt is not None
+        if rt.business_running:
+            return
+        # Defensive: tear down leftovers from a failed prior start before rebuilding.
+        if (
+            rt.gateway is not None
+            or rt.cron_manager is not None
+            or rt.proactive_scheduler is not None
+        ):
+            await self._shutdown_business()
+
+        if self.plugin_manager is None:
+            self.plugin_manager = PluginManager(
+                plugins_dir=self.paths.plugins_dir,
+                config_path=self.paths.config,
+            )
+        self.plugin_manager.seed_bundled()
+        self.plugin_manager.load_installed()
+
+        registry = rt.agent_registry
+        if registry is None:
+            registry = AgentManager(
+                repos=self.services.repos,
+                paths=self.paths,
+                config=config,
+                expert_catalog=self.expert_catalog,
+                plugin_manager=self.plugin_manager,
+            )
+        rt.agent_registry = registry
+
         gateway = Gateway(
             agent_manager=registry,
             repos=self.services.repos,
-            trajectory_service=trajectory_service,
-            history_archive=history_archive,
+            trajectory_service=rt.trajectory_service,
+            history_archive=rt.history_archive,
         )
+        rt.gateway = gateway
         await gateway.boot()
 
         from octop import __version__  # noqa: PLC0415
@@ -467,11 +651,8 @@ class OctopServer:
             repos=self.services.repos,
             timezone=config.default_timezone,
         )
+        rt.cron_manager = cron_mgr
         await cron_mgr.boot()
-
-        from octop.infra.setup.tls.renewal import install_auto_renewal_job
-
-        install_auto_renewal_job(cron_mgr, paths=self.paths)
 
         from octop.infra.backup.auto import install_auto_backup_job
 
@@ -498,116 +679,68 @@ class OctopServer:
             default_timezone=config.default_timezone,
         )
         registry.set_proactive_scheduler(proactive_scheduler)
+        rt.proactive_scheduler = proactive_scheduler
 
-        assert self._user_manager is not None
+        await registry.boot()
+        await gateway.refresh_media_backends()
+        await proactive_scheduler.start_all()
+        rt.business_running = True
+        logger.info("octop business runtime started")
 
-        self.app_runtime = AppRuntime(
-            agent_registry=registry,
-            gateway=gateway,
-            cron_manager=cron_mgr,
-            proactive_scheduler=proactive_scheduler,
-            trajectory_service=trajectory_service,
-            history_archive=history_archive,
+        # First-run wizard defaults deferred while the managed license was
+        # locked are consumed exactly once at the first allowed business boot.
+        from octop.infra.agents.default_agent import (  # noqa: PLC0415
+            resume_deferred_setup_agents,
         )
-        if self.license_service is not None and self.license_service.allowed:
-            await self._on_license_change(True)
-            if self._business_start_task is not None:
-                # Expiry during startup leaves a working locked management plane.
-                with suppress(asyncio.CancelledError):
-                    await self._business_start_task
 
-    async def _on_license_change(self, allowed: bool) -> None:
-        if not self._started or self.app_runtime is None:
-            return
-        if allowed:
-            if self._business_running or (
-                self._business_start_task is not None and not self._business_start_task.done()
-            ):
-                return
-            self._business_start_task = asyncio.create_task(
-                self._resume_business(), name="license-business-resume"
-            )
-            self._business_start_task.add_done_callback(self._business_start_finished)
-            return
-        await self._cancel_business_start()
-        async with self._runtime_transition_lock:
-            rt = self.app_runtime
-            if rt is None:
-                return
-            self._business_running = False
-            await rt.cron_manager.pause_business()
-            await rt.proactive_scheduler.pause_business()
-            await rt.gateway.pause_business()
-            from octop.infra.knowledge.jobs import pause_index_jobs  # noqa: PLC0415
+        await resume_deferred_setup_agents(self)
 
-            await pause_index_jobs()
-            await rt.agent_registry.pause_business()
-            logger.info("instance business locked; authentication and maintenance remain active")
-
-    def _business_start_finished(self, task: asyncio.Task[None]) -> None:
-        if not task.cancelled() and task.exception() is not None:
-            logger.error("instance business resume failed", exc_info=task.exception())
-
-    async def _cancel_business_start(self) -> None:
-        task, self._business_start_task = self._business_start_task, None
-        if task is not None and not task.done():
-            task.cancel()
-            with suppress(asyncio.CancelledError):
-                await task
-
-    async def _resume_business(self) -> None:
-        assert self.license_service is not None
-        async with self.license_service.business_task(), self._runtime_transition_lock:
-            rt = self.app_runtime
-            if rt is None or self._business_running:
-                return
-            self.license_service.require_business_access()
-            assert self.plugin_manager is not None
-            await asyncio.to_thread(self.plugin_manager.seed_bundled)
-            self.license_service.require_business_access()
-            await asyncio.to_thread(self.plugin_manager.load_installed, install_deps=False)
-            self.license_service.require_business_access()
-            config = await asyncio.to_thread(ensure_mobile_capabilities_probed, self.paths.config)
-            self.config = config
-            await rt.agent_registry.resume_business()
-            self.license_service.require_business_access()
-            from octop.infra.agents.default_agent import (
-                resume_deferred_setup_agents,  # noqa: PLC0415
+        users = rt.user_manager.list()
+        admin = next((user for user in users if user.is_admin), None)
+        if admin is not None:
+            from octop.infra.agents.default_agent import (  # noqa: PLC0415
+                ensure_builtin_general_assistant_feature,
             )
 
-            await resume_deferred_setup_agents(self)
-            await rt.gateway.resume_business()
-            await rt.gateway.refresh_media_backends()
-            self.license_service.require_business_access()
-            await rt.cron_manager.resume_business()
-            await rt.proactive_scheduler.resume_business()
-            assert self._user_manager is not None
-            users = self._user_manager.list()
-            admin = next((user for user in users if user.is_admin), None)
-            if admin is not None:
-                from octop.infra.agents.default_agent import (  # noqa: PLC0415
-                    ensure_builtin_general_assistant_feature,
+            try:
+                await ensure_builtin_general_assistant_feature(
+                    registry,
+                    self.expert_catalog,
+                    self.services.repos.resource_acl_repo,
+                    owner_user_id=admin.id,
+                    locale=admin.locale,
                 )
+            except Exception:
+                logger.exception("could not ensure built-in general-assistant feature")
+        from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
 
-                assert self.expert_catalog is not None
-                assert self.services is not None
-                try:
-                    await ensure_builtin_general_assistant_feature(
-                        rt.agent_registry,
-                        self.expert_catalog,
-                        self.services.repos.resource_acl_repo,
-                        owner_user_id=admin.id,
-                        locale=admin.locale,
-                    )
-                except Exception:
-                    logger.exception("could not ensure built-in general-assistant feature")
-            from octop.infra.knowledge.jobs import resume_pending_index_jobs  # noqa: PLC0415
+        resume_pending_index_jobs(self.services)
 
-            assert self.services is not None
-            self.license_service.require_business_access()
-            resume_pending_index_jobs(self.services)
-            self._business_running = True
-            logger.info("instance business resumed; overdue business jobs are not replayed")
+    async def _shutdown_business(self) -> None:
+        """Stop business components (license loss or server shutdown).
+
+        Identity stores (user manager, trajectory/history) stay untouched.
+        """
+        rt = self.app_runtime
+        assert rt is not None
+        try:
+            if rt.proactive_scheduler is not None:
+                await rt.proactive_scheduler.shutdown()
+            if rt.cron_manager is not None:
+                await rt.cron_manager.shutdown()
+            if rt.gateway is not None:
+                await rt.gateway.shutdown()
+            if rt.agent_registry is not None:
+                await rt.agent_registry.shutdown()
+        finally:
+            rt.proactive_scheduler = None
+            rt.cron_manager = None
+            rt.gateway = None
+            # The registry object stays (identity plane): persistence reads and
+            # wizard bootstrap keep working while business is locked. Its
+            # harness runtime is gone; AgentManager.boot() rebuilds it.
+            rt.business_running = False
+            logger.info("octop business runtime stopped")
 
     def _emit_wizard_password(self, *, user_count: int) -> None:
         config = self.config
@@ -642,30 +775,30 @@ class OctopServer:
     async def stop(self) -> None:
         if not self._started:
             return
-        if self._license_unsubscribe is not None:
-            self._license_unsubscribe()
-            self._license_unsubscribe = None
-        await self._cancel_business_start()
-        if self.license_service is not None:
-            await self.license_service.stop()
+        # Freeze license transitions first so no callback restarts business
+        # while/after we are tearing the process down.
+        from octop.infra.setup.tls.renewal import shutdown_auto_renewal_scheduler
+
+        shutdown_auto_renewal_scheduler()
+        if self._license_monitoring and self.license_manager is not None:
+            self._license_monitoring = False
+            with suppress(Exception):
+                await self.license_manager.stop()
+        async with self._business_lock:
+            if self.app_runtime is not None and self.app_runtime.business_running:
+                with suppress(Exception):
+                    await self._shutdown_business()
         try:
             if self.app_runtime is not None:
                 rt = self.app_runtime
-                await rt.proactive_scheduler.shutdown()
-                await rt.cron_manager.shutdown()
-                await rt.gateway.shutdown()
-                await rt.agent_registry.shutdown()
+                await rt.user_manager.shutdown_all()
                 if rt.history_archive is not None:
                     rt.history_archive.store.close()
-            if self._user_manager is not None:
-                await self._user_manager.shutdown_all()
         finally:
             if self.services is not None:
                 self.services.db.close()
             self.services = None
             self.app_runtime = None
-            self._user_manager = None
-            self._business_running = False
             self._started = False
             logger.info("octop server stopped")
 

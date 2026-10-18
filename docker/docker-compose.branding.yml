@@ -1,0 +1,8 @@
+# Optional deployment identity, shared by backend runtime and branding defaults.
+# Use with docker-compose.yml; brand.config.json schema remains the source of truth.
+services:
+  maitu:
+    volumes:
+      - ${MAITU_BRAND_CONFIG_HOST_FILE:?Set the deployment brand configuration path}:/run/maitu-brand/brand.json:ro
+    environment:
+      MAITU_BRAND_CONFIG_FILE: /run/maitu-brand/brand.json

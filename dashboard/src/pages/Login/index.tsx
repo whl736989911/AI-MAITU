@@ -65,7 +65,7 @@ function providerIcon(provider: OauthProviderStatus): ReactNode {
 }
 
 export default function LoginPage() {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const { isDark } = useTheme();
   const brand = useBranding();
   const navigate = useNavigate();
@@ -330,10 +330,9 @@ export default function LoginPage() {
             width: "100%",
           }}
         >
-          {t(
-            "login.forgotPasswordHint",
-            "Forgot the password? On the Octop host run octop user passwd <username>, or ask an administrator to reset it.",
-          )}
+          {t("login.forgotPasswordHint", {
+            brand: brand.name[i18n.language.startsWith("zh") ? "zh" : "en"],
+          })}
         </p>
 
         {providers.length > 0 && (

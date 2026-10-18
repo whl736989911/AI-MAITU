@@ -43,38 +43,27 @@ class TestValidateCustomAgentId:
 
 
 def _make_manager(*, existing_agent_ids: set[str], root: Path):
-    """Minimal AgentManager with fakes — no DB, no harness runtime.
-
-    Workspace creation raises a sentinel RuntimeError so tests can assert
-    exactly how far ``create()`` progressed before bailing out.
-    """
+    """Minimal manager for create-time ID rejection, without a DB or runtime."""
     from octop.infra.agents import manager as manager_mod
 
     def repo_get(agent_id: str):
         return object() if agent_id in existing_agent_ids else None
-
-    class WorkspaceReached(RuntimeError):
-        pass
-
-    class TestPaths(PathLayout):
-        def ensure_agent_workspace(self, agent_id: str) -> Path:
-            raise WorkspaceReached(agent_id)
 
     mgr = object.__new__(manager_mod.AgentManager)
     mgr._repos = SimpleNamespace(
         agent_repo=SimpleNamespace(get=repo_get),
         user_policy_repo=SimpleNamespace(get=lambda *args, **kwargs: None),
     )
-    mgr._paths = TestPaths(root)
+    mgr._paths = PathLayout(root)
     mgr._lock = asyncio.Lock()
     mgr._assert_agent_name_available = lambda user_id, name: None  # type: ignore[method-assign]
-    return mgr, WorkspaceReached
+    return mgr
 
 
 class TestCreateWithCustomAgentId:
     @pytest.mark.asyncio
     async def test_duplicate_custom_id_rejected_before_workspace(self, tmp_path: Path) -> None:
-        mgr, sentinel = _make_manager(existing_agent_ids={"taken-id"}, root=tmp_path)
+        mgr = _make_manager(existing_agent_ids={"taken-id"}, root=tmp_path)
         spec = AgentCreateSpec(name="New", agent_id="taken-id", user_id=1)
         with pytest.raises(OctopError) as exc:
             await mgr.create(spec)
@@ -82,16 +71,8 @@ class TestCreateWithCustomAgentId:
 
     @pytest.mark.asyncio
     async def test_invalid_custom_id_rejected_before_repo_lookup(self, tmp_path: Path) -> None:
-        mgr, _sentinel = _make_manager(existing_agent_ids=set(), root=tmp_path)
+        mgr = _make_manager(existing_agent_ids=set(), root=tmp_path)
         spec = AgentCreateSpec(name="New", agent_id="bad id!", user_id=1)
         with pytest.raises(OctopError) as exc:
             await mgr.create(spec)
         assert exc.value.code == ErrorCode.AGENT_ID_INVALID
-
-    @pytest.mark.asyncio
-    async def test_valid_custom_id_reaches_workspace_creation(self, tmp_path: Path) -> None:
-        mgr, sentinel = _make_manager(existing_agent_ids=set(), root=tmp_path)
-        spec = AgentCreateSpec(name="New", agent_id="my-writer", user_id=1)
-        with pytest.raises(sentinel) as exc:
-            await mgr.create(spec)
-        assert exc.value.args[0] == "my-writer"

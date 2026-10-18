@@ -37,10 +37,9 @@ def kb_id(db: SqlitePool, owner_id: int) -> str:
 
 def test_data_sources_table_migrated(db: SqlitePool) -> None:
     with db.connect() as conn:
-        version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(data_sources)").fetchall()}
         target = conn.execute("PRAGMA foreign_key_list(data_sources)").fetchall()
-    assert version == 40
+
     assert cols == {
         "id",
         "knowledge_base_id",

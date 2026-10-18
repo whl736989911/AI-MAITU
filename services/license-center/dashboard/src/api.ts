@@ -86,9 +86,37 @@ export interface ActivationIssue {
   used_at: number | null;
   revoked_at: number | null;
 }
-
-let csrfToken = "";
+export interface OfflineLicenseIssue {
+  token: string;
+  license_id: string;
+  license_version: number;
+}
+export interface Release {
+  id: string;
+  version: string;
+  filename: string;
+  sha256: string;
+  size: number;
+  release_notes: string;
+  package_type: string;
+  platform: string;
+  architecture: string;
+  published: boolean;
+  created_at: string;
+  published_at: string | null;
+}
+export interface ReleaseSigningKey {
+  kid: string;
+  public_pem: string;
+  state: string;
+  created_at: number;
+}
 const base = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
+let csrfToken = "";
+const json = (method: string, body?: unknown): RequestInit => ({
+  method,
+  ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+});
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? "GET").toUpperCase();
@@ -126,11 +154,6 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   }
   return data as T;
 }
-const json = (method: string, body?: unknown): RequestInit => ({
-  method,
-  ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-});
-
 export const api = {
   session: async () => {
     const s = await request<Session>("/api/v1/admin/session");
@@ -189,6 +212,41 @@ export const api = {
   revokeActivation: (id: string, reason: string) =>
     request<Activation>(
       `/api/v1/admin/activation-codes/${encodeURIComponent(id)}/revoke`,
+      json("POST", { reason }),
+    ),
+  createOfflineLicense: (input: {
+    customer_id: string;
+    request: Record<string, string>;
+    license_expires_at: number;
+    offline_expires_at: number;
+    reason: string;
+  }) =>
+    request<OfflineLicenseIssue>(
+      "/api/v1/admin/offline-licenses",
+      json("POST", input),
+    ),
+  releases: () => request<Release[]>("/api/v1/admin/releases"),
+  uploadRelease: (filename: string, file: File) =>
+    request<Release>(`/api/v1/admin/releases/${encodeURIComponent(filename)}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/zip" },
+      body: file,
+    }),
+  publishRelease: (id: string, reason: string) =>
+    request<Release>(
+      `/api/v1/admin/releases/${encodeURIComponent(id)}/publish`,
+      json("POST", { reason }),
+    ),
+  releaseSigningKeys: () =>
+    request<ReleaseSigningKey[]>("/api/v1/admin/release-signing-keys"),
+  stageReleaseKey: (reason: string) =>
+    request<{ kid: string; public_pem: string; state: string }>(
+      "/api/v1/admin/release-signing-keys/stage",
+      json("POST", { reason }),
+    ),
+  activateReleaseKey: (kid: string, reason: string) =>
+    request<{ kid: string; state: string }>(
+      `/api/v1/admin/release-signing-keys/${encodeURIComponent(kid)}/activate`,
       json("POST", { reason }),
     ),
   audit: (beforeId?: number) =>

@@ -67,18 +67,37 @@ def test_functional_modules_and_channel_types_are_catalogued() -> None:
     assert "acp" not in BASELINE_PERMISSIONS
 
 
-def test_user_has_permission_admin_bypass_excludes_deployment_controls() -> None:
+@pytest.mark.parametrize("managed", [False, True])
+def test_user_has_permission_admin_bypass_matches_deployment_mode(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     admin = _FakeUser(is_admin=True, permissions=[])
-    for key in ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS:
+    restricted = RESTRICTED_DEPLOYMENT_PERMISSIONS if managed else set()
+    for key in ALL_PERMISSION_KEYS - restricted:
         assert user_has_permission(admin, key) is True
-    for key in RESTRICTED_DEPLOYMENT_PERMISSIONS:
+    for key in restricted:
         assert user_has_permission(admin, key) is False
 
 
+@pytest.mark.parametrize("managed", [False, True])
+def test_user_has_permission_normal_browser_grant_matches_deployment_mode(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
+    user = _FakeUser(is_admin=False, permissions=["browser"])
+    assert user_has_permission(user, "browser") is not managed
+
+
 def test_user_has_permission_normal_hit_and_miss() -> None:
-    u = _FakeUser(is_admin=False, permissions=["users", "browser"])
+    u = _FakeUser(is_admin=False, permissions=["users"])
     assert user_has_permission(u, "users") is True
-    assert user_has_permission(u, "browser") is False
     assert user_has_permission(u, "providers") is False
     assert user_has_permission(u, "unknown_key") is False
 
@@ -141,15 +160,31 @@ def test_validate_permission_keys_rejects_unknown() -> None:
         validate_permission_keys(["browser", "not_a_real_key"])
 
 
-def test_effective_permissions_admin_excludes_deployment_controls() -> None:
+@pytest.mark.parametrize("managed", [False, True])
+def test_effective_permissions_admin_matches_deployment_mode(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     admin = _FakeUser(is_admin=True, permissions=[])
-    assert effective_permissions(admin) == sorted(
-        ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS
-    )
+    restricted = RESTRICTED_DEPLOYMENT_PERMISSIONS if managed else set()
+    assert effective_permissions(admin) == sorted(ALL_PERMISSION_KEYS - restricted)
 
 
-def test_admin_cannot_grant_deployment_controls() -> None:
+@pytest.mark.parametrize("managed", [False, True])
+def test_admin_grants_host_controls_only_on_unmanaged_installs(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     admin = _FakeUser(is_admin=True, permissions=[])
-    with pytest.raises(OctopError) as exc:
+    if managed:
+        with pytest.raises(OctopError) as exc:
+            assert_can_grant(admin, ["plugins"])
+        assert exc.value.code == ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+    else:
         assert_can_grant(admin, ["plugins"])
-    assert exc.value.code == ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED

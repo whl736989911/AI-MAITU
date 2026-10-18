@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
@@ -11,9 +12,12 @@ from tests.support.auth import create_user
 
 
 @pytest.mark.asyncio
-async def test_recording_routes_are_denied_before_daemon_or_store_access(env: Any) -> None:
+async def test_managed_recording_routes_are_denied_before_daemon_or_store_access(
+    env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     client, _server, admin_auth = env
     member_auth = await create_user(client, admin_auth, username="record-member")
+    monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", str(tmp_path / "trusted-keys.json"))
     send_request = AsyncMock(side_effect=AssertionError("browser daemon must not be called"))
     ensure_daemon = AsyncMock(side_effect=AssertionError("browser daemon must not start"))
     replay_runner = AsyncMock(side_effect=AssertionError("replay runner must not run"))
@@ -31,7 +35,7 @@ async def test_recording_routes_are_denied_before_daemon_or_store_access(env: An
             ):
                 response = await client.post(path, headers=auth, json=payload)
                 assert response.status_code == 403, response.text
-                assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+                assert response.json()["error"]["code"] == "FORBIDDEN"
 
     send_request.assert_not_awaited()
     ensure_daemon.assert_not_awaited()

@@ -17,8 +17,13 @@ async def _run_acp_server(*, agent_id: str | None, debug: bool) -> None:
 
     srv = OctopServer()
     await srv.start()
+    # Direct stdio business entry: same license gate as the HTTP middleware.
+    from octop.infra.licensing import current_license  # noqa: PLC0415
+
+    current_license().require_business_access()
     assert srv.app_runtime is not None
     registry = srv.app_runtime.agent_registry
+    assert registry is not None
 
     aid = agent_id
     if not aid:
@@ -51,7 +56,7 @@ async def _run_acp_server(*, agent_id: str | None, debug: bool) -> None:
 )
 @click.option("--debug", is_flag=True, default=False, help="Enable debug logging to stderr")
 def acp_cmd(agent_id: str | None, debug: bool) -> None:
-    """Start Octop as an ACP agent (stdio) for IDE clients (Zed, OpenCode, …)."""
+    """Start an application as an ACP agent (stdio) for IDE clients (Zed, OpenCode, …)."""
     from octop.cli.support.ctx import resolve_agent
 
     aid = resolve_agent(agent_id)

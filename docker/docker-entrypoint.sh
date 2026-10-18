@@ -26,6 +26,7 @@ CREDENTIAL_FILE="${OCTOP_HOME}/credential.txt"
 ADMIN_USERNAME="${OCTOP_ADMIN_USERNAME:-admin}"
 ADMIN_DISPLAY_NAME="${OCTOP_ADMIN_DISPLAY_NAME:-Admin}"
 PORT="${OCTOP_PORT:-8088}"
+PLATFORM_NAME="$(python -c 'from octop.branding import platform_name; print(platform_name("zh"))')"
 
 # 生成随机密码（首字符字母、末字符数字，避开易混淆字符）。
 octop_random_password() {
@@ -46,7 +47,7 @@ octop_random_password() {
 DEFAULT_PASSWORD="${OCTOP_DEFAULT_PASSWORD:-}"
 
 if [ ! -f "$DB_FILE" ]; then
-    echo "[entrypoint] 首次启动，正在初始化麦途智造..."
+    echo "[entrypoint] 首次启动，正在初始化${PLATFORM_NAME}..."
 
     if [ -z "$DEFAULT_PASSWORD" ]; then
         DEFAULT_PASSWORD="$(octop_random_password)"
@@ -81,7 +82,7 @@ if [ ! -f "$DB_FILE" ]; then
     rm -f "$init_log"
 
     cat > "$CREDENTIAL_FILE" << EOF
-MAITU Login Credential
+${PLATFORM_NAME} Login Credential
 ======================
 URL:      http://<host>:${PORT}
 Username: ${ADMIN_USERNAME}
@@ -99,7 +100,7 @@ EOF
 fi
 
 if [ $# -eq 0 ]; then
-    echo "[entrypoint] 正在启动麦途智造，端口 $PORT..."
+    echo "[entrypoint] 正在启动${PLATFORM_NAME}，端口 $PORT..."
     exec octop run --host 0.0.0.0 --port "$PORT"
 fi
 

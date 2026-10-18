@@ -1,0 +1,6 @@
+# Linux hosts with AppArmor 4+: load docker/security/apparmor-maitu first.
+# Append this file to the same platform Compose invocation and updater overlays.
+services:
+  maitu:
+    security_opt:
+      - apparmor=maitu-sandbox

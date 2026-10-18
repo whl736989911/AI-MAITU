@@ -21,6 +21,26 @@ export class InstanceLicenseLockedError extends Error {
   }
 }
 
+export const LICENSE_LOCKED_EVENT = "octop:license-locked";
+
+function notifyLicenseLocked(path: string, status: number, body: string): void {
+  if (status !== 423) return;
+  try {
+    const parsed = JSON.parse(body) as {
+      error?: { code?: unknown };
+      code?: unknown;
+    };
+    const code = parsed.error?.code ?? parsed.code;
+    if (code === "INSTANCE_LICENSE_LOCKED" && typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent(LICENSE_LOCKED_EVENT, { detail: { path } }),
+      );
+    }
+  } catch {
+    // Non-JSON error bodies do not carry a machine-readable license code.
+  }
+}
+
 /** Response header used by the server for JWT sliding renewal. */
 export const ACCESS_TOKEN_RESPONSE_HEADER = "X-Octop-Access-Token";
 
@@ -353,6 +373,7 @@ export async function request<T = unknown>(
       );
     }
     const text = await response.text().catch(() => "");
+    notifyLicenseLocked(path, response.status, text);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
         text ? ` - ${text}` : ""
@@ -403,6 +424,7 @@ export async function requestBlob(
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    notifyLicenseLocked(path, response.status, text);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
         text ? ` - ${text}` : ""
@@ -457,6 +479,7 @@ export async function probeAuthResource(
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    notifyLicenseLocked(path, response.status, text);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
         text ? ` - ${text}` : ""
@@ -498,6 +521,7 @@ export async function requestStream(
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    notifyLicenseLocked(path, response.status, text);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
         text ? ` - ${text}` : ""
@@ -603,6 +627,7 @@ export async function requestUpload<T = unknown>(
         applyRenewedAccessToken(response);
 
         if (!response.ok) {
+          notifyLicenseLocked(path, status, responseText);
           // Same shape as request() so parseApiError() can read the error envelope.
           reject(
             new Error(

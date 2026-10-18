@@ -76,7 +76,7 @@ function isPython3(pythonPath) {
  * Python 解释器解析优先级：
  * 1. OCTOP_PYTHON 环境变量（显式指定）
  * 2. Octop 自托管 venv（裸机安装：$OCTOP_HOME/venv/bin/python，默认 ~/.octop/venv）
- * 3. Octop Docker 镜像 venv（/app/.venv/bin/python）
+ * 3. Octop Docker 镜像 venv（/usr/local/maitu-venv/bin/python）
  * 4. 回退：PATH 上的 python3 / python（非 Octop 宿主环境的兼容路径）
  */
 function findPython() {
@@ -87,7 +87,7 @@ function findPython() {
   const venvCandidates = [
     path.join(octopHome, 'venv', 'bin', 'python'),            // macOS / Linux
     path.join(octopHome, 'venv', 'Scripts', 'python.exe'),    // Windows
-    '/app/.venv/bin/python',                                   // Octop Docker 镜像
+    '/usr/local/maitu-venv/bin/python',                         // Octop Docker 镜像
   ];
   for (const p of venvCandidates) {
     try {

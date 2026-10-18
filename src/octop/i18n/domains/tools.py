@@ -6,7 +6,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from octop.i18n.loader import _load_all, lookup
+from octop.i18n.loader import _load_all, tr
 from octop.infra.utils.locale import Locale, normalize_locale
 
 # Built-in tools that must stay available without HITL — hidden from the approval picker.
@@ -22,8 +22,12 @@ HITL_TOOL_EXCLUDE: frozenset[str] = frozenset(
         "memory_search",
         "memory_get",
         # Knowledge base
-        "search_knowledge",
-        # Cron
+        "browse_knowledge",
+        "read_knowledge_collection",
+        "read_knowledge_document",
+        "export_knowledge_original",
+        "search_knowledge_paths",
+        "record_knowledge_observation",
         "cronjob_list",
         "cronjob_get",
         "cronjob_create",
@@ -72,10 +76,14 @@ def resolve_tool_display_name(
     plugin_labels: Mapping[str, str] | None = None,
 ) -> str:
     if not name:
-        return lookup("tools.unknown", locale) or "unknown"
-    text = lookup(f"tools.{name}", locale)
-    if text is not None:
-        return text
+        try:
+            return tr("tools.unknown", locale)
+        except KeyError:
+            return "unknown"
+    try:
+        return tr(f"tools.{name}", locale)
+    except KeyError:
+        pass
     if plugin_labels and name in plugin_labels:
         return plugin_labels[name]
     if mcp_server_labels:
@@ -103,7 +111,7 @@ def all_tool_labels(locale: str | Locale = "en") -> dict[str, str]:
         node = tables.get("en", {}).get("tools")
     if not isinstance(node, dict):
         return {}
-    return {str(k): str(v) for k, v in node.items() if isinstance(v, str)}
+    return {str(key): tr(f"tools.{key}", loc) for key in node if isinstance(node[key], str)}
 
 
 def hitl_tool_catalog() -> list[HitlToolCatalogEntry]:

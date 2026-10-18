@@ -25,6 +25,14 @@ def main(argv: list[str] | None = None) -> int:
         help="持久部署记录目录（默认 /etc/maitu-deploy）",
     )
     parser.add_argument("--role", choices=("center", "platform"), help="check 时只检查指定角色")
+    parser.add_argument(
+        "--native-source", type=Path, help="check: 原生源码目录（不需要 Docker 部署记录）"
+    )
+    parser.add_argument("--python", type=Path, help="check: 原生服务实际使用的 Python")
+    parser.add_argument("--health-url", help="check: 可选，已运行服务的 /api/health URL")
+    parser.add_argument(
+        "--extra", action="append", choices=("local-embedding", "desktop"), default=[]
+    )
     options = parser.parse_args(argv)
     try:
         command = options.command
@@ -36,6 +44,21 @@ def main(argv: list[str] | None = None) -> int:
                 raise DeploymentError("请选择有效菜单项。")
         if options.role and command != "check":
             raise DeploymentError("--role 只用于只读 check 命令。")
+        if options.native_source or options.python or options.health_url or options.extra:
+            if (
+                command != "check"
+                or not options.native_source
+                or not options.python
+                or options.role
+            ):
+                raise DeploymentError(
+                    "原生检查须使用 check --native-source PATH --python PATH，不能与 --role 混用。"
+                )
+            from deployment.diagnostics import check_native
+
+            return check_native(
+                options.native_source, options.python, options.extra, options.health_url
+            )
         config_dir = options.config_dir.expanduser().absolute()
         if command == "center":
             from deployment.center import deploy

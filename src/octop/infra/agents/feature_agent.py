@@ -106,8 +106,9 @@ async def create_feature_agent(
     (``AGENT_NAME_TAKEN``) rather than silently renamed.
     """
     assert server.app_runtime is not None
+    registry = server.app_runtime.require_agent_registry()
     agent_id = _checked_agent_id(feature_id)
-    return await server.app_runtime.agent_registry.create(
+    return await registry.create(
         AgentCreateSpec(
             agent_id=agent_id,
             name=name,

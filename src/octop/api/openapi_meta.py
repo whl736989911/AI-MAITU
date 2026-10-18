@@ -8,9 +8,10 @@ from fastapi import FastAPI
 from fastapi.openapi.utils import get_openapi
 
 from octop.api.deps import is_jwt_exempt_path
+from octop.branding import platform_name
 
-API_DESCRIPTION = """\
-**MAITU Smart Manufacturing** is a smarter, self-hosted AI assistant for multiple users and agents. All routes are served under `/api`.
+_API_DESCRIPTION = """\
+**{platform_name}** is a smarter, self-hosted AI assistant for multiple users and agents. All routes are served under `/api`.
 
 ## Authentication
 
@@ -54,6 +55,11 @@ SPA can show a toast even when the chat socket is not subscribed.
 HITL resume still uses `POST /api/agents/{agent_id}/chat/hitl/resume` (SSE).
 """
 
+
+def api_description() -> str:
+    return _API_DESCRIPTION.replace("{platform_name}", platform_name("en"))
+
+
 OPENAPI_TAGS: list[dict[str, str]] = [
     {
         "name": "setup",
@@ -65,6 +71,10 @@ OPENAPI_TAGS: list[dict[str, str]] = [
     },
     {"name": "auth", "description": "Sign in, sign out, and manage the current user profile."},
     {"name": "health", "description": "Liveness probe for load balancers and monitoring."},
+    {
+        "name": "license",
+        "description": "Instance license status and activation (reachable while locked).",
+    },
     {"name": "users", "description": "Admin user management (create, disable, reset passwords)."},
     {
         "name": "agents",
@@ -181,13 +191,16 @@ def configure_openapi(app: FastAPI) -> None:
     """Attach tag descriptions, API intro, and Bearer security to the OpenAPI schema."""
 
     def custom_openapi() -> dict[str, Any]:
+        app.title = f"{platform_name('en')} API"
+        app.description = api_description()
         if app.openapi_schema:
+            app.openapi_schema["info"].update(title=app.title, description=app.description)
             return app.openapi_schema
 
         schema = get_openapi(
             title=app.title,
             version=app.version,
-            description=API_DESCRIPTION,
+            description=app.description,
             routes=app.routes,
             tags=OPENAPI_TAGS,
         )

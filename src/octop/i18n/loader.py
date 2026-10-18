@@ -7,9 +7,15 @@ from functools import lru_cache
 from importlib import resources
 from typing import Any
 
+from octop.branding import company_name, platform_name
 from octop.infra.utils.locale import Locale, normalize_locale
 
 _FALLBACK_LOCALE: Locale = "en"
+
+
+class _IdentityTemplateValues(dict[str, object]):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
 
 
 def _resolve_node(table: dict[str, Any], key: str) -> str | None:
@@ -46,7 +52,20 @@ def tr(key: str, locale: str | Locale = "en", **kwargs: object) -> str:
     text = lookup(key, locale)
     if text is None:
         raise KeyError(key)
-    return text.format(**kwargs) if kwargs else text
+    if not kwargs:
+        if "{platform_name}" not in text and "{company_name}" not in text:
+            return text
+        identity_values = _IdentityTemplateValues(
+            platform_name=platform_name(str(locale)),
+            company_name=company_name(str(locale)),
+        )
+        return text.format_map(identity_values)
+    values = {
+        "platform_name": platform_name(str(locale)),
+        "company_name": company_name(str(locale)),
+        **kwargs,
+    }
+    return text.format(**values)
 
 
 def flatten_keys(table: dict[str, Any], prefix: str = "") -> set[str]:

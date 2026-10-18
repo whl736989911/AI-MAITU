@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from octop.infra.backend.adapter import row_to_backend_spec
+from octop.infra.utils.host_dirs import license_managed_install
 
 
 def default_agent_backend_spec(workspace_dir: Path) -> dict[str, Any]:
@@ -22,6 +23,12 @@ def default_agent_backend_spec(workspace_dir: Path) -> dict[str, Any]:
     """
     from harness_agent.backends import DEFAULT_BACKEND_SPEC  # noqa: PLC0415
 
+    if license_managed_install():
+        return {
+            "type": "filesystem" if os.name == "nt" else "local_shell",
+            "root_dir": str(workspace_dir.resolve()),
+            "virtual_mode": True,
+        }
     if os.name == "nt":
         return {
             "type": "local_shell",

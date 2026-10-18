@@ -3,17 +3,13 @@
   min-width: 0;
 }
 
-/* ── Page layout: current version left, GitHub guide right ── */
+/* ── Version and release panel layout ── */
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 20px;
   align-items: start;
-
-  @media (max-width: 960px) {
-    grid-template-columns: 1fr;
-  }
 }
 
 .panel {
@@ -59,7 +55,7 @@
 
 .versionGrid {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 16px;
 
@@ -128,72 +124,90 @@
   }
 }
 
-/* ── Upgrade guide (right column) ── */
-
-.guide {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-}
-
-.guideMethods {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.guideNote {
-  margin: 0 0 14px;
-  padding: 10px 12px;
-  border-radius: 8px;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--fn-text-secondary);
-  background: color-mix(in srgb, var(--fn-color-brand) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--fn-color-brand) 20%, transparent);
-}
-
-.guideMethod {
-  display: flex;
-  flex-direction: column;
+.btnPrimary {
+  display: inline-flex;
+  align-items: center;
   gap: 6px;
-  padding: 12px 14px;
-  border-radius: 10px;
-  border: 1px solid var(--fn-border-primary);
-  background: var(--fn-bg-primary, var(--fn-bg-base, #fff));
-}
-
-.guideMethodTitle {
-  margin: 0;
+  padding: 8px 14px;
+  border: 1px solid var(--fn-color-brand);
+  border-radius: 8px;
+  background: var(--fn-color-brand);
+  color: #fff;
   font-size: 13px;
   font-weight: 600;
-  color: var(--fn-text-primary);
+  cursor: pointer;
+  transition: all var(--fn-transition-fast);
+
+  &:hover:not(:disabled) {
+    filter: brightness(0.96);
+  }
+
+  &:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
 }
 
-.guideMethodBody {
-  margin: 0;
-  font-size: 12.5px;
-  line-height: 1.55;
-  color: var(--fn-text-secondary);
+.releaseNotes {
+  margin: 0 0 14px;
+  padding: 12px 14px;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 10px;
+  background: var(--fn-bg-primary, var(--fn-bg-base, #fff));
+
+  h4 {
+    margin: 0 0 8px;
+    font-size: 13px;
+    color: var(--fn-text-primary);
+  }
+
+  pre {
+    margin: 0;
+    font: inherit;
+    font-size: 12.5px;
+    line-height: 1.55;
+    color: var(--fn-text-secondary);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
 }
 
-.guideCode {
-  margin: 2px 0 0;
+.checkedAt {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--fn-text-tertiary);
+}
+
+.statusMessage,
+.errorMessage,
+.successMessage {
+  margin: 0 0 12px;
   padding: 10px 12px;
   border-radius: 8px;
-  background: color-mix(in srgb, var(--fn-text-primary) 4%, transparent);
-  border: 1px solid var(--fn-border-secondary, var(--fn-border-primary));
-  font-family: var(
-    --fn-font-mono,
-    ui-monospace,
-    SFMono-Regular,
-    Menlo,
-    Consolas,
-    monospace
+  font-size: 13px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.statusMessage {
+  color: var(--fn-text-secondary);
+  background: color-mix(in srgb, var(--fn-color-brand) 8%, transparent);
+}
+
+.errorMessage {
+  color: var(--fn-color-danger, #b42318);
+  background: color-mix(
+    in srgb,
+    var(--fn-color-danger, #b42318) 8%,
+    transparent
   );
-  font-size: 11.5px;
-  line-height: 1.55;
-  color: var(--fn-text-primary);
-  white-space: pre-wrap;
-  overflow-x: auto;
+}
+
+.successMessage {
+  color: var(--fn-color-success, #067647);
+  background: color-mix(
+    in srgb,
+    var(--fn-color-success, #067647) 8%,
+    transparent
+  );
 }

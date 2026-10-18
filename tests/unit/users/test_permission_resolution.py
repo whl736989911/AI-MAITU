@@ -178,14 +178,39 @@ def test_resolve_permissions_deny_outranks_baseline_grant() -> None:
     assert resolved == BASELINE_PERMISSIONS - {"channels"}
 
 
-def test_resolve_permissions_admin_bypasses_deny_and_empty_permissions() -> None:
+@pytest.mark.parametrize("managed", [False, True])
+def test_resolve_permissions_admin_matches_deployment_mode(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     resolved = resolve_permissions(
         role=Role.ADMIN,
         permissions=[],
         denied=["features", "users"],
         unit_grants=set(),
     )
-    assert resolved == ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS
+    restricted = RESTRICTED_DEPLOYMENT_PERMISSIONS if managed else set()
+    assert resolved == ALL_PERMISSION_KEYS - restricted
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_resolve_permissions_explicit_browser_grant_matches_deployment_mode(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
+    resolved = resolve_permissions(
+        role=Role.USER,
+        permissions=["browser"],
+        denied=None,
+        unit_grants=None,
+    )
+    assert ("browser" in resolved) is not managed
 
 
 def test_resolve_permissions_difference_is_exact() -> None:
@@ -254,26 +279,39 @@ def test_effective_permissions_matches_formula() -> None:
     assert effective_permissions(member, unit_grants={"users"}) == expected
 
 
-def test_effective_permissions_admin_bypasses_deny() -> None:
+@pytest.mark.parametrize("managed", [False, True])
+def test_effective_permissions_admin_matches_deployment_mode(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     admin = _user(Role.ADMIN, permissions=[], denied=["features"])
-    assert effective_permissions(admin) == sorted(
-        ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS
-    )
+    restricted = RESTRICTED_DEPLOYMENT_PERMISSIONS if managed else set()
+    assert effective_permissions(admin) == sorted(ALL_PERMISSION_KEYS - restricted)
 
 
-def test_wrappers_accept_legacy_user_shape_without_role_or_denied() -> None:
+@pytest.mark.parametrize("managed", [False, True])
+def test_wrappers_accept_legacy_user_shape_without_role_or_denied(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     admin = _LegacyUser(is_admin=True, permissions=[])
-    assert effective_permissions(admin) == sorted(
-        ALL_PERMISSION_KEYS - RESTRICTED_DEPLOYMENT_PERMISSIONS
-    )
+    restricted = RESTRICTED_DEPLOYMENT_PERMISSIONS if managed else set()
+    assert effective_permissions(admin) == sorted(ALL_PERMISSION_KEYS - restricted)
     member = _LegacyUser(is_admin=False, permissions=["users", "features"])
     assert effective_permissions(member) == ["features", "users"]
     assert user_has_permission(member, "features") is True
     assert user_has_permission(member, "providers") is False
 
 
-def test_assert_can_grant_uses_the_effective_set() -> None:
+def test_assert_can_grant_uses_the_effective_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """Granting is bounded by ``role ∪ unit ∪ grant − deny``, not by the stored column."""
+    monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     holder = _user(Role.USER, permissions=["users", "terminal"], denied=["terminal"])
 
     # Stored grant: held.
@@ -281,10 +319,10 @@ def test_assert_can_grant_uses_the_effective_set() -> None:
     # Department grant: held, and the reason the two grant surfaces share this
     # function.
     assert_can_grant(holder, ["providers"], unit_grants={"providers"})
-    # Restricted even when held in the stored column.
+    # An explicit deny outranks a stored grant on an unmanaged installation.
     with pytest.raises(OctopError) as exc:
         assert_can_grant(holder, ["terminal"])
-    assert exc.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
+    assert exc.value.code is ErrorCode.FORBIDDEN
     # Neither stored nor granted.
     with pytest.raises(OctopError) as exc:
         assert_can_grant(holder, ["users", "security"], unit_grants={"providers"})
@@ -296,9 +334,13 @@ def test_assert_can_grant_uses_the_effective_set() -> None:
     assert exc.value.details == {"missing": ["security"], "unit_key": "eng"}
 
 
-def test_assert_can_grant_admin_bypasses_for_allowed_keys() -> None:
+def test_assert_can_grant_admin_bypasses_for_allowed_keys(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
     admin = _user(Role.ADMIN, permissions=[], denied=["features"])
-    assert_can_grant(admin, ["providers", "security"])
+    assert_can_grant(admin, ["providers", "security", "terminal"])
+    monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
     with pytest.raises(OctopError) as exc:
         assert_can_grant(admin, ["terminal"])
     assert exc.value.code is ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED

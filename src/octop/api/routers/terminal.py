@@ -1,8 +1,6 @@
-"""Terminal context plus a permanently restricted host PTY WebSocket route.
+"""Authenticated agent terminal context and host PTY WebSocket routes.
 
-The WebSocket handshake is denied before authentication or shell setup. The
-session helpers below remain isolated low-level utilities and are not exposed
-through the customer deployment API.
+License-managed deployments deny host PTY access before shell setup.
 """
 
 from __future__ import annotations
@@ -25,8 +23,14 @@ from fastapi import APIRouter, Depends, Query, WebSocket
 
 from octop.api.common.agent import assert_agent_owner
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
-from octop.api.deps import get_server, require_permission
+from octop.api.deps import (
+    get_server,
+    require_permission,
+    resolve_user_from_token,
+    unit_grants_for,
+)
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils import posix_compat
 
 logger = logging.getLogger(__name__)
@@ -406,6 +410,15 @@ async def terminal_context(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return system context for the AI terminal panel."""
+    from octop.infra.utils.host_dirs import license_managed_install
+
+    if license_managed_install():
+        # Accepted managed default: no web host-shell for enterprise admins.
+        raise OctopError(
+            ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+            "The web terminal is disabled on license-managed installs; "
+            "the operator maintains the host outside this application.",
+        )
     assert server.app_runtime is not None
     row = server.app_runtime.agent_registry.get_row(agent_id)
     if row is None:
@@ -463,10 +476,73 @@ async def terminal_ws(
     cols: int = Query(default=80),
     rows: int = Query(default=24),
 ) -> None:
-    """Reject host PTY access for every customer deployment."""
-    await websocket.close(
-        code=4403,
-        reason=json.dumps({"error": {"code": "INSTANCE_DEPLOYMENT_RESTRICTED"}}),
+    """PTY-backed WebSocket terminal scoped to an agent's workspace.
+
+    Pass ``session_id`` to opt into session persistence (survives disconnect,
+    replays history on re-attach). Omit it for an ephemeral shell.
+    """
+    server = websocket.app.state.octop_server
+
+    # --- auth (token query param + agent ownership) ---------------------
+    if not token:
+        await websocket.close(code=4001, reason="missing token")
+        return
+    try:
+        user = resolve_user_from_token(server, token)
+    except OctopError as exc:
+        await websocket.close(code=4001, reason=f"auth: {exc.code.value}")
+        return
+    from octop.infra.utils.host_dirs import license_managed_install  # noqa: PLC0415
+
+    if license_managed_install():
+        # Accepted managed default: no web host-shell for enterprise admins.
+        await websocket.close(code=4403, reason="terminal disabled on license-managed installs")
+        return
+    if not user_has_permission(user, "terminal", unit_grants=unit_grants_for(server, user)):
+        await websocket.close(code=4003, reason="permission required")
+        return
+    assert server.app_runtime is not None
+    registry = server.app_runtime.agent_registry
+    agent_row = registry.get_row(agent_id)
+    if agent_row is None:
+        # Allow short suffixes; include disabled agents so terminal works even when
+        # the agent runtime is stopped/disabled.
+        candidates: list[Any] = []
+        agent_repo = getattr(server.services, "agent_repo", None)
+        if agent_repo is not None:
+            with contextlib.suppress(Exception):
+                candidates = list(agent_repo.list_all(include_disabled=True))
+        if not candidates:
+            with contextlib.suppress(Exception):
+                candidates = list(registry.list_rows())
+        for row in candidates:
+            row_id = str(getattr(row, "agent_id", "") or "")
+            if row_id == agent_id or row_id.endswith(agent_id):
+                agent_row = row
+                agent_id = row_id
+                break
+    if agent_row is None:
+        await websocket.close(code=4404, reason="agent not found")
+        return
+    try:
+        assert_agent_owner(agent_row, user, server=server)
+    except OctopError:
+        await websocket.close(code=4003, reason="agent not owned by user")
+        return
+
+    supported, unsupported_reason = terminal_supported()
+    if not supported:
+        await websocket.accept()
+        await websocket.send_text(json.dumps({"type": "error", "message": unsupported_reason}))
+        await websocket.close(code=4003, reason="terminal unsupported")
+        return
+
+    await websocket.accept()
+    logger.info(
+        "terminal ws accepted: agent=%s user=%s session_id=%s",
+        agent_id,
+        user.id,
+        session_id or "-",
     )
 
 

@@ -14,13 +14,14 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, cast
 
 from harness_agent.backends.workspace import BackendWorkspace
 
 from octop.infra.agents.manager import AgentCreateSpec
+from octop.infra.agents.middleware.platform_identity import render_platform_identity
 from octop.infra.agents.workspace_dir import DEFAULT_SYSTEM_FILES_PATH
 
 logger = logging.getLogger(__name__)
@@ -210,29 +211,65 @@ def _is_prompt_md_path(rel: str) -> bool:
     return "/" not in rel and rel.endswith(".md")
 
 
+def _is_bundled_expert_dir(expert_dir: Path) -> bool:
+    try:
+        expert_dir.resolve().relative_to(default_library_root().resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _render_bundled_contents(path: Path, contents: bytes) -> bytes:
+    text = contents.decode("utf-8")
+    rendered = render_platform_identity(text, None)
+    if rendered == text:
+        return contents
+    if path.suffix.lower() == ".json":
+        # Render JSON values, not serialized bytes: configured names can contain
+        # quotes or backslashes and must not corrupt workspace manifests.
+        def render_values(value: Any) -> Any:
+            if isinstance(value, str):
+                return render_platform_identity(value, None)
+            if isinstance(value, list):
+                return [render_values(item) for item in value]
+            if isinstance(value, dict):
+                return {key: render_values(item) for key, item in value.items()}
+            return value
+
+        rendered = json.dumps(render_values(json.loads(text)), ensure_ascii=False)
+    return rendered.encode("utf-8")
+
+
 async def seed_expert_directory(
     *,
     expert_dir: Path,
     workspace: BackendWorkspace,
     seed_paths: list[str] | None = None,
 ) -> int:
-    """Upload expert template files into *workspace*, including welcome manifest.
+    """Upload expert template files, rendering only packaged prompt templates.
 
     ``seed_paths`` / :func:`discover_seed_paths` omit the library manifest so
     catalog ``Expert.files`` stays seed-content only; this helper always
     copies library ``manifest.json`` to :data:`WORKSPACE_MANIFEST_PATH` when
-    present (chat welcome source of truth).
+    present. User-published snapshots retain their authored content as-is.
     """
+    bundled = _is_bundled_expert_dir(expert_dir)
     paths = seed_paths if seed_paths is not None else discover_seed_paths(expert_dir)
     pairs: list[tuple[str, bytes]] = []
     for rel in paths:
         fpath = expert_dir / rel
         if not fpath.is_file():
             continue
-        pairs.append((rel.lstrip("/"), fpath.read_bytes()))
+        contents = fpath.read_bytes()
+        if bundled and fpath.suffix.lower() in {".md", ".json"}:
+            contents = _render_bundled_contents(fpath, contents)
+        pairs.append((rel.lstrip("/"), contents))
     manifest_path = expert_dir / MANIFEST_FILENAME
     if manifest_path.is_file():
-        pairs.append((WORKSPACE_MANIFEST_PATH, manifest_path.read_bytes()))
+        contents = manifest_path.read_bytes()
+        if bundled:
+            contents = _render_bundled_contents(manifest_path, contents)
+        pairs.append((WORKSPACE_MANIFEST_PATH, contents))
     if not pairs:
         return 0
     await workspace.aupload_many(pairs)
@@ -667,7 +704,11 @@ class ExpertCatalog:
         if expert is None:
             return []
         rels = paths if paths is not None else expert.files
-        return read_text_file_contents(self.expert_dir(expert_id), rels)
+        contents = read_text_file_contents(self.expert_dir(expert_id), rels)
+        if self.is_bundled(expert_id):
+            for item in contents:
+                item["content"] = render_platform_identity(item["content"], None)
+        return contents
 
     def refresh(self) -> None:
         """Re-scan the library directory; quietly skip malformed entries."""
@@ -747,12 +788,25 @@ class ExpertCatalog:
                 continue
             if not include_market_cache and ex_id not in self._bundled_ids:
                 continue
-            summaries.append(expert.summary)
+            summaries.append(self._render_bundled_expert(expert).summary)
         summaries.sort(key=lambda s: (0 if s.id == "general-assistant" else 1, s.id))
         return summaries
 
+    def _render_bundled_expert(self, expert: Expert) -> Expert:
+        if not self.is_bundled(expert.summary.id):
+            return expert
+        return replace(
+            expert,
+            summary=replace(
+                expert.summary,
+                description_zh=render_platform_identity(expert.summary.description_zh, "zh"),
+                description_en=render_platform_identity(expert.summary.description_en, "en"),
+            ),
+        )
+
     def get(self, expert_id: str) -> Expert | None:
-        return self._experts.get(expert_id)
+        expert = self._experts.get(expert_id)
+        return self._render_bundled_expert(expert) if expert is not None else None
 
 
 def default_library_root() -> Path:

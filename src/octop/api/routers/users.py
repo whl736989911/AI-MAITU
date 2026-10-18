@@ -59,6 +59,7 @@ from octop.infra.users.scope import (
     assert_may_manage_unit,
     scope_for,
 )
+from octop.infra.utils.host_dirs import license_managed_install
 from octop.infra.utils.locale import resolve_request_locale
 
 router = APIRouter()
@@ -314,7 +315,7 @@ async def list_permission_catalog(
     items: list[dict[str, Any]] = []
     zh = locale.startswith("zh")
     for key, p in PERMISSIONS.items():
-        if key in RESTRICTED_DEPLOYMENT_PERMISSIONS:
+        if license_managed_install() and key in RESTRICTED_DEPLOYMENT_PERMISSIONS:
             continue
         labels = [(p.label_zh, p.label_en), *p.extra_tabs]
         for label_zh, label_en in labels:

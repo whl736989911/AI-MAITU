@@ -12,6 +12,7 @@ services:
       LICENSE_CENTER_TIMEZONE: ${LICENSE_CENTER_TIMEZONE:-Asia/Shanghai}
       LICENSE_CENTER_TLS_CERT: /run/certificates/fullchain.pem
       LICENSE_CENTER_TRUSTED_PROXY_IPS: ${LICENSE_CENTER_TRUSTED_PROXY_IPS:?Set the reverse proxy source address}
+      MAITU_CENTER_CLIENT_TOKEN: ${MAITU_CENTER_CLIENT_TOKEN:?Set a separate client update token of at least 32 characters}
     volumes:
       - type: bind
         source: ${LICENSE_CENTER_DATA:?Set a persistent protected authorization-center data directory}

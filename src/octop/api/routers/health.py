@@ -7,6 +7,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from octop.api.deps import get_server
+from octop.infra.setup.version_info import get_local_version
 
 router = APIRouter()
 
@@ -21,6 +22,7 @@ async def health(server: Any = Depends(get_server)) -> dict[str, Any]:
     )
     return {
         "ok": True,
+        "version": get_local_version(),
         "started_at": server._started_at,
         "db": bound,
         "users_loaded": users,

@@ -76,7 +76,13 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     OCTOP_LOG_LEVEL=info \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
-    UV_PYTHON_DOWNLOADS=never
+    UV_PROJECT_ENVIRONMENT=/usr/local/maitu-venv \
+    UV_PYTHON_DOWNLOADS=never \
+    MAITU_BRAND_CONFIG_FILE=/app/brand.config.json \
+    MAITU_LICENSE_TRUSTED_KEYS_FILE=/run/maitu-trust/license-trusted-keys.json \
+    MAITU_LICENSE_STATE_DIR=/var/lib/maitu-license \
+    MAITU_UPDATE_TRUSTED_KEYS_FILE=/run/maitu-trust/release-trusted-keys.json \
+    MAITU_UPDATE_QUEUE_DIR=/var/lib/maitu-update-queue
 
 ARG PIP_INDEX_URL=
 ARG PIP_TRUSTED_HOST=
@@ -93,6 +99,8 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
         libffi-dev \
         curl \
         git \
+        bubblewrap \
+        libreoffice-writer \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /bin/
@@ -108,15 +116,19 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     fi \
     && uv sync --frozen --no-install-project --no-dev --extra browser
 
-ENV PATH="/app/.venv/bin:$PATH" \
-    PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+ENV PATH="/usr/local/maitu-venv/bin:$PATH" \
+    PLAYWRIGHT_BROWSERS_PATH=/opt/maitu-browser \
+    BROWSER_USE_NO_SANDBOX=0 \
+    BROWSER_USE_CHROME_BIN=/usr/local/bin/maitu-chromium
 
 COPY src/ ./src/
 COPY --from=frontend-builder /build/src/octop/dashboard/ ./src/octop/dashboard/
 
 COPY .env.example ./
+COPY brand.config.json ./
 COPY docker/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+RUN sed -i 's/\r$//' /usr/local/bin/docker-entrypoint.sh \
+    && chmod +x /usr/local/bin/docker-entrypoint.sh
 
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -n "$PIP_INDEX_URL" ]; then \
@@ -128,9 +140,18 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/* /tmp/*
 
-RUN mkdir -p /data/.octop
+# Install the trusted browser and shared libraries before dropping privileges.
+# Its user-namespace and seccomp sandboxes remain enabled at runtime.
+RUN python -m playwright install --with-deps chromium \
+    && python -c 'from pathlib import Path; from playwright.sync_api import sync_playwright; p = sync_playwright().start(); Path("/usr/local/bin/maitu-chromium").symlink_to(p.chromium.executable_path); p.stop()' \
+    && chmod -R a+rX /opt/maitu-browser \
+    && useradd --uid 1000 --user-group --home-dir /data --no-create-home maitu \
+    && mkdir -p /data/.octop /var/lib/maitu-license /var/lib/maitu-update-queue \
+    && chown -R maitu:maitu /data /var/lib/maitu-license /var/lib/maitu-update-queue
 
 EXPOSE 8088
+
+USER 1000:1000
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=90s --retries=3 \
     CMD ["sh", "-c", "curl -f http://localhost:${OCTOP_PORT:-8088}/api/health || exit 1"]

@@ -1,4 +1,4 @@
-"""Instance-wide knowledge indexing and retrieval parameters."""
+"""Instance-wide knowledge indexing parameters."""
 
 from __future__ import annotations
 
@@ -6,20 +6,12 @@ from collections.abc import Callable
 
 DEFAULT_CHUNK_SIZE = 800
 DEFAULT_CHUNK_OVERLAP = 120
-DEFAULT_RETRIEVAL_K = 8
-DEFAULT_CONTEXT_CHAR_BUDGET = 6000
 
 _CHUNK_SIZE_KEY = "knowledge_chunk_size"
 _CHUNK_OVERLAP_KEY = "knowledge_chunk_overlap"
-_RETRIEVAL_K_KEY = "knowledge_retrieval_k"
-_CONTEXT_CHAR_BUDGET_KEY = "knowledge_context_char_budget"
 
 _MIN_CHUNK_SIZE = 100
 _MAX_CHUNK_SIZE = 8000
-_MIN_RETRIEVAL_K = 1
-_MAX_RETRIEVAL_K = 20
-_MIN_CONTEXT_CHAR_BUDGET = 500
-_MAX_CONTEXT_CHAR_BUDGET = 50_000
 
 SettingsGet = Callable[[str], str | None]
 SettingsSet = Callable[[str, str], None]
@@ -46,7 +38,7 @@ def _validate_chunk_window(size: int, overlap: int) -> None:
 
 
 def get_advanced_settings(settings_get: SettingsGet) -> dict[str, int]:
-    """Return resolved indexing/retrieval knobs (missing values use defaults)."""
+    """Return resolved chunking parameters (missing values use defaults)."""
     size = _as_int(
         settings_get(_CHUNK_SIZE_KEY),
         default=DEFAULT_CHUNK_SIZE,
@@ -64,18 +56,6 @@ def get_advanced_settings(settings_get: SettingsGet) -> dict[str, int]:
     return {
         "chunk_size": size,
         "chunk_overlap": overlap,
-        "retrieval_k": _as_int(
-            settings_get(_RETRIEVAL_K_KEY),
-            default=DEFAULT_RETRIEVAL_K,
-            minimum=_MIN_RETRIEVAL_K,
-            maximum=_MAX_RETRIEVAL_K,
-        ),
-        "context_char_budget": _as_int(
-            settings_get(_CONTEXT_CHAR_BUDGET_KEY),
-            default=DEFAULT_CONTEXT_CHAR_BUDGET,
-            minimum=_MIN_CONTEXT_CHAR_BUDGET,
-            maximum=_MAX_CONTEXT_CHAR_BUDGET,
-        ),
     }
 
 
@@ -85,8 +65,6 @@ def set_advanced_settings(
     *,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
-    retrieval_k: int | None = None,
-    context_char_budget: int | None = None,
 ) -> None:
     """Persist provided advanced settings; omitted fields stay unchanged."""
     current = get_advanced_settings(settings_get)
@@ -98,18 +76,3 @@ def set_advanced_settings(
             settings_set(_CHUNK_SIZE_KEY, str(next_size))
         if chunk_overlap is not None:
             settings_set(_CHUNK_OVERLAP_KEY, str(next_overlap))
-    if retrieval_k is not None:
-        value = int(retrieval_k)
-        if value < _MIN_RETRIEVAL_K or value > _MAX_RETRIEVAL_K:
-            raise ValueError(
-                f"retrieval_k must be between {_MIN_RETRIEVAL_K} and {_MAX_RETRIEVAL_K}"
-            )
-        settings_set(_RETRIEVAL_K_KEY, str(value))
-    if context_char_budget is not None:
-        value = int(context_char_budget)
-        if value < _MIN_CONTEXT_CHAR_BUDGET or value > _MAX_CONTEXT_CHAR_BUDGET:
-            raise ValueError(
-                "context_char_budget must be between "
-                f"{_MIN_CONTEXT_CHAR_BUDGET} and {_MAX_CONTEXT_CHAR_BUDGET}"
-            )
-        settings_set(_CONTEXT_CHAR_BUDGET_KEY, str(value))

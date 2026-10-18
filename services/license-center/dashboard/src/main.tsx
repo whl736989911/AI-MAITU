@@ -13,12 +13,14 @@ import {
   Languages,
   LayoutDashboard,
   LogOut,
+  PackageCheck,
   Plus,
   RefreshCw,
   Search,
   Shield,
   ShieldCheck,
   Ticket,
+  Upload,
   Users,
   X,
 } from "lucide-react";
@@ -31,6 +33,8 @@ import {
   type Instance,
   type Operator,
   type Overview,
+  type Release,
+  type ReleaseSigningKey,
   type Role,
   type Session,
   type SystemReadout,
@@ -417,6 +421,112 @@ Object.assign(zh, {
   dstGap: "由于夏令时切换，该本地时间在授权中心配置的时区中不存在。",
   dstAmbiguous: "由于夏令时切换，该本地时间在授权中心配置的时区中存在歧义。",
 });
+Object.assign(en, {
+  offline: "Offline licenses",
+  releases: "Software releases",
+  offlineRequest: "Issue offline activation",
+  offlineRequestHelp:
+    "Paste the signed request JSON exported by the client. The customer and license expiry must match its identity and current entitlement.",
+  requestJson: "Signed request JSON",
+  licenseExpiry: "License expiry",
+  offlineExpiry: "Offline access expiry",
+  issueOffline: "Issue offline license",
+  offlineIssued: "Offline license issued",
+  downloadToken: "Download signed license token",
+  releaseUpload: "Upload release package",
+  releaseFile: "Release ZIP package",
+  upload: "Upload package",
+  version: "Version",
+  packageType: "Package type",
+  target: "Target",
+  size: "Size",
+  checksum: "SHA-256",
+  releaseNotes: "Release notes",
+  releaseState: "Publication state",
+  published: "Published",
+  draft: "Draft",
+  publish: "Publish",
+  publishReason: "Publication reason",
+  releaseKeyring: "Release signing keys",
+  stageReleaseKey: "Stage signing key",
+  activateReleaseKey: "Activate key",
+  keyId: "Key ID",
+  publicKey: "Public key",
+  keyState: "Key state",
+  staged: "Staged",
+  keyActive: "Active",
+  retired: "Retired",
+  rotationReason: "Key rotation reason",
+  copy: "Copy",
+  noReleases: "No release packages uploaded.",
+  noCustomers: "Create an active customer before issuing an offline license.",
+  uploadHelp:
+    "Upload a ZIP archive containing the signed release metadata and package. The center validates the archive before storing it.",
+  secureDistribution:
+    "Published packages are distributed only through the updater's authenticated download endpoint.",
+  invalidRequest: "Enter a JSON object exported as the signed offline request.",
+  selectFile: "Select a ZIP release package.",
+  licenseId: "License ID",
+  offlineIssueHelp:
+    "Import a client's signed offline request, select its customer and expiry values, then issue the signed grant.",
+  releaseKeyHelp:
+    "Public keys are distributed through the updater trust bundle. Never export or share private-key material.",
+  keyActivationWarning:
+    "Activate only after every client trust set contains this staged public key.",
+  tokenReady: "A signed license file was downloaded to your device.",
+});
+Object.assign(zh, {
+  offline: "离线授权",
+  releases: "软件发行",
+  offlineRequest: "签发离线激活授权",
+  offlineRequestHelp:
+    "粘贴客户端导出的已签名请求 JSON。客户及授权到期时间必须与请求身份和当前授权一致。",
+  requestJson: "已签名请求 JSON",
+  licenseExpiry: "授权到期时间",
+  offlineExpiry: "离线访问有效期",
+  issueOffline: "签发离线授权",
+  offlineIssued: "离线授权已签发",
+  downloadToken: "下载签名授权令牌",
+  releaseUpload: "上传发行包",
+  releaseFile: "发行 ZIP 包",
+  upload: "上传发行包",
+  version: "版本",
+  packageType: "包类型",
+  target: "目标平台",
+  size: "大小",
+  checksum: "SHA-256",
+  releaseNotes: "发行说明",
+  releaseState: "发布状态",
+  published: "已发布",
+  draft: "草稿",
+  publish: "发布",
+  publishReason: "发布原因",
+  releaseKeyring: "发行签名密钥",
+  stageReleaseKey: "生成待启用密钥",
+  activateReleaseKey: "启用密钥",
+  keyId: "密钥 ID",
+  publicKey: "公钥",
+  keyState: "密钥状态",
+  staged: "待启用",
+  keyActive: "活动",
+  retired: "已退役",
+  rotationReason: "密钥轮换原因",
+  copy: "复制",
+  noReleases: "尚未上传发行包。",
+  noCustomers: "请先创建有效客户，再签发离线授权。",
+  uploadHelp:
+    "上传包含签名发行元数据和程序包的 ZIP 文件；授权中心会先验证压缩包。",
+  secureDistribution: "已发布程序包仅通过更新器的认证下载接口分发。",
+  invalidRequest: "请输入客户端导出的离线签名请求 JSON 对象。",
+  selectFile: "请选择 ZIP 格式的发行包。",
+  licenseId: "授权 ID",
+  offlineIssueHelp:
+    "导入客户的离线签名请求，指定所属客户和有效期后签发签名授权。",
+  releaseKeyHelp: "公钥通过更新器可信密钥包分发。严禁导出或共享私钥材料。",
+  keyActivationWarning:
+    "请先将待启用公钥加入所有客户的可信密钥集合，再启用该密钥。",
+  tokenReady: "签名授权文件已下载到本地设备。",
+});
 void i18n.use(initReactI18next).init({
   resources: { en: { translation: en }, zh: { translation: zh } },
   lng: localStorage.getItem("license-locale") ?? "zh",
@@ -429,6 +539,8 @@ type Page =
   | "customers"
   | "instances"
   | "activations"
+  | "offline"
+  | "releases"
   | "audit"
   | "operators"
   | "system";
@@ -437,6 +549,8 @@ const nav: { id: Page; icon: typeof LayoutDashboard; owner?: boolean }[] = [
   { id: "customers", icon: Building2 },
   { id: "instances", icon: ShieldCheck },
   { id: "activations", icon: Ticket },
+  { id: "offline", icon: ShieldCheck },
+  { id: "releases", icon: PackageCheck },
   { id: "audit", icon: Activity },
   { id: "operators", icon: Users, owner: true },
   { id: "system", icon: KeyRound, owner: true },
@@ -552,6 +666,8 @@ function App() {
   const [hasMoreAudit, setHasMoreAudit] = useState(false);
   const [operators, setOperators] = useState<Operator[]>([]);
   const [system, setSystem] = useState<SystemReadout | null>(null);
+  const [releases, setReleases] = useState<Release[]>([]);
+  const [releaseKeys, setReleaseKeys] = useState<ReleaseSigningKey[]>([]);
   const isOwner = session?.user.role === "owner";
   const canManage =
     session?.user.role === "owner" || session?.user.role === "operator";
@@ -593,6 +709,15 @@ function App() {
         setCodes(a);
         setCustomers(c);
       }
+      if (target === "offline") setCustomers(await api.customers());
+      if (target === "releases") {
+        const [items, keys] = await Promise.all([
+          api.releases(),
+          api.releaseSigningKeys(),
+        ]);
+        setReleases(items);
+        setReleaseKeys(keys);
+      }
       if (target === "audit") {
         const a = await api.audit();
         setAudit(a);
@@ -625,7 +750,15 @@ function App() {
     api
       .session()
       .then(setSession)
-      .catch(() => {})
+      .catch((cause) => {
+        const isUnauthorized =
+          cause !== null &&
+          typeof cause === "object" &&
+          "status" in cause &&
+          cause.status === 401;
+        if (!isUnauthorized)
+          setError(cause instanceof Error ? cause.message : t("failed"));
+      })
       .finally(() => setChecking(false));
   }, []);
   useEffect(() => {
@@ -1006,6 +1139,267 @@ function App() {
       ),
     });
   };
+  const createOfflineLicense = () => {
+    let customerId = customers.find((customer) => customer.active)?.id ?? "";
+    let requestJson = "";
+    let licenseExpiry = localInZone(Date.now() + 365 * 86400000, zone);
+    let offlineExpiry = localInZone(Date.now() + 30 * 86400000, zone);
+    let reason = "";
+    setModal({
+      title: t("offlineRequest"),
+      body: (
+        <form
+          className="modal-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            let request: Record<string, string>;
+            let licenseExpiresAt: number;
+            let offlineExpiresAt: number;
+            try {
+              const parsed: unknown = JSON.parse(requestJson);
+              if (
+                !parsed ||
+                typeof parsed !== "object" ||
+                Array.isArray(parsed) ||
+                !Object.values(parsed).every(
+                  (value) => typeof value === "string",
+                )
+              )
+                throw new Error(t("invalidRequest"));
+              request = parsed as Record<string, string>;
+              licenseExpiresAt = zoneInputToEpoch(licenseExpiry, zone, t);
+              offlineExpiresAt = zoneInputToEpoch(offlineExpiry, zone, t);
+            } catch (cause) {
+              return setError(
+                cause instanceof Error ? cause.message : t("invalidRequest"),
+              );
+            }
+            if (offlineExpiresAt <= Date.now() / 1000)
+              return setError(t("invalidWallTime"));
+            requireSensitive(t("issueOffline"), false, async () => {
+              const issued = await api.createOfflineLicense({
+                customer_id: customerId,
+                request,
+                license_expires_at: licenseExpiresAt,
+                offline_expires_at: offlineExpiresAt,
+                reason: reason.trim(),
+              });
+              const blob = new Blob([issued.token], {
+                type: "application/jwt",
+              });
+              const url = URL.createObjectURL(blob);
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = `${issued.license_id}-offline.license`;
+              link.click();
+              window.setTimeout(() => URL.revokeObjectURL(url), 300000);
+              setModal({
+                title: t("offlineIssued"),
+                body: (
+                  <div className="secret-box">
+                    <p>{`${t("licenseId")}: ${issued.license_id} · ${t(
+                      "version",
+                    )} ${issued.license_version}`}</p>
+                    <a
+                      className="button primary"
+                      href={url}
+                      download={`${issued.license_id}-offline.license`}
+                    >
+                      {t("downloadToken")}
+                    </a>
+                    <p>{t("tokenReady")}</p>
+                  </div>
+                ),
+              });
+            });
+          }}
+        >
+          <p className="muted">{t("offlineRequestHelp")}</p>
+          {!customers.some((customer) => customer.active) && (
+            <div className="inline-error">{t("noCustomers")}</div>
+          )}
+          <label>
+            {t("customer")}
+            <select
+              defaultValue={customerId}
+              required
+              onChange={(event) => (customerId = event.target.value)}
+            >
+              {customers
+                .filter((customer) => customer.active)
+                .map((customer) => (
+                  <option key={customer.id} value={customer.id}>
+                    {customer.name}
+                  </option>
+                ))}
+            </select>
+          </label>
+          <label>
+            {t("requestJson")}
+            <textarea
+              required
+              rows={8}
+              spellCheck={false}
+              onChange={(event) => (requestJson = event.target.value)}
+            />
+          </label>
+          <label>
+            {t("licenseExpiry")} <small>({zone})</small>
+            <input
+              type="datetime-local"
+              defaultValue={licenseExpiry}
+              required
+              onChange={(event) => (licenseExpiry = event.target.value)}
+            />
+          </label>
+          <label>
+            {t("offlineExpiry")} <small>({zone})</small>
+            <input
+              type="datetime-local"
+              defaultValue={offlineExpiry}
+              onChange={(event) => (offlineExpiry = event.target.value)}
+            />
+          </label>
+          <label>
+            {t("reason")}
+            <textarea
+              required
+              rows={2}
+              onChange={(event) => (reason = event.target.value)}
+            />
+          </label>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="button ghost"
+              onClick={() => setModal(null)}
+            >
+              {t("cancel")}
+            </button>
+            <button
+              className="button primary"
+              disabled={!customerId || !canManage}
+            >
+              {t("issueOffline")}
+            </button>
+          </div>
+        </form>
+      ),
+    });
+  };
+  const uploadRelease = () => {
+    let file: File | undefined;
+    setModal({
+      title: t("releaseUpload"),
+      body: (
+        <form
+          className="modal-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!file) return setError(t("selectFile"));
+            requireSensitive(t("releaseUpload"), false, async () => {
+              await api.uploadRelease(file!.name, file!);
+            });
+          }}
+        >
+          <p className="muted">{t("uploadHelp")}</p>
+          <label>
+            {t("releaseFile")}
+            <input
+              type="file"
+              accept=".zip,application/zip"
+              required
+              onChange={(event) => (file = event.target.files?.[0])}
+            />
+          </label>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="button ghost"
+              onClick={() => setModal(null)}
+            >
+              {t("cancel")}
+            </button>
+            <button className="button primary" disabled={!canManage}>
+              <Upload size={15} />
+              {t("upload")}
+            </button>
+          </div>
+        </form>
+      ),
+    });
+  };
+  const publishRelease = (release: Release) =>
+    requireSensitive(
+      `${t("publish")} · ${release.version} · ${release.architecture}`,
+      true,
+      (reason) => api.publishRelease(release.id, reason),
+    );
+  const stageReleaseKey = () => {
+    let reason = "";
+    setModal({
+      title: t("stageReleaseKey"),
+      body: (
+        <form
+          className="modal-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            requireSensitive(t("stageReleaseKey"), false, async () => {
+              const key = await api.stageReleaseKey(reason.trim());
+              setModal({
+                title: t("stageReleaseKey"),
+                body: (
+                  <div className="secret-box">
+                    <p>{`${t("keyId")}: ${key.kid}`}</p>
+                    <p>{t("publicKey")}</p>
+                    <code>{key.public_pem}</code>
+                    <button
+                      type="button"
+                      className="button primary"
+                      onClick={() =>
+                        void navigator.clipboard
+                          .writeText(key.public_pem)
+                          .then(() => notify(t("copied")))
+                      }
+                    >
+                      {t("copy")}
+                    </button>
+                  </div>
+                ),
+              });
+            });
+          }}
+        >
+          <p className="muted">{t("rotationInstructions")}</p>
+          <label>
+            {t("rotationReason")}
+            <textarea
+              required
+              rows={3}
+              onChange={(event) => (reason = event.target.value)}
+            />
+          </label>
+          <div className="modal-actions">
+            <button
+              type="button"
+              className="button ghost"
+              onClick={() => setModal(null)}
+            >
+              {t("cancel")}
+            </button>
+            <button className="button primary">{t("stageReleaseKey")}</button>
+          </div>
+        </form>
+      ),
+    });
+  };
+  const activateReleaseKey = (kid: string) =>
+    requireSensitive(
+      `${t("activateReleaseKey")} · ${kid}`,
+      true,
+      (reason) => api.activateReleaseKey(kid, reason),
+      t("keyActivationWarning"),
+    );
   const licenseAction = (
     instance: Instance,
     kind: "extend" | "revoke" | "restore" | "replace",
@@ -1452,6 +1846,21 @@ function App() {
                       : t("createCode")}
                   </button>
                 )}
+              {page === "offline" && canManage && (
+                <button
+                  className="button primary"
+                  onClick={createOfflineLicense}
+                >
+                  <Plus size={16} />
+                  {t("issueOffline")}
+                </button>
+              )}
+              {page === "releases" && canManage && (
+                <button className="button primary" onClick={uploadRelease}>
+                  <Upload size={16} />
+                  {t("releaseUpload")}
+                </button>
+              )}
               {page === "operators" && isOwner && (
                 <button className="button primary" onClick={createOperator}>
                   <Plus size={16} />
@@ -1869,6 +2278,176 @@ function App() {
                 {!codes.length && <Empty t={t} />}
               </div>
             </section>
+          )}
+          {page === "offline" && (
+            <section className="panel release-panel">
+              <div className="panel-head">
+                <div>
+                  <h3>{t("offlineRequest")}</h3>
+                  <p>{t("offlineRequestHelp")}</p>
+                </div>
+              </div>
+              <div className="panel-body">
+                {customers.filter((customer) => customer.active).length === 0
+                  ? t("noCustomers")
+                  : t("offlineIssueHelp")}
+              </div>
+            </section>
+          )}
+          {page === "releases" && (
+            <div className="release-layout">
+              <section className="panel">
+                <div className="panel-head">
+                  <div>
+                    <h3>{t("releases")}</h3>
+                    <p>{t("secureDistribution")}</p>
+                  </div>
+                </div>
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>{t("version")}</th>
+                        <th>{t("packageType")}</th>
+                        <th>{t("target")}</th>
+                        <th>{t("size")}</th>
+                        <th>{t("checksum")}</th>
+                        <th>{t("releaseNotes")}</th>
+                        <th>{t("releaseState")}</th>
+                        <th />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {releases
+                        .filter((release) =>
+                          `${release.version} ${release.filename} ${release.architecture} ${release.platform}`
+                            .toLowerCase()
+                            .includes(search.toLowerCase()),
+                        )
+                        .map((release) => (
+                          <tr key={release.id}>
+                            <td>
+                              <div className="entity">
+                                <span className="entity-icon">
+                                  <PackageCheck size={16} />
+                                </span>
+                                <span>
+                                  <b>{release.version}</b>
+                                  <small>{release.filename}</small>
+                                </span>
+                              </div>
+                            </td>
+                            <td>{release.package_type}</td>
+                            <td>
+                              {release.platform}/{release.architecture}
+                            </td>
+                            <td>
+                              {new Intl.NumberFormat(language).format(
+                                release.size,
+                              )}{" "}
+                              B
+                            </td>
+                            <td className="mono checksum-cell">
+                              {release.sha256}
+                            </td>
+                            <td className="release-notes-cell">
+                              {release.release_notes || "—"}
+                            </td>
+                            <td>
+                              <Status
+                                active={release.published}
+                                label={
+                                  release.published
+                                    ? t("published")
+                                    : t("draft")
+                                }
+                              />
+                              <small className="release-date">
+                                {release.published_at
+                                  ? dateFormat(
+                                      Date.parse(release.published_at) / 1000,
+                                      zone,
+                                      language,
+                                    )
+                                  : dateFormat(
+                                      Date.parse(release.created_at) / 1000,
+                                      zone,
+                                      language,
+                                    )}
+                              </small>
+                            </td>
+                            <td>
+                              {!release.published && canManage && (
+                                <button
+                                  className="row-action positive"
+                                  onClick={() => publishRelease(release)}
+                                >
+                                  {t("publish")}
+                                </button>
+                              )}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                  {!releases.length && <Empty t={t} />}
+                </div>
+              </section>
+              <section className="panel">
+                <div className="panel-head">
+                  <div>
+                    <h3>{t("releaseKeyring")}</h3>
+                    <p>{t("releaseKeyHelp")}</p>
+                  </div>
+                  {isOwner && (
+                    <button
+                      className="button primary"
+                      onClick={stageReleaseKey}
+                    >
+                      <Plus size={15} />
+                      {t("stageReleaseKey")}
+                    </button>
+                  )}
+                </div>
+                <div className="key-list">
+                  {releaseKeys.map((key) => (
+                    <article className="release-key" key={key.kid}>
+                      <div className="release-key-top">
+                        <div>
+                          <b className="mono">{key.kid}</b>
+                          <small>
+                            {dateFormat(key.created_at, zone, language)}
+                          </small>
+                        </div>
+                        <Status
+                          active={key.state === "active"}
+                          label={t(
+                            key.state === "staged"
+                              ? "staged"
+                              : key.state === "active"
+                              ? "keyActive"
+                              : "retired",
+                          )}
+                        />
+                      </div>
+                      {key.state === "staged" && isOwner && (
+                        <button
+                          className="row-action positive"
+                          onClick={() => activateReleaseKey(key.kid)}
+                        >
+                          {t("activateReleaseKey")}
+                        </button>
+                      )}
+                      <details>
+                        <summary>{t("publicKey")}</summary>
+                        <code>{key.public_pem}</code>
+                      </details>
+                    </article>
+                  ))}
+                  {!releaseKeys.length && <Empty t={t} />}
+                </div>
+              </section>
+            </div>
           )}
           {page === "operators" && (
             <section className="panel">

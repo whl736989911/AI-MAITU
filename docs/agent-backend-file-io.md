@@ -13,7 +13,7 @@
 - Octop 服务端 seed / 写 SOUL / 同步插件 skills 等仍写本地；
 - Dashboard 部分读路径优先本地，展示与真实存储不一致。
 
-默认未配置 backend 时，harness 使用 `filesystem` + `virtual_mode`，`root_dir` 由 `workspace_dir`（即 `~/.octop/agents/<id>/`）在创建 backend 时挂载。此时直连磁盘与经 backend 写入**同一物理文件**，但远程 backend 场景下必须统一走 backend。
+默认未配置 backend 时，Octop 在 Linux 上使用 `local_shell` + `virtual_mode=True`，`root_dir` 固定为受管理的 `workspace_dir`（即 `~/.octop/agents/<id>/`）；文件工具仍使用同一文件系统路径，`execute` 必须经过 bubblewrap。非 Linux 默认使用仅文件访问的 `filesystem`，不回退到宿主 shell。远程 backend 场景下仍必须统一走 workspace 文件接口。
 
 ---
 
@@ -60,7 +60,7 @@ await backend.aupload_files([(soul_path, text.encode("utf-8"))])
 
 `~/.octop/agents/<id>/` 仍作为 harness 的 `workspace_dir`，用于：
 
-- 构造 backend 时的 `root_dir` 挂载（默认 filesystem）；
+- 构造本地 backend 时的 `root_dir` 挂载；
 - checkpoint、sessions JSONL、harness-memory SQLite 等**本地产物**（不由 backend 协议管理）；
 - 终端 PTY 的 cwd（见 §6 例外）。
 
@@ -167,7 +167,7 @@ create(agent)
 | **终端** `api/routers/terminal.py` | PTY cwd 仍为 `workspace_dir`；远程 backend 时 UI 禁用或提示「仅本地 backend」 |
 | **记忆删除** `agent_files.delete_daily_memory` | 暂保留本地 `unlink`；待 backend 支持 delete 后统一 |
 | **sessions JSONL** | 记忆豁免 |
-| **默认 filesystem** | `root_dir` = `workspace_dir` 时，`aupload_files` 与原先 `write_text` 落同一文件，默认用户无感 |
+| **本地 workspace backend** | `root_dir` = `workspace_dir` 时，workspace 文件写入与原先 `write_text` 落同一文件；Linux 默认 `local_shell` 另提供隔离的 `execute` |
 
 ---
 
@@ -181,7 +181,7 @@ create(agent)
 2. 若 backend 根目录 listing 为空且本地 `workspace_dir` 有内容文件
 3. 将本地文件（排除记忆豁免目录）`aupload_files` 到 backend，path 仍为 `str(workspace_dir / rel)`
 
-### 7.2 默认 filesystem 用户
+### 7.2 默认本地 workspace 用户
 
 无迁移步骤；仅 IO 通道变化，物理路径不变。
 
@@ -234,9 +234,13 @@ create(agent)
 
 ## 12. 局部 root_dir 与 execute jail（补充）
 
-当 agent backend 为本地 `local_shell`，且同时满足 **Linux + `virtual_mode=True` + `root_dir` 非主机 `/` + 宿主机有 `bwrap`** 时，harness 在 **构造 backend 之前** 路由到 `BubbledLocalShellBackend`，将 `execute`（含 Skill 脚本）包进 bubblewrap：工作根绑到 `/`，与文件工具虚拟路径对齐。其余情况（宿主根、非 Linux、无 bwrap、`filesystem`）走普通 `HarnessLocalShellBackend`：无目录狱，但在 **harness-agent >= 1.0** 且 `virtual_mode` + 非宿主 `root_dir` 时，仍会把 `execute` 命令里的虚拟绝对路径改写到该 `root_dir` 下再在宿主机执行。
+未配置 backend 的 Linux agent 默认使用 `local_shell`，显式配置的 `local_shell` 也保留执行能力，不再被静默改为 `filesystem`。Octop 将本地 `local_shell` / `filesystem` 的 `root_dir` 固定到该 agent 的受管理 workspace，并强制 `virtual_mode=True`；旧配置中的 `/`、其他宿主目录或非虚拟模式在运行时收紧到此边界，偏离的根目录会记录 warning，不改写原始记录，也不读取旧宿主目录中的文件。`workspace_dir`、额外 skills 根目录及 Docker 宿主挂载覆盖仍受独立校验。
 
-`scripts/install.sh`（及 desktop Linux 安装脚本）会在 **Linux** 上尽力安装 `bubblewrap`；保存局部 `root_dir` 时仪表盘也会调用 `POST /api/filesystem/ensure-bwrap` 做同样的尽力安装。**该端点（连同 `/filesystem/{defaults,dirs,probe,mkdir,rename}`）现在仅管理员可调用**（`require_admin`，见 `src/octop/api/routers/filesystem.py`）：非管理员保存专家时仪表盘会跳过 probe / ensure-bwrap，root_dir 退化为手填路径、目录浏览器不渲染，因此普通用户不会看到 403。macOS / 无 bwrap 时无目录狱，文件工具仍靠 deepagents `virtual_mode`；`BackendWorkspace` 读/物化路径 failback 不变：绝对路径先 virtual 映到 `root_dir` 再原始宿主机路径；相对路径先 `{root_dir}/{rel}` 再 `{workspace_dir}/{rel}`。Dashboard path I/O: use ``dashboard/src/utils/workspaceIoPath.ts`` for download/file API paths
+本地 `local_shell` 只在 Linux 上提供隔离执行。原生安装经 `SourceShellBackend`，许可证托管安装经 `ManagedShellBackend`，均用 bubblewrap 将 workspace 绑定到沙箱 `/`。缺少或无法启动 `bwrap` 时显式失败，不能回退到宿主执行；非 Linux 默认使用 `filesystem`，显式请求 `local_shell` 则拒绝。平台 Python 运行时仅以只读绑定供 Skill 脚本使用，不为此绑定整个用户 home、项目目录或许可证目录。
+
+`scripts/install.sh`（及 desktop Linux 安装脚本）会在 Linux 上尽力安装 bubblewrap。原生安装的 `/api/filesystem/*` 保留管理员 ACL；许可证托管安装在调用 host helper 之前拒绝这组宿主接口，包括 `ensure-bwrap` / Docker 安装入口，管理员也不能通过这些接口扩大宿主访问范围。连接器 host CLI 安装同样只允许原生安装的管理员；缺少权限返回 `FORBIDDEN`，托管安装的管理员返回 `INSTANCE_DEPLOYMENT_RESTRICTED`。浏览器和 ACP 的托管限制由有效权限集执行，不能以原生管理员测试夹具代替托管部署场景。
+
+Dashboard path I/O: use ``dashboard/src/utils/workspaceIoPath.ts`` for download/file API paths
 (host absolute stays ``file://…``). Dock tab identity may still ``canonicalizeDockFilePath``;
 do not collapse host abs before calling BackendWorkspace.
 
@@ -246,9 +250,9 @@ do not collapse host abs before calling BackendWorkspace.
 
 需要把 agent 的文件系统工具与 `execute` 隔离到 Docker 容器时，配置 harness `type: "docker"`（需 `orcakit-harness-agent[docker]`，本机 Docker daemon 可用）。
 
-宿主 ``workspace_dir`` 在**创建专家时**写入 ``config_json.workspace_dir``（默认
-``{OCTOP_HOME}/agents/<agent_id>/``；创建时可覆盖）。**所有 backend 类型**共用这
-一路径作为 harness ``HarnessAgentConfig.workspace_dir``：
+宿主 ``workspace_dir`` 在创建专家时固定为
+``{OCTOP_HOME}/agents/<agent_id>/``，不能由用户覆盖为任意宿主目录。
+所有 backend 类型共用该路径作为 harness ``HarnessAgentConfig.workspace_dir``：
 
 | Backend | 专家可见内容 | 宿主 ``workspace_dir`` |
 |---------|--------------|------------------------|
@@ -290,7 +294,7 @@ Harness 侧只认调用方传入的 ``workspace_dir``；Docker 默认把它镜�
 | `sandbox_id` | `fixed` 必填 |
 | `username` | `user` 用；缺省时 Octop 注入专家所有者用户名 |
 | `previewable` | 仅影响 Admin「我的存储」浏览按钮；默认仅 `fixed` 为 true。专家工作区始终可预览 |
-| `volumes` | 用户自行配置的挂载，原样透传；**不**自动 named volume |
+| `volumes` | Octop 拒绝用户提供的宿主路径覆盖；`workspace_path` / `environment_file` 同样禁止，不以放宽宿主挂载修复旧配置 |
 
 容器命名：
 
@@ -314,7 +318,7 @@ Harness 侧只认调用方传入的 ``workspace_dir``；Docker 默认把它镜�
 
 - **同名路径、两处落盘（不自动挂载）**：
   - 专家 ``workspace_dir``（创建时写入配置/库；Octop 默认 ``{OCTOP_HOME}/agents/<id>/``）：宿主上放 sessions / memory / checkpoints
-  - 容器内同一绝对路径：专家可见工作区（由传入的 ``workspace_dir`` 决定；可用 ``workspace_path`` 覆盖；皆无时回退 ``/workspace``）
+  - 容器内同一绝对路径：专家可见工作区（由受管理的 ``workspace_dir`` 决定；Octop 不接受用户传入的 ``workspace_path`` 覆盖）
 - **沙箱 FS**：`ls` / `read` / `write` / `execute` 都在容器内，经 Docker Python SDK 完成
 - **专家工作区**（专家页文件树 / SOUL.md 等）始终可预览；走 agent backend API（Docker 时即该专家对应容器内同名路径）
 - **Admin 存储浏览**（`/admin/backend`）：`previewable` 控制；Docker 默认仅 `fixed` 可浏览；`agent`/`user` 按钮置灰，仍可用「探测」验证连通性（test 沙箱）

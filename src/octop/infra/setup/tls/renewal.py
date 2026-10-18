@@ -4,20 +4,20 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime
-from typing import TYPE_CHECKING
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
 
 from octop.config import load_config
 from octop.infra.setup.tls.manager import get_tls_manager
 from octop.infra.setup.tls.modes import is_renewal_mode
 from octop.infra.utils.paths import PathLayout
 
-if TYPE_CHECKING:
-    from octop.infra.cron.manager import CronManager
-
 logger = logging.getLogger(__name__)
 
 RENEWAL_WINDOW_DAYS = 30
 _AUTO_RENEW_JOB_ID = "octop_tls_auto_renew"
+_scheduler: AsyncIOScheduler | None = None
 
 
 def _parse_expiry(expires_at: str) -> datetime | None:
@@ -71,18 +71,38 @@ async def _auto_renew_job(paths: PathLayout) -> None:
         logger.warning("TLS auto-renew preflight failed")
 
 
-def install_auto_renewal_job(cron_manager: CronManager, *, paths: PathLayout) -> None:
-    """Schedule a daily job to renew Let's Encrypt certs within the renewal window."""
+def install_auto_renewal_job(*, paths: PathLayout, timezone: str = "Asia/Shanghai") -> None:
+    """Run trusted TLS maintenance independently of the licensed business scheduler."""
+    global _scheduler
+
     config = load_config(paths.config)
     if not is_renewal_mode(config):
+        if _scheduler is not None and _scheduler.get_job(_AUTO_RENEW_JOB_ID) is not None:
+            _scheduler.remove_job(_AUTO_RENEW_JOB_ID)
         return
+
+    if _scheduler is None:
+        _scheduler = AsyncIOScheduler(timezone=timezone)
 
     async def _run() -> None:
         await _auto_renew_job(paths)
 
-    cron_manager.schedule_system_job(
-        _AUTO_RENEW_JOB_ID,
-        trigger="cron:0 3 * * *",
-        func=_run,
+    _scheduler.add_job(
+        _run,
+        trigger=CronTrigger(hour=3, minute=0, timezone=timezone),
+        id=_AUTO_RENEW_JOB_ID,
+        replace_existing=True,
+        misfire_grace_time=300,
     )
+    if not _scheduler.running:
+        _scheduler.start()
     logger.info("TLS auto-renewal job scheduled (daily 03:00)")
+
+
+def shutdown_auto_renewal_scheduler() -> None:
+    """Stop process-owned TLS maintenance during server shutdown."""
+    global _scheduler
+
+    if _scheduler is not None and _scheduler.running:
+        _scheduler.shutdown(wait=False)
+    _scheduler = None

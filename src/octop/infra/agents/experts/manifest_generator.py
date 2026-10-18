@@ -11,11 +11,13 @@ from typing import Any
 
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from octop.branding import company_name
 from octop.infra.agents.experts.catalog import (
     default_task_examples,
     parse_task_examples,
     snap_task_examples,
 )
+from octop.infra.agents.middleware.platform_identity import render_platform_identity
 from octop.infra.utils.llm_text import ainvoke_text
 
 logger = logging.getLogger(__name__)
@@ -135,6 +137,7 @@ async def generate_skillhub_manifest_assets(
 ) -> dict[str, Any]:
     """Call the internal generator skill and return normalized manifest fields."""
     system_prompt = await asyncio.to_thread(_SKILL_PATH.read_text, encoding="utf-8")
+    system_prompt = render_platform_identity(system_prompt, None)
     fallback_label_zh = _fallback_label_zh(item)
     fallback_label_en = _fallback_label_en(item)
     context = {
@@ -162,7 +165,7 @@ async def generate_skillhub_manifest_assets(
             "task_example_max": _MAX_TASK_EXAMPLES,
             "output": (
                 "label + description + one-line welcome_message + quick_prompts "
-                "+ task_examples for MAITU Smart Manufacturing expert manifest"
+                f"+ task_examples for {company_name('en')} expert manifest"
             ),
         },
     }

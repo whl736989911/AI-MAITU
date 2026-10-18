@@ -118,6 +118,26 @@ class SkillCatalogRefreshMiddleware(AgentMiddleware[Any, Any, Any]):
         scanned = await scanner.abefore_agent(self._state_to_scan(state), runtime, config or {})
         return _stamped(scanned, revision)
 
+    def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        revision = self._stale_revision(state)
+        if revision is None or SKILLS_METADATA_KEY not in state:
+            return None
+        scanner = self._scanner()
+        if scanner is None:
+            return None
+        scanned = scanner.before_agent(self._state_to_scan(state), runtime, {})
+        return _stamped(scanned, revision)
+
+    async def abefore_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        revision = self._stale_revision(state)
+        if revision is None or SKILLS_METADATA_KEY not in state:
+            return None
+        scanner = self._scanner()
+        if scanner is None:
+            return None
+        scanned = await scanner.abefore_agent(self._state_to_scan(state), runtime, {})
+        return _stamped(scanned, revision)
+
     def _stale_revision(self, state: Mapping[str, Any]) -> int | None:
         """The revision to refresh to, or ``None`` when this thread is current."""
         revision = self._registry.skill_catalog_revision(self._agent_id)

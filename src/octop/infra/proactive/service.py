@@ -117,11 +117,9 @@ class ProactiveCareService:
     async def run(self, agent_id: str, session_key: str) -> None:
         from octop.infra.licensing import current_license
 
-        license_service = current_license()
-        if not license_service.allowed:
+        if not current_license().business_allowed:
             return
-        async with license_service.business_task():
-            await self._run(agent_id, session_key)
+        await self._run(agent_id, session_key)
 
     async def _run(self, agent_id: str, session_key: str) -> None:
         """Run one proactive care push.

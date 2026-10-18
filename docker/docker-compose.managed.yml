@@ -1,0 +1,17 @@
+# Operator-managed trust and identity; use together with docker-compose.yml.
+# These paths are NOT customer workspaces or downloadable business backups.
+services:
+  maitu:
+    volumes:
+      - ${MAITU_LICENSE_TRUSTED_KEYS_HOST_FILE:?Set the license signing public keyring file}:/run/maitu-trust/license-trusted-keys.json:ro
+      - ${MAITU_UPDATE_TRUSTED_KEYS_HOST_FILE:?Set the release signing public keyring file}:/run/maitu-trust/release-trusted-keys.json:ro
+      - ${MAITU_LICENSE_STATE_HOST_DIR:?Set the protected license identity directory}:/var/lib/maitu-license
+      - ${MAITU_UPDATE_QUEUE_HOST_DIR:?Set the host updater queue directory}:/var/lib/maitu-update-queue
+    environment:
+      MAITU_LICENSE_TRUSTED_KEYS_FILE: /run/maitu-trust/license-trusted-keys.json
+      MAITU_LICENSE_STATE_DIR: /var/lib/maitu-license
+      MAITU_LICENSE_CENTER_URL: ${MAITU_CENTER_URL:-}
+      MAITU_UPDATE_TRUSTED_KEYS_FILE: /run/maitu-trust/release-trusted-keys.json
+      MAITU_UPDATE_QUEUE_DIR: /var/lib/maitu-update-queue
+      MAITU_UPDATE_CENTER_URL: ${MAITU_CENTER_URL:-}
+      MAITU_UPDATE_CLIENT_TOKEN: ${MAITU_CENTER_CLIENT_TOKEN:-}

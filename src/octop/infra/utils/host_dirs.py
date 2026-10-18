@@ -22,6 +22,64 @@ _MAX_LIST_ENTRIES = 1000
 # Host paths that must not be browsed or used as workspace roots (POSIX).
 _DENIED_PREFIXES_POSIX = ("/proc", "/sys", "/dev", "/etc", "/root")
 
+
+def license_managed_install() -> bool:
+    """True when this install is license-managed (operator-provisioned trust key).
+
+    Managed installs get the hardened defaults: no host terminal, vetted
+    bundled plugins only, workspace-scoped/sandboxed agent backends. Developer
+    installs without the key keep existing behavior.
+    """
+    return bool(os.environ.get("MAITU_LICENSE_TRUSTED_KEYS_FILE", "").strip())
+
+
+def license_protected_dir_covered_by(root_dir: str) -> bool:
+    """True when *root_dir* would expose license identity/trust locations.
+
+    A backend root that *contains* the protected directories (e.g. the process
+    home covering ``~/.maitu-license``) is as bad as pointing at them directly:
+    scoped jail roots must not span the trust locations on managed installs.
+    """
+    if not license_managed_install():
+        return False
+    root_real = os.path.realpath(os.path.expanduser(root_dir))
+    root_n = os.path.normcase(root_real)
+    for prefix in _license_protected_prefixes():
+        prefix_n = os.path.normcase(os.path.realpath(os.path.expanduser(prefix)))
+        if root_n == prefix_n or prefix_n.startswith(root_n + os.sep):
+            return True
+    return False
+
+
+def _license_protected_prefixes() -> list[str]:
+    """Protected license identity/trust locations on license-managed installs.
+
+    Managed = ``MAITU_LICENSE_TRUSTED_KEYS_FILE`` configured (operator provisioned).
+    The license state directory (identity private key, entitlement ledger,
+    cached credentials) and the directories holding pinned trust keys must
+    never be browsable or selectable as a workspace/data root by dashboard
+    users, even admins.
+    """
+    key_file = os.environ.get("MAITU_LICENSE_TRUSTED_KEYS_FILE", "").strip()
+    if not key_file:
+        return []
+    prefixes: list[str] = []
+    state_dir = os.environ.get("MAITU_LICENSE_STATE_DIR", "").strip()
+    if state_dir:
+        prefixes.append(state_dir)
+    else:
+        # Default placement: sibling of the install root, outside customer data.
+        prefixes.append(str(Path.home() / ".maitu-license"))
+    for variable in ("MAITU_LICENSE_TRUSTED_KEYS_FILE", "MAITU_UPDATE_TRUSTED_KEYS_FILE"):
+        key_file = os.environ.get(variable, "").strip()
+        if not key_file:
+            continue
+        key_parent = Path(key_file).parent
+        if str(key_parent) not in ("/", "C:\\", "C:/"):
+            prefixes.append(str(key_parent))
+    return prefixes
+
+
 _OUTSIDE_HOME_MSG = "path outside home"
 _OUTSIDE_ROOT_MSG = "path outside allowed workspace root"
 _NOT_ALLOWED_MSG = "path not allowed"
@@ -129,7 +187,14 @@ def _is_denied_host_path(resolved: Path) -> bool:
     # denied policy still matches the logical system locations.
     if text == "/private" or text.startswith("/private/"):
         text = text[len("/private") :] or "/"
-    return any(text == denied or text.startswith(f"{denied}/") for denied in _DENIED_PREFIXES_POSIX)
+    if any(text == denied or text.startswith(f"{denied}/") for denied in _DENIED_PREFIXES_POSIX):
+        return True
+    for protected in _license_protected_prefixes():
+        protected_s = os.path.normcase(os.path.realpath(os.path.expanduser(protected)))
+        resolved_s = os.path.normcase(text)
+        if resolved_s == protected_s or resolved_s.startswith(protected_s + os.sep):
+            return True
+    return False
 
 
 def _within_restrict_root(resolved_s: str, restrict_to_root: str | None) -> bool:

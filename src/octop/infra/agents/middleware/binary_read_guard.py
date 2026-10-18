@@ -1,20 +1,45 @@
-"""Block ``read_file`` on binary inbound attachments (PDF, Office, …)."""
+"""Route read_file image reads to multimodal context; block other binary inputs."""
 
 from __future__ import annotations
 
+import io
 import logging
+import mimetypes
 from collections.abc import Awaitable, Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
+from langgraph.config import get_config
 from langgraph.prebuilt.tool_node import ToolCallRequest
 from langgraph.types import Command
 
+from octop.i18n import tr
+from octop.infra.gateway.media.attachment_hints import (
+    VISION_MAX_BYTES,
+    WORKSPACE_IMAGE_SCHEME,
+    sniff_image_media_type,
+)
+
+if TYPE_CHECKING:
+    from harness_agent.backends.workspace import BackendWorkspace
+
 logger = logging.getLogger(__name__)
 
+
+def _request_locale() -> str:
+    try:
+        configurable = get_config().get("configurable") or {}
+    except RuntimeError:
+        return "en"
+    if not isinstance(configurable, dict):
+        return "en"
+    return str(configurable.get("octop_feature_locale") or configurable.get("locale") or "en")
+
+
 _READ_FILE_TOOL = "read_file"
+_IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"})
 _BLOCKED_EXTENSIONS = frozenset(
     {
         ".pdf",
@@ -26,11 +51,6 @@ _BLOCKED_EXTENSIONS = frozenset(
         ".pptx",
         ".zip",
         ".bin",
-        ".gif",
-        ".webp",
-        ".jpg",
-        ".jpeg",
-        ".png",
     }
 )
 _TEXT_EXTENSIONS = frozenset(
@@ -79,25 +99,23 @@ def read_file_block_reason(path: str) -> str | None:
         return None
     ext = _extension(path)
     if ext == ".pdf":
-        return (
-            f"read_file blocked for binary PDF `{path}`. "
-            "Use execute_shell_command with the pdf skill (pdftotext, pdfplumber, etc.) instead."
-        )
+        return "Use execute with the pdf skill (pdftotext, pdfplumber, etc.) instead."
     if ext in _BLOCKED_EXTENSIONS:
-        return (
-            f"read_file blocked for binary file `{path}`. "
-            "Use execute_shell_command or the matching skill instead."
-        )
-    if _is_inbound_attachment(path) and ext and ext not in _TEXT_EXTENSIONS:
-        return (
-            f"read_file blocked for inbound attachment `{path}`. "
-            "Use execute_shell_command or the matching skill instead."
-        )
+        return "Use execute or the matching skill instead."
+    if (
+        _is_inbound_attachment(path)
+        and ext
+        and (ext not in _TEXT_EXTENSIONS and ext not in _IMAGE_EXTENSIONS)
+    ):
+        return "Use execute or the matching skill instead."
     return None
 
 
 class BinaryReadGuardMiddleware(AgentMiddleware[Any, Any]):
-    """Reject read_file on PDF/Office inbound attachments before bytes hit context."""
+    """Preserve binary guards while exposing decodable image reads to vision models."""
+
+    def __init__(self, *, workspace: BackendWorkspace) -> None:
+        self._workspace = workspace
 
     async def awrap_tool_call(
         self,
@@ -114,14 +132,50 @@ class BinaryReadGuardMiddleware(AgentMiddleware[Any, Any]):
             params = {}
         path = _read_file_path_from_args(params)
         reason = read_file_block_reason(path)
-        if reason is None:
+        if reason is not None:
+            logger.info("BinaryReadGuard blocked read_file on %s", path)
+            return ToolMessage(
+                content=reason,
+                tool_call_id=str(tool_call.get("id") or ""),
+                status="error",
+            )
+
+        if _extension(path) not in _IMAGE_EXTENSIONS:
             return await handler(request)
 
-        logger.info("BinaryReadGuard blocked read_file on %s", path)
+        try:
+            data = await self._workspace.adownload_bytes(path)
+            if data is None:
+                raise FileNotFoundError(path)
+            if len(data) <= VISION_MAX_BYTES:
+                from PIL import Image  # noqa: PLC0415
+
+                with Image.open(io.BytesIO(data)) as image:
+                    image.verify()
+        except Exception as exc:
+            logger.info("BinaryReadGuard could not decode image %s: %s", path, exc)
+            return ToolMessage(
+                content=tr("agent_errors.image_read_failed", _request_locale(), path=path),
+                tool_call_id=str(tool_call.get("id") or ""),
+                status="error",
+            )
+
+        mime_type = sniff_image_media_type(data) or mimetypes.guess_type(path)[0] or "image/png"
+
         return ToolMessage(
-            content=reason,
+            content=[
+                {
+                    "type": "text",
+                    "text": tr("agent_errors.image_read_success", _request_locale(), path=path),
+                },
+                {
+                    "type": "image_url",
+                    "workspace_path": path,
+                    "mime_type": mime_type,
+                    "image_url": {"url": f"{WORKSPACE_IMAGE_SCHEME}{path}"},
+                },
+            ],
             tool_call_id=str(tool_call.get("id") or ""),
-            status="error",
         )
 
 

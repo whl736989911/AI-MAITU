@@ -1,10 +1,4 @@
-"""Best-effort bubblewrap (``bwrap``) provisioning for scoped ``root_dir``.
-
-Used when saving agent backends with a non-host-root ``root_dir``. Install
-failure is never fatal — harness only constructs ``BubbledLocalShellBackend``
-when Linux + ``virtual_mode`` + non-host root + ``bwrap``; otherwise plain
-``local_shell`` (no execute path rewrite).
-"""
+"""Provision bubblewrap and verify its namespace jail can actually start."""
 
 from __future__ import annotations
 
@@ -13,6 +7,8 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -26,6 +22,28 @@ _PKG_MANAGERS: tuple[tuple[str, str], ...] = (
     ("yum", "yum"),
     ("pacman", "pacman"),
     ("zypper", "zypper"),
+)
+
+# Shared diagnosis taxonomy for the filesystem sandbox API:
+# ``missing_binary``           bwrap is not installed
+# ``install_permission_denied`` package installation is not possible without credentials
+# ``userns_denied``            the kernel / AppArmor / seccomp refuses the user namespace
+# ``runtime_failure``          any other failure starting the jail
+DIAGNOSIS_MISSING_BINARY = "missing_binary"
+DIAGNOSIS_INSTALL_PERMISSION_DENIED = "install_permission_denied"
+DIAGNOSIS_USERNS_DENIED = "userns_denied"
+DIAGNOSIS_RUNTIME_FAILURE = "runtime_failure"
+
+# Real bubblewrap failure strings (observed on Ubuntu 24.04): AppArmor's
+# unprivileged-userns restriction denies the uid/gid map setup, while kernels
+# with unprivileged userns disabled (or seccomp filters blocking ``clone``)
+# reject namespace creation outright. Anything else is an unrelated failure.
+_USERNS_DENY_MARKERS: tuple[str, ...] = (
+    "uid map",
+    "gid map",
+    "user namespace",
+    "new namespace",
+    "unshare",
 )
 
 
@@ -156,60 +174,190 @@ def _install_bubblewrap(manager: str) -> bool:
     return _run_install(argv)
 
 
-def ensure_bubblewrap() -> dict[str, Any]:
-    """Best-effort ensure ``bwrap`` is on PATH.
+def _classify_probe_failure(detail: str) -> str:
+    """Map a real ``bwrap`` failure to the shared diagnosis taxonomy."""
+    text = (detail or "").lower()
+    if any(marker in text for marker in _USERNS_DENY_MARKERS):
+        return DIAGNOSIS_USERNS_DENIED
+    return DIAGNOSIS_RUNTIME_FAILURE
 
-    Returns a status dict suitable for ``POST /api/filesystem/ensure-bwrap``.
-    Never raises for missing packages / privilege — callers must not block save.
-    """
-    if not sys.platform.startswith("linux"):
-        return {
-            "status": "skipped",
-            "reason": "not_linux",
-            "detail": "bubblewrap jail is Linux-only; execute uses plain local_shell",
-        }
 
-    if shutil.which("bwrap"):
-        return {
-            "status": "ready",
-            "reason": "already_present",
-            "detail": "",
-        }
-
-    manager = _detect_package_manager()
-    if manager is None:
-        return {
-            "status": "degraded",
-            "reason": "no_package_manager",
-            "detail": "no apt/dnf/yum/pacman/zypper; install bubblewrap manually",
-        }
-
-    if not _can_install_without_password():
-        return {
-            "status": "degraded",
-            "reason": "no_privilege",
-            "detail": "need root or passwordless sudo to install bubblewrap",
-        }
-
-    if not _install_bubblewrap(manager):
-        return {
-            "status": "degraded",
-            "reason": "install_failed",
-            "detail": f"failed to install bubblewrap via {manager}",
-        }
-
-    if shutil.which("bwrap"):
-        return {
-            "status": "installed",
-            "reason": "install_ok",
-            "detail": "",
-        }
-
+def _install_command(manager: str | None) -> str | None:
     return {
-        "status": "degraded",
-        "reason": "install_failed",
-        "detail": "package manager reported success but bwrap still missing",
+        "apt": "sudo apt-get install -y bubblewrap",
+        "dnf": "sudo dnf install -y bubblewrap",
+        "yum": "sudo yum install -y bubblewrap",
+        "pacman": "sudo pacman -S --noconfirm bubblewrap",
+        "zypper": "sudo zypper install -y bubblewrap",
+    }.get(manager or "")
+
+
+def _recovery_commands(diagnosis: str | None, manager: str | None) -> list[str]:
+    """Minimal-privilege operator commands for a diagnosis (display only)."""
+    if diagnosis in (DIAGNOSIS_MISSING_BINARY, DIAGNOSIS_INSTALL_PERMISSION_DENIED):
+        command = _install_command(manager)
+        return [command] if command else []
+    if diagnosis == DIAGNOSIS_USERNS_DENIED:
+        # The helper installs only the dedicated profile and refuses to
+        # overwrite an existing distribution-managed bubblewrap policy.
+        return ["sudo bash scripts/setup-host-sandbox.sh"]
+    return []
+
+
+def _status_result(
+    *,
+    status: str,
+    reason: str,
+    detail: str,
+    diagnosis: str | None,
+    manager: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "status": status,
+        "reason": reason,
+        "detail": detail,
+        "diagnosis": diagnosis,
+        "commands": _recovery_commands(diagnosis, manager),
     }
 
 
-__all__ = ["ensure_bubblewrap"]
+def _probe_runtime(
+    binary: str, *, installed: bool = False, manager: str | None = None
+) -> dict[str, Any]:
+    from harness_agent.backends.bwrap_shell import build_bwrap_argv
+
+    try:
+        with tempfile.TemporaryDirectory(prefix="maitu-bwrap-check-") as root:
+            result = subprocess.run(
+                build_bwrap_argv(bwrap=binary, root_dir=Path(root), command="true"),
+                check=False,
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                timeout=10,
+                env={"PATH": os.defpath, "LANG": "C"},
+            )
+    except FileNotFoundError as exc:
+        return _status_result(
+            status="degraded",
+            reason="sandbox_unavailable",
+            detail=str(exc),
+            diagnosis=DIAGNOSIS_MISSING_BINARY,
+            manager=manager,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _status_result(
+            status="degraded",
+            reason="sandbox_unavailable",
+            detail=str(exc),
+            diagnosis=DIAGNOSIS_RUNTIME_FAILURE,
+            manager=manager,
+        )
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "bubblewrap jail failed to start").strip()[
+            :1000
+        ]
+        return _status_result(
+            status="degraded",
+            reason="sandbox_unavailable",
+            detail=detail,
+            diagnosis=_classify_probe_failure(detail),
+            manager=manager,
+        )
+    return {
+        "status": "installed" if installed else "ready",
+        "reason": "install_ok" if installed else "already_present",
+        "detail": "",
+        "diagnosis": None,
+        "commands": [],
+    }
+
+
+def bwrap_status() -> dict[str, Any]:
+    """Read-only bubblewrap capability report; never installs anything.
+
+    Companion to :func:`ensure_bubblewrap` for ``GET /api/filesystem/bwrap-status``:
+    same response shape, but a missing binary is only classified (with the
+    operator's install command), never installed.
+    """
+    if not sys.platform.startswith("linux"):
+        return _status_result(
+            status="skipped",
+            reason="not_linux",
+            detail="bubblewrap jail is Linux-only; execute uses plain local_shell",
+            diagnosis=None,
+        )
+    binary = shutil.which("bwrap")
+    if binary:
+        return _probe_runtime(binary, manager=_detect_package_manager())
+    return _status_result(
+        status="degraded",
+        reason="not_installed",
+        detail="bwrap is not installed; use POST /api/filesystem/ensure-bwrap to install",
+        diagnosis=DIAGNOSIS_MISSING_BINARY,
+        manager=_detect_package_manager(),
+    )
+
+
+def ensure_bubblewrap() -> dict[str, Any]:
+    """Ensure ``bwrap`` is installed and can start the execution namespace jail.
+
+    Returns a status dict suitable for ``POST /api/filesystem/ensure-bwrap``.
+    Never raises for missing packages / privilege — callers must not block save.
+    ``status`` / ``reason`` keep their existing values; ``diagnosis`` classifies
+    the failure for the dashboard and ``commands`` lists display-only operator
+    commands.
+    """
+    if not sys.platform.startswith("linux"):
+        return _status_result(
+            status="skipped",
+            reason="not_linux",
+            detail="bubblewrap jail is Linux-only; execute uses plain local_shell",
+            diagnosis=None,
+        )
+
+    binary = shutil.which("bwrap")
+    if binary:
+        return _probe_runtime(binary, manager=_detect_package_manager())
+
+    manager = _detect_package_manager()
+    if manager is None:
+        return _status_result(
+            status="degraded",
+            reason="no_package_manager",
+            detail="no apt/dnf/yum/pacman/zypper; install bubblewrap manually",
+            diagnosis=DIAGNOSIS_MISSING_BINARY,
+        )
+
+    if not _can_install_without_password():
+        return _status_result(
+            status="degraded",
+            reason="no_privilege",
+            detail="need root or passwordless sudo to install bubblewrap",
+            diagnosis=DIAGNOSIS_INSTALL_PERMISSION_DENIED,
+            manager=manager,
+        )
+
+    if not _install_bubblewrap(manager):
+        return _status_result(
+            status="degraded",
+            reason="install_failed",
+            detail=f"failed to install bubblewrap via {manager}",
+            diagnosis=DIAGNOSIS_RUNTIME_FAILURE,
+            manager=manager,
+        )
+
+    binary = shutil.which("bwrap")
+    if binary:
+        return _probe_runtime(binary, installed=True, manager=manager)
+
+    return _status_result(
+        status="degraded",
+        reason="install_failed",
+        detail="package manager reported success but bwrap still missing",
+        diagnosis=DIAGNOSIS_RUNTIME_FAILURE,
+        manager=manager,
+    )
+
+
+__all__ = ["bwrap_status", "ensure_bubblewrap"]

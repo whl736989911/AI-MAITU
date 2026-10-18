@@ -1622,6 +1622,159 @@ def _ensure_knowledge_derived_schema(db: DatabasePool) -> None:
     _ensure_column(db, "knowledge_documents", "derived_json", "TEXT NOT NULL DEFAULT ''")
 
 
+def _ensure_knowledge_prompt_collections_schema(db: DatabasePool) -> None:
+    """Turn v40 keyword collections into prompt-registered ones (schema v41).
+
+    SQLite companion of ``041_knowledge_prompt_collections.sql``: every step
+    applies only what is missing, so a downstamped watermark or a repaired
+    build re-runs it without the file's plain ``ADD COLUMN`` / ``DROP COLUMN``
+    refusing work that already happened.
+    """
+    if not _table_exists(db, "knowledge_collections"):
+        return
+    for column, definition in (
+        ("prompt", "TEXT NOT NULL DEFAULT ''"),
+        ("prompt_updated_at", "INTEGER"),
+        ("generation_state", "TEXT NOT NULL DEFAULT 'idle'"),
+        ("generation_error", "TEXT NOT NULL DEFAULT ''"),
+        ("generated_model", "TEXT NOT NULL DEFAULT ''"),
+        ("generated_at", "INTEGER"),
+    ):
+        _ensure_column(db, "knowledge_collections", column, definition)
+    columns = _table_columns(db, "knowledge_collections")
+    entries_present = _table_exists(db, "knowledge_collection_entries")
+    settings_present = _table_exists(db, "settings")
+    with db.connect() as conn:
+        if "keywords_json" in columns:
+            # Old keyword lists migrate into the freeform prompt that replaces
+            # them. The keyword MATCH entries themselves are not prompt-backed
+            # synthesis and are not migrated as topic results; collections
+            # regenerate topics from real source reads.
+            conn.execute(
+                """
+                UPDATE knowledge_collections
+                SET prompt = COALESCE((
+                  SELECT group_concat(je.value, '; ')
+                  FROM json_each(knowledge_collections.keywords_json) AS je
+                ), '')
+                WHERE EXISTS (SELECT 1 FROM json_each(knowledge_collections.keywords_json) AS je)
+                """
+            )
+            conn.execute("ALTER TABLE knowledge_collections DROP COLUMN keywords_json")
+        # Platform-accumulated evidence of actual authorized reads, independent
+        # of any index.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_source_reads (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              evidence_id TEXT NOT NULL,
+              knowledge_base_id TEXT NOT NULL,
+              document_id TEXT NOT NULL,
+              source_version TEXT NOT NULL,
+              kind TEXT NOT NULL DEFAULT 'text',
+              status TEXT NOT NULL DEFAULT 'legacy',
+              locator_json TEXT NOT NULL DEFAULT '{}',
+              text TEXT NOT NULL DEFAULT '',
+              summary TEXT NOT NULL DEFAULT '',
+              images_json TEXT NOT NULL DEFAULT '[]',
+              read_by INTEGER,
+              created_at INTEGER NOT NULL,
+              updated_at INTEGER NOT NULL,
+              UNIQUE (document_id, source_version, evidence_id)
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_source_reads_scope
+              ON knowledge_source_reads(knowledge_base_id, document_id, source_version, created_at)
+            """
+        )
+        # Per-collection prompt-directed topic results for one source version.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_collection_topics (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              collection_id TEXT NOT NULL,
+              document_id TEXT NOT NULL,
+              source_version TEXT NOT NULL,
+              status TEXT NOT NULL DEFAULT 'pending',
+              content TEXT NOT NULL DEFAULT '',
+              summary TEXT NOT NULL DEFAULT '',
+              citations_json TEXT NOT NULL DEFAULT '[]',
+              evidence_ids_json TEXT NOT NULL DEFAULT '[]',
+              corrections_json TEXT NOT NULL DEFAULT '[]',
+              conflicts_json TEXT NOT NULL DEFAULT '[]',
+              omissions_json TEXT NOT NULL DEFAULT '[]',
+              model_ref TEXT NOT NULL DEFAULT '',
+              error TEXT NOT NULL DEFAULT '',
+              generated_at INTEGER,
+              updated_at INTEGER NOT NULL,
+              UNIQUE (collection_id, document_id, source_version),
+              FOREIGN KEY (collection_id)
+                REFERENCES knowledge_collections(collection_id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_knowledge_collection_topics_doc
+              ON knowledge_collection_topics(collection_id, document_id)
+            """
+        )
+        if entries_present:
+            # Preserve v40 verified reading entries only where they are still
+            # truthful: the source document must still exist and still hash to
+            # the version that was read. They keep legacy status until a fresh
+            # source read re-verifies them.
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO knowledge_source_reads(
+                  evidence_id, knowledge_base_id, document_id, source_version, kind, status,
+                  locator_json, text, summary, images_json, read_by, created_at, updated_at
+                )
+                SELECT
+                  'legacy:' || e.document_id || ':' || substr(e.source_version, 1, 16) || ':'
+                    || e.segment_id,
+                  c.knowledge_base_id,
+                  e.document_id,
+                  e.source_version,
+                  'text',
+                  'legacy',
+                  e.locator_json,
+                  e.text,
+                  e.extractive_summary,
+                  '[]',
+                  NULL,
+                  e.updated_at,
+                  e.updated_at
+                FROM knowledge_collection_entries AS e
+                JOIN knowledge_collections AS c ON c.collection_id = e.collection_id
+                JOIN knowledge_documents AS d
+                  ON d.document_id = e.document_id AND d.content_hash = e.source_version
+                WHERE e.read = 1
+                  AND e.segment_id <> ''
+                  AND length(trim(e.text)) > 0
+                """
+            )
+        # Membership was derived index state; scope now derives from the target
+        # path at render time. Per-file/folder search rules are fully removed
+        # with their runtime.
+        conn.execute("DROP TABLE IF EXISTS knowledge_collection_members")
+        conn.execute("DROP TABLE IF EXISTS knowledge_collection_entries")
+        conn.execute("DROP TABLE IF EXISTS knowledge_search_rule_vectors")
+        conn.execute("DROP TABLE IF EXISTS knowledge_search_rules")
+        conn.execute("DROP TABLE IF EXISTS knowledge_folder_search_rules")
+        # Retrieval-shape knobs of the removed collection-first retrieval
+        # surface; ordinary lexical/vector search and chunk-size knobs keep
+        # their own keys.
+        if settings_present:
+            conn.execute(
+                "DELETE FROM settings WHERE key IN "
+                "('knowledge_retrieval_k', 'knowledge_context_char_budget')"
+            )
+
+
 def _ensure_extract_templates_schema(db: DatabasePool) -> None:
     """Reconstruct the historical v33 template tables during an old upgrade.
 
@@ -1778,31 +1931,6 @@ def _ensure_knowledge_search_rules_schema(db: DatabasePool) -> None:
         ):
             conn.execute(f"DROP TABLE IF EXISTS {table}")
         conn.execute("UPDATE _schema_version SET version = ?", (38,))
-
-
-def _ensure_knowledge_rule_vectors_schema(db: DatabasePool) -> None:
-    """Repair a missing v39 cache table even if the version watermark skipped its DDL."""
-    blob_type = "BYTEA" if db.dialect == "postgresql" else "BLOB"
-    user_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
-    with db.connect() as conn:
-        conn.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS knowledge_search_rule_vectors (
-              document_id TEXT NOT NULL,
-              user_id {user_type} NOT NULL,
-              model_key TEXT NOT NULL,
-              keyword TEXT NOT NULL,
-              embedding {blob_type} NOT NULL,
-              PRIMARY KEY (document_id, user_id, model_key, keyword),
-              FOREIGN KEY (document_id, user_id)
-                REFERENCES knowledge_search_rules(document_id, user_id) ON DELETE CASCADE
-            )
-            """
-        )
-        conn.execute(
-            "CREATE INDEX IF NOT EXISTS idx_knowledge_search_rule_vectors_user_model "
-            "ON knowledge_search_rule_vectors(user_id, model_key)"
-        )
 
 
 def _ensure_org_units_schema(db: DatabasePool) -> None:
@@ -2974,6 +3102,7 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_feature_run_schema(db)
         _ensure_feature_change_schema(db)
         _ensure_data_sources_schema(db)
+        _ensure_knowledge_prompt_collections_schema(db)
 
 
 def _max_discovered_version(dialect: str) -> int:
@@ -3126,6 +3255,10 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     agent bindings that named them — so it runs through the helper in both
     dialects; see ``_merge_legacy_knowledge_bases`` for why the files make SQL
     alone impossible and why running it twice changes nothing.
+    Version 41 turns v40 keyword collections into prompt-registered collections
+    whose access derives from the source ACL. The file's plain ``ADD COLUMN`` /
+    ``DROP COLUMN`` statements are not re-runnable, so this branch calls the
+    ensure helper (also part of ``_repair_legacy_schema``).
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -3317,6 +3450,14 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 41:
+        # ``041_knowledge_prompt_collections.sql`` is the readable record; this
+        # helper re-applies the same shape idempotently so a downstamped
+        # watermark or repair pass cannot fail on its plain ALTER statements.
+        _ensure_knowledge_prompt_collections_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     sql = path.read_text(encoding="utf-8")
     with db.connect() as conn:
         conn.executescript(sql)
@@ -3411,4 +3552,3 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_file_index_schema(db)
     _ensure_knowledge_sync_runs_schema(db)
     _ensure_knowledge_derived_schema(db)
-    _ensure_knowledge_rule_vectors_schema(db)

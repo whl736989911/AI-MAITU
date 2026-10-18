@@ -32,10 +32,14 @@ def _infer_model_input_modalities(
     model_id: str,
     explicit: list[str] | None = None,
 ) -> list[str]:
-    """Merge stored ``input`` with id-based heuristics (vision/audio)."""
+    """Use declared modalities when present; otherwise infer from known model IDs."""
+    if explicit is not None:
+        inputs = {str(modality).strip().lower() for modality in explicit if str(modality).strip()}
+        inputs.add("text")
+        return sorted(inputs)
+
     lower = model_id.lower()
-    inputs: set[str] = set(explicit or ["text"])
-    inputs.add("text")
+    inputs = {"text"}
     if (
         "-vl" in lower
         or "vision" in lower
@@ -172,14 +176,19 @@ class ProviderStore:
         data = dict(raw)
         model_id = str(data.get("id") or "")
         explicit = data.get("input")
-        inputs = list(explicit) if isinstance(explicit, list) else ["text"]
-        data["input"] = _infer_model_input_modalities(model_id, inputs)
+        inputs = list(explicit) if isinstance(explicit, list) else None
+        modalities = _infer_model_input_modalities(model_id, inputs)
+        # Harness strips image payloads unless transport explicitly permits them.
+        # Stored capability hints must not silently discard user-supplied images.
+        if "image" not in modalities:
+            modalities.append("image")
+        data["input"] = modalities
         # ModelConfig keeps total context, prompt cap, and output cap distinct,
         # while still accepting legacy rows that only contain one context key.
         return ModelConfig.from_dict(data)
 
     def is_model_ref_multimodal(self, ref: str) -> bool:
-        """True when *ref* resolves to a model that accepts images."""
+        """Return the configured image-capability hint, not a verified API capability."""
         ref = ref.strip()
         if not ref or "/" not in ref:
             return False
@@ -195,7 +204,7 @@ class ProviderStore:
         return False
 
     def resolve_multimodal_model_ref(self) -> str | None:
-        """First enabled image-capable model across usable providers."""
+        """First usable chat model with an image-capability hint."""
         for row in self.iter_usable_rows():
             for model in row.get_models():
                 if not is_chat_eligible_model(
@@ -212,14 +221,13 @@ class ProviderStore:
         *,
         needs_multimodal: bool,
     ) -> str | None:
-        """Keep explicit ref when it supports vision; else upgrade to a vision model."""
+        """Keep a usable selection; image annotations must not veto a real API request."""
         if not needs_multimodal:
             return model_ref
         ref = (model_ref or "").strip() or None
-        if ref and self.is_model_ref_multimodal(ref):
+        if ref and self.is_model_ref_usable(ref):
             return ref
-        upgraded = self.resolve_multimodal_model_ref()
-        return upgraded or ref
+        return self.resolve_multimodal_model_ref() or self.resolve_first_model_ref()
 
     def resolve_first_model_ref(self) -> str | None:
         """First chat-eligible enabled model across usable providers."""

@@ -20,7 +20,11 @@ describe("offeredTabs", () => {
     ]);
   });
 
-  it("offers a caller memory but not author-owned configuration", () => {
+  it("offers a caller only what nobody has to write", () => {
+    // A feature is configured by whoever defines it. For a caller the writing
+    // tabs are not offered at all — a control whose only outcome is a refusal is
+    // a dead end, not a choice — and what is left is its memory, which no one
+    // writes and which therefore stays readable.
     expect(offeredTabs("feature", FEATURE_PERSONALIZATION_TABS, false)).toEqual(
       ["memory"],
     );

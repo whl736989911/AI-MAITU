@@ -1,0 +1,18 @@
+[Unit]
+Description=MAITU source release updater
+After=docker.service network-online.target
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=root
+EnvironmentFile=/etc/maitu/updater.env
+ExecStart=/opt/maitu-updater/venv/bin/python /opt/maitu-updater/maitu_updater.py
+Restart=on-failure
+RestartSec=5
+UMask=0077
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

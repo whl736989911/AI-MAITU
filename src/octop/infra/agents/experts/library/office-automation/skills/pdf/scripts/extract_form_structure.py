@@ -15,7 +15,13 @@ Usage: python extract_form_structure.py <input.pdf> <output.json>
 import json
 import sys
 
-import pdfplumber
+try:
+    import pdfplumber
+except ImportError:
+    raise RuntimeError(
+        "pdfplumber is not installed. Install the platform office dependencies with: "
+        'uv sync --extra office (or pip install -e ".[office]")'
+    ) from None
 
 
 def extract_form_structure(pdf_path):

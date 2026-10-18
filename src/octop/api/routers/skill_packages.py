@@ -430,8 +430,9 @@ async def delete_skill_package(
     row = _package_or_404(store, package_id, locale=resolve_request_locale(request))
     store.assert_can_mutate(row, user)
     store.delete_package(package_id)
-    if server.app_runtime is not None:
-        await server.app_runtime.agent_registry.strip_skill_package_id(package_id)
+    runtime = server.app_runtime
+    if runtime is not None and runtime.business_running:
+        await runtime.require_agent_registry().strip_skill_package_id(package_id)
 
 
 @router.get("/{package_id}/skills", summary="List skills in a global skill package")
@@ -493,8 +494,9 @@ async def create_package_skill(
         slug,
         _files_from_package_skill_body(content=body.content, files=body.files),
     )
-    if server.app_runtime is not None:
-        await server.app_runtime.agent_registry.refresh_agents_for_package(package_id)
+    runtime = server.app_runtime
+    if runtime is not None and runtime.business_running:
+        await runtime.require_agent_registry().refresh_agents_for_package(package_id)
     return _package_skill_or_404(store, package_id, slug)
 
 
@@ -516,8 +518,9 @@ async def update_package_skill(
         slug,
         _files_from_package_skill_body(content=body.content, files=body.files),
     )
-    if server.app_runtime is not None:
-        await server.app_runtime.agent_registry.refresh_agents_for_package(package_id)
+    runtime = server.app_runtime
+    if runtime is not None and runtime.business_running:
+        await runtime.require_agent_registry().refresh_agents_for_package(package_id)
     return _package_skill_or_404(store, package_id, slug)
 
 
@@ -538,8 +541,9 @@ async def delete_package_skill(
     store.assert_can_mutate(row, user)
     _package_skill_or_404(store, package_id, slug)
     store.delete_skill(package_id, slug)
-    if server.app_runtime is not None:
-        await server.app_runtime.agent_registry.refresh_agents_for_package(package_id)
+    runtime = server.app_runtime
+    if runtime is not None and runtime.business_running:
+        await runtime.require_agent_registry().refresh_agents_for_package(package_id)
 
 
 def _package_has_skill(store: SkillPackageStore, package_id: str, slug: str) -> bool:
@@ -547,8 +551,9 @@ def _package_has_skill(store: SkillPackageStore, package_id: str, slug: str) -> 
 
 
 async def _refresh_package(server: OctopServer, package_id: str) -> None:
-    if server.app_runtime is not None:
-        await server.app_runtime.agent_registry.refresh_agents_for_package(package_id)
+    runtime = server.app_runtime
+    if runtime is not None and runtime.business_running:
+        await runtime.require_agent_registry().refresh_agents_for_package(package_id)
 
 
 class _PackageInstallTarget:

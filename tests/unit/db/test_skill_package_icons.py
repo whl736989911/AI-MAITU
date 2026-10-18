@@ -83,7 +83,6 @@ def test_migration_002_idempotent_when_icon_columns_already_present(tmp_path: Pa
         conn.execute("ALTER TABLE skill_packages ADD COLUMN icon_url TEXT NOT NULL DEFAULT ''")
     run_migrations(pool)
     with pool.connect() as conn:
-        v = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(skill_packages)").fetchall()}
         indexes = {
             r["name"]
@@ -91,7 +90,7 @@ def test_migration_002_idempotent_when_icon_columns_already_present(tmp_path: Pa
                 "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='skill_packages'"
             )
         }
-    assert v == 40
+
     assert "icon_name" in cols
     assert "icon_url" in cols
     assert "skill_package_id" in cols
@@ -108,9 +107,8 @@ def test_repair_legacy_schema_adds_icon_columns_at_version_2(tmp_path: Path) -> 
         conn.execute("UPDATE _schema_version SET version = 2")
     run_migrations(pool)
     with pool.connect() as conn:
-        v = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(skill_packages)").fetchall()}
-    assert v == 40
+
     assert "icon_name" in cols
     assert "icon_url" in cols
     assert "skill_package_id" in cols

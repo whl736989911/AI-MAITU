@@ -15,7 +15,11 @@ _refs = 0
 
 @asynccontextmanager
 async def embedded_runtime() -> AsyncIterator[OctopServer]:
-    """Boot OctopServer once per event loop; nested ``async with`` shares it."""
+    """Boot OctopServer once per event loop; nested ``async with`` shares it.
+
+    Embedded business ops are denied while a managed license blocks business —
+    direct CLI entry must not bypass the HTTP gate.
+    """
     global _server, _refs
 
     async with _lock:
@@ -24,6 +28,10 @@ async def embedded_runtime() -> AsyncIterator[OctopServer]:
             await _server.start()
         _refs += 1
         server = _server
+
+    from octop.infra.licensing import current_license
+
+    current_license().require_business_access()
 
     try:
         yield server

@@ -11,8 +11,11 @@ from tests.support.auth import create_user
 
 
 @pytest.mark.asyncio
-async def test_terminal_context_is_denied_before_host_inspection(env: Any) -> None:
+async def test_terminal_context_is_denied_before_host_inspection(
+    env: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     client, _server, admin_auth = env
+    monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
     member_auth = await create_user(client, admin_auth, username="terminal-member")
 
     with patch("octop.api.routers.terminal.platform.system") as host_probe:
@@ -21,6 +24,5 @@ async def test_terminal_context_is_denied_before_host_inspection(env: Any) -> No
                 "/api/agents/agent-not-created/terminal/context", headers=auth
             )
             assert response.status_code == 403, response.text
-            assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
 
     host_probe.assert_not_called()

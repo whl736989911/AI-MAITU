@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from tests.support.auth import create_user
 
 # --- env-status -------------------------------------------------------------
@@ -164,11 +166,15 @@ async def test_harness_list_tabs_uses_sticky_target_id(monkeypatch) -> None:
     assert [tab["active"] for tab in tabs] == [False, True]
 
 
-async def test_browser_host_routes_are_denied_before_probe_install_or_shutdown(env: Any) -> None:
+async def test_managed_browser_routes_are_denied_before_probe_install_or_shutdown(
+    env: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     c, _srv, admin_auth = env
     member_auth = await create_user(c, admin_auth, username="browser-member")
     from octop.api.routers.browser import env as browser_env
     from octop.api.routers.browser import harness as browser_harness
+
+    monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", str(tmp_path / "trusted-keys.json"))
 
     with (
         patch.object(browser_env, "_probe_env") as probe,
@@ -187,7 +193,7 @@ async def test_browser_host_routes_are_denied_before_probe_install_or_shutdown(e
             ):
                 response = await c.request(method, path, headers=auth)
                 assert response.status_code == 403, response.text
-                assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
+                assert response.json()["error"]["code"] == "FORBIDDEN"
 
     probe.assert_not_called()
     verify.assert_not_called()

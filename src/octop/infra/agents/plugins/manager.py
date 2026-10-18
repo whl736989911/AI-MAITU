@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import shutil
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,44 @@ from octop.infra.utils.json_file import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _require_business_access() -> None:
+    from octop.infra.licensing import current_license
+
+    current_license().require_business_access()
+
+
+def _is_shipped_plugin(plugin_dir: Path, plugin_id: str) -> bool:
+    from octop.infra.agents.plugins.catalog import get_catalog_plugin
+
+    try:
+        source = get_catalog_plugin(plugin_id).source_dir
+    except OctopError:
+        return False
+    if not plugin_dir.is_dir() or not source.is_dir():
+        return False
+    source_files: set[str] = set()
+    installed_files: set[str] = set()
+    for root, dirs, files in os.walk(source, followlinks=False):
+        dirs[:] = [name for name in dirs if name != "__pycache__"]
+        files = [name for name in files if not name.endswith(".pyc")]
+        if any((Path(root) / name).is_symlink() for name in dirs + files):
+            return False
+        source_files.update((Path(root) / name).relative_to(source).as_posix() for name in files)
+    for root, dirs, files in os.walk(plugin_dir, followlinks=False):
+        dirs[:] = [name for name in dirs if name != "__pycache__"]
+        files = [name for name in files if not name.endswith(".pyc")]
+        if any((Path(root) / name).is_symlink() for name in dirs + files):
+            return False
+        installed_files.update(
+            (Path(root) / name).relative_to(plugin_dir).as_posix() for name in files
+        )
+    if source_files != installed_files:
+        return False
+    return all(
+        (source / name).read_bytes() == (plugin_dir / name).read_bytes() for name in source_files
+    )
 
 
 def _read_global_plugins(config_path: Path) -> dict[str, bool]:
@@ -171,12 +210,6 @@ def parse_plugin_requires(plugin_dir: Path) -> list[str]:
     return [str(r).strip() for r in raw if str(r).strip()]
 
 
-def _require_business_access() -> None:
-    from octop.infra.licensing import current_license
-
-    current_license().require_business_access()
-
-
 class PluginManager:
     def __init__(self, *, plugins_dir: Path, config_path: Path) -> None:
         self._plugins_dir = plugins_dir
@@ -205,34 +238,12 @@ class PluginManager:
             config_path=self._config_path,
         )
 
-    @staticmethod
-    def _matches_shipped_plugin(plugin_dir: Path, plugin_id: str) -> bool:
-        from octop.infra.agents.plugins.catalog import get_catalog_plugin
-
-        try:
-            source = get_catalog_plugin(plugin_id).source_dir
-        except OctopError:
-            return False
-
-        def snapshot(root: Path) -> dict[str, bytes] | None:
-            files: dict[str, bytes] = {}
-            for path in root.rglob("*"):
-                if path.is_symlink():
-                    return None
-                if path.is_file():
-                    files[path.relative_to(root).as_posix()] = path.read_bytes()
-            return files
-
-        installed = snapshot(plugin_dir)
-        bundled = snapshot(source)
-        return installed is not None and bundled is not None and installed == bundled
-
     def load_installed(self, *, install_deps: bool = False) -> list[LoadedPlugin]:
         _require_business_access()
         if install_deps:
             raise OctopError(
-                ErrorCode.PLUGIN_INSTALL_FAILED,
-                "Plugin dependency installation is disabled at runtime.",
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                "Installing plugin dependencies is disabled.",
             )
         enabled = self.global_enabled_map()
         loaded: list[LoadedPlugin] = []
@@ -244,36 +255,29 @@ class PluginManager:
                 continue
             if enabled.get(manifest.id, True) is False:
                 continue
-            if not self._matches_shipped_plugin(plugin_dir, manifest.id):
-                logger.warning("refusing unverified plugin code: %s", plugin_dir)
+            if not _is_shipped_plugin(plugin_dir, manifest.id):
+                logger.warning("skip unshipped or modified plugin code: %s", plugin_dir)
                 continue
             try:
-                loaded.append(load_plugin_dir(plugin_dir, install_deps=install_deps))
+                loaded.append(load_plugin_dir(plugin_dir, install_deps=False))
             except Exception as exc:
-                logger.error(
-                    "failed to load plugin from %s: %s",
-                    plugin_dir,
-                    exc,
-                    exc_info=True,
-                )
-        active_ids = {plugin.manifest.id for plugin in loaded}
+                logger.error("failed to load plugin from %s: %s", plugin_dir, exc, exc_info=True)
+
+        loaded_ids = {plugin.manifest.id for plugin in loaded}
         for plugin in PluginRegistry().list_plugins():
-            if plugin.manifest.id not in active_ids:
+            if plugin.manifest.id not in loaded_ids:
                 unload_plugin(plugin.manifest.id)
+        for plugin_id, is_on in enabled.items():
+            if not is_on:
+                unload_plugin(plugin_id)
         return loaded
 
     def load_missing(self, *, install_deps: bool = False) -> list[LoadedPlugin]:
-        """Load any on-disk plugins that are not yet in the process registry.
-
-        Used after CLI ``octop plugin install`` while ``octop run`` is already
-        up — unlike ``load_installed``, this does not clear already-loaded
-        plugins.
-        """
         _require_business_access()
         if install_deps:
             raise OctopError(
-                ErrorCode.PLUGIN_INSTALL_FAILED,
-                "Plugin dependency installation is disabled at runtime.",
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                "Installing plugin dependencies is disabled.",
             )
         enabled = self.global_enabled_map()
         newly: list[LoadedPlugin] = []
@@ -283,27 +287,14 @@ class PluginManager:
             except Exception as exc:
                 logger.error("skip plugin dir %s: %s", plugin_dir, exc)
                 continue
-            if enabled.get(manifest.id) is False:
-                continue
-            if not self._matches_shipped_plugin(plugin_dir, manifest.id):
-                logger.warning("refusing unverified plugin code: %s", plugin_dir)
+            if enabled.get(manifest.id) is False or not _is_shipped_plugin(plugin_dir, manifest.id):
                 continue
             if PluginRegistry().get(manifest.id) is not None:
                 continue
             try:
-                newly.append(load_plugin_dir(plugin_dir, install_deps=install_deps))
-                logger.info(
-                    "loaded missing plugin %s v%s",
-                    manifest.id,
-                    manifest.version,
-                )
+                newly.append(load_plugin_dir(plugin_dir, install_deps=False))
             except Exception as exc:
-                logger.error(
-                    "failed to load plugin from %s: %s",
-                    plugin_dir,
-                    exc,
-                    exc_info=True,
-                )
+                logger.error("failed to load plugin from %s: %s", plugin_dir, exc, exc_info=True)
         return newly
 
     def list_installed(self) -> list[dict[str, Any]]:
@@ -361,16 +352,17 @@ class PluginManager:
         return out
 
     def set_enabled(self, plugin_id: str, enabled: bool) -> dict[str, Any]:
-        """Toggle global plugin enablement in ``config.json`` and load/unload registry."""
-        _require_business_access()
+        """Toggle a shipped plugin, requiring a valid license to enable code."""
         plugin_dir = self.plugin_dir(plugin_id)
         if plugin_dir is None:
             raise OctopError(ErrorCode.NOT_FOUND, f"plugin {plugin_id!r} not found")
-        if enabled and not self._matches_shipped_plugin(plugin_dir, plugin_id):
-            raise OctopError(
-                ErrorCode.PLUGIN_INSTALL_FAILED,
-                "Only unmodified plugins shipped in this application may be loaded.",
-            )
+        if enabled:
+            _require_business_access()
+            if not _is_shipped_plugin(plugin_dir, plugin_id):
+                raise OctopError(
+                    ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
+                    "Only unchanged plugins shipped in this application may be enabled.",
+                )
         try:
             PluginManifest.load(plugin_dir / "plugin.yaml")
         except Exception as exc:
@@ -378,37 +370,22 @@ class PluginManager:
                 ErrorCode.PLUGIN_INVALID_ARCHIVE,
                 f"invalid plugin manifest: {exc}",
             ) from exc
-
         _write_global_plugin_enabled(self._config_path, plugin_id, enabled)
         if enabled:
             if PluginRegistry().get(plugin_id) is None:
-                try:
-                    load_plugin_dir(plugin_dir, install_deps=False)
-                except Exception as exc:
-                    raise OctopError(
-                        ErrorCode.PLUGIN_INSTALL_FAILED,
-                        f"failed to load plugin: {exc}",
-                        details={"reason": str(exc)},
-                    ) from exc
+                load_plugin_dir(plugin_dir, install_deps=False)
         else:
             loaded = PluginRegistry().get(plugin_id)
             if loaded is not None:
                 self._tool_catalog[plugin_id] = [
                     {
-                        "name": t.name,
-                        "description": t.description,
-                        "config_fields": t.config_fields,
+                        "name": tool.name,
+                        "description": tool.description,
+                        "config_fields": tool.config_fields,
                     }
-                    for t in loaded.tools
+                    for tool in loaded.tools
                 ]
-                if loaded.skills_dir is not None:
-                    self._skill_catalog[plugin_id] = {
-                        path.name
-                        for path in loaded.skills_dir.iterdir()
-                        if path.is_dir() and (path / "SKILL.md").is_file()
-                    }
             unload_plugin(plugin_id)
-
         for item in self.list_installed():
             if item.get("id") == plugin_id:
                 return item
@@ -503,9 +480,9 @@ class PluginManager:
                 ErrorCode.PLUGIN_INVALID_ARCHIVE,
                 f"invalid plugin manifest: {exc}",
             ) from exc
-        if not self._matches_shipped_plugin(source, manifest.id):
+        if not _is_shipped_plugin(source, manifest.id):
             raise OctopError(
-                ErrorCode.PLUGIN_INSTALL_FAILED,
+                ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
                 "Only plugins shipped in this application may be installed.",
             )
         dest = self._plugins_dir / manifest.id
@@ -519,31 +496,19 @@ class PluginManager:
             shutil.rmtree(dest)
         shutil.copytree(source, dest)
         unload_plugin(manifest.id)
-        try:
-            return load_plugin_dir(dest, install_deps=False)
-        except Exception as exc:
-            raise OctopError(
-                ErrorCode.PLUGIN_INSTALL_FAILED,
-                f"failed to load plugin: {exc}",
-                details={"reason": str(exc)},
-            ) from exc
+        return load_plugin_dir(dest, install_deps=False)
 
     def install_archive(self, archive: Path, *, force: bool = False) -> LoadedPlugin:
-        """Install a plugin from a local ZIP archive.
-
-        The archive must contain exactly one plugin directory (at the zip root
-        or in a single top-level folder) with a ``plugin.yaml`` manifest.
-        """
         _require_business_access()
         raise OctopError(
-            ErrorCode.PLUGIN_INSTALL_FAILED,
+            ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
             "Installing plugins from archives is disabled; choose a shipped catalog plugin.",
         )
 
     def install_url(self, url: str, *, force: bool = False) -> LoadedPlugin:
         _require_business_access()
         raise OctopError(
-            ErrorCode.PLUGIN_INSTALL_FAILED,
+            ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
             "Installing plugins from URLs is disabled; choose a shipped catalog plugin.",
         )
 
@@ -558,9 +523,10 @@ class PluginManager:
         _require_business_access()
         from octop.infra.agents.plugins.catalog import get_catalog_plugin
 
+        _require_business_access()
         entry = get_catalog_plugin(plugin_id)
         dest = self._plugins_dir / entry.id
-        if not self._matches_shipped_plugin(dest, entry.id):
+        if not _is_shipped_plugin(dest, entry.id):
             self.install_path(entry.source_dir, force=dest.exists())
         return self.set_enabled(entry.id, True)
 
@@ -592,6 +558,7 @@ class PluginManager:
         *,
         agent_plugins: object = None,
     ) -> None:
+        _require_business_access()
         from harness_agent.backends.workspace import BackendWorkspace
 
         from octop.infra.agents.plugin_tool_defaults import agent_plugin_enabled

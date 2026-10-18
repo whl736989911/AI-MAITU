@@ -110,6 +110,7 @@ export const ADVANCED_TAB_PERMISSIONS = {
   updates: "update",
   captcha: "captcha",
   branding: "admin",
+  bwrap: "admin",
 } as const;
 
 export const SECURITY_TAB_PERMISSIONS = {

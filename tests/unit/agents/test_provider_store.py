@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import base64
+import io
 import json
 from pathlib import Path
+from typing import Any
 
+import httpx
+import openai
 import pytest
+from harness_agent.llm.factory import build_chat_model
+from langchain_core.messages import HumanMessage
+from PIL import Image
 
 from octop.config import OctopConfig
 from octop.infra.agents.manager import AgentManager
 from octop.infra.agents.providers import KIND_TO_PROTOCOL, ProviderStore
+from octop.infra.agents.providers.probe import build_probe_chat_model
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.agents import AgentRow
@@ -251,36 +260,81 @@ def test_manager_exposes_provider_store(tmp_path: Path) -> None:
     assert isinstance(manager.providers, ProviderStore)
 
 
-def test_build_harness_configs_infers_vision_from_model_id(store: ProviderStore) -> None:
-    store._provider_repo.create(
-        name="p",
-        kind="openai",
-        base_url="https://api.example.com/v1",
-        api_key="sk-test",
-        models_json=json.dumps(
+@pytest.mark.asyncio
+@pytest.mark.parametrize("factory_path", ["registry", "probe"])
+async def test_openai_request_keeps_real_image_when_metadata_says_text_only(
+    store: ProviderStore, monkeypatch: pytest.MonkeyPatch, factory_path: str
+) -> None:
+    received: dict[str, Any] = {}
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        received.update(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "id": "image-transport",
+                "object": "chat.completion",
+                "created": 0,
+                "model": "unannotated",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "received"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            },
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(respond)) as client:
+
+        class ProbeClient(openai.AsyncOpenAI):
+            def __init__(self, **kwargs: Any) -> None:
+                kwargs["http_client"] = client
+                super().__init__(**kwargs)
+
+        monkeypatch.setattr(openai, "AsyncOpenAI", ProbeClient)
+        store._provider_repo.create(
+            name="p",
+            kind="openai",
+            base_url="https://api.example.com/v1",
+            api_key="sk-test",
+            models_json=json.dumps([{"id": "unannotated", "enabled": True, "input": ["text"]}]),
+        )
+        if factory_path == "registry":
+            provider = store.build_harness_configs()[0]
+            chat = build_chat_model(provider, provider.models[0])
+        else:
+            chat = build_probe_chat_model(
+                store._provider_repo.get_by_name("p"), model_id="unannotated"
+            )
+        image_bytes = io.BytesIO()
+        Image.new("RGB", (2, 2), (210, 30, 70)).save(image_bytes, format="PNG")
+        image_url = "data:image/png;base64," + base64.b64encode(image_bytes.getvalue()).decode()
+        await chat.ainvoke(
             [
-                {"id": "gpt-4o", "name": "GPT-4o", "enabled": True, "input": ["text"]},
-                {"id": "deepseek-chat", "name": "DeepSeek", "enabled": True, "input": ["text"]},
+                HumanMessage(
+                    content=[
+                        {"type": "text", "text": "Read this image"},
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                    ]
+                )
             ]
-        ),
+        )
+
+    content = received["messages"][0]["content"]
+    assert isinstance(content, list)
+    sent_image = next(
+        block["image_url"]["url"] for block in content if block["type"] == "image_url"
     )
-    models = store.build_harness_configs()[0].models
-    gpt4o = next(m for m in models if m.id == "gpt-4o")
-    deepseek = next(m for m in models if m.id == "deepseek-chat")
-    assert "image" in gpt4o.input
-    assert deepseek.input == ["text"]
+    with Image.open(io.BytesIO(base64.b64decode(sent_image.split(",", 1)[1]))) as image:
+        image.load()
+        assert image.size == (2, 2)
+        assert image.getpixel((0, 0)) == (210, 30, 70)
 
 
-@pytest.mark.parametrize(
-    ("model_ref", "expected"),
-    [
-        ("p/text-only", "p/vision"),
-        ("p/vision", "p/vision"),
-        (None, "p/vision"),
-    ],
-)
-def test_resolve_model_for_multimodal_turn(
-    store: ProviderStore, model_ref: str | None, expected: str
+def test_image_turn_keeps_selection_despite_missing_image_annotation(
+    store: ProviderStore,
 ) -> None:
     store._provider_repo.create(
         name="p",
@@ -289,13 +343,14 @@ def test_resolve_model_for_multimodal_turn(
         api_key="sk-test",
         models_json=json.dumps(
             [
-                {"id": "text-only", "name": "text", "enabled": True, "input": ["text"]},
-                {"id": "vision", "name": "vision", "enabled": True, "input": ["text", "image"]},
+                {"id": "selected", "enabled": True, "input": ["text"]},
+                {"id": "hinted-vision", "enabled": True, "input": ["text", "image"]},
             ]
         ),
     )
-    resolved = store.resolve_model_for_multimodal_turn(model_ref, needs_multimodal=True)
-    assert resolved == expected
+    assert (
+        store.resolve_model_for_multimodal_turn("p/selected", needs_multimodal=True) == "p/selected"
+    )
 
 
 def test_resolve_first_model_ref_returns_first_enabled_model(store: ProviderStore) -> None:
@@ -322,7 +377,9 @@ def test_resolve_first_model_ref_returns_first_enabled_model(store: ProviderStor
     assert store.resolve_first_model_ref() == "p1/ready"
 
 
-def test_resolve_multimodal_model_ref_prefers_inferred_vision_model(store: ProviderStore) -> None:
+def test_resolve_multimodal_model_ref_uses_only_declared_or_inferred_vision(
+    store: ProviderStore,
+) -> None:
     store._provider_repo.create(
         name="p",
         kind="openai",
@@ -330,9 +387,49 @@ def test_resolve_multimodal_model_ref_prefers_inferred_vision_model(store: Provi
         api_key="sk-test",
         models_json=json.dumps(
             [
-                {"id": "text-only", "name": "text", "enabled": True, "input": ["text"]},
-                {"id": "gpt-4o", "name": "GPT-4o", "enabled": True, "input": ["text"]},
+                {
+                    "id": "gpt-4o",
+                    "name": "GPT-4o configured text-only",
+                    "enabled": True,
+                    "input": ["text"],
+                },
+                {"id": "gpt-4.1", "name": "Legacy inferred", "enabled": True},
+                {
+                    "id": "custom-vision",
+                    "name": "Explicit vision",
+                    "enabled": True,
+                    "input": ["text", "image"],
+                },
             ]
         ),
     )
-    assert store.resolve_multimodal_model_ref() == "p/gpt-4o"
+    assert store.resolve_multimodal_model_ref() == "p/gpt-4.1"
+
+
+def test_image_turn_can_attempt_unannotated_model_when_none_is_selected(
+    store: ProviderStore,
+) -> None:
+    store._provider_repo.create(
+        name="p",
+        kind="openai",
+        base_url="https://api.example.com/v1",
+        api_key="sk-test",
+        models_json=json.dumps([{"id": "unannotated", "enabled": True, "input": ["text"]}]),
+    )
+    assert store.resolve_model_for_multimodal_turn(None, needs_multimodal=True) == "p/unannotated"
+
+
+def test_image_turn_does_not_use_disabled_or_embedding_models(store: ProviderStore) -> None:
+    store._provider_repo.create(
+        name="p",
+        kind="openai",
+        base_url="https://api.example.com/v1",
+        api_key="sk-test",
+        models_json=json.dumps(
+            [
+                {"id": "disabled", "enabled": False, "input": ["text", "image"]},
+                {"id": "embedding-only", "enabled": True, "embedding": True},
+            ]
+        ),
+    )
+    assert store.resolve_model_for_multimodal_turn("p/disabled", needs_multimodal=True) is None

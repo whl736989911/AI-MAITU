@@ -125,7 +125,7 @@ async def reload_plugins(
     mgr = _plugin_manager(server)
     loaded = mgr.load_installed(install_deps=True)
     if server.app_runtime is not None:
-        await server.app_runtime.agent_registry.reload_all()
+        await server.app_runtime.require_agent_registry().reload_all()
     return {
         "status": "ok",
         "loaded": [
@@ -158,7 +158,7 @@ async def install_plugin(
         ) from exc
     if server.app_runtime is not None:
         mgr.load_installed(install_deps=False)
-        await server.app_runtime.agent_registry.reload_all()
+        await server.app_runtime.require_agent_registry().reload_all()
     return {
         "id": loaded.manifest.id,
         "version": loaded.manifest.version,
@@ -200,7 +200,7 @@ async def upload_plugin(
         ) from exc
     if server.app_runtime is not None:
         mgr.load_installed(install_deps=False)
-        await server.app_runtime.agent_registry.reload_all()
+        await server.app_runtime.require_agent_registry().reload_all()
     return {
         "id": loaded.manifest.id,
         "version": loaded.manifest.version,
@@ -350,7 +350,7 @@ async def install_plugin_market_item(
         ) from exc
     if server.app_runtime is not None:
         mgr.load_installed(install_deps=False)
-        await server.app_runtime.agent_registry.reload_all()
+        await server.app_runtime.require_agent_registry().reload_all()
     return _market_card_by_id(server, plugin_id)
 
 
@@ -396,7 +396,7 @@ async def patch_plugin(
     mgr = _plugin_manager(server)
     item = mgr.set_enabled(plugin_id, body.enabled)
     if server.app_runtime is not None:
-        await server.app_runtime.agent_registry.reload_all()
+        await server.app_runtime.require_agent_registry().reload_all()
     return item
 
 
@@ -408,7 +408,7 @@ async def uninstall_plugin(
 ) -> dict[str, str]:
     _plugin_manager(server).uninstall(plugin_id)
     if server.app_runtime is not None:
-        await server.app_runtime.agent_registry.reload_all()
+        await server.app_runtime.require_agent_registry().reload_all()
     return {"status": "ok", "id": plugin_id}
 
 
@@ -447,7 +447,7 @@ def _agent_row_and_config(
 ) -> tuple[Any, dict[str, Any]]:
     runtime = server.app_runtime
     assert runtime is not None
-    registry = runtime.agent_registry
+    registry = runtime.require_agent_registry()
     row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
@@ -524,7 +524,7 @@ async def patch_agent_plugins(
 
     runtime = server.app_runtime
     assert runtime is not None
-    registry = runtime.agent_registry
+    registry = runtime.require_agent_registry()
     merged = merge_plugins_enabled_settings(
         cfg.get("plugins"),
         {plugin_id: patch.enabled for plugin_id, patch in body.plugins.items()},
@@ -541,12 +541,13 @@ async def list_agent_plugin_tools(
     user: Any = Depends(require_permission("plugins")),
 ) -> dict[str, Any]:
     assert server.app_runtime is not None
-    row = server.app_runtime.agent_registry.get_row(agent_id)
+    registry = server.app_runtime.require_agent_registry()
+    row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     _assert_agent_owner(row, user, server=server)
     mgr = _plugin_manager(server)
-    agent_cfg = server.app_runtime.agent_registry.get_config(agent_id)
+    agent_cfg = registry.get_config(agent_id)
     raw_plugins = agent_cfg.get("plugins")
     plugins_cfg: dict[str, Any] = raw_plugins if isinstance(raw_plugins, dict) else {}
     tools_out: list[dict[str, Any]] = []
@@ -598,11 +599,11 @@ async def patch_agent_plugin_tools(
     full agent reload so disable takes effect on the next model turn.
     """
     assert server.app_runtime is not None
-    row = server.app_runtime.agent_registry.get_row(agent_id)
+    registry = server.app_runtime.require_agent_registry()
+    row = registry.get_row(agent_id)
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION, server=server)
-    registry = server.app_runtime.agent_registry
     cfg = registry.get_config(agent_id)
     merged = merge_plugins_tool_settings(cfg.get("plugins"), body.plugins)
     await registry.persist_plugin_tools_config(agent_id, merged)

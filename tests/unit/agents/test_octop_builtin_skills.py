@@ -73,6 +73,83 @@ async def test_sync_seeds_manager_and_retires_old_installer(tmp_path: Path) -> N
 
 
 @pytest.mark.asyncio
+async def test_sync_migrates_only_the_existing_platform_assistant_skill(tmp_path: Path) -> None:
+    agent = FakeHarnessAgent(
+        workspace_dir=tmp_path,
+        virtual_mode=False,
+        system_files_path=".octop",
+    )
+    await agent.workspace.awrite_text(
+        ".octop/skills/octop-assistant/SKILL.md",
+        "user note\nuse execute_shell_command for config\n",
+        force=True,
+    )
+    await agent.workspace.awrite_text(
+        ".octop/skills/my-custom-skill/SKILL.md",
+        "user-authored execute_shell_command guidance\n",
+        force=True,
+    )
+
+    await sync_octop_builtin_skills(agent.workspace)
+    await sync_octop_builtin_skills(agent.workspace)
+
+    assistant = await agent.workspace.aread_text(".octop/skills/octop-assistant/SKILL.md")
+    custom = await agent.workspace.aread_text(".octop/skills/my-custom-skill/SKILL.md")
+    builtin = await agent.workspace.aread_text(".octop/_builtin_skills/skill-manager/SKILL.md")
+    assert assistant == "user note\nuse execute for config\n"
+    assert custom == "user-authored execute_shell_command guidance\n"
+    assert builtin is not None and "execute_shell_command" not in builtin
+
+
+@pytest.mark.asyncio
+async def test_sync_migrates_versioned_office_skills_only(tmp_path: Path) -> None:
+    agent = FakeHarnessAgent(
+        workspace_dir=tmp_path,
+        virtual_mode=False,
+        system_files_path=".octop",
+    )
+    await agent.workspace.awrite_text(
+        ".octop/skills/pdf/SKILL.md",
+        "---\nmetadata:\n  builtin_skill_version: '1.1'\n---\n"
+        "> 或使用 `execute_shell_command` 的 `cwd` 参数。\nuser paragraph\n",
+        force=True,
+    )
+    await agent.workspace.awrite_text(
+        ".octop/skills/pdf/forms.md",
+        "> 运行方式：`cd {this_skill_dir} && python scripts/...`\n"
+        "> 或使用 `execute_shell_command` 的 `cwd` 参数。\nuser form note\n",
+        force=True,
+    )
+    await agent.workspace.awrite_text(
+        "skills/docx/SKILL.md",
+        "---\nmetadata:\n  builtin_skill_version: '1.1'\n---\n"
+        "execute_shell_command is the old instruction\n",
+        force=True,
+    )
+    await agent.workspace.awrite_text(
+        ".octop/skills/xlsx/SKILL.md",
+        "user-authored skill mentioning execute_shell_command\n",
+        force=True,
+    )
+
+    await sync_octop_builtin_skills(agent.workspace)
+
+    pdf = await agent.workspace.aread_text(".octop/skills/pdf/SKILL.md")
+    forms = await agent.workspace.aread_text(".octop/skills/pdf/forms.md")
+    docx = await agent.workspace.aread_text("skills/docx/SKILL.md")
+    xlsx = await agent.workspace.aread_text(".octop/skills/xlsx/SKILL.md")
+    assert pdf is not None and "execute_shell_command" not in pdf
+    assert "cd {this_skill_dir} && python scripts/..." in pdf
+    assert "user paragraph" in pdf
+    assert forms is not None and "execute_shell_command" not in forms
+    assert "user form note" in forms
+    assert docx == (
+        "---\nmetadata:\n  builtin_skill_version: '1.1'\n---\nexecute is the old instruction\n"
+    )
+    assert xlsx == "user-authored skill mentioning execute_shell_command\n"
+
+
+@pytest.mark.asyncio
 async def test_sync_uses_system_files_path(tmp_path: Path) -> None:
     agent = FakeHarnessAgent(
         workspace_dir=tmp_path,

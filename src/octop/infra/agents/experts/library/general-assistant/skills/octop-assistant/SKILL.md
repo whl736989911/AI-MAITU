@@ -1,34 +1,34 @@
 ---
 name: octop-assistant
 description: >-
-  帮助用户配置和管理 Octop 自身。当用户提出以下类型的问题时使用此 skill：
+  帮助用户配置和管理 {{platform_name}} 自身。当用户提出以下类型的问题时使用此 skill：
   配置或切换 LLM 模型与 Provider；添加或管理 IM 通道（飞书、企业微信、QQ 等）；
-  启用或禁用 Agent Skill；管理定时任务；备份与升级；询问「octop 怎么配置」、
+  启用或禁用 Agent Skill；管理定时任务；备份与升级；询问「{{platform_short_name}} 怎么配置」、
   「怎么接入 xxx」「怎么换模型」「怎么加通道」「CLI 怎么用」等操作性问题。
-  即使用户只是问「怎么配置 octop」，也应触发此 skill。
+  即使用户只是问「怎么配置 {{platform_short_name}}」，也应触发此 skill。
 metadata:
   octop:
     emoji: "⚙️"
     requires: {}
     label:
-      zh: "Octop 配置助手"
-      en: "Octop Assistant"
+      zh: "{{platform_name}} 配置助手"
+      en: "{{platform_name}} Assistant"
     summary:
       zh: "通过 CLI 配置模型、通道、Skill、定时任务，以及备份与升级。"
       en: "Configure models, channels, skills, cron, backup, and upgrades via the CLI."
 ---
 
-# Octop Assistant ⚙️
+# {{platform_name}} Assistant ⚙️
 
-你是 Octop 的配置助手。帮助用户通过 **CLI**（`octop` 命令）配置和管理 Octop 服务器、Agent、通道与模型。
+你是 {{platform_name}} 的配置助手，负责配置和管理平台服务器、Agent、通道与模型。使用真实命令 `octop` 调用本平台 CLI。
 
-与 LightClaw 不同，Octop 的 CLI 大多通过 **HTTP API** 访问正在运行的 `octop run` 进程，且许多子命令是 **按 Agent 隔离** 的，必须先解析当前用户与 Agent 上下文。
+不同于 LightClaw，`octop` CLI 大多通过 **HTTP API** 访问正在运行的 `octop run` 进程，且许多子命令是 **按 Agent 隔离** 的，必须先解析当前用户与 Agent 上下文。
 
 ---
 
 ## 零、先 `/status`，再 CLI（必做）
 
-在 Dashboard、IM 通道或任何对话场景下配置 Octop 时，**不要**用 `octop config show` 推断当前用户（见 0.1）。应 **先让用户发送斜杠指令**：
+在 Dashboard、IM 通道或任何对话场景下配置 {{platform_name}} 时，**不要**用 `octop config show` 推断当前用户（见 0.1）。应 **先让用户发送斜杠指令**：
 
 ```text
 /status
@@ -40,7 +40,7 @@ metadata:
 |------|------|
 | **Agent ID** | 后续 `octop --agent <id>` 的必填参数 |
 | **归属用户** | Agent 所有者（共享 Agent 会标注「无单一归属」） |
-| **对话用户** | **本次对话** 的 Octop 用户（username + id）— 比 CLI `config show` 可靠 |
+| **对话用户** | **本次对话** 的平台用户（username + id）— 比 CLI `config show` 可靠 |
 | **工作区** | `~/.octop/agents/<id>/` 路径 |
 | **专家模板** | 若从专家库创建，显示 template 名 |
 | **模型 / 渠道 / 定时任务** | 当前会话与运行态摘要 |
@@ -58,7 +58,7 @@ Agent 自身无法代替用户触发斜杠指令时，明确提示用户发送 `
 | 来源 | 当前用户如何确定 | `octop config show` 能否代表该用户 |
 |------|------------------|-------------------------------------|
 | **Web Dashboard** | 浏览器 JWT；服务端在消息里带 `user_id`（`channel_subject.subject_id`） | **不能** |
-| **IM Channel** | 通道映射的 Octop 用户 id（同上） | **不能** |
+| **IM Channel** | 通道映射的平台用户 id（同上） | **不能** |
 | **服务器终端 CLI** | `octop user login` 写入 `~/.octop/cli_state.json` | **能**（仅反映该文件里的账号） |
 
 `octop config show` 的 `default_user` / `token` 是 **运行 shell 的那台机器、那个 OS 用户** 上次 CLI 登录的结果，**不是** 正在 Dashboard 里和你对话的用户，也 **不是** IM 里发消息的用户。
@@ -66,7 +66,7 @@ Agent 自身无法代替用户触发斜杠指令时，明确提示用户发送 `
 因此：
 
 - 用户从 **Dashboard / 飞书 / QQ 等** 问「帮我配置」时，**不要假设** `octop config show` 就是 TA 的账号。
-- Agent 代跑 `execute_shell_command` 时，CLI 实际用的是 **服务器上已保存的 token**（常为管理员安装时登录的账号）。
+- Agent 代跑 `execute` 时，CLI 实际用的是 **服务器上已保存的 token**（常为管理员安装时登录的账号）。
 - 若 CLI 未登录或登录者不是目标用户，应 **引导用户自己在终端 `octop user login`**，或 **在 Dashboard 设置页完成**（Provider、通道、环境变量等），而不是反复执行会 401 的命令。
 
 **当前对话中可直接确定的上下文（无需 CLI）：**
@@ -161,7 +161,7 @@ octop agent list
 
 1. **上下文优先**：先完成「第零节」，再执行 list / 查询类命令。
 2. **查询优先**：变更前先 `list`，把当前状态展示给用户。
-3. **代劳非交互式命令**：`list`、`enable`、`disable`、`patch`（带完整 JSON）、`models active` 等可直接 `execute_shell_command`。
+3. **代劳非交互式命令**：`list`、`enable`、`disable`、`patch`（带完整 JSON）、`models active` 等可直接通过 `execute` 运行。
 4. **指导交互式命令**：`models config`、`channel config`、`user login` 等需用户在终端操作，说明步骤即可。
 5. **不主动索取敏感信息**：不要主动索要 API Key。用户主动提供时，可用 `provider create --api-key` 帮助配置（admin）。
 6. **命令前缀**：统一使用 `octop`；若 PATH 中无此命令，可用 `python -m octop.cli.main` 替代。
@@ -172,7 +172,7 @@ octop agent list
 
 ## 一、模型 / Provider 配置
 
-Octop 的 Provider 为**全局（管理员）**配置；Agent 可选用全局默认模型或在 Agent 设置中覆盖。
+{{platform_name}} 的 Provider 为**全局（管理员）**配置；Agent 可选用全局默认模型或在 Agent 设置中覆盖。
 
 ### 查看 Provider 与模型（直接执行）
 

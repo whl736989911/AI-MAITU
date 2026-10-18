@@ -7,6 +7,7 @@ shape matches production exactly.
 
 from __future__ import annotations
 
+import sys
 from types import SimpleNamespace
 from typing import Any
 
@@ -355,20 +356,37 @@ async def test_create_from_expert_default_name_uses_expert_label(env: Any) -> No
     assert r.json()["name"] == "运维工程师 Ops"
 
 
-async def test_create_from_expert_rejects_host_backend_override(env: Any) -> None:
-    c, _srv, auth = env
-    before = (await c.get("/api/agents", headers=auth)).json()
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "filesystem",
+        pytest.param(
+            "local_shell",
+            marks=pytest.mark.skipif(
+                not sys.platform.startswith("linux"), reason="bubblewrap requires Linux"
+            ),
+        ),
+    ],
+)
+async def test_create_from_expert_confines_legacy_host_backend_override(
+    env: Any, kind: str
+) -> None:
+    c, server, auth = env
     response = await c.post(
         "/api/agents/from-expert/default",
         headers=auth,
         json={
             "name": "backend-agent",
-            "backend": {"type": "local_shell", "virtual_mode": True, "root_dir": "/"},
+            "backend": {"type": kind, "virtual_mode": True, "root_dir": "/"},
         },
     )
-    assert response.status_code == 403, response.text
-    assert response.json()["error"]["code"] == "INSTANCE_DEPLOYMENT_RESTRICTED"
-    assert (await c.get("/api/agents", headers=auth)).json() == before
+    assert response.status_code == 201, response.text
+    agent_id = response.json()["agent_id"]
+    registry = server.app_runtime.agent_registry
+    backend = registry.resolved_backend_spec(agent_id)
+    assert backend["type"] == kind
+    assert backend["root_dir"] == str(registry.resolve_workspace_dir(agent_id).resolve())
+    assert backend["virtual_mode"] is True
 
 
 async def test_create_agent_from_expert_stores_composer_defaults(env: Any) -> None:

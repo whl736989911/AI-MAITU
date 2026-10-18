@@ -14,10 +14,13 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from langgraph.config import get_config
 
+from octop.i18n import tr
 from octop.infra.agents.feature_agent import feature_agent_id
 from octop.infra.agents.kinds import KIND_FEATURE, is_feature_agent
 from octop.infra.agents.manager import AgentCreateSpec
+from octop.infra.sharing import can_access
 from octop.infra.users.permissions import unit_permissions, user_has_permission
+from octop.infra.utils.locale import resolve_user_locale
 
 MAX_ARCHIVE_ENTRIES = 500
 MAX_ARCHIVE_FILE_BYTES = 20 * 1024 * 1024
@@ -42,6 +45,24 @@ def _owned_turn(registry: Any) -> tuple[str, int, Any]:
     row = registry.get_row(agent_id)
     if row is None or getattr(row, "user_id", None) != user_id:
         raise ValueError("This tool is available only in an agent owned by the current user.")
+    return agent_id, user_id, row
+
+
+def _accessible_turn(registry: Any, repos: Any) -> tuple[str, int, Any]:
+    """Resolve the authenticated caller and require existing share access."""
+    agent_id, user_id = _turn_identity()
+    locale = resolve_user_locale(user_repo=repos.user_repo, user_id=user_id)
+    if not agent_id or not user_id:
+        raise ValueError(tr("feature_creation.missing_identity", locale))
+    row = registry.get_row(agent_id)
+    if row is None:
+        raise ValueError(tr("feature_creation.source_unavailable", locale))
+    if getattr(row, "user_id", None) != user_id:
+        acl = getattr(repos, "resource_acl_repo", None)
+        entry = acl.get("agent", agent_id) if acl is not None else None
+        role, unit_keys = acl.scope_for_user(user_id) if acl is not None else ("", ())
+        if entry is None or not can_access(entry, user_id=user_id, role=role, unit_keys=unit_keys):
+            raise ValueError(tr("feature_creation.source_forbidden", locale))
     return agent_id, user_id, row
 
 
@@ -121,7 +142,7 @@ def _safe_workspace_relative(path: str, *, what: str) -> str:
 
 
 def build_feature_creation_tools(*, registry: Any, repos: Any) -> list[StructuredTool]:
-    """Give user-owned agents feature creation and ZIP extraction capabilities."""
+    """Give reachable user agents feature creation and workspace ZIP extraction."""
 
     async def feature_create(
         name: str,
@@ -133,7 +154,7 @@ def build_feature_creation_tools(*, registry: Any, repos: Any) -> list[Structure
     ) -> str:
         """Create an enabled feature agent owned by the current user."""
         try:
-            _agent_id, user_id, caller_row = _owned_turn(registry)
+            _agent_id, user_id, caller_row = _accessible_turn(registry, repos)
             if is_feature_agent(str(getattr(caller_row, "kind", ""))):
                 raise ValueError("A feature agent cannot create another feature agent.")
             user = repos.user_repo.get(user_id)

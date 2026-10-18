@@ -344,6 +344,40 @@ async def test_published_feature_tools_follow_enterprise_role_not_former_author(
 
 
 @pytest.mark.asyncio
+async def test_enterprise_admin_cannot_change_another_enterprises_feature(
+    tmp_path: Path, monkeypatch: Any, repos: RepoBundle
+) -> None:
+    workspace = _workspace(tmp_path / "ws")
+    await wf.save_workflow(workspace, _definition())
+    manager_id = repos.user_repo.create(
+        username="foreign_enterprise_manager",
+        password_hash="h",
+        role="enterprise_admin",
+    )
+    with repos.agent_repo._db.transaction() as conn:
+        conn.execute(
+            "UPDATE agents SET user_id = NULL, enterprise_unit_key = 'enterprise-b' "
+            "WHERE agent_id = ?",
+            (FEATURE_AGENT,),
+        )
+    monkeypatch.setattr(
+        tools_module,
+        "scope_for",
+        lambda actor, _repo: SimpleNamespace(covers_unit=lambda _unit: False),
+    )
+    tools = _tools(monkeypatch, workspace=workspace, repos=repos, user_id=manager_id)
+
+    refused = json.loads(
+        await tools["feature_workflow_save"].ainvoke(
+            {"workflow": _definition(rules=["他企业修改"])}
+        )
+    )
+
+    assert refused.get("saved") is not True
+    assert (await wf.load_workflow(workspace)).definition == _definition()
+
+
+@pytest.mark.asyncio
 async def test_somebody_else_cannot_change_the_feature(
     tmp_path: Path, monkeypatch: Any, repos: RepoBundle
 ) -> None:

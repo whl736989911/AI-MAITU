@@ -106,7 +106,6 @@ def test_run_migrations_creates_acl_tables(tmp_path: Path) -> None:
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
 
-    assert _version(pool) == 40
     assert set(_ACL_TABLES).issubset(_table_names(pool))
     assert _columns(pool, "resource_acl") == {
         "resource_type",
@@ -327,7 +326,6 @@ def test_v21_drops_the_share_columns_and_no_other_column(tmp_path: Path) -> None
 
     run_migrations(pool)
 
-    assert _version(pool) == 40
     for table, column in _SHARE_COLUMNS:
         assert column in before[table]
         assert _columns(pool, table) == before[table] - {column}

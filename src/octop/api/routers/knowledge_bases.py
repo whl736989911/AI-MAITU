@@ -8,14 +8,13 @@ from collections.abc import Collection
 from contextlib import suppress
 from dataclasses import asdict
 from functools import partial
-from typing import Any, Literal
+from typing import Any
 
 from fastapi import (
     APIRouter,
     Depends,
     File,
     Form,
-    HTTPException,
     Query,
     Request,
     UploadFile,
@@ -23,6 +22,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
+from starlette.background import BackgroundTask
 
 from octop.api.common.content_disposition import content_disposition
 from octop.api.common.upload_limit import read_upload_capped
@@ -185,32 +185,6 @@ class UpdateBaseBody(BaseModel):
         ge=0,
         le=10_000,
         description="Per-base document limit. 0 = unlimited.",
-    )
-
-
-class KnowledgeSearchRule(BaseModel):
-    path: str = Field(description="Relative file or folder path.")
-    kind: Literal["file", "folder"] = Field(description="Stored rule target type.")
-    mode: Literal["keyword", "hybrid", "exclude"] = Field(
-        description="Search strategy for a file or inherited by files within a folder."
-    )
-    keywords: list[str] = Field(
-        description="Personal search aliases: semantic candidates with a ready embedding model, otherwise literal matches."
-    )
-
-
-class KnowledgeSearchRuleBody(BaseModel):
-    path: str = Field(min_length=1, max_length=500, description="Relative file or folder path.")
-    mode: Literal["keyword", "hybrid", "exclude"] = Field(
-        description=(
-            "keyword searches names and text lexically while aliases may match semantically; "
-            "hybrid also searches text semantically; exclude hides files."
-        )
-    )
-    keywords: list[str] = Field(
-        default_factory=list,
-        max_length=32,
-        description="Personal aliases that add readable files as unverified candidates.",
     )
 
 
@@ -948,7 +922,7 @@ async def read_knowledge_segment(
 @router.get(
     "/{kb_id}/search",
     response_model=list[SearchHit],
-    summary="Search readable file names, personal aliases, and located document text",
+    summary="Search authorized file names and existing located document text",
 )
 async def search_documents(
     kb_id: str,
@@ -960,12 +934,7 @@ async def search_documents(
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> list[SearchHit]:
-    """Search readable names and indexed text under the current user's rules.
-
-    Aliases use semantic similarity with a ready embedding model and literal
-    matching otherwise. Alias hits are unverified file candidates without a
-    segment ID; inspect coverage and read a source segment before citing text.
-    """
+    """Find authorized files and indexed excerpts without personal search policies."""
     try:
         service = _knowledge_service(server)
         return await asyncio.get_running_loop().run_in_executor(
@@ -980,102 +949,6 @@ async def search_documents(
                 generate_query_vector=True,
             ),
         )
-    except Exception as exc:
-        raise _map_knowledge_error(
-            exc, locale=resolve_request_locale(request), server=server
-        ) from exc
-
-
-@router.get(
-    "/{kb_id}/search-rules",
-    response_model=list[KnowledgeSearchRule],
-    summary="List the current user's file and folder search rules",
-)
-async def list_search_rules(
-    kb_id: str,
-    request: Request,
-    server: OctopServer = Depends(get_server),
-    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
-) -> list[KnowledgeSearchRule]:
-    try:
-        service = _knowledge_service(server)
-        rows = await asyncio.get_running_loop().run_in_executor(
-            None,
-            partial(
-                service.list_search_rules,
-                kb_id,
-                actor_user_id=user.id,
-                is_admin=_is_admin(user),
-            ),
-        )
-        return [KnowledgeSearchRule.model_validate(row) for row in rows]
-    except Exception as exc:
-        raise _map_knowledge_error(
-            exc, locale=resolve_request_locale(request), server=server
-        ) from exc
-
-
-@router.put(
-    "/{kb_id}/search-rules",
-    response_model=KnowledgeSearchRule,
-    summary="Set a current-user file or folder search rule",
-)
-async def put_search_rule(
-    kb_id: str,
-    body: KnowledgeSearchRuleBody,
-    request: Request,
-    server: OctopServer = Depends(get_server),
-    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
-) -> KnowledgeSearchRule:
-    try:
-        service = _knowledge_service(server)
-        row = await asyncio.get_running_loop().run_in_executor(
-            None,
-            partial(
-                service.set_search_rule,
-                kb_id,
-                actor_user_id=user.id,
-                path=body.path,
-                mode=body.mode,
-                keywords=body.keywords,
-                is_admin=_is_admin(user),
-            ),
-        )
-        return KnowledgeSearchRule.model_validate(row)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception as exc:
-        raise _map_knowledge_error(
-            exc, locale=resolve_request_locale(request), server=server
-        ) from exc
-
-
-@router.delete(
-    "/{kb_id}/search-rules",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete a current-user file or folder search rule",
-)
-async def delete_search_rule(
-    kb_id: str,
-    request: Request,
-    path: str = Query(min_length=1, max_length=500),
-    server: OctopServer = Depends(get_server),
-    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
-) -> None:
-    try:
-        service = _knowledge_service(server)
-        await asyncio.get_running_loop().run_in_executor(
-            None,
-            partial(
-                service.delete_search_rule,
-                kb_id,
-                actor_user_id=user.id,
-                path=path,
-                is_admin=_is_admin(user),
-            ),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
@@ -1126,7 +999,7 @@ async def preview_document(
 
 @router.get(
     "/{kb_id}/documents/{doc_id}/file",
-    summary="Download or inline-open the original uploaded document",
+    summary="Download or inline-open an authorized original from storage or a data source",
     response_class=FileResponse,
 )
 async def download_document_file(
@@ -1141,18 +1014,29 @@ async def download_document_file(
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> FileResponse:
+    from octop.infra.knowledge.source_access import KnowledgeSourceService
+
+    assert server.services is not None
+    source = KnowledgeSourceService(server.services)
+    original = source.open_original(kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user))
     try:
-        path, filename, content_type = _knowledge_service(server).resolve_document_file(
+        metadata = source.describe_document(
             kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
         )
+        path = await asyncio.get_running_loop().run_in_executor(None, original.__enter__)
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
         ) from exc
     return FileResponse(
         path=path,
-        media_type=content_type or "application/octet-stream",
-        headers={"Content-Disposition": content_disposition(filename, disposition=disposition)},
+        media_type=metadata["content_type"] or "application/octet-stream",
+        headers={
+            "Content-Disposition": content_disposition(
+                metadata["filename"], disposition=disposition
+            )
+        },
+        background=BackgroundTask(original.__exit__, None, None, None),
     )
 
 

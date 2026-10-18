@@ -23,17 +23,17 @@ pytestmark = pytest.mark.skipif(
 
 def _bundle() -> tuple[dict, ed25519.Ed25519PrivateKey]:
     key = ed25519.Ed25519PrivateKey.generate()
+    pem = (
+        key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
     return {
         "format": "maitu-license-connection",
-        "version": 1,
+        "version": 2,
         "server_url": "https://192.0.2.10/",
-        "trusted_keys": {
-            "issuer-a": key.public_key()
-            .public_bytes(
-                serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo
-            )
-            .decode()
-        },
+        "license_trusted_keys": {"license-a": pem},
+        "release_trusted_keys": {"release-a": pem},
         "ca_certificate_pem": None,
     }, key
 
@@ -64,13 +64,17 @@ def test_import_keeps_issuer_key_identity_and_installs_only_public_material(tmp_
     der = key.public_key().public_bytes(
         serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
     )
-    assert key_fingerprints(validated) == {"issuer-a": hashlib.sha256(der).hexdigest()}
+    assert key_fingerprints(validated) == {
+        "license:license-a": hashlib.sha256(der).hexdigest(),
+        "release:release-a": hashlib.sha256(der).hexdigest(),
+    }
     assert validated["server_url"] == "https://192.0.2.10"
-    trust_path, ca_path = install_bundle(validated, tmp_path / "trust")
-    assert json.loads(trust_path.read_text(encoding="utf-8")) == data["trusted_keys"]
+    license_path, release_path, ca_path = install_bundle(validated, tmp_path / "trust")
+    assert json.loads(license_path.read_text(encoding="utf-8")) == data["license_trusted_keys"]
+    assert json.loads(release_path.read_text(encoding="utf-8")) == data["release_trusted_keys"]
     assert ca_path is not None
     assert ca_path.read_text(encoding="utf-8") == data["ca_certificate_pem"]
-    assert "PRIVATE KEY" not in trust_path.read_text(encoding="utf-8")
+    assert "PRIVATE KEY" not in license_path.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize(
@@ -91,13 +95,13 @@ def test_bundle_rejects_unsafe_or_non_root_center_address(url: str) -> None:
 
 def test_private_or_wrong_algorithm_keys_cannot_replace_issuer_trust() -> None:
     data, key = _bundle()
-    data["trusted_keys"]["issuer-a"] = key.private_bytes(
+    data["license_trusted_keys"]["license-a"] = key.private_bytes(
         serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()
     ).decode()
     with pytest.raises(DeploymentError):
         validate_bundle(data)
     wrong_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    data["trusted_keys"]["issuer-a"] = (
+    data["license_trusted_keys"]["license-a"] = (
         wrong_key.public_key()
         .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         .decode()
@@ -126,10 +130,10 @@ def test_new_bundle_without_custom_ca_does_not_delete_operator_ca(tmp_path: Path
     data, key = _bundle()
     directory = tmp_path / "trust"
     data["ca_certificate_pem"] = _certificate(key, ca=True)
-    _, previous_ca = install_bundle(data, directory)
+    _, _, previous_ca = install_bundle(data, directory)
     assert previous_ca is not None
     previous = previous_ca.read_bytes()
     data["ca_certificate_pem"] = None
-    _, effective_ca = install_bundle(data, directory)
+    _, _, effective_ca = install_bundle(data, directory)
     assert effective_ca is None
     assert previous_ca.read_bytes() == previous

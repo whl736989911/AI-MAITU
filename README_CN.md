@@ -59,19 +59,21 @@
 ## 快速开始（源码运行）
 
 前置：**Python ≥ 3.12**、[`uv`](https://docs.astral.sh/uv/)、**Node.js**（构建前端）。
+Ubuntu 首次同步前安装 `build-essential python3-dev linux-libc-dev`：
+当前核心 `orcakit-harness-agent[all]` 即使未选 desktop 也会传递安装 pynput/evdev。
 
 ```bash
 git clone https://github.com/whl736989911/AI-MAITU.git
 cd AI-MAITU
 
 # 后端依赖
-uv sync
+uv sync --inexact --no-dev --extra office --extra knowledge-ocr
 
 # 前端（构建产物由后端直接服务）
 cd dashboard && npm ci && npm run build && cd ..
 
 # 启动
-uv run octop run --port 8088
+uv run --no-sync octop run --port 8088
 ```
 
 **首次启动**会打印一次性安装密码和密码文件路径（`octop-login.txt`）。打开 `http://127.0.0.1:8088` 粘贴密码，向导会：
@@ -79,7 +81,35 @@ uv run octop run --port 8088
 2. 创建第一个管理员
 3. 可选：配置模型提供商
 
-**本地嵌入模型**（知识库需要）：在管理界面里下载，最小的约 90 MB。
+**本地嵌入模型**：同步命令追加 `--extra local-embedding`，再在管理界面下载模型。
+桌面控制仅按需追加 `--extra desktop`，且需要兼容图形会话；不选择该 extra 目前不能免除传递依赖的 evdev 编译要求。
+
+已有部署同步始终保留 `--inexact`，避免静默卸载已装可选包；重复声明选用的 extras 才会同步更新其依赖。
+Release ZIP 没有 `.git`，不能使用 `git pull`；请按[原生 ZIP 升级、依赖检查和无 make 命令](scripts/README.md#原生-release-zip-升级不需要-git)操作。
+升级复用原环境和 `OCTOP_HOME`，新源码独立准备，手动切换服务，不重建配置或授权身份。
+
+### Ubuntu 原生沙箱（源码安装）
+
+agent 的 `execute` 运行在 bubblewrap jail 中。Ubuntu 24.04+ 默认用 AppArmor 限制非特权 user namespace，jail 会以 `bwrap: setting up uid map: Permission denied` 失败。请使用仓库内置的最小权限、可撤销方案，**不要**全局关闭 AppArmor 的限制。
+
+```bash
+sudo bash scripts/setup-host-sandbox.sh              # 安装 bubblewrap + userns profile（仅授予 /usr/bin/bwrap）
+sudo bash scripts/setup-host-sandbox.sh --status     # 查看当前状态
+sudo bash scripts/setup-host-sandbox.sh --revert     # 撤销 profile
+```
+
+管理后台的「执行沙箱」页面展示实时状态：`GET /api/filesystem/bwrap-status` 只诊断、不安装；显式操作 `POST /api/filesystem/ensure-bwrap` 才安装并给出失败分类（`missing_binary`、`install_permission_denied`、`userns_denied`、`runtime_failure`）与运维命令（仅展示，不自动执行）。服务启动时不会自行安装任何系统包。配置了作用域 `local_shell` 的后端是失效关闭的：沙箱不可用时 agent 拒绝启动，而不是静默退回宿主机执行。
+
+技能脚本在 jail 内使用平台 Python 环境。办公/OCR 依赖：`uv sync --inexact --no-dev --extra office --extra knowledge-ocr`。
+
+浏览器/视觉通道（可选）：Chromium 不再以 `--no-sandbox` 启动，Playwright 的 Chromium 需要自己的 userns profile：
+
+```bash
+sudo bash scripts/setup-host-sandbox.sh --with-browser  # Chromium（以当前用户安装）+ profile
+sudo bash scripts/setup-host-sandbox.sh --revert-browser
+```
+
+浏览器步骤请以运行服务的用户身份执行（systemd user 服务的 `HOME`/`PATH` 来自该用户）；profile 只匹配 `~/.cache/ms-playwright/...` 下的可执行文件，并保持 Chromium 自身沙箱开启。若服务 `HOME` 不在 `/home` 下，请调整 `scripts/security/apparmor-playwright-chromium` 中的路径。
 
 ### 开发
 

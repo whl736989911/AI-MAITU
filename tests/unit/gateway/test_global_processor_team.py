@@ -15,6 +15,7 @@ from octop.infra.db.repos.agents import AgentRepo
 from octop.infra.db.repos.sessions import SessionRepo
 from octop.infra.db.repos.threads import ThreadRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.process.processor import GlobalProcessor
 from octop.infra.gateway.slash.dispatcher import SlashDispatcher
 from octop.infra.gateway.threads import ThreadRegistry
@@ -140,7 +141,7 @@ async def test_prepare_peer_session_creates_callee_thread_without_rebind(
     assert registry.get_bound_thread_id(str(parent_sk)) == "thr_parent"
 
 
-def test_resolve_harness_model_auto_expert_omits_model() -> None:
+def test_resolve_harness_model_rejects_multimodal_turn_without_configured_model() -> None:
     processor = GlobalProcessor(
         agent_manager=MagicMock(),
         thread_registry=MagicMock(),
@@ -156,16 +157,16 @@ def test_resolve_harness_model_auto_expert_omits_model() -> None:
     processor._agent_repo.get.return_value = MagicMock(default_model=None)
     processor._agent_manager.get_config.return_value = {}
     processor._agent_manager.providers.resolve_explicit_default_model.return_value = None
+    processor._agent_manager.providers.resolve_model_for_multimodal_turn.return_value = None
 
-    assert (
+    with pytest.raises(OctopError) as exc_info:
         processor._resolve_harness_model(
             "a1",
             "t1",
             None,
             needs_multimodal=True,
         )
-        is None
-    )
+    assert exc_info.value.code is ErrorCode.AGENT_FAILED
 
 
 def test_resolve_harness_model_uses_agent_default_and_upgrades_vision() -> None:
@@ -214,7 +215,6 @@ def test_resolve_harness_model_dashboard_override_wins() -> None:
     processor._agent_manager.get_thread_model.return_value = None
     processor._agent_repo.get.return_value = MagicMock(default_model="p/default")
     processor._agent_manager.providers.is_model_ref_usable.return_value = True
-    processor._agent_manager.providers.resolve_model_for_multimodal_turn.return_value = "p/picked"
 
     resolved = processor._resolve_harness_model(
         "a1",
@@ -223,10 +223,6 @@ def test_resolve_harness_model_dashboard_override_wins() -> None:
         needs_multimodal=False,
     )
     assert resolved == "p/picked"
-    processor._agent_manager.providers.resolve_model_for_multimodal_turn.assert_called_once_with(
-        "p/picked",
-        needs_multimodal=False,
-    )
 
 
 def test_resolve_harness_model_drops_unusable_dashboard_override() -> None:

@@ -78,8 +78,9 @@ class TeamTemplateFileResponse(BaseModel):
 
 
 def _registry(server: OctopServer) -> AgentManager:
-    assert server.app_runtime is not None
-    return server.app_runtime.agent_registry
+    if server.app_runtime is None:
+        raise OctopError(ErrorCode.INTERNAL_ERROR, "agent manager unavailable")
+    return server.app_runtime.require_agent_registry()
 
 
 def _teams(server: Any) -> TeamService:

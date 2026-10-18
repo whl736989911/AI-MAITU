@@ -14,7 +14,13 @@ from harness_agent.middleware.conversation_mode import (
     parse_conversation_mode,
 )
 
-HOST_READ_TOOLS: tuple[str, ...] = ("search_knowledge",)
+HOST_READ_TOOLS: tuple[str, ...] = (
+    "browse_knowledge",
+    "search_knowledge_paths",
+    "read_knowledge_collection",
+    "read_knowledge_document",
+    "record_knowledge_observation",
+)
 
 _EXECUTE_EXACT = frozenset(
     {

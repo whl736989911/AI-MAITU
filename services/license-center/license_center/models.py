@@ -12,16 +12,20 @@ class StrictModel(BaseModel):
 class ChallengeRequest(StrictModel):
     instance_id: str = Field(min_length=1, max_length=128)
     operation: Literal["activate", "sync"]
-    public_key: str = Field(min_length=40, max_length=4096)
+    public_key_pem: str | None = Field(default=None, min_length=40, max_length=4096)
 
 
 class ChallengeReply(StrictModel):
     challenge: str
-    expires_at: int
+    expires_at: int | None = None
 
 
 class ProofRequest(StrictModel):
+    instance_id: str = Field(min_length=1, max_length=128)
+    challenge: str = Field(min_length=1, max_length=256)
     proof: str = Field(min_length=32, max_length=16384)
+    public_key_pem: str | None = Field(default=None, min_length=40, max_length=4096)
+    activation_code: str | None = Field(default=None, min_length=1, max_length=256)
 
 
 class TokenReply(StrictModel):
@@ -91,6 +95,14 @@ class ActivationView(StrictModel):
     revoked_at: int | None
 
 
+class OfflineLicenseCreate(StrictModel):
+    customer_id: str = Field(min_length=1, max_length=128)
+    request: dict[str, str]
+    license_expires_at: int = Field(gt=0)
+    offline_expires_at: int = Field(gt=0)
+    reason: str = Field(min_length=1, max_length=1000)
+
+
 class LicenseAction(StrictModel):
     expires_at: int | None = Field(default=None, gt=0)
     reason: str = Field(min_length=1, max_length=1000)
@@ -109,6 +121,7 @@ class LicenseView(StrictModel):
     expires_at: int
     revoked: bool
     expired: bool
+    restored: bool
     revision: int
     created_at: int
 

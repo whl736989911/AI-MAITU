@@ -160,7 +160,6 @@ class ProactiveCareScheduler:
         self._default_timezone = default_timezone
         self._tasks: dict[str, asyncio.Task[None]] = {}
         self._suspended = False
-        self._business_paused = False
 
     def replace_persistence(
         self,
@@ -179,31 +178,14 @@ class ProactiveCareScheduler:
 
         Includes agents that never saved a config row: proactive care defaults to on.
         """
-        if self._business_paused or self._suspended:
-            return
+        # Direct-entry license gate: proactive care is business processing.
+        from octop.infra.licensing import current_license
+
+        current_license().require_business_access()
         configs = self._config_repo.list_enabled()
         logger.info("ProactiveCareScheduler: started, found %d enabled agents", len(configs))
         for cfg in configs:
             self.ensure_scheduled(cfg.agent_id)
-
-    async def pause_business(self) -> None:
-        """Cancel business schedules and any active push loops without deleting state."""
-        self._business_paused = True
-        pending: list[asyncio.Task[None]] = []
-        for agent_id in list(self._tasks):
-            task = self._tasks.pop(agent_id, None)
-            if task and not task.done():
-                task.cancel()
-                pending.append(task)
-        if pending:
-            await asyncio.gather(*pending, return_exceptions=True)
-
-    async def resume_business(self) -> None:
-        """Recompute future triggers from current time; never catch up missed pushes."""
-        if self._suspended:
-            return
-        self._business_paused = False
-        await self.start_all()
 
     def suspend(self) -> None:
         """Stop creating new loops. Tests call this so leftover sleeps do not hang pytest."""
@@ -211,7 +193,7 @@ class ProactiveCareScheduler:
 
     def ensure_scheduled(self, agent_id: str) -> None:
         """Start the loop if this agent is enabled and not already scheduled."""
-        if self._suspended or self._business_paused:
+        if self._suspended:
             return
         if agent_id in self._tasks:
             return
@@ -265,7 +247,7 @@ class ProactiveCareScheduler:
 
     def _schedule(self, agent_id: str) -> None:
         """Create a scheduling task for an agent."""
-        if self._suspended or self._business_paused:
+        if self._suspended:
             return
         existing = self._tasks.get(agent_id)
         if existing is not None and not existing.done():

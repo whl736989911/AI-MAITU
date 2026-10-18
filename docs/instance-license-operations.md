@@ -103,24 +103,26 @@ uv run license-center restore /protected-backups/center.sqlite3 --confirm
 
 该版本没有关闭授权检查的配置开关。缺少配置或有效凭证时默认锁定。因此升级现有实例前必须先部署中心、导出可信公开密钥、备份业务数据，并在隔离副本完成激活验证；不要直接替换正在使用的未授权实例。
 
-环境配置：
-
-| 变量 | 内容 |
-| --- | --- |
-| `OCTOP_LICENSE_SERVER_URL` | 授权中心 HTTPS 根地址，例如包含 IP 证书的固定公网 IP 地址 |
-| `OCTOP_LICENSE_TRUST_FILE` | 运维预置的公开验签 JSON 文件，内容为 `kid → PEM` |
-| `OCTOP_LICENSE_CA_FILE` | 可选受信任 CA PEM 文件；使用私有 CA 时必须明确安装，不能跳过证书验证 |
-| `OCTOP_LICENSE_CONTACT` | 锁定页面显示的交付方联系方式 |
-
-Linux Docker 可以叠加 `docker/docker-compose.licensing.yml`：
+Docker 部署通过 `docker/docker-compose.managed.yml` 加入托管授权和更新配置：
 
 ```bash
-docker compose -f docker/docker-compose.yml -f docker/docker-compose.licensing.yml up -d
+docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.managed.yml up -d --build
 ```
 
-同时设置 `OCTOP_LICENSE_TRUST_DIR` 指向宿主机上的运维管理公开密钥目录。该目录以只读形式挂载到 `/etc/maitu/license`。配置 CA 文件时使用容器内的路径。原有 `OCTOP_DATA` 数据挂载必须继续复用，不能因为升级重新生成空数据目录。
+在 Compose 环境文件中设置以下宿主路径；不要把身份私钥、客户数据和密钥文件放在同一目录：
 
-实例身份私钥、缓存凭证和已见版本栅栏位于业务数据目录的 `license/state.json`，与 Agent 工作区隔离。保护业务数据目录的系统权限，保持系统时间同步，不允许客户通过终端、环境变量、插件安装、自定义 stdio MCP 或任意宿主机目录后端接触该边界。Windows 部署还需要设置真实 NTFS ACL，不能把 `chmod` 当作 NTFS 权限隔离。
+| 变量 | 用途 |
+| --- | --- |
+| `MAITU_CENTER_URL` | 授权及更新中心的可信 HTTPS 根地址 |
+| `MAITU_LICENSE_TRUSTED_KEYS_HOST_FILE` | 授权签名 keyring JSON（KID→PEM），只读挂载至 `/run/maitu-trust/license-trusted-keys.json` |
+| `MAITU_UPDATE_TRUSTED_KEYS_HOST_FILE` | 发布签名 keyring JSON（KID→PEM），只读挂载至 `/run/maitu-trust/release-trusted-keys.json`；不得与授权 keyring 混用 |
+| `MAITU_LICENSE_STATE_HOST_DIR` | 独立实例身份、在线/离线凭据、版本栅栏及提醒账本目录，容器 UID/GID 1000 可写 |
+| `MAITU_UPDATE_QUEUE_HOST_DIR` | 独立更新请求和进度队列目录；须与宿主更新器的 `MAITU_UPDATE_QUEUE_DIR` 指向同一目录 |
+| `MAITU_CENTER_CLIENT_TOKEN` | 必须配置独立客户侧版本读取令牌；不得使用中心管理凭据 |
+
+`MAITU_LICENSE_TRUSTED_KEYS_FILE`、`MAITU_LICENSE_STATE_DIR`、`MAITU_LICENSE_CENTER_URL`、`MAITU_UPDATE_TRUSTED_KEYS_FILE`、`MAITU_UPDATE_QUEUE_DIR` 和 `MAITU_UPDATE_CENTER_URL` 由托管 Compose overlay 指向容器内路径。keyring 应保留所有仍可能用于验证有效凭据/发布签名的 KID；换钥前先导出更新接入包。私有 CA 环境由中心连接包与部署向导配置，不能关闭 TLS 验证。已有实例升级务必保留原 `OCTOP_DATA`、授权身份目录、队列目录和 Compose project name。
+实例身份、已验证的在线/离线凭据、共用版本栅栏和提醒账本存放在独立的授权状态 bind mount；业务数据备份不能覆盖它们。默认执行器使用镜像内 Bubblewrap，能读到 `/usr/local/maitu-venv` 的只读 Python 环境，但不能访问授权目录、源码或宿主 Docker socket。Compose 默认不挂载 Docker socket；独立 Docker 执行路径仅由可信运维显式启用，宿主更新器运行于单独的 systemd 服务，不向客户业务容器开放。Linux 镜像包含 LibreOffice / Bubblewrap，用户命名空间必须由宿主 AppArmor/内核策略允许；见 [Docker 部署说明](../docker/README_CN.md#执行沙箱与浏览器linux)。Windows 部署还需要设置真实 NTFS ACL，不能把 `chmod` 当作 NTFS 权限隔离。
 
 ### 3.2 开通与交付
 
@@ -129,6 +131,7 @@ docker compose -f docker/docker-compose.yml -f docker/docker-compose.licensing.y
 3. 在办公室主机完成基本安装。首次安装尚未授权时，业务初始化会暂存，激活后再恢复，不能借初始化接口启动业务。
 4. 系统/企业管理员在锁定页面输入激活码；主机会生成独立实例身份并向中心签名证明。也可以由主机运维人员使用下面的本地 CLI。
 5. 确认授权状态、截止时间、企业权限和正常业务可用，再创建/交付客户的企业管理员账号。不交付中心账户、系统管理员凭据或签发密钥。
+6. 如交付系统管理员分享的通用助手，确认客户账号具有该助手的共享使用权及 `features` 权限。客户可在共享助手中创建功能，新功能归当前登录客户用户，而非通用助手分享者；随后在新功能自己的会话中配置和训练。共享不代表拥有源助手，也不授予分享者的管理员权限，其他企业的目标功能仍受原管理边界限制。
 
 本地运维命令使用同一验签和状态机：
 
@@ -152,9 +155,9 @@ uv run octop license refresh
 | 断网/中心不可用 | 已有有效凭证最多支持 24 小时，且不超过真实授权截止时间；不存在到期后的额外宽限 |
 | 更换主机 | 中心执行替换/解绑旧实例，生成新激活码，在新主机激活；旧实例联网获知撤销或缓存截止后锁定，不复制旧身份私钥冒充新主机 |
 
-正常状态每小时同步，启动时立即尝试；锁定后每 5 分钟尝试。手动检查受实例级限频与并发合并保护。提前撤销不是互联网即时推送：正常联网最长等待一次同步周期，断网实例最多等待已有凭证截止。不能向客户承诺断网时即时停用。
+配置了授权信任公钥和中心地址的托管实例，启动时立即尝试同步，之后每小时尝试一次；锁定状态同样按这一周期尝试。提前撤销不是互联网即时推送：正常联网最长等待一次同步周期，断网实例最多等待已有凭证截止。不能向客户承诺断网时即时停用。
 
-同步失败时采用指数退避和随机抖动：起始约 30 秒，有效缓存期间最长约 1 小时，锁定期间最长约 5 分钟；到期监视不等待下一次网络重试。签名响应会为当前进程建立可信时间锚点，并计入往返时间的保守上界，不能利用略慢的客户时钟延长试用。严重时间异常仍需运维修正系统时间。
+同步失败会保存最近一次 `sync_error`，启动同步和周期同步的异常也会写入平台进程日志；当前周期循环没有指数退避或锁定后每 5 分钟重试。到期监视不等待下一次网络请求。签名响应会为当前进程建立可信时间锚点，并计入往返时间的保守上界，不能利用略慢的客户时钟延长试用。严重时间异常仍需运维修正系统时间。
 
 解锁不需要删除数据库、修改到期字段或重新安装。中心更新授权后，客户企业管理员只触发同步；可信新凭证到达后恢复 Agent、通道、业务计划任务和索引处理。企业管理员没有签发或修改本地授权凭证的权限。
 
@@ -175,3 +178,7 @@ uv run octop license refresh
 5. 配置错误、中心暂时不可达、缓存过期和真正授权到期分别排查；不要用删缓存、回滚时钟、改数据库或关闭验签处理。
 
 授权地址、信任文件或 CA 配置错误时，业务平台以未配置锁定状态启动，并保留登录与授权诊断入口；具体配置异常写入主机日志。修正运维配置后重启平台，再检查授权；这不是临时放行或跳过验签。
+
+中心实例列表的“最近联系”取自 `last_seen_at`；显示 `—` 表示接口没有返回联系时间，不表示已在线。成功通过身份验证的在线激活或授权同步会写入该字段，检查新版本、下载升级包不会更新它。平台启动同步还要求容器内实际配置了 `MAITU_LICENSE_TRUSTED_KEYS_FILE` 和 `MAITU_LICENSE_CENTER_URL`；升级中心配置不能替代授权中心配置。
+
+如果激活成功、重启后仍不能更新联系时间，检查同步请求是否被中心返回 HTTP 401。平台同步的签名请求必须同时携带实例公钥和挑战证明，中心继续验证签名、挑战和实例绑定；不要通过关闭中心验签来修复。更新到包含这一协议修复的平台源码并重启即可，无需重新激活，也不要删除或更换现有实例身份目录。修复前的历史失败无法补写，只能从后续成功同步开始记录联系时间。

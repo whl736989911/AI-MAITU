@@ -16,7 +16,10 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, within } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import userEventLibrary, {
+  PointerEventsCheckLevel,
+  type UserEvent,
+} from "@testing-library/user-event";
 import type { OctopUser } from "../../../api/modules/auth";
 import type { OctopAgent } from "../../../context/AgentContext";
 import zh from "../../../locales/zh.json";
@@ -142,8 +145,13 @@ const FEATURE = agent("weekly-report", "feature", 1);
 
 let agents: OctopAgent[] = [];
 let permissionCatalog: PermissionCatalogItem[] = [];
+let userEvent: UserEvent;
 
 beforeEach(() => {
+  userEvent = userEventLibrary.setup({
+    pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+    delay: null,
+  });
   permissionCatalog = [];
   requestMock.mockReset();
   requestMock.mockImplementation(async (url: string): Promise<unknown> => {

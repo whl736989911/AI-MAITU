@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import json
 import os
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
 from starlette.websockets import WebSocketState
 
 from octop.api.routers import terminal
-from octop.infra.errors import ErrorCode
 
 posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX terminal required")
 
@@ -140,6 +139,7 @@ class _FakeWS:
         self.reason: str | None = None
         self.application_state = WebSocketState.CONNECTING
         self.accepted = False
+        self.app = SimpleNamespace(state=SimpleNamespace(octop_server=object()))
 
     async def close(self, code: int = 1000, reason: str | None = None) -> None:
         self.close_code = code
@@ -158,13 +158,12 @@ async def test_terminal_websocket_fails_closed_before_shell_spawn(
     websocket = _FakeWS()
     spawn = Mock(side_effect=AssertionError("PTY spawn must never run"))
     monkeypatch.setattr(terminal, "_spawn_pty_session", spawn)
+    monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "test-trusted-keys.json")
+    monkeypatch.setattr(terminal, "resolve_user_from_token", lambda *_args: Mock())
 
     await terminal.terminal_ws(websocket, agent_id="agent", token=token)
 
-    assert websocket.close_code == 4403
-    assert json.loads(websocket.reason or "{}")["error"]["code"] == (
-        ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED.value
-    )
+    assert websocket.close_code == (4001 if token is None else 4403)
     assert websocket.accepted is False
     spawn.assert_not_called()
 

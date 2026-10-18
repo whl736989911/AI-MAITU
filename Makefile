@@ -20,6 +20,7 @@ DASHBOARD_DEST := $(REPO_ROOT)/src/octop/dashboard
 DIST_DIR      := $(REPO_ROOT)/dist
 LICENSE_CENTER_DIR := $(REPO_ROOT)/services/license-center
 LICENSE_DASHBOARD_DIR := $(LICENSE_CENTER_DIR)/dashboard
+UPDATE_SCRIPTS := scripts/maitu_updater.py scripts/package_release.py
 
 # PyPI repository (override: make publish PYPI_REPO=testpypi)
 PYPI_REPO  ?= pypi
@@ -212,20 +213,21 @@ all: format-all lint lint-frontend typecheck test test-frontend check-license-ce
 .PHONY: lint
 lint:
 	@echo "[lint] Ruff check..."
-	$(RUN) ruff check src tests scripts/deploy.py scripts/deployment
+	$(RUN) ruff check src tests scripts/deploy.py scripts/deployment $(UPDATE_SCRIPTS)
 	@echo "[lint] Ruff format check..."
-	$(RUN) ruff format --check src tests scripts/deploy.py scripts/deployment
+	$(RUN) ruff format --check src tests scripts/deploy.py scripts/deployment $(UPDATE_SCRIPTS)
 
 .PHONY: format
 format:
 	@echo "[format] Ruff fix + format..."
-	$(RUN) ruff check --fix src tests scripts/deploy.py scripts/deployment
-	$(RUN) ruff format src tests scripts/deploy.py scripts/deployment
+	$(RUN) ruff check --fix src tests scripts/deploy.py scripts/deployment $(UPDATE_SCRIPTS) services/license-center
+	$(RUN) ruff format src tests scripts/deploy.py scripts/deployment $(UPDATE_SCRIPTS) services/license-center
 
 .PHONY: typecheck
 typecheck:
 	@echo "[typecheck] mypy..."
 	$(RUN) mypy src/octop
+
 
 .PHONY: test
 test:

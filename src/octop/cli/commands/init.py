@@ -46,7 +46,7 @@ def init(
     force: bool,
     non_interactive: bool,
 ) -> None:
-    """Bootstrap an Octop server (~/.octop dir, DB migrations, first admin)."""
+    """Bootstrap an application server (~/.octop dir, DB migrations, first admin)."""
     from octop.config import load_config
     from octop.infra.agents.plugins.manager import PluginManager
     from octop.infra.db.factory import open_database
@@ -68,10 +68,11 @@ def init(
             )
             raise SystemExit(1)
         if not non_interactive:
+            from octop.branding import platform_name
             from octop.cli.support import prompts as _prompts
 
             if not _prompts.confirm(
-                f"Wipe {home}? This deletes ALL MAITU Smart Manufacturing state.", default=False
+                f"Wipe {home}? This deletes all {platform_name()} state.", default=False
             ):
                 click.echo("aborted", err=True)
                 raise SystemExit(1)
@@ -123,6 +124,8 @@ def init(
     finally:
         db.close()
 
-    click.echo(f"\u2705 MAITU Smart Manufacturing bootstrapped at {home}")
+    from octop.branding import platform_name
+
+    click.echo(f"\u2705 {platform_name()} bootstrapped at {home}")
     click.echo(f"   admin user: {username}")
     click.echo("   next: `octop run` (optional: `octop agent use <id>` to pin default agent)")

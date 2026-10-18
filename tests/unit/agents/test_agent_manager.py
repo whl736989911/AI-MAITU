@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import subprocess
+import sys
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
@@ -658,12 +660,57 @@ def test_bootstrap_pending_detects_unfinished_onboarding(tmp_path: Path) -> None
     assert bootstrap_marker_exists(ws)
 
 
-def test_build_harness_config_rejects_filesystem_backend_outside_workspace(
-    manager: AgentManager,
+@pytest.mark.parametrize("kind", ["filesystem", "local_shell"])
+@pytest.mark.parametrize("root", ["/", "/srv/data"])
+def test_legacy_backend_roots_are_confined_to_workspace(
+    manager: AgentManager, kind: str, root: str
 ) -> None:
-    row = _row(config_json=json.dumps({"backend": {"type": "filesystem", "root_dir": "/srv/data"}}))
-    with pytest.raises(OctopError, match="rooted at the agent workspace"):
-        manager._build_harness_config(row)
+    row = _row(
+        config_json=json.dumps({"backend": {"type": kind, "root_dir": root, "virtual_mode": False}})
+    )
+    spec = manager._backend_spec_for_row(row)
+    assert spec["type"] == kind
+    assert Path(spec["root_dir"]) == manager.paths.agent_workspace(row.agent_id).resolve()
+    assert spec["virtual_mode"] is True
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="bubblewrap requires Linux")
+@pytest.mark.parametrize(
+    "backend",
+    [None, "local_shell", {"type": "local_shell", "root_dir": "/", "virtual_mode": False}],
+)
+def test_native_default_and_legacy_shell_execute_inside_workspace(
+    manager: AgentManager, monkeypatch: pytest.MonkeyPatch, backend: Any
+) -> None:
+    from octop.infra.backend import managed_shell
+
+    monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
+    monkeypatch.setattr(
+        "harness_agent.backends.bwrap_shell.resolve_bubbled_bwrap",
+        lambda **_kwargs: "/usr/bin/bwrap",
+    )
+    monkeypatch.setattr(managed_shell, "_platform_python_runtime", lambda: None)
+    calls: list[list[str]] = []
+
+    def run(argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[str]:
+        calls.append(argv)
+        return subprocess.CompletedProcess(argv, 0, stdout="confined", stderr="")
+
+    monkeypatch.setattr(managed_shell.subprocess, "run", run)
+    row = _row(config_json=json.dumps({"backend": backend}))
+    workspace = manager.resolve_workspace_dir(row.agent_id)
+    shell = managed_shell.managed_shell_spec(
+        manager._backend_spec_for_row(row),
+        workspace_dir=workspace,
+        system_files_path=".octop",
+    )
+    result = shell.execute("printf confined")
+    assert result.exit_code == 0
+    assert calls[0][0] == "/usr/bin/bwrap"
+    assert any(
+        calls[0][index : index + 3] == ["--bind", str(workspace.resolve()), "/"]
+        for index in range(len(calls[0]) - 2)
+    )
 
 
 def test_backend_policy_rejects_docker_host_path_overrides_recursively(
@@ -713,19 +760,6 @@ def test_backend_spec_rejects_customer_workspace_outside_managed_directory(
     with pytest.raises(OctopError, match="managed workspace directory"):
         manager._build_harness_config(row)
     assert not outside.exists()
-
-
-@pytest.mark.asyncio
-async def test_runtime_mcp_loader_rejects_customer_stdio_before_process_start(
-    manager: AgentManager,
-) -> None:
-    with pytest.raises(OctopError) as exc_info:
-        await manager._get_or_load_mcp_tools(
-            1,
-            "unsafe",
-            {"transport": "stdio", "command": "npx", "args": ["-y", "pkg"]},
-        )
-    assert exc_info.value.code == ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
 
 
 def test_build_harness_config_keeps_permissions_for_workspace_filesystem(
@@ -1034,7 +1068,7 @@ async def test_create_rejects_user_workspace_dir_outside_managed_directory(
 
 
 @pytest.mark.asyncio
-async def test_create_rejects_backend_root_outside_managed_workspace(
+async def test_create_clamps_legacy_backend_root_to_managed_workspace(
     manager: AgentManager,
     tmp_path: Path,
 ) -> None:
@@ -1048,21 +1082,23 @@ async def test_create_rejects_backend_root_outside_managed_workspace(
         log_dir=str(manager.paths.logs_dir),
     )
     try:
-        with pytest.raises(OctopError):
-            await manager.create(
-                AgentCreateSpec(
-                    name="scoped-ws",
-                    config={
-                        **_MEMORY_OFF,
-                        "backend": {
-                            "type": "filesystem",
-                            "root_dir": str(tmp_path),
-                            "virtual_mode": True,
-                        },
+        row = await manager.create(
+            AgentCreateSpec(
+                name="scoped-ws",
+                config={
+                    **_MEMORY_OFF,
+                    "backend": {
+                        "type": "filesystem",
+                        "root_dir": str(tmp_path),
+                        "virtual_mode": True,
                     },
-                )
+                },
             )
-        assert not (tmp_path / ".octop" / "workspaces").exists()
+        )
+        workspace = manager.paths.agent_workspace(row.agent_id).resolve()
+        spec = manager._backend_spec_for_row(row)
+        assert Path(spec["root_dir"]) == workspace
+        assert not (tmp_path / "SOUL.md").exists()
     finally:
         manager._harness_manager.close()
 
@@ -1693,3 +1729,83 @@ def test_acp_outbound_is_blocked_for_scoped_or_remote_backend(
         {"type": "filesystem", "root_dir": str(workspace)},
         workspace_dir=workspace,
     )
+
+
+@pytest.mark.asyncio
+async def test_market_install_approval_survives_registration_and_security_rebuild(
+    manager: AgentManager,
+) -> None:
+    from langchain.agents import create_agent
+    from langchain.agents.middleware import HumanInTheLoopMiddleware
+    from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
+    from langchain_core.messages import AIMessage, HumanMessage
+    from langchain_core.tools import StructuredTool
+    from langgraph.checkpoint.memory import InMemorySaver
+    from langgraph.types import Command
+
+    from octop.infra.agents.manager import AgentCreateSpec
+
+    class ToolModel(FakeMessagesListChatModel):
+        def bind_tools(self, tools: Any, **kwargs: Any) -> Any:
+            return self
+
+    installed: list[str] = []
+
+    def install_fixture(slug: str) -> str:
+        installed.append(slug)
+        return "completed"
+
+    tool = StructuredTool.from_function(
+        install_fixture, name="install_market_skill", description="Install a local fixture."
+    )
+
+    async def invoke(thread_id: str, agent_id: str) -> tuple[Any, Any, dict[str, Any]]:
+        current = manager.get_agent(agent_id).config
+        model = ToolModel(
+            responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": tool.name,
+                            "args": {"slug": "local-fixture"},
+                            "id": "install",
+                            "type": "tool_call",
+                        }
+                    ],
+                ),
+                AIMessage(content="Finished."),
+            ]
+        )
+        graph = create_agent(
+            model,
+            tools=[tool],
+            middleware=[HumanInTheLoopMiddleware(interrupt_on=current.interrupt_on or {})],
+            checkpointer=InMemorySaver(),
+        )
+        config = {"configurable": {"thread_id": thread_id}}
+        result = await graph.ainvoke({"messages": [HumanMessage(content="Install.")]}, config)
+        return graph, config, result
+
+    _seed_test_provider(manager)
+    manager.save_security({"hitl": {"enabled": True, "tools": ["write_file", "execute"]}})
+    await manager.boot()
+    try:
+        row = await manager.create(AgentCreateSpec(name="approval", config=dict(_MEMORY_OFF)))
+        graph, config, result = await invoke("ask", row.agent_id)
+        assert result["__interrupt__"][0].value["action_requests"][0]["name"] == tool.name
+        assert installed == []
+        await graph.ainvoke(Command(resume={"decisions": [{"type": "reject"}]}), config)
+        assert installed == []
+
+        manager.save_security({"hitl": {"enabled": False}})
+        _, _, result = await invoke("disabled", row.agent_id)
+        assert not result.get("__interrupt__")
+        assert installed == ["local-fixture"]
+
+        manager.save_security({"hitl": {"enabled": True, "tools": ["write_file"]}})
+        _, _, result = await invoke("reenabled", row.agent_id)
+        assert result["__interrupt__"][0].value["action_requests"][0]["name"] == tool.name
+        assert installed == ["local-fixture"]
+    finally:
+        await manager.shutdown()

@@ -9,11 +9,17 @@ def test_blocks_inbound_pdf() -> None:
     reason = read_file_block_reason("inbound/01KWB9MG2Z570P7QB367KDJ75R.pdf")
     assert reason is not None
     assert "pdf" in reason.lower()
-    assert "execute_shell_command" in reason
+    assert "Use execute" in reason
+    assert "execute_" not in reason
 
 
 def test_allows_inbound_txt() -> None:
     assert read_file_block_reason("inbound/01JTEST.txt") is None
+
+
+def test_allows_image_reads_but_keeps_docx_binary_guard() -> None:
+    assert read_file_block_reason("inbound/diagram.png") is None
+    assert read_file_block_reason("inbound/modified.docx") is not None
 
 
 def test_blocks_pdf_anywhere() -> None:

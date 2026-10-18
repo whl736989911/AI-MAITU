@@ -8,6 +8,23 @@ from typing import Any
 
 OCTOP_BUILTIN_SKILLS_ROOT = "_builtin_skills"
 RETIRED_BUILTIN_SKILLS = ("install-skill",)
+_EXECUTE_TOOL_MIGRATION = b"execute_" + b"shell_command"
+_OLD_CWD_GUIDANCE = ("> 或使用 `" + _EXECUTE_TOOL_MIGRATION.decode() + "` 的 `cwd` 参数。").encode(
+    "utf-8"
+)
+_NEW_CWD_GUIDANCE = (
+    "> 可将 `cd {this_skill_dir} && python scripts/...` 命令直接传给平台的 "
+    "`execute` 工具；该工具接收命令字符串，不单独提供 `cwd` 参数。"
+    "第三方技能要求旧工具名时，同样改用 `execute`，不要尝试调用未注册的工具。"
+).encode()
+_BUILTIN_SKILL_VERSION = b"builtin_skill_version:"
+_MANAGED_EXPERT_SKILLS = {
+    "pdf": ("SKILL.md", "forms.md"),
+    "docx": ("SKILL.md",),
+    "pptx": ("SKILL.md", "editing.md"),
+    "xlsx": ("SKILL.md",),
+    "file_reader": ("SKILL.md",),
+}
 _WORKSPACE_TOKEN = b"{{OCTOP_WORKSPACE}}"
 _SKILLS_TOKEN = b"{{OCTOP_SKILLS}}"
 _BUILTIN_TOKEN = b"{{OCTOP_BUILTIN_SKILLS}}"
@@ -23,6 +40,42 @@ def _collect_files(source: Traversable, prefix: str, out: list[tuple[str, bytes]
             _collect_files(entry, path, out)
         else:
             out.append((path, entry.read_bytes()))
+
+
+async def _migrate_known_system_skill(
+    workspace: Any, skill_path: str, *, require_builtin_version: bool = False
+) -> None:
+    contents = await workspace.adownload_bytes(skill_path)
+    if contents is None:
+        return
+    if require_builtin_version and _BUILTIN_SKILL_VERSION not in contents:
+        return
+    updated = contents.replace(_OLD_CWD_GUIDANCE, _NEW_CWD_GUIDANCE).replace(
+        _EXECUTE_TOOL_MIGRATION, b"execute"
+    )
+    if updated != contents:
+        await workspace.aupload_many([(skill_path, updated)])
+
+
+async def _migrate_platform_skills(workspace: Any) -> None:
+    """Migrate exact stale tool references in known platform-owned system skills."""
+    system_skills = workspace.system_rel("skills")
+    await _migrate_known_system_skill(workspace, f"{system_skills}/octop-assistant/SKILL.md")
+
+    roots = {system_skills, "skills"}
+    for root in roots:
+        for slug, filenames in _MANAGED_EXPERT_SKILLS.items():
+            skill_root = f"{root}/{slug}"
+            manifest_path = f"{skill_root}/SKILL.md"
+            manifest = await workspace.adownload_bytes(manifest_path)
+            if manifest is None or _BUILTIN_SKILL_VERSION not in manifest:
+                continue
+            for filename in filenames:
+                await _migrate_known_system_skill(
+                    workspace,
+                    f"{skill_root}/{filename}",
+                    require_builtin_version=filename == "SKILL.md",
+                )
 
 
 async def sync_octop_builtin_skills(workspace: Any) -> list[str]:
@@ -66,6 +119,7 @@ async def sync_octop_builtin_skills(workspace: Any) -> list[str]:
 
     if uploads:
         await workspace.aupload_many(uploads)
+    await _migrate_platform_skills(workspace)
 
     for name in RETIRED_BUILTIN_SKILLS:
         path = f"{OCTOP_BUILTIN_SKILLS_ROOT}/{name}"

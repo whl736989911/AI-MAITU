@@ -69,7 +69,7 @@ import { fetchConfigMdFiles } from "./expertFileGroups";
 import {
   buildBackendSpec,
   DEFAULT_BACKEND,
-  ensureBubblewrapAfterProbe,
+  getBubblewrapStatusAfterProbe,
   ensureBwrapMessage,
   ensureBwrapToastKind,
   parseBackendSpec,
@@ -424,9 +424,9 @@ function EditAgentDrawerBody({
     setSaving(true);
     let bwrapToast: { kind: "success" | "warning"; text: string } | null = null;
     try {
-      // Host-root probing and bubblewrap setup are admin-only endpoints.
+      // Host-root probing and bubblewrap status checks are admin-only endpoints.
       if (admin && shouldProbeRootDir(values.backend_choice, values.root_dir)) {
-        const bwrap = await ensureBubblewrapAfterProbe();
+        const bwrap = await getBubblewrapStatusAfterProbe();
         const kind = ensureBwrapToastKind(bwrap.status);
         if (kind !== "none") {
           bwrapToast = { kind, text: ensureBwrapMessage(bwrap, t) };

@@ -123,10 +123,8 @@ def is_vision_model(model: dict[str, Any]) -> bool:
     """True when a model entry declares or conventionally supports image input."""
     model_id = str(model.get("id") or "").strip().lower()
     raw_input = model.get("input")
-    if isinstance(raw_input, list) and any(
-        str(modality).strip().lower() == "image" for modality in raw_input
-    ):
-        return True
+    if isinstance(raw_input, list):
+        return any(str(modality).strip().lower() == "image" for modality in raw_input)
     return any(
         hint in model_id
         for hint in (

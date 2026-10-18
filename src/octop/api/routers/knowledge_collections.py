@@ -1,4 +1,4 @@
-"""Personal source-bound materialized knowledge reading views."""
+"""Prompt-registered, source-ACL-shared collections with two Markdown views."""
 
 from __future__ import annotations
 
@@ -23,23 +23,33 @@ router = APIRouter(prefix="/knowledge-bases")
 
 class CollectionCoverage(BaseModel):
     total: int = Field(description="Currently readable files in this selection.")
-    indexed: int = Field(description="Files with a current located text index.")
-    read: int = Field(description="Files with retained, source-verified reading entries.")
-    pending: int = Field(description="Files not yet extracted or currently being processed.")
-    failed: int = Field(description="Files whose extraction failed or requires a password.")
-    unsupported: int = Field(description="Files with unsupported formats.")
+    read: int = Field(description="Files with retained, source-verified reading evidence.")
+    generated: int = Field(description="Files with a current prompt-backed topic result.")
+    failed: int = Field(description="Files whose extraction failed or that need visual inspection.")
+    pending: int = Field(description="Files not yet processed by the current prompt.")
+
+
+class CollectionGeneration(BaseModel):
+    state: Literal["idle", "running", "ready", "partial", "error"] = Field(
+        description="State of the last explicit organize run over this collection."
+    )
+    error: str = Field(description="Failure reason of the last organize run, empty when none.")
+    generated_at: int | None = Field(description="Completion time of the last organize run.")
+    model_ref: str = Field(description="Provider/model that produced the current topic results.")
 
 
 class KnowledgeCollection(BaseModel):
-    id: str = Field(description="Public identifier of this independent personal selection.")
+    id: str = Field(description="Public identifier of this source-bound selection.")
     kb_id: str
     target_document_id: str = Field(description="Original selected file or folder identifier.")
     target_path: str = Field(description="Current path of the selected original.")
     target_kind: Literal["file", "folder"]
     name: str
-    keywords: list[str] = Field(description="User-confirmed keywords; initially empty.")
-    status: Literal["ready", "partial", "pending"]
+    prompt: str = Field(description="Freeform user prompt that directs topic organization.")
+    created_by: int = Field(description="User that registered this collection.")
+    status: Literal["pending", "partial", "ready", "error"]
     coverage: CollectionCoverage
+    generation: CollectionGeneration
     created_at: int
     updated_at: int
 
@@ -50,23 +60,35 @@ class CreateCollectionsBody(BaseModel):
         max_length=1000,
         description="Explicit selections. A parent folder and its child remain independent.",
     )
+    prompt: str = Field(
+        default="",
+        max_length=2000,
+        description="Freeform topical prompt. Optional: empty-prompt collections still "
+        "accumulate reading evidence; organize requires a prompt. Nothing is read or "
+        "parsed at creation.",
+    )
+    name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class UpdateCollectionBody(BaseModel):
-    keywords: list[str] = Field(
-        max_length=32, description="Keywords to retain; an empty list disables keyword extraction."
+    prompt: str | None = Field(
+        default=None,
+        max_length=2000,
+        description="Replacement prompt; an empty string clears it and marks topic results stale.",
     )
     name: str | None = Field(default=None, min_length=1, max_length=200)
 
 
 class CollectionDocuments(BaseModel):
     collection: KnowledgeCollection
-    keyword_document: str = Field(description="Permission-filtered keyword Markdown view.")
+    topic_document: str = Field(
+        description="Permission-filtered prompt-backed topic Markdown view."
+    )
     reading_document: str = Field(
-        description="Permission-filtered accumulated reading Markdown view."
+        description="Permission-filtered accumulated source-reading Markdown view."
     )
     storage_path: str = Field(
-        description="Server-internal directory, separate from source folders."
+        description="Server-internal directory of the caller-filtered materialization."
     )
 
 
@@ -97,13 +119,14 @@ async def _run(
 
 def _service(server: OctopServer) -> KnowledgeCollectionService:
     assert server.services is not None
-    return KnowledgeCollectionService(server.services)
+    registry = getattr(server.app_runtime, "agent_registry", None) if server.app_runtime else None
+    return KnowledgeCollectionService(server.services, agent_registry=registry)
 
 
 @router.get(
     "/{kb_id}/collections",
     response_model=list[KnowledgeCollection],
-    summary="List the current user's independent file and folder collections",
+    summary="List the collections this caller may see through the source ACL",
 )
 async def list_collections(
     kb_id: str,
@@ -118,9 +141,9 @@ async def list_collections(
     "/{kb_id}/collections",
     response_model=list[KnowledgeCollection],
     status_code=201,
-    summary="Create one independent pair of documents for each explicit selection",
-    description="Personal selections require source read access, not source write access. "
-    "Keywords start empty. A selected folder does not create separate pairs for its descendants.",
+    summary="Register one collection per explicit selection with a freeform prompt",
+    description="Creation requires source read access only and never reads or parses the "
+    "originals. Use the organize endpoint to run prompt-directed extraction.",
 )
 async def create_collections(
     kb_id: str,
@@ -129,13 +152,25 @@ async def create_collections(
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> Any:
-    return await _run(server, request, user, _service(server).create, kb_id, body.document_ids)
+    return await _run(
+        server,
+        request,
+        user,
+        _service(server).create,
+        kb_id,
+        body.document_ids,
+        prompt=body.prompt,
+        name=body.name,
+    )
 
 
 @router.patch(
     "/{kb_id}/collections/{collection_id}",
     response_model=KnowledgeCollection,
-    summary="Update a personal collection's name and confirmed keywords",
+    summary="Update a collection's prompt or name",
+    description="Requires source write access on the target original or knowledge-base "
+    "management; shared readers cannot change the prompt. Changing the prompt marks "
+    "existing topic results stale until organize runs again.",
 )
 async def update_collection(
     kb_id: str,
@@ -152,7 +187,7 @@ async def update_collection(
         _service(server).update,
         kb_id,
         collection_id,
-        keywords=body.keywords,
+        prompt=body.prompt,
         name=body.name,
     )
 
@@ -160,9 +195,11 @@ async def update_collection(
 @router.post(
     "/{kb_id}/collections/{collection_id}/generate",
     response_model=KnowledgeCollection,
-    summary="Refresh the two documents from current authorized source content",
-    description="With keywords configured, missing text extraction uses the existing parser/OCR "
-    "settings. Failures remain visible in coverage. Empty keywords never trigger a full-folder read.",
+    summary="Organize: run prompt-directed topical extraction over readable originals",
+    description="Requires source write access on the target. Reads every readable original "
+    "in scope through the authorized source service, then extracts prompt-directed topic "
+    "results per source with the configured platform model. Concurrent organize runs are "
+    "rejected; failures stay visible in generation state and coverage.",
 )
 async def generate_collection(
     kb_id: str,
@@ -177,9 +214,10 @@ async def generate_collection(
 @router.get(
     "/{kb_id}/collections/{collection_id}/documents",
     response_model=CollectionDocuments,
-    summary="Read the current keyword and reading-index Markdown documents",
-    description="Checks current owner, source access and indexed versions before rendering. "
-    "Cached excerpts are candidates; verify the original segment before citing a fact.",
+    summary="Read the current topic and reading Markdown documents",
+    description="Checks current source access before rendering; sources this caller cannot "
+    "read never appear. Topic content is model-derived from stored evidence; verify the "
+    "original source before citing a fact.",
 )
 async def collection_documents(
     kb_id: str,
@@ -194,7 +232,8 @@ async def collection_documents(
 @router.delete(
     "/{kb_id}/collections/{collection_id}",
     status_code=204,
-    summary="Delete a personal collection and its two documents, never its originals",
+    summary="Delete a collection and its two documents, never its originals",
+    description="Requires source write access on the target original or knowledge-base management.",
 )
 async def delete_collection(
     kb_id: str,

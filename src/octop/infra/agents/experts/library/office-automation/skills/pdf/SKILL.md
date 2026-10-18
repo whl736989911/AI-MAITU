@@ -16,18 +16,19 @@ metadata:
 
 > **重要：** 所有 `scripts/` 路径均相对于此技能目录。
 > 运行方式：`cd {this_skill_dir} && python scripts/...`
-> 或使用 `execute_shell_command` 的 `cwd` 参数。
+> 可将 `cd {this_skill_dir} && python scripts/...` 命令直接传给平台的 `execute` 工具；该工具接收命令字符串，不单独提供 `cwd` 参数。第三方技能要求旧工具名时，同样改用 `execute`，不要尝试调用未注册的工具。
 
 # PDF 处理指南
 
 ## 前置要求
 
-- **pypdf**：核心 PDF 读写功能
-- **pdfplumber**：文本和表格提取
-- **reportlab**：PDF 创建
-- **pdftotext** (poppler-utils)：命令行文本提取
-- **pdftoppm** (poppler-utils)：PDF 转图片
-- **qpdf**：PDF 操作（合并、拆分、旋转、解密）
+- **pypdf**：核心 PDF 读写功能；由平台核心依赖提供。
+- **pdfplumber**：平台自带 `extract_form_structure.py` 和下方表格提取示例需要。源码安装需显式安装平台的 office extra：`uv sync --extra office`，或 `pip install -e ".[office]"`。
+- **reportlab**：PDF 创建示例需要，运行前请确认执行环境中已安装。
+- **pdftotext** (poppler-utils)：命令行文本提取。
+- **pdftoppm** (poppler-utils)：PDF 转图片。
+- **qpdf**：PDF 操作（合并、拆分、旋转、解密）。
+- **pdfplumber 和 pandas**：用户环境中的第三方/实例 `office-to-markdown` 脚本需要这两个包；平台 office extra 提供它们，但不包含该外部脚本，也未修改它。安装：`uv sync --extra office`，或 `pip install -e ".[office]"`。不需要 Python PDF 库时，可用 `pdftotext -layout input.pdf -` 提取文本。
 
 ## 概述
 
