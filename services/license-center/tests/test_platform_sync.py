@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from helpers import active_license_public_pem, customer_and_activation
+
 from license_center import storage
 
 
