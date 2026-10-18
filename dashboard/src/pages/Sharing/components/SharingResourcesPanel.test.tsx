@@ -45,18 +45,30 @@ describe("<SharingResourcesPanel />", () => {
   it("keeps knowledge-base ACL configuration out of shared settings", async () => {
     render(<SharingResourcesPanel />);
 
-    expect(await screen.findByText("sharing.resourceType.agent")).toBeInTheDocument();
-    expect(screen.queryByText("sharing.resourceType.knowledge_base")).toBeNull();
-    expect(screen.queryByText("sharing.resourceType.knowledge_document")).toBeNull();
+    expect(
+      await screen.findByText("sharing.resourceType.agent"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("sharing.resourceType.knowledge_base"),
+    ).toBeNull();
+    expect(
+      screen.queryByText("sharing.resourceType.knowledge_document"),
+    ).toBeNull();
   });
 
   it("offers only catalogs this account may list", async () => {
     held.user = user(["users"]);
     render(<SharingResourcesPanel />);
 
-    expect(await screen.findByText("sharing.resourceType.agent")).toBeInTheDocument();
-    expect(screen.queryByText("sharing.resourceType.knowledge_base")).toBeNull();
-    expect(screen.queryByText("sharing.resourceType.knowledge_document")).toBeNull();
+    expect(
+      await screen.findByText("sharing.resourceType.agent"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("sharing.resourceType.knowledge_base"),
+    ).toBeNull();
+    expect(
+      screen.queryByText("sharing.resourceType.knowledge_document"),
+    ).toBeNull();
     expect(screen.queryByText("sharing.resourceType.connector")).toBeNull();
   });
 
@@ -64,9 +76,15 @@ describe("<SharingResourcesPanel />", () => {
     held.user = user(["connectors"]);
     render(<SharingResourcesPanel />);
 
-    expect(await screen.findByText("sharing.resourceType.connector")).toBeInTheDocument();
-    expect(screen.queryByText("sharing.resourceType.knowledge_base")).toBeNull();
-    expect(screen.queryByText("sharing.resourceType.knowledge_document")).toBeNull();
+    expect(
+      await screen.findByText("sharing.resourceType.connector"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("sharing.resourceType.knowledge_base"),
+    ).toBeNull();
+    expect(
+      screen.queryByText("sharing.resourceType.knowledge_document"),
+    ).toBeNull();
   });
 });
 
