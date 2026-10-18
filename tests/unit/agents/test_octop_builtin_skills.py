@@ -56,8 +56,8 @@ async def test_sync_seeds_manager_and_retires_old_installer(tmp_path: Path) -> N
         "_builtin_skills/skill-manager/scripts/manage_skills.py"
     )
     assert manager is not None and "name: skill-manager" in manager
-    # Rendered workspace path uses forward slashes regardless of platform.
-    assert tmp_path.as_posix() in manager.replace("\\", "/")
+    # The shipped template teaches the platform SkillHub tools; no host path is rendered.
+    assert "search_skill_market" in manager
     assert "{{OCTOP_WORKSPACE}}" not in manager
     assert script is not None and "def main()" in script
 
@@ -163,9 +163,7 @@ async def test_sync_uses_system_files_path(tmp_path: Path) -> None:
     manager = await agent.workspace.aread_text("_builtin_skills/skill-manager/SKILL.md")
     assert manager is not None
     assert "{{OCTOP_SKILLS}}" not in manager
-    assert str(tmp_path / ".octop" / "skills") in manager.replace("\\", "/") or (
-        tmp_path / ".octop" / "skills"
-    ).as_posix() in manager.replace("\\", "/")
+    assert "search_skill_market" in manager
     assert (tmp_path / ".octop" / "_builtin_skills" / "skill-manager" / "SKILL.md").is_file()
     assert not (tmp_path / "_builtin_skills").exists()
     assert (tmp_path / "AGENTS.md").exists() is False

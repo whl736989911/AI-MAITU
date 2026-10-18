@@ -224,7 +224,7 @@ async def test_octop_skill_manager_detail_and_delete_protection(env: Any) -> Non
     body = r.json()
     assert body["kind"] == "builtin"
     assert body["frontmatter"]["name"] == "skill-manager"
-    assert "manage_skills.py" in body["body"]
+    assert "search_skill_market" in body["body"]
 
     r = await c.delete(f"/api/agents/{aid}/skills/skill-manager", headers=auth)
     assert r.status_code == 404
