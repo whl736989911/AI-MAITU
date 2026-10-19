@@ -182,12 +182,34 @@ Docker 默认策略和额外 compose overlay（Postgres/品牌/移动端/托管�
 cd services/license-center
 export LICENSE_CENTER_DATA=/var/lib/maitu-license-center
 uv run license-center init
-uv run license-center export-trust /etc/maitu/license/trusted-keys.json
+uv run license-center --help          # 确认当前中心版本的导出命令
 uv run license-center run --host 127.0.0.1 --port 8090
 # 按 license-center-deployment.md 配置 HTTPS 反向代理
 ```
 
-交付方在中心管理界面创建客户记录和**一次性激活码**（授权截止时间与激活码有效期是两个字段），并确认中心时区。`export-trust` 只导出公开验签密钥，**不要**把中心的 `keys/`、数据库或管理员凭据复制到平台主机。
+中心导出的公开信任材料有两种常见形式，按当前版本的实际命令取用：
+
+```bash
+# 形式 A：命令名是 export-trust（较早/文档版本），直接输出 keyring
+uv run license-center export-trust /root/license-trusted-keys.json
+
+# 形式 B：当前源码只有 export-connection，输出“连接包”
+uv run license-center export-connection /root/center-connection.json \
+  --server-url https://license.example.com --confirm
+```
+
+连接包不是私钥，字段包含 `server_url`、`license_trusted_keys`、`release_trusted_keys` 和可选的 `ca_certificate_pem`；给平台只需要前两项（不要使用 release keyring 代替 license keyring）：
+
+```bash
+python3 - <<'PY'
+import json
+bundle = json.load(open('/root/center-connection.json', encoding='utf-8'))
+json.dump(bundle['license_trusted_keys'], open('/root/license-trusted-keys.json', 'w', encoding='utf-8'), indent=2)
+print('center_url =', bundle['server_url'])
+PY
+```
+
+交付方在中心管理界面创建客户记录和**一次性激活码**（授权截止时间与激活码有效期是两个字段），并确认中心时区。**不要**把中心的 `keys/`、数据库或管理员凭据复制到平台主机；keyring 只包含公开验签密钥。若连接包带私有 CA 证书，把 CA 安装到平台系统信任链后再用 HTTPS，不能关闭证书校验。
 
 ### 2. 原生平台：配置信任并重启
 
