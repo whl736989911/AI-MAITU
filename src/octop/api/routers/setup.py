@@ -250,9 +250,16 @@ async def status(server: Any = Depends(get_server)) -> dict[str, Any]:
 async def test_database(
     body: DatabaseSetupBody,
     server: Any = Depends(get_server),
+    authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
-    """Validate DSN/settings with a short-lived pool (does not replace the process pool)."""
-    _enforce_wizard_open(server)
+    """Validate DSN/settings with a short-lived pool (does not replace the process pool).
+
+    Requires the same wizard authority as ``initial-admin``: a wizard token while
+    the wizard is pending, or an administrator JWT once the first administrator
+    exists. Without this, an unauthenticated caller on a not-yet-finished instance
+    could probe arbitrary database targets.
+    """
+    _authorize_setup_mid_wizard(authorization, server)
     from octop.infra.db.probe import probe_database
     from octop.infra.db.rebind import database_config_from_payload
 
@@ -268,13 +275,16 @@ async def test_database(
 async def apply_database(
     body: DatabaseSetupBody,
     server: Any = Depends(get_server),
+    authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Write ``config.json`` database section, open the pool, migrate, and boot runtime.
 
     First-run path binds once (no prior pool). If already bound with zero users
-    (e.g. changing engine mid-wizard), swaps via rebind.
+    (e.g. changing engine mid-wizard), swaps via rebind. Requires the same wizard
+    authority as ``initial-admin``: unauthenticated callers must not be able to
+    redirect the control-plane database.
     """
-    _enforce_wizard_open(server)
+    _authorize_setup_mid_wizard(authorization, server)
     from octop.infra.db.probe import probe_database
     from octop.infra.db.rebind import (
         assert_control_plane_database_empty,
