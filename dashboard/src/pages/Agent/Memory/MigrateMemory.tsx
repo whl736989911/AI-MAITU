@@ -15,7 +15,6 @@ import {
   Form,
   Modal,
   Radio,
-  Select,
   Space,
   Spin,
   Tag,
@@ -104,7 +103,6 @@ export default function MigrateMemory({ agentId }: Props) {
 
   // Import form state.
   const [importFile, setImportFile] = useState<UploadFile | null>(null);
-  const [targetHost, setTargetHost] = useState("openclaw");
   const [onConflict, setOnConflict] = useState<"skip" | "replace">("skip");
   const [hostRewrite, setHostRewrite] = useState<"keep" | "target">("keep");
 
@@ -116,7 +114,6 @@ export default function MigrateMemory({ agentId }: Props) {
 
   const resetState = () => {
     setImportFile(null);
-    setTargetHost("openclaw");
     setOnConflict("skip");
     setHostRewrite("keep");
     setAdoptResult(null);
@@ -163,7 +160,7 @@ export default function MigrateMemory({ agentId }: Props) {
         agentId,
         importFile.originFileObj,
         {
-          targetHost,
+          targetHost: "agent",
           onConflict,
           hostRewrite,
           dryRun: actualDryRun,
@@ -259,7 +256,7 @@ export default function MigrateMemory({ agentId }: Props) {
         <Paragraph>
           {t(
             "memory.migrate.exportDesc",
-            "将当前 Octop 的全部记忆打包为 .hmpkg 文件并下载到本地。你可以在其他宿主（openclaw / hermes）上导入此文件继续使用。",
+            "将当前 Octop 的全部记忆打包为 .hmpkg 文件并下载到本地。可在本平台的智能体上导入此文件继续使用。",
           )}
         </Paragraph>
         {error ? <Alert type="error" message={error} showIcon /> : null}
@@ -339,20 +336,6 @@ export default function MigrateMemory({ agentId }: Props) {
                     {t("memory.migrate.chooseFile", "选择文件")}
                   </Button>
                 </Upload>
-              </Form.Item>
-
-              <Form.Item
-                label={t("memory.migrate.targetHostLabel", "目标宿主")}
-              >
-                <Select
-                  value={targetHost}
-                  onChange={setTargetHost}
-                  options={[
-                    { value: "openclaw", label: "openclaw" },
-                    { value: "hermes", label: "hermes" },
-                    { value: "agent", label: "octop（本机）" },
-                  ]}
-                />
               </Form.Item>
 
               <Form.Item label={t("memory.migrate.conflictLabel", "冲突策略")}>

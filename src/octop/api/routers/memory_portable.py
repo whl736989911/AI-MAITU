@@ -82,12 +82,105 @@ def _refuse_postgres_portable(server: Any, agent_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Target authorization
+# ---------------------------------------------------------------------------
+
+_AGENT_TARGET_HOST = "agent"
+_MAX_TARGET_NAMESPACE_CHARS = 128
+#: Characters that could turn a namespace into a filesystem path, a SQL
+#: identifier escape, or a host separator. The only accepted namespace is the
+#: current agent's own, so these are never legitimate.
+_UNSAFE_TARGET_CHARS = frozenset("/\\:")
+
+
+def _bad_migration_target(message: str) -> OctopError:
+    """A refused target selection — 400, and never echoing the caller's value."""
+    return OctopError(ErrorCode.SLASH_BAD_ARGS, message, status=400)
+
+
+def _validated_target_host(target_host: str | None) -> str:
+    """Accept only this agent's own memory store as a migration target.
+
+    ``adopt`` used to accept other hosts (openclaw / hermes) and resolved the
+    write target from their namespaces. Those hosts are not reachable through
+    this endpoint any more: the only memory store an authenticated owner may
+    write is the one the URL's agent already uses.
+    """
+    text = (target_host or "").strip().lower()
+    if text in ("", _AGENT_TARGET_HOST):
+        return _AGENT_TARGET_HOST
+    raise _bad_migration_target(
+        "portable memory migration to other hosts is not supported; "
+        "target_host must be 'agent' (this agent's own memory store)"
+    )
+
+
+def _validated_target_namespace(agent_id: str, target_namespace: str | None) -> str:
+    """Return the one namespace this endpoint may write: the agent's own."""
+    canonical = memory_namespace(agent_id)
+    text = (target_namespace or "").strip()
+    if not text:
+        return canonical
+    if (
+        len(text) > _MAX_TARGET_NAMESPACE_CHARS
+        or ".." in text
+        or any(char in _UNSAFE_TARGET_CHARS for char in text)
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in text)
+    ):
+        raise _bad_migration_target(
+            "invalid memory migration target: namespace contains unsupported characters"
+        )
+    if text != canonical:
+        raise _bad_migration_target(
+            "memory migration may only target the current agent's own memory store"
+        )
+    return canonical
+
+
+def resolve_adopt_target(
+    agent_id: str,
+    target_host: str | None,
+    target_namespace: str | None,
+) -> tuple[str, str]:
+    """Server-derived ``(host, namespace)`` for ``harness_memory.adopt``.
+
+    The caller may omit both values; otherwise they must name the URL agent's
+    own store. The returned tuple is what the dependency is called with — never
+    the raw form values.
+    """
+    return _validated_target_host(target_host), _validated_target_namespace(
+        agent_id, target_namespace
+    )
+
+
+def resolve_doctor_host_spec(agent_id: str, host_spec: str | None) -> tuple[str, str]:
+    """Server-derived ``(host, namespace)`` for ``harness_memory.doctor``.
+
+    Accepts ``agent`` / empty / ``agent:<own namespace>``; any other host or
+    namespace is refused before the dependency sees it.
+    """
+    raw = (host_spec or "").strip()
+    canonical = memory_namespace(agent_id)
+    if not raw:
+        return _AGENT_TARGET_HOST, canonical
+    host, separator, namespace = raw.partition(":")
+    if not host.strip():
+        raise _bad_migration_target(
+            "invalid memory migration host specification; expected 'agent' "
+            "or 'agent:<current namespace>'"
+        )
+    target_host = _validated_target_host(host)
+    target_namespace = _validated_target_namespace(agent_id, namespace) if separator else canonical
+    return target_host, target_namespace
+
+
+# ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
 
 
 class _AdoptRequest(BaseModel):
-    target_host: str = Field(description="目标宿主：agent / openclaw / hermes，可带 namespace")
+    target_host: str = Field(description="目标宿主：仅支持 agent（当前 agent 自己的记忆库）")
     target_namespace: str | None = Field(default=None, description="目标 namespace（可选）")
     on_conflict: str = Field(default="skip", description="冲突策略：skip / replace / raise")
     host_rewrite: str = Field(default="keep", description="host 重写策略：keep / target")
@@ -218,10 +311,17 @@ async def adopt_agent_memory(
     if not dry_run and not access.shared_writable:
         reason = feature_memory_reason("shared_read_only", user=user, server=server)
         raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})
+    # The only writable target is this agent's own memory store. Resolve that
+    # from the authorized agent id, never from the request's form values.
+    target_host, target_namespace = resolve_adopt_target(agent_id, target_host, target_namespace)
     _refuse_postgres_portable(server, agent_id)
 
     try:
         from harness_memory.operations.migration.portable import adopt
+
+        # Resolve the agent's db path, so the dependency writes exactly there.
+        workspace = resolve_agent_workspace_dir(server, agent_id)
+        db_path = memory_db_path_for_cfg(workspace, _agent_config_dict(server, agent_id))
 
         # Write the uploaded file to a temp file
         with tempfile.NamedTemporaryFile(suffix=".hmpkg", delete=False) as tmp:
@@ -238,6 +338,7 @@ async def adopt_agent_memory(
                 on_conflict=on_conflict,
                 host_rewrite=host_rewrite,
                 dry_run=dry_run,
+                target_db_path=str(db_path),
             )
         finally:
             tmp_path.unlink(missing_ok=True)
@@ -269,6 +370,9 @@ async def doctor_agent_memory(
 ) -> JSONResponse:
     """Run a health check against the target db."""
     require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
+    # Health-check exactly this agent's store; a client-chosen host/namespace
+    # must not steer it at another agent's database.
+    target_host, target_namespace = resolve_doctor_host_spec(agent_id, host_spec)
     _refuse_postgres_portable(server, agent_id)
 
     try:
@@ -291,7 +395,8 @@ async def doctor_agent_memory(
 
         try:
             report = doctor(
-                host_spec,
+                target_host,
+                namespace=target_namespace,
                 db_path=str(db_path),
                 compare_with=compare_path,
             )
