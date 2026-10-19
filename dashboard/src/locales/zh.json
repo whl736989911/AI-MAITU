@@ -260,7 +260,28 @@
     "reminderUser": "许可证将于 {{date}} 到期（剩余 {{remaining}}），请联系管理员安排续期。",
     "remainingTime": "{{days}} 天 {{hours}} 小时 {{minutes}} 分钟",
     "title": "许可证状态",
-    "unmanaged": "此实例未启用许可证管理。"
+    "unmanaged": "此实例未启用许可证管理。",
+    "settings": {
+      "title": "授权中心",
+      "description": "配置授权中心的公开信任材料并管理本实例的许可。实例私钥只保存在本机，不会上传。",
+      "centerUrl": "授权中心根地址",
+      "centerUrlHint": "必须是平台可访问的 HTTPS 根地址，不要包含 /api 路径或末尾斜杠。默认：https://111.229.110.180:8091",
+      "trustedKeys": "可信公钥 trusted-keys.json",
+      "trustedKeysPlaceholder": "粘贴或选择授权中心导出的 trusted-keys.json（KID → PEM 公钥）",
+      "trustedKeysHint": "由授权中心管理员导出的公开验签密钥，不包含签发私钥。",
+      "chooseTrustedKeys": "选择 trusted-keys.json",
+      "rootCa": "根 CA 证书（可选）",
+      "rootCaPlaceholder": "如授权中心使用私有 CA，粘贴 PEM 根证书",
+      "rootCaHint": "只有私有 CA 部署才需要；公共 CA 可留空。",
+      "chooseRootCa": "选择根 CA 证书",
+      "save": "保存授权配置",
+      "saved": "授权配置已保存并重新加载。",
+      "saveFailed": "无法保存授权配置。",
+      "loadFailed": "无法读取授权配置。",
+      "unmanaged": "未启用许可证管理",
+      "source": "配置来源",
+      "activated": "许可证操作成功。"
+    }
   },
   "nav": {
     "chat": "对话",
@@ -294,6 +315,7 @@
     "loginCaptcha": "登录验证码",
     "executionSandbox": "执行沙箱",
     "branding": "品牌",
+    "license": "授权中心",
     "search": "AI 搜索",
     "collapseSidebar": "收起",
     "expandSidebar": "展开",
@@ -5176,6 +5198,7 @@
     "steps": {
       "database": "数据库",
       "password": "验证密码",
+      "license": "授权",
       "admin": "管理员",
       "model": "模型"
     },
@@ -5217,6 +5240,23 @@
       "wrong": "密码错误。",
       "rateLimited": "尝试次数过多，请稍后重试。",
       "verifyButton": "验证并继续"
+    },
+    "license": {
+      "title": "授权中心配置",
+      "hint": "填写授权中心的公开信任材料。没有这些材料时平台无法验签；也可以稍后在应用设置 → 授权中心中配置。",
+      "centerUrl": "授权中心根地址",
+      "centerUrlHint": "默认 https://111.229.110.180:8091；必须是平台能访问的 HTTPS 根地址。",
+      "trustedKeys": "trusted-keys.json",
+      "trustedKeysPlaceholder": "粘贴授权中心导出的公开 keyring JSON",
+      "trustedKeysHint": "仅公开验签密钥；不要粘贴授权中心的签发私钥或数据库。",
+      "chooseTrustedKeys": "选择 trusted-keys.json",
+      "rootCa": "根 CA 证书（可选）",
+      "rootCaPlaceholder": "私有 CA 环境粘贴 PEM 根证书",
+      "rootCaHint": "使用公共 CA 时留空。",
+      "chooseRootCa": "选择根 CA 证书",
+      "skip": "稍后配置",
+      "save": "保存并继续",
+      "saveFailed": "无法保存授权配置。"
     },
     "admin": {
       "username": "用户名",

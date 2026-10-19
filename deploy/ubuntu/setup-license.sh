@@ -14,6 +14,7 @@ set -euo pipefail
 
 TRUSTED_KEYS=""
 CENTER_URL=""
+ROOT_CA=""
 STATE_DIR="/var/lib/maitu-license"
 SERVICE_USER="maitu"
 UNIT="maitu.service"
@@ -27,6 +28,7 @@ Usage: sudo bash deploy/ubuntu/setup-license.sh [options]
 
   --trusted-keys FILE     public keyring JSON exported by the center's
                           `license-center export-trust` command
+  --root-ca FILE          optional PEM root CA for a center behind a private CA
   --center-url URL        license center root URL (must be HTTPS, e.g.
                           https://license.example.com)
   --state-dir DIR         protected instance identity/credential directory
@@ -43,6 +45,7 @@ EOF
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --trusted-keys) TRUSTED_KEYS="${2:?}"; shift 2 ;;
+    --root-ca) ROOT_CA="${2:?}"; shift 2 ;;
     --center-url) CENTER_URL="${2:?}"; shift 2 ;;
     --state-dir) STATE_DIR="${2:?}"; shift 2 ;;
     --service-user) SERVICE_USER="${2:?}"; shift 2 ;;
@@ -61,6 +64,9 @@ die()  { printf '\033[0;31m[maitu]\033[0m %s\n' "$*" >&2; exit 1; }
 
 [[ -n "$TRUSTED_KEYS" ]] || die "--trusted-keys is required"
 [[ -f "$TRUSTED_KEYS" ]] || die "trusted keys file not found: $TRUSTED_KEYS"
+if [[ -n "$ROOT_CA" && ! -f "$ROOT_CA" ]]; then
+  die "root CA file not found: $ROOT_CA"
+fi
 [[ -n "$CENTER_URL" ]] || die "--center-url is required for an online license center"
 [[ ! "$CENTER_URL" =~ [[:space:]] ]] || die "center URL must not contain whitespace"
 [[ "$CENTER_URL" != */ ]] || die "center URL must be the root URL without a trailing slash"
@@ -107,8 +113,24 @@ for kid, pem in data.items():
 print(f"trusted keyring OK: {len(data)} public key(s)")
 PY
 
+if [[ -n "$ROOT_CA" ]]; then
+  python3 - "$ROOT_CA" <<'PY'
+import ssl
+import sys
+from pathlib import Path
+
+try:
+    pem = Path(sys.argv[1]).read_text(encoding="utf-8")
+    ssl.create_default_context(cadata=pem)
+except (OSError, ValueError, ssl.SSLError) as exc:
+    raise SystemExit(f"invalid root CA PEM: {exc}")
+print("root CA OK")
+PY
+fi
+
 say "trusted keyring: $TRUSTED_KEYS"
 say "license center: $CENTER_URL"
+[[ -n "$ROOT_CA" ]] && say "root CA:        $ROOT_CA"
 say "instance state: $STATE_DIR (owner $SERVICE_USER, mode 0700)"
 say "systemd unit:   $UNIT"
 
@@ -126,6 +148,11 @@ else
   install -m 0640 -o root -g "$SERVICE_USER" "$TRUSTED_KEYS" "$trusted_dest"
 fi
 install -d -m 0700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$STATE_DIR"
+ca_dest=""
+if [[ -n "$ROOT_CA" ]]; then
+  ca_dest="/etc/maitu/license/root-ca.pem"
+  install -m 0640 -o root -g "$SERVICE_USER" "$ROOT_CA" "$ca_dest"
+fi
 
 dropin_dir="/etc/systemd/system/${UNIT}.d"
 dropin="$dropin_dir/50-license.conf"
@@ -140,6 +167,7 @@ fi
   echo "Environment=\"MAITU_LICENSE_TRUSTED_KEYS_FILE=$trusted_dest\""
   echo "Environment=\"MAITU_LICENSE_STATE_DIR=$STATE_DIR\""
   echo "Environment=\"MAITU_LICENSE_CENTER_URL=$CENTER_URL\""
+  [[ -n "$ca_dest" ]] && echo "Environment=\"MAITU_LICENSE_CA_FILE=$ca_dest\""
   [[ "$ALLOW_LOOPBACK" -eq 1 ]] && echo 'Environment="MAITU_LICENSE_ALLOW_LOOPBACK=true"'
 } > "$dropin"
 chmod 0644 "$dropin"
@@ -162,6 +190,7 @@ License trust is configured and the service restarted.
   Center:     $CENTER_URL
   State dir:  $STATE_DIR
   Keyring:    $trusted_dest
+  Root CA:    ${ca_dest:-<system CA>}
 
 Next: in the license center create the customer and a one-time activation code
 (with license expiry and code validity), then open the platform's locked page

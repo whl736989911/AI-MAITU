@@ -333,11 +333,24 @@ class OctopServer:
 
     def _init_license(self) -> None:
         """Construct the managed license manager; install it for the plugin hook."""
-        from octop.infra.licensing import LicenseManager, install_license_manager
+        from octop.infra.licensing import (
+            LicenseManager,
+            install_license_manager,
+            install_unmanaged_license_manager,
+        )
+        from octop.infra.licensing.settings import load_license_settings
 
         try:
-            manager = LicenseManager.from_env(
-                default_state_dir=self.default_license_state_dir(self.paths.root)
+            settings = load_license_settings(
+                self.paths,
+                default_state_dir=self.default_license_state_dir(self.paths.root),
+            )
+            manager = LicenseManager(
+                settings.state_dir,
+                settings.trusted_keys_file,
+                settings.center_url,
+                settings.allow_loopback,
+                settings.ca_file,
             )
         except Exception:
             logger.exception("license manager construction failed; install stays locked")
@@ -346,9 +359,26 @@ class OctopServer:
         if not manager.managed:
             # Unmanaged developer installs keep existing behavior exactly.
             self.license_manager = None
+            install_unmanaged_license_manager()
             return
         self.license_manager = manager
         install_license_manager(manager)
+
+    async def reload_license_config(self) -> None:
+        """Reload trust/center settings after the setup or settings API writes them."""
+        if self.license_manager is not None:
+            self._license_monitoring = False
+            with suppress(Exception):
+                await self.license_manager.stop()
+        self.license_manager = None
+        self._license_config_error = False
+        self._init_license()
+        if self.license_manager is not None:
+            await self._start_license_monitoring()
+        if self._started:
+            await self._on_license_change(self.license_allows_business())
+        else:
+            await self._notify_license_listeners(self.license_allows_business())
 
     async def _start_license_monitoring(self) -> None:
         if self.license_manager is None or self._license_monitoring:

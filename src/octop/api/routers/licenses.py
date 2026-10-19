@@ -216,3 +216,101 @@ async def license_reminder(request: Request, user: Any = Depends(current_user)) 
     config = server.services.config if server.services else server.config
     timezone = config.default_timezone if config else "UTC"
     return await manager.claim_reminder(user.id, timezone)
+
+
+class LicenseSettingsView(BaseModel):
+    center_url: str | None = None
+    trusted_keys_configured: bool = False
+    ca_configured: bool = False
+    allow_loopback: bool = False
+    source: str = "none"
+    state_dir: str = ""
+    trusted_keys_json: str | None = Field(
+        default=None, description="Public keyring content, for administrator editing"
+    )
+    ca_pem: str | None = Field(default=None, description="Optional public root CA PEM")
+
+
+class LicenseSettingsUpdate(BaseModel):
+    center_url: str = Field(description="License center root URL")
+    trusted_keys_json: str | None = Field(
+        default=None,
+        description="Public keyring JSON. Omit to keep it; empty string clears it.",
+    )
+    ca_pem: str | None = Field(
+        default=None,
+        description="Optional private CA PEM. Omit to keep it; empty string clears it.",
+    )
+    allow_loopback: bool = Field(
+        default=False, description="Testing only: allow HTTP on a loopback center URL"
+    )
+
+
+def _license_settings_view(server: OctopServer) -> dict[str, Any]:
+    from octop.infra.licensing.settings import load_license_settings
+
+    settings = load_license_settings(
+        server.paths,
+        default_state_dir=server.default_license_state_dir(server.paths.root),
+    )
+    keys_json = (
+        settings.trusted_keys_file.read_text(encoding="utf-8")
+        if settings.trusted_keys_file is not None and settings.trusted_keys_file.is_file()
+        else None
+    )
+    ca_pem = (
+        settings.ca_file.read_text(encoding="utf-8")
+        if settings.ca_file is not None and settings.ca_file.is_file()
+        else None
+    )
+    return {
+        "center_url": settings.center_url,
+        "trusted_keys_configured": settings.trusted_keys_file is not None
+        and settings.trusted_keys_file.is_file(),
+        "ca_configured": settings.ca_file is not None and settings.ca_file.is_file(),
+        "allow_loopback": settings.allow_loopback,
+        "source": settings.source,
+        "state_dir": str(settings.state_dir),
+        "trusted_keys_json": keys_json,
+        "ca_pem": ca_pem,
+    }
+
+
+@router.get(
+    "/settings",
+    summary="Read license center trust settings (administrator)",
+    response_model=LicenseSettingsView,
+)
+async def license_settings(
+    request: Request, _admin: Any = Depends(require_license_details_admin)
+) -> dict[str, Any]:
+    """Return public trust material only; the instance private key is never included."""
+    return _license_settings_view(get_server(request))
+
+
+@router.put(
+    "/settings",
+    summary="Update license center trust settings (administrator)",
+    response_model=LicenseSettingsView,
+)
+async def update_license_settings(
+    request: Request,
+    body: LicenseSettingsUpdate,
+    _admin: Any = Depends(require_admin()),
+) -> dict[str, Any]:
+    """Persist the public keyring/CA/center URL and reload the license manager."""
+    from octop.infra.licensing.settings import write_license_files
+
+    server = get_server(request)
+    try:
+        write_license_files(
+            server.paths,
+            trusted_keys_json=body.trusted_keys_json,
+            ca_pem=body.ca_pem,
+            center_url=body.center_url,
+            allow_loopback=body.allow_loopback,
+        )
+        await server.reload_license_config()
+    except ValueError as exc:
+        raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
+    return _license_settings_view(server)

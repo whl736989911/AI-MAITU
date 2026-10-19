@@ -111,6 +111,7 @@ export const ADVANCED_TAB_PERMISSIONS = {
   captcha: "captcha",
   branding: "admin",
   bwrap: "admin",
+  license: "admin",
 } as const;
 
 export const SECURITY_TAB_PERMISSIONS = {

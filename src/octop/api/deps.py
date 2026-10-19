@@ -100,6 +100,7 @@ _JWT_EXEMPT_METHOD_PATHS = frozenset(
         ("POST", "/api/setup/initial-admin"),
         ("POST", "/api/setup/resume-wizard"),
         ("POST", "/api/setup/test-provider"),
+        ("POST", "/api/setup/license-config"),
         ("POST", "/api/setup/finish"),
         # These license endpoints validate either an administrator JWT or the
         # narrowly scoped first-run WizardToken themselves.

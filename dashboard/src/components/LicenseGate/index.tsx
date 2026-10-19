@@ -1,14 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import {
-  Alert,
-  Button,
-  Card,
-  Input,
-  Modal,
-  Space,
-  Spin,
-  Typography,
-} from "antd";
+import { Alert, Button, Card, Input, Space, Spin, Typography } from "antd";
 import { useTranslation } from "react-i18next";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useServerTimezone } from "../../hooks/useServerTimezone";
@@ -20,7 +11,6 @@ import {
 } from "../../api/modules/licensing";
 import { LICENSE_LOCKED_EVENT } from "../../api/request";
 import { apiErrorMessage } from "../../utils/apiError";
-import { LICENSE_OPEN_EVENT } from "./events";
 import styles from "./index.module.less";
 
 const { TextArea } = Input;
@@ -73,7 +63,6 @@ export default function LicenseGate({
   const [busy, setBusy] = useState(false);
   const [lockedSignal, setLockedSignal] = useState(false);
   const [reminder, setReminder] = useState<LicenseReminder | null>(null);
-  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const refreshSnapshot = useCallback(async () => {
     try {
@@ -121,18 +110,12 @@ export default function LicenseGate({
       );
       void refreshSnapshot();
     };
-    const onOpenLicense = () => {
-      setDetailsOpen(true);
-      void refreshSnapshot();
-    };
     window.addEventListener("focus", onFocus);
     window.addEventListener(LICENSE_LOCKED_EVENT, onLicenseLocked);
-    window.addEventListener(LICENSE_OPEN_EVENT, onOpenLicense);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener(LICENSE_LOCKED_EVENT, onLicenseLocked);
-      window.removeEventListener(LICENSE_OPEN_EVENT, onOpenLicense);
     };
   }, [refreshSnapshot, refreshReminder]);
 
@@ -234,28 +217,12 @@ export default function LicenseGate({
     );
   }
 
-  if (!snapshot.managed) {
-    return (
-      <>
-        {children}
-        {detailsOpen && (
-          <Modal
-            open
-            title={t("license.title")}
-            footer={null}
-            onCancel={() => setDetailsOpen(false)}
-          >
-            <Alert type="info" showIcon message={t("license.unmanaged")} />
-          </Modal>
-        )}
-      </>
-    );
-  }
+  if (!snapshot.managed) return <>{children}</>;
 
   if (snapshot.business_allowed && !lockedSignal) {
-    // The healthy state is not a pinned banner. Keep license details one
-    // click away in the account menu; surface the bar only when the user
-    // needs to act (expiry warning or a sync failure).
+    // The healthy state is not a pinned banner. Surface the bar only when the
+    // user needs to act (expiry warning or a sync failure); full details live
+    // in Settings → License center.
     const licenseDetails = (
       <div className={styles.statusDetails}>
         <div>
@@ -367,7 +334,7 @@ export default function LicenseGate({
       Boolean(snapshot.sync_error) || Boolean(snapshot.expiring_soon);
     return (
       <>
-        {showStatusBar && !detailsOpen && (
+        {showStatusBar && (
           <div className={styles.statusDisclosure}>
             <details>
               <summary>
@@ -407,17 +374,6 @@ export default function LicenseGate({
           </div>
         )}
         {children}
-        {detailsOpen && (
-          <Modal
-            open
-            title={t("license.title")}
-            footer={null}
-            width={640}
-            onCancel={() => setDetailsOpen(false)}
-          >
-            {licenseDetails}
-          </Modal>
-        )}
       </>
     );
   }

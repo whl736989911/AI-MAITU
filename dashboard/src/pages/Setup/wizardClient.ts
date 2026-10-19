@@ -47,9 +47,10 @@ const STEP_KEY = "octop:wizard-step";
 
 export const STEP_PASSWORD = 0;
 export const STEP_DATABASE = 1;
-export const STEP_ADMIN = 2;
-export const STEP_MODEL = 3;
-export const STEP_FINISH = 4;
+export const STEP_LICENSE = 2;
+export const STEP_ADMIN = 3;
+export const STEP_MODEL = 4;
+export const STEP_FINISH = 5;
 
 export interface DatabaseSetupBody {
   driver: "sqlite" | "postgresql" | string;
@@ -61,6 +62,16 @@ export interface DatabaseSetupBody {
   password?: string;
   url?: string;
 }
+
+export interface LicenseSetupBody {
+  center_url: string;
+  trusted_keys_json?: string | null;
+  ca_pem?: string | null;
+  allow_loopback?: boolean;
+  skip?: boolean;
+}
+
+export const DEFAULT_LICENSE_CENTER_URL = "https://111.229.110.180:8091";
 
 export const wizardSession = {
   saveToken(token: string): void {
@@ -123,16 +134,30 @@ export const wizardApi = {
       method: "POST",
     }),
 
-  testDatabase: (body: DatabaseSetupBody) =>
+  testDatabase: (body: DatabaseSetupBody, wizardToken: string) =>
     request<{ ok: boolean; driver: string }>("/setup/test-database", {
       method: "POST",
       body: JSON.stringify(body),
+      headers: bearer(wizardToken),
     }),
 
-  applyDatabase: (body: DatabaseSetupBody) =>
+  applyDatabase: (body: DatabaseSetupBody, wizardToken: string) =>
     request<{ ok: boolean; driver: string }>("/setup/database", {
       method: "POST",
       body: JSON.stringify(body),
+      headers: bearer(wizardToken),
+    }),
+
+  saveLicenseConfig: (body: LicenseSetupBody, wizardToken: string) =>
+    request<{
+      ok: boolean;
+      configured: boolean;
+      skipped?: boolean;
+      managed?: boolean;
+    }>("/setup/license-config", {
+      method: "POST",
+      body: JSON.stringify(body),
+      headers: bearer(wizardToken),
     }),
 
   verifyPassword: (password: string) =>

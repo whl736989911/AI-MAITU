@@ -9,6 +9,7 @@ import json
 import logging
 import os
 import re
+import ssl
 import tempfile
 import threading
 import time
@@ -125,6 +126,7 @@ class LicenseManager:
         trusted_keys_file: Path | None,
         center_url: str | None = None,
         allow_loopback: bool = False,
+        ca_file: Path | None = None,
     ) -> None:
         self.state_dir = Path(state_dir).expanduser()
         self.trusted_keys_file = (
@@ -132,6 +134,10 @@ class LicenseManager:
         )
         self.center_url = center_url.rstrip("/") if center_url else None
         self.allow_loopback = allow_loopback
+        self.ca_file = Path(ca_file).expanduser() if ca_file is not None else None
+        self._ssl_context = (
+            ssl.create_default_context(cafile=str(self.ca_file)) if self.ca_file else None
+        )
         self._managed = self.trusted_keys_file is not None
         self._state_path = self.state_dir / _STATE_NAME
         self._reminder_path = self.state_dir / _REMINDER_NAME
@@ -168,6 +174,9 @@ class LicenseManager:
             Path(keyring) if keyring else None,
             os.environ.get("MAITU_LICENSE_CENTER_URL"),
             allow,
+            Path(os.environ["MAITU_LICENSE_CA_FILE"])
+            if os.environ.get("MAITU_LICENSE_CA_FILE")
+            else None,
         )
 
     def _initialize(self) -> None:
@@ -668,7 +677,10 @@ class LicenseManager:
             req = urllib.request.Request(
                 url, raw, {"Content-Type": "application/json"}, method="POST"
             )
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            kwargs: dict[str, Any] = {"timeout": 15}
+            if self._ssl_context is not None:
+                kwargs["context"] = self._ssl_context
+            with urllib.request.urlopen(req, **kwargs) as resp:
                 result = json.loads(resp.read())
             if not isinstance(result, dict):
                 raise ValueError("invalid license center response")
@@ -959,6 +971,11 @@ _CURRENT_LOCK = threading.Lock()
 
 def current_license() -> LicenseManager:
     return _CURRENT
+
+
+def install_unmanaged_license_manager() -> None:
+    """Restore the process-wide no-op manager after trust settings are cleared."""
+    install_license_manager(_DEFAULT)
 
 
 def install_license_manager(manager: LicenseManager) -> None:

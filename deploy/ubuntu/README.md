@@ -211,34 +211,53 @@ PY
 
 交付方在中心管理界面创建客户记录和**一次性激活码**（授权截止时间与激活码有效期是两个字段），并确认中心时区。**不要**把中心的 `keys/`、数据库或管理员凭据复制到平台主机；keyring 只包含公开验签密钥。若连接包带私有 CA 证书，把 CA 安装到平台系统信任链后再用 HTTPS，不能关闭证书校验。
 
-### 2. 原生平台：配置信任并重启
+### 2. 原生平台：初始化向导或应用设置
 
-把中心导出的 `trusted-keys.json` 上传到平台主机，然后运行：
+推荐在首次初始化向导的 **“授权”步骤** 中填写：
+
+- 授权中心根地址，默认 `https://111.229.110.180:8091`；
+- 授权中心导出的公开 `trusted-keys.json`；
+- 如果中心使用私有 CA，再填写/上传 PEM 根证书（公共 CA 留空）。
+
+向导会把公开材料保存到数据目录下的 `license/trusted-keys.json`、`license/root-ca.pem`，并把
+授权中心地址写入 `config.json` 的 `license` 段；公开材料会立即生效，不需要手工改 systemd。
+
+如果初始化时跳过了，或实例已经在运行，进入 **应用设置 → 高级设置 → 授权中心**，填写同样的三项并保存。
+保存后平台会重新加载许可证配置；使用私有 CA 时平台直接使用该根证书校验中心，不需要修改主机系统信任链。
+默认地址只作为向导初值，生产环境应替换为实际授权中心的 HTTPS 根地址。
+
+仍然可以使用部署脚本（适合没有浏览器或需要纳入自动化的情况）：
 
 ```bash
 sudo bash deploy/ubuntu/setup-license.sh \
   --trusted-keys /root/license-trusted-keys.json \
-  --center-url https://license.example.com
+  --center-url https://license.example.com \
+  [--root-ca /root/private-ca.pem]
 ```
 
 脚本会：
 
 - 校验 keyring JSON 是 KID → PEM 公钥的非空映射；
 - 安装到 `/etc/maitu/license/trusted-keys.json`（root 所有、`maitu` 组可读）；
+- 可选地把私有 CA 安装到 `/etc/maitu/license/root-ca.pem`；
 - 创建并收紧实例状态目录 `/var/lib/maitu-license`（`maitu` 所有，0700）；
 - 写入 `/etc/systemd/system/maitu.service.d/50-license.conf`，设置
-  `MAITU_LICENSE_TRUSTED_KEYS_FILE`、`MAITU_LICENSE_STATE_DIR`、`MAITU_LICENSE_CENTER_URL`；
+  `MAITU_LICENSE_TRUSTED_KEYS_FILE`、`MAITU_LICENSE_STATE_DIR`、`MAITU_LICENSE_CENTER_URL`，
+  以及可选的 `MAITU_LICENSE_CA_FILE`；
 - `daemon-reload` 并重启 `maitu.service`。
 
-HTTPS 证书必须由平台主机正常校验。`--allow-loopback` 仅用于中心在 `127.0.0.1` 上做联调，不能用于生产。
+HTTPS 证书必须由平台主机正常校验；使用私有 CA 时也可以设置 `MAITU_LICENSE_CA_FILE`。
+`--allow-loopback` 仅用于中心在 `127.0.0.1` 上做联调，不能用于生产。
 
-如果不用脚本，也可以手工创建同样内容的 systemd drop-in 后 `sudo systemctl daemon-reload && sudo systemctl restart maitu.service`；不要只导出环境变量而不重启服务。
+如果不用脚本，也可以手工创建同样内容的 systemd drop-in 后
+`sudo systemctl daemon-reload && sudo systemctl restart maitu.service`；不要只导出环境变量而不重启服务。
 
 ### 3. 激活实例
 
-1. 平台重启后，用系统管理员/企业管理员打开 `http://<ubuntu-ip>:8088/`；未授权时业务功能锁定，但登录和授权页面仍可用。
-2. 在锁定页面的“激活码”输入中心创建的一次性激活码。
-3. 平台在本机 `MAITU_LICENSE_STATE_DIR` 下生成独立 Ed25519 实例身份，向中心签名证明并领取签名授权；中心只保存实例公钥，不需要也不会得到实例私钥。
+1. 平台启动后，用系统管理员/企业管理员打开 `http://<ubuntu-ip>:8088/`；未授权时业务功能锁定，但登录和授权页面仍可用。
+2. 在锁定页面的“激活码”输入中心创建的一次性激活码；已经进入应用的实例也可以使用
+   **应用设置 → 高级设置 → 授权中心** 中的激活码输入框。
+3. 平台在本机许可证状态目录下生成独立 Ed25519 实例身份，向中心签名证明并领取签名授权；中心只保存实例公钥，不需要也不会得到实例私钥。
 4. 激活成功后检查状态并确认 Agent、通道、知识库等业务恢复。
 
 状态和手动同步：
@@ -256,7 +275,9 @@ uv run maitu license activate          # 交互输入激活码，避免进入 sh
 uv run maitu license refresh
 ```
 
-不要删除 `/var/lib/maitu-license` 来“重置授权”；实例身份丢失后需要走中心的重新绑定/换主机流程。激活码应视为一次性秘密，不要写入部署日志或共享聊天记录。
+使用初始化向导/应用设置时，实例身份默认位于数据目录下的 `license/state`；使用
+`setup-license.sh` 时位于 `/var/lib/maitu-license`。不要删除该目录来“重置授权”；实例身份丢失后
+需要走中心的重新绑定/换主机流程。激活码应视为一次性秘密，不要写入部署日志或共享聊天记录。
 
 ### 4. Docker 平台：managed Compose overlay
 

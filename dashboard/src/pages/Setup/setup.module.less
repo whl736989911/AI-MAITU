@@ -479,3 +479,40 @@
     opacity: 1;
   }
 }
+
+/* ---- License step ---- */
+.fieldGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin-bottom: 18px;
+}
+
+.fieldLabel {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.fieldHint {
+  font-size: 12px;
+  line-height: 1.5;
+  display: block;
+}
+
+.fileButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  width: fit-content;
+  padding: 7px 12px;
+  border: 1px dashed var(--fn-border-primary);
+  border-radius: 8px;
+  color: var(--fn-text-primary);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.fileButton:hover {
+  border-color: var(--fn-color-brand);
+}

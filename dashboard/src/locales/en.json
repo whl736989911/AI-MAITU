@@ -260,7 +260,28 @@
     "reminderUser": "This license expires on {{date}} ({{remaining}} remaining). Contact your administrator to arrange renewal.",
     "remainingTime": "{{days}}d {{hours}}h {{minutes}}m",
     "title": "License status",
-    "unmanaged": "License management is not enabled for this instance."
+    "unmanaged": "License management is not enabled for this instance.",
+    "settings": {
+      "title": "License center",
+      "description": "Configure the license center's public trust material and manage this instance's license. The instance private key stays on this host.",
+      "centerUrl": "License center root URL",
+      "centerUrlHint": "Must be an HTTPS root URL reachable by this platform, without /api paths or a trailing slash. Default: https://111.229.110.180:8091",
+      "trustedKeys": "Trusted keys (trusted-keys.json)",
+      "trustedKeysPlaceholder": "Paste or choose the license center's trusted-keys.json (KID → PEM public key)",
+      "trustedKeysHint": "Exported public verification keys only; never the center's signing private key.",
+      "chooseTrustedKeys": "Choose trusted-keys.json",
+      "rootCa": "Root CA certificate (optional)",
+      "rootCaPlaceholder": "Paste the PEM root certificate when the center uses a private CA",
+      "rootCaHint": "Only needed for a private CA; leave empty for a public CA.",
+      "chooseRootCa": "Choose root CA certificate",
+      "save": "Save license configuration",
+      "saved": "License configuration saved and reloaded.",
+      "saveFailed": "Could not save license configuration.",
+      "loadFailed": "Could not load license configuration.",
+      "unmanaged": "License management is not enabled",
+      "source": "Configuration source",
+      "activated": "License action completed."
+    }
   },
   "nav": {
     "chat": "Conversation",
@@ -294,6 +315,7 @@
     "loginCaptcha": "Login captcha",
     "executionSandbox": "Execution sandbox",
     "branding": "Brand",
+    "license": "License center",
     "search": "AI Search",
     "collapseSidebar": "Collapse",
     "expandSidebar": "Expand",
@@ -5176,6 +5198,7 @@
     "steps": {
       "database": "Database",
       "password": "Password",
+      "license": "License",
       "admin": "Admin",
       "model": "Models"
     },
@@ -5217,6 +5240,23 @@
       "wrong": "Wrong password.",
       "rateLimited": "Too many attempts. Wait a minute and try again.",
       "verifyButton": "Verify and continue"
+    },
+    "license": {
+      "title": "License center setup",
+      "hint": "Enter the license center's public trust material. Without it the platform cannot verify signed licenses. You can also configure it later under Settings → License center.",
+      "centerUrl": "License center root URL",
+      "centerUrlHint": "Default: https://111.229.110.180:8091. Must be an HTTPS root URL reachable from this platform.",
+      "trustedKeys": "trusted-keys.json",
+      "trustedKeysPlaceholder": "Paste the public keyring JSON exported by the license center",
+      "trustedKeysHint": "Public verification keys only; never the center's signing private key or database.",
+      "chooseTrustedKeys": "Choose trusted-keys.json",
+      "rootCa": "Root CA certificate (optional)",
+      "rootCaPlaceholder": "Paste the PEM root certificate for a private CA",
+      "rootCaHint": "Leave empty when the center uses a public CA.",
+      "chooseRootCa": "Choose root CA certificate",
+      "skip": "Configure later",
+      "save": "Save and continue",
+      "saveFailed": "Could not save license configuration."
     },
     "admin": {
       "username": "Username",

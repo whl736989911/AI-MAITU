@@ -448,3 +448,45 @@ async def finish(
     if wizard_token is not None:
         server.wizard_tokens.consume(wizard_token)
     return {"ok": True}
+
+
+class LicenseSetupBody(BaseModel):
+    center_url: str = Field(
+        description="License center HTTPS root URL, for example https://license.example.com"
+    )
+    trusted_keys_json: str | None = Field(
+        default=None,
+        description="Public trusted-keys.json content (KID to PEM); empty means configure later",
+    )
+    ca_pem: str | None = Field(default=None, description="Optional private root CA PEM")
+    allow_loopback: bool = Field(
+        default=False, description="Testing only: allow HTTP on a loopback center URL"
+    )
+    skip: bool = Field(default=False, description="Skip license trust configuration for now")
+
+
+@router.post("/setup/license-config", summary="Persist first-run license trust settings")
+async def setup_license_config(
+    body: LicenseSetupBody,
+    server: Any = Depends(get_server),
+    authorization: str | None = Header(default=None),
+) -> dict[str, Any]:
+    """Write public trust material collected by the wizard; no activation code here."""
+    _authorize_setup_mid_wizard(authorization, server)
+    if body.skip:
+        return {"ok": True, "configured": False, "skipped": True}
+    from octop.infra.licensing.settings import write_license_files
+
+    try:
+        write_license_files(
+            server.paths,
+            trusted_keys_json=body.trusted_keys_json,
+            ca_pem=body.ca_pem,
+            center_url=body.center_url,
+            allow_loopback=body.allow_loopback,
+        )
+        await server.reload_license_config()
+    except ValueError as exc:
+        raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
+    configured = (server.paths.root / "license" / "trusted-keys.json").is_file()
+    return {"ok": True, "configured": configured, "managed": server.license_manager is not None}

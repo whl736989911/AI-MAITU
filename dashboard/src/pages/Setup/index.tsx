@@ -1,7 +1,15 @@
 import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Segmented, Steps, Typography } from "antd";
-import { Lock, UserCog, Cpu, CheckCircle, Wand2, Database } from "lucide-react";
+import {
+  Lock,
+  UserCog,
+  Cpu,
+  CheckCircle,
+  Wand2,
+  Database,
+  ShieldCheck,
+} from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ensureLocaleBundle } from "../../i18n";
 import { storeUiLocale, type UiLocale } from "../../utils/locale";
@@ -12,6 +20,7 @@ import BootOfflinePanel from "../../components/BootOfflinePanel";
 import { useTheme } from "../../context/ThemeContext";
 import DatabaseStep from "./steps/DatabaseStep";
 import PasswordStep from "./steps/PasswordStep";
+import LicenseStep from "./steps/LicenseStep";
 import AdminStep from "./steps/AdminStep";
 import ModelStep from "./steps/ModelStep";
 import FinishStep from "./steps/FinishStep";
@@ -22,6 +31,7 @@ import {
   wizardSession,
   STEP_DATABASE,
   STEP_PASSWORD,
+  STEP_LICENSE,
   STEP_ADMIN,
   STEP_MODEL,
   STEP_FINISH,
@@ -101,7 +111,7 @@ export default function SetupPage() {
                 savedStep <= STEP_MODEL
               ) {
                 if (savedStep === STEP_DATABASE && status.database_bound) {
-                  goToStep(STEP_ADMIN);
+                  goToStep(STEP_LICENSE);
                 } else {
                   goToStep(savedStep);
                 }
@@ -111,7 +121,7 @@ export default function SetupPage() {
               ) {
                 goToStep(STEP_PASSWORD);
               } else {
-                goToStep(status.database_bound ? STEP_ADMIN : STEP_DATABASE);
+                goToStep(status.database_bound ? STEP_LICENSE : STEP_DATABASE);
               }
               setChecking(false);
               return;
@@ -154,14 +164,14 @@ export default function SetupPage() {
     } catch {
       /* token may already exist after password step */
     }
-    goToStep(STEP_ADMIN);
+    goToStep(STEP_LICENSE);
   };
 
   const handleBackFromAdmin = () => {
     setAdminCreds(null);
     setProviderDraft(null);
     wizardSession.saveDraft({});
-    goToStep(STEP_DATABASE);
+    goToStep(STEP_LICENSE);
   };
 
   const handleBackFromDatabase = () => {
@@ -202,6 +212,7 @@ export default function SetupPage() {
   }
 
   const isModelStep = current === STEP_MODEL;
+  const isWideStep = isModelStep || current === STEP_LICENSE;
   const currentLang = i18n.language?.startsWith("zh") ? "zh" : "en";
 
   const handleLanguageChange = (lang: string) => {
@@ -220,12 +231,14 @@ export default function SetupPage() {
     ? [
         { title: t("wizard.steps.password"), icon: <Lock size={22} /> },
         { title: t("wizard.steps.database"), icon: <Database size={22} /> },
+        { title: t("wizard.steps.license"), icon: <ShieldCheck size={22} /> },
         { title: t("wizard.steps.admin"), icon: <UserCog size={22} /> },
         { title: t("wizard.steps.model"), icon: <Cpu size={22} /> },
         { title: t("common.done"), icon: <CheckCircle size={22} /> },
       ]
     : [
         { title: t("wizard.steps.database"), icon: <Database size={22} /> },
+        { title: t("wizard.steps.license"), icon: <ShieldCheck size={22} /> },
         { title: t("wizard.steps.admin"), icon: <UserCog size={22} /> },
         { title: t("wizard.steps.model"), icon: <Cpu size={22} /> },
         { title: t("common.done"), icon: <CheckCircle size={22} /> },
@@ -233,18 +246,19 @@ export default function SetupPage() {
 
   const stepIndex = (() => {
     if (passwordRequired) return current;
-    // Password step omitted visually: map DATABASE..FINISH → 0..3
+    // Password step omitted visually: map DATABASE..FINISH → 0..4
     if (current <= STEP_DATABASE) return 0;
-    if (current === STEP_ADMIN) return 1;
-    if (current === STEP_MODEL) return 2;
-    return 3;
+    if (current === STEP_LICENSE) return 1;
+    if (current === STEP_ADMIN) return 2;
+    if (current === STEP_MODEL) return 3;
+    return 4;
   })();
 
   return (
     <div className={styles.wizardShell}>
       <div
         className={`${styles.wizardCard} ${
-          isModelStep ? styles.wizardCardWide : styles.wizardCardNarrow
+          isWideStep ? styles.wizardCardWide : styles.wizardCardNarrow
         }`}
       >
         <div className={styles.wizardHeader}>
@@ -293,6 +307,13 @@ export default function SetupPage() {
             <DatabaseStep
               onContinue={() => void handleDatabaseContinue()}
               onBack={passwordRequired ? handleBackFromDatabase : undefined}
+            />
+          )}
+          {current === STEP_LICENSE && (
+            <LicenseStep
+              onContinue={() => goToStep(STEP_ADMIN)}
+              onSkip={() => goToStep(STEP_ADMIN)}
+              onBack={() => goToStep(STEP_DATABASE)}
             />
           )}
           {current === STEP_ADMIN && (

@@ -44,6 +44,24 @@ export interface LicenseReminder {
   date: string | null;
 }
 
+export interface LicenseSettings {
+  center_url: string | null;
+  trusted_keys_configured: boolean;
+  ca_configured: boolean;
+  allow_loopback: boolean;
+  source: "config" | "env" | "files" | "none" | string;
+  state_dir: string;
+  trusted_keys_json: string | null;
+  ca_pem: string | null;
+}
+
+export interface LicenseSettingsUpdate {
+  center_url: string;
+  trusted_keys_json?: string | null;
+  ca_pem?: string | null;
+  allow_loopback?: boolean;
+}
+
 export const licensingApi = {
   getStatus: () => request<LicenseSnapshot>("/license/status"),
   getDetails: () => request<LicenseSnapshot>("/license/details"),
@@ -68,5 +86,11 @@ export const licensingApi = {
     request<LicenseReminder>("/license/reminder", {
       method: "POST",
       body: JSON.stringify({}),
+    }),
+  getSettings: () => request<LicenseSettings>("/license/settings"),
+  updateSettings: (body: LicenseSettingsUpdate) =>
+    request<LicenseSettings>("/license/settings", {
+      method: "PUT",
+      body: JSON.stringify(body),
     }),
 };

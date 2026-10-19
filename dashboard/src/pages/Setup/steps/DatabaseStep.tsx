@@ -13,7 +13,11 @@ import { useTranslation } from "react-i18next";
 
 import { authApi } from "../../../api/modules/auth";
 import { BRAND } from "../../../brand.generated";
-import { wizardApi, type DatabaseSetupBody } from "../wizardClient";
+import {
+  resolveSetupProbeToken,
+  wizardApi,
+  type DatabaseSetupBody,
+} from "../wizardClient";
 import { apiErrorMessage } from "../../../utils/apiError";
 import setupStyles from "../setup.module.less";
 
@@ -75,8 +79,17 @@ export default function DatabaseStep({ onContinue, onBack }: Props) {
     password: values.password || undefined,
   });
 
+  const setupToken = async (): Promise<string> => {
+    const token = await resolveSetupProbeToken();
+    if (!token) {
+      throw new Error(t("wizard.sessionExpired"));
+    }
+    return token;
+  };
+
   const applyAndContinue = async (body: DatabaseSetupBody) => {
-    await wizardApi.applyDatabase(body);
+    const token = await setupToken();
+    await wizardApi.applyDatabase(body, token);
     onContinue();
   };
 
@@ -92,7 +105,8 @@ export default function DatabaseStep({ onContinue, onBack }: Props) {
         "user",
         "password",
       ]);
-      await wizardApi.testDatabase(buildPostgresBody(values));
+      const token = await setupToken();
+      await wizardApi.testDatabase(buildPostgresBody(values), token);
       setTestedOk(true);
       setTestMsg(t("wizard.database.testOk"));
     } catch (e) {
@@ -132,11 +146,13 @@ export default function DatabaseStep({ onContinue, onBack }: Props) {
         "password",
       ]);
       const body = buildPostgresBody(values);
+      const token = await setupToken();
       if (!testedOk) {
-        await wizardApi.testDatabase(body);
+        await wizardApi.testDatabase(body, token);
         setTestedOk(true);
       }
-      await applyAndContinue(body);
+      await wizardApi.applyDatabase(body, token);
+      onContinue();
     } catch (e) {
       setError(apiErrorMessage(e, t("wizard.database.applyFailed"), t));
     } finally {
