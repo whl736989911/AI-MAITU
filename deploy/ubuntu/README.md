@@ -170,7 +170,117 @@ docker compose -f docker/docker-compose.yml down      # 保留数据目录
 
 Docker 默认策略和额外 compose overlay（Postgres/品牌/移动端/托管）见 [`docker/README_CN.md`](../../docker/README_CN.md)。默认不挂载宿主 Docker socket；只有可信运维显式叠加 `docker-compose.docker-exec.yml` 才会产生高权限边界。
 
-## 六、验收与排障
+## 六、与授权中心对接
+
+平台本身不签发授权。授权中心由交付方单独部署和保管；客户平台只保存**中心的公开验签 keyring**、自己的实例身份/凭据，以及中心的 HTTPS 根地址，不持有签发私钥。缺少可信配置或有效凭据时，平台默认进入授权锁定状态。
+
+### 1. 授权中心侧准备
+
+在中心主机（不是本平台主机）按 [`docs/instance-license-operations.md`](../../docs/instance-license-operations.md) 和 [`docs/license-center-deployment.md`](../../docs/license-center-deployment.md) 部署并初始化：
+
+```bash
+cd services/license-center
+export LICENSE_CENTER_DATA=/var/lib/maitu-license-center
+uv run license-center init
+uv run license-center export-trust /etc/maitu/license/trusted-keys.json
+uv run license-center run --host 127.0.0.1 --port 8090
+# 按 license-center-deployment.md 配置 HTTPS 反向代理
+```
+
+交付方在中心管理界面创建客户记录和**一次性激活码**（授权截止时间与激活码有效期是两个字段），并确认中心时区。`export-trust` 只导出公开验签密钥，**不要**把中心的 `keys/`、数据库或管理员凭据复制到平台主机。
+
+### 2. 原生平台：配置信任并重启
+
+把中心导出的 `trusted-keys.json` 上传到平台主机，然后运行：
+
+```bash
+sudo bash deploy/ubuntu/setup-license.sh \
+  --trusted-keys /root/license-trusted-keys.json \
+  --center-url https://license.example.com
+```
+
+脚本会：
+
+- 校验 keyring JSON 是 KID → PEM 公钥的非空映射；
+- 安装到 `/etc/maitu/license/trusted-keys.json`（root 所有、`maitu` 组可读）；
+- 创建并收紧实例状态目录 `/var/lib/maitu-license`（`maitu` 所有，0700）；
+- 写入 `/etc/systemd/system/maitu.service.d/50-license.conf`，设置
+  `MAITU_LICENSE_TRUSTED_KEYS_FILE`、`MAITU_LICENSE_STATE_DIR`、`MAITU_LICENSE_CENTER_URL`；
+- `daemon-reload` 并重启 `maitu.service`。
+
+HTTPS 证书必须由平台主机正常校验。`--allow-loopback` 仅用于中心在 `127.0.0.1` 上做联调，不能用于生产。
+
+如果不用脚本，也可以手工创建同样内容的 systemd drop-in 后 `sudo systemctl daemon-reload && sudo systemctl restart maitu.service`；不要只导出环境变量而不重启服务。
+
+### 3. 激活实例
+
+1. 平台重启后，用系统管理员/企业管理员打开 `http://<ubuntu-ip>:8088/`；未授权时业务功能锁定，但登录和授权页面仍可用。
+2. 在锁定页面的“激活码”输入中心创建的一次性激活码。
+3. 平台在本机 `MAITU_LICENSE_STATE_DIR` 下生成独立 Ed25519 实例身份，向中心签名证明并领取签名授权；中心只保存实例公钥，不需要也不会得到实例私钥。
+4. 激活成功后检查状态并确认 Agent、通道、知识库等业务恢复。
+
+状态和手动同步：
+
+```bash
+curl -fsS http://127.0.0.1:8088/api/license/status
+curl -fsS http://127.0.0.1:8088/api/license/details    # 管理员
+```
+
+CLI 也使用同一套状态机（在源码根目录、以服务用户/相同环境执行）：
+
+```bash
+uv run maitu license status
+uv run maitu license activate          # 交互输入激活码，避免进入 shell history
+uv run maitu license refresh
+```
+
+不要删除 `/var/lib/maitu-license` 来“重置授权”；实例身份丢失后需要走中心的重新绑定/换主机流程。激活码应视为一次性秘密，不要写入部署日志或共享聊天记录。
+
+### 4. Docker 平台：managed Compose overlay
+
+Docker 部署用 `docker/docker-compose.managed.yml` 挂载授权和更新配置；**不要**把签发私钥或中心数据放进业务容器：
+
+```bash
+export MAITU_CENTER_URL=https://license.example.com
+export MAITU_LICENSE_TRUSTED_KEYS_HOST_FILE=/etc/maitu/license/trusted-keys.json
+export MAITU_LICENSE_STATE_HOST_DIR=/var/lib/maitu-license
+export MAITU_UPDATE_TRUSTED_KEYS_HOST_FILE=/etc/maitu/updates/release-trusted-keys.json
+export MAITU_UPDATE_QUEUE_HOST_DIR=/var/lib/maitu-update-queue
+export MAITU_CENTER_CLIENT_TOKEN=<独立的客户侧版本读取令牌>
+
+# 文件和目录归容器 UID/GID 1000 可读/可写；keyring 只读
+sudo install -d -m 0755 /etc/maitu/license /etc/maitu/updates
+sudo install -m 0640 -o root -g 1000 \
+  /root/license-trusted-keys.json /etc/maitu/license/trusted-keys.json
+sudo install -d -m 0700 -o 1000 -g 1000 \
+  /var/lib/maitu-license /var/lib/maitu-update-queue
+
+cd /opt/maitu
+docker compose -f docker/docker-compose.yml \
+  -f docker/docker-compose.managed.yml up -d
+```
+
+这里的路径和变量名必须与 `docker/docker-compose.managed.yml` 一致；`MAITU_UPDATE_*` 与 `MAITU_CENTER_CLIENT_TOKEN` 用于中心托管升级，若不启用中心升级，仍需按[授权中心详细部署说明](../../docs/license-center-deployment.md)处理 overlay 的必填项，或使用只挂载授权字段的独立 override。激活仍在平台锁定页完成，不是在中心页面点击“激活客户”。
+
+### 5. 续期、撤销、离线与换主机
+
+- **续期/撤销/恢复**：中心修改授权后，平台在下一次成功同步时生效；正常在线同步周期约 1 小时。锁定状态仍会尝试同步，登录/授权页面保持可用。
+- **离线授权**：平台管理员可导出签名请求（`/api/license/offline-request`），交给中心签发后再导入（`/api/license/offline-import`）；离线场景只需要可信 keyring 和状态目录，中心 URL 可留空，但必须通过可信介质传递签名文件。
+- **换主机**：在中心执行替换/解绑，生成新激活码，在新主机激活；**不要复制旧主机的 `/var/lib/maitu-license`** 冒充新实例。
+- **密钥轮换**：中心先 `stage-key` 并重新 `export-trust`，把包含新旧 KID 的完整 keyring 分发到所有平台并重启；逐台确认可验签后，中心再 `activate-key`。旧公钥要保留到历史凭据过期。
+- **备份边界**：业务备份（`/var/lib/maitu`）不包含实例私钥/授权凭据；授权状态目录要单独加密备份并限制访问。恢复业务数据不改变已激活的实例身份；整机迁移仍应走中心换主机流程。
+
+### 6. 授权相关排障
+
+| 现象 | 排查 |
+|---|---|
+| 平台一直锁定 | 检查 `systemctl show maitu -p Environment` 是否加载了三个 `MAITU_LICENSE_*`；确认 keyring/状态目录权限；`journalctl -u maitu` 查看加载错误 |
+| 激活提示无法连接 | 从平台执行 `curl -v https://<center>/api/v1/...`；检查 DNS、防火墙、证书链；私有 CA 要把 CA 安装到系统信任，不能 `verify=False` |
+| 激活码无效/过期 | 中心和平台时区/时间必须准确；确认激活码未使用、未过有效期、绑定客户正确 |
+| 同步不更新中心“最近联系” | 检查平台是否真的配置了中心 URL 和 keyring；401 通常是实例签名/挑战失败，不要关闭中心验签，重启平台让新连接生效 |
+| 换机后旧机仍可用 | 中心撤销/替换旧实例并等待旧机同步；断网旧机最多用到已缓存凭据截止，不能承诺即时失效 |
+
+## 七、验收与排障
 
 安装后至少核对：
 
@@ -192,7 +302,7 @@ sudo journalctl -u maitu.service -n 50 --no-pager
 | 实例授权锁定 | 按 `docs/instance-license-operations.md` 配置可信公钥/实例授权；登录页和授权管理仍可用 |
 | 端口冲突 | 改 `--port` 重装；确认旧 `octop.service`/旧进程已停止 |
 
-## 七、安全边界
+## 八、安全边界
 
 - 平台默认内网 HTTP，不要在没有 TLS/访问控制的情况下暴露公网；公网请配置反代、证书和防火墙。
 - 原生服务以 `maitu` 用户运行；不要为了省事改成 root。Agent 的终端/文件能力继承服务用户权限，必要时再叠加宿主级隔离（bubblewrap/AppArmor）。
