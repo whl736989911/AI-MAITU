@@ -122,6 +122,8 @@ docker compose -f docker/docker-compose.yml \
 | `MAITU_CENTER_CLIENT_TOKEN` | 必须配置独立客户侧版本读取令牌；不得使用中心管理凭据 |
 
 `MAITU_LICENSE_TRUSTED_KEYS_FILE`、`MAITU_LICENSE_STATE_DIR`、`MAITU_LICENSE_CENTER_URL`、`MAITU_UPDATE_TRUSTED_KEYS_FILE`、`MAITU_UPDATE_QUEUE_DIR` 和 `MAITU_UPDATE_CENTER_URL` 由托管 Compose overlay 指向容器内路径。keyring 应保留所有仍可能用于验证有效凭据/发布签名的 KID；换钥前先导出更新接入包。私有 CA 环境由中心连接包与部署向导配置，不能关闭 TLS 验证。已有实例升级务必保留原 `MAITU_DATA`、授权身份目录、队列目录和 Compose project name。
+
+平台也可以在初始化向导的“授权”步骤或 **应用设置 → 高级设置 → 授权中心** 中配置同一组公开 trust 材料（授权中心根地址、`trusted-keys.json`、可选根 CA）。此时显式的 `config.json` `license` 配置优先于 `MAITU_LICENSE_*` 环境变量；实例状态目录和 keyring 路径默认会保留原环境配置，避免升级时更换实例身份。若仍使用 `setup-license.sh` 修改环境变量，而平台已有 `config.json` 授权配置，请先在应用设置中更新，或移除旧 `license` 段后再重启，否则脚本写入的环境值会被显式配置覆盖。
 实例身份、已验证的在线/离线凭据、共用版本栅栏和提醒账本存放在独立的授权状态 bind mount；业务数据备份不能覆盖它们。默认执行器使用镜像内 Bubblewrap，能读到 `/usr/local/maitu-venv` 的只读 Python 环境，但不能访问授权目录、源码或宿主 Docker socket。Compose 默认不挂载 Docker socket；独立 Docker 执行路径仅由可信运维显式启用，宿主更新器运行于单独的 systemd 服务，不向客户业务容器开放。Linux 镜像包含 LibreOffice / Bubblewrap，用户命名空间必须由宿主 AppArmor/内核策略允许；见 [Docker 部署说明](../docker/README_CN.md#执行沙箱与浏览器linux)。Windows 部署还需要设置真实 NTFS ACL，不能把 `chmod` 当作 NTFS 权限隔离。
 
 ### 3.2 开通与交付

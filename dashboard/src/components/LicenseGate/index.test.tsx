@@ -57,6 +57,7 @@ vi.mock("react-i18next", () => {
     "license.statusFailed": "Could not read the license status.",
     "license.actionFailed": "The license action could not be completed.",
     "license.title": "License status",
+    "license.settingsOpen": "License center settings",
     "license.remainingTime": "{{days}}d {{hours}}h {{minutes}}m",
   };
   const t = (key: string) => translations[key] ?? "Missing translation";
@@ -96,6 +97,7 @@ const unmanagedStatus = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/");
   mocks.user = { role: "admin", permissions: [] };
   mocks.getDetails.mockResolvedValue(activeSnapshot);
   mocks.getStatus.mockResolvedValue(activeSnapshot);
@@ -173,6 +175,27 @@ describe("LicenseGate", () => {
     expect(screen.queryByText("business-shell")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Activation code")).toBeInTheDocument();
     expect(document.getElementById("license-offline-file")).toBeTruthy();
+  });
+
+  it("keeps the license settings route reachable while locked", async () => {
+    window.history.replaceState({}, "", "/admin/advanced?tab=license");
+    mocks.getDetails.mockResolvedValue({
+      ...activeSnapshot,
+      state: "UNACTIVATED",
+      business_allowed: false,
+      reason: "unactivated",
+    });
+
+    render(
+      <LicenseGate>
+        <div>business-shell</div>
+      </LicenseGate>,
+    );
+
+    expect(await screen.findByText("business-shell")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { name: "License required" }),
+    ).not.toBeInTheDocument();
   });
   it("restores the business shell only after administrator activation succeeds", async () => {
     const user = userEvent.setup();

@@ -31,10 +31,7 @@ def paths(tmp_path: Path) -> PathLayout:
 
 
 def test_normalize_center_url_accepts_https_and_strips_trailing_slash() -> None:
-    assert (
-        normalize_center_url("https://111.229.110.180:8091/")
-        == "https://111.229.110.180:8091"
-    )
+    assert normalize_center_url("https://111.229.110.180:8091/") == "https://111.229.110.180:8091"
 
 
 @pytest.mark.parametrize(
@@ -136,3 +133,44 @@ def test_save_does_not_move_an_env_managed_instance_identity(
     raw = json.loads(paths.config.read_text(encoding="utf-8"))
     assert "state_dir" not in raw["license"]
     assert settings.state_dir == paths.root / "protected-state"
+
+
+def test_none_keeps_existing_external_trust_paths(paths: PathLayout) -> None:
+    external_keys = paths.root / "external" / "keys.json"
+    external_ca = paths.root / "external" / "ca.pem"
+    external_keys.parent.mkdir(parents=True)
+    external_keys.write_text(_keyring(), encoding="utf-8")
+    paths.config.write_text(
+        json.dumps(
+            {
+                "license": {
+                    "center_url": "https://old.example.test",
+                    "trusted_keys_file": str(external_keys),
+                    "ca_file": str(external_ca),
+                    "state_dir": str(paths.root / "old-state"),
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    write_license_files(
+        paths,
+        trusted_keys_json=None,
+        ca_pem=None,
+        center_url="https://new.example.test",
+        allow_loopback=False,
+    )
+    raw = json.loads(paths.config.read_text(encoding="utf-8"))["license"]
+    assert raw["trusted_keys_file"] == str(external_keys)
+    assert raw["ca_file"] == str(external_ca)
+    assert raw["state_dir"] == str(paths.root / "old-state")
+    assert raw["center_url"] == "https://new.example.test"
+
+
+def test_malformed_license_section_fails_closed(paths: PathLayout) -> None:
+    paths.config.write_text(
+        json.dumps({"license": "not-an-object"}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="config.license"):
+        load_license_settings(paths, default_state_dir=paths.root / ".license")

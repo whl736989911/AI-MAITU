@@ -260,6 +260,7 @@
     "reminderUser": "This license expires on {{date}} ({{remaining}} remaining). Contact your administrator to arrange renewal.",
     "remainingTime": "{{days}}d {{hours}}h {{minutes}}m",
     "title": "License status",
+    "settingsOpen": "License center settings",
     "unmanaged": "License management is not enabled for this instance.",
     "settings": {
       "title": "License center",

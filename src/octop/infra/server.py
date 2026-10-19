@@ -355,6 +355,7 @@ class OctopServer:
         except Exception:
             logger.exception("license manager construction failed; install stays locked")
             self._license_config_error = True
+            install_unmanaged_license_manager()
             return
         if not manager.managed:
             # Unmanaged developer installs keep existing behavior exactly.

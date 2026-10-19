@@ -217,8 +217,17 @@ export default function LicenseGate({
     );
   }
 
-  if (!snapshot.managed) return <>{children}</>;
+  // Trust/configuration must remain repairable while the instance is locked
+  // (for example after an invalid CA or keyring was saved). AuthGuard and the
+  // license-settings API still enforce the administrator role.
+  if (
+    window.location.pathname === "/admin/advanced" &&
+    new URLSearchParams(window.location.search).get("tab") === "license"
+  ) {
+    return <>{children}</>;
+  }
 
+  if (!snapshot.managed) return <>{children}</>;
   if (snapshot.business_allowed && !lockedSignal) {
     // The healthy state is not a pinned banner. Surface the bar only when the
     // user needs to act (expiry warning or a sync failure); full details live
@@ -450,6 +459,13 @@ export default function LicenseGate({
             <Space wrap>
               <Button onClick={() => void refreshSnapshot()} loading={loading}>
                 {t("license.refreshStatus")}
+              </Button>
+              <Button
+                onClick={() => {
+                  window.location.assign("/admin/advanced?tab=license");
+                }}
+              >
+                {t("license.settingsOpen")}
               </Button>
               <Button
                 onClick={() => void runAction(() => licensingApi.refresh())}

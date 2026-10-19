@@ -53,6 +53,8 @@ export default function LicenseSettingsPanel() {
   const [centerUrl, setCenterUrl] = useState("");
   const [trustedKeys, setTrustedKeys] = useState("");
   const [rootCa, setRootCa] = useState("");
+  const [initialTrustedKeys, setInitialTrustedKeys] = useState("");
+  const [initialRootCa, setInitialRootCa] = useState("");
   const [code, setCode] = useState("");
   const [offlineToken, setOfflineToken] = useState("");
   const [offlineRequest, setOfflineRequest] =
@@ -77,6 +79,8 @@ export default function LicenseSettingsPanel() {
       setCenterUrl(nextSettings.center_url || "https://111.229.110.180:8091");
       setTrustedKeys(nextSettings.trusted_keys_json || "");
       setRootCa(nextSettings.ca_pem || "");
+      setInitialTrustedKeys(nextSettings.trusted_keys_json || "");
+      setInitialRootCa(nextSettings.ca_pem || "");
     } catch (err) {
       setError(apiErrorMessage(err, t("license.settings.loadFailed"), t));
     } finally {
@@ -99,8 +103,15 @@ export default function LicenseSettingsPanel() {
     try {
       const next = await licensingApi.updateSettings({
         center_url: centerUrl.trim(),
-        trusted_keys_json: trustedKeys.trim() ? trustedKeys : null,
-        ca_pem: rootCa.trim() ? rootCa : null,
+        // null means "unchanged" on the server. Only send an empty string
+        // when the administrator explicitly cleared the field.
+        trusted_keys_json:
+          trustedKeys === initialTrustedKeys
+            ? null
+            : trustedKeys.trim()
+            ? trustedKeys
+            : "",
+        ca_pem: rootCa === initialRootCa ? null : rootCa.trim() ? rootCa : "",
         allow_loopback: false,
       });
       setSettings(next);

@@ -38,9 +38,13 @@ def _read_raw_config(path: Path) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return {}
-    return data if isinstance(data, dict) else {}
+    except OSError as exc:
+        raise ValueError(f"cannot read {path}: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(f"{path} is not valid JSON") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"{path} must contain a JSON object")
+    return data
 
 
 def _resolve(root: Path, value: object) -> Path | None:
@@ -92,6 +96,12 @@ def write_license_files(
         validate_ca_pem(ca_pem)
         normalized_ca = ca_pem.strip() + "\n"
 
+    # Read and validate the existing config before mutating trust files, so a
+    # broken config cannot leave a half-written keyring/CA behind.
+    data = _read_raw_config(paths.config)
+    current = data.get("license")
+    license_cfg: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
+
     if trusted_keys_json is not None:
         if parsed_keys is not None:
             _atomic_write(keys_path, json.dumps(parsed_keys, ensure_ascii=False, indent=2) + "\n")
@@ -104,22 +114,21 @@ def write_license_files(
         else:
             ca_path.unlink(missing_ok=True)
 
-    data = _read_raw_config(paths.config)
-    current = data.get("license")
-    license_cfg: dict[str, Any] = dict(current) if isinstance(current, dict) else {}
     if center_url is not None:
         if normalized_url:
             license_cfg["center_url"] = normalized_url
         else:
             license_cfg.pop("center_url", None)
-    if keys_path.is_file():
-        license_cfg["trusted_keys_file"] = f"{LICENSE_DIRNAME}/{TRUSTED_KEYS_FILENAME}"
-    else:
-        license_cfg.pop("trusted_keys_file", None)
-    if ca_path.is_file():
-        license_cfg["ca_file"] = f"{LICENSE_DIRNAME}/{ROOT_CA_FILENAME}"
-    else:
-        license_cfg.pop("ca_file", None)
+    if trusted_keys_json is not None:
+        if parsed_keys is not None:
+            license_cfg["trusted_keys_file"] = f"{LICENSE_DIRNAME}/{TRUSTED_KEYS_FILENAME}"
+        else:
+            license_cfg.pop("trusted_keys_file", None)
+    if ca_pem is not None:
+        if normalized_ca is not None:
+            license_cfg["ca_file"] = f"{LICENSE_DIRNAME}/{ROOT_CA_FILENAME}"
+        else:
+            license_cfg.pop("ca_file", None)
     # Never silently move an existing instance identity. Keep a configured or
     # env-provided state directory; only new, unmanaged installs get the
     # in-home default.
@@ -140,7 +149,15 @@ def load_license_settings(paths: PathLayout, *, default_state_dir: Path) -> Lice
     """
     raw = _read_raw_config(paths.config)
     raw_license = raw.get("license")
+    if raw_license is not None and not isinstance(raw_license, dict):
+        raise ValueError("config.license must be a JSON object")
     cfg: dict[str, Any] = raw_license if isinstance(raw_license, dict) else {}
+    for field in ("center_url", "trusted_keys_file", "ca_file", "state_dir"):
+        value = cfg.get(field)
+        if value is not None and not isinstance(value, str):
+            raise ValueError(f"config.license.{field} must be a string")
+    if "allow_loopback" in cfg and not isinstance(cfg["allow_loopback"], bool):
+        raise ValueError("config.license.allow_loopback must be a boolean")
 
     center_url = cfg.get("center_url") or _env("MAITU_LICENSE_CENTER_URL") or None
     keys_path = _resolve(paths.root, cfg.get("trusted_keys_file")) or _resolve(

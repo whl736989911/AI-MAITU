@@ -74,6 +74,26 @@ async def test_admin_can_read_and_update_license_settings(env) -> None:
 
 
 @pytest.mark.asyncio
+async def test_license_config_error_status_fails_closed(env) -> None:
+    client, srv, auth = env
+    srv._license_config_error = True
+    try:
+        status = await client.get("/api/license/status")
+        assert status.status_code == 200, status.text
+        body = status.json()
+        assert body["managed"] is True
+        assert body["business_allowed"] is False
+        assert body["state"] == "LOCKED"
+        assert body["reason"] == "configuration"
+
+        details = await client.get("/api/license/details", headers=auth)
+        assert details.status_code == 200, details.text
+        assert details.json()["business_allowed"] is False
+    finally:
+        srv._license_config_error = False
+
+
+@pytest.mark.asyncio
 async def test_license_settings_reject_invalid_ca(env) -> None:
     client, _srv, auth = env
     response = await client.put(
@@ -116,3 +136,35 @@ async def test_setup_license_config_persists_trust(patched_app_client) -> None:
     assert response.json()["configured"] is True
     assert srv.license_manager is not None
     assert (home / "license" / "trusted-keys.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_runtime_license_config_keeps_first_run_admin_creation_working(
+    patched_app_client,
+) -> None:
+    client, srv, home = patched_app_client
+    token = await wizard_token(client, home)
+    headers = {"Authorization": f"Bearer {token}"}
+    saved = await client.post(
+        "/api/setup/license-config",
+        headers=headers,
+        json={
+            "center_url": "https://license.example.test",
+            "trusted_keys_json": _keyring(),
+        },
+    )
+    assert saved.status_code == 200, saved.text
+    created = await client.post(
+        "/api/setup/initial-admin",
+        headers=headers,
+        json={"username": "admin", "password": "TestPass12"},
+    )
+    assert created.status_code == 201, created.text
+    finished = await client.post(
+        "/api/setup/finish",
+        headers=headers,
+        json={"provider_draft": None},
+    )
+    assert finished.status_code == 200, finished.text
+    assert srv.license_manager is not None
+    assert srv.license_manager.business_allowed is False

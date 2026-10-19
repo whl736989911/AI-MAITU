@@ -11,6 +11,8 @@ from octop.infra.utils.host_dirs import (
     assert_safe_host_path,
     host_home_dir,
     is_within_host_home,
+    license_managed_install,
+    license_protected_dir_covered_by,
     list_host_subdirs,
     mkdir_host_subdir,
     normalize_host_path,
@@ -317,3 +319,25 @@ def test_list_and_probe_return_posix_paths(tmp_path: Path) -> None:
     assert entries[0]["path"] == (tmp_path / "alpha").resolve().as_posix()
     probed = probe_host_root_dir(str(tmp_path))
     assert probed["path"] == tmp_path.resolve().as_posix()
+
+
+def test_license_managed_install_detects_wizard_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "maitu-home"
+    keys = home / "license" / "trusted-keys.json"
+    keys.parent.mkdir(parents=True)
+    keys.write_text("{}", encoding="utf-8")
+    (home / "config.json").write_text(
+        '{"license": {"trusted_keys_file": "license/trusted-keys.json", "state_dir": "license/state"}}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAITU_HOME", str(home))
+    monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
+    monkeypatch.delenv("MAITU_LICENSE_CENTER_URL", raising=False)
+    monkeypatch.setattr("octop.infra.utils.host_dirs.Path.home", lambda: tmp_path)
+
+    assert license_managed_install() is True
+    assert license_protected_dir_covered_by(str(home)) is True
+    assert license_protected_dir_covered_by(str(tmp_path / "workspace")) is False
+    assert license_protected_dir_covered_by(str(tmp_path.anchor)) is True

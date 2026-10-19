@@ -122,7 +122,9 @@ def validate_managed_environment(
     values: Mapping[str, str], *, previous: Mapping[str, str] | None = None
 ) -> None:
     """Keep deployment trust and host executable loading outside business configuration."""
-    if not os.environ.get("MAITU_LICENSE_TRUSTED_KEYS_FILE", "").strip():
+    from octop.infra.utils.host_dirs import license_managed_install
+
+    if not license_managed_install():
         return
     protected = {
         "PATH",

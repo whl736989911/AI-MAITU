@@ -99,7 +99,24 @@ def _require_manager(server: OctopServer) -> LicenseManager:
     return manager
 
 
+def _config_error_status() -> dict[str, Any]:
+    """Fail closed in the UI when managed trust could not be constructed."""
+    return {
+        "managed": True,
+        "state": "LOCKED",
+        "business_allowed": False,
+        "reason": "configuration",
+        "instance_id": "",
+        "license_id": None,
+        "license_version": None,
+        "license_expires_at": None,
+        "expiring_soon": False,
+    }
+
+
 def _public_status(server: OctopServer) -> dict[str, Any]:
+    if getattr(server, "_license_config_error", False):
+        return _config_error_status()
     manager = server.license_manager
     if manager is None:
         return _unmanaged_status()
@@ -134,6 +151,8 @@ async def license_details(
     request: Request, _admin: Any = Depends(require_license_details_admin)
 ) -> dict[str, Any]:
     server = get_server(request)
+    if getattr(server, "_license_config_error", False):
+        return _config_error_status()
     manager = server.license_manager
     if manager is None:
         return _unmanaged_status()
@@ -311,6 +330,11 @@ async def update_license_settings(
             allow_loopback=body.allow_loopback,
         )
         await server.reload_license_config()
+        if getattr(server, "_license_config_error", False):
+            raise OctopError(
+                ErrorCode.SLASH_BAD_ARGS,
+                "license configuration was written but could not be loaded",
+            )
     except ValueError as exc:
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
     return _license_settings_view(server)

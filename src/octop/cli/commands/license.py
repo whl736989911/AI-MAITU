@@ -23,13 +23,26 @@ from octop.infra.server import OctopServer
 
 
 def _manager() -> LicenseManager:
-    """Build the env-configured manager for this install (does not start monitoring)."""
+    """Build the configured manager for this install (does not start monitoring)."""
     from octop.infra.licensing import install_license_manager
+    from octop.infra.licensing.settings import load_license_settings
     from octop.infra.utils.paths import PathLayout
 
-    manager = LicenseManager.from_env(
-        default_state_dir=OctopServer.default_license_state_dir(PathLayout.from_env().root)
-    )
+    paths = PathLayout.from_env()
+    try:
+        settings = load_license_settings(
+            paths,
+            default_state_dir=OctopServer.default_license_state_dir(paths.root),
+        )
+        manager = LicenseManager(
+            settings.state_dir,
+            settings.trusted_keys_file,
+            settings.center_url,
+            settings.allow_loopback,
+            settings.ca_file,
+        )
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(f"invalid license configuration: {exc}") from exc
     install_license_manager(manager)
     return manager
 

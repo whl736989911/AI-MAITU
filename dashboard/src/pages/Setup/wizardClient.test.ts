@@ -51,4 +51,12 @@ describe("setup wizard bearer authorization", () => {
     expect(wizardSession.loadToken()).toBe("wizard");
     expect(wizardSession.loadSetupJwt()).toBe("jwt");
   });
+
+  it("maps a pre-license-step saved wizard position", () => {
+    sessionStorage.setItem("octop:wizard-step", "3");
+    expect(wizardSession.loadStep()).toBe(4);
+    wizardSession.saveStep(2);
+    expect(sessionStorage.getItem("octop:wizard-step")).toBeNull();
+    expect(wizardSession.loadStep()).toBe(2);
+  });
 });

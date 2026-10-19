@@ -11,8 +11,9 @@ license management, health, server timezone, i18n labels, update endpoints,
 user/identity administration, and read-only branding for the login screen.
 Non-``/api`` paths (dashboard SPA shell/assets) are never gated here.
 
-Unmanaged installs (no ``MAITU_LICENSE_TRUSTED_KEYS_FILE``) bypass the gate
-entirely: the middleware is not even installed.
+Unmanaged installs (no trusted keyring from env or the setup/settings config)
+pass through: the middleware is installed for every process but asks the server
+for the current gate state on each request.
 """
 
 from __future__ import annotations

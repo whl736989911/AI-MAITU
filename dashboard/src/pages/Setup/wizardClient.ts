@@ -43,7 +43,8 @@ export interface ProviderDraft {
 const TOKEN_KEY = "octop:wizard-token";
 const SETUP_JWT_KEY = "octop:setup-jwt";
 const DRAFT_KEY = "octop:wizard-draft";
-const STEP_KEY = "octop:wizard-step";
+const STEP_KEY = "octop:wizard-step-v2";
+const LEGACY_STEP_KEY = "octop:wizard-step";
 
 export const STEP_PASSWORD = 0;
 export const STEP_DATABASE = 1;
@@ -51,6 +52,17 @@ export const STEP_LICENSE = 2;
 export const STEP_ADMIN = 3;
 export const STEP_MODEL = 4;
 export const STEP_FINISH = 5;
+
+// Before the license step existed the saved numbers were password/database/
+// admin/model/finish. Map an in-progress old wizard instead of silently
+// resuming on a different screen after an upgrade.
+const LEGACY_STEP_MAP: Record<number, number> = {
+  0: STEP_PASSWORD,
+  1: STEP_DATABASE,
+  2: STEP_ADMIN,
+  3: STEP_MODEL,
+  4: STEP_FINISH,
+};
 
 export interface DatabaseSetupBody {
   driver: "sqlite" | "postgresql" | string;
@@ -94,10 +106,16 @@ export const wizardSession = {
   },
   saveStep(step: number): void {
     sessionStorage.setItem(STEP_KEY, String(step));
+    sessionStorage.removeItem(LEGACY_STEP_KEY);
   },
   loadStep(): number | null {
     const raw = sessionStorage.getItem(STEP_KEY);
-    if (raw == null) return null;
+    if (raw == null) {
+      const legacyRaw = sessionStorage.getItem(LEGACY_STEP_KEY);
+      if (legacyRaw == null) return null;
+      const legacy = Number(legacyRaw);
+      return Number.isFinite(legacy) ? LEGACY_STEP_MAP[legacy] ?? null : null;
+    }
     const n = Number(raw);
     return Number.isFinite(n) ? n : null;
   },
@@ -121,6 +139,7 @@ export const wizardSession = {
     sessionStorage.removeItem(SETUP_JWT_KEY);
     sessionStorage.removeItem(DRAFT_KEY);
     sessionStorage.removeItem(STEP_KEY);
+    sessionStorage.removeItem(LEGACY_STEP_KEY);
   },
 };
 

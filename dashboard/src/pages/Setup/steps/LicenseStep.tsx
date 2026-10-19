@@ -52,6 +52,13 @@ export default function LicenseStep({ onContinue, onSkip, onBack }: Props) {
   };
 
   const save = async (skip: boolean) => {
+    if (skip) {
+      // "Configure later" must not depend on a valid wizard token: the
+      // backend's skip branch makes no changes, and a stale session must not
+      // block the user from reaching the administrator step.
+      onSkip();
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
@@ -63,12 +70,11 @@ export default function LicenseStep({ onContinue, onSkip, onBack }: Props) {
           trusted_keys_json: trustedKeys.trim() || null,
           ca_pem: rootCa.trim() || null,
           allow_loopback: false,
-          skip,
+          skip: false,
         },
         token,
       );
-      if (skip) onSkip();
-      else onContinue();
+      onContinue();
     } catch (err) {
       setError(apiErrorMessage(err, t("wizard.license.saveFailed"), t));
     } finally {

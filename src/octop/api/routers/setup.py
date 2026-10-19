@@ -475,7 +475,7 @@ async def setup_license_config(
     _authorize_setup_mid_wizard(authorization, server)
     if body.skip:
         return {"ok": True, "configured": False, "skipped": True}
-    from octop.infra.licensing.settings import write_license_files
+    from octop.infra.licensing.settings import load_license_settings, write_license_files
 
     try:
         write_license_files(
@@ -486,7 +486,18 @@ async def setup_license_config(
             allow_loopback=body.allow_loopback,
         )
         await server.reload_license_config()
+        if getattr(server, "_license_config_error", False):
+            raise OctopError(
+                ErrorCode.SLASH_BAD_ARGS,
+                "license configuration was written but could not be loaded",
+            )
+        settings = load_license_settings(
+            server.paths,
+            default_state_dir=server.default_license_state_dir(server.paths.root),
+        )
     except ValueError as exc:
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
-    configured = (server.paths.root / "license" / "trusted-keys.json").is_file()
+    configured = (
+        settings.trusted_keys_file is not None and settings.trusted_keys_file.is_file()
+    )
     return {"ok": True, "configured": configured, "managed": server.license_manager is not None}
