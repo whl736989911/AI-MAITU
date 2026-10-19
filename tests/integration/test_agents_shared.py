@@ -25,6 +25,37 @@ async def _shared_agent(env) -> tuple[object, dict[str, str], dict[str, str], st
     return client, owner_auth, peer_auth, response.json()["agent_id"]
 
 
+_OWNER_ONLY_CONTENT = {
+    "memory.sqlite": "memory-db-secret",
+    "checkpoints.sqlite": "checkpoints-db-secret",
+    ".octop/sessions/x.jsonl": "session-log-secret",
+    ".octop-auth/token.json": "auth-token-secret",
+    ".env": "env-secret",
+}
+
+
+async def _shared_agent_with_system_files(
+    env,
+) -> tuple[object, dict[str, str], dict[str, str], str]:
+    """A shared agent whose workspace holds the owner-only system files."""
+    client, owner_auth, peer_auth, agent_id = await _shared_agent(env)
+    response = await client.patch(
+        f"/api/agents/{agent_id}",
+        headers=owner_auth,
+        json={"is_shared": True},
+    )
+    assert response.status_code == 200, response.text
+    for path, content in _OWNER_ONLY_CONTENT.items():
+        response = await client.put(
+            f"/api/agents/{agent_id}/workspace/file",
+            headers=owner_auth,
+            params={"path": path},
+            json={"content": content},
+        )
+        assert response.status_code == 200, response.text
+    return client, owner_auth, peer_auth, agent_id
+
+
 async def test_shared_agent_appears_for_other_user(env) -> None:
     client, owner_auth, peer_auth, agent_id = await _shared_agent(env)
 
@@ -295,3 +326,71 @@ async def test_a_directed_grant_puts_the_agent_in_the_list(env) -> None:
     stranger_list = await client.get("/api/agents", headers=stranger_auth)
     assert stranger_list.status_code == 200, stranger_list.text
     assert agent_id not in {row["agent_id"] for row in stranger_list.json()}
+
+
+async def test_peer_cannot_read_shared_agent_system_files(env) -> None:
+    client, _owner_auth, peer_auth, agent_id = await _shared_agent_with_system_files(env)
+
+    for path in _OWNER_ONLY_CONTENT:
+        for route in ("file", "download"):
+            response = await client.get(
+                f"/api/agents/{agent_id}/workspace/{route}",
+                headers=peer_auth,
+                params={"path": path},
+            )
+            assert response.status_code == 403, (
+                f"{route} {path}: {response.status_code} {response.text}"
+            )
+
+    # Windows ignores trailing dots/spaces and resolves NTFS stream syntax, so
+    # aliases of the reserved names must be refused too.
+    for path in (
+        "memory.sqlite.",
+        "checkpoints.sqlite.",
+        ".env.",
+        ".octop.",
+        "memory.sqlite::$DATA",
+    ):
+        response = await client.get(
+            f"/api/agents/{agent_id}/workspace/file",
+            headers=peer_auth,
+            params={"path": path},
+        )
+        assert response.status_code == 403, f"alias {path}: {response.status_code} {response.text}"
+
+    # The document and media-preview read routes enforce the same guard.
+    response = await client.get(
+        f"/api/agents/{agent_id}/workspace/doc",
+        headers=peer_auth,
+        params={"path": ".octop/sessions/x.jsonl"},
+    )
+    assert response.status_code == 403, response.text
+    response = await client.get(
+        f"/api/agents/{agent_id}/media/preview",
+        headers=peer_auth,
+        params={"source": "memory.sqlite"},
+    )
+    assert response.status_code == 403, response.text
+
+
+async def test_owner_can_read_shared_agent_system_files(env) -> None:
+    client, owner_auth, _peer_auth, agent_id = await _shared_agent_with_system_files(env)
+
+    for path, content in _OWNER_ONLY_CONTENT.items():
+        response = await client.get(
+            f"/api/agents/{agent_id}/workspace/file",
+            headers=owner_auth,
+            params={"path": path},
+        )
+        assert response.status_code == 200, f"file {path}: {response.status_code} {response.text}"
+        assert response.json()["content"] == content
+
+        response = await client.get(
+            f"/api/agents/{agent_id}/workspace/download",
+            headers=owner_auth,
+            params={"path": path},
+        )
+        assert response.status_code == 200, (
+            f"download {path}: {response.status_code} {response.text}"
+        )
+        assert response.content == content.encode()

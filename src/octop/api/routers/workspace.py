@@ -14,7 +14,7 @@ from fastapi.responses import Response, StreamingResponse
 from harness_agent.backends.utils import BackendOperationNotSupportedError
 from pydantic import BaseModel
 
-from octop.api.common.agent import AgentCapability
+from octop.api.common.agent import AgentCapability, user_owns_agent
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.common.content_disposition import content_disposition
 from octop.api.common.memory_client import feature_memory_reason
@@ -43,6 +43,16 @@ logger = logging.getLogger(__name__)
 _PROTECTED_PREFIX = "_builtin_skills"
 _SHARED_MEMORY_FILES = frozenset({"memory.md"})
 _SHARED_SQLITE_FILES = frozenset({"memory.sqlite", ".octop/memory.sqlite"})
+
+# Read-side system paths stay owner/admin-only even on a shared agent. The
+# harness stores the logical names (``memory.sqlite``, ``sessions/…``) under
+# ``.octop`` via ``BackendWorkspace``, and legacy workspaces keep some of them
+# at the workspace root, so both forms are rejected. Matching is
+# workspace-relative and case-insensitive.
+_OWNER_ONLY_PREFIXES = frozenset({".octop", ".octop-auth"})
+_OWNER_ONLY_DIRS = frozenset({"sessions"})
+_OWNER_ONLY_FILES = frozenset({".env"})
+_OWNER_ONLY_SQLITE_STEMS = ("memory.sqlite", "checkpoints.sqlite")
 
 
 async def _protect_published_memory(
@@ -119,6 +129,61 @@ def _assert_workspace_mutable(path: str, *, workspace_dir: Path) -> str:
     ):
         raise OctopError(ErrorCode.FORBIDDEN, f"cannot modify {_PROTECTED_PREFIX!r} paths")
     return io_path
+
+
+def _workspace_relative_path(path: str, *, workspace_dir: Path) -> str:
+    """Return *path* as a case-folded workspace-relative POSIX path."""
+    root = workspace_dir.resolve()
+    candidate = Path(path)
+    if not is_host_absolute_path(path):
+        candidate = root / path
+    try:
+        return candidate.resolve().relative_to(root).as_posix().casefold()
+    except (OSError, ValueError):
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            f"path is outside agent workspace: {path!r}",
+        ) from None
+
+
+def _is_owner_only_workspace_path(rel: str) -> bool:
+    # Windows ignores trailing dots/spaces and resolves NTFS stream suffixes
+    # (``memory.sqlite.`` / ``memory.sqlite::$DATA`` both open the file), so
+    # normalize the first segment before the reserved-name comparison.
+    first = rel.split("/", 1)[0].split(":", 1)[0].rstrip(" .")
+    if first in _OWNER_ONLY_PREFIXES or first in _OWNER_ONLY_DIRS or first in _OWNER_ONLY_FILES:
+        return True
+    return any(first == stem or first.startswith(f"{stem}-") for stem in _OWNER_ONLY_SQLITE_STEMS)
+
+
+def _assert_workspace_readable(
+    path: str,
+    *,
+    agent_id: str,
+    user: Any,
+    server: Any,
+    workspace_dir: Path,
+) -> None:
+    """Reject non-owner reads of workspace system files.
+
+    A shared agent stays readable for ordinary files (``inbound/``,
+    ``outbound/``, user documents), but its memory databases, session logs,
+    checkpoints, and credentials belong to the owner (or an admin).
+    *path* is the value returned by :func:`_workspace_io_path`.
+    """
+    if not _is_owner_only_workspace_path(
+        _workspace_relative_path(path, workspace_dir=workspace_dir)
+    ):
+        return
+    if user.is_admin:
+        return
+    row = server.services.agent_repo.get(agent_id)
+    if row is not None and user_owns_agent(row, user):
+        return
+    raise OctopError(
+        ErrorCode.FORBIDDEN,
+        f"workspace system path is owner-only: {path!r}",
+    )
 
 
 def _map_workspace_fs_error(exc: Exception, *, operation: str, path: str) -> OctopError:
@@ -251,6 +316,13 @@ async def read_file(
     ws = await require_running_workspace(agent_id, user=user, as_user=as_user, server=server)
     io_path = _workspace_io_path(
         path, from_workspace=from_workspace, workspace_dir=ws.workspace_dir
+    )
+    _assert_workspace_readable(
+        io_path,
+        agent_id=agent_id,
+        user=user,
+        server=server,
+        workspace_dir=ws.workspace_dir,
     )
     content = await ws.aread_text(io_path)
     if content is None:
@@ -454,6 +526,13 @@ async def download_file(
     io_path = _workspace_io_path(
         path, from_workspace=from_workspace, workspace_dir=ws.workspace_dir
     )
+    _assert_workspace_readable(
+        io_path,
+        agent_id=agent_id,
+        user=user,
+        server=server,
+        workspace_dir=ws.workspace_dir,
+    )
     try:
         file_blob = await ws.adownload_bytes(io_path)
     except PermissionError as exc:
@@ -481,6 +560,13 @@ async def read_doc(
     ws = await require_running_workspace(agent_id, user=user, as_user=as_user, server=server)
     io_path = _workspace_io_path(
         path, from_workspace=from_workspace, workspace_dir=ws.workspace_dir
+    )
+    _assert_workspace_readable(
+        io_path,
+        agent_id=agent_id,
+        user=user,
+        server=server,
+        workspace_dir=ws.workspace_dir,
     )
     converter = _ensure_editable_doc(path)
     try:
@@ -542,7 +628,14 @@ async def preview_media(
 ) -> StreamingResponse:
     """Stream an image or video inline for dashboard tool-result previews."""
     ws = await require_running_workspace(agent_id, user=user, as_user=as_user, server=server)
-    _workspace_io_path(source, workspace_dir=ws.workspace_dir)
+    io_path = _workspace_io_path(source, workspace_dir=ws.workspace_dir)
+    _assert_workspace_readable(
+        io_path,
+        agent_id=agent_id,
+        user=user,
+        server=server,
+        workspace_dir=ws.workspace_dir,
+    )
     payload = await resolve_preview_payload(
         source=source,
         workspace=ws,
