@@ -24,6 +24,7 @@ import {
   Github,
   RefreshCw,
   KeyRound,
+  ShieldCheck,
 } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
@@ -48,6 +49,7 @@ import { userCan } from "../utils/permissions";
 import feishuIcon from "../assets/channels/feishu.svg";
 import dingtalkIcon from "../assets/channels/dingtalk.svg";
 import wecomIcon from "../assets/channels/wecom.svg";
+import { requestLicenseDialog } from "./LicenseGate/events";
 import styles from "./AvatarDropdown.module.less";
 import { BRAND } from "../brand.generated";
 
@@ -400,6 +402,20 @@ export default function AvatarDropdown({
         <KeyRound size={16} strokeWidth={1.8} />
         <span>{t("account.changePassword")}</span>
       </button>
+
+      {(role === "admin" || role === "enterprise_admin") && (
+        <button
+          type="button"
+          className={styles.menuItem}
+          onClick={() => {
+            setMenuOpen(false);
+            requestLicenseDialog();
+          }}
+        >
+          <ShieldCheck size={16} strokeWidth={1.8} />
+          <span>{t("license.title")}</span>
+        </button>
+      )}
 
       {userCan(user, "update") && (
         <button

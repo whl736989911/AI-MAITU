@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useState } from "react";
-import { Alert, Button, Card, Input, Space, Spin, Typography } from "antd";
+import {
+  Alert,
+  Button,
+  Card,
+  Input,
+  Modal,
+  Space,
+  Spin,
+  Typography,
+} from "antd";
 import { useTranslation } from "react-i18next";
 import { useCurrentUser } from "../../hooks/useCurrentUser";
 import { useServerTimezone } from "../../hooks/useServerTimezone";
@@ -11,6 +20,7 @@ import {
 } from "../../api/modules/licensing";
 import { LICENSE_LOCKED_EVENT } from "../../api/request";
 import { apiErrorMessage } from "../../utils/apiError";
+import { LICENSE_OPEN_EVENT } from "./events";
 import styles from "./index.module.less";
 
 const { TextArea } = Input;
@@ -63,6 +73,7 @@ export default function LicenseGate({
   const [busy, setBusy] = useState(false);
   const [lockedSignal, setLockedSignal] = useState(false);
   const [reminder, setReminder] = useState<LicenseReminder | null>(null);
+  const [detailsOpen, setDetailsOpen] = useState(false);
 
   const refreshSnapshot = useCallback(async () => {
     try {
@@ -110,12 +121,18 @@ export default function LicenseGate({
       );
       void refreshSnapshot();
     };
+    const onOpenLicense = () => {
+      setDetailsOpen(true);
+      void refreshSnapshot();
+    };
     window.addEventListener("focus", onFocus);
     window.addEventListener(LICENSE_LOCKED_EVENT, onLicenseLocked);
+    window.addEventListener(LICENSE_OPEN_EVENT, onOpenLicense);
     return () => {
       window.clearInterval(interval);
       window.removeEventListener("focus", onFocus);
       window.removeEventListener(LICENSE_LOCKED_EVENT, onLicenseLocked);
+      window.removeEventListener(LICENSE_OPEN_EVENT, onOpenLicense);
     };
   }, [refreshSnapshot, refreshReminder]);
 
@@ -217,133 +234,150 @@ export default function LicenseGate({
     );
   }
 
-  if (!snapshot.managed) return <>{children}</>;
-
-  if (snapshot.business_allowed && !lockedSignal) {
+  if (!snapshot.managed) {
     return (
       <>
-        <div className={styles.statusDisclosure}>
-          <details>
-            <summary>
-              {t("license.title")}:{" "}
-              {t(`license.state.${snapshot.state ?? "ACTIVE"}`)}
-            </summary>
-            <div className={styles.statusDetails}>
-              <div>
-                <strong>{t("license.instanceId")}:</strong>{" "}
-                <code>{snapshot.instance_id}</code>
-              </div>
-              {snapshot.license_id && (
-                <div>
-                  <strong>{t("license.licenseId")}:</strong>{" "}
-                  <code>{snapshot.license_id}</code>
-                </div>
-              )}
-              {snapshot.license_version != null && (
-                <div>
-                  <strong>{t("license.version")}:</strong>{" "}
-                  {snapshot.license_version}
-                </div>
-              )}
-              {expiration != null && (
-                <div>
-                  <strong>{t("license.expiresAt")}:</strong>{" "}
-                  {formatDate(expiration)}
-                </div>
-              )}
-              {snapshot.credential_type && (
-                <div>
-                  <strong>{t("license.credentialType")}:</strong>{" "}
-                  {t(`license.credential.${snapshot.credential_type}`)}
-                </div>
-              )}
-              {snapshot.last_sync_at != null && (
-                <div>
-                  <strong>{t("license.lastSync")}:</strong>{" "}
-                  {formatDate(snapshot.last_sync_at)}
-                </div>
-              )}
-              {snapshot.sync_error && (
-                <div className={styles.error}>{snapshot.sync_error}</div>
-              )}
-              {isAdmin && (
-                <Space wrap>
-                  <Button
-                    size="small"
-                    onClick={() => void runAction(() => licensingApi.refresh())}
-                    loading={busy}
-                  >
-                    {t("license.syncOnline")}
-                  </Button>
-                  <Button
-                    size="small"
-                    onClick={() => void exportOfflineRequest()}
-                    loading={busy}
-                  >
-                    {t("license.exportOfflineRequest")}
-                  </Button>
-                </Space>
-              )}
-              {isAdmin && (
-                <div className={styles.offlineControls}>
-                  {offlineRequest && (
-                    <p className={styles.helpText}>
-                      {t("license.exportedRequest", {
-                        fingerprint: offlineRequest.key_fingerprint,
-                      })}
-                    </p>
-                  )}
-                  <label
-                    className={styles.fieldLabel}
-                    htmlFor="license-offline-file"
-                  >
-                    {t("license.chooseOfflineFile")}
-                  </label>
-                  <input
-                    id="license-offline-file"
-                    type="file"
-                    accept=".json,.txt,application/json,text/plain"
-                    disabled={busy}
-                    onChange={(event) =>
-                      void importFile(event.currentTarget.files?.[0])
-                    }
-                  />
-                  <label
-                    className={styles.fieldLabel}
-                    htmlFor="license-offline-import"
-                  >
-                    {t("license.offlineImport")}
-                  </label>
-                  <TextArea
-                    id="license-offline-import"
-                    autoSize={{ minRows: 2, maxRows: 6 }}
-                    value={offlineToken}
-                    onChange={(event) => setOfflineToken(event.target.value)}
-                    placeholder={t("license.offlineImportPlaceholder")}
-                    disabled={busy}
-                  />
-                  <Button
-                    onClick={() =>
-                      void runAction(() =>
-                        licensingApi.importOffline(toToken(offlineToken)),
-                      )
-                    }
-                    disabled={!offlineToken.trim() || busy}
-                    loading={busy}
-                  >
-                    {t("license.importOffline")}
-                  </Button>
-                </div>
-              )}
-              {actionError && (
-                <Alert type="error" showIcon message={actionError} />
-              )}
-              {loadError && (
-                <Alert type="warning" showIcon message={loadError} />
-              )}
-            </div>
-          </details>
+        {children}
+        {detailsOpen && (
+          <Modal
+            open
+            title={t("license.title")}
+            footer={null}
+            onCancel={() => setDetailsOpen(false)}
+          >
+            <Alert type="info" showIcon message={t("license.unmanaged")} />
+          </Modal>
+        )}
+      </>
+    );
+  }
+
+  if (snapshot.business_allowed && !lockedSignal) {
+    // The healthy state is not a pinned banner. Keep license details one
+    // click away in the account menu; surface the bar only when the user
+    // needs to act (expiry warning or a sync failure).
+    const licenseDetails = (
+      <div className={styles.statusDetails}>
+        <div>
+          <strong>{t("license.instanceId")}:</strong>{" "}
+          <code>{snapshot.instance_id}</code>
         </div>
+        {snapshot.license_id && (
+          <div>
+            <strong>{t("license.licenseId")}:</strong>{" "}
+            <code>{snapshot.license_id}</code>
+          </div>
+        )}
+        {snapshot.license_version != null && (
+          <div>
+            <strong>{t("license.version")}:</strong> {snapshot.license_version}
+          </div>
+        )}
+        {expiration != null && (
+          <div>
+            <strong>{t("license.expiresAt")}:</strong> {formatDate(expiration)}
+          </div>
+        )}
+        {snapshot.credential_type && (
+          <div>
+            <strong>{t("license.credentialType")}:</strong>{" "}
+            {t(`license.credential.${snapshot.credential_type}`)}
+          </div>
+        )}
+        {snapshot.last_sync_at != null && (
+          <div>
+            <strong>{t("license.lastSync")}:</strong>{" "}
+            {formatDate(snapshot.last_sync_at)}
+          </div>
+        )}
+        {snapshot.sync_error && (
+          <div className={styles.error}>{snapshot.sync_error}</div>
+        )}
+        {isAdmin && (
+          <Space wrap>
+            <Button
+              size="small"
+              onClick={() => void runAction(() => licensingApi.refresh())}
+              loading={busy}
+            >
+              {t("license.syncOnline")}
+            </Button>
+            <Button
+              size="small"
+              onClick={() => void exportOfflineRequest()}
+              loading={busy}
+            >
+              {t("license.exportOfflineRequest")}
+            </Button>
+          </Space>
+        )}
+        {isAdmin && (
+          <div className={styles.offlineControls}>
+            {offlineRequest && (
+              <p className={styles.helpText}>
+                {t("license.exportedRequest", {
+                  fingerprint: offlineRequest.key_fingerprint,
+                })}
+              </p>
+            )}
+            <label className={styles.fieldLabel} htmlFor="license-offline-file">
+              {t("license.chooseOfflineFile")}
+            </label>
+            <input
+              id="license-offline-file"
+              type="file"
+              accept=".json,.txt,application/json,text/plain"
+              disabled={busy}
+              onChange={(event) =>
+                void importFile(event.currentTarget.files?.[0])
+              }
+            />
+            <label
+              className={styles.fieldLabel}
+              htmlFor="license-offline-import"
+            >
+              {t("license.offlineImport")}
+            </label>
+            <TextArea
+              id="license-offline-import"
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              value={offlineToken}
+              onChange={(event) => setOfflineToken(event.target.value)}
+              placeholder={t("license.offlineImportPlaceholder")}
+              disabled={busy}
+            />
+            <Button
+              onClick={() =>
+                void runAction(() =>
+                  licensingApi.importOffline(toToken(offlineToken)),
+                )
+              }
+              disabled={!offlineToken.trim() || busy}
+              loading={busy}
+            >
+              {t("license.importOffline")}
+            </Button>
+          </div>
+        )}
+        {actionError && <Alert type="error" showIcon message={actionError} />}
+        {loadError && <Alert type="warning" showIcon message={loadError} />}
+      </div>
+    );
+    const showStatusBar =
+      Boolean(snapshot.sync_error) || Boolean(snapshot.expiring_soon);
+    return (
+      <>
+        {showStatusBar && !detailsOpen && (
+          <div className={styles.statusDisclosure}>
+            <details>
+              <summary>
+                {t("license.title")}:{" "}
+                {t(`license.state.${snapshot.state ?? "ACTIVE"}`)}
+              </summary>
+              {licenseDetails}
+            </details>
+          </div>
+        )}
         {reminder && (
           <div className={styles.reminder}>
             <Alert
@@ -373,6 +407,17 @@ export default function LicenseGate({
           </div>
         )}
         {children}
+        {detailsOpen && (
+          <Modal
+            open
+            title={t("license.title")}
+            footer={null}
+            width={640}
+            onCancel={() => setDetailsOpen(false)}
+          >
+            {licenseDetails}
+          </Modal>
+        )}
       </>
     );
   }

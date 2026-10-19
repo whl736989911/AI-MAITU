@@ -259,7 +259,8 @@
     "reminderAdmin": "许可证将于 {{date}} 到期（剩余 {{remaining}}）。请在到期前续期，以免业务操作被锁定。",
     "reminderUser": "许可证将于 {{date}} 到期（剩余 {{remaining}}），请联系管理员安排续期。",
     "remainingTime": "{{days}} 天 {{hours}} 小时 {{minutes}} 分钟",
-    "title": "许可证状态"
+    "title": "许可证状态",
+    "unmanaged": "此实例未启用许可证管理。"
   },
   "nav": {
     "chat": "对话",

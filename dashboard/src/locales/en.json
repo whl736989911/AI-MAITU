@@ -259,7 +259,8 @@
     "reminderAdmin": "This license expires on {{date}} ({{remaining}} remaining). Renew it before expiration to keep business operations available.",
     "reminderUser": "This license expires on {{date}} ({{remaining}} remaining). Contact your administrator to arrange renewal.",
     "remainingTime": "{{days}}d {{hours}}h {{minutes}}m",
-    "title": "License status"
+    "title": "License status",
+    "unmanaged": "License management is not enabled for this instance."
   },
   "nav": {
     "chat": "Conversation",

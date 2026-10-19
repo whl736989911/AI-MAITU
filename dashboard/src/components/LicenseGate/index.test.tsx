@@ -39,6 +39,7 @@ vi.mock("react-i18next", () => {
     "license.lockedDescription": "Business features require a valid license.",
     "license.statusSummary": "{{state}} — {{reason}}",
     "license.state.UNACTIVATED": "Unactivated",
+    "license.state.ACTIVE": "Active",
     "license.reason.unactivated":
       "No license has been activated for this instance.",
     "license.instanceId": "Instance ID",
@@ -131,6 +132,34 @@ describe("LicenseGate", () => {
     expect(await screen.findByText("business-shell")).toBeInTheDocument();
     expect(mocks.getStatus).toHaveBeenCalled();
     expect(mocks.getDetails).not.toHaveBeenCalled();
+  });
+
+  it("does not pin a healthy license status above the app", async () => {
+    render(
+      <LicenseGate>
+        <div>business-shell</div>
+      </LicenseGate>,
+    );
+
+    expect(await screen.findByText("business-shell")).toBeInTheDocument();
+    expect(screen.queryByText("License status")).not.toBeInTheDocument();
+    expect(screen.queryByText("Instance ID")).not.toBeInTheDocument();
+  });
+
+  it("shows license details in a dialog requested from the account menu", async () => {
+    render(
+      <LicenseGate>
+        <div>business-shell</div>
+      </LicenseGate>,
+    );
+
+    await screen.findByText("business-shell");
+    act(() => {
+      window.dispatchEvent(new Event("maitu:license-open"));
+    });
+
+    expect(await screen.findByText("License status")).toBeInTheDocument();
+    expect(screen.getAllByText(/Instance ID/).length).toBeGreaterThan(0);
   });
 
   it("hides business routes while locked and gives administrators activation controls", async () => {
