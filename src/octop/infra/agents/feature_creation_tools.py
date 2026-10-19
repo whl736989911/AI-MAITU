@@ -199,7 +199,7 @@ def build_feature_creation_tools(*, registry: Any, repos: Any) -> list[Structure
                     "name": created.name,
                     "state": created.last_state or "unknown",
                     "conversation": f"Open the new feature agent conversation for {created.agent_id}.",
-                    "workspace": f"The feature's own workspace is attached to agent {created.agent_id}; use its conversation to write SOUL.md and .octop/workflow.json.",
+                    "workspace": f"The feature's own workspace is attached to agent {created.agent_id}; use its conversation to write SOUL.md and .maitu/workflow.json.",
                 }
             )
         except Exception as exc:
@@ -269,7 +269,7 @@ def build_feature_creation_tools(*, registry: Any, repos: Any) -> list[Structure
                 {
                     "extracted_to": dest,
                     "files": tree,
-                    "next": "Read the extracted README.md or entry-point files first, then inspect relevant skills/<slug>/SKILL.md and agents/<slug>.md. Write feature instructions at workspace-root SOUL.md/AGENTS.md and define the runnable feature in .octop/workflow.json using feature_workflow_save.",
+                    "next": "Read the extracted README.md or entry-point files first, then inspect relevant skills/<slug>/SKILL.md and agents/<slug>.md. Write feature instructions at workspace-root SOUL.md/AGENTS.md and define the runnable feature in .maitu/workflow.json using feature_workflow_save.",
                 }
             )
         except Exception as exc:

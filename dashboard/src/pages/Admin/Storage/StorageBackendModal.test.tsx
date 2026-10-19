@@ -108,7 +108,7 @@ describe("<StorageBackendDrawer /> docker config", () => {
       memory: "256m",
       // … the sandbox keys the form owns are written …
       sandbox_scope: "agent",
-      sandbox_prefix: "octop_sandbox",
+      sandbox_prefix: "maitu_sandbox",
       // … and a sandbox_id left over from another scope is still pruned.
     });
   });
@@ -128,7 +128,7 @@ describe("<StorageBackendDrawer /> docker config", () => {
       cpus: "2",
       // … and the sandbox keys are still written on top of it.
       sandbox_scope: "agent",
-      sandbox_prefix: "octop_sandbox",
+      sandbox_prefix: "maitu_sandbox",
     });
   });
 

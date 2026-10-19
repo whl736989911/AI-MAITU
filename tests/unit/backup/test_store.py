@@ -19,25 +19,29 @@ from octop.infra.backup.store import (
     write_backup_file,
 )
 from octop.infra.errors import OctopError
+from octop.infra.utils.legacy_names import (
+    LEGACY_AUTO_BACKUP_PREFIX,
+    LEGACY_MANUAL_BACKUP_PREFIX,
+)
 from octop.infra.utils.paths import PathLayout
 
 
 def test_backups_dir_paths(tmp_path: Path) -> None:
-    layout = PathLayout(tmp_path / ".octop")
-    assert layout.backups_dir == tmp_path / ".octop" / "backups"
+    layout = PathLayout(tmp_path / ".maitu")
+    assert layout.backups_dir == tmp_path / ".maitu" / "backups"
     out = layout.ensure_backups_dir()
     assert out.is_dir()
     assert layout.backup_file("x.tar.gz") == layout.backups_dir / "x.tar.gz"
 
 
 def test_store_roundtrip(tmp_path: Path) -> None:
-    layout = PathLayout(tmp_path / ".octop")
-    write_backup_file(layout, "octop-backup-test.tar.gz", b"payload")
+    layout = PathLayout(tmp_path / ".maitu")
+    write_backup_file(layout, "maitu-backup-test.tar.gz", b"payload")
     items = list_backup_files(layout)
     assert len(items) == 1
-    assert items[0].name == "octop-backup-test.tar.gz"
-    assert read_backup_file(layout, "octop-backup-test.tar.gz") == b"payload"
-    delete_backup_file(layout, "octop-backup-test.tar.gz")
+    assert items[0].name == "maitu-backup-test.tar.gz"
+    assert read_backup_file(layout, "maitu-backup-test.tar.gz") == b"payload"
+    delete_backup_file(layout, "maitu-backup-test.tar.gz")
     assert list_backup_files(layout) == []
 
 
@@ -49,8 +53,8 @@ def test_reject_unsafe_filename() -> None:
 
 
 def test_created_at_from_canonical_filename(tmp_path: Path) -> None:
-    layout = PathLayout(tmp_path / ".octop")
-    name = "octop-backup-20260721T013000Z.tar.gz"
+    layout = PathLayout(tmp_path / ".maitu")
+    name = "maitu-backup-20260721T013000Z.tar.gz"
     write_backup_file(layout, name, b"x")
     items = list_backup_files(layout)
     assert len(items) == 1
@@ -59,7 +63,7 @@ def test_created_at_from_canonical_filename(tmp_path: Path) -> None:
 
 
 def test_created_at_falls_back_without_timestamp_in_name(tmp_path: Path) -> None:
-    layout = PathLayout(tmp_path / ".octop")
+    layout = PathLayout(tmp_path / ".maitu")
     write_backup_file(layout, "manual-upload.tar.gz", b"x")
     items = list_backup_files(layout)
     assert len(items) == 1
@@ -69,50 +73,68 @@ def test_created_at_falls_back_without_timestamp_in_name(tmp_path: Path) -> None
 
 
 def test_created_at_falls_back_on_invalid_filename_stamp(tmp_path: Path) -> None:
-    layout = PathLayout(tmp_path / ".octop")
+    layout = PathLayout(tmp_path / ".maitu")
     # Matches regex but is not a real calendar datetime
-    write_backup_file(layout, "octop-backup-20261399T999999Z.tar.gz", b"x")
+    write_backup_file(layout, "maitu-backup-20261399T999999Z.tar.gz", b"x")
     items = list_backup_files(layout)
     assert len(items) == 1
     datetime.fromisoformat(items[0].created_at)
 
 
 def test_created_at_from_auto_filename(tmp_path: Path) -> None:
-    layout = PathLayout(tmp_path / ".octop")
-    name = "octop-auto-backup-20260721T020000Z.tar.gz"
+    layout = PathLayout(tmp_path / ".maitu")
+    name = "maitu-auto-backup-20260721T020000Z.tar.gz"
     write_backup_file(layout, name, b"x")
     items = list_backup_files(layout)
     assert len(items) == 1
     assert items[0].created_at == "2026-07-21T02:00:00+00:00"
     assert is_auto_backup_filename(name)
-    assert not is_auto_backup_filename("octop-backup-20260721T020000Z.tar.gz")
+    assert not is_auto_backup_filename("maitu-backup-20260721T020000Z.tar.gz")
 
 
 def test_prune_auto_backups_keeps_newest_and_spares_manual(tmp_path: Path) -> None:
-    layout = PathLayout(tmp_path / ".octop")
-    write_backup_file(layout, "octop-backup-20260101T000000Z.tar.gz", b"manual")
-    write_backup_file(layout, "octop-auto-backup-20260101T010000Z.tar.gz", b"a1")
-    write_backup_file(layout, "octop-auto-backup-20260102T010000Z.tar.gz", b"a2")
-    write_backup_file(layout, "octop-auto-backup-20260103T010000Z.tar.gz", b"a3")
+    layout = PathLayout(tmp_path / ".maitu")
+    write_backup_file(layout, "maitu-backup-20260101T000000Z.tar.gz", b"manual")
+    write_backup_file(layout, "maitu-auto-backup-20260101T010000Z.tar.gz", b"a1")
+    write_backup_file(layout, "maitu-auto-backup-20260102T010000Z.tar.gz", b"a2")
+    write_backup_file(layout, "maitu-auto-backup-20260103T010000Z.tar.gz", b"a3")
 
     deleted = prune_auto_backups(layout, keep=2)
-    assert set(deleted) == {"octop-auto-backup-20260101T010000Z.tar.gz"}
+    assert set(deleted) == {"maitu-auto-backup-20260101T010000Z.tar.gz"}
     names = {f.name for f in list_backup_files(layout)}
     assert names == {
-        "octop-backup-20260101T000000Z.tar.gz",
-        "octop-auto-backup-20260102T010000Z.tar.gz",
-        "octop-auto-backup-20260103T010000Z.tar.gz",
+        "maitu-backup-20260101T000000Z.tar.gz",
+        "maitu-auto-backup-20260102T010000Z.tar.gz",
+        "maitu-auto-backup-20260103T010000Z.tar.gz",
     }
 
 
 def test_prune_auto_backups_keep_zero_deletes_all_auto(tmp_path: Path) -> None:
-    layout = PathLayout(tmp_path / ".octop")
-    write_backup_file(layout, "octop-backup-20260101T000000Z.tar.gz", b"manual")
-    write_backup_file(layout, "octop-auto-backup-20260101T010000Z.tar.gz", b"a1")
+    layout = PathLayout(tmp_path / ".maitu")
+    write_backup_file(layout, "maitu-backup-20260101T000000Z.tar.gz", b"manual")
+    write_backup_file(layout, "maitu-auto-backup-20260101T010000Z.tar.gz", b"a1")
     deleted = prune_auto_backups(layout, keep=0)
-    assert deleted == ["octop-auto-backup-20260101T010000Z.tar.gz"]
+    assert deleted == ["maitu-auto-backup-20260101T010000Z.tar.gz"]
     names = {f.name for f in list_backup_files(layout)}
-    assert names == {"octop-backup-20260101T000000Z.tar.gz"}
+    assert names == {"maitu-backup-20260101T000000Z.tar.gz"}
+
+
+def test_legacy_backup_names_are_still_recognized(tmp_path: Path) -> None:
+    """LEGACY: archives created before the rename stay listable, datable and prunable."""
+    layout = PathLayout(tmp_path / ".maitu")
+    legacy_auto = f"{LEGACY_AUTO_BACKUP_PREFIX}20260101T010000Z.tar.gz"
+    legacy_manual = f"{LEGACY_MANUAL_BACKUP_PREFIX}20260101T000000Z.tar.gz"
+    write_backup_file(layout, legacy_auto, b"auto")
+    write_backup_file(layout, legacy_manual, b"manual")
+
+    assert is_auto_backup_filename(legacy_auto)
+    assert not is_auto_backup_filename(legacy_manual)
+    item = next(entry for entry in list_backup_files(layout) if entry.name == legacy_auto)
+    assert item.created_at == "2026-01-01T01:00:00+00:00"
+
+    deleted = prune_auto_backups(layout, keep=0)
+    assert deleted == [legacy_auto]
+    assert (layout.backups_dir / legacy_manual).exists()
 
 
 def test_peek_backup_contents_reads_manifest(tmp_path: Path) -> None:
@@ -121,7 +143,7 @@ def test_peek_backup_contents_reads_manifest(tmp_path: Path) -> None:
     from octop.infra.db.migrate import run_migrations
     from octop.infra.db.pool import SqlitePool
 
-    layout = PathLayout(tmp_path / ".octop")
+    layout = PathLayout(tmp_path / ".maitu")
     layout.root.mkdir()
     pool = SqlitePool(layout.db)
     run_migrations(pool)
@@ -148,7 +170,7 @@ def test_peek_backup_contents_reads_manifest(tmp_path: Path) -> None:
         includes_knowledge=False,
         includes_chats=False,
     )
-    write_backup_file(layout, "octop-backup-peek.tar.gz", archive.read_bytes())
+    write_backup_file(layout, "maitu-backup-peek.tar.gz", archive.read_bytes())
     item = list_backup_files(layout)[0]
     assert item.includes_config is False
     assert item.includes_workspaces is False

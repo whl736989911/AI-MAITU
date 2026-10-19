@@ -54,16 +54,16 @@ def test_sniff_and_reject() -> None:
 @pytest.mark.asyncio
 async def test_write_read_delete_roundtrip() -> None:
     workspace = _MemoryWorkspace()
-    assert await write_workspace_avatar(workspace, JPEG) == ".octop/avatar.jpg"
+    assert await write_workspace_avatar(workspace, JPEG) == ".maitu/avatar.jpg"
     found = await read_workspace_avatar(workspace)
     assert found is not None
     data, media_type = found
     assert media_type == "image/jpeg"
     assert data == JPEG
-    assert workspace.files == {".octop/avatar.jpg": JPEG}
+    assert workspace.files == {".maitu/avatar.jpg": JPEG}
     assert agent_avatar_api_path("agent01") == "/api/agents/agent01/avatar"
     await write_workspace_avatar(workspace, PNG)
-    assert set(workspace.files) == {".octop/avatar.png"}
+    assert set(workspace.files) == {".maitu/avatar.png"}
     await delete_workspace_avatar(workspace)
     assert await read_workspace_avatar(workspace) is None
 
@@ -75,14 +75,24 @@ async def test_write_skips_unsupported_mkdir() -> None:
             raise BackendOperationNotSupportedError("mkdir", "CosBackend")
 
     workspace = _NoMkdir()
-    assert await write_workspace_avatar(workspace, PNG) == ".octop/avatar.png"
-    assert workspace.files[".octop/avatar.png"] == PNG
+    assert await write_workspace_avatar(workspace, PNG) == ".maitu/avatar.png"
+    assert workspace.files[".maitu/avatar.png"] == PNG
 
 
 @pytest.mark.asyncio
 async def test_read_legacy_root_avatar() -> None:
     workspace = _MemoryWorkspace()
     workspace.files["avatar.png"] = PNG
+    found = await read_workspace_avatar(workspace)
+    assert found is not None
+    assert found[0] == PNG
+
+
+@pytest.mark.asyncio
+async def test_read_legacy_system_dir_avatar() -> None:
+    """An unmigrated workspace keeps its avatar in the old system directory."""
+    workspace = _MemoryWorkspace()
+    workspace.files[".octop/avatar.png"] = PNG
     found = await read_workspace_avatar(workspace)
     assert found is not None
     assert found[0] == PNG
@@ -107,7 +117,7 @@ def test_read_snapshot_avatar_and_display_url(tmp_path) -> None:
         is None
     )
 
-    avatar = tmp_path / ".octop" / "avatar.png"
+    avatar = tmp_path / ".maitu" / "avatar.png"
     avatar.parent.mkdir(parents=True)
     avatar.write_bytes(PNG)
     found = read_snapshot_avatar(tmp_path)
@@ -122,6 +132,16 @@ def test_read_snapshot_avatar_and_display_url(tmp_path) -> None:
         )
         == "/api/experts/published/pexp1/avatar?v=2026-01-01T00:00:00Z"
     )
+
+
+def test_read_legacy_snapshot_avatar(tmp_path) -> None:
+    """Snapshots published before the rename keep an avatar under the old dir."""
+    avatar = tmp_path / ".octop" / "avatar.png"
+    avatar.parent.mkdir(parents=True)
+    avatar.write_bytes(PNG)
+    found = read_snapshot_avatar(tmp_path)
+    assert found is not None
+    assert found[0] == PNG
 
 
 @pytest.mark.asyncio
@@ -159,7 +179,7 @@ async def test_materialize_remote_icon_url_writes_workspace_avatar(
         "https://cdn.example.com/a.png",
     )
     assert ok is True
-    assert workspace.files[".octop/avatar.png"] == PNG
+    assert workspace.files[".maitu/avatar.png"] == PNG
     assert registry.icon_url == "/api/agents/agt1/avatar"
 
     assert (

@@ -20,6 +20,10 @@ from octop.infra.agents.experts.catalog import (
     read_workspace_manifest_bytes,
 )
 from octop.infra.agents.subagents.catalog import slugify
+from octop.infra.agents.workspace_dir import (
+    LEGACY_SYSTEM_FILES_DIRNAME,
+    SYSTEM_FILES_DIRNAME,
+)
 from octop.infra.db.repos.published_experts import PublishedExpertRepo, PublishedExpertRow
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import User
@@ -56,8 +60,13 @@ _SEEDABLE_GLOB_PATTERNS = (
     "*.md",
     "skills/**/*",
     "agents/*.md",
-    ".octop/skills/**/*",
-    ".octop/agents/*.md",
+    f"{SYSTEM_FILES_DIRNAME}/skills/**/*",
+    f"{SYSTEM_FILES_DIRNAME}/agents/*.md",
+    # Older workspaces keep their skills/subagents under the previous system
+    # directory; publishing from one must not silently drop them. The prefix is
+    # stripped below, so the snapshot itself stays layout-neutral.
+    f"{LEGACY_SYSTEM_FILES_DIRNAME}/skills/**/*",
+    f"{LEGACY_SYSTEM_FILES_DIRNAME}/agents/*.md",
 )
 
 
@@ -264,10 +273,14 @@ async def _workspace_file_paths(workspace: BackendWorkspace) -> list[str]:
 
 
 def _logical_seed_path(path: str) -> str:
+    """Strip the workspace system prefix so a snapshot stays layout-neutral."""
     rel = path.replace("\\", "/").lstrip("/")
-    prefix = ".octop/"
-    if rel.startswith(prefix):
-        return rel[len(prefix) :]
+    for prefix in (
+        f"{SYSTEM_FILES_DIRNAME}/",
+        f"{LEGACY_SYSTEM_FILES_DIRNAME}/",
+    ):
+        if rel.startswith(prefix):
+            return rel[len(prefix) :]
     return rel
 
 

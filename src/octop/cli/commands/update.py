@@ -1,4 +1,4 @@
-"""`octop update` — check and queue trusted source releases."""
+"""`maitu update` — check and queue trusted source releases."""
 
 from __future__ import annotations
 

@@ -1028,14 +1028,16 @@ async def test_create_seeds_bootstrap_files(manager: AgentManager) -> None:
     assert cfg.get("workspace_dir") == str(
         manager.paths.ensure_agent_workspace(row.agent_id).resolve()
     )
-    assert cfg.get("system_files_path") == ".octop"
+    assert cfg.get("system_files_path") == ".maitu"
     ws = manager.resolve_workspace_dir(row.agent_id)
     assert cfg.get("workspace_dir") == str(ws)
     assert (ws / "AGENTS.md").is_file()
-    assert (ws / ".octop" / "_builtin_skills").is_dir() or agent.workspace.exists(
+    assert (ws / ".maitu" / "_builtin_skills").is_dir() or agent.workspace.exists(
         "_builtin_skills/skill-manager/SKILL.md"
     )
     assert not (ws / "_builtin_skills").exists()
+    # A new workspace never gains the old system directory.
+    assert not (ws / ".octop").exists()
     manager._harness_manager.close()
 
 
@@ -1272,7 +1274,7 @@ async def test_seed_expert_template_writes_workspace_files(
 
     ws = manager._paths.ensure_agent_workspace("AGT1")
     assert (ws / "SOUL.md").read_text(encoding="utf-8") == "# Soul"
-    manifest = json.loads((ws / ".octop" / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((ws / ".maitu" / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["id"] == "demo"
     assert manifest["welcome_message"]["zh"] == "欢迎"
 
@@ -1361,14 +1363,51 @@ async def test_update_config_json_cannot_change_system_files_path(
     row = await manager.create(AgentCreateSpec(name="sysfiles-fixed"), defer_bootstrap=True)
     monkeypatch.setattr(manager, "_schedule_reload", lambda _aid: None)
 
-    assert manager.get_config(row.agent_id).get("system_files_path") == ".octop"
+    assert manager.get_config(row.agent_id).get("system_files_path") == ".maitu"
 
     await manager.update_config_json(
         row.agent_id,
         json.dumps({"system_files_path": "", "foo": 1}),
     )
 
-    assert manager.get_config(row.agent_id).get("system_files_path") == ".octop"
+    assert manager.get_config(row.agent_id).get("system_files_path") == ".maitu"
+
+
+@pytest.mark.asyncio
+async def test_resolve_workspace_dir_migrates_a_legacy_layout(
+    manager: AgentManager, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An old workspace is moved to the current layout on first resolution."""
+    from octop.infra.agents.manager import AgentCreateSpec
+    from octop.infra.agents.profile import dumps_config
+
+    row = await manager.create(AgentCreateSpec(name="legacy-layout"), defer_bootstrap=True)
+    monkeypatch.setattr(manager, "_schedule_reload", lambda _aid: None)
+    ws = manager.paths.ensure_agent_workspace(row.agent_id)
+
+    # Simulate a workspace written by a build that used the old directory names.
+    system_dir = ws / ".maitu"
+    (system_dir / "skills").mkdir(parents=True)
+    (system_dir / "skills" / "keep.md").write_text("kept", encoding="utf-8")
+    system_dir.rename(ws / ".octop")
+    migrated_auth = ws / ".maitu-auth"
+    migrated_auth.mkdir()
+    (migrated_auth / "token.json").write_text("{}", encoding="utf-8")
+    migrated_auth.rename(ws / ".octop-auth")
+    # Direct repo write: the client-facing update path refuses layout changes.
+    cfg = dict(manager.get_config(row.agent_id))
+    cfg["system_files_path"] = ".octop"
+    manager._repos.agent_repo.update_config(row.agent_id, config_json=dumps_config(cfg))
+
+    resolved = manager.resolve_workspace_dir(row.agent_id)
+
+    assert (resolved / ".maitu" / "skills" / "keep.md").read_text(encoding="utf-8") == "kept"
+    assert (resolved / ".maitu-auth" / "token.json").is_file()
+    assert not (resolved / ".octop").exists()
+    assert not (resolved / ".octop-auth").exists()
+    assert manager.get_config(row.agent_id).get("system_files_path") == ".maitu"
+    # Idempotent: resolving again changes nothing.
+    assert manager.resolve_workspace_dir(row.agent_id) == resolved
 
 
 @pytest.mark.asyncio

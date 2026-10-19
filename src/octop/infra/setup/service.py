@@ -22,7 +22,13 @@ from octop.infra.utils.json_file import (
     read_json_object,
     write_json_atomic,
 )
-from octop.infra.utils.paths import PathLayout
+from octop.infra.utils.paths import (
+    DEFAULT_HOME_DIRNAME,
+    HOME_ENV,
+    LEGACY_HOME_ENV,
+    LOG_FILENAME,
+    PathLayout,
+)
 from octop.infra.utils.posix_compat import chown, geteuid, getuid, is_root
 
 logger = logging.getLogger(__name__)
@@ -30,13 +36,19 @@ logger = logging.getLogger(__name__)
 ServiceMode = Literal["systemd", "launchd"]
 ServiceScope = Literal["user", "system"]
 
-SERVICE_NAME = "octop"
+SERVICE_NAME = "maitu"
 SYSTEMD_UNIT = f"{SERVICE_NAME}.service"
 LAUNCHD_LABEL = SERVICE_NAME
+# Pre-rename service identity.  It is recognised so an existing installation can
+# be stopped, migrated or restarted instead of silently installing a second unit
+# that fights over the same port.
+LEGACY_SERVICE_NAME = "octop"
+LEGACY_SYSTEMD_UNIT = f"{LEGACY_SERVICE_NAME}.service"
+LEGACY_LAUNCHD_LABEL = LEGACY_SERVICE_NAME
 NOFILE_DROPIN_NAME = "10-nofile.conf"
 
 # Give freshly-started services a moment to bind the port before health checks
-# begin.  `octop run` typically takes several seconds to initialise DB, load
+# begin.  `maitu run` typically takes several seconds to initialise DB, load
 # agents, and start accepting HTTP requests.
 _STARTUP_GRACE_SECONDS = 5.0
 
@@ -107,7 +119,7 @@ def _auto_service_scope() -> ServiceScope:
     Any process running as root (uid 0) installs a system unit under
     ``/etc/systemd/system``.  Non-root processes install a user unit under
     ``~/.config/systemd/user``.  ``SUDO_USER`` is intentionally ignored here:
-    when root runs ``octop service start`` the expected outcome is always a
+    when root runs ``maitu service start`` the expected outcome is always a
     system-level service, regardless of how root was obtained.
     """
     if is_root():
@@ -144,12 +156,19 @@ def launchd_domain(scope: ServiceScope) -> str:
     """Return the launchd service-target for the given scope.
 
     This is the form accepted by `launchctl kickstart -k` / `bootout` /
-    `print` — e.g. ``gui/$UID/octop`` for user scope.  For the `bootstrap`
+    `print` — e.g. ``gui/$UID/maitu`` for user scope.  For the `bootstrap`
     domain-target form (no service id), use :func:`launchd_bootstrap_target`.
     """
     if scope == "user":
         return f"gui/{getuid()}/{LAUNCHD_LABEL}"
     return f"system/{LAUNCHD_LABEL}"
+
+
+def legacy_launchd_domain(scope: ServiceScope) -> str:
+    """Service-target of the pre-rename ``octop`` launchd job, if present."""
+    if scope == "user":
+        return f"gui/{getuid()}/{LEGACY_LAUNCHD_LABEL}"
+    return f"system/{LEGACY_LAUNCHD_LABEL}"
 
 
 def launchd_bootstrap_target(scope: ServiceScope) -> str:
@@ -165,30 +184,33 @@ def launchd_bootstrap_target(scope: ServiceScope) -> str:
 
 
 def resolve_octop_executable(home: Path | None = None) -> Path:
+    """Resolve the installed CLI entry point for the service unit.
+
+    Both the branded ``maitu`` entry point and the legacy ``octop`` script are
+    accepted: the package keeps the ``octop`` console script for compatibility,
+    and older installs may only have that one on disk.
+    """
     root = home or PathLayout.from_env().root
-    for candidate in (
-        root / "bin" / "octop",
-        root / "venv" / "bin" / "octop",
-        root / "venv" / "Scripts" / "octop.exe",
-    ):
+    candidates: list[Path] = []
+    for bin_dir in (root / "bin", root / "venv" / "bin", root / "venv" / "Scripts"):
+        for name in (SERVICE_NAME, LEGACY_SERVICE_NAME):
+            candidates.append(bin_dir / name)
+            candidates.append(bin_dir / f"{name}.exe")
+    for name in (SERVICE_NAME, LEGACY_SERVICE_NAME):
+        candidates.append(Path(sys.executable).parent / name)
+        candidates.append(Path(sys.executable).parent / f"{name}.exe")
+    for candidate in candidates:
         if candidate.is_file():
             return candidate
 
-    # Dev / conda / uv-tool installs: use the octop that invoked this command.
-    for candidate in (
-        Path(sys.executable).parent / "octop",
-        Path(sys.executable).parent / "octop.exe",
-    ):
-        if candidate.is_file():
-            return candidate
-
-    found = shutil.which("octop")
-    if found:
-        return Path(found)
+    for name in (SERVICE_NAME, LEGACY_SERVICE_NAME):
+        found = shutil.which(name)
+        if found:
+            return Path(found)
 
     raise FileNotFoundError(
-        f"octop executable not found under {root} or on PATH; "
-        "run `scripts/install.sh` or ensure `octop` is installed"
+        f"{SERVICE_NAME} executable not found under {root} or on PATH; "
+        "run `bash scripts/install.sh` or ensure the application CLI is installed"
     )
 
 
@@ -220,17 +242,19 @@ def _account_home(user: str) -> Path:
 
 
 def resolve_service_home(*, run_as_user: str | None = None) -> Path:
-    """Resolve ``OCTOP_HOME`` for the service owner, not the installer's euid.
+    """Resolve ``MAITU_HOME`` for the service owner, not the installer's euid.
 
     ``Path.home()`` follows the effective uid, so a ``sudo`` install as root
-    would otherwise point at ``/root/.octop`` while ``User=`` names the
-    invoking user — use that user's passwd home instead.
+    would otherwise point at ``/root/.maitu`` while ``User=`` names the
+    invoking user — use that user's passwd home instead.  The legacy
+    ``OCTOP_HOME`` override is still honoured so an existing install keeps its
+    data directory.
     """
-    raw = os.environ.get("OCTOP_HOME", "").strip()
+    raw = os.environ.get(HOME_ENV, "").strip() or os.environ.get(LEGACY_HOME_ENV, "").strip()
     if raw:
         return Path(raw).expanduser()
     user = run_as_user or resolve_run_as_user()
-    return _account_home(user) / ".octop"
+    return _account_home(user) / DEFAULT_HOME_DIRNAME
 
 
 def persist_bind_options(home: Path, *, host: str | None = None, port: int | None = None) -> None:
@@ -341,6 +365,26 @@ def _systemd_enable_linger(runtime: ServiceRuntime) -> None:
         )
 
 
+def _unit_path_for(
+    mode: ServiceMode,
+    *,
+    systemd_unit: str,
+    launchd_label: str,
+    scope: ServiceScope | None = None,
+    run_as_user: str | None = None,
+) -> Path:
+    owner_home = _account_home(run_as_user or resolve_run_as_user())
+    if scope is None:
+        scope = resolve_service_scope()
+    if mode == "systemd":
+        if scope == "user":
+            return owner_home / ".config" / "systemd" / "user" / systemd_unit
+        return Path("/etc/systemd/system") / systemd_unit
+    if scope == "user":
+        return owner_home / "Library" / "LaunchAgents" / f"{launchd_label}.plist"
+    return Path("/Library/LaunchDaemons") / f"{launchd_label}.plist"
+
+
 def unit_path(
     mode: ServiceMode,
     scope: ServiceScope | None = None,
@@ -353,18 +397,29 @@ def unit_path(
     User-level paths are resolved from the service owner's passwd home, not the
     installer's ``Path.home()`` (so ``sudo`` does not point at ``/root``).
     """
-    owner_home = _account_home(run_as_user or resolve_run_as_user())
-    if mode == "systemd":
-        if scope is None:
-            scope = resolve_service_scope()
-        if scope == "user":
-            return owner_home / ".config" / "systemd" / "user" / SYSTEMD_UNIT
-        return Path("/etc/systemd/system") / SYSTEMD_UNIT
-    if scope is None:
-        scope = resolve_service_scope()
-    if scope == "user":
-        return owner_home / "Library" / "LaunchAgents" / f"{LAUNCHD_LABEL}.plist"
-    return Path("/Library/LaunchDaemons") / f"{LAUNCHD_LABEL}.plist"
+    return _unit_path_for(
+        mode,
+        systemd_unit=SYSTEMD_UNIT,
+        launchd_label=LAUNCHD_LABEL,
+        scope=scope,
+        run_as_user=run_as_user,
+    )
+
+
+def legacy_unit_path(
+    mode: ServiceMode,
+    scope: ServiceScope | None = None,
+    *,
+    run_as_user: str | None = None,
+) -> Path:
+    """On-disk path of the pre-rename ``octop`` unit/plist, if one remains."""
+    return _unit_path_for(
+        mode,
+        systemd_unit=LEGACY_SYSTEMD_UNIT,
+        launchd_label=LEGACY_LAUNCHD_LABEL,
+        scope=scope,
+        run_as_user=run_as_user,
+    )
 
 
 def is_service_installed(
@@ -376,30 +431,45 @@ def is_service_installed(
     return unit_path(mode, scope=scope, run_as_user=run_as_user).is_file()
 
 
+def is_legacy_service_installed(
+    mode: ServiceMode,
+    scope: ServiceScope | None = None,
+    *,
+    run_as_user: str | None = None,
+) -> bool:
+    """True when the pre-rename ``octop`` service is still installed."""
+    return legacy_unit_path(mode, scope=scope, run_as_user=run_as_user).is_file()
+
+
 def render_systemd_unit(runtime: ServiceRuntime, *, user_unit: bool | None = None) -> str:
     if user_unit is None:
         user_unit = runtime.scope == "user"
     account_home = _account_home(runtime.run_as_user)
-    # LightClaw-style: HOME + service mode + config-driven ``run``.  Octop also
-    # sets ``OCTOP_HOME`` explicitly.  No ``WorkingDirectory`` — avoids CHDIR
-    # failures when ``User=`` and data paths disagree.
+    # LightClaw-style: HOME + service mode + config-driven ``run``.  A custom
+    # data home is passed explicitly; the default home is derived from HOME so a
+    # legacy ``~/.octop`` tree is still migrated in place by the app on boot.  No
+    # ``WorkingDirectory`` — avoids CHDIR failures when ``User=`` and data paths
+    # disagree.
     if user_unit or runtime.run_as_user == "root":
         user_line = ""
     else:
         user_line = f"User={runtime.run_as_user}\n"
     wanted_by = "default.target" if user_unit else "multi-user.target"
-    env_lines = (
-        f'Environment="HOME={account_home}"\n'
-        f"Environment=OCTOP_HOME={runtime.home}\n"
-        "Environment=OCTOP_SERVICE_MODE=systemd\n"
-    )
+    env_lines = f'Environment="HOME={account_home}"\n'
+    if runtime.home != account_home / DEFAULT_HOME_DIRNAME:
+        env_lines += f"Environment={HOME_ENV}={runtime.home}\n"
+    env_lines += "Environment=OCTOP_SERVICE_MODE=systemd\n"
     if user_unit:
         env_lines += "Environment=OCTOP_SYSTEMD_USER=1\n"
     nofile = _user_nofile_cap() if user_unit else SERVICE_NOFILE_LIMIT
     nofile_line = f"LimitNOFILE={nofile}\n" if nofile is not None else ""
+    # Presentation name only; the unit identity stays ``maitu`` for upgrades.
+    from octop.branding import platform_name  # noqa: PLC0415 - setup imports stay light
+
+    description = f"{platform_name('en')} AI Server"
     return (
         "[Unit]\n"
-        "Description=MAITU Smart Manufacturing AI Server\n"
+        f"Description={description}\n"
         "After=network.target\n"
         "\n"
         "[Service]\n"
@@ -424,13 +494,27 @@ def render_launchd_plist(runtime: ServiceRuntime) -> str:
     plists; launchd rejects it for user-domain agents and the agent runs as
     the logged-in user automatically.
     """
-    log_path = runtime.home / "logs" / "octop.log"
+    log_path = runtime.home / "logs" / LOG_FILENAME
     account_home = _account_home(runtime.run_as_user)
     user_block = (
         f"  <key>UserName</key>\n  <string>{runtime.run_as_user}</string>\n"
         if runtime.scope == "system"
         else ""
     )
+    env_entries = [
+        "    <key>HOME</key>",
+        f"    <string>{account_home}</string>",
+    ]
+    if runtime.home != account_home / DEFAULT_HOME_DIRNAME:
+        env_entries += [
+            f"    <key>{HOME_ENV}</key>",
+            f"    <string>{runtime.home}</string>",
+        ]
+    env_entries += [
+        "    <key>OCTOP_SERVICE_MODE</key>",
+        "    <string>launchd</string>",
+    ]
+    env_block = "\n".join(env_entries) + "\n"
     return (
         '<?xml version="1.0" encoding="UTF-8"?>\n'
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
@@ -447,12 +531,7 @@ def render_launchd_plist(runtime: ServiceRuntime) -> str:
         "  </array>\n"
         "  <key>EnvironmentVariables</key>\n"
         "  <dict>\n"
-        f"    <key>HOME</key>\n"
-        f"    <string>{account_home}</string>\n"
-        f"    <key>OCTOP_HOME</key>\n"
-        f"    <string>{runtime.home}</string>\n"
-        "    <key>OCTOP_SERVICE_MODE</key>\n"
-        "    <string>launchd</string>\n"
+        f"{env_block}"
         "  </dict>\n"
         f"  <key>WorkingDirectory</key>\n"
         f"  <string>{runtime.home}</string>\n"
@@ -543,7 +622,7 @@ def _nofile_limit_for(runtime: ServiceRuntime) -> int | None:
 
 def render_nofile_dropin(limit: int = SERVICE_NOFILE_LIMIT) -> str:
     return (
-        "# Generated by octop service. Override with a later drop-in if needed.\n"
+        "# Generated by MAITU Smart Manufacturing service. Override with a later drop-in if needed.\n"
         "[Service]\n"
         f"LimitNOFILE={limit}\n"
     )
@@ -598,6 +677,103 @@ def _write_unit(runtime: ServiceRuntime) -> None:
         _rendered_unit(runtime),
         run_as_user=runtime.run_as_user,
     )
+
+
+def _remove_managed_file(destination: Path) -> None:
+    """Delete a unit/plist, using sudo when its directory is not writable."""
+    use_sudo = _needs_sudo(destination.parent)
+    if use_sudo and geteuid() != 0:
+        proc = _run_cmd(["rm", "-f", str(destination)], use_sudo=True)
+        _cmd_ok(proc, f"failed to remove {destination}")
+        return
+    try:
+        destination.unlink()
+    except FileNotFoundError:
+        return
+
+
+def _remove_managed_tree(path: Path) -> None:
+    if not path.exists():
+        return
+    use_sudo = _needs_sudo(path.parent)
+    if use_sudo and geteuid() != 0:
+        _run_cmd(["rm", "-rf", str(path)], use_sudo=True)
+        return
+    shutil.rmtree(path, ignore_errors=True)
+
+
+def _legacy_dropin_dir(runtime: ServiceRuntime) -> Path | None:
+    if runtime.mode != "systemd":
+        return None
+    unit = legacy_unit_path(runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user)
+    return unit.parent / f"{LEGACY_SYSTEMD_UNIT}.d"
+
+
+def _stop_legacy_service(runtime: ServiceRuntime) -> None:
+    """Stop the pre-rename service; failures are logged, never fatal."""
+    if runtime.mode == "systemd":
+        for verb in ("stop", "disable"):
+            proc = _systemd_run(runtime, verb, LEGACY_SERVICE_NAME)
+            if proc.returncode != 0:
+                logger.info("legacy %s %s returned %s", LEGACY_SYSTEMD_UNIT, verb, proc.returncode)
+        return
+    _launchctl_run_tolerant(
+        runtime.scope,
+        "bootout",
+        legacy_launchd_domain(runtime.scope),
+        ignore_substrings=("no such", "could not find"),
+    )
+
+
+def migrate_legacy_service(runtime: ServiceRuntime) -> bool:
+    """Stop and remove a pre-rename ``octop`` unit so it cannot fight the new one.
+
+    Returns True when a legacy unit was found and cleanup was attempted.  Cleanup
+    is best-effort: failures are logged and the caller still installs the new
+    unit, so the real error surfaces instead of being hidden.
+    """
+    if not is_legacy_service_installed(
+        runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user
+    ):
+        return False
+    legacy = legacy_unit_path(runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user)
+    logger.info(
+        "migrating legacy %s to %s; the old service is stopped and its unit removed",
+        LEGACY_SERVICE_NAME,
+        SERVICE_NAME,
+    )
+    try:
+        _stop_legacy_service(runtime)
+        _remove_managed_file(legacy)
+        dropin_dir = _legacy_dropin_dir(runtime)
+        if dropin_dir is not None:
+            _remove_managed_tree(dropin_dir)
+        if runtime.mode == "systemd":
+            _systemd_run(runtime, "daemon-reload")
+    except Exception:
+        logger.exception(
+            "legacy %s cleanup failed; remove %s manually before starting %s",
+            LEGACY_SYSTEMD_UNIT if runtime.mode == "systemd" else LEGACY_LAUNCHD_LABEL,
+            legacy,
+            SYSTEMD_UNIT if runtime.mode == "systemd" else LAUNCHD_LABEL,
+        )
+    return True
+
+
+def _restart_legacy_service(runtime: ServiceRuntime) -> None:
+    """Bounce the legacy unit when the new one has not been installed yet."""
+    logger.info(
+        "starting legacy %s service; run `%s service start` to migrate",
+        LEGACY_SERVICE_NAME,
+        SERVICE_NAME,
+    )
+    if runtime.mode == "systemd":
+        proc = _systemd_run(runtime, "restart", LEGACY_SERVICE_NAME)
+    else:
+        proc = _launchctl_run(
+            runtime.scope, "kickstart", "-k", legacy_launchd_domain(runtime.scope)
+        )
+    _cmd_ok(proc, "restart failed")
 
 
 def ensure_nofile_dropin(runtime: ServiceRuntime) -> bool:
@@ -688,7 +864,12 @@ def install_service(
     The main unit is only created or rewritten when missing or ``force`` is
     set — never because the template gained a new line.  systemd also gets a
     ``LimitNOFILE`` drop-in so existing custom units keep ExecStart/User.
+
+    A pre-rename ``octop`` unit is stopped and removed first: installing
+    ``maitu`` while ``octop`` is still enabled would leave two services fighting
+    for the same port, and the old one would restart on boot.
     """
+    migrate_legacy_service(runtime)
     was_installed = is_service_installed(
         runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user
     )
@@ -762,16 +943,24 @@ def start_service(runtime: ServiceRuntime, *, apply_unit: bool = False) -> None:
 
 
 def stop_service(runtime: ServiceRuntime) -> None:
-    if not is_service_installed(runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user):
+    current = is_service_installed(
+        runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user
+    )
+    legacy = is_legacy_service_installed(
+        runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user
+    )
+    if not current and not legacy:
         return
-    if runtime.mode == "systemd":
-        proc = _systemd_run(runtime, "stop", SERVICE_NAME)
-        _cmd_ok(proc, "stop failed")
+    if current:
+        if runtime.mode == "systemd":
+            proc = _systemd_run(runtime, "stop", SERVICE_NAME)
+            _cmd_ok(proc, "stop failed")
+        else:
+            proc = _launchctl_run(runtime.scope, "bootout", launchd_domain(runtime.scope))
+            _cmd_ok(proc, "stop failed")
         _wait_for_stop(runtime)
-    else:
-        proc = _launchctl_run(runtime.scope, "bootout", launchd_domain(runtime.scope))
-        _cmd_ok(proc, "stop failed")
-        _wait_for_stop(runtime)
+    if legacy:
+        _stop_legacy_service(runtime)
 
 
 def restart_service(runtime: ServiceRuntime) -> None:
@@ -780,8 +969,14 @@ def restart_service(runtime: ServiceRuntime) -> None:
     Drop-in / daemon-reload problems must not block ``systemctl restart``.
     """
     if not is_service_installed(runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user):
+        if is_legacy_service_installed(
+            runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user
+        ):
+            _restart_legacy_service(runtime)
+            _wait_for_startup()
+            return
         raise RuntimeError(
-            "octop system service is not installed "
+            f"{SERVICE_NAME} system service is not installed "
             f"(expected {unit_path(runtime.mode, scope=runtime.scope, run_as_user=runtime.run_as_user)})"
         )
     wrote = False
@@ -815,28 +1010,32 @@ def restart_service(runtime: ServiceRuntime) -> None:
     _wait_for_startup()
 
 
-def _systemd_status(runtime: ServiceRuntime) -> tuple[bool, bool | None, str]:
-    active_proc = _systemd_run(runtime, "is-active", SERVICE_NAME)
+def _systemd_status(
+    runtime: ServiceRuntime, service_name: str = SERVICE_NAME
+) -> tuple[bool, bool | None, str]:
+    active_proc = _systemd_run(runtime, "is-active", service_name)
     active = active_proc.stdout.strip() == "active"
-    enabled_proc = _systemd_run(runtime, "is-enabled", SERVICE_NAME)
+    enabled_proc = _systemd_run(runtime, "is-enabled", service_name)
     enabled_raw = enabled_proc.stdout.strip()
     enabled = enabled_raw == "enabled" if enabled_proc.returncode == 0 else None
-    detail_proc = _systemd_run(runtime, "status", SERVICE_NAME, "--no-pager")
+    detail_proc = _systemd_run(runtime, "status", service_name, "--no-pager")
     detail = (detail_proc.stdout or detail_proc.stderr or "").strip()
     return active, enabled, detail
 
 
-def _launchd_status(scope: ServiceScope) -> tuple[bool, bool | None, str]:
-    proc = _launchctl_run(scope, "print", launchd_domain(scope))
+def _launchd_status(
+    scope: ServiceScope, *, domain: str, installed: bool
+) -> tuple[bool, bool | None, str]:
+    proc = _launchctl_run(scope, "print", domain)
     if proc.returncode != 0:
         return (
             False,
-            is_service_installed("launchd", scope=scope),
+            installed,
             (proc.stderr or proc.stdout or "").strip(),
         )
     detail = proc.stdout.strip()
     active = "state = running" in detail.lower()
-    return active, is_service_installed("launchd", scope=scope), detail
+    return active, installed, detail
 
 
 def probe_health(host: str, port: int) -> tuple[bool, str]:
@@ -892,14 +1091,31 @@ def collect_service_status(
 
     scope = runtime.scope if runtime is not None else resolve_service_scope()
     run_as = runtime.run_as_user if runtime is not None else None
-    installed = is_service_installed(mode, scope=scope, run_as_user=run_as)
+    current_installed = is_service_installed(mode, scope=scope, run_as_user=run_as)
+    legacy_installed = is_legacy_service_installed(mode, scope=scope, run_as_user=run_as)
+    installed = current_installed or legacy_installed
     if mode == "systemd":
+        service_name = (
+            SERVICE_NAME if current_installed or not legacy_installed else LEGACY_SERVICE_NAME
+        )
         if runtime is None:
             active, enabled, detail = False, None, ""
         else:
-            active, enabled, detail = _systemd_status(runtime)
+            active, enabled, detail = _systemd_status(runtime, service_name)
     else:
-        active, enabled, detail = _launchd_status(scope)
+        domain = (
+            launchd_domain(scope)
+            if current_installed or not legacy_installed
+            else legacy_launchd_domain(scope)
+        )
+        active, enabled, detail = _launchd_status(scope, domain=domain, installed=installed)
+
+    if legacy_installed and not current_installed:
+        migration = (
+            f"legacy {LEGACY_SYSTEMD_UNIT if mode == 'systemd' else LEGACY_LAUNCHD_LABEL} "
+            f"is installed; run `{SERVICE_NAME} service start` to migrate"
+        )
+        detail = f"{detail}\n{migration}".strip()
 
     health_ok: bool | None = None
     health_detail: str | None = None

@@ -321,7 +321,9 @@ export default function CandidatesReview({
             <Typography.Paragraph type="secondary">
               “{selected.verbatim_quote}”
             </Typography.Paragraph>
-            <Typography.Title level={5}>Octop 的建议</Typography.Title>
+            <Typography.Title level={5}>
+              {t("memory.candidates.title", "建议")}
+            </Typography.Title>
             <Typography.Paragraph>
               {selected.recommended_action}
               {selected.promotion_reason
@@ -375,6 +377,7 @@ export default function CandidatesReview({
 // ---------------------------------------------------------------------------
 
 function GuidanceBanner({ status }: { status: CandidateStatus | "" }) {
+  const { t } = useTranslation();
   if (status === "pending") {
     return (
       <Alert
@@ -384,7 +387,12 @@ function GuidanceBanner({ status }: { status: CandidateStatus | "" }) {
         message="关于「待处理」草稿"
         description={
           <ul style={{ margin: "4px 0 0", paddingLeft: 18, lineHeight: "1.8" }}>
-            <li>这些草稿由 Octop 从对话中自动提取，正在等待系统规则判断。</li>
+            <li>
+              {t(
+                "memory.candidates.intro",
+                "这些草稿从对话中自动提取，正在等待系统规则判断。",
+              )}
+            </li>
             <li>
               系统会自动决定：直接采纳、合并到已有记忆、标记为待复核或丢弃——
               <strong>无需手动干预</strong>。

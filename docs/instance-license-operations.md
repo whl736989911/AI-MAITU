@@ -121,7 +121,7 @@ docker compose -f docker/docker-compose.yml \
 | `MAITU_UPDATE_QUEUE_HOST_DIR` | 独立更新请求和进度队列目录；须与宿主更新器的 `MAITU_UPDATE_QUEUE_DIR` 指向同一目录 |
 | `MAITU_CENTER_CLIENT_TOKEN` | 必须配置独立客户侧版本读取令牌；不得使用中心管理凭据 |
 
-`MAITU_LICENSE_TRUSTED_KEYS_FILE`、`MAITU_LICENSE_STATE_DIR`、`MAITU_LICENSE_CENTER_URL`、`MAITU_UPDATE_TRUSTED_KEYS_FILE`、`MAITU_UPDATE_QUEUE_DIR` 和 `MAITU_UPDATE_CENTER_URL` 由托管 Compose overlay 指向容器内路径。keyring 应保留所有仍可能用于验证有效凭据/发布签名的 KID；换钥前先导出更新接入包。私有 CA 环境由中心连接包与部署向导配置，不能关闭 TLS 验证。已有实例升级务必保留原 `OCTOP_DATA`、授权身份目录、队列目录和 Compose project name。
+`MAITU_LICENSE_TRUSTED_KEYS_FILE`、`MAITU_LICENSE_STATE_DIR`、`MAITU_LICENSE_CENTER_URL`、`MAITU_UPDATE_TRUSTED_KEYS_FILE`、`MAITU_UPDATE_QUEUE_DIR` 和 `MAITU_UPDATE_CENTER_URL` 由托管 Compose overlay 指向容器内路径。keyring 应保留所有仍可能用于验证有效凭据/发布签名的 KID；换钥前先导出更新接入包。私有 CA 环境由中心连接包与部署向导配置，不能关闭 TLS 验证。已有实例升级务必保留原 `MAITU_DATA`、授权身份目录、队列目录和 Compose project name。
 实例身份、已验证的在线/离线凭据、共用版本栅栏和提醒账本存放在独立的授权状态 bind mount；业务数据备份不能覆盖它们。默认执行器使用镜像内 Bubblewrap，能读到 `/usr/local/maitu-venv` 的只读 Python 环境，但不能访问授权目录、源码或宿主 Docker socket。Compose 默认不挂载 Docker socket；独立 Docker 执行路径仅由可信运维显式启用，宿主更新器运行于单独的 systemd 服务，不向客户业务容器开放。Linux 镜像包含 LibreOffice / Bubblewrap，用户命名空间必须由宿主 AppArmor/内核策略允许；见 [Docker 部署说明](../docker/README_CN.md#执行沙箱与浏览器linux)。Windows 部署还需要设置真实 NTFS ACL，不能把 `chmod` 当作 NTFS 权限隔离。
 
 ### 3.2 开通与交付
@@ -136,12 +136,12 @@ docker compose -f docker/docker-compose.yml \
 本地运维命令使用同一验签和状态机：
 
 ```bash
-uv run octop license status
-uv run octop license activate
-uv run octop license refresh
+uv run maitu license status
+uv run maitu license activate
+uv run maitu license refresh
 ```
 
-`activate` 会交互要求输入激活码；非交互使用 `uv run octop license activate --code <激活码>`。命令行参数可能进入进程列表或终端历史，交付现场优先使用交互输入，不要把激活码写入部署日志或共享聊天记录。
+`activate` 会交互要求输入激活码；非交互使用 `uv run maitu license activate --code <激活码>`。命令行参数可能进入进程列表或终端历史，交付现场优先使用交互输入，不要把激活码写入部署日志或共享聊天记录。
 
 ## 4. 到期、撤销与解锁
 
@@ -163,7 +163,7 @@ uv run octop license refresh
 
 ## 5. 数据恢复边界
 
-客户业务备份与授权中心备份是两种独立产物。业务导出不包含实例私钥、缓存凭证及 `OCTOP_LICENSE_*` 验签配置；导入也不能覆盖当前主机的受保护授权目录。业务归档不是转移授权的手段。原主机业务恢复继续使用它自己的受保护身份；主机迁移应走中心替换和新激活流程。
+客户业务备份与授权中心备份是两种独立产物。业务导出不包含实例私钥、缓存凭证及 `MAITU_LICENSE_*` 验签配置；导入也不能覆盖当前主机的受保护授权目录。业务归档不是转移授权的手段。原主机业务恢复继续使用它自己的受保护身份；主机迁移应走中心替换和新激活流程。
 
 锁定不会删除已有用户、文件、知识库或会话。自动 TLS 续期和可信系统备份保持运行；普通手动业务备份和业务导出仍被锁定门禁拒绝，不能将自动维护的豁免用于下载客户数据。无法撤回已经离开应用的请求；迁移、恢复和手动运维前应停止有关外部任务并核对客户数据备份。
 

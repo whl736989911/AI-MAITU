@@ -1,1 +1,1 @@
-"""Local deployment tools; independent of the Octop runtime and issuer package."""
+"""Local deployment tools; independent of the MAITU runtime and issuer package."""

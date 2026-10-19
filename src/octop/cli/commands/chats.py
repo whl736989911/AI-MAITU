@@ -1,4 +1,4 @@
-"""octop chats — thread CRUD + interactive REPL (CLI channel / local DB)."""
+"""maitu chats — thread CRUD + interactive REPL (CLI channel / local DB)."""
 
 from __future__ import annotations
 

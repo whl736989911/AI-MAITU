@@ -1,14 +1,14 @@
-# Octop 用户帮助文档
+# 麦途智造用户帮助文档
 
 > 本帮助文档面向最终用户，介绍 **安装 → 设置向导 → 配置模型 → 基本使用** 的完整流程。
-> 所有运行时数据默认存放在 `~/.octop/`（可通过 `OCTOP_HOME` 覆盖）。
+> 所有运行时数据默认存放在 `~/.maitu/`（可通过 `MAITU_HOME` 覆盖；旧版 `MAITU_HOME` 仍兼容）。
 
 ---
 
 ## 目录
 
 - [一、简介](#一简介)
-- [二、安装 Octop](#二安装-octop)
+- [二、安装麦途智造](#二安装麦途智造)
   - [2.1 环境要求](#21-环境要求)
   - [2.2 一键脚本安装（推荐）](#22-一键脚本安装推荐)
   - [2.3 验证安装](#23-验证安装)
@@ -43,9 +43,9 @@
 
 ## 一、简介
 
-**Octop** 是一个开源、自托管的 AI 助手平台，支持多用户、多 Agent。它在单进程中同时提供 Web 控制台、CLI、IM 通道（飞书、钉钉、QQ、Discord、企业微信等）和定时任务，所有数据都保存在你自己的机器上。
+**麦途智造** 是一个开源、自托管的 AI 助手平台，支持多用户、多 Agent。它在单进程中同时提供 Web 控制台、CLI、IM 通道（飞书、钉钉、QQ、Discord、企业微信等）和定时任务，所有数据都保存在你自己的机器上。
 
-![图 1.1 — Octop 产品总览](assets/overview.png)
+![图 1.1 — 麦途智造产品总览](assets/overview.png)
 
 核心特性速览：
 
@@ -58,12 +58,12 @@
 
 ---
 
-## 二、安装 Octop
+## 二、安装麦途智造
 
 ### 2.1 环境要求
 
 - 操作系统：**macOS / Linux / Windows**。
-- **无需** 预先安装 Python —— 安装脚本会通过 [uv](https://docs.astral.sh/uv/) 在 `~/.octop/` 下自动创建隔离的 Python 3.12 虚拟环境。
+- **无需** 预先安装 Python —— 安装脚本会通过 [uv](https://docs.astral.sh/uv/) 在 `~/.maitu/` 下自动创建隔离的 Python 3.12 虚拟环境。
 - 需要可访问外网，用于下载安装脚本与依赖。
 
 ### 2.2 一键脚本安装（推荐）
@@ -95,18 +95,18 @@ source ~/.zshrc   # Zsh
 source ~/.bashrc  # Bash
 ```
 
-安装脚本会把 `octop` 命令放入 `~/.octop/bin` 并加入 PATH，并在 `~/.octop/venv` 创建隔离环境；**不会改动系统 Python**。
+安装脚本会把 `maitu` 命令放入 `~/.maitu/bin` 并加入 PATH，并在 `~/.maitu/venv` 创建隔离环境；**不会改动系统 Python**。
 
 > **可选附加组件**：安装脚本支持通过 `--extras` 追加能力，例如浏览器自动化 `--extras browser`、飞书通道 `--extras channels-feishu`；也可用 `--version` 指定版本、`--mirror <url>` 使用国内 PyPI 镜像。更多选项见 [scripts/README.md](scripts/README.md)。
 
 ### 2.3 验证安装
 
 ```bash
-octop --version
-octop run --help
+maitu --version
+maitu run --help
 ```
 
-若提示 `command not found: octop`，请确认已重新加载 shell 或检查 `~/.octop/bin` 是否在 PATH 中。
+若提示 `command not found: maitu`，请确认已重新加载 shell 或检查 `~/.maitu/bin` 是否在 PATH 中。
 
 ### 2.4 Docker 安装（生产推荐）
 
@@ -119,9 +119,9 @@ bash docker/docker_build.sh
 docker run -d \
   --name maitu \
   -p 8088:8088 \
-  -v maitu-data:/data/.octop \
+  -v maitu-data:/data/.maitu \
   -e HOME=/data \
-  -e OCTOP_DEFAULT_PASSWORD="<自定义强密码，留空则自动生成随机密码>" \
+  -e MAITU_DEFAULT_PASSWORD="<自定义强密码，留空则自动生成随机密码>" \
   maitu:latest
 ```
 
@@ -129,10 +129,10 @@ docker run -d \
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `OCTOP_PORT` | `8088` | HTTP 监听端口 |
-| `OCTOP_DEFAULT_PASSWORD` | _(空)_ | 首次运行管理员密码（Docker 引导；≥8 位且含字母+数字；留空则自动生成随机密码并写入 credential.txt） |
-| `OCTOP_ADMIN_USERNAME` | `admin` | 首次运行管理员用户名 |
-| `OCTOP_DATA` | `~/.maitu` | 宿主机数据目录（compose 挂载）；已有部署须指定原目录，见 [升级说明](../docker/README_CN.md#已有部署升级必须保留原数据挂载) |
+| `MAITU_PORT` | `8088` | HTTP 监听端口 |
+| `MAITU_DEFAULT_PASSWORD` | _(空)_ | 首次运行管理员密码（Docker 引导；≥8 位且含字母+数字；留空则自动生成随机密码并写入 credential.txt） |
+| `MAITU_ADMIN_USERNAME` | `admin` | 首次运行管理员用户名 |
+| `MAITU_DATA` | `~/.maitu` | 宿主机数据目录（compose 挂载）；已有部署须指定原目录，见 [升级说明](../docker/README_CN.md#已有部署升级必须保留原数据挂载) |
 
 > 后续计划：Docker 首次启动可改为随机生成管理员密码，并仅写入 `credential.txt`。
 
@@ -145,13 +145,13 @@ docker run -d \
 安装完成后，直接启动服务即可。首次运行时，控制面数据库、JWT 密钥与首个管理员都会在**设置向导**中创建（绿场默认延后打开数据库，直到向导里确认 SQLite / PostgreSQL）：
 
 ```bash
-octop run       # 前台启动 API + Web 控制台
+maitu run       # 前台启动 API + Web 控制台
 ```
 
 若希望服务在后台常驻，可注册为系统服务：
 
 ```bash
-octop service start   # Linux(systemd) / macOS(launchd) / Windows 服务
+maitu service start   # Linux(systemd) / macOS(launchd) / Windows 服务
 ```
 
 启动后打开 **http://127.0.0.1:8088**。
@@ -167,15 +167,15 @@ octop service start   # Linux(systemd) / macOS(launchd) / Windows 服务
 **步骤 1：设置密码（可选）**
 
 - 首次配置需要一个临时「设置密码」作为保护（默认开启）。
-- 密码打印在启动终端，并写入服务器上的引导文件（常见为 `~/octop-login.txt`）。
+- 密码打印在启动终端，并写入服务器上的引导文件（常见为 `~/maitu-login.txt`）。
 - 此步**不依赖**控制面数据库是否已打开。
 
 **步骤 2：选择控制面数据库**
 
-- 默认使用本地 **SQLite**（路径相对 `~/.octop/`，通常为 `octop.db`），点击「保存并继续」即可。
+- 默认使用本地 **SQLite**（路径相对 `~/.maitu/`，通常为 `maitu.db`），点击「保存并继续」即可。
 - 「展开更多」可配置 **PostgreSQL**（内测）：填写主机等并先「测试连接」，再「使用 PostgreSQL 并继续」。
 - 向导会把选择写入 `config.json` 的 `database` 段，并在服务进程内**首次绑定**连接池、跑迁移。
-- 也可事先用环境变量指定（见 [configuration.md](configuration.md) 的 `OCTOP_DATABASE_*`）；已有库文件的升级安装不会延后建连。
+- 也可事先用环境变量指定（见 [configuration.md](configuration.md) 的 `MAITU_DATABASE_*`）；已有库文件的升级安装不会延后建连。
 - 本步只配置**控制面**；若选用 PostgreSQL，Agent 记忆默认复用同一 DSN（可用 `memory.backend.type=sqlite` 强制文件记忆）。详见 [configuration.md](configuration.md)。
 
 **步骤 3：创建管理员账号**
@@ -210,9 +210,9 @@ octop service start   # Linux(systemd) / macOS(launchd) / Windows 服务
 对于自动化部署，可省略向导中的"设置密码"步骤，直接在 Web 控制台通过环境变量预设管理员身份后启动：
 
 ```bash
-export OCTOP_ADMIN_USERNAME=admin
-export OCTOP_ADMIN_PASSWORD="<你的强密码，≥8 位且含字母和数字>"
-octop run
+export MAITU_ADMIN_USERNAME=admin
+export MAITU_ADMIN_PASSWORD="<你的强密码，≥8 位且含字母和数字>"
+maitu run
 ```
 
 密码须满足策略（≥8 位，同时包含字母和数字）。之后再在 Web 控制台中完成模型等其余配置即可。
@@ -221,7 +221,7 @@ octop run
 
 ## 四、配置模型（LLM 供应商）
 
-Octop 通过 **供应商（Provider）** 接入大模型。每个 Agent 可使用不同的供应商与模型。支持 OpenAI 兼容 API、Anthropic、AWS Bedrock、DashScope（通义千问）、Ollama 本地模型等。
+麦途智造通过 **供应商（Provider）** 接入大模型。每个 Agent 可使用不同的供应商与模型。支持 OpenAI 兼容 API、Anthropic、AWS Bedrock、DashScope（通义千问）、Ollama 本地模型等。
 
 ### 4.1 预设供应商
 
@@ -270,9 +270,9 @@ Octop 通过 **供应商（Provider）** 接入大模型。每个 Agent 可使�
 ### 4.5 通过 CLI 配置供应商
 
 ```bash
-octop models              # 查看供应商预设与模型解析
-octop provider list       # 列出已配置供应商
-octop provider --help     # 供应商增删改查帮助
+maitu models              # 查看供应商预设与模型解析
+maitu provider list       # 列出已配置供应商
+maitu provider --help     # 供应商增删改查帮助
 ```
 
 ### 4.6 本地模型 Ollama
@@ -300,7 +300,7 @@ octop provider --help     # 供应商增删改查帮助
 
 打开 **http://127.0.0.1:8088**，使用向导创建的账号登录。
 
-> ⚠️ **安全提醒**：Docker 首次初始化若未设置 `OCTOP_DEFAULT_PASSWORD`，会自动生成随机管理员密码（写入 `/data/.octop/credential.txt`，可用 `docker exec <容器> cat /data/.octop/credential.txt` 查看）。无论哪种方式，都请尽快在 **个人设置 → 修改密码** 中更换，避免服务暴露到公网时被未授权访问。
+> ⚠️ **安全提醒**：Docker 首次初始化若未设置 `MAITU_DEFAULT_PASSWORD`，会自动生成随机管理员密码（写入 `/data/.maitu/credential.txt`，可用 `docker exec <容器> cat /data/.maitu/credential.txt` 查看）。无论哪种方式，都请尽快在 **个人设置 → 修改密码** 中更换，避免服务暴露到公网时被未授权访问。
 
 ![图 5.1 — 登录页面](assets/use-01-login.png)
 
@@ -350,12 +350,12 @@ octop provider --help     # 供应商增删改查帮助
 
 ### 5.7 ACP（与 IDE / 编码 Agent 协作）
 
-Octop 支持两个方向的 ACP 集成：
+麦途智造支持两个方向的 ACP 集成：
 
-1. **入站** —— 让外部工具（Zed、OpenCode 等）使用你的 Octop Agent：
+1. **入站** —— 让外部工具（Zed、OpenCode 等）使用你的麦途智造 Agent：
 
    ```bash
-   octop acp --agent main
+   maitu acp --agent main
    ```
 
 2. **出站** —— 在对话中把编码任务委派给外部 Agent（OpenCode、CodeBuddy、Claude Code、Codex）：
@@ -367,11 +367,11 @@ Octop 支持两个方向的 ACP 集成：
 ### 5.8 设置（用户 / 安全 / TLS / 系统）
 
 - **用户**：管理账号、角色、修改密码。
-- **安全**：工具审批、Shell 命令护栏（`~/.octop/security/tool_guard/`）。
+- **安全**：工具审批、Shell 命令护栏（`~/.maitu/security/tool_guard/`）。
 - **TLS**：配置 HTTPS（自签或 Let's Encrypt）。
 - **系统**：监听地址 / 端口、日志级别、定时任务时区等。
 
-> 手动编辑配置文件：运行时参数保存在 `~/.octop/config.json`，可用环境变量覆盖（如 `OCTOP_PORT`、`OCTOP_BIND_HOST`）。详见 [docs/configuration.md](docs/configuration.md)。
+> 手动编辑配置文件：运行时参数保存在 `~/.maitu/config.json`，可用环境变量覆盖（如 `MAITU_PORT`、`MAITU_BIND_HOST`）。详见 [docs/configuration.md](docs/configuration.md)。
 
 ![图 5.6 — 设置页面](assets/use-06-settings.png)
 
@@ -405,21 +405,21 @@ Octop 支持两个方向的 ACP 集成：
 
 | 命令 | 说明 |
 |------|------|
-| `octop run` | 前台启动 Octop |
-| `octop run --host 0.0.0.0 --port 8088` | 自定义监听地址与端口 |
-| `octop service start` | 安装并启动系统服务 |
-| `octop service stop` | 停止系统服务 |
-| `octop agent` | 创建、列出、启停 Agent |
-| `octop channel` | 安装与管理 IM 通道 |
-| `octop chats` | REPL 与会话管理 |
-| `octop acp` | 为 IDE 提供 stdio ACP 服务 |
-| `octop cron` | 管理定时任务 |
-| `octop models` | 供应商预设与模型解析 |
-| `octop provider list` | 列出已配置供应商 |
-| `octop skills` | 按 Agent 启用 / 禁用 Skill |
-| `octop user list` | 列出用户（管理员） |
-| `octop backup` | 导出 / 恢复备份 |
-| `octop update` | 检查并安装更新 |
+| `maitu run` | 前台启动麦途智造 |
+| `maitu run --host 0.0.0.0 --port 8088` | 自定义监听地址与端口 |
+| `maitu service start` | 安装并启动系统服务 |
+| `maitu service stop` | 停止系统服务 |
+| `maitu agent` | 创建、列出、启停 Agent |
+| `maitu channel` | 安装与管理 IM 通道 |
+| `maitu chats` | REPL 与会话管理 |
+| `maitu acp` | 为 IDE 提供 stdio ACP 服务 |
+| `maitu cron` | 管理定时任务 |
+| `maitu models` | 供应商预设与模型解析 |
+| `maitu provider list` | 列出已配置供应商 |
+| `maitu skills` | 按 Agent 启用 / 禁用 Skill |
+| `maitu user list` | 列出用户（管理员） |
+| `maitu backup` | 导出 / 恢复备份 |
+| `maitu update` | 检查并安装更新 |
 
 完整参考见 [docs/cli.md](docs/cli.md)。
 
@@ -428,9 +428,9 @@ Octop 支持两个方向的 ACP 集成：
 ## 七、常见问题
 
 **Q：访问 http://127.0.0.1:8088 打不开？**
-- 确认已执行 `octop run` 且终端无报错。
+- 确认已执行 `maitu run` 且终端无报错。
 - 若改过端口，请访问对应地址（如 `http://127.0.0.1:8088` 或自定义端口）。
-- 用 `octop service status`（Linux / macOS）确认服务状态。
+- 用 `maitu service status`（Linux / macOS）确认服务状态。
 
 **Q：忘记管理员密码？**
 - 可通过 CLI 重置或重新初始化（注意：重置密码请使用用户管理相关命令 / 直接管理数据库）。
@@ -439,24 +439,24 @@ Octop 支持两个方向的 ACP 集成：
 - 检查 API Key、Base URL 是否正确，网络是否可访问该服务，账户是否有配额。
 
 **Q：如何修改监听地址让局域网访问？**
-- 启动时：`octop run --host 0.0.0.0 --port 8088`；或设置环境变量 `OCTOP_BIND_HOST=0.0.0.0`、`OCTOP_PORT=8088`。
+- 启动时：`maitu run --host 0.0.0.0 --port 8088`；或设置环境变量 `MAITU_BIND_HOST=0.0.0.0`、`MAITU_PORT=8088`。
 
 **Q：数据存放在哪里？**
-- 全部在 `~/.octop/`：
+- 全部在 `~/.maitu/`：
 
 ```
-~/.octop/
+~/.maitu/
 ├── config.json              # 进程级配置（地址、端口、CORS、TLS、database …）
-├── octop.db                 # 默认 SQLite 控制面 — 用户、Agent、通道、定时任务 …
+├── maitu.db                 # 默认 SQLite 控制面 — 用户、Agent、通道、定时任务 …
 ├── secrets/                 # JWT 密钥、通道 Token
 ├── agents/<agent_id>/       # 各 Agent 工作区（SOUL.md、skills …）
 ├── security/tool_guard/     # Shell 命令允许 / 拒绝规则
 ├── logs/                    # 运行日志
-└── bin/octop                # PATH 包装脚本 → venv/bin/octop
+└── bin/maitu                # PATH 包装脚本 → venv/bin/maitu
 ```
 
 **Q：如何升级？**
-- `octop update`（若通过一键安装）；或从 PyPI / 源码重新安装后重启服务。
+- `maitu update`（若通过一键安装）；或从 PyPI / 源码重新安装后重启服务。
 
 **Q：如何加入客户企业微信服务群？**
 - 请扫描下方二维码加入：
@@ -473,7 +473,7 @@ Octop 支持两个方向的 ACP 集成：
 
 | 编号 | 位置 | 文件名 | 状态 | 内容说明 |
 |------|------|--------|------|----------|
-| 图 1.1 | 一、简介 | `overview.png` | ✅ 已就位 | Octop 品牌 Banner |
+| 图 1.1 | 一、简介 | `overview.png` | ✅ 已就位 | 麦途智造品牌 Banner |
 | 图 3.1 | 3.2 向导步骤 | `setup-01-steps.png` | ✅ 已就位 | 向导步骤条（验证密码页） |
 | 图 3.2 | 3.2 管理员 | `setup-02-admin.png` | ✅ 已就位 | 创建管理员账号表单 |
 | 图 3.3 | 3.2 模型 | `setup-03-model.png` | ✅ 已就位 | 向导内预设供应商选择 |

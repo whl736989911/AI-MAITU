@@ -2,7 +2,7 @@
     "docker-project": {
         "projects": [
             {
-                "name": "octop",
+                "name": "maitu",
                 "path": "docker"
             }
         ]

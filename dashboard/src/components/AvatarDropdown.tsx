@@ -367,7 +367,9 @@ export default function AvatarDropdown({
 
       <a
         className={styles.menuItem}
-        href="https://tencentcloud.github.io/Octop/"
+        // ``help`` is generated from brand.config.json; older generated files
+        // have no key yet, so fall back to the in-app API docs.
+        href={(BRAND.links as { help?: string }).help || "/api/docs"}
         target="_blank"
         rel="noopener noreferrer"
         onClick={() => setMenuOpen(false)}

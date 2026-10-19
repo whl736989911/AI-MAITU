@@ -29,7 +29,7 @@ def _row(agent_id: str = "a1") -> AgentRow:
     )
 
 
-def test_inject_local_shell_uses_octop_auth_for_new_layout(tmp_path: Path, monkeypatch) -> None:
+def test_inject_local_shell_uses_system_auth_for_new_layout(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
     paths = PathLayout(tmp_path)
     paths.ensure_root()
@@ -43,37 +43,45 @@ def test_inject_local_shell_uses_octop_auth_for_new_layout(tmp_path: Path, monke
         paths=paths,
         row=_row("agent-1"),
         workspace_dir=ws,
-        cfg={"system_files_path": ".octop"},
+        cfg={"system_files_path": ".maitu"},
     )
     env = spec["env"]
     assert env["OCTOP_AGENT_ID"] == "agent-1"
-    assert (ws / ".octop" / "auth").is_dir()
-    assert env["OCTOP_AUTH_DIR"] == str(ws / ".octop" / "auth")
+    assert (ws / ".maitu" / "auth").is_dir()
+    assert env["OCTOP_AUTH_DIR"] == str(ws / ".maitu" / "auth")
     assert env["OCTOP_HOME"] == str(paths.root)
-    assert env["OCTOP_SKILLS_DIR"] == str(ws / ".octop" / "skills")
+    assert env["OCTOP_SKILLS_DIR"] == str(ws / ".maitu" / "skills")
     assert "GLOBAL_KEY" not in env
     assert "AGENT_KEY" not in env
     assert spec["inherit_env"] is True
 
 
-def test_inject_legacy_layout_keeps_root_octop_auth(tmp_path: Path, monkeypatch) -> None:
+def test_inject_treats_a_persisted_legacy_prefix_as_the_new_one(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A row written before the rename keeps working, on the current directory."""
     monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
     paths = PathLayout(tmp_path)
     paths.ensure_root()
-    ws = paths.ensure_agent_workspace("agent-legacy")
+    ws = paths.ensure_agent_workspace("agent-old-cfg")
 
     spec = inject_agent_execute_env(
         {"type": "local_shell", "root_dir": "/", "virtual_mode": True},
         paths=paths,
-        row=_row("agent-legacy"),
+        row=_row("agent-old-cfg"),
         workspace_dir=ws,
-        cfg={},
+        cfg={"system_files_path": ".octop"},
     )
-    assert (ws / ".octop-auth").is_dir()
-    assert spec["env"]["OCTOP_AUTH_DIR"] == str(ws / ".octop-auth")
+
+    env = spec["env"]
+    assert (ws / ".maitu" / "auth").is_dir()
+    assert env["OCTOP_AUTH_DIR"] == str(ws / ".maitu" / "auth")
+    assert env["OCTOP_SKILLS_DIR"] == str(ws / ".maitu" / "skills")
 
 
-def test_inject_keeps_legacy_auth_when_tokens_already_there(tmp_path: Path, monkeypatch) -> None:
+def test_inject_keeps_standalone_legacy_auth_when_tokens_already_there(
+    tmp_path: Path, monkeypatch
+) -> None:
     monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
     paths = PathLayout(tmp_path)
     paths.ensure_root()
@@ -87,9 +95,28 @@ def test_inject_keeps_legacy_auth_when_tokens_already_there(tmp_path: Path, monk
         paths=paths,
         row=_row("agent-mig"),
         workspace_dir=ws,
-        cfg={"system_files_path": ".octop"},
+        cfg={"system_files_path": ".maitu"},
     )
     assert spec["env"]["OCTOP_AUTH_DIR"] == str(legacy)
+
+
+def test_inject_uses_migrated_standalone_auth_dir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    paths = PathLayout(tmp_path)
+    paths.ensure_root()
+    ws = paths.ensure_agent_workspace("agent-mig2")
+    migrated = ws / ".maitu-auth"
+    migrated.mkdir()
+    (migrated / "token.json").write_text("{}", encoding="utf-8")
+
+    spec = inject_agent_execute_env(
+        {"type": "local_shell", "root_dir": "/", "virtual_mode": True},
+        paths=paths,
+        row=_row("agent-mig2"),
+        workspace_dir=ws,
+        cfg={"system_files_path": ".maitu"},
+    )
+    assert spec["env"]["OCTOP_AUTH_DIR"] == str(migrated)
 
 
 def test_inject_composite_default_local_shell(tmp_path: Path, monkeypatch) -> None:
@@ -107,14 +134,46 @@ def test_inject_composite_default_local_shell(tmp_path: Path, monkeypatch) -> No
         paths=paths,
         row=_row("agent-c"),
         workspace_dir=ws,
-        cfg={"system_files_path": ".octop"},
+        cfg={"system_files_path": ".maitu"},
     )
     assert spec["default"]["env"]["OCTOP_AGENT_ID"] == "agent-c"
-    assert spec["default"]["env"]["OCTOP_AUTH_DIR"] == str(ws / ".octop" / "auth")
+    assert spec["default"]["env"]["OCTOP_AUTH_DIR"] == str(ws / ".maitu" / "auth")
     assert spec["default"]["inherit_env"] is True
 
 
 def test_inject_scoped_root_uses_agent_facing_auth_paths(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    paths = PathLayout(tmp_path)
+    paths.ensure_root()
+    root = tmp_path / "scoped"
+    root.mkdir()
+    ws = root / ".maitu" / "workspaces" / "agent-s"
+    ws.mkdir(parents=True)
+    cfg = {
+        "system_files_path": ".maitu",
+        "workspace_dir": "/.maitu/workspaces/agent-s",
+        "backend": {
+            "type": "local_shell",
+            "root_dir": str(root),
+            "virtual_mode": True,
+        },
+    }
+
+    spec = inject_agent_execute_env(
+        {"type": "local_shell", "root_dir": str(root), "virtual_mode": True},
+        paths=paths,
+        row=_row("agent-s"),
+        workspace_dir=ws,
+        cfg=cfg,
+    )
+    env = spec["env"]
+    assert (ws / ".maitu" / "auth").is_dir()
+    assert env["OCTOP_AUTH_DIR"] == "/.maitu/workspaces/agent-s/.maitu/auth"
+    assert env["OCTOP_SKILLS_DIR"] == "/.maitu/workspaces/agent-s/.maitu/skills"
+
+
+def test_inject_scoped_root_keeps_legacy_agent_facing_paths(tmp_path: Path, monkeypatch) -> None:
+    """A persisted ``/.octop/workspaces/…`` keeps resolving to the same host tree."""
     monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
     paths = PathLayout(tmp_path)
     paths.ensure_root()
@@ -140,9 +199,8 @@ def test_inject_scoped_root_uses_agent_facing_auth_paths(tmp_path: Path, monkeyp
         cfg=cfg,
     )
     env = spec["env"]
-    assert (ws / ".octop" / "auth").is_dir()
-    assert env["OCTOP_AUTH_DIR"] == "/.octop/workspaces/agent-s/.octop/auth"
-    assert env["OCTOP_SKILLS_DIR"] == "/.octop/workspaces/agent-s/.octop/skills"
+    assert env["OCTOP_AUTH_DIR"] == "/.octop/workspaces/agent-s/.maitu/auth"
+    assert env["OCTOP_SKILLS_DIR"] == "/.octop/workspaces/agent-s/.maitu/skills"
 
 
 def test_inject_docker_only_sets_platform_defaults(tmp_path: Path, monkeypatch) -> None:
@@ -157,9 +215,9 @@ def test_inject_docker_only_sets_platform_defaults(tmp_path: Path, monkeypatch) 
         paths=paths,
         row=_row("agent-2"),
         workspace_dir=ws,
-        cfg={"system_files_path": ".octop"},
+        cfg={"system_files_path": ".maitu"},
     )
     env = spec["env"]
     assert env["OCTOP_AGENT_ID"] == "agent-2"
-    assert env["OCTOP_AUTH_DIR"] == str(ws / ".octop" / "auth")
+    assert env["OCTOP_AUTH_DIR"] == str(ws / ".maitu" / "auth")
     assert "GLOBAL_KEY" not in env

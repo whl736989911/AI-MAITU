@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # =============================================================================
-# Octop — FnOS 专用构建（基于仓库源码，安装全部附加组件）
+# 麦途智造 — FnOS 专用构建（基于仓库源码，安装全部附加组件）
 #
 # 与上游 docker/Dockerfile 一致，但显式安装 desktop extra：
 #   - desktop  （mss / pynput / pillow，桌面控制附加组件）
@@ -38,17 +38,17 @@ RUN NODE_ENV=production NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_
 FROM python:3.12-slim AS runtime
 
 LABEL maintainer="TencentCloud OrcaKit"
-LABEL org.opencontainers.image.title="Octop"
-LABEL org.opencontainers.image.description="Smarter self-hosted AI assistant — multi-user, multi-agent (FnOS build with all addons)."
-LABEL org.opencontainers.image.source="https://github.com/TencentCloud/Octop"
+LABEL org.opencontainers.image.title="麦途智造"
+LABEL org.opencontainers.image.description="MAITU Smart Manufacturing — multi-user, multi-agent AI workspace (FnOS build with all addons)."
+LABEL org.opencontainers.image.source="https://github.com/TencentCloud/麦途智造"
 LABEL org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HOME=/data \
-    OCTOP_BIND_HOST=0.0.0.0 \
-    OCTOP_PORT=8088 \
-    OCTOP_LOG_LEVEL=info \
+    MAITU_BIND_HOST=0.0.0.0 \
+    MAITU_PORT=8088 \
+    MAITU_LOG_LEVEL=info \
     UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PYTHON_DOWNLOADS=never \
@@ -98,12 +98,12 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 ENV PATH="/app/.venv/bin:$PATH" \
     PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
 
-RUN mkdir -p /data/.octop
+RUN mkdir -p /data/.maitu
 
 EXPOSE 8088
 
 HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=3 \
-    CMD ["sh", "-c", "curl -f http://localhost:${OCTOP_PORT:-8088}/api/health || exit 1"]
+    CMD ["sh", "-c", "curl -f http://localhost:${MAITU_PORT:-8088}/api/health || exit 1"]
 
 ENTRYPOINT ["docker-entrypoint.sh"]
 CMD []

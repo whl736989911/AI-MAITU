@@ -1,4 +1,4 @@
-"""octop models — provider presets and resolved model list."""
+"""maitu models — provider presets and resolved model list."""
 
 from __future__ import annotations
 

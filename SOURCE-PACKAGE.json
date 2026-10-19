@@ -1337,8 +1337,6 @@
     "docs/architecture.md": "1c5a6f7bdc2b24b1fe89a7db2001523470689a80bbd36bc952a8ae6c5e50472a",
     "docs/assets/model-01-custom.png": "bc8e035e91b48cd2660b062245b8f12b404396ca65912492e981f4bc60d10cae",
     "docs/assets/model-02-manage.png": "9e6ca5e953ee6919bfc7d7517ade91c3549ce6f6b028443a39c7bbb9e90da3bb",
-    "docs/assets/octop-banner.png": "7fd1de8f6ccaee8fcea2d2f8d52cb29d9044f7b08867d4af6842d96d313bf85a",
-    "docs/assets/octop-logo.svg": "2cd4244ce564e9d9b9aaef3b85140039632d64a5b521a0e6afd665c746d47b19",
     "docs/assets/overview.png": "4471d0d0c18edf550599bb802e5825c42db9f7eaca3e06b73867c9e4d7bc7d59",
     "docs/assets/qrcode.png": "b58e1f6881b8b1b918bcb894a9bd284479a52e0f10869abea1408497a05d664b",
     "docs/assets/readme-banner-zh.png": "0e0e3847e2666c92d8269f8ff4d1f55f46b70ef97fed6fe032fddc6cfcff3898",
@@ -1364,7 +1362,6 @@
     "docs/instance-license-operations.md": "78997843e44e5c6d4f79b649478337f62f718a3a0d52a701b95a0a221072b025",
     "docs/knowledge-processing-development-plan.md": "7bca8f2c5945157f3f243f191ab7dd2f05cbd5e3e8a69de3c65fcb419a993732",
     "docs/license-center-deployment.md": "ffcd6305a80a21d81b8ea85dd494b11f06e6b02462725cae07fdd6013f66a7f3",
-    "docs/octop-introduction.html": "30cd9a089ee1b02f7a02c1902fef8fcaaddf36721cec27cec58462b9b0674541",
     "docs/parallel-dev-convention.md": "c28d5aaedbb3b2b41d8e915bf7c92ff7e7a60e4dcfc9d54ec18052c3e29a8560",
     "docs/personas.md": "c57b83069ad3769295a794b40b8c616924bc55483a81f28a19c49d4aa1100145",
     "docs/user-guide.html": "08d5d5ccb4447e7a71b1a992387c8770812654fc46d9aab0d9ebaa981be99de9",
@@ -1448,7 +1445,6 @@
     "scripts/deployment/probe.py": "d19980db0c897a39515198a19e549052b47319848d3d14b62c0687377cfe8e0d",
     "scripts/deployment/ruff.toml": "448b12ce1a1301324288277ee4e98817b4ad0f6fdccbb7ff2367eeedec5a6ab9",
     "scripts/fnos/common.sh": "55c899a4a92681172c1ca262eb60b5c3ad8c8c115db81242d6080bc38482ceb1",
-    "scripts/install-octop.sh": "45fa0e1da895b36175aeb799238c089c3d75bed1cc02550bb36c5dd34f91e1a6",
     "scripts/install.bat": "7b918a10d8805dd812b9d6be4ad4ffc529b91e52a782ba07160414f2fce2f73d",
     "scripts/install.ps1": "d861f30c2243ddb9c4cc2d05a6e10e94edac081730f45e4d9e2becff9449ec30",
     "scripts/install.sh": "5da6ea47c8ee5a33134b513f005432a92f7c745d77d86be7df547a213c8ff5ca",
@@ -4244,6 +4240,10 @@
     "tests/unit/utils/test_runtime_packages.py": "61c853c12ae687907842efd5e54e5617d735de2a39ee6a7d54f1389ae853b53e",
     "tests/unit/utils/test_search_probe.py": "540163e0d58ada5510ea9f885aac7dae6a94ef3c5181dd6cf0318823bfa7a897",
     "tests/unit/utils/test_ssrf_guard.py": "579c1010c54eb4871263e00829ad5ce0989192ac8227313a4abc78c124fe6c2a",
-    "uv.lock": "80a94cfab77b8a6188194873a319ca1948329ef5dd330a7600eea1a59c2246a1"
+    "uv.lock": "80a94cfab77b8a6188194873a319ca1948329ef5dd330a7600eea1a59c2246a1",
+    "docs/assets/maitu-banner.png": "7fd1de8f6ccaee8fcea2d2f8d52cb29d9044f7b08867d4af6842d96d313bf85a",
+    "docs/assets/maitu-logo.svg": "2cd4244ce564e9d9b9aaef3b85140039632d64a5b521a0e6afd665c746d47b19",
+    "docs/maitu-introduction.html": "55953ef126e9bf9e829338e5f0c306b234d5ea996be0d9882d77ebd11c7f07b2",
+    "scripts/install-maitu.sh": "e717b29aa4dba3db57eb450e0ca5ecdb44025fc49adbaaccee713c5ab894d0c9"
   }
 }

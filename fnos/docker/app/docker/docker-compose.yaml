@@ -1,20 +1,20 @@
 services:
-  octop:
+  maitu:
     image: ghcr.io/tencentcloud/octop:latest
-    container_name: octop
+    container_name: maitu
     restart: unless-stopped
     pull_policy: always
     ports:
       - "8088:8088"
     volumes:
-      - "/var/apps/octop/share/octop/data:/data/.octop"
+      - "/var/apps/octop/share/octop/data:/data/.maitu"
     environment:
       - HOME=/data
-      - OCTOP_BIND_HOST=0.0.0.0
-      - OCTOP_PORT=${OCTOP_PORT:-8088}
-      - OCTOP_LOG_LEVEL=${OCTOP_LOG_LEVEL:-info}
-      - OCTOP_DEFAULT_PASSWORD=${OCTOP_DEFAULT_PASSWORD:-}
-      - OCTOP_ADMIN_USERNAME=${OCTOP_ADMIN_USERNAME:-admin}
-      - OCTOP_ADMIN_DISPLAY_NAME=${OCTOP_ADMIN_DISPLAY_NAME:-Admin}
+      - MAITU_BIND_HOST=0.0.0.0
+      - MAITU_PORT=${MAITU_PORT:-8088}
+      - MAITU_LOG_LEVEL=${MAITU_LOG_LEVEL:-info}
+      - MAITU_DEFAULT_PASSWORD=${MAITU_DEFAULT_PASSWORD:-}
+      - MAITU_ADMIN_USERNAME=${MAITU_ADMIN_USERNAME:-admin}
+      - MAITU_ADMIN_DISPLAY_NAME=${MAITU_ADMIN_DISPLAY_NAME:-Admin}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - DASHSCOPE_API_KEY=${DASHSCOPE_API_KEY:-}

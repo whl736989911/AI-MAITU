@@ -36,7 +36,7 @@ async def test_team_roster_persists_and_rejects_single_member(
     assert after.status_code == 200, after.text
     assert after.json()["member_ids"] == [first, second]
     workspace = server.app_runtime.agent_registry.workspace_for_agent(team_id)
-    manifest = json.loads(await workspace.aread_text(".octop/manifest.json"))
+    manifest = json.loads(await workspace.aread_text(".maitu/manifest.json"))
     assert manifest["members"] == [first, second]
 
 

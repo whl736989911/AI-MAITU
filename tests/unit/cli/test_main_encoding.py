@@ -63,4 +63,4 @@ def test_init_completes_with_gbk_stdout(tmp_path: Path) -> None:
     assert proc.returncode == 0, proc.stdout.decode("utf-8", "replace") + proc.stderr.decode(
         "utf-8", "replace"
     )
-    assert (home / "octop.db").is_file()
+    assert (home / "maitu.db").is_file()

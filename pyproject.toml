@@ -109,6 +109,7 @@ dev = [
 ]
 
 [project.scripts]
+maitu = "octop.cli.main:cli"
 octop = "octop.cli.main:cli"
 
 [tool.hatch.build.targets.wheel]

@@ -12,7 +12,11 @@ import pytest
 
 from octop.config import DatabaseConfig
 from octop.infra.backup.manifest import MANIFEST_VERSION, BackupManifest
-from octop.infra.backup.system_archive import create_system_backup, restore_system_backup
+from octop.infra.backup.system_archive import (
+    create_system_backup,
+    restore_system_backup,
+    suggested_backup_filename,
+)
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.errors import ErrorCode, OctopError
@@ -21,7 +25,7 @@ from octop.infra.utils.paths import PathLayout
 
 @pytest.fixture
 def layout(tmp_path: Path) -> PathLayout:
-    root = tmp_path / ".octop"
+    root = tmp_path / ".maitu"
     root.mkdir()
     return PathLayout(root)
 
@@ -33,14 +37,14 @@ def test_manifest_roundtrip_includes_driver_fields() -> None:
         schema_version=1,
         created_at="t",
         home="/tmp",
-        db_file="db/octop.dump",
+        db_file="db/maitu.dump",
         database_driver="postgresql",
         database_dump_format="pg_custom",
     )
     loaded = BackupManifest.load_text(m.to_json())
     assert loaded.database_driver == "postgresql"
     assert loaded.database_dump_format == "pg_custom"
-    assert loaded.db_file == "db/octop.dump"
+    assert loaded.db_file == "db/maitu.dump"
 
 
 def test_legacy_manifest_defaults_plugins_omitted() -> None:
@@ -91,7 +95,7 @@ def test_roundtrip_backup(layout: PathLayout, tmp_path: Path) -> None:
         name = "Test"
 
     archive = tmp_path / "roundtrip.tar.gz"
-    create_system_backup(
+    filename = create_system_backup(
         paths=layout,
         agent_rows=[Row()],
         pool=pool,
@@ -146,6 +150,9 @@ def test_roundtrip_backup(layout: PathLayout, tmp_path: Path) -> None:
         manifest = json.loads(tf.extractfile("manifest.json").read().decode("utf-8"))
     assert manifest["manifest_version"] == MANIFEST_VERSION
     assert manifest["database_driver"] == "sqlite"
+    assert manifest["db_file"] == "db/maitu.db"
+    assert filename.startswith("maitu-backup-")
+    assert filename.endswith(".tar.gz")
 
 
 def test_backup_packs_config_workspace_dir(layout: PathLayout, tmp_path: Path) -> None:
@@ -1288,3 +1295,69 @@ def test_refuse_cross_engine_restore(layout: PathLayout, tmp_path: Path) -> None
         )
     assert excinfo.value.code == ErrorCode.BACKUP_DRIVER_MISMATCH
     pool.close()
+
+
+def test_restore_legacy_archive_with_old_db_member_name(tmp_path: Path) -> None:
+    """LEGACY: archives that packed the old database path still restore."""
+    from octop.infra.utils.legacy_names import LEGACY_DB_ARCHIVE_PATH
+
+    source_layout = PathLayout(tmp_path / "legacy-source")
+    source_pool = SqlitePool(source_layout.db)
+    run_migrations(source_pool)
+    with source_pool.connect() as conn:
+        conn.execute(
+            "INSERT INTO users(username, password_hash, role, created_at) VALUES (?, ?, ?, ?)",
+            ("legacy-admin", "hash", "admin", 1),
+        )
+
+    archive = tmp_path / "legacy.tar.gz"
+    create_system_backup(
+        paths=source_layout,
+        agent_rows=[],
+        pool=source_pool,
+        db_config=DatabaseConfig(),
+        dest=archive,
+        include_config=False,
+        include_workspaces=False,
+    )
+    source_pool.close()
+
+    # Rewrite the archive the way a pre-white-label build wrote it.
+    members: dict[str, bytes] = {}
+    with tarfile.open(archive, mode="r:gz") as tf:
+        for member in tf.getmembers():
+            if member.isfile():
+                extracted = tf.extractfile(member)
+                assert extracted is not None
+                members[member.name] = extracted.read()
+    members[LEGACY_DB_ARCHIVE_PATH] = members.pop("db/maitu.db")
+    manifest = json.loads(members["manifest.json"])
+    manifest["db_file"] = LEGACY_DB_ARCHIVE_PATH
+    members["manifest.json"] = json.dumps(manifest).encode()
+    with tarfile.open(archive, mode="w:gz") as tf:
+        for name, blob in members.items():
+            info = tarfile.TarInfo(name=name)
+            info.size = len(blob)
+            tf.addfile(info, BytesIO(blob))
+
+    target_layout = PathLayout(tmp_path / "legacy-target")
+    target_pool = SqlitePool(target_layout.db)
+    run_migrations(target_pool)
+    result = restore_system_backup(
+        archive,
+        paths=target_layout,
+        pool=target_pool,
+        db_config=DatabaseConfig(),
+        restore_config=False,
+    )
+    assert result["schema_version"] >= 1
+    with target_pool.connect() as conn:
+        row = conn.execute("SELECT 1 FROM users WHERE username = 'legacy-admin'").fetchone()
+        assert row is not None
+    target_pool.close()
+
+
+def test_suggested_backup_filename_uses_the_brand_prefix() -> None:
+    name = suggested_backup_filename()
+    assert name.startswith("maitu-backup-")
+    assert name.endswith(".tar.gz")

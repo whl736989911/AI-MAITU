@@ -1,7 +1,7 @@
 """A feature's workflow over HTTP — who writes it, and what a refusal carries.
 
 The definition is a document in the feature's own workspace
-(``.octop/workflow.json``), written through ``PUT /api/agents/{id}/workflow``. What
+(``.maitu/workflow.json``), written through ``PUT /api/agents/{id}/workflow``. What
 this pins is the part the definition module cannot: only a feature has a workflow,
 its author writes it while a grantee only reads it, a refusal lists every problem
 and writes nothing, and a draft may be half-written where an active one may not.
@@ -55,7 +55,7 @@ def _draft(**overrides):
 async def _stored_definition(server, agent_id: str):
     workspace = server.app_runtime.agent_registry.workspace_for_agent(agent_id)
     assert workspace is not None
-    text = await workspace.aread_text(".octop/workflow.json")
+    text = await workspace.aread_text(".maitu/workflow.json")
     return json.loads(text) if text else None
 
 

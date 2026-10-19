@@ -1,19 +1,19 @@
 # Agent 内容文件 Backend 严格化改造方案
 
-> 目标：Octop 服务端对 agent workspace **内容文件**的读写，一律经 `agent.backend`（或 `resolve_harness_backend`），不再用 `Path(...).write_text` / `read_text` 直连磁盘。  
+> 目标：麦途智造服务端对 agent workspace **内容文件**的读写，一律经 `agent.backend`（或 `resolve_harness_backend`），不再用 `Path(...).write_text` / `read_text` 直连磁盘。  
 > 记忆相关路径除外。不新增统一 I/O 抽象层。
 
 ---
 
 ## 1. 背景与问题
 
-当前部分代码在 agent 已配置远程 backend（S3/COS 等）时，仍向本地 `~/.octop/agents/<agent_id>/` 读写内容文件，导致：
+当前部分代码在 agent 已配置远程 backend（S3/COS 等）时，仍向本地 `~/.maitu/agents/<agent_id>/` 读写内容文件，导致：
 
 - 用户配置了 backend，agent 工具读的是远程存储；
-- Octop 服务端 seed / 写 SOUL / 同步插件 skills 等仍写本地；
+- 麦途智造服务端 seed / 写 SOUL / 同步插件 skills 等仍写本地；
 - Dashboard 部分读路径优先本地，展示与真实存储不一致。
 
-默认未配置 backend 时，Octop 在 Linux 上使用 `local_shell` + `virtual_mode=True`，`root_dir` 固定为受管理的 `workspace_dir`（即 `~/.octop/agents/<id>/`）；文件工具仍使用同一文件系统路径，`execute` 必须经过 bubblewrap。非 Linux 默认使用仅文件访问的 `filesystem`，不回退到宿主 shell。远程 backend 场景下仍必须统一走 workspace 文件接口。
+默认未配置 backend 时，麦途智造在 Linux 上使用 `local_shell` + `virtual_mode=True`，`root_dir` 固定为受管理的 `workspace_dir`（即 `~/.maitu/agents/<id>/`）；文件工具仍使用同一文件系统路径，`execute` 必须经过 bubblewrap。非 Linux 默认使用仅文件访问的 `filesystem`，不回退到宿主 shell。远程 backend 场景下仍必须统一走 workspace 文件接口。
 
 ---
 
@@ -21,7 +21,7 @@
 
 ### 2.1 只换 IO 通道，不换路径
 
-改造前后**操作的是同一个文件**，路径字符串**保持项目既有写法**，Octop 不做路径改写。
+改造前后**操作的是同一个文件**，路径字符串**保持项目既有写法**，麦途智造不做路径改写。
 
 ```python
 # 以前
@@ -34,7 +34,7 @@ backend = await agent_registry.resolve_harness_backend(agent_id)
 await backend.aupload_files([(soul_path, text.encode("utf-8"))])
 ```
 
-- **禁止**在 Octop 层把 `~/.octop/agents/<id>/SOUL.md`「转换」为 `/SOUL.md`、`SOUL.md` 等另一套命名。
+- **禁止**在麦途智造层把 `~/.maitu/agents/<id>/SOUL.md`「转换」为 `/SOUL.md`、`SOUL.md` 等另一套命名。
 - 专家模板、skills、seed 等：backend 参数中的 path 与原先 `disk_path = workspace_dir / rel` 的字符串形式一致。
 
 ### 2.2 Backend 获取方式
@@ -58,13 +58,13 @@ await backend.aupload_files([(soul_path, text.encode("utf-8"))])
 
 ### 2.4 `workspace_dir` 的保留用途
 
-`~/.octop/agents/<id>/` 仍作为 harness 的 `workspace_dir`，用于：
+`~/.maitu/agents/<id>/` 仍作为 harness 的 `workspace_dir`，用于：
 
 - 构造本地 backend 时的 `root_dir` 挂载；
 - checkpoint、sessions JSONL、harness-memory SQLite 等**本地产物**（不由 backend 协议管理）；
 - 终端 PTY 的 cwd（见 §6 例外）。
 
-**内容文件**（md、skills 等）不再由 Octop 对该目录做 `read_text` / `write_text`。
+**内容文件**（md、skills 等）不再由麦途智造对该目录做 `read_text` / `write_text`。
 
 ---
 
@@ -96,7 +96,7 @@ await backend.aupload_files([(soul_path, text.encode("utf-8"))])
 ### 3.3 不在范围
 
 - Expert library 内 skill 脚本（agent 运行时经 harness 工具执行）
-- `~/.octop/plugins/` 安装、`~/.octop/security/` tool guard
+- `~/.maitu/plugins/` 安装、`~/.maitu/security/` tool guard
 - Expert catalog  bundled 源码读取
 
 ---
@@ -156,7 +156,7 @@ create(agent)
 ```
 
 - 全程不对内容文件 `Path.write_text`。
-- `init_workspace=False`：避免 harness 再次写本地造成双轨；seed 由 Octop 经 backend 完成。
+- `init_workspace=False`：避免 harness 再次写本地造成双轨；seed 由麦途智造经 backend 完成。
 
 ---
 
@@ -234,7 +234,7 @@ create(agent)
 
 ## 12. 局部 root_dir 与 execute jail（补充）
 
-未配置 backend 的 Linux agent 默认使用 `local_shell`，显式配置的 `local_shell` 也保留执行能力，不再被静默改为 `filesystem`。Octop 将本地 `local_shell` / `filesystem` 的 `root_dir` 固定到该 agent 的受管理 workspace，并强制 `virtual_mode=True`；旧配置中的 `/`、其他宿主目录或非虚拟模式在运行时收紧到此边界，偏离的根目录会记录 warning，不改写原始记录，也不读取旧宿主目录中的文件。`workspace_dir`、额外 skills 根目录及 Docker 宿主挂载覆盖仍受独立校验。
+未配置 backend 的 Linux agent 默认使用 `local_shell`，显式配置的 `local_shell` 也保留执行能力，不再被静默改为 `filesystem`。麦途智造将本地 `local_shell` / `filesystem` 的 `root_dir` 固定到该 agent 的受管理 workspace，并强制 `virtual_mode=True`；旧配置中的 `/`、其他宿主目录或非虚拟模式在运行时收紧到此边界，偏离的根目录会记录 warning，不改写原始记录，也不读取旧宿主目录中的文件。`workspace_dir`、额外 skills 根目录及 Docker 宿主挂载覆盖仍受独立校验。
 
 本地 `local_shell` 只在 Linux 上提供隔离执行。原生安装经 `SourceShellBackend`，许可证托管安装经 `ManagedShellBackend`，均用 bubblewrap 将 workspace 绑定到沙箱 `/`。缺少或无法启动 `bwrap` 时显式失败，不能回退到宿主执行；非 Linux 默认使用 `filesystem`，显式请求 `local_shell` 则拒绝。平台 Python 运行时仅以只读绑定供 Skill 脚本使用，不为此绑定整个用户 home、项目目录或许可证目录。
 
@@ -251,7 +251,7 @@ do not collapse host abs before calling BackendWorkspace.
 需要把 agent 的文件系统工具与 `execute` 隔离到 Docker 容器时，配置 harness `type: "docker"`（需 `orcakit-harness-agent[docker]`，本机 Docker daemon 可用）。
 
 宿主 ``workspace_dir`` 在创建专家时固定为
-``{OCTOP_HOME}/agents/<agent_id>/``，不能由用户覆盖为任意宿主目录。
+``{MAITU_HOME}/agents/<agent_id>/``，不能由用户覆盖为任意宿主目录。
 所有 backend 类型共用该路径作为 harness ``HarnessAgentConfig.workspace_dir``：
 
 | Backend | 专家可见内容 | 宿主 ``workspace_dir`` |
@@ -263,7 +263,7 @@ do not collapse host abs before calling BackendWorkspace.
 自动压缩与 `/compact` 把被挤出的原文写到
 ``{artifacts_root}/conversation_history/{session_id}.md``。本地
 ``local_shell`` / ``filesystem`` 经 harness ``MountedCompositeBackend`` 把
-``artifacts_root`` 收到工作区（Octop：``.octop/conversation_history/``）。
+``artifacts_root`` 收到工作区（麦途智造：``.maitu/conversation_history/``）。
 ``docker`` / ``opensandbox`` / COS 等**没有**这层 wrap：offload 可能落到
 容器内 ``/conversation_history/``。自动压缩在写失败时仍继续摘要
 （``file_path=None``）；``/compact`` 写失败则整次失败，不改对话状态。
@@ -278,7 +278,7 @@ Harness 侧只认调用方传入的 ``workspace_dir``；Docker 默认把它镜�
     "type": "docker",
     "image": "python:3.12-slim",
     "sandbox_scope": "agent",
-    "sandbox_prefix": "octop_sandbox",
+    "sandbox_prefix": "maitu_sandbox",
     "allow_network": false,
     "memory": "512m"
   }
@@ -290,15 +290,15 @@ Harness 侧只认调用方传入的 ``workspace_dir``；Docker 默认把它镜�
 | 字段 | 说明 |
 |------|------|
 | `sandbox_scope` | `agent`（默认）/ `user` / `fixed` |
-| `sandbox_prefix` | 容器名前缀；Octop 默认注入 `octop_sandbox`；库默认 `sandbox` |
+| `sandbox_prefix` | 容器名前缀；麦途智造默认注入 `maitu_sandbox`；库默认 `sandbox` |
 | `sandbox_id` | `fixed` 必填 |
-| `username` | `user` 用；缺省时 Octop 注入专家所有者用户名 |
+| `username` | `user` 用；缺省时麦途智造注入专家所有者用户名 |
 | `previewable` | 仅影响 Admin「我的存储」浏览按钮；默认仅 `fixed` 为 true。专家工作区始终可预览 |
-| `volumes` | Octop 拒绝用户提供的宿主路径覆盖；`workspace_path` / `environment_file` 同样禁止，不以放宽宿主挂载修复旧配置 |
+| `volumes` | 麦途智造拒绝用户提供的宿主路径覆盖；`workspace_path` / `environment_file` 同样禁止，不以放宽宿主挂载修复旧配置 |
 
 容器命名：
 
-- `agent` → `{prefix}_agent_{agentId}`（如 `octop_sandbox_agent_ZE6GR2`）
+- `agent` → `{prefix}_agent_{agentId}`（如 `maitu_sandbox_agent_ZE6GR2`）
 - `user` → `{prefix}_{username}`（同用户多专家共用一沙箱）
 - `fixed` → `sandbox_id`
 
@@ -317,8 +317,8 @@ Harness 侧只认调用方传入的 ``workspace_dir``；Docker 默认把它镜�
 行为要点：
 
 - **同名路径、两处落盘（不自动挂载）**：
-  - 专家 ``workspace_dir``（创建时写入配置/库；Octop 默认 ``{OCTOP_HOME}/agents/<id>/``）：宿主上放 sessions / memory / checkpoints
-  - 容器内同一绝对路径：专家可见工作区（由受管理的 ``workspace_dir`` 决定；Octop 不接受用户传入的 ``workspace_path`` 覆盖）
+  - 专家 ``workspace_dir``（创建时写入配置/库；麦途智造默认 ``{MAITU_HOME}/agents/<id>/``）：宿主上放 sessions / memory / checkpoints
+  - 容器内同一绝对路径：专家可见工作区（由受管理的 ``workspace_dir`` 决定；麦途智造不接受用户传入的 ``workspace_path`` 覆盖）
 - **沙箱 FS**：`ls` / `read` / `write` / `execute` 都在容器内，经 Docker Python SDK 完成
 - **专家工作区**（专家页文件树 / SOUL.md 等）始终可预览；走 agent backend API（Docker 时即该专家对应容器内同名路径）
 - **Admin 存储浏览**（`/admin/backend`）：`previewable` 控制；Docker 默认仅 `fixed` 可浏览；`agent`/`user` 按钮置灰，仍可用「探测」验证连通性（test 沙箱）

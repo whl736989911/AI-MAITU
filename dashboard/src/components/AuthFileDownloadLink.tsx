@@ -28,7 +28,7 @@ function filenameFromUrl(url: string): string | undefined {
   try {
     const parsed = url.startsWith("http")
       ? new URL(url)
-      : new URL(url, "http://octop.local");
+      : new URL(url, "http://maitu.local");
     const pathParam = parsed.searchParams.get("path");
     if (pathParam) {
       const name = pathParam.split("/").pop();

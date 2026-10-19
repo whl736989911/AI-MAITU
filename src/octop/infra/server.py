@@ -34,7 +34,13 @@ from octop.infra.setup import password_file as _wizard_pw
 from octop.infra.setup.password_file import WIZARD_FILE_NAME
 from octop.infra.setup.wizard_tokens import WizardTokenStore
 from octop.infra.users.manager import UserManager
-from octop.infra.utils.paths import PathLayout
+from octop.infra.utils.legacy_names import LEGACY_LOG_FILENAME
+from octop.infra.utils.paths import (
+    LOG_FILENAME,
+    PathLayout,
+    migrate_legacy_home,
+    upgrade_legacy_names,
+)
 
 if TYPE_CHECKING:
     from octop.infra.auth.sso.service import SsoService
@@ -117,6 +123,7 @@ def delaycompress_rotated_logs(
     *,
     enabled: bool,
     keep: Path | None = None,
+    log_name: str = LOG_FILENAME,
 ) -> None:
     """Gzip older rotated plains; leave ``keep`` (or the newest) uncompressed.
 
@@ -128,7 +135,7 @@ def delaycompress_rotated_logs(
         return
     plains = [
         entry
-        for entry in log_dir.glob("octop.log.*")
+        for entry in log_dir.glob(f"{log_name}.*")
         if entry.is_file() and not entry.name.endswith(".gz")
     ]
     if not plains:
@@ -178,14 +185,19 @@ def _build_log_handler(
         max_bytes=max_bytes,
         compress_rotated=compress_rotated,
     )
-    # Rotated files get a date suffix, e.g. octop.log.2026-07-16
+    # Rotated files get a date suffix, e.g. maitu.log.2026-07-16
     handler.suffix = "%Y-%m-%d"
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)-5s %(name)s — %(message)s"))
     return handler
 
 
-def _purge_stale_logs(log_dir: Path, retention_days: int) -> None:
-    """Delete rotated octop log files older than ``retention_days`` (mtime based).
+def _purge_stale_logs(
+    log_dir: Path,
+    retention_days: int,
+    *,
+    log_name: str = LOG_FILENAME,
+) -> None:
+    """Delete rotated log files older than ``retention_days`` (mtime based).
 
     ``TimedRotatingFileHandler`` only trims by count at rollover time, so a service
     that is offline for a long stretch can accumulate stale files. This purges them
@@ -194,7 +206,7 @@ def _purge_stale_logs(log_dir: Path, retention_days: int) -> None:
     if retention_days <= 0:
         return
     cutoff = time.time() - retention_days * 86400
-    for entry in log_dir.glob("octop.log.*"):
+    for entry in log_dir.glob(f"{log_name}.*"):
         if entry.is_file() and entry.stat().st_mtime < cutoff:
             with suppress(OSError):
                 entry.unlink()
@@ -277,8 +289,8 @@ class AppRuntime:
 
 class OctopServer:
     def __init__(self, home: Path | None = None) -> None:
-        self._home = home or PathLayout.from_env().root
-        self.paths = PathLayout(self._home)
+        self._explicit_home = home
+        self.paths = PathLayout(home) if home is not None else PathLayout.from_env()
         self.config: OctopConfig | None = None
         self.services: SharedServices | None = None
         self.app_runtime: AppRuntime | None = None
@@ -398,6 +410,7 @@ class OctopServer:
     async def start(self) -> None:
         if self._started:
             return
+        self._resolve_startup_home()
         self.paths.ensure_root()
         # fnOS/容器内非 root 用户场景：把用户级 npm 全局 bin 目录（~/.npm-global）
         # 纳入进程 PATH，保证连接器 CLI（wecom-cli / lark-cli）可被检测与调用。
@@ -762,7 +775,7 @@ class OctopServer:
                 "║  MAITU Smart Manufacturing first-run wizard password (one-time use):          ║\n"
                 f"║  {new_pw:<54}  ║\n"
                 "║  Open the dashboard and paste it into the setup wizard.  ║\n"
-                "║  File: ~/octop-login.txt                                   ║\n"
+                f"║  File: ~/{WIZARD_FILE_NAME}                                   ║\n"
                 "╚══════════════════════════════════════════════════════════╝"
                 "\033[0m\n"
             )
@@ -771,6 +784,13 @@ class OctopServer:
                 "wizard password generated; file=%s",
                 wizard_home / WIZARD_FILE_NAME,
             )
+
+    def _resolve_startup_home(self) -> None:
+        """Upgrade a pre-white-label home before anything reads or writes it."""
+        if self._explicit_home is not None:
+            upgrade_legacy_names(self.paths)
+            return
+        self.paths = migrate_legacy_home(self.paths)
 
     async def stop(self) -> None:
         if not self._started:
@@ -809,8 +829,8 @@ class OctopServer:
         log_dir.mkdir(parents=True, exist_ok=True)
         log_path = self.paths.log
 
-        # Migrate the legacy single-file log (~/.octop/octop.log) into the new logs dir.
-        legacy = self.paths.root / "octop.log"
+        # LEGACY: migrate the old single-file log (<home>/<old>.log) into the logs dir.
+        legacy = self.paths.root / LEGACY_LOG_FILENAME
         if legacy.exists() and not log_path.exists():
             with suppress(OSError):
                 legacy.replace(log_path)
@@ -824,9 +844,9 @@ class OctopServer:
             max_bytes=max_bytes,
             compress_rotated=compress_rotated,
         )
-        _purge_stale_logs(log_dir, retention_days)
+        _purge_stale_logs(log_dir, retention_days, log_name=log_path.name)
         # Catch up: gzip older plains, leave the newest rotated file plain (delaycompress).
-        delaycompress_rotated_logs(log_dir, enabled=compress_rotated)
+        delaycompress_rotated_logs(log_dir, enabled=compress_rotated, log_name=log_path.name)
 
         root = logging.getLogger()
         _attach_log_handler(root, handler)

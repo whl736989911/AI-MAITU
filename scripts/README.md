@@ -7,7 +7,7 @@
 项目地址：<https://github.com/whl736989911/AI-MAITU>。
 
 本项目的源码 ZIP 不包含 `.git`；不能在 ZIP 解压目录运行 `git pull`。`scripts/install.*` 和
-`pip install -U octop` 默认指向上游 PyPI 包，**不能用于安装或升级麦途智造**。
+`pip install -U maitu` 默认指向上游 PyPI 包，**不能用于安装或升级麦途智造**。
 原生部署需要 Python ≥ 3.12、uv、Node.js/npm；不要盲目用 `--all-extras`。
 当前核心依赖 `orcakit-harness-agent[all]` 已传递安装 `pynput`/`evdev`，
 所以 Ubuntu **即使不选择 desktop** 也应在首次同步前安装构建依赖：
@@ -25,7 +25,7 @@ sudo apt-get install build-essential python3-dev linux-libc-dev
 ```bash
 uv sync --inexact --no-dev --extra office --extra knowledge-ocr
 cd dashboard && npm ci && npm run build && cd ..
-uv run --no-sync octop run --port 8088
+uv run --no-sync maitu run --port 8088
 ```
 
 - `office` 安装办公技能的 `pdfplumber`、`pandas`；`knowledge-ocr` 安装 `rapidocr`、`onnxruntime`。
@@ -33,17 +33,17 @@ uv run --no-sync octop run --port 8088
 - 桌面控制是可选功能，只有实际使用才选择 `--extra desktop`；不选择该 extra
   目前也不能绕过上述传递依赖的 evdev 编译要求。编译成功不代表 headless/Wayland 会话可控制桌面。
 - 每次同步均保留 `--inexact`，避免移除既有可选包；重复声明已选 extras 才会同时按新约束更新它们。
-  启动使用 `uv run --no-sync` 或环境内的 `octop`，不要再用裸 `uv sync` 修复部署。
+  启动使用 `uv run --no-sync` 或环境内的 `maitu`，不要再用裸 `uv sync` 修复部署。
 
 ### Git 源码升级
 
-先停止实际服务并备份完整 `OCTOP_HOME` 和外置数据库；使用原服务用户、相同 `HOME`、环境变量和数据路径：
+先停止实际服务并备份完整 `MAITU_HOME` 和外置数据库；使用原服务用户、相同 `HOME`、环境变量和数据路径：
 
 ```bash
 git pull --ff-only
 uv sync --inexact --no-dev --extra office --extra knowledge-ocr
 cd dashboard && npm ci && npm run build && cd ..
-uv run --no-sync octop run --port 8088
+uv run --no-sync maitu run --port 8088
 ```
 
 ### 原生 Release ZIP 升级（不需要 Git）
@@ -51,11 +51,11 @@ uv run --no-sync octop run --port 8088
 此路径只准备新源码和更新原虚拟环境，不自动停止/启动服务、修改 systemd、覆盖配置、迁移或恢复数据库。
 Docker 的签名队列升级器仍按原有 `--once`/常驻契约工作，**不要**对 Docker 安装使用下列原生命令。
 
-1. 查看当前服务的 `WorkingDirectory`、`ExecStart`、服务用户及环境文件，记录实际绝对 `OCTOP_HOME`；
-   若未设置，沿用该服务用户的 `~/.octop`，不要在 sudo 后误用 root 的目录。
+1. 查看当前服务的 `WorkingDirectory`、`ExecStart`、服务用户及环境文件，记录实际绝对 `MAITU_HOME`；
+   若未设置，沿用该服务用户的 `~/.maitu`，不要在 sudo 后误用 root 的目录。
 2. 停止旧服务，备份完整数据目录（包括 config、实例/授权状态、会话和附件）及 PostgreSQL 等外置数据库。
    同时保留旧源码和原 `.venv`；不要删除、重建或交换它们，不要生成新配置或重新激活实例。
-   授权身份目录可能位于 `OCTOP_HOME` 之外：另行记录并备份服务实际使用的
+   授权身份目录可能位于 `MAITU_HOME` 之外：另行记录并备份服务实际使用的
    `MAITU_LICENSE_STATE_DIR`、信任公钥及 CA 文件；不要重新生成实例密钥。
 3. 从可信发布方取得 `maitu-版本.zip` 和独立核验的 SHA-256（不能仅相信同一次不可信下载的摘要）。
    GitHub 自动生成的仓库 ZIP 没有 `maitu-release.json`，不能传给此命令；它应使用首次安装的解压方式，
@@ -89,8 +89,8 @@ printf '%s  %s\n' "$TRUSTED_RELEASE_SHA256" /srv/downloads/maitu-0.1.1.zip | sha
 命令失败时保留新目录、旧源码、数据和原环境供诊断；**不自动回滚已更新的 Python 包**。
 不要重试覆盖失败目录，应检查错误后另选空目录。
 
-5. 准备成功后，手动将服务 `WorkingDirectory` 指向新源码，`ExecStart` 仍使用原环境的 `octop`，
-   保留相同 `OCTOP_HOME`、配置环境文件和服务用户，执行 `daemon-reload` 后启动。
+5. 准备成功后，手动将服务 `WorkingDirectory` 指向新源码，`ExecStart` 仍使用原环境的 `maitu`，
+   保留相同 `MAITU_HOME`、配置环境文件和服务用户，执行 `daemon-reload` 后启动。
    editable 安装已指向新源码，因此仅切回旧 WorkingDirectory **不构成回滚**；
    需停服、在旧源码目录对同一环境执行旧版本的 inexact 同步，并根据迁移情况由管理员恢复备份。
 6. 运行下方只读检查，并在应用中核对原实例身份、原用户和历史数据仍存在。不要删除旧版本和备份。
@@ -112,7 +112,7 @@ printf '%s  %s\n' "$TRUSTED_RELEASE_SHA256" "$SOURCE_ZIP" | sha256sum --check - 
 ```
 
 确认 `NEW_SOURCE` 指向含 `pyproject.toml` 的实际源码根目录；若包内有顶层目录，调整该变量，
-不要移动或覆盖旧源码和数据。使用原服务用户、原环境及原绝对 `OCTOP_HOME` 执行：
+不要移动或覆盖旧源码和数据。使用原服务用户、原环境及原绝对 `MAITU_HOME` 执行：
 
 ```bash
 test -f "$NEW_SOURCE/pyproject.toml" &&

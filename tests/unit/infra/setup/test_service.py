@@ -104,7 +104,7 @@ def test_render_systemd_unit_system_scope_uses_runtime_scope_by_default(
     unit = render_systemd_unit(runtime)
     assert f"User={user}" in unit
     assert f'Environment="HOME={account_home}"' in unit
-    assert f"Environment=OCTOP_HOME={tmp_path}" in unit
+    assert f"Environment=MAITU_HOME={tmp_path}" in unit
     assert "WorkingDirectory=" not in unit
     assert "WantedBy=multi-user.target" in unit
 
@@ -166,7 +166,7 @@ def test_install_service_systemd_user_uses_systemctl_user(
 
     assert install_service(runtime) is True
     assert calls[0] == ["daemon-reload"]
-    assert calls[1] == ["enable", "octop"]
+    assert calls[1] == ["enable", "maitu"]
 
 
 def test_install_service_does_not_rewrite_custom_unit_without_force(
@@ -229,7 +229,7 @@ def test_ensure_nofile_dropin_is_idempotent(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     runtime = replace(_runtime(tmp_path), scope="user")
-    dropin = tmp_path / "octop.service.d" / service_mod.NOFILE_DROPIN_NAME
+    dropin = tmp_path / "maitu.service.d" / service_mod.NOFILE_DROPIN_NAME
     monkeypatch.setattr(service_mod, "nofile_dropin_path", lambda _rt: dropin)
     monkeypatch.setattr(service_mod, "_nofile_limit_for", lambda _rt: 65535)
 
@@ -259,11 +259,11 @@ def test_start_service_restarts_systemd_when_apply_unit(
     monkeypatch.setattr(service_mod, "_wait_for_startup", lambda: None)
 
     service_mod.start_service(runtime, apply_unit=True)
-    assert calls == [["restart", "octop"]]
+    assert calls == [["restart", "maitu"]]
 
     calls.clear()
     service_mod.start_service(runtime, apply_unit=False)
-    assert calls == [["start", "octop"]]
+    assert calls == [["start", "maitu"]]
 
 
 def test_restart_service_refreshes_unit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -293,8 +293,8 @@ def test_restart_service_refreshes_unit(monkeypatch: pytest.MonkeyPatch, tmp_pat
     restart_service(runtime)
     assert installs == [False]
     assert ["daemon-reload"] in calls
-    assert ["restart", "octop"] in calls
-    assert calls.index(["restart", "octop"]) > calls.index(["daemon-reload"])
+    assert ["restart", "maitu"] in calls
+    assert calls.index(["restart", "maitu"]) > calls.index(["daemon-reload"])
 
 
 def test_restart_service_still_restarts_when_install_fails(
@@ -323,14 +323,14 @@ def test_restart_service_still_restarts_when_install_fails(
     monkeypatch.setattr(service_mod, "_wait_for_startup", lambda: None)
 
     restart_service(runtime)
-    assert ["restart", "octop"] in calls
+    assert ["restart", "maitu"] in calls
 
 
 def test_ensure_nofile_dropin_caps_user_hard_limit(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     runtime = replace(_runtime(tmp_path), scope="user")
-    dropin = tmp_path / "octop.service.d" / service_mod.NOFILE_DROPIN_NAME
+    dropin = tmp_path / "maitu.service.d" / service_mod.NOFILE_DROPIN_NAME
     monkeypatch.setattr(service_mod, "nofile_dropin_path", lambda _rt: dropin)
     monkeypatch.setattr(service_mod, "_user_nofile_cap", lambda: 4096)
 
@@ -404,7 +404,7 @@ def test_install_service_launchd_force_reload(
     monkeypatch.setattr(service_mod, "_run_cmd", _fake_run_cmd)
 
     install_service(runtime, force=True)
-    assert ["launchctl", "bootout", "system/octop"] in calls
+    assert ["launchctl", "bootout", "system/maitu"] in calls
     assert any(cmd[:3] == ["launchctl", "bootstrap", "system"] for cmd in calls)
 
 
@@ -442,7 +442,7 @@ def test_install_service_launchd_force_reload_tolerates_unloaded(
     monkeypatch.setattr(service_mod, "_run_cmd", _fake_run_cmd)
 
     install_service(runtime, force=True)  # must not raise
-    assert any(cmd[:3] == ["launchctl", "bootout", "system/octop"] for cmd in calls)
+    assert any(cmd[:3] == ["launchctl", "bootout", "system/maitu"] for cmd in calls)
     # ... and bootstrap must still run afterwards.
     assert any(cmd[:3] == ["launchctl", "bootstrap", "system"] for cmd in calls)
 
@@ -515,8 +515,8 @@ def test_launchd_domain_user_vs_system() -> None:
     """User agents run in the gui/$UID domain, system agents in system/."""
     user = launchd_domain("user")
     assert user.startswith("gui/")
-    assert user.endswith("/octop")
-    assert launchd_domain("system") == "system/octop"
+    assert user.endswith("/maitu")
+    assert launchd_domain("system") == "system/maitu"
 
 
 def test_launchd_bootstrap_target_must_be_qualified() -> None:
@@ -570,14 +570,14 @@ def test_unit_path_launchd_user_is_under_home(monkeypatch: pytest.MonkeyPatch) -
     monkeypatch.setenv("OCTOP_SERVICE_SCOPE", "user")
     path = unit_path("launchd")
     owner_home = Path(pwd.getpwnam(getpass.getuser()).pw_dir)
-    assert path == owner_home / "Library" / "LaunchAgents" / "octop.plist"
+    assert path == owner_home / "Library" / "LaunchAgents" / "maitu.plist"
 
 
 def test_unit_path_launchd_system_is_under_library(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(service_mod, "is_root", lambda: True)
     monkeypatch.setenv("OCTOP_SERVICE_SCOPE", "system")
     path = unit_path("launchd")
-    assert path == Path("/Library/LaunchDaemons/octop.plist")
+    assert path == Path("/Library/LaunchDaemons/maitu.plist")
 
 
 def test_render_launchd_plist_user_scope_omits_username(tmp_path: Path) -> None:
@@ -697,14 +697,16 @@ def test_resolve_service_home_uses_passwd_not_effective_uid(
 ) -> None:
     """sudo install as root must still target the invoking user's ~/.octop."""
     monkeypatch.delenv("OCTOP_HOME", raising=False)
+    monkeypatch.delenv("MAITU_HOME", raising=False)
     monkeypatch.setattr(service_mod, "is_root", lambda: True)
     monkeypatch.setenv("SUDO_USER", "ubuntu")
-    assert resolve_service_home(run_as_user="ubuntu") == Path("/home/ubuntu") / ".octop"
+    assert resolve_service_home(run_as_user="ubuntu") == Path("/home/ubuntu") / ".maitu"
 
 
 def test_resolve_service_home_root_session(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("OCTOP_HOME", raising=False)
-    assert resolve_service_home(run_as_user="root") == Path(pwd.getpwnam("root").pw_dir) / ".octop"
+    monkeypatch.delenv("MAITU_HOME", raising=False)
+    assert resolve_service_home(run_as_user="root") == Path(pwd.getpwnam("root").pw_dir) / ".maitu"
 
 
 def test_build_runtime_root_always_system_scope(
@@ -714,7 +716,7 @@ def test_build_runtime_root_always_system_scope(
     # not a user-scope unit for the original invoker.
     root_home = tmp_path / "root-home"
     root_home.mkdir()
-    octop_bin = root_home / ".octop" / "bin" / "octop"
+    octop_bin = root_home / ".maitu" / "bin" / "maitu"
     octop_bin.parent.mkdir(parents=True)
     octop_bin.write_text("#!/bin/sh\n", encoding="utf-8")
 
@@ -722,6 +724,7 @@ def test_build_runtime_root_always_system_scope(
     monkeypatch.setenv("SUDO_USER", "ubuntu")
     monkeypatch.setenv("USER", "root")
     monkeypatch.delenv("OCTOP_HOME", raising=False)
+    monkeypatch.delenv("MAITU_HOME", raising=False)
     monkeypatch.setattr(
         service_mod.pwd,
         "getpwnam",
@@ -747,7 +750,7 @@ def test_systemctl_user_wraps_xdg_runtime_dir_for_root_install(
         "getpwnam",
         lambda _name: type("Pw", (), {"pw_uid": 1000, "pw_dir": "/home/ubuntu"})(),
     )
-    cmd = service_mod._systemctl("user", "enable", "octop", run_as_user="ubuntu")
+    cmd = service_mod._systemctl("user", "enable", "maitu", run_as_user="ubuntu")
     assert cmd == [
         "sudo",
         "-u",
@@ -841,7 +844,7 @@ def test_write_unit_sudo_path_creates_parent_dir_first(
 
 def test_needs_sudo_false_when_an_ancestor_is_writable(tmp_path: Path) -> None:
     """Missing drop-in directory under a writable home must not force sudo."""
-    nested = tmp_path / "systemd" / "user" / "octop.service.d" / "10-nofile.conf"
+    nested = tmp_path / "systemd" / "user" / "maitu.service.d" / "10-nofile.conf"
     assert service_mod._needs_sudo(nested) is False
 
 

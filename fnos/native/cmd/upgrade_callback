@@ -1,9 +1,9 @@
 #!/bin/bash
 #
-# Octop 本地版 — 升级后回调
+# 麦途智造本地版 — 升级后回调
 # 升级会重装包内向导文件（wizard/config 恢复成带占位符的模板），
 # 这里用现有 .env 的凭据重新渲染「设置」窗口的当前密码显示，
-# 并确认回落备份 octop-login.txt 存在（不覆盖用户已在 Web 内修改的密码，
+# 并确认回落备份 maitu-login.txt 存在（不覆盖用户已在 Web 内修改的密码，
 # 仅在备份缺失时按 .env 重建）。
 #
 set -euo pipefail
@@ -22,8 +22,8 @@ else
     DATA_DIR="${APPDEST}/shares/octop-native/data"
 fi
 
-ADMIN_USER="$(octop_env_get "$ENV_FILE" OCTOP_ADMIN_USERNAME)"
-ADMIN_PASS="$(octop_env_get "$ENV_FILE" OCTOP_DEFAULT_PASSWORD)"
+ADMIN_USER="$(octop_env_get "$ENV_FILE" MAITU_ADMIN_USERNAME)"
+ADMIN_PASS="$(octop_env_get "$ENV_FILE" MAITU_DEFAULT_PASSWORD)"
 [ -n "$ADMIN_USER" ] || ADMIN_USER="admin"
 
 if [ -n "$ADMIN_PASS" ]; then
@@ -33,7 +33,7 @@ if [ -n "$ADMIN_PASS" ]; then
     [ -f "$WIZARD_TEMPLATE" ] || WIZARD_TEMPLATE="${APPDEST}/../wizard/config"
     octop_render_config_wizard "$WIZARD_TEMPLATE" "$WIZARD_DIR" "$ADMIN_USER" "$ADMIN_PASS"
     # 回落备份缺失时按 .env 重建（存在则不动，尊重用户在 Web 内改过的密码）
-    if [ -d "$DATA_DIR" ] && [ ! -f "${DATA_DIR}/octop-login.txt" ]; then
+    if [ -d "$DATA_DIR" ] && [ ! -f "${DATA_DIR}/maitu-login.txt" ]; then
         octop_write_login_file "$DATA_DIR" "$ADMIN_USER" "$ADMIN_PASS" 8089
     fi
 fi

@@ -29,6 +29,12 @@ from octop.api.deps import current_user, get_server
 from octop.infra.agents.feature_workflow import STATUS_ACTIVE, feature_memory_stage
 from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.agents.memory_backend import open_memory_kwargs
+from octop.infra.agents.workspace_dir import (
+    LEGACY_AUTH_DIRNAME,
+    LEGACY_SYSTEM_FILES_DIRNAME,
+    MIGRATED_AUTH_DIRNAME,
+    SYSTEM_FILES_DIRNAME,
+)
 from octop.infra.backup.workspace_archive import export_workspace_zip, import_workspace_zip
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.media.backend_files import (
@@ -42,14 +48,32 @@ logger = logging.getLogger(__name__)
 
 _PROTECTED_PREFIX = "_builtin_skills"
 _SHARED_MEMORY_FILES = frozenset({"memory.md"})
-_SHARED_SQLITE_FILES = frozenset({"memory.sqlite", ".octop/memory.sqlite"})
+
+# Both layouts are named: the current one is what this build writes, and the old
+# one still exists in an unmigrated workspace (the migration is on first touch,
+# not a boot-time sweep).
+_SYSTEM_DIR_NAMES = frozenset({SYSTEM_FILES_DIRNAME, LEGACY_SYSTEM_FILES_DIRNAME})
+_SHARED_SQLITE_FILES = frozenset(
+    {
+        "memory.sqlite",
+        f"{SYSTEM_FILES_DIRNAME}/memory.sqlite",
+        f"{LEGACY_SYSTEM_FILES_DIRNAME}/memory.sqlite",
+    }
+)
 
 # Read-side system paths stay owner/admin-only even on a shared agent. The
-# harness stores the logical names (``memory.sqlite``, ``sessions/…``) under
-# ``.octop`` via ``BackendWorkspace``, and legacy workspaces keep some of them
-# at the workspace root, so both forms are rejected. Matching is
+# harness stores the logical names (``memory.sqlite``, ``sessions/…``) under the
+# system directory via ``BackendWorkspace``, and legacy workspaces keep some of
+# them at the workspace root, so both forms are rejected. Matching is
 # workspace-relative and case-insensitive.
-_OWNER_ONLY_PREFIXES = frozenset({".octop", ".octop-auth"})
+_OWNER_ONLY_PREFIXES = frozenset(
+    {
+        SYSTEM_FILES_DIRNAME,
+        LEGACY_SYSTEM_FILES_DIRNAME,
+        MIGRATED_AUTH_DIRNAME,
+        LEGACY_AUTH_DIRNAME,
+    }
+)
 _OWNER_ONLY_DIRS = frozenset({"sessions"})
 _OWNER_ONLY_FILES = frozenset({".env"})
 _OWNER_ONLY_SQLITE_STEMS = ("memory.sqlite", "checkpoints.sqlite")
@@ -106,7 +130,7 @@ async def _protect_published_memory(
             or target == "daily"
             or target.startswith("daily/")
             or destructive
-            and target == ".octop"
+            and target.split("/", 1)[0] in _SYSTEM_DIR_NAMES
         ):
             reason = feature_memory_reason("shared_read_only", user=user, server=server)
             raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})
@@ -121,12 +145,11 @@ def _assert_workspace_mutable(path: str, *, workspace_dir: Path) -> str:
     if rel == ".":
         raise OctopError(ErrorCode.FORBIDDEN, "cannot modify workspace root")
     posix = rel.replace("\\", "/").strip("/")
-    if (
-        posix == _PROTECTED_PREFIX
-        or posix.startswith(f"{_PROTECTED_PREFIX}/")
-        or posix == f".octop/{_PROTECTED_PREFIX}"
-        or posix.startswith(f".octop/{_PROTECTED_PREFIX}/")
-    ):
+    protected = (
+        _PROTECTED_PREFIX,
+        *(f"{name}/{_PROTECTED_PREFIX}" for name in sorted(_SYSTEM_DIR_NAMES)),
+    )
+    if any(posix == prefix or posix.startswith(f"{prefix}/") for prefix in protected):
         raise OctopError(ErrorCode.FORBIDDEN, f"cannot modify {_PROTECTED_PREFIX!r} paths")
     return io_path
 

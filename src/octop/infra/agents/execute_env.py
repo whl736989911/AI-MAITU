@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from octop.infra.agents.workspace_dir import (
+    LEGACY_AUTH_DIRNAME,
+    LEGACY_SYSTEM_FILES_DIRNAME,
+    MIGRATED_AUTH_DIRNAME,
+    SYSTEM_FILES_DIRNAME,
     agent_auth_dir,
     agent_facing_workspace_dir_from_config,
     agent_facing_workspace_root,
@@ -46,18 +50,21 @@ def _agent_facing_auth_and_skills(
             root_dir=local_backend_root_dir(cfg),
             virtual_mode=True,
         )
-    scoped = uses_scoped_workspace_default(cfg) or facing.startswith("/.octop/")
+    scoped = uses_scoped_workspace_default(cfg) or facing.startswith(
+        (f"/{SYSTEM_FILES_DIRNAME}/", f"/{LEGACY_SYSTEM_FILES_DIRNAME}/")
+    )
     if not scoped:
         return str(auth_host), str(skills_host)
 
     prefix = system_files_path_from_config(cfg)
-    # Match agent_auth_dir legacy preference when tokens already live at root.
-    if auth_host.name == ".octop-auth":
-        auth_env = join_agent_facing(facing, ".octop-auth")
+    # Match agent_auth_dir's legacy preference when tokens already live at the
+    # workspace root (a standalone auth directory of either generation).
+    if auth_host.name in (MIGRATED_AUTH_DIRNAME, LEGACY_AUTH_DIRNAME):
+        auth_env = join_agent_facing(facing, auth_host.name)
     elif prefix:
         auth_env = join_agent_facing(facing, prefix, "auth")
     else:
-        auth_env = join_agent_facing(facing, ".octop-auth")
+        auth_env = join_agent_facing(facing, MIGRATED_AUTH_DIRNAME)
 
     if prefix:
         skills_env = join_agent_facing(facing, prefix, "skills")

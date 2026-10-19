@@ -5,100 +5,100 @@ It is registered in `src/octop/cli/main.py`; commands are loaded
 lazily from `src/octop/cli/registry.py`.
 
 ```
-$ octop --help
-Usage: octop [OPTIONS] COMMAND [ARGS]...
+$ maitu --help
+Usage: maitu [OPTIONS] COMMAND [ARGS]...
 
-  Octop command-line interface.
+  麦途智造 command-line interface.
 
 Options:
-  -v, --version           Show the installed octop version.
+  -v, --version           Show the installed maitu version.
   --user TEXT             Default --user for subcommands (admin acting on behalf
-                          of a user). [env: OCTOP_USER]
-  --agent TEXT            Default --agent for subcommands. [env: OCTOP_AGENT]
+                          of a user). [env: MAITU_USER]
+  --agent TEXT            Default --agent for subcommands. [env: MAITU_AGENT]
   --json                  Emit machine-readable JSON for list-style commands.
   -h, --help              Show this message and exit.
 
 Commands:
-  acp        Run Octop agent as ACP server (stdio).
+  acp        Run 麦途智造 agent as ACP server (stdio).
   admin      Admin commands.
   agent      Agent lifecycle commands.
-  backup     Export and restore Octop backups.
-  chat       [deprecated] Alias for `octop chats`.
+  backup     Export and restore 麦途智造 backups.
+  chat       [deprecated] Alias for `maitu chats`.
   chats      Chat REPL and session management.
   channel    Channel management commands.
-  clean      Remove CLI state or wipe all of ~/.octop.
+  clean      Remove CLI state or wipe all of ~/.maitu.
   completion Shell completion utilities.
   config     CLI state (base URL, defaults).
   cron       Cron job management commands.
-  init       Bootstrap an Octop server install.
+  init       Bootstrap an 麦途智造 server install.
   models     Model catalog and active-model settings.
   plugin     Install and manage plugins.
   provider   Provider management (admin write).
   run        Run octop-server in the foreground.
   service    System service lifecycle (start/stop/restart/status).
   skills     Per-agent skill enable/disable.
-  update     Check for and install a newer Octop release.
+  update     Check for and install a newer 麦途智造 release.
   user       User management commands.
-  version    Show the installed octop version.
+  version    Show the installed maitu version.
 ```
 
 > **Tip.** Regenerate the per-subcommand listings below with
-> `make docs-cli` (each `octop <cmd> --help` is captured to stdout).
+> `make docs-cli` (each `maitu <cmd> --help` is captured to stdout).
 
 ## Global options
 
 | Option | Env | Effect |
 |--------|-----|--------|
-| `--user NAME` | `OCTOP_USER` | Default `--user` for subcommands (admin acting on behalf of a user) |
-| `--agent ID` | `OCTOP_AGENT` | Default `--agent` for subcommands |
+| `--user NAME` | `MAITU_USER` | Default `--user` for subcommands (admin acting on behalf of a user) |
+| `--agent ID` | `MAITU_AGENT` | Default `--agent` for subcommands |
 | `--json` | — | Emit machine-readable JSON for list-style commands |
 | `-v, --version` | — | Print version and exit |
 
 ## Transport layers
 
-Octop commands pick one of three transports:
+麦途智造 commands pick one of three transports:
 
 | Layer | When | Login? | Examples |
 |-------|------|--------|----------|
-| **Offline** (local DB only) | Need to read/write `~/.octop` without a running server | No | `init`, `backup`, `plugin`, `agent list`, `chats list/get/create/update/delete`, `cron list`, `user *`, `admin overview/audit`, `models presets/list/active` |
-| **Attach** (HTTP / WS) | Need a live `octop run` process (IM, streams, model pulls) | Yes (`octop user login`) | `chats send/repl`, `channel test/probe`, `models ollama-*`, `skills enable/disable`, `provider test` |
-| **Embedded** (in-process) | CLI boots `OctopServer` for a single command | No | `octop acp`, `octop chats repl`, `octop chats send` (defaults to embedded), `octop agent create/from-expert/start/stop/reload` |
+| **Offline** (local DB only) | Need to read/write `~/.maitu` without a running server | No | `init`, `backup`, `plugin`, `agent list`, `chats list/get/create/update/delete`, `cron list`, `user *`, `admin overview/audit`, `models presets/list/active` |
+| **Attach** (HTTP / WS) | Need a live `maitu run` process (IM, streams, model pulls) | Yes (`maitu user login`) | `chats send/repl`, `channel test/probe`, `models ollama-*`, `skills enable/disable`, `provider test` |
+| **Embedded** (in-process) | CLI boots `麦途智造Server` for a single command | No | `maitu acp`, `maitu chats repl`, `maitu chats send` (defaults to embedded), `maitu agent create/from-expert/start/stop/reload` |
 
 The dashboards and HTTP callers manage their own JWTs and do **not**
-share `~/.octop/cli_state.json`.
+share `~/.maitu/cli_state.json`.
 
-## `octop init`
+## `maitu init`
 
 Bootstrap a fresh install (DB migrations, JWT secret, first admin).
-Idempotent on the DB; pass `--force` to wipe `~/.octop` first.
+Idempotent on the DB; pass `--force` to wipe `~/.maitu` first.
 
 ```
-Usage: octop init [OPTIONS]
+Usage: maitu init [OPTIONS]
 
-  Bootstrap an Octop server (~/.octop dir, DB migrations, JWT secret, first admin).
+  Bootstrap an 麦途智造 server (~/.maitu dir, DB migrations, JWT secret, first admin).
 
 Options:
-  --admin-username TEXT       [env: OCTOP_ADMIN_USERNAME]
-  --admin-password TEXT       [env: OCTOP_ADMIN_PASSWORD]
-  --admin-display-name TEXT   [env: OCTOP_ADMIN_DISPLAY_NAME]
-  --force                     Wipe existing ~/.octop contents before bootstrapping.
+  --admin-username TEXT       [env: MAITU_ADMIN_USERNAME]
+  --admin-password TEXT       [env: MAITU_ADMIN_PASSWORD]
+  --admin-display-name TEXT   [env: MAITU_ADMIN_DISPLAY_NAME]
+  --force                     Wipe existing ~/.maitu contents before bootstrapping.
   --yes                       Skip all interactive prompts.
   -h, --help                  Show this message and exit.
 ```
 
-## `octop run`
+## `maitu run`
 
 Start the FastAPI app in the foreground (delegates to
 `octop.launch.run_foreground_blocking`).
 
 ```
-Usage: octop run [OPTIONS]
+Usage: maitu run [OPTIONS]
 
-  Start the Octop server (foreground; uvicorn).
+  Start the 麦途智造 server (foreground; uvicorn).
 
 Options:
-  --host TEXT                 Override OCTOP_BIND_HOST.
-  --port INTEGER              Override OCTOP_PORT.
+  --host TEXT                 Override MAITU_BIND_HOST.
+  --port INTEGER              Override MAITU_PORT.
   --reload / --no-reload      Enable uvicorn auto-reload (dev only).
   --ssl / --no-ssl            Enable HTTPS with a self-signed cert (or a real one).
   --certfile PATH             TLS certificate (PEM).
@@ -107,17 +107,17 @@ Options:
   -h, --help                  Show this message and exit.
 ```
 
-## `octop service`
+## `maitu service`
 
-Install and manage the Octop system service. The backend is detected
+Install and manage the 麦途智造 system service. The backend is detected
 automatically (systemd on Linux, launchd on macOS); the scope
 (`user` vs `system`) can be forced via `--scope` or
-`OCTOP_SERVICE_SCOPE`.
+`MAITU_SERVICE_SCOPE`.
 
 ```
-Usage: octop service [OPTIONS] COMMAND [ARGS]...
+Usage: maitu service [OPTIONS] COMMAND [ARGS]...
 
-  Manage the Octop system service (systemd on Linux, launchd on macOS).
+  Manage the 麦途智造 system service (systemd on Linux, launchd on macOS).
 
 Commands:
   start     Install (if missing) and start the service.
@@ -136,15 +136,15 @@ spawn). The main unit file is not rewritten unless it is missing or
 you pass `--force-install`. `restart` always runs `systemctl restart`
 even if writing the drop-in fails, so an upgrade that only restarts
 still comes back. To undo: delete the drop-in, then
-`systemctl daemon-reload && systemctl restart octop`.
+`systemctl daemon-reload && systemctl restart maitu`.
 
-## `octop user`
+## `maitu user`
 
 Local-DB user management. `login` requires a running server; the
 rest are offline.
 
 ```
-Usage: octop user [OPTIONS] COMMAND [ARGS]...
+Usage: maitu user [OPTIONS] COMMAND [ARGS]...
 
   User management commands (local DB; no server login required).
 
@@ -158,13 +158,13 @@ Commands:
   login     Login against a running server; stores JWT for optional remote HTTP attach.
 ```
 
-## `octop agent`
+## `maitu agent`
 
 Lifecycle and templates. Most commands boot an embedded
-`OctopServer` to operate on the local DB without a remote round-trip.
+`麦途智造Server` to operate on the local DB without a remote round-trip.
 
 ```
-Usage: octop agent [OPTIONS] COMMAND [ARGS]...
+Usage: maitu agent [OPTIONS] COMMAND [ARGS]...
 
   Agent lifecycle commands.
 
@@ -182,16 +182,16 @@ Commands:
 
 `create` and `from-expert` accept `--user` (admin only) to create
 agents on behalf of another user. `use` writes the agent id into
-`~/.octop/cli_state.json` so subsequent commands default to it.
+`~/.maitu/cli_state.json` so subsequent commands default to it.
 
-## `octop chats`
+## `maitu chats`
 
 Thread CRUD + interactive REPL. The REPL and `send` use an embedded
-server (no separate `octop run` needed); `list` / `get` / `create` /
-`update` / `delete` work fully offline against `~/.octop/octop.db`.
+server (no separate `maitu run` needed); `list` / `get` / `create` /
+`update` / `delete` work fully offline against `~/.maitu/maitu.db`.
 
 ```
-Usage: octop chats [OPTIONS] COMMAND [ARGS]...
+Usage: maitu chats [OPTIONS] COMMAND [ARGS]...
 
   Thread list/history and interactive chat (CLI channel / local DB).
 
@@ -205,17 +205,17 @@ Commands:
   repl        Interactive chat REPL (embedded server + CLI gateway channel).
 ```
 
-`octop chat` is a deprecated alias that prints a stderr warning and
+`maitu chat` is a deprecated alias that prints a stderr warning and
 forwards to `chats`.
 
-## `octop channel`
+## `maitu channel`
 
 Local DB channel CRUD plus platform-specific bot creators. The
 `wecom` / `weixin` / `feishu-setup` subcommands drive the QR-code
 bot-creator flows; `config` is the offline config editor.
 
 ```
-Usage: octop channel [OPTIONS] COMMAND [ARGS]...
+Usage: maitu channel [OPTIONS] COMMAND [ARGS]...
 
   Channel management commands.
 
@@ -231,14 +231,14 @@ Commands:
   bind          Bind-group helper for WeCom / Weixin (QR login, etc.).
 ```
 
-## `octop cron`
+## `maitu cron`
 
-Local DB cron management. `run-now` requires a running `octop run`
+Local DB cron management. `run-now` requires a running `maitu run`
 because the actual fire is dispatched through the live
 `CronManager`.
 
 ```
-Usage: octop cron [OPTIONS] COMMAND [ARGS]...
+Usage: maitu cron [OPTIONS] COMMAND [ARGS]...
 
   Cron job management commands.
 
@@ -255,12 +255,12 @@ prompt verbatim; `--task-type agent` (default) runs the LLM and
 pushes the reply. `--prompt` is required, must be non-empty and ≤
 2000 characters.
 
-## `octop provider`
+## `maitu provider`
 
 Local DB provider CRUD. `test` requires a running server.
 
 ```
-Usage: octop provider [OPTIONS] COMMAND [ARGS]...
+Usage: maitu provider [OPTIONS] COMMAND [ARGS]...
 
   Provider management commands (local DB).
 
@@ -271,12 +271,12 @@ Commands:
   test      Ping the provider (requires running server).
 ```
 
-## `octop models`
+## `maitu models`
 
 Provider presets and active model management.
 
 ```
-Usage: octop models [OPTIONS] COMMAND [ARGS]...
+Usage: maitu models [OPTIONS] COMMAND [ARGS]...
 
   Model catalog and active-model settings.
 
@@ -290,14 +290,14 @@ Commands:
   ollama-rm     Remove a local Ollama model (requires a running server).
 ```
 
-## `octop skills`
+## `maitu skills`
 
 Per-agent skill enable / disable. All subcommands need a running
-server (the dashboard's Skill Hub and bundled `~/.octop/skills/`
+server (the dashboard's Skill Hub and bundled `~/.maitu/skills/`
 library are queried at boot).
 
 ```
-Usage: octop skills [OPTIONS] COMMAND [ARGS]...
+Usage: maitu skills [OPTIONS] COMMAND [ARGS]...
 
   Manage agent skills (enable / disable / list).
 
@@ -308,13 +308,13 @@ Commands:
   config    Show / edit the per-agent skills config.
 ```
 
-## `octop admin`
+## `maitu admin`
 
 Local DB admin operations. `rotate-jwt-secret` works without a
 running server (it edits the SQLite secret row directly).
 
 ```
-Usage: octop admin [OPTIONS] COMMAND [ARGS]...
+Usage: maitu admin [OPTIONS] COMMAND [ARGS]...
 
   Admin commands (local DB).
 
@@ -325,31 +325,31 @@ Commands:
   rotate-jwt-secret    Rotate the JWT secret directly via the local DB.
 ```
 
-## `octop backup`
+## `maitu backup`
 
-Export and restore Octop backups. Works fully offline.
+Export and restore 麦途智造 backups. Works fully offline.
 
 ```
-Usage: octop backup [OPTIONS] COMMAND [ARGS]...
+Usage: maitu backup [OPTIONS] COMMAND [ARGS]...
 
   Backup and restore database + local agent workspaces.
 
 Commands:
   create     Create a backup archive (DB + workspaces + config).
-  restore    Restore a backup archive into ~/.octop.
+  restore    Restore a backup archive into ~/.maitu.
   auto       Automatic backup status and one-shot run.
 ```
 
-### `octop backup auto`
+### `maitu backup auto`
 
-Automatic backups are scheduled **inside** a running `octop run` process
+Automatic backups are scheduled **inside** a running `maitu run` process
 (via the same system-job mechanism as TLS renewal). Configure in
 `config.json` under `backup`, with env overrides
-`OCTOP_BACKUP_AUTO_ENABLED`, `OCTOP_BACKUP_SCHEDULE`,
-`OCTOP_BACKUP_RETENTION_COUNT`, or via the dashboard Backup settings.
+`MAITU_BACKUP_AUTO_ENABLED`, `MAITU_BACKUP_SCHEDULE`,
+`MAITU_BACKUP_RETENTION_COUNT`, or via the dashboard Backup settings.
 
 ```
-Usage: octop backup auto [OPTIONS] COMMAND [ARGS]...
+Usage: maitu backup auto [OPTIONS] COMMAND [ARGS]...
 
 Commands:
   status  Print automatic backup settings from config.json.
@@ -357,19 +357,19 @@ Commands:
 ```
 
 Default schedule when enabled: `cron:0 4 * * *` (daily 04:00, server
-timezone). Automatic archives are named `octop-auto-backup-*.tar.gz`;
+timezone). Automatic archives are named `maitu-auto-backup-*.tar.gz`;
 retention only deletes those files and never touches manual
-`octop-backup-*.tar.gz` archives.
+`maitu-backup-*.tar.gz` archives.
 
-## `octop update`
+## `maitu update`
 
-Check for and install a newer Octop release from the configured
+Check for and install a newer 麦途智造 release from the configured
 channel (PyPI by default).
 
 ```
-Usage: octop update [OPTIONS]
+Usage: maitu update [OPTIONS]
 
-  Check for and install a newer Octop release.
+  Check for and install a newer 麦途智造 release.
 
 Options:
   --check / --no-check     Only check; do not install.
@@ -377,19 +377,19 @@ Options:
   -h, --help               Show this message and exit.
 ```
 
-## `octop plugin`
+## `maitu plugin`
 
-Install and manage third-party plugins (drop into `~/.octop/plugins/`).
+Install and manage third-party plugins (drop into `~/.maitu/plugins/`).
 The same plugin manager powers the dashboard's "Plugins" page.
 
-Octop also **seeds bundled plugins** into `~/.octop/plugins/` during
-`octop init` and every `octop run` start. They are listed in Admin →
+麦途智造 also **seeds bundled plugins** into `~/.maitu/plugins/` during
+`maitu init` and every `maitu run` start. They are listed in Admin →
 Plugins but stay **globally disabled** until you turn them on. An id
 already recorded in `config.json` → `bundled_plugins_seeded` is not
 copied again after uninstall.
 
 ```
-Usage: octop plugin [OPTIONS] COMMAND [ARGS]...
+Usage: maitu plugin [OPTIONS] COMMAND [ARGS]...
 
   Install and manage plugins.
 
@@ -400,19 +400,19 @@ Commands:
   reload     Reload all installed plugins without restart.
 ```
 
-## `octop acp`
+## `maitu acp`
 
-Expose an Octop agent as a stdio JSON-RPC ACP server. Boots a
-standalone `OctopServer` (reads `~/.octop`); does **not** require
-`octop run` to be running.
+Expose an 麦途智造 agent as a stdio JSON-RPC ACP server. Boots a
+standalone `麦途智造Server` (reads `~/.maitu`); does **not** require
+`maitu run` to be running.
 
 ```
-Usage: octop acp [OPTIONS]
+Usage: maitu acp [OPTIONS]
 
-  Run Octop agent as ACP server (stdio).
+  Run 麦途智造 agent as ACP server (stdio).
 
 Options:
-  --agent TEXT   Agent to expose (default: OCTOP_AGENT or first agent).
+  --agent TEXT   Agent to expose (default: MAITU_AGENT or first agent).
   --debug        Log to stderr.
   -h, --help     Show this message and exit.
 ```
@@ -420,15 +420,15 @@ Options:
 See [ACP integration](./acp.md) for the Zed setup example and the
 runner object schema.
 
-## `octop clean`
+## `maitu clean`
 
-Reset CLI state or wipe the whole `~/.octop` tree. Destructive — read
+Reset CLI state or wipe the whole `~/.maitu` tree. Destructive — read
 the help carefully.
 
 ```
-Usage: octop clean [OPTIONS]
+Usage: maitu clean [OPTIONS]
 
-  Remove CLI state or wipe all of ~/.octop.
+  Remove CLI state or wipe all of ~/.maitu.
 
 Options:
   --state / --all       What to remove.
@@ -436,13 +436,13 @@ Options:
   -h, --help            Show this message and exit.
 ```
 
-## `octop config`
+## `maitu config`
 
-Inspect / edit `~/.octop/cli_state.json` (default base URL, user,
+Inspect / edit `~/.maitu/cli_state.json` (default base URL, user,
 agent).
 
 ```
-Usage: octop config [OPTIONS] COMMAND [ARGS]...
+Usage: maitu config [OPTIONS] COMMAND [ARGS]...
 
   CLI state (base URL, defaults).
 
@@ -451,17 +451,17 @@ Commands:
   set-user   Pin the default --user.
 ```
 
-## `octop completion` / `octop version`
+## `maitu completion` / `maitu version`
 
 ```text
-$ octop completion show bash   # dump a shell snippet
-$ octop completion install     # append to ~/.zshrc / ~/.bashrc
-$ octop version                # print the installed octop version
+$ maitu completion show bash   # dump a shell snippet
+$ maitu completion install     # append to ~/.zshrc / ~/.bashrc
+$ maitu version                # print the installed maitu version
 ```
 
 ## CLI state file
 
-`~/.octop/cli_state.json` stores:
+`~/.maitu/cli_state.json` stores:
 
 ```json
 {
@@ -473,6 +473,6 @@ $ octop version                # print the installed octop version
 ```
 
 The path is exposed as `octop.cli.support.state.default_state_path()`
-and can be overridden via `OCTOP_HOME`. Delete the file to log out
+and can be overridden via `MAITU_HOME`. Delete the file to log out
 the CLI without hitting the server. The dashboard and HTTP callers
 do not share this file — they manage their own tokens.

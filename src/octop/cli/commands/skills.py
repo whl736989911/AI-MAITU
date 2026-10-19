@@ -1,4 +1,4 @@
-"""octop skills — per-agent skill library."""
+"""maitu skills — per-agent skill library."""
 
 from __future__ import annotations
 

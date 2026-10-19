@@ -1,4 +1,4 @@
-"""Manual memory maintenance coordinated by the running Octop process."""
+"""Manual memory maintenance coordinated by the running MAITU process."""
 
 from __future__ import annotations
 

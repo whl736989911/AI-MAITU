@@ -2,7 +2,7 @@
 
 End-to-end smoke: build a real OctopServer with a main agent, seed a
 small graph (entity / candidate / atom / episode / journal) directly
-into the agent memory SQLite (``.octop/memory.sqlite`` for new agents)
+into the agent memory SQLite (``.maitu/memory.sqlite`` for new agents)
 via ``harness_memory.Memory``, then drive the FastAPI router and assert
 the JSON shapes.
 

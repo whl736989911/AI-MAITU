@@ -9,7 +9,7 @@ import httpx
 
 from octop.api.app import build_app
 from octop.infra.server import OctopServer
-from octop.infra.setup.password_file import read_password
+from octop.infra.setup.password_file import WIZARD_FILE_NAME, read_password
 from tests.support.app import ensure_control_plane_bound, write_octop_config
 from tests.support.auth import auth_header, bootstrap_admin
 from tests.support.harness import patch_harness
@@ -87,7 +87,7 @@ async def test_locked_setup_defers_then_resumes_managed_defaults_once(
                 assert srv.paths is not None
                 workspace = srv.paths.agent_workspace("main")
                 assert (workspace / "SOUL.md").is_file()
-                assert (workspace / ".octop" / "skills" / "octop-assistant" / "SKILL.md").is_file()
+                assert (workspace / ".maitu" / "skills" / "octop-assistant" / "SKILL.md").is_file()
 
                 # An allowed transition while already running is a no-op.
                 await srv._on_license_change(True)
@@ -178,7 +178,7 @@ async def test_start_writes_wizard_password_when_no_users(tmp_octop_home: Path) 
     srv = OctopServer(home=tmp_octop_home)
     await srv.start()
     try:
-        assert (tmp_octop_home.parent / "octop-login.txt").exists()
+        assert (tmp_octop_home.parent / WIZARD_FILE_NAME).exists()
     finally:
         await srv.stop()
 
@@ -188,7 +188,7 @@ async def test_start_skips_wizard_password_when_disabled(tmp_octop_home: Path) -
     srv = OctopServer(home=tmp_octop_home)
     await srv.start()
     try:
-        assert not (tmp_octop_home / "octop-login.txt").exists()
+        assert not (tmp_octop_home / WIZARD_FILE_NAME).exists()
     finally:
         await srv.stop()
 
@@ -201,7 +201,7 @@ async def test_main_agent_seeds_general_assistant_workspace(patched_app_client: 
     ws = srv.paths.agent_workspace("main")
     assert (ws / "SOUL.md").is_file()
     # Agent system files, including the bundled skill, live under the managed workspace.
-    assert (ws / ".octop" / "skills" / "octop-assistant" / "SKILL.md").is_file()
+    assert (ws / ".maitu" / "skills" / "octop-assistant" / "SKILL.md").is_file()
 
 
 async def test_main_agent_uses_general_assistant_template(patched_app_client: Any) -> None:

@@ -100,7 +100,7 @@ async def test_export_snapshot_writes_manifest_and_seed_files(tmp_path: Path) ->
             ("inbound/note.txt", b"user upload"),
             ("daily/2026-01-01.md", b"journal"),
             ("uploads/tmp.bin", b"binary"),
-            (".octop/avatar.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 8),
+            (".maitu/avatar.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 8),
         ]
     )
 
@@ -111,7 +111,7 @@ async def test_export_snapshot_writes_manifest_and_seed_files(tmp_path: Path) ->
         MANIFEST_FILENAME,
         "SOUL.md",
         "skills/research/SKILL.md",
-        ".octop/avatar.png",
+        ".maitu/avatar.png",
     }
     assert json.loads((destination / MANIFEST_FILENAME).read_text(encoding="utf-8")) == manifest
     assert (destination / "SOUL.md").read_text(encoding="utf-8") == "# Source soul"
@@ -132,12 +132,12 @@ async def test_export_snapshot_writes_manifest_and_seed_files(tmp_path: Path) ->
     )
 
     assert copied == 4
-    assert (installed_dir / ".octop" / "manifest.json").read_text(encoding="utf-8") == json.dumps(
+    assert (installed_dir / ".maitu" / "manifest.json").read_text(encoding="utf-8") == json.dumps(
         manifest,
         ensure_ascii=False,
     )
     assert (installed_dir / "skills" / "research" / "SKILL.md").read_bytes() == b"# Research"
-    assert (installed_dir / ".octop" / "avatar.png").read_bytes().startswith(b"\x89PNG")
+    assert (installed_dir / ".maitu" / "avatar.png").read_bytes().startswith(b"\x89PNG")
     assert not (installed_dir / "MEMORY.md").exists()
 
 
@@ -432,3 +432,52 @@ async def test_export_snapshot_builds_manifest_from_publish_metadata(tmp_path: P
         "color": "#123456",
         "prompt_files": ["SOUL.md"],
     }
+
+
+@pytest.mark.asyncio
+async def test_export_from_legacy_layout_reads_old_system_dir(tmp_path: Path) -> None:
+    """Publishing from an unmigrated workspace still carries skills and the avatar."""
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = _workspace(source_dir)
+    await source.aupload_many(
+        [
+            (WORKSPACE_MANIFEST_PATH, json.dumps({"id": "legacy"}).encode()),
+            (".octop/skills/old/SKILL.md", b"# Old skill"),
+            (".octop/agents/reviewer.md", b"# Reviewer"),
+            (".octop/avatar.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 8),
+        ]
+    )
+
+    destination = tmp_path / "published"
+    exported = await export_agent_workspace_to_dir(workspace=source, dest=destination)
+
+    # The old system prefix is stripped: a snapshot stays layout-neutral.
+    assert set(exported) == {
+        MANIFEST_FILENAME,
+        "skills/old/SKILL.md",
+        "agents/reviewer.md",
+        ".maitu/avatar.png",
+    }
+    assert (destination / "skills" / "old" / "SKILL.md").read_bytes() == b"# Old skill"
+    assert (destination / ".maitu" / "avatar.png").is_file()
+
+
+@pytest.mark.asyncio
+async def test_install_legacy_snapshot_writes_current_system_layout(tmp_path: Path) -> None:
+    """A snapshot authored by an older build installs under the current directory names."""
+    snapshot_dir = tmp_path / "snapshot"
+    (snapshot_dir / ".octop" / "skills" / "old").mkdir(parents=True)
+    (snapshot_dir / ".octop" / "skills" / "old" / "SKILL.md").write_bytes(b"# Old skill")
+    (snapshot_dir / MANIFEST_FILENAME).write_text(json.dumps({"id": "legacy"}), encoding="utf-8")
+
+    installed_dir = tmp_path / "installed"
+    installed_dir.mkdir()
+    await seed_expert_directory(
+        expert_dir=snapshot_dir,
+        workspace=_workspace(installed_dir),
+    )
+
+    assert (installed_dir / ".maitu" / "skills" / "old" / "SKILL.md").read_bytes() == b"# Old skill"
+    assert not (installed_dir / ".octop").exists()
+    assert (installed_dir / ".maitu" / MANIFEST_FILENAME).is_file()

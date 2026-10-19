@@ -1,13 +1,13 @@
 # ACP (Agent Client Protocol)
 
-Octop integrates [ACP](https://agentclientprotocol.com/) in two directions:
+麦途智造 integrates [ACP](https://agentclientprotocol.com/) in two directions:
 
 | Direction | ACP server | ACP client | Typical use |
 |-----------|------------|------------|-------------|
-| **Inbound** | Octop (`octop acp`) | Zed, OpenCode, … | External IDE drives your Octop agent |
-| **Outbound** | OpenCode, CodeBuddy, … | Octop (`acp_runner` tool) | Octop agent delegates coding tasks |
+| **Inbound** | 麦途智造 (`maitu acp`) | Zed, OpenCode, … | External IDE drives your 麦途智造 agent |
+| **Outbound** | OpenCode, CodeBuddy, … | 麦途智造 (`acp_runner` tool) | 麦途智造 agent delegates coding tasks |
 
-Both use **stdio** JSON-RPC today. Octop does not expose an HTTP ACP endpoint.
+Both use **stdio** JSON-RPC today. 麦途智造 does not expose an HTTP ACP endpoint.
 
 ---
 
@@ -36,7 +36,7 @@ Legacy per-agent `config_json.acp.runners` is migrated to the user-global store 
 | `cursor_cli` | `agent` | `acp` |
 | `pi` | `npx` | `-y`, `pi-acp` |
 
-Install the CLI on the host where `octop run` executes, ensure it is on `PATH` (or set an absolute `command` in the runner drawer). Built-in runners cannot be deleted; custom runners can be added from **Add runner**.
+Install the CLI on the host where `maitu run` executes, ensure it is on `PATH` (or set an absolute `command` in the runner drawer). Built-in runners cannot be deleted; custom runners can be added from **Add runner**.
 
 ### Enable delegation in chat
 
@@ -63,16 +63,16 @@ Example user message:
 
 Permission prompts from the external agent appear in chat; pick an option or instruct the agent to call `action=respond` with the option id.
 
-After changing global runners, Octop reloads your agents automatically. Changing only `tool_enabled` reloads that agent.
+After changing global runners, 麦途智造 reloads your agents automatically. Changing only `tool_enabled` reloads that agent.
 
 ---
 
-## CLI: inbound — expose Octop as an ACP server
+## CLI: inbound — expose 麦途智造 as an ACP server
 
-Let external clients (e.g. Zed) use an Octop agent as their coding agent:
+Let external clients (e.g. Zed) use an 麦途智造 agent as their coding agent:
 
 ```bash
-octop acp --agent main
+maitu acp --agent main
 ```
 
 | Option | Description |
@@ -80,14 +80,14 @@ octop acp --agent main
 | `--agent ID` | Agent to expose (default: CLI `default_agent` or first agent) |
 | `--debug` | Log to stderr |
 
-This starts a **standalone** `OctopServer` (reads `~/.octop`), boots the agent, and speaks ACP on stdin/stdout. It does **not** require `octop run` to be running; it is a separate process.
+This starts a **standalone** `麦途智造Server` (reads `~/.maitu`), boots the agent, and speaks ACP on stdin/stdout. It does **not** require `maitu run` to be running; it is a separate process.
 
 Pin the default agent for convenience:
 
 ```bash
-octop user login --username you
-# set default_agent in ~/.octop/cli_state.json, or:
-octop --agent main acp
+maitu user login --username you
+# set default_agent in ~/.maitu/cli_state.json, or:
+maitu --agent main acp
 ```
 
 ### Zed example
@@ -97,8 +97,8 @@ octop --agent main acp
 ```json
 {
   "agent_servers": {
-    "Octop": {
-      "command": "octop",
+    "麦途智造": {
+      "command": "maitu",
       "args": ["acp", "--agent", "main"],
       "env": {}
     }
@@ -111,16 +111,16 @@ From a dev checkout:
 ```json
 {
   "agent_servers": {
-    "Octop": {
+    "麦途智造": {
       "command": "uv",
-      "args": ["run", "octop", "acp", "--agent", "main"],
+      "args": ["run", "maitu", "acp", "--agent", "main"],
       "env": {}
     }
   }
 }
 ```
 
-Create an agent thread in Zed and prompt as usual. Sessions map to `thread_id`; the agent workspace remains under `~/.octop/agents/<agent_id>/`.
+Create an agent thread in Zed and prompt as usual. Sessions map to `thread_id`; the agent workspace remains under `~/.maitu/agents/<agent_id>/`.
 
 ---
 
@@ -164,8 +164,8 @@ Runner shape:
 
 ## Prerequisites
 
-- **harness-agent `[acp]` extra** — pulls in `agent-client-protocol` (included in the Octop wheel dependency on harness-agent).
-- **Outbound:** install external CLIs (`opencode`, `codebuddy`, …) on the machine running `octop run`.
+- **harness-agent `[acp]` extra** — pulls in `agent-client-protocol` (included in the 麦途智造 wheel dependency on harness-agent).
+- **Outbound:** install external CLIs (`opencode`, `codebuddy`, …) on the machine running `maitu run`.
 - **Inbound:** agent must start successfully (provider + model configured).
 
 ---
@@ -175,9 +175,9 @@ Runner shape:
 | Symptom | Likely cause |
 |---------|----------------|
 | Runner missing on some agents | Upgrade to user-global runners; open `/acp` once or `GET /api/acp` to trigger migration |
-| `acp_runner` lists runner but start fails with “Unknown runner” | Restart `octop run` after adding a custom runner (ACP service cache is process-wide) |
+| `acp_runner` lists runner but start fails with “Unknown runner” | Restart `maitu run` after adding a custom runner (ACP service cache is process-wide) |
 | External runner returns no text | Check CLI auth/quota (e.g. `codebuddy auth status`) |
-| `octop acp` fails immediately | Agent not running or invalid `--agent`; create/start agent in dashboard first |
+| `maitu acp` fails immediately | Agent not running or invalid `--agent`; create/start agent in dashboard first |
 | Command not found | Use absolute path in runner `command` if `PATH` for the server process differs from your shell |
 | Kimi Code fails to start | Install [kimi-code](https://github.com/MoonshotAI/kimi-code) and run `kimi` login on the host |
 | Cursor CLI fails to start | Install Cursor CLI; run `agent login` or set `CURSOR_API_KEY` |
@@ -188,6 +188,6 @@ Runner shape:
 ## Related
 
 - Dashboard: `/acp`
-- CLI: `octop acp --help`
+- CLI: `maitu acp --help`
 - OpenAPI: `/api/docs`
 - Harness implementation: `harness-agent` → `harness_agent.acp` (server + `acp_runner` tool)

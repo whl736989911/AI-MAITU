@@ -397,7 +397,7 @@ def check_native(
         "[INFO] bwrap 存在不代表 userns/AppArmor 已授权；请另运行 setup-host-sandbox.sh --status。"
     )
     modules = [
-        "octop",
+        "maitu",
         "fastapi",
         "uvicorn",
         "harness_agent",

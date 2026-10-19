@@ -1,4 +1,4 @@
-"""`octop acp` — run Octop agent as an ACP server over stdio."""
+"""`maitu acp` — run MAITU agent as an ACP server over stdio."""
 
 from __future__ import annotations
 

@@ -78,7 +78,11 @@ async def run_foreground(
     from octop.infra.setup.tls.http_companion import build_http_companion_app
     from octop.infra.setup.tls.listeners import build_listen_plan
     from octop.infra.setup.tls.store import resolve_tls_paths
+    from octop.infra.utils.paths import migrate_legacy_home
 
+    # Desktop/service entry points construct the server directly; upgrade the
+    # legacy data home before the server resolves its paths.
+    migrate_legacy_home()
     srv = OctopServer()
     await srv.start()
     bwrap_task = _schedule_linux_bubblewrap_diagnosis()

@@ -354,7 +354,7 @@ TLS、签名、类型、受众、实例、公钥指纹、版本、挑战或期�
 
 | 宿主配置 | 用途 |
 | --- | --- |
-| `OCTOP_DATA` | 业务数据的固定绝对目录，已有客户实例必须复用原目录 |
+| `MAITU_DATA` | 业务数据的固定绝对目录，已有客户实例必须复用原目录 |
 | `MAITU_LICENSE_TRUSTED_KEYS_HOST_FILE` | 授权 Ed25519 KID→PEM 映射，只读挂载至 `/run/maitu-trust/license-trusted-keys.json` |
 | `MAITU_UPDATE_TRUSTED_KEYS_HOST_FILE` | 发布 Ed25519 KID→PEM 映射，只读挂载至 `/run/maitu-trust/release-trusted-keys.json` |
 | `MAITU_LICENSE_STATE_HOST_DIR` | 实例私钥、凭据、授权版本及提醒账本，独立于业务目录 |
@@ -373,13 +373,13 @@ TLS、签名、类型、受众、实例、公钥指纹、版本、挑战或期�
 | `MAITU_UPDATE_CENTER_URL`、`MAITU_UPDATE_CLIENT_TOKEN`、`MAITU_UPDATE_TRUSTED_KEYS_FILE` | 可信 HTTPS、发行包读取凭据、KID→PEM 发布密钥映射 |
 | `MAITU_UPDATE_PROJECT_DIR`、`MAITU_UPDATE_COMPOSE_FILE` | 已有部署目录与实际主 Compose 文件 |
 | `MAITU_UPDATE_COMPOSE_OVERLAYS` | 所有实际使用的 managed/branding/执行驱动附加文件，Linux 用 `:` 分隔 |
-| `MAITU_UPDATE_DATA_DIR` | 与 Compose 的 `/data/.octop` bind mount 完全一致的宿主绝对目录 |
+| `MAITU_UPDATE_DATA_DIR` | 与 Compose 的 `/data/.maitu` bind mount 完全一致的宿主绝对目录 |
 | `MAITU_UPDATE_QUEUE_DIR`、`MAITU_UPDATE_STATE_DIR` | 与 Compose 对应的独立队列、受保护的更新器事务/备份目录 |
 | `MAITU_UPDATE_HEALTH_URL` | 宿主可达的 `/api/health`，如 `http://127.0.0.1:8088/api/health` |
 | `MAITU_UPDATE_COMPOSE_SERVICE`、`MAITU_UPDATE_ARCHITECTURE` | 默认 `maitu`，CPU 为 `amd64` 或 `arm64` |
 | `MAITU_UPDATE_POSTGRES_DSN` | 使用 PostgreSQL 时必需；宿主预装 `pg_dump` 和 `pg_restore`，否则拒绝升级 |
 
-Compose 插值使用的 `OCTOP_DATA`、上述宿主挂载路径及中心参数也必须存在于更新器服务环境中，不能只在交互式终端设置。更新器启动前应已构建并运行旧实例，不负责创建空实例。业务容器默认不挂载 Docker socket；独立 Docker 执行仅在显式 overlay 和对应配置下启用。
+Compose 插值使用的 `MAITU_DATA`、上述宿主挂载路径及中心参数也必须存在于更新器服务环境中，不能只在交互式终端设置。更新器启动前应已构建并运行旧实例，不负责创建空实例。业务容器默认不挂载 Docker socket；独立 Docker 执行仅在显式 overlay 和对应配置下启用。
 
 成功升级后，当前不可变镜像覆盖写在 `MAITU_UPDATE_STATE_DIR/live-image.json`。以后手动 `docker compose up` 必须继续添加 `-f <更新器状态目录>/live-image.json`（以及原有 managed/branding/执行驱动附加文件），否则原 Compose 中的基础镜像可能覆盖已升级版本。升级失败恢复旧镜像和对应停机备份；恢复也失败时保留事务日志，须由运维处理，不能删除日志后盲目再次安装。
 

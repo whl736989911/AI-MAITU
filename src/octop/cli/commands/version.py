@@ -1,4 +1,4 @@
-"""octop version command."""
+"""maitu version command."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import click
 
 @click.command("version")
 def version() -> None:
-    """Show the installed octop version."""
+    """Show the installed maitu version."""
     try:
         from importlib.metadata import version as _v
 
@@ -16,4 +16,4 @@ def version() -> None:
         v = "unknown"
     from octop.branding import platform_name
 
-    click.echo(f"{platform_name()} CLI (octop v{v})")
+    click.echo(f"{platform_name()} CLI (MAITU Smart Manufacturing v{v})")

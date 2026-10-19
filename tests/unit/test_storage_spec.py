@@ -169,7 +169,7 @@ def test_enrich_docker_backend_spec_defaults() -> None:
         {"type": "docker", "image": "python:3.12-slim"},
         agent_id="ZE6GR2",
     )
-    assert agent["sandbox_prefix"] == "octop_sandbox"
+    assert agent["sandbox_prefix"] == "maitu_sandbox"
     assert agent["sandbox_scope"] == "agent"
     assert agent["agent_id"] == "ZE6GR2"
     assert docker_spec_previewable(agent) is False

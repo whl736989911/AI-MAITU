@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# Octop — 配置后回调（应用「设置」窗口提交后执行）
+# 麦途智造 — 配置后回调（应用「设置」窗口提交后执行）
 #
 # 功能：
 #   - 管理员密码三选一：保持不变（keep）/ 自动生成新的随机密码（random）/
 #     自己设置新密码（custom，先按应用侧策略校验）；
-#   - 修改密码时：更新 docker/.env、数据共享目录 octop-login.txt 回落备份、
+#   - 修改密码时：更新 docker/.env、数据共享目录 maitu-login.txt 回落备份、
 #     「设置」窗口的当前密码显示；容器在运行时通过官方 CLI
-#     （docker exec ... octop user passwd）直接改密，无需重建容器；
+#     （docker exec ... maitu user passwd）直接改密，无需重建容器；
 #   - API Key / 日志级别可选更新，容器重启后生效。
 #
 set -euo pipefail
@@ -23,13 +23,13 @@ mkdir -p "$(dirname "$ENV_FILE")"
 DATA_DIR="/var/apps/octop/share/octop/data"
 mkdir -p "$DATA_DIR"
 
-CONTAINER="octop"
+CONTAINER="maitu"
 LOG="${TRIM_TEMP_LOGFILE:-/dev/null}"
 
 # 现有配置（.env 不存在时给安全默认值，正常情况下 install_callback 已写入）
-CUR_USER="$(octop_env_get "$ENV_FILE" OCTOP_ADMIN_USERNAME)"
-CUR_PASS="$(octop_env_get "$ENV_FILE" OCTOP_DEFAULT_PASSWORD)"
-CUR_LOG="$(octop_env_get "$ENV_FILE" OCTOP_LOG_LEVEL)"
+CUR_USER="$(octop_env_get "$ENV_FILE" MAITU_ADMIN_USERNAME)"
+CUR_PASS="$(octop_env_get "$ENV_FILE" MAITU_DEFAULT_PASSWORD)"
+CUR_LOG="$(octop_env_get "$ENV_FILE" MAITU_LOG_LEVEL)"
 CUR_OPENAI="$(octop_env_get "$ENV_FILE" OPENAI_API_KEY)"
 CUR_DASH="$(octop_env_get "$ENV_FILE" DASHSCOPE_API_KEY)"
 [ -n "$CUR_USER" ] || CUR_USER="admin"
@@ -42,8 +42,8 @@ OPENAI_NEW="$(octop_sanitize_value "${wizard_openai_api_key:-}")"
 DASHSCOPE_NEW="$(octop_sanitize_value "${wizard_dashscope_api_key:-}")"
 
 fail_config() {
-    echo "[octop] $1" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
-    echo "[octop] $1" >&2 || true
+    echo "[maitu] $1" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+    echo "[maitu] $1" >&2 || true
     exit 1
 }
 
@@ -94,26 +94,26 @@ DASHSCOPE="$CUR_DASH"
 # ---------------------------------------------------------------------------
 if [ "$PASS_CHANGED" = "1" ]; then
     if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$CONTAINER" \
-        && docker exec "$CONTAINER" octop user passwd "$ADMIN_USER" --password "$ADMIN_PASS" > "$LOG" 2>&1; then
-        echo "[octop] 已通过官方 CLI（docker exec octop octop user passwd）修改管理员密码" > "$LOG" 2>&1 || true
+        && docker exec "$CONTAINER" maitu user passwd "$ADMIN_USER" --password "$ADMIN_PASS" > "$LOG" 2>&1; then
+        echo "[maitu] 已通过官方 CLI（docker exec maitu maitu user passwd）修改管理员密码" > "$LOG" 2>&1 || true
     else
-        echo "[octop] 提示：容器未运行或在线改密未成功，密码将写入 .env；重建容器/重新初始化时生效。" > "$LOG" 2>&1 || true
+        echo "[maitu] 提示：容器未运行或在线改密未成功，密码将写入 .env；重建容器/重新初始化时生效。" > "$LOG" 2>&1 || true
     fi
 fi
 
 # ---------------------------------------------------------------------------
 # 写回 .env（逐键更新，保留未知键）
 # ---------------------------------------------------------------------------
-octop_env_set "$ENV_FILE" OCTOP_PORT "8088"
-octop_env_set "$ENV_FILE" OCTOP_BIND_HOST "0.0.0.0"
-octop_env_set "$ENV_FILE" OCTOP_LOG_LEVEL "$LOG_LEVEL"
-octop_env_set "$ENV_FILE" OCTOP_ADMIN_USERNAME "$ADMIN_USER"
-octop_env_set "$ENV_FILE" OCTOP_DEFAULT_PASSWORD "$ADMIN_PASS"
-octop_env_set "$ENV_FILE" OCTOP_ADMIN_DISPLAY_NAME "Admin"
+octop_env_set "$ENV_FILE" MAITU_PORT "8088"
+octop_env_set "$ENV_FILE" MAITU_BIND_HOST "0.0.0.0"
+octop_env_set "$ENV_FILE" MAITU_LOG_LEVEL "$LOG_LEVEL"
+octop_env_set "$ENV_FILE" MAITU_ADMIN_USERNAME "$ADMIN_USER"
+octop_env_set "$ENV_FILE" MAITU_DEFAULT_PASSWORD "$ADMIN_PASS"
+octop_env_set "$ENV_FILE" MAITU_ADMIN_DISPLAY_NAME "Admin"
 octop_env_set "$ENV_FILE" OPENAI_API_KEY "$OPENAI"
 octop_env_set "$ENV_FILE" DASHSCOPE_API_KEY "$DASHSCOPE"
 
-echo "[octop] 配置已更新: $ENV_FILE" > "$LOG" 2>&1 || true
+echo "[maitu] 配置已更新: $ENV_FILE" > "$LOG" 2>&1 || true
 
 # 凭据回落保存 + 「设置」窗口当前密码显示刷新
 octop_write_login_file "$DATA_DIR" "$ADMIN_USER" "$ADMIN_PASS" 8088

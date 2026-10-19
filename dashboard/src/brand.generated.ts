@@ -5,6 +5,8 @@ export const BRAND = {
   name: { zh: "麦途智造", en: "MAITU Smart Manufacturing" },
   fullName: { zh: "苏州麦途", en: "Suzhou Maitou" },
   shortName: { zh: "麦途智造", en: "MAITU" },
+  id: "maitu",
+  envPrefix: "MAITU",
   description: {
     zh: "麦途智造 · 面向制造企业的 AI 工作平台",
     en: "MAITU Smart Manufacturing · AI workspace for manufacturers",
@@ -25,6 +27,8 @@ export const BRAND = {
   links: {
     // Empty string hides the "project URL" entry in the account menu.
     projectRepo: "",
+    // Empty string falls back to the in-app API docs page.
+    help: "",
   },
 } as const;
 

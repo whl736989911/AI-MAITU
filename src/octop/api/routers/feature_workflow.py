@@ -3,7 +3,7 @@
 A feature *is* an agent (:mod:`octop.infra.agents.kinds`), so this surface lives on
 the agent's own path like its skills, its tools and its workspace files, and holds
 exactly the one document those surfaces have no equivalent of:
-``.octop/workflow.json`` (:mod:`octop.infra.agents.feature_workflow`).
+``.maitu/workflow.json`` (:mod:`octop.infra.agents.feature_workflow`).
 
 **Who may read, who may write.** A feature's author trains an unfinished draft,
 and enterprise administrators may inspect all drafts in their enterprise. On
@@ -107,7 +107,7 @@ async def get_workflow(
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
 ) -> WorkflowResponse:
-    """Read ``.octop/workflow.json`` for a feature, if it has one."""
+    """Read ``.maitu/workflow.json`` for a feature, if it has one."""
     row = _require_feature_row(agent_id, user=user, server=server)
     workspace = await require_agent_workspace(agent_id, user=user, server=server)
     loaded = await wf.load_workflow(workspace)

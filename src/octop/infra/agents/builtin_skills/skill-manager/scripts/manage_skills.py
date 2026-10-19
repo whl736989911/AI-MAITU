@@ -70,7 +70,7 @@ def _default_workspace() -> Path:
         raise SkillManagerError("cannot infer workspace from the manager script path") from exc
     if script.parents[1].name != "skill-manager" or builtin_root.name != "_builtin_skills":
         raise SkillManagerError("--workspace is required outside a deployed expert workspace")
-    if container.name == ".octop":
+    if container.name in (".maitu", ".octop"):
         try:
             return _workspace(str(script.parents[4]))
         except IndexError as exc:  # pragma: no cover
@@ -79,17 +79,18 @@ def _default_workspace() -> Path:
 
 
 def _skills_dir(workspace: Path) -> Path:
-    """Return the writable skills directory (legacy root or ``.octop/skills``)."""
+    """Return the writable skills directory (legacy root or ``.maitu/skills``)."""
     env_dir = os.environ.get("OCTOP_SKILLS_DIR", "").strip()
     if env_dir:
         path = _workspace(env_dir)
         path.mkdir(parents=True, exist_ok=True)
         return path
-    nested_builtin = workspace / ".octop" / "_builtin_skills"
-    nested_skills = workspace / ".octop" / "skills"
-    if nested_builtin.is_dir() or nested_skills.exists():
-        nested_skills.mkdir(parents=True, exist_ok=True)
-        return nested_skills
+    for system_name in (".maitu", ".octop"):
+        system_dir = workspace / system_name
+        if (system_dir / "_builtin_skills").is_dir() or (system_dir / "skills").exists():
+            nested_skills = system_dir / "skills"
+            nested_skills.mkdir(parents=True, exist_ok=True)
+            return nested_skills
     skills_dir = workspace / "skills"
     skills_dir.mkdir(parents=True, exist_ok=True)
     return skills_dir
@@ -440,8 +441,7 @@ def _install(workspace: Path, skills: list[dict[str, Any]], *, force: bool) -> l
     reserved = [item["slug"] for item in skills if item["slug"] in RESERVED_SKILL_SLUGS]
     if reserved:
         raise SkillManagerError(
-            "cannot replace an MAITU Smart Manufacturing-owned built-in skill: "
-            + ", ".join(reserved)
+            "cannot replace an maitu-owned built-in skill: " + ", ".join(reserved)
         )
     conflicts = [item["slug"] for item in skills if (skills_dir / item["slug"]).exists()]
     if conflicts and not force:

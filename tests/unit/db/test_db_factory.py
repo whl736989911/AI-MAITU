@@ -36,7 +36,7 @@ def test_should_not_defer_when_sqlite_exists(tmp_path: Path):
     root = tmp_path / ".octop"
     root.mkdir()
     (root / "config.json").write_text(json.dumps({"port": 8088}))
-    (root / "octop.db").write_bytes(b"")
+    (root / "maitu.db").write_bytes(b"")
     paths = PathLayout(root)
     cfg = load_config(paths.config)
     assert should_defer_control_plane_db(cfg, paths) is False
@@ -61,8 +61,8 @@ def test_should_not_defer_postgresql(tmp_path: Path):
                 "database": {
                     "driver": "postgresql",
                     "host": "localhost",
-                    "database": "octop",
-                    "user": "octop",
+                    "database": "maitu",
+                    "user": "maitu",
                     "password": "x",
                 }
             }
@@ -140,8 +140,8 @@ def test_postgresql_returns_postgres_pool(tmp_path: Path, monkeypatch: pytest.Mo
                 "database": {
                     "driver": "postgresql",
                     "host": "localhost",
-                    "database": "octop",
-                    "user": "octop",
+                    "database": "maitu",
+                    "user": "maitu",
                     "password": "x",
                 }
             }
@@ -151,4 +151,4 @@ def test_postgresql_returns_postgres_pool(tmp_path: Path, monkeypatch: pytest.Mo
     cfg = load_config(paths.config)
     pool = open_database(cfg, paths)
     assert pool.dialect == "postgresql"
-    assert "octop" in created["conninfo"]
+    assert "maitu" in created["conninfo"]

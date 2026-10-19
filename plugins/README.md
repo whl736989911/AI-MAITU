@@ -1,14 +1,14 @@
-# Octop Plugin Demos
+# MAITU Plugin Demos
 
 [中文版](./README_CN.md)
 
-Sample plugins for Octop / harness-agent `kind` values, plus a **dual
+Sample plugins for MAITU / harness-agent `kind` values, plus a **dual
 frontend + backend** demo that renders tool results in chat.
 Layout inspired by [octop-toolkit](https://github.com/veenyi/octop-plugins/tree/main/octop-toolkit).
 
 Product plugins shipped with the wheel live in
-`src/octop/infra/agents/plugins/bundled/`. `octop init` and `octop run`
-copy missing ones into `~/.octop/plugins/` and set them **globally off**
+`src/octop/infra/agents/plugins/bundled/`. `maitu init` and `maitu run`
+copy missing ones into `~/.maitu/plugins/` and set them **globally off**
 in `config.json`. Uninstalled ids are not re-copied.
 
 ## Demos
@@ -77,11 +77,11 @@ Ship a self-contained ESM; React is provided as `window.__OCTOP_REACT__` /
 ## Install locally
 
 ```bash
-octop plugin install ./plugins/demo-toolkit --force
-octop plugin install ./plugins/demo-greeting-skill --force
-octop plugin install ./plugins/demo-turn-logger --force
-octop plugin install ./plugins/demo-ui-card --force
-octop plugin list
+maitu plugin install ./plugins/demo-toolkit --force
+maitu plugin install ./plugins/demo-greeting-skill --force
+maitu plugin install ./plugins/demo-turn-logger --force
+maitu plugin install ./plugins/demo-ui-card --force
+maitu plugin list
 ```
 
 Or pack a ZIP first (include prebuilt `ui/dist/` when present — the server

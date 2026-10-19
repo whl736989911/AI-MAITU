@@ -39,7 +39,7 @@ def test_init_non_interactive_creates_admin(fake_home: Path) -> None:
     )
     assert result.exit_code == 0, result.output
     assert (fake_home / ".octop").is_dir()
-    assert (fake_home / ".octop" / "octop.db").is_file()
+    assert (fake_home / ".octop" / "maitu.db").is_file()
     weather = fake_home / ".octop" / "plugins" / "weather" / "plugin.yaml"
     assert weather.is_file()
     cfg = json.loads((fake_home / ".octop" / "config.json").read_text(encoding="utf-8"))
@@ -133,3 +133,23 @@ def test_init_env_vars_supply_credentials(fake_home: Path, monkeypatch: pytest.M
     paths = PathLayout(fake_home / ".octop")
     repo = UserRepo(SqlitePool(paths.db))
     assert repo.get_by_username("fromenv") is not None
+
+
+def test_init_default_home_uses_brand_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without a home override the CLI bootstraps ``~/.maitu``."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path))
+    monkeypatch.delenv("OCTOP_HOME", raising=False)
+    monkeypatch.delenv("MAITU_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
+
+    runner = CliRunner()
+    result = runner.invoke(
+        cli,
+        ["init", "--admin-username", "alice", "--admin-password", "TestPass12", "--yes"],
+    )
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / ".maitu" / "maitu.db").is_file()
+    assert not (tmp_path / ".octop").exists()

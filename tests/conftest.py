@@ -92,6 +92,8 @@ def _isolated_user_home(
         "OCTOP_LICENSE_TRUST_FILE",
         "OCTOP_LICENSE_CA_FILE",
         "OCTOP_LICENSE_CONTACT",
+        "MAITU_HOME",
+        "OCTOP_HOME",
     ):
         monkeypatch.delenv(key, raising=False)
     return home

@@ -28,9 +28,16 @@ async def _shared_agent(env) -> tuple[object, dict[str, str], dict[str, str], st
 _OWNER_ONLY_CONTENT = {
     "memory.sqlite": "memory-db-secret",
     "checkpoints.sqlite": "checkpoints-db-secret",
-    ".octop/sessions/x.jsonl": "session-log-secret",
-    ".octop-auth/token.json": "auth-token-secret",
+    ".maitu/sessions/x.jsonl": "session-log-secret",
+    ".maitu-auth/token.json": "auth-token-secret",
     ".env": "env-secret",
+}
+
+# An unmigrated workspace keeps the same files under the old directory names;
+# the guard must protect those too.
+_LEGACY_OWNER_ONLY_CONTENT = {
+    ".octop/sessions/legacy.jsonl": "legacy-session-log-secret",
+    ".octop-auth/token.json": "legacy-auth-token-secret",
 }
 
 
@@ -45,7 +52,7 @@ async def _shared_agent_with_system_files(
         json={"is_shared": True},
     )
     assert response.status_code == 200, response.text
-    for path, content in _OWNER_ONLY_CONTENT.items():
+    for path, content in {**_OWNER_ONLY_CONTENT, **_LEGACY_OWNER_ONLY_CONTENT}.items():
         response = await client.put(
             f"/api/agents/{agent_id}/workspace/file",
             headers=owner_auth,
@@ -331,7 +338,7 @@ async def test_a_directed_grant_puts_the_agent_in_the_list(env) -> None:
 async def test_peer_cannot_read_shared_agent_system_files(env) -> None:
     client, _owner_auth, peer_auth, agent_id = await _shared_agent_with_system_files(env)
 
-    for path in _OWNER_ONLY_CONTENT:
+    for path in {**_OWNER_ONLY_CONTENT, **_LEGACY_OWNER_ONLY_CONTENT}:
         for route in ("file", "download"):
             response = await client.get(
                 f"/api/agents/{agent_id}/workspace/{route}",
@@ -348,6 +355,7 @@ async def test_peer_cannot_read_shared_agent_system_files(env) -> None:
         "memory.sqlite.",
         "checkpoints.sqlite.",
         ".env.",
+        ".maitu.",
         ".octop.",
         "memory.sqlite::$DATA",
     ):
@@ -359,12 +367,13 @@ async def test_peer_cannot_read_shared_agent_system_files(env) -> None:
         assert response.status_code == 403, f"alias {path}: {response.status_code} {response.text}"
 
     # The document and media-preview read routes enforce the same guard.
-    response = await client.get(
-        f"/api/agents/{agent_id}/workspace/doc",
-        headers=peer_auth,
-        params={"path": ".octop/sessions/x.jsonl"},
-    )
-    assert response.status_code == 403, response.text
+    for path in (".maitu/sessions/x.jsonl", ".octop/sessions/legacy.jsonl"):
+        response = await client.get(
+            f"/api/agents/{agent_id}/workspace/doc",
+            headers=peer_auth,
+            params={"path": path},
+        )
+        assert response.status_code == 403, f"doc {path}: {response.text}"
     response = await client.get(
         f"/api/agents/{agent_id}/media/preview",
         headers=peer_auth,
@@ -376,7 +385,7 @@ async def test_peer_cannot_read_shared_agent_system_files(env) -> None:
 async def test_owner_can_read_shared_agent_system_files(env) -> None:
     client, owner_auth, _peer_auth, agent_id = await _shared_agent_with_system_files(env)
 
-    for path, content in _OWNER_ONLY_CONTENT.items():
+    for path, content in {**_OWNER_ONLY_CONTENT, **_LEGACY_OWNER_ONLY_CONTENT}.items():
         response = await client.get(
             f"/api/agents/{agent_id}/workspace/file",
             headers=owner_auth,

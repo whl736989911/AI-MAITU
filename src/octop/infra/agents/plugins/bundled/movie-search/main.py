@@ -9,7 +9,7 @@ from urllib.parse import quote
 import httpx
 from harness_agent.plugins import PluginContext
 
-_UA = "Octop-movie-search/0.1.0 (https://github.com/octop)"
+_UA = "maitu-movie-search/0.1.0 (https://github.com/octop)"
 
 
 def _payload(data: dict[str, Any], text: str) -> str:

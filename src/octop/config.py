@@ -41,11 +41,13 @@ class DatabaseConfig:
     """Database connection settings (SQLite or PostgreSQL)."""
 
     driver: str = "sqlite"
-    sqlite_path: str = "octop.db"
+    # Keep in sync with ``PathLayout.db`` (the config module must not import
+    # ``infra``); an explicit value in config.json may still point elsewhere.
+    sqlite_path: str = "maitu.db"
     host: str = "127.0.0.1"
     port: int = 5432
-    database: str = "octop"
-    user: str = "octop"
+    database: str = "maitu"
+    user: str = "maitu"
     password: str | None = None
     url: str | None = None  # verbatim OCTOP_DATABASE_URL when set
 
@@ -333,7 +335,7 @@ def parse_database_config(merged: dict[str, Any]) -> DatabaseConfig:
         raise ValueError(msg)
 
     if driver == "sqlite":
-        sqlite_path = str(merged.get("sqlite_path", "octop.db")).strip()
+        sqlite_path = str(merged.get("sqlite_path", "maitu.db")).strip()
         if not sqlite_path:
             raise ValueError("database.sqlite_path must not be empty")
         return DatabaseConfig(driver=driver, sqlite_path=sqlite_path)

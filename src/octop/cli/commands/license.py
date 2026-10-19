@@ -1,4 +1,4 @@
-"""`octop license` — instance license management (embedded, works offline).
+"""`maitu license` — instance license management (embedded, works offline).
 
 Talks directly to the local licensing state (same store as the server
 process); ``activate``/``refresh`` additionally reach the license center over

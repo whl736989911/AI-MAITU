@@ -6,7 +6,11 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from octop.infra.utils.legacy_names import LEGACY_DB_ARCHIVE_PATH
+from octop.infra.utils.paths import BRAND_ID
+
 MANIFEST_VERSION = 1
+_NEW_DB_ARCHIVE_PATH = f"db/{BRAND_ID}.db"
 
 
 @dataclass
@@ -23,7 +27,7 @@ class BackupManifest:
     schema_version: int
     created_at: str
     home: str
-    db_file: str = "db/octop.db"
+    db_file: str = _NEW_DB_ARCHIVE_PATH
     database_driver: str = "sqlite"
     database_dump_format: str = "sqlite_file"
     agents: list[AgentBackupEntry] = field(default_factory=list)
@@ -72,7 +76,9 @@ class BackupManifest:
             schema_version=int(data.get("schema_version", 0)),
             created_at=str(data.get("created_at", "")),
             home=str(data.get("home", "")),
-            db_file=str(data.get("db_file", "db/octop.db")),
+            # LEGACY: archives written before the rename packed the old DB path;
+            # archives that predate the field entirely used the same path.
+            db_file=str(data.get("db_file", LEGACY_DB_ARCHIVE_PATH)),
             database_driver=str(data.get("database_driver", "sqlite")),
             database_dump_format=str(data.get("database_dump_format", "sqlite_file")),
             agents=agents,

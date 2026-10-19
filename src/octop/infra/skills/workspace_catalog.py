@@ -134,7 +134,7 @@ def list_workspace_skill_summaries(
     skills_disabled: set[str] | frozenset[str],
     include_corrupt: bool = True,
 ) -> list[dict[str, Any]]:
-    """Scan ``skills/`` including ``.octop/skills`` and symlinked directories."""
+    """Scan ``skills/`` including ``.maitu/skills`` (legacy ``.octop``) and symlinked directories."""
     seen: set[str] = set()
     summaries: list[dict[str, Any]] = []
     for skills_root in _skills_roots(workspace_dir):

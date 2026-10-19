@@ -27,6 +27,7 @@ from octop.infra.server import (
     delaycompress_rotated_logs,
     gzip_rotated_log,
 )
+from octop.infra.utils.legacy_names import LEGACY_LOG_FILENAME
 
 
 @pytest.fixture(autouse=True)
@@ -56,7 +57,7 @@ def _stale_path(log_dir: Path, name: str, age_days: int) -> Path:
 
 
 def test_build_log_handler_uses_daily_rotation_and_retention(tmp_path: Path):
-    handler = _build_log_handler(tmp_path / "octop.log", retention_days=7, max_bytes=4096)
+    handler = _build_log_handler(tmp_path / "maitu.log", retention_days=7, max_bytes=4096)
     try:
         assert isinstance(handler, SizeTimedRotatingFileHandler)
         assert handler.when == "MIDNIGHT"
@@ -72,8 +73,8 @@ def test_build_log_handler_uses_daily_rotation_and_retention(tmp_path: Path):
 def test_purge_stale_logs_removes_only_old_files(tmp_path: Path):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    old = _stale_path(log_dir, "octop.log.2020-01-01", age_days=100)
-    new = _stale_path(log_dir, "octop.log.2026-07-16", age_days=1)
+    old = _stale_path(log_dir, "maitu.log.2020-01-01", age_days=100)
+    new = _stale_path(log_dir, "maitu.log.2026-07-16", age_days=1)
 
     _purge_stale_logs(log_dir, retention_days=14)
 
@@ -84,7 +85,7 @@ def test_purge_stale_logs_removes_only_old_files(tmp_path: Path):
 def test_purge_stale_logs_skipped_when_retention_non_positive(tmp_path: Path):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    old = _stale_path(log_dir, "octop.log.2020-01-01", age_days=100)
+    old = _stale_path(log_dir, "maitu.log.2020-01-01", age_days=100)
 
     _purge_stale_logs(log_dir, retention_days=0)
 
@@ -93,7 +94,7 @@ def test_purge_stale_logs_skipped_when_retention_non_positive(tmp_path: Path):
 
 def test_attach_log_handler_is_idempotent(tmp_path: Path):
     root = logging.getLogger()
-    handler = _build_log_handler(tmp_path / "octop.log", retention_days=7)
+    handler = _build_log_handler(tmp_path / "maitu.log", retention_days=7)
     try:
         _attach_log_handler(root, handler)
         _attach_log_handler(root, handler)
@@ -110,7 +111,7 @@ def test_attach_log_handler_is_idempotent(tmp_path: Path):
 def test_setup_logging_creates_logs_dir_and_file(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("OCTOP_LOG_LEVEL", raising=False)
     monkeypatch.delenv("OCTOP_LOG_RETENTION_DAYS", raising=False)
-    server = OctopServer(home=tmp_path / ".octop")
+    server = OctopServer(home=tmp_path / ".maitu")
 
     server._setup_logging()
 
@@ -130,8 +131,8 @@ def test_setup_logging_creates_logs_dir_and_file(tmp_path: Path, monkeypatch):
 
 
 def test_setup_logging_migrates_legacy_log(tmp_path: Path):
-    home = tmp_path / ".octop"
-    legacy = home / "octop.log"
+    home = tmp_path / ".maitu"
+    legacy = home / LEGACY_LOG_FILENAME
     legacy.parent.mkdir(parents=True, exist_ok=True)
     legacy.write_text("legacy content", encoding="utf-8")
     server = OctopServer(home=home)
@@ -145,7 +146,7 @@ def test_setup_logging_migrates_legacy_log(tmp_path: Path):
 
 def test_setup_logging_respects_retention_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OCTOP_LOG_RETENTION_DAYS", "3")
-    server = OctopServer(home=tmp_path / ".octop")
+    server = OctopServer(home=tmp_path / ".maitu")
 
     server._setup_logging()
 
@@ -160,7 +161,7 @@ def test_setup_logging_respects_retention_env(tmp_path: Path, monkeypatch):
 
 def test_setup_logging_respects_level_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OCTOP_LOG_LEVEL", "debug")
-    server = OctopServer(home=tmp_path / ".octop")
+    server = OctopServer(home=tmp_path / ".maitu")
 
     server._setup_logging()
 
@@ -169,7 +170,7 @@ def test_setup_logging_respects_level_env(tmp_path: Path, monkeypatch):
 
 def test_setup_logging_falls_back_on_invalid_level_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OCTOP_LOG_LEVEL", "not-a-level")
-    server = OctopServer(home=tmp_path / ".octop")
+    server = OctopServer(home=tmp_path / ".maitu")
 
     server._setup_logging()
 
@@ -178,7 +179,7 @@ def test_setup_logging_falls_back_on_invalid_level_env(tmp_path: Path, monkeypat
 
 def test_setup_logging_falls_back_on_invalid_retention_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OCTOP_LOG_RETENTION_DAYS", "oops")
-    server = OctopServer(home=tmp_path / ".octop")
+    server = OctopServer(home=tmp_path / ".maitu")
 
     server._setup_logging()
 
@@ -202,7 +203,7 @@ def test_parse_log_max_bytes_defaults_and_env(monkeypatch):
 
 
 def test_log_handler_rotates_when_max_bytes_exceeded(tmp_path: Path):
-    log_path = tmp_path / "octop.log"
+    log_path = tmp_path / "maitu.log"
     handler = _build_log_handler(log_path, retention_days=3, max_bytes=256)
     test_logger = logging.getLogger("test.octop.log.size_roll")
     test_logger.handlers = []
@@ -213,7 +214,7 @@ def test_log_handler_rotates_when_max_bytes_exceeded(tmp_path: Path):
         for _ in range(40):
             test_logger.info("x" * 40)
         handler.flush()
-        backups = [p for p in tmp_path.glob("octop.log*") if p != log_path]
+        backups = [p for p in tmp_path.glob("maitu.log*") if p != log_path]
         assert len(backups) >= 1
         # delaycompress: newest rotated file stays plain; older ones may be .gz
         plains = [p for p in backups if not p.name.endswith(".gz")]
@@ -229,11 +230,11 @@ def test_log_handler_rotates_when_max_bytes_exceeded(tmp_path: Path):
 
 
 def test_gzip_rotated_log_replaces_plain_file(tmp_path: Path):
-    plain = tmp_path / "octop.log.2026-09-02"
+    plain = tmp_path / "maitu.log.2026-09-02"
     # Binary write keeps LF on Windows (text mode would expand to CRLF).
     plain.write_bytes(b"hello\nworld\n")
     gzip_rotated_log(plain)
-    gz = tmp_path / "octop.log.2026-09-02.gz"
+    gz = tmp_path / "maitu.log.2026-09-02.gz"
     assert not plain.exists()
     assert gz.exists()
     assert gzip.decompress(gz.read_bytes()) == b"hello\nworld\n"
@@ -242,27 +243,27 @@ def test_gzip_rotated_log_replaces_plain_file(tmp_path: Path):
 def test_delaycompress_keeps_newest_plain_on_startup(tmp_path: Path):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    older = log_dir / "octop.log.2026-08-28"
-    newer = log_dir / "octop.log.2026-08-29"
+    older = log_dir / "maitu.log.2026-08-28"
+    newer = log_dir / "maitu.log.2026-08-29"
     older.write_text("older\n", encoding="utf-8")
     newer.write_text("newer\n", encoding="utf-8")
     past = time.time() - 86400
     os.utime(older, (past, past))
     delaycompress_rotated_logs(log_dir, enabled=True)
     assert not older.exists()
-    assert (log_dir / "octop.log.2026-08-28.gz").exists()
+    assert (log_dir / "maitu.log.2026-08-28.gz").exists()
     assert newer.exists()
-    assert not (log_dir / "octop.log.2026-08-29.gz").exists()
+    assert not (log_dir / "maitu.log.2026-08-29.gz").exists()
 
 
 def test_delaycompress_single_plain_stays_uncompressed(tmp_path: Path):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    plain = log_dir / "octop.log.2026-08-29"
+    plain = log_dir / "maitu.log.2026-08-29"
     plain.write_text("only\n", encoding="utf-8")
     delaycompress_rotated_logs(log_dir, enabled=True)
     assert plain.exists()
-    assert not (log_dir / "octop.log.2026-08-29.gz").exists()
+    assert not (log_dir / "maitu.log.2026-08-29.gz").exists()
 
 
 def test_parse_log_compress_env(monkeypatch):
@@ -275,8 +276,8 @@ def test_parse_log_compress_env(monkeypatch):
 def test_purge_stale_logs_removes_old_gz_files(tmp_path: Path):
     log_dir = tmp_path / "logs"
     log_dir.mkdir()
-    old = _stale_path(log_dir, "octop.log.2020-01-01.gz", age_days=100)
-    new = _stale_path(log_dir, "octop.log.2026-07-16.gz", age_days=1)
+    old = _stale_path(log_dir, "maitu.log.2020-01-01.gz", age_days=100)
+    new = _stale_path(log_dir, "maitu.log.2026-07-16.gz", age_days=1)
     _purge_stale_logs(log_dir, retention_days=14)
     assert not old.exists()
     assert new.exists()
@@ -284,7 +285,7 @@ def test_purge_stale_logs_removes_old_gz_files(tmp_path: Path):
 
 def test_setup_logging_respects_max_bytes_env(tmp_path: Path, monkeypatch):
     monkeypatch.setenv("OCTOP_LOG_MAX_BYTES", "8192")
-    server = OctopServer(home=tmp_path / ".octop")
+    server = OctopServer(home=tmp_path / ".maitu")
     server._setup_logging()
     handler = next(
         h

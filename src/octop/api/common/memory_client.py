@@ -28,7 +28,11 @@ from octop.i18n import tr
 from octop.infra.agents.feature_workflow import STATUS_ACTIVE, STATUS_DRAFT, feature_memory_stage
 from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.agents.memory_backend import memory_namespace, open_memory_kwargs
-from octop.infra.agents.workspace_dir import host_system_dir
+from octop.infra.agents.workspace_dir import (
+    LEGACY_SYSTEM_FILES_DIRNAME,
+    SYSTEM_FILES_DIRNAME,
+    host_system_dir,
+)
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.locale import resolve_user_locale
 
@@ -82,18 +86,26 @@ async def resolve_memory_access(
 def memory_db_path(workspace_dir: Path) -> Path:
     """Return the default SQLite file path within an agent workspace.
 
-    Prefer an explicit on-disk file. When neither exists, treat a populated
-    ``.octop/_builtin_skills`` tree as the new-layout signal (empty ``.octop/``
-    alone is not enough for legacy agents).
+    Prefer an explicit on-disk file, in the current system directory first and
+    the legacy one second (an unmigrated workspace keeps its database there).
+    When neither exists, treat a populated ``_builtin_skills`` tree — under
+    either directory name — as the nested-layout signal; an empty directory
+    alone is not enough for legacy agents.
     """
-    nested = workspace_dir / ".octop" / "memory.sqlite"
+    candidates = (
+        workspace_dir / SYSTEM_FILES_DIRNAME,
+        workspace_dir / LEGACY_SYSTEM_FILES_DIRNAME,
+    )
     root = workspace_dir / "memory.sqlite"
-    if nested.exists():
-        return nested
+    for system_dir in candidates:
+        nested = system_dir / "memory.sqlite"
+        if nested.exists():
+            return nested
     if root.exists():
         return root
-    if (workspace_dir / ".octop" / "_builtin_skills").is_dir():
-        return nested
+    for system_dir in candidates:
+        if (system_dir / "_builtin_skills").is_dir():
+            return system_dir / "memory.sqlite"
     return root
 
 

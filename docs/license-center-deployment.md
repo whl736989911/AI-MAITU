@@ -4,7 +4,7 @@
 
 服务器不需要桌面或浏览器。通过 SSH 完成部署和恢复，在运维电脑的浏览器中进行日常管理，手机身份验证器提供 MFA 验证码。
 
-> 本功能源于本项目的 `feature/instance-licensing` 开发分支；上游 `TencentCloud/Octop` 不保证包含它。生产部署应使用交付方确认过的本项目版本，并核对具体提交和交付包。不要直接替换现有客户实例：该版本默认需要授权，缺少有效授权时业务会锁定。
+> 本功能源于本项目的 `feature/instance-licensing` 开发分支；上游 `TencentCloud/麦途智造` 不保证包含它。生产部署应使用交付方确认过的本项目版本，并核对具体提交和交付包。不要直接替换现有客户实例：该版本默认需要授权，缺少有效授权时业务会锁定。
 
 ## 0. 推荐入口：两台主机各运行一次部署向导
 
@@ -385,7 +385,7 @@ sudo install -m 0644 \
 
 预演可以使用 `--staging`，但 staging 证书不受公共信任，不能用于客户交付。若曾签发 staging 证书，正式签发前核对 Certbot 的证书名称与 CA 配置，不把 staging 文件当成正式证书。
 
-如果使用商业 CA，安装其签发的 IP 证书链和私钥，并按其规则续期。如果采用私有 CA，必须明确为管理浏览器安装可信根、为客户配置 `OCTOP_LICENSE_CA_FILE`；不得让用户忽略浏览器警告，也不得关闭客户端验签。
+如果使用商业 CA，安装其签发的 IP 证书链和私钥，并按其规则续期。如果采用私有 CA，必须明确为管理浏览器安装可信根、为客户配置 `MAITU_LICENSE_CA_FILE`；不得让用户忽略浏览器警告，也不得关闭客户端验签。
 
 ## 6. Docker 网络、环境文件与构建
 
@@ -613,9 +613,9 @@ Docker 部署使用 `docker/docker-compose.managed.yml`，并通过宿主 Compos
 | `MAITU_UPDATE_QUEUE_HOST_DIR` | 平台更新请求/进度队列目录，须与宿主 updater 使用同一目录 |
 | `MAITU_CENTER_CLIENT_TOKEN` | 必须配置独立客户侧版本读取令牌，不能使用中心管理员凭据 |
 
-授权 keyring 使用 `MAITU_LICENSE_TRUSTED_KEYS_FILE`，发布 keyring 使用 `MAITU_UPDATE_TRUSTED_KEYS_FILE`；两者不可互换。必须继续复用原 `OCTOP_DATA`、授权身份目录、队列目录和 Compose project name，升级前备份并在隔离副本验证。交付源码包的基础 Compose 不挂载宿主 Docker socket；默认使用 Bubblewrap，只有可信运维明确选择时才叠加 `docker/docker-compose.docker-exec.yml`，该覆盖会把宿主 Docker API 授权给业务容器，绝不可提供给不可信 agent worker。平台向导使用宿主本地 Docker socket 执行构建/Compose，但不会把该 socket 挂进平台服务容器。镜像、seccomp/AppArmor 与隔离执行说明见[ Docker 部署说明](../docker/README_CN.md#执行沙箱与浏览器linux)。
+授权 keyring 使用 `MAITU_LICENSE_TRUSTED_KEYS_FILE`，发布 keyring 使用 `MAITU_UPDATE_TRUSTED_KEYS_FILE`；两者不可互换。必须继续复用原 `MAITU_DATA`、授权身份目录、队列目录和 Compose project name，升级前备份并在隔离副本验证。交付源码包的基础 Compose 不挂载宿主 Docker socket；默认使用 Bubblewrap，只有可信运维明确选择时才叠加 `docker/docker-compose.docker-exec.yml`，该覆盖会把宿主 Docker API 授权给业务容器，绝不可提供给不可信 agent worker。平台向导使用宿主本地 Docker socket 执行构建/Compose，但不会把该 socket 挂进平台服务容器。镜像、seccomp/AppArmor 与隔离执行说明见[ Docker 部署说明](../docker/README_CN.md#执行沙箱与浏览器linux)。
 
-中心创建客户，生成激活码时分别确认“授权截止时间”和“激活码使用期限”。客户管理员在业务平台锁定页输入激活码，或由主机运维执行 `octop license activate`。激活码只显示一次，不写到公共日志；同一激活码不用于多台不同主机。
+中心创建客户，生成激活码时分别确认“授权截止时间”和“激活码使用期限”。客户管理员在业务平台锁定页输入激活码，或由主机运维执行 `maitu license activate`。激活码只显示一次，不写到公共日志；同一激活码不用于多台不同主机。
 
 客户侧详细命令和数据边界见 [实例授权部署与交付操作](instance-license-operations.md#3-办公室业务主机)。不要复制中心 `keys/`、数据库、owner 密码或 MFA 密钥到办公室主机。
 
@@ -766,7 +766,7 @@ dc run --rm -T license-center activate-key REPLACE_WITH_STAGED_KID --confirm
 
 ### 13.3 更换服务器或公网 IP
 
-先备份并恢复原数据库和全部密钥，不能重建全新中心替代旧中心。新 IP 要重新取得包含新 IP 的证书，重做 Nginx 白名单及代理信任地址，再更新每台客户的 `OCTOP_LICENSE_SERVER_URL` 并重启加载。
+先备份并恢复原数据库和全部密钥，不能重建全新中心替代旧中心。新 IP 要重新取得包含新 IP 的证书，重做 Nginx 白名单及代理信任地址，再更新每台客户的 `MAITU_LICENSE_SERVER_URL` 并重启加载。
 
 在迁移窗口避免新旧中心同时允许管理写入，防止授权版本分叉。规划停机及缓存期限；验收现有客户同步后再下线旧中心。更换中心地址通常不需要重新生成客户实例身份或激活码，前提是原绑定和签发密钥已完整恢复。
 

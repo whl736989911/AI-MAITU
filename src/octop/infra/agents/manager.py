@@ -803,7 +803,7 @@ class AgentManager:
                 if requested_host_workspace != self._paths.agent_workspace(agent_id).resolve():
                     raise OctopError(
                         ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                        "Agent workspaces must remain inside Octop's managed workspace directory.",
+                        "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
                     )
             seed_workspace_dir_on_create(config, paths=self._paths, agent_id=agent_id)
             config.pop("system_files_path", None)
@@ -1234,7 +1234,10 @@ class AgentManager:
         """On-disk workspace restricted to Octop's managed per-agent directory.
 
         Persisted workspace paths are validated before any directory is created;
-        legacy external paths are rejected rather than remapped or adopted.
+        legacy external paths are rejected rather than remapped or adopted. This
+        is also the layout-migration point: an older workspace's system
+        directories are moved to the current names here, once, by whichever
+        operation touches the workspace first.
         """
         from octop.infra.agents.workspace_dir import (  # noqa: PLC0415
             workspace_dir_from_config,
@@ -1249,10 +1252,11 @@ class AgentManager:
             if resolved != self._paths.agent_workspace(agent_id).resolve():
                 raise OctopError(
                     ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                    "Agent workspaces must remain inside Octop's managed workspace directory.",
+                    "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
                 )
             self._assert_managed_workspace_ok(agent_id, resolved)
             resolved.mkdir(parents=True, exist_ok=True)
+            self._migrate_workspace_layout(agent_id, resolved, cfg, persist=persist_if_missing)
             return resolved
 
         # Legacy / incomplete row: classic managed layout.
@@ -1261,7 +1265,62 @@ class AgentManager:
             new_cfg = dict(cfg)
             new_cfg["workspace_dir"] = str(out.resolve())
             self.persist_harness_config(agent_id, new_cfg)
+        self._migrate_workspace_layout(agent_id, out, cfg, persist=persist_if_missing)
         return out
+
+    def _migrate_workspace_layout(
+        self,
+        agent_id: str,
+        workspace_dir: Path,
+        cfg: dict[str, Any],
+        *,
+        persist: bool,
+    ) -> None:
+        """Move an older workspace to the current system layout, once.
+
+        Renames ``.octop`` → ``.maitu`` and ``.octop-auth`` → ``.maitu-auth``
+        inside *workspace_dir* and normalizes the stored ``system_files_path``
+        (an old value is treated as the current default, never written back).
+
+        The config write goes through the repo directly: ``persist_harness_config``
+        deliberately preserves the stored ``system_files_path``, which is exactly
+        the value being normalized here.
+        """
+        from octop.infra.agents.workspace_dir import (  # noqa: PLC0415
+            migrate_workspace_system_dirs,
+            system_files_path_from_config,
+        )
+
+        try:
+            migration = migrate_workspace_system_dirs(workspace_dir, cfg)
+        except Exception:
+            logger.exception("workspace layout migration failed for %s", agent_id)
+            return
+        stored = cfg.get("system_files_path")
+        normalized = system_files_path_from_config(cfg)
+        stored_text = (
+            stored.strip().replace("\\", "/").strip("/") if isinstance(stored, str) else ""
+        )
+        if not (migration.changed or (stored_text and stored_text != normalized)):
+            return
+        if not persist or self._repos.agent_repo.get(agent_id) is None:
+            return
+        updated = dict(cfg)
+        if normalized:
+            updated["system_files_path"] = normalized
+        else:
+            updated.pop("system_files_path", None)
+        try:
+            self._repos.agent_repo.update_config(
+                agent_id,
+                config_json=dumps_config(updated),
+            )
+        except Exception:
+            logger.warning(
+                "could not persist the migrated workspace layout of %s",
+                agent_id,
+                exc_info=True,
+            )
 
     def is_bootstrapped(self, agent_id: str) -> bool:
         """Whether onboarding has completed for a running agent."""
@@ -3262,7 +3321,7 @@ class AgentManager:
         if workspace_dir.resolve() != expected_workspace:
             raise OctopError(
                 ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                "Agent workspaces must remain inside Octop's managed workspace directory.",
+                "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
             )
         configured_skill_dirs = self._validate_configured_skill_dirs(cfg, expected_workspace)
         if configured_skill_dirs:
@@ -3420,7 +3479,11 @@ class AgentManager:
         from deepagents.backends.composite import CompositeBackend
         from deepagents.backends.filesystem import FilesystemBackend
 
-        from octop.infra.agents.workspace_dir import system_files_path_from_config
+        from octop.infra.agents.workspace_dir import (
+            LEGACY_AUTH_DIRNAME,
+            MIGRATED_AUTH_DIRNAME,
+            system_files_path_from_config,
+        )
 
         if not isinstance(resolved_backend, (FilesystemBackend, CompositeBackend)):
             return resolved_backend
@@ -3443,7 +3506,16 @@ class AgentManager:
                 (workspace_dir / prefix / "skills", workspace_dir / prefix / "auth")
             )
         else:
-            readonly_dirs.extend((workspace_dir / "skills", workspace_dir / ".octop-auth"))
+            readonly_dirs.append(workspace_dir / "skills")
+        # A standalone auth directory from either generation stays read-only too:
+        # credentials are not workspace content, whichever name they were kept
+        # under before the layout migration.
+        readonly_dirs.extend(
+            (
+                workspace_dir / MIGRATED_AUTH_DIRNAME,
+                workspace_dir / LEGACY_AUTH_DIRNAME,
+            )
+        )
         for configured_dir in self._normalize_skills_dir_config(cfg.get("skills")):
             candidate = Path(configured_dir)
             readonly_dirs.append(
@@ -3670,12 +3742,22 @@ class AgentManager:
         row_description: str | None,
     ) -> dict[str, Any]:
         """Guidance cards (and fallback description) from workspace ``manifest.json``."""
+        from octop.infra.agents.workspace_dir import (  # noqa: PLC0415
+            LEGACY_SYSTEM_FILES_DIRNAME,
+            SYSTEM_FILES_DIRNAME,
+        )
+
         extra: dict[str, Any] = {}
         try:
             host = self.resolve_workspace_dir(agent_id, persist_if_missing=False)
         except Exception:
             return extra
-        for rel in (Path(".octop") / "manifest.json", Path("manifest.json")):
+        candidates = (
+            Path(SYSTEM_FILES_DIRNAME) / "manifest.json",
+            Path(LEGACY_SYSTEM_FILES_DIRNAME) / "manifest.json",
+            Path("manifest.json"),
+        )
+        for rel in candidates:
             path = host / rel
             if not path.is_file():
                 continue
@@ -3861,7 +3943,7 @@ class AgentManager:
             if workspace_dir.resolve() != self._paths.agent_workspace(row.agent_id).resolve():
                 raise OctopError(
                     ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                    "Agent workspaces must remain inside Octop's managed workspace directory.",
+                    "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
                 )
             workspace_dir.mkdir(parents=True, exist_ok=True)
         else:

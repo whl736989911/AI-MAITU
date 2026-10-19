@@ -6,7 +6,7 @@ from __future__ import annotations
 COMMANDS: dict[str, tuple[str, str, str]] = {
     "memory": (".commands.memory", "memory", "Live memory maintenance (backup and slim)."),
     "init": (".commands.init", "init", "Bootstrap an application server install."),
-    "run": (".commands.run", "run", "Run octop-server in the foreground."),
+    "run": (".commands.run", "run", "Run the MAITU Smart Manufacturing server in the foreground."),
     "service": (
         ".commands.service",
         "service",
@@ -27,14 +27,18 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
         "captcha",
         "Login captcha maintenance (lockout escape hatch).",
     ),
-    "version": (".commands.version", "version", "Show the installed octop version."),
+    "version": (
+        ".commands.version",
+        "version",
+        "Show the installed MAITU Smart Manufacturing version.",
+    ),
     "completion": (".commands.completion", "completion", "Shell completion utilities."),
     "update": (
         ".commands.update",
         "update",
         "Check for and install a newer application release.",
     ),
-    "clean": (".commands.clean", "clean", "Remove CLI state or wipe all of ~/.octop."),
+    "clean": (".commands.clean", "clean", "Remove CLI state or wipe all of ~/maitu."),
     "backup": (
         ".commands.backup",
         "backup",

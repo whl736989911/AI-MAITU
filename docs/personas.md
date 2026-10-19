@@ -7,7 +7,7 @@ boot. If the user also sets a `system_prompt` on the agent row, it is
 **appended** to the persona — the persona file is the backbone, the
 user prompt is the trim.
 
-If `persona_mbti` is `NULL` or the empty string, octop falls back to
+If `persona_mbti` is `NULL` or the empty string, maitu falls back to
 the built-in `_DEFAULT_SOUL_TEMPLATE` (warm, direct, competent tone).
 
 ## Where the 16 codes live
@@ -111,7 +111,7 @@ curl -X PUT http://127.0.0.1:8088/api/agents/architect/mbti \
   -d '{ "code": "INTJ" }'
 ```
 
-The CLI exposes the same path via `octop agent create --persona-mbti INTJ`.
+The CLI exposes the same path via `maitu agent create --persona-mbti INTJ`.
 
 ## Customising
 

@@ -1,7 +1,7 @@
 """Per-caller overlay text: what one user keeps saying about one feature.
 
 A feature's own workflow is its author's, declared once for everybody, and it lives
-with the feature (``.octop/workflow.json`` in its agent's workspace). This is the
+with the feature (``.maitu/workflow.json`` in its agent's workspace). This is the
 other side of that arrangement: text a *caller* writes for themselves — by hand, or
 summarised for them out of their own runs — which is injected above the definition
 on their runs and on nobody else's.

@@ -4,7 +4,7 @@
         "items": [
             {
                 "type": "tips",
-                "helpText": "当前管理员账号：<b><octop-current-username></b><br>当前管理员密码：<b><octop-current-password></b><br><br>修改密码后设置窗口会显示新密码，数据目录下的 octop-login.txt 备份也会同步更新；Web 控制台需使用新密码重新登录。"
+                "helpText": "当前管理员账号：<b><octop-current-username></b><br>当前管理员密码：<b><octop-current-password></b><br><br>修改密码后设置窗口会显示新密码，数据目录下的 maitu-login.txt 备份也会同步更新；Web 控制台需使用新密码重新登录。"
             },
             {
                 "type": "radio",

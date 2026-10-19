@@ -1,4 +1,4 @@
-"""octop provider commands."""
+"""maitu provider commands."""
 
 from __future__ import annotations
 

@@ -1,9 +1,9 @@
 # AI-MAITU · 麦途智造
 
 A self-hosted enterprise AI workspace for manufacturing teams.
-Built on [Octop](https://github.com/TencentCloud/Octop) — a multi-user, multi-agent AI assistant — and extended into a governed business-capability platform.
+Built on [麦途智造](https://github.com/TencentCloud/麦途智造) — a multi-user, multi-agent AI assistant — and extended into a governed business-capability platform.
 
-> **This is a fork.** We rebranded the product and added the enterprise modules described below. The upstream project, its design, and its engineering are the work of the Octop authors; see [License & attribution](#license--attribution).
+> **This is a fork.** We rebranded the product and added the enterprise modules described below. The upstream project, its design, and its engineering are the work of the 麦途智造 authors; see [License & attribution](#license--attribution).
 
 ---
 
@@ -18,7 +18,7 @@ Employees open a workspace of **business capabilities** — "draft a quotation",
 
 Built for manufacturers: the capabilities are process-heavy (multi-step, human-gated, document-producing), and the output feeds engineers, workshops, and machines.
 
-## What we added on top of Octop
+## What we added on top of 麦途智造
 
 | Module | What it does |
 |---|---|
@@ -64,17 +64,17 @@ uv sync --inexact --no-dev --extra office --extra knowledge-ocr
 cd dashboard && npm ci && npm run build && cd ..
 
 # Run
-uv run --no-sync octop run --port 8088
+uv run --no-sync maitu run --port 8088
 ```
 
-The first boot prints a one-time setup password and a path to `octop-login.txt`. Open `http://127.0.0.1:8088`, paste the password, and the wizard will:
+The first boot prints a one-time setup password and a path to `maitu-login.txt`. Open `http://127.0.0.1:8088`, paste the password, and the wizard will:
 1. choose a database backend (SQLite or PostgreSQL),
 2. create the first administrator,
 3. optionally configure a model provider.
 
 For local embedding models, add `--extra local-embedding` to the sync command, then download a model from the admin UI. Desktop control is optional (`--extra desktop`) and requires a compatible graphical session; omitting it currently does not remove the transitive evdev build prerequisite.
 
-Always keep `--inexact` when synchronizing an existing deployment so previously installed optional packages are not pruned; repeat selected extras to update their dependencies. Release ZIP installations have no `.git`: follow the [native ZIP upgrade, dependency health checks, and no-make commands](scripts/README.md#原生-release-zip-升级不需要-git). That path retains the original environment and `OCTOP_HOME`, prepares new source without overwriting old source, and requires manual service cutover. Do not regenerate config or license identity during upgrades.
+Always keep `--inexact` when synchronizing an existing deployment so previously installed optional packages are not pruned; repeat selected extras to update their dependencies. Release ZIP installations have no `.git`: follow the [native ZIP upgrade, dependency health checks, and no-make commands](scripts/README.md#原生-release-zip-升级不需要-git). That path retains the original environment and `MAITU_HOME`, prepares new source without overwriting old source, and requires manual service cutover. Do not regenerate config or license identity during upgrades.
 
 ### Native sandbox on Ubuntu (source installs)
 
@@ -132,8 +132,8 @@ make precommit      # format, lint, typecheck, affected tests (BE + FE)
 
 ## Configuration
 
-Data lives under `OCTOP_HOME` (default `~/.octop`): database, agent workspaces, logs, plugins, embedding models.
-Set `OCTOP_HOME` before starting the server to run multiple instances side by side.
+Data lives under `MAITU_HOME` (default `~/.maitu`; legacy `MAITU_HOME` is still honoured): database, agent workspaces, logs, plugins, embedding models.
+Set `MAITU_HOME` before starting the server to run multiple instances side by side.
 
 The brand is configured in `brand.config.json` and applied with:
 
@@ -152,12 +152,12 @@ the public login page.
 
 ### Upstream
 
-This is a fork of **[TencentCloud/Octop](https://github.com/TencentCloud/Octop)**, also MIT licensed.
+This is a fork of **[TencentCloud/麦途智造](https://github.com/TencentCloud/麦途智造)**, also MIT licensed.
 
 The MIT License requires that the original copyright notice and permission notice be included in all copies or substantial portions of the software. **The upstream notice is preserved verbatim in [`LICENSE`](LICENSE)**:
 
 ```
-Copyright (c) 2026 Octop
+Copyright (c) 2026 麦途智造
 ```
 
 Our own modifications are recorded beneath it:
@@ -177,10 +177,10 @@ A non-exhaustive summary, so upstream and downstream are easy to tell apart:
 - added the feature catalog, permission model, sharing/governance, self-improvement loop and data-source modules
 - added database migrations `016`–`022`
 
-Everything else is upstream Octop. To pull in upstream changes, add it as a remote:
+Everything else is upstream 麦途智造. To pull in upstream changes, add it as a remote:
 
 ```bash
-git remote add upstream https://github.com/TencentCloud/Octop.git
+git remote add upstream https://github.com/TencentCloud/麦途智造.git
 git fetch upstream
 ```
 
@@ -192,4 +192,4 @@ This project bundles and depends on third-party software (Python and Node packag
 
 ## Acknowledgements
 
-The foundation of this project — the agent runtime, the tool and skill system, the gateway, the multi-channel architecture and the dashboard — is the work of the [Octop](https://github.com/TencentCloud/Octop) authors and contributors. Thank you.
+The foundation of this project — the agent runtime, the tool and skill system, the gateway, the multi-channel architecture and the dashboard — is the work of the [麦途智造](https://github.com/TencentCloud/麦途智造) authors and contributors. Thank you.

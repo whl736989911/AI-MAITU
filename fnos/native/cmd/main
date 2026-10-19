@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# Octop 本地版（原生 app）— 生命周期管理
+# 麦途智造本地版（原生 app）— 生命周期管理
 # 直接以进程方式运行在飞牛主机上（非 Docker），监听 0.0.0.0:8089。
-# start:  启动 Octop（后台，写 PID 文件）
+# start:  启动麦途智造（后台，写 PID 文件）
 # stop:   发送 SIGTERM，超时 SIGKILL
 # status: 查询进程状态
 #
@@ -13,17 +13,17 @@ APPDEST="${TRIM_APPDEST:-/var/apps/octop-native}"
 PKGVAR="${TRIM_PKGVAR:-/var/apps/octop-native/var}"
 LOG_FILE="${PKGVAR}/info.log"
 PID_FILE="${PKGVAR}/octop.pid"
-PORT="${OCTOP_PORT:-8089}"
-BIN="$APPDEST/bin/octop"
+PORT="${MAITU_PORT:-8089}"
+BIN="$APPDEST/bin/maitu"
 
 log_msg() { echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" >> "${LOG_FILE}"; }
 
 start_process() {
     if status; then return 0; fi
     mkdir -p "${PKGVAR}"
-    log_msg "Starting Octop (native) on port ${PORT} ..."
+    log_msg "Starting 麦途智造 (native) on port ${PORT} ..."
 
-    # 以最低权限用户 octop-native 运行 Octop 服务（安全：web 服务与工作台终端
+    # 以最低权限用户 octop-native 运行麦途智造服务（安全：web 服务与工作台终端
     # 不以 root 身份暴露）。若该用户不存在（个别 FnOS 版本在 run-as=root 时不
     # 创建包用户），则回退以当前身份（root）运行，保证服务一定起得来。
     # 注意：本包 run-as=root 是为了让 install_callback 能以 root 写入
@@ -32,34 +32,34 @@ start_process() {
     local -a RUN_AS=()
     if id octop-native >/dev/null 2>&1 && command -v runuser >/dev/null 2>&1; then
         RUN_AS=(runuser -u octop-native --)
-        log_msg "将以 octop-native 低权限用户运行 Octop 服务"
+        log_msg "将以 octop-native 低权限用户运行麦途智造服务"
     else
-        log_msg "octop-native 用户不可用，回退以当前身份运行 Octop 服务"
+        log_msg "octop-native 用户不可用，回退以当前身份运行麦途智造服务"
     fi
 
-    # 启动 Octop 监听所有接口（供飞牛直接通过端口访问）
-    OCTOP_PORT="$PORT" OCTOP_BIND_HOST=0.0.0.0 ${RUN_AS[@]+"${RUN_AS[@]}"} "$BIN" --host 0.0.0.0 --port "$PORT" >> "${LOG_FILE}" 2>&1 &
+    # 启动麦途智造监听所有接口（供飞牛直接通过端口访问）
+    MAITU_PORT="$PORT" MAITU_BIND_HOST=0.0.0.0 ${RUN_AS[@]+"${RUN_AS[@]}"} "$BIN" --host 0.0.0.0 --port "$PORT" >> "${LOG_FILE}" 2>&1 &
     octop_pid=$!
 
-    # 等待 Octop TCP 端口就绪（最多 30 秒）
+    # 等待麦途智造 TCP 端口就绪（最多 30 秒）
     for i in $(seq 1 30); do
         if nc -z 127.0.0.1 "$PORT" 2>/dev/null || (exec 3<>/dev/tcp/127.0.0.1/"$PORT") 2>/dev/null; then
             break
         fi
         if ! kill -0 "$octop_pid" 2>/dev/null; then
-            log_msg "Octop process exited early"
+            log_msg "麦途智造 process exited early"
             return 1
         fi
         sleep 1
     done
 
     printf "%s" "$octop_pid" > "${PID_FILE}"
-    log_msg "Octop pid=$octop_pid"
+    log_msg "麦途智造 pid=$octop_pid"
     return 0
 }
 
 stop_process() {
-    log_msg "Stopping Octop (native) ..."
+    log_msg "Stopping 麦途智造 (native) ..."
 
     if [ -r "${PID_FILE}" ]; then
         pid=$(head -n 1 "${PID_FILE}" | tr -d '[:space:]')

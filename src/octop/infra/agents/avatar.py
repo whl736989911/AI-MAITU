@@ -9,11 +9,15 @@ from typing import Any, Protocol
 
 from harness_agent.backends.utils import BackendOperationNotSupportedError
 
+from octop.infra.agents.workspace_dir import (
+    DEFAULT_SYSTEM_FILES_PATH,
+    LEGACY_SYSTEM_FILES_DIRNAME,
+)
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.media.attachment_hints import sniff_image_media_type
 
 MAX_AVATAR_BYTES = 5 * 1024 * 1024
-AVATAR_DIR = ".octop"
+AVATAR_DIR = DEFAULT_SYSTEM_FILES_PATH
 _AVATAR_NAMES: tuple[str, ...] = (
     "avatar.png",
     "avatar.jpg",
@@ -22,8 +26,13 @@ _AVATAR_NAMES: tuple[str, ...] = (
     "avatar.gif",
 )
 AVATAR_RELPATHS: tuple[str, ...] = tuple(f"{AVATAR_DIR}/{name}" for name in _AVATAR_NAMES)
+_LEGACY_SYSTEM_AVATAR_RELPATHS: tuple[str, ...] = tuple(
+    f"{LEGACY_SYSTEM_FILES_DIRNAME}/{name}" for name in _AVATAR_NAMES
+)
 LEGACY_AVATAR_RELPATHS: tuple[str, ...] = _AVATAR_NAMES
-_ALL_AVATAR_RELPATHS: tuple[str, ...] = AVATAR_RELPATHS + LEGACY_AVATAR_RELPATHS
+_ALL_AVATAR_RELPATHS: tuple[str, ...] = (
+    AVATAR_RELPATHS + _LEGACY_SYSTEM_AVATAR_RELPATHS + LEGACY_AVATAR_RELPATHS
+)
 _MEDIA_TO_RELPATH: dict[str, str] = {
     "image/png": f"{AVATAR_DIR}/avatar.png",
     "image/jpeg": f"{AVATAR_DIR}/avatar.jpg",
@@ -122,7 +131,7 @@ async def delete_workspace_avatar(workspace: WorkspaceAvatarIO) -> None:
 
 
 async def copy_workspace_avatar_to_dir(workspace: WorkspaceAvatarIO, dest: Path) -> str | None:
-    """Write the current avatar into a snapshot directory as ``.octop/avatar.*``."""
+    """Write the current avatar into a snapshot directory as ``.maitu/avatar.*``."""
     found = await read_workspace_avatar(workspace)
     if found is None:
         return None
@@ -135,7 +144,7 @@ async def copy_workspace_avatar_to_dir(workspace: WorkspaceAvatarIO, dest: Path)
 
 
 def read_snapshot_avatar(snapshot_dir: Path) -> tuple[bytes, str] | None:
-    """Load ``.octop/avatar.*`` (or legacy root ``avatar.*``) from a published snapshot."""
+    """Load ``.maitu/avatar.*`` (legacy ``.octop/`` dir or root ``avatar.*``) from a snapshot."""
     for relpath in _ALL_AVATAR_RELPATHS:
         path = snapshot_dir.joinpath(*PurePosixPath(relpath).parts)
         if not path.is_file():

@@ -12,6 +12,7 @@ from deepagents.backends.local_shell import LocalShellBackend
 from harness_agent.backends.workspace import BackendWorkspace
 
 from octop.infra.agents.feature_workflow import (
+    WORKFLOW_FILENAME,
     WORKSPACE_WORKFLOW_PATH,
     WorkflowCapabilities,
     clear_workflow,
@@ -343,7 +344,25 @@ async def test_save_and_load_roundtrip() -> None:
         loaded = await load_workflow(workspace)
         assert loaded.error is None
         assert loaded.definition == stored
-        assert (Path(ws_dir) / ".octop" / "workflow.json").is_file()
+        assert (Path(ws_dir) / ".maitu" / "workflow.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_load_reads_the_legacy_system_directory() -> None:
+    """A workspace whose layout has not been migrated still answers with its workflow."""
+    with tempfile.TemporaryDirectory() as ws_dir:
+        workspace = _workspace(ws_dir)
+        await workspace.awrite_text(
+            f".octop/{WORKFLOW_FILENAME}",
+            json.dumps(_definition()),
+            force=True,
+        )
+
+        loaded = await load_workflow(workspace)
+
+        assert loaded.error is None
+        assert loaded.definition is not None
+        assert loaded.definition["status"] == "active"
 
 
 @pytest.mark.asyncio

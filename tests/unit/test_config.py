@@ -20,7 +20,7 @@ def test_defaults_when_missing(tmp_path: Path):
     assert cfg.enable_api_docs is False
     assert cfg.require_setup_password is True
     assert cfg.database.driver == "sqlite"
-    assert cfg.database.sqlite_path == "octop.db"
+    assert cfg.database.sqlite_path == "maitu.db"
     assert cfg.database.is_sqlite
     assert cfg.database_in_file is False
     assert cfg.backup.auto_enabled is False
@@ -206,8 +206,8 @@ def test_postgresql_conninfo_from_discrete_fields(tmp_path: Path):
                     "driver": "postgresql",
                     "host": "127.0.0.1",
                     "port": 5432,
-                    "database": "octop",
-                    "user": "octop",
+                    "database": "maitu",
+                    "user": "maitu",
                     "password": "s3cret",
                 }
             }
@@ -217,7 +217,7 @@ def test_postgresql_conninfo_from_discrete_fields(tmp_path: Path):
     cfg = load_config(tmp_path / "config.json")
     info = cfg.database.postgresql_conninfo()
     assert info.startswith("postgresql://")
-    assert "octop" in info
+    assert "maitu" in info
     assert "s3cret" in info
 
 
@@ -229,8 +229,8 @@ def test_database_env_password_override(tmp_path: Path, monkeypatch: pytest.Monk
                 "database": {
                     "driver": "postgresql",
                     "host": "localhost",
-                    "database": "octop",
-                    "user": "octop",
+                    "database": "maitu",
+                    "user": "maitu",
                 }
             }
         )
@@ -260,7 +260,7 @@ def test_postgresql_missing_user_raises(tmp_path: Path):
             {
                 "driver": "postgresql",
                 "host": "localhost",
-                "database": "octop",
+                "database": "maitu",
                 "user": "",
             }
         )

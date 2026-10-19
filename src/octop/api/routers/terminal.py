@@ -424,7 +424,8 @@ async def terminal_context(
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, "no agents for user")
     assert_agent_owner(row, user, server=server)
-    # AI-facing path: persisted config value (e.g. ``/.octop/workspaces/<id>``).
+    # AI-facing path: persisted config value (e.g. ``/.maitu/workspaces/<id>`` or a
+    # legacy ``/.octop/workspaces/<id>``).
     # PTY spawn still uses the host-mapped path via resolve_agent_workspace_dir.
     cfg = server.app_runtime.agent_registry.get_config(agent_id)
     raw_ws = cfg.get("workspace_dir") if isinstance(cfg, dict) else None

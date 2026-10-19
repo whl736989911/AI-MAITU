@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -23,12 +22,12 @@ def _bootstrap() -> None:
     assert result.exit_code == 0, result.output
 
 
-def test_set_skill_enabled_persists_disabled_list(tmp_octop_home: Path) -> None:
+def test_set_skill_enabled_persists_disabled_list() -> None:
     from octop.cli.support.db import open_cli_services
     from octop.cli.support.skills import set_skill_enabled
 
     _bootstrap()
-    with open_cli_services(home=tmp_octop_home) as svc:
+    with open_cli_services() as svc:
         uid = UserRepo(svc.db).get_by_username("alice")
         assert uid is not None
         AgentRepo(svc.db).create(
@@ -40,7 +39,7 @@ def test_set_skill_enabled_persists_disabled_list(tmp_octop_home: Path) -> None:
 
     set_skill_enabled("ag1", "pdf", enabled=True)
 
-    with open_cli_services(home=tmp_octop_home) as svc:
+    with open_cli_services() as svc:
         row = svc.agent_repo.get("ag1")
         assert row is not None
         cfg = json.loads(row.config_json or "{}")

@@ -36,6 +36,7 @@ import {
   type OidcConfigPut,
 } from "../../../api/modules/sso";
 import { apiErrorMessage } from "../../../utils/apiError";
+import { BRAND } from "../../../brand.generated";
 import { copyText } from "../../../utils/copyText";
 import styles from "./index.module.less";
 
@@ -638,7 +639,9 @@ export default function SsoPanel() {
                             },
                           ]}
                         >
-                          <Input placeholder="https://octop.example.com" />
+                          <Input
+                            placeholder={`https://${BRAND.id}.example.com`}
+                          />
                         </Form.Item>
                       ),
                     },

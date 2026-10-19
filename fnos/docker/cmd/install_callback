@@ -1,12 +1,12 @@
 #!/bin/bash
 #
-# Octop — 安装后回调
+# 麦途智造 — 安装后回调
 #
-# 密码策略（修复 issue #502：旧版写死 Octop123 被应用弱密码黑名单拒绝，
+# 密码策略（修复 issue #502：旧版写死麦途智造123 被应用弱密码黑名单拒绝，
 # 容器首次 init 报 "password is too common" 退出、反复重启）：
 # 安装向导提供「自己输入密码 / 自动生成随机密码」两种方式，此处预校验
 # 自定义密码，随机密码本地生成，统一写入 docker/.env 供容器首次 init 使用；
-# 并把凭据回落保存到数据共享目录 octop-login.txt（容器内 credential.txt 之外
+# 并把凭据回落保存到数据共享目录 maitu-login.txt（容器内 credential.txt 之外
 # 的宿主机侧备份），渲染应用「设置」窗口的当前密码显示。
 #
 set -euo pipefail
@@ -19,7 +19,7 @@ _OCTOP_COMMON="$(dirname "$0")/common.sh"
 [ -f "$_OCTOP_COMMON" ] || _OCTOP_COMMON="/var/apps/octop/cmd/common.sh"
 [ -f "$_OCTOP_COMMON" ] && source "$_OCTOP_COMMON"
 
-# 释放 Octop 端口（8088=Docker 版，8089=本地版），杀掉残留/孤儿进程，避免重装端口冲突。
+# 释放麦途智造端口（8088=Docker 版，8089=本地版），杀掉残留/孤儿进程，避免重装端口冲突。
 free_octop_ports
 
 ENV_FILE="${TRIM_APPDEST:-/var/apps/octop/target}/docker/.env"
@@ -31,8 +31,8 @@ DATA_DIR="/var/apps/octop/share/octop/data"
 mkdir -p "$DATA_DIR"
 
 fail_install() {
-    echo "[octop] $1" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
-    echo "[octop] $1" >&2 || true
+    echo "[maitu] $1" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+    echo "[maitu] $1" >&2 || true
     exit 1
 }
 
@@ -75,21 +75,21 @@ case "$PASSWORD_MODE" in
 esac
 
 {
-    echo "OCTOP_PORT=8088"
-    echo "OCTOP_BIND_HOST=0.0.0.0"
-    echo "OCTOP_LOG_LEVEL=${LOG_LEVEL}"
-    echo "OCTOP_ADMIN_USERNAME=${ADMIN_USER}"
-    echo "OCTOP_DEFAULT_PASSWORD=${ADMIN_PASS}"
-    echo "OCTOP_ADMIN_DISPLAY_NAME=Admin"
+    echo "MAITU_PORT=8088"
+    echo "MAITU_BIND_HOST=0.0.0.0"
+    echo "MAITU_LOG_LEVEL=${LOG_LEVEL}"
+    echo "MAITU_ADMIN_USERNAME=${ADMIN_USER}"
+    echo "MAITU_DEFAULT_PASSWORD=${ADMIN_PASS}"
+    echo "MAITU_ADMIN_DISPLAY_NAME=Admin"
     echo "OPENAI_API_KEY=${OPENAI}"
     echo "DASHSCOPE_API_KEY=${DASHSCOPE}"
 } > "$ENV_FILE"
 
 chmod 600 "$ENV_FILE"
-echo "[octop] 已写入配置: $ENV_FILE" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null || true
+echo "[maitu] 已写入配置: $ENV_FILE" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
-# 凭据回落保存（octop-login.txt）+ 「设置」窗口当前密码显示渲染
+# 凭据回落保存（maitu-login.txt）+ 「设置」窗口当前密码显示渲染
 # ---------------------------------------------------------------------------
 octop_write_login_file "$DATA_DIR" "$ADMIN_USER" "$ADMIN_PASS" 8088
 

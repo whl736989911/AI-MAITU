@@ -16,17 +16,31 @@ from octop.infra.backup.auto import (
     to_auto_backup_filename,
 )
 from octop.infra.errors import OctopError
+from octop.infra.utils.legacy_names import (
+    LEGACY_AUTO_BACKUP_PREFIX,
+    LEGACY_MANUAL_BACKUP_PREFIX,
+)
 
 
 def test_to_auto_backup_filename() -> None:
     assert (
-        to_auto_backup_filename("octop-backup-20260101T000000Z.tar.gz")
-        == "octop-auto-backup-20260101T000000Z.tar.gz"
+        to_auto_backup_filename("maitu-backup-20260101T000000Z.tar.gz")
+        == "maitu-auto-backup-20260101T000000Z.tar.gz"
     )
     assert (
-        to_auto_backup_filename("octop-auto-backup-20260101T000000Z.tar.gz")
-        == "octop-auto-backup-20260101T000000Z.tar.gz"
+        to_auto_backup_filename("maitu-auto-backup-20260101T000000Z.tar.gz")
+        == "maitu-auto-backup-20260101T000000Z.tar.gz"
     )
+
+
+def test_to_auto_backup_filename_accepts_legacy_manual_prefix() -> None:
+    legacy = f"{LEGACY_MANUAL_BACKUP_PREFIX}20260101T000000Z.tar.gz"
+    assert to_auto_backup_filename(legacy) == "maitu-auto-backup-20260101T000000Z.tar.gz"
+
+
+def test_to_auto_backup_filename_keeps_legacy_auto_name() -> None:
+    legacy = f"{LEGACY_AUTO_BACKUP_PREFIX}20260101T000000Z.tar.gz"
+    assert to_auto_backup_filename(legacy) == legacy
 
 
 def test_backup_config_from_payload_rejects_bad_schedule() -> None:

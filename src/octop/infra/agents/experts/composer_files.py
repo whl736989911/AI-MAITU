@@ -9,6 +9,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
+from octop.infra.agents.workspace_dir import (
+    LEGACY_SYSTEM_FILES_DIRNAME,
+    SYSTEM_FILES_DIRNAME,
+)
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.skills.skill_packages import validate_skill_slug
 
@@ -62,7 +66,12 @@ class ComposerWorkspacePatch:
 def normalize_composer_relpath(name: str, *, allow_skill_dir: bool = False) -> str:
     """Normalize a composer-editable workspace path or raise ``SLASH_BAD_ARGS``."""
     rel = name.strip().replace("\\", "/").lstrip("/")
-    if not rel or ".." in rel.split("/") or rel.startswith(".octop"):
+    system_prefixes = (SYSTEM_FILES_DIRNAME, LEGACY_SYSTEM_FILES_DIRNAME)
+    if (
+        not rel
+        or ".." in rel.split("/")
+        or any(rel == prefix or rel.startswith(f"{prefix}/") for prefix in system_prefixes)
+    ):
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, f"invalid file path {name!r}")
     parts = rel.split("/")
     if any(not part for part in parts):

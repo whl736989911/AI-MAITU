@@ -5,7 +5,7 @@ endpoints emit `text/event-stream`; chat turns use a WebSocket
 described in [Chat (WebSocket)](#chat-websocket).
 
 > **Interactive docs** (Scalar) live at `/api/docs` when
-> `enable_api_docs=true` (or `OCTOP_ENABLE_API_DOCS=1`). The schema
+> `enable_api_docs=true` (or `MAITU_ENABLE_API_DOCS=1`). The schema
 > is at `/api/openapi.json`.
 
 ## Authentication
@@ -14,10 +14,10 @@ described in [Chat (WebSocket)](#chat-websocket).
 |--------|-------|
 | `Authorization` | `Bearer <access_token>` from `POST /api/auth/login` |
 
-Tokens expire after `OCTOP_ACCESS_TOKEN_TTL` seconds (default 24 h).
-Rotating the JWT secret (`octop admin rotate-jwt-secret`) invalidates
+Tokens expire after `MAITU_ACCESS_TOKEN_TTL` seconds (default 24 h).
+Rotating the JWT secret (`maitu admin rotate-jwt-secret`) invalidates
 every outstanding token immediately. Login attempts are rate-limited
-(`OCTOP_LOGIN_MAX_ATTEMPTS` / `OCTOP_LOGIN_LOCKOUT_SECONDS`); the
+(`MAITU_LOGIN_MAX_ATTEMPTS` / `MAITU_LOGIN_LOCKOUT_SECONDS`); the
 admin can clear the lockout with `POST /api/users/{id}/unlock-login`.
 
 ### Auth column legend
@@ -52,16 +52,16 @@ rejected before siteverify.
 
 Offline recovery: delete the `captcha.settings` row via local CLI /
 `settings_repo` if a settings-sourced strong provider is unreachable. If
-the process refused to start because `OCTOP_CAPTCHA_PROVIDER` is strong
-without both keys and no readable settings blob, edit `~/.octop/env` on
+the process refused to start because `MAITU_CAPTCHA_PROVIDER` is strong
+without both keys and no readable settings blob, edit `~/.maitu/env` on
 disk — the dashboard and `PUT /api/envs` are unreachable until the
-process starts. `GET /api/envs` redacts `OCTOP_CAPTCHA_SECRET` as
+process starts. `GET /api/envs` redacts `MAITU_CAPTCHA_SECRET` as
 `********`; sending that sentinel on PUT keeps the on-disk value.
 
 If you serve the dashboard behind a CSP, allow
 `challenges.cloudflare.com`; `js.hcaptcha.com`, `newassets.hcaptcha.com`,
 `api.hcaptcha.com`; `www.google.com`, `www.gstatic.com`;
-`turing.captcha.qcloud.com`, `captcha.qq.com`, `ssl.captcha.qq.com`. Octop
+`turing.captcha.qcloud.com`, `captcha.qq.com`, `ssl.captcha.qq.com`. 麦途智造
 does not set these headers itself.
 
 ## Instance licensing
@@ -247,7 +247,7 @@ because each request is a one-shot continuation.
 | `GET`    | `/settings/captcha` | `captcha` | `{active, available, providers, source, v3_min_score}`; secrets omitted |
 | `PUT`    | `/settings/captcha` | `captcha` | merge `{active?, providers?}`; empty secret keeps ciphertext; `null` removes a pair |
 | `GET`    | `/cron/settings` | user | compat alias of `/settings/timezone` |
-| `GET`    | `/agents/{aid}/cron/examples` | agent access | `{task_examples}` from workspace `.octop/manifest.json` (`{zh,en}` string arrays, display-normalized to 3 or 6); `null` if the field is absent (dashboard keeps default cards). Prefer `GET /agents/{aid}/chat/welcome` which includes the same field. |
+| `GET`    | `/agents/{aid}/cron/examples` | agent access | `{task_examples}` from workspace `.maitu/manifest.json` (`{zh,en}` string arrays, display-normalized to 3 or 6); `null` if the field is absent (dashboard keeps default cards). Prefer `GET /agents/{aid}/chat/welcome` which includes the same field. |
 | `GET`    | `/agents/{aid}/cron` | owner only | list cron rows; non-owners (including admin) get `[]` |
 | `POST`   | `/agents/{aid}/cron` | owner only | body `{name?, trigger, prompt, session_key?, fresh_thread?, enabled?, model?, task_type?}` → `201` |
 | `GET`    | `/agents/{aid}/cron/{cid}` | owner only | cron row |
@@ -343,7 +343,7 @@ Bundled experts live in `src/octop/infra/agents/experts/library/`
 ## Teams
 
 A team is a host agent (`kind = 'team'`) with a workspace roster in
-`.octop/manifest.json`. The host delegates to at least two enabled,
+`.maitu/manifest.json`. The host delegates to at least two enabled,
 accessible expert agents. Team management requires both the independent `teams`
 permission and effective `experts` permission; a teams grant is ineffective
 when experts is absent or explicitly denied. Individual team reads and writes
@@ -361,7 +361,7 @@ also require ownership (or admin).
 ## Feature workflow
 
 A feature is an agent (`kind = 'feature'`); its workflow is a document in that
-agent's workspace (`.octop/workflow.json`) declaring the input form, the fixed
+agent's workspace (`.maitu/workflow.json`) declaring the input form, the fixed
 steps, the deliverables and the soft rules its runs follow. An unpublished
 `draft` is visible to its author and administrators of that author's enterprise,
 but only the author may train it. On the first activation, ownership moves from
@@ -532,7 +532,7 @@ child graphs and incomplete bootstrap cannot bypass that approval. A parent can
 approve a copy before delegating work on it to a child task.
 
 Artifacts are caller-filtered materializations under
-`<OCTOP_HOME>/knowledge-collections/<collection_id>/<user_id>/`; database evidence
+`<MAITU_HOME>/knowledge-collections/<collection_id>/<user_id>/`; database evidence
 is canonical. Revoked or old-version sources do not reappear through cached
 Markdown. Renames preserve stable targets; same-path replacement does not
 retarget an existing collection. Knowledge backups include the derived artifacts.
@@ -595,7 +595,7 @@ for non-`/` paths.
 | `GET`    | `/connectors/oauth/callback` | public | OAuth redirect target |
 | `GET`    | `/connectors/oauth/pending/{state_id}` | user | poll the OAuth result |
 
-Custom MCP OAuth (streamable HTTP, public HTTPS URL only): Octop discovers the authorization
+Custom MCP OAuth (streamable HTTP, public HTTPS URL only): 麦途智造 discovers the authorization
 server from the MCP URL (401 / RFC 9728 protected-resource metadata), requires dynamic client
 registration (DCR), stores encrypted tokens in the custom MCP spec, and injects `Authorization:
 Bearer` when loading tools. Loopback MCP URLs do not use remote OAuth discovery.
@@ -637,7 +637,7 @@ endpoint (public, mounted directly in `api/app.py`).
 | `WS`/`POST`/`GET`/… | `/agents/{aid}/terminal` | owner | AI-assisted remote PTY |
 | `GET` | `/agents/{aid}/terminal/context` | owner | recent terminal context for the AI helper |
 | `WS`/`POST`/`GET`/… | `/browser/...` | user | harness-browser sessions, live stream, record/replay |
-| `POST` | `/browser/shutdown` | user | stop the current user's Octop-managed Chrome |
+| `POST` | `/browser/shutdown` | user | stop the current user's 麦途智造-managed Chrome |
 | `POST` | `/agents/{aid}/upload` | user | multipart upload → `{workspace}/inbound/` |
 | `POST` | `/agents/{aid}/files/access-urls` | user | refresh inbound media URLs (signed) |
 | `GET`  | `/agents/{aid}/files/{path}` | owner | read an inbound file |
@@ -685,7 +685,7 @@ Every non-2xx JSON response uses:
 ```
 
 `code` matches the `ErrorCode` enum in `octop.infra.errors`; the
-server-localized `message` is rendered by `OctopError.to_envelope`
+server-localized `message` is rendered by `麦途智造Error.to_envelope`
 with the locale from `Accept-Language` (falling back to `en`). The
 dashboard mirrors every code under `apiErrors.*` in
 `dashboard/src/locales/{en,zh}.json`.

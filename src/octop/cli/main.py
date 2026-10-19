@@ -1,4 +1,4 @@
-"""octop CLI entry point with lazy command loading."""
+"""maitu CLI entry point with lazy command loading."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _ensure_utf8_stdio(
 
     On Windows the ANSI code page is often GBK (cp936); Python then encodes
     piped/redirected stdout and stderr with it, so any non-GBK character
-    (e.g. the success checkmark printed by ``octop init``) raises
+    (e.g. the success checkmark printed by ``maitu init``) raises
     ``UnicodeEncodeError`` and kills the process after the work was already
     done. Output is re-encoded to UTF-8 (``errors="replace"`` as a last
     resort) instead.
@@ -168,8 +168,12 @@ def cli(
     agent_id: str | None,
     json_out: bool,
 ) -> None:
-    """Octop command-line interface."""
+    """MAITU command-line interface."""
     _ensure_utf8_stdio()
+    # Upgrade a pre-white-label data home before any command resolves paths.
+    from octop.infra.utils.paths import migrate_legacy_home
+
+    migrate_legacy_home()
     ctx.ensure_object(dict)
     ctx.obj["as_user"] = as_user
     ctx.obj["agent_id"] = agent_id

@@ -13,13 +13,15 @@ from typing import Any
 
 from octop.infra.backup.manifest import BackupManifest
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.utils.paths import PathLayout
+from octop.infra.utils.legacy_names import LEGACY_AUTO_BACKUP_PREFIX, LEGACY_BRAND
+from octop.infra.utils.paths import BRAND_ID, PathLayout
 
 _BACKUP_SUFFIXES = (".tar.gz", ".tgz")
 _BACKUP_CREATED_RE = re.compile(
-    r"octop-(?:auto-)?backup-(\d{8}T\d{6}Z)",
+    rf"(?:{BRAND_ID}|{LEGACY_BRAND})-(?:auto-)?backup-(\d{{8}}T\d{{6}}Z)",
 )
-_AUTO_BACKUP_PREFIX = "octop-auto-backup-"
+_AUTO_BACKUP_PREFIX = f"{BRAND_ID}-auto-backup-"
+_LEGACY_AUTO_BACKUP_PREFIX = LEGACY_AUTO_BACKUP_PREFIX
 
 
 def _iso_utc_from_timestamp(ts: float) -> str:
@@ -220,18 +222,21 @@ def delete_backup_file(paths: PathLayout, filename: str) -> None:
 
 
 def is_auto_backup_filename(name: str) -> bool:
-    """True when ``name`` is an automatic backup archive (not a manual create)."""
+    """True when ``name`` is an automatic backup archive (not a manual create).
+
+    Both the current brand prefix and the pre-white-label prefix are recognized
+    so automatic backups created before the rename keep being pruned.
+    """
     base = Path(name).name
-    return base.startswith(_AUTO_BACKUP_PREFIX) and any(
-        base.endswith(suffix) for suffix in _BACKUP_SUFFIXES
-    )
+    prefixes = (_AUTO_BACKUP_PREFIX, _LEGACY_AUTO_BACKUP_PREFIX)
+    return base.startswith(prefixes) and any(base.endswith(suffix) for suffix in _BACKUP_SUFFIXES)
 
 
 def prune_auto_backups(paths: PathLayout, *, keep: int) -> list[str]:
     """Delete oldest automatic backups beyond ``keep``; return deleted filenames.
 
-    Manual ``octop-backup-*`` archives are never removed. ``keep <= 0`` deletes
-    all automatic backups.
+    Manual backup archives (current or legacy prefix) are never removed.
+    ``keep <= 0`` deletes all automatic backups.
     """
     autos = [f for f in list_backup_files(paths) if is_auto_backup_filename(f.name)]
     # list_backup_files is newest-first by mtime; prefer created_at stamp order.

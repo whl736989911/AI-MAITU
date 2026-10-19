@@ -120,7 +120,7 @@ def _compose_status(config: dict[str, Any]) -> dict[str, Any]:
         "--no-deps",
         "-T",
         "--entrypoint",
-        "octop",
+        "maitu",
         "maitu",
         "license",
         "status",
@@ -142,7 +142,7 @@ def _run_license(config: dict[str, Any], operation: str, *, code: str | None = N
         "--no-deps",
         "-T",
         "--entrypoint",
-        "octop",
+        "maitu",
         "maitu",
         "license",
         operation,
@@ -220,16 +220,16 @@ def _data_mount(
         parsed = json.loads(result.stdout)
         service = parsed["services"]["maitu"]
         mounts = [
-            item for item in service.get("volumes", []) if item.get("target") == "/data/.octop"
+            item for item in service.get("volumes", []) if item.get("target") == "/data/.maitu"
         ]
         ports = service.get("ports", [])
     except (ValueError, TypeError, KeyError) as exc:
         raise DeploymentError(
-            "无法从原 Compose 配置确认平台服务、端口和 /data/.octop 数据挂载。"
+            "无法从原 Compose 配置确认平台服务、端口和 /data/.maitu 数据挂载。"
         ) from exc
     if len(mounts) != 1 or mounts[0].get("type") not in {"bind", "volume"}:
         raise DeploymentError(
-            "原 Compose 必须为 /data/.octop 配置且仅配置一个 bind/volume 数据挂载。"
+            "原 Compose 必须为 /data/.maitu 配置且仅配置一个 bind/volume 数据挂载。"
         )
     source = mounts[0].get("source")
     if not isinstance(source, str) or not source:
@@ -268,7 +268,7 @@ def _verify_existing_storage(config: dict[str, Any], mount: dict[str, str]) -> N
             actual = [
                 item
                 for item in json.loads(result.stdout)
-                if item.get("Destination") == "/data/.octop"
+                if item.get("Destination") == "/data/.maitu"
             ]
             if len(actual) != 1:
                 raise ValueError("missing data mount")
@@ -359,7 +359,7 @@ def _verify_runtime_mounts(
     try:
         service = json.loads(result.stdout)["services"]["maitu"]
         volumes = service.get("volumes", [])
-        data_mounts = [item for item in volumes if item.get("target") == "/data/.octop"]
+        data_mounts = [item for item in volumes if item.get("target") == "/data/.maitu"]
     except (ValueError, TypeError, KeyError) as exc:
         raise DeploymentError("无法确认最终平台 Compose 的数据挂载。") from exc
     if (
@@ -368,7 +368,7 @@ def _verify_runtime_mounts(
         or data_mounts[0].get("source") != data_mount["source"]
     ):
         raise DeploymentError(
-            "最终平台 Compose 的 /data/.octop 挂载与原部署数据不一致；拒绝切换数据或实例身份。"
+            "最终平台 Compose 的 /data/.maitu 挂载与原部署数据不一致；拒绝切换数据或实例身份。"
         )
     for target, (source, read_only) in protected_mounts.items():
         matches = [item for item in volumes if item.get("target") == target]
@@ -839,7 +839,7 @@ def deploy(config_dir: Path) -> None:
     # CLI uses a one-off container; the service process caches credential state in memory.
     # Recreate only after a successful sync/activation so it reloads signed disk state.
     if operation_ok:
-        print("Octop license CLI 已完成授权中心 HTTPS challenge、实例签名验证和凭据同步。")
+        print("MAITU license CLI 已完成授权中心 HTTPS challenge、实例签名验证和凭据同步。")
         print("正在让平台服务重新载入本地签名授权凭据。")
         compose(config, "up", "-d", "--force-recreate", "maitu")
     _health(bind_host, port)
@@ -859,7 +859,7 @@ def deploy(config_dir: Path) -> None:
         print(f"首次管理员凭据由初始化生成，请在服务器上通过安全通道读取：{credential}")
     elif mount["type"] == "volume":
         print(
-            "如首次管理员凭据由初始化生成，凭据保存在原 named volume 的 /data/.octop/credential.txt；勿将其复制到部署日志。"
+            "如首次管理员凭据由初始化生成，凭据保存在原 named volume 的 /data/.maitu/credential.txt；勿将其复制到部署日志。"
         )
 
 

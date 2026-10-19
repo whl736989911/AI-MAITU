@@ -11,6 +11,10 @@ from typing import Any
 from octop.infra.agents.kinds import KIND_AGENT, KIND_TEAM
 from octop.infra.agents.teams.jobs import TeamJobTracker
 from octop.infra.agents.tool_catalog import BUILTIN_TOOL_CATALOG
+from octop.infra.agents.workspace_dir import (
+    LEGACY_SYSTEM_FILES_DIRNAME,
+    SYSTEM_FILES_DIRNAME,
+)
 from octop.infra.db.repos.agents import AgentRow
 from octop.infra.db.services import RepoBundle
 from octop.infra.errors import ErrorCode, OctopError
@@ -20,7 +24,8 @@ TEAM_TEMPLATE_NAME = "team-host"
 TEAM_MIN_MEMBERS = 2
 TEAM_AVATAR_URL = "/experts/avatars/team-host.svg"
 TEMPLATE_DIR = Path(__file__).resolve().parent / "template"
-TEAM_MANIFEST_WORKSPACE = ".octop/manifest.json"
+TEAM_MANIFEST_WORKSPACE = f"{SYSTEM_FILES_DIRNAME}/manifest.json"
+TEAM_MANIFEST_WORKSPACE_LEGACY = f"{LEGACY_SYSTEM_FILES_DIRNAME}/manifest.json"
 
 # Hosts only dispatch and keep light memory/time — members do the work.
 HOST_TOOLS_ALLOWED: frozenset[str] = frozenset(
@@ -92,7 +97,14 @@ class TeamService:
         self, team_agent_id: str, workspace: Any | None = None
     ) -> dict[str, Any]:
         active = workspace or self._workspace(team_agent_id)
-        text = await active.aread_text(TEAM_MANIFEST_WORKSPACE)
+        text = None
+        # A team workspace created before the layout migration still keeps its
+        # roster under the old system directory; read it rather than dropping the
+        # team's membership on the floor.
+        for rel in (TEAM_MANIFEST_WORKSPACE, TEAM_MANIFEST_WORKSPACE_LEGACY):
+            text = await active.aread_text(rel)
+            if text is not None and str(text).strip():
+                break
         if text is None or not str(text).strip():
             return {}
         try:

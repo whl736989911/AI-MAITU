@@ -16,6 +16,7 @@ import { message } from "@/utils/antdMessage";
 import { Activity } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { request } from "../../../api/request";
+import { BRAND } from "../../../brand.generated";
 import {
   clearFormDraft,
   loadFormDraft,
@@ -123,7 +124,7 @@ export function StorageBackendDrawer({
           sandbox_prefix:
             typeof cfg.sandbox_prefix === "string"
               ? cfg.sandbox_prefix
-              : "octop_sandbox",
+              : `${BRAND.id}_sandbox`,
           sandbox_id: typeof cfg.sandbox_id === "string" ? cfg.sandbox_id : "",
           username: typeof cfg.username === "string" ? cfg.username : "",
         });
@@ -135,7 +136,7 @@ export function StorageBackendDrawer({
         if (kind === "docker") {
           form.setFieldValue("bucket", "python:3.12-slim");
           form.setFieldValue("sandbox_scope", "agent");
-          form.setFieldValue("sandbox_prefix", "octop_sandbox");
+          form.setFieldValue("sandbox_prefix", `${BRAND.id}_sandbox`);
         }
         if (kind === "opensandbox") {
           form.setFieldValue("bucket", "python:3.12");
@@ -196,7 +197,8 @@ export function StorageBackendDrawer({
         const scope = (values.sandbox_scope || "agent").trim() || "agent";
         cfg.sandbox_scope = scope;
         cfg.sandbox_prefix =
-          (values.sandbox_prefix || "octop_sandbox").trim() || "octop_sandbox";
+          (values.sandbox_prefix || `${BRAND.id}_sandbox`).trim() ||
+          `${BRAND.id}_sandbox`;
         if (scope === "fixed" && values.sandbox_id?.trim()) {
           cfg.sandbox_id = values.sandbox_id.trim();
         } else {
@@ -617,9 +619,9 @@ export function StorageBackendDrawer({
               name="sandbox_prefix"
               label={t("storage.sandboxPrefixLabel")}
               extra={t("storage.sandboxPrefixExtra")}
-              initialValue="octop_sandbox"
+              initialValue={`${BRAND.id}_sandbox`}
             >
-              <Input placeholder="octop_sandbox" />
+              <Input placeholder={`${BRAND.id}_sandbox`} />
             </Form.Item>
             {sandboxScope === "fixed" && (
               <Form.Item

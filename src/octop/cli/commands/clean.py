@@ -1,4 +1,4 @@
-"""`octop clean` — remove CLI state and (optionally) all Octop data."""
+"""`maitu clean` — remove CLI state and (optionally) all MAITU data."""
 
 from __future__ import annotations
 
@@ -20,7 +20,7 @@ def _all_targets() -> list[Path]:
 
 
 @click.command("clean")
-@click.option("--all", "wipe_all", is_flag=True, default=False, help="Wipe ALL of ~/.octop.")
+@click.option("--all", "wipe_all", is_flag=True, default=False, help="Wipe ALL of ~/maitu.")
 @click.option("--yes", is_flag=True, default=False, help="Skip confirmation.")
 @click.option("--dry-run", is_flag=True, default=False, help="Show targets without deleting.")
 def clean(wipe_all: bool, yes: bool, dry_run: bool) -> None:

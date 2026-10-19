@@ -5,12 +5,13 @@ one part of it that an expert has no equivalent of: a **declarative workflow** �
 the form the caller fills in, the ordered steps the run follows, the artifacts it
 hands back, and the rules that hold for every step.
 
-**Where it lives.** ``{workspace}/.octop/workflow.json``, read and written through
+**Where it lives.** ``{workspace}/.maitu/workflow.json``, read and written through
 ``HarnessAgent.workspace`` like every other workspace content file. It travels with
 the agent: publishing a feature as an expert template, installing one, backing the
 instance up and restoring it all carry the definition along, and nothing has to be
-re-created in a second store. The neighbouring ``.octop/manifest.json`` (welcome
-cards) is the same idea and the same directory.
+re-created in a second store. The neighbouring ``.maitu/manifest.json`` (welcome
+cards) is the same idea and the same directory. A workspace whose layout has not
+been migrated yet is still read from its old ``.octop/workflow.json``.
 
 **Two statuses, two strictnesses.** ``draft`` is the training state: only the shape
 of the document is checked, so a workflow can be saved half-written while its author
@@ -44,7 +45,10 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from octop.i18n import tr
-from octop.infra.agents.workspace_dir import DEFAULT_SYSTEM_FILES_PATH
+from octop.infra.agents.workspace_dir import (
+    DEFAULT_SYSTEM_FILES_PATH,
+    system_dir_relpaths,
+)
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.locale import normalize_locale
 
@@ -57,7 +61,7 @@ WORKFLOW_FILENAME = "workflow.json"
 """The definition's filename inside the workspace system directory."""
 
 WORKSPACE_WORKFLOW_PATH = f"{DEFAULT_SYSTEM_FILES_PATH}/{WORKFLOW_FILENAME}"
-"""Agent-workspace path of the definition (``.octop/workflow.json``)."""
+"""Agent-workspace path of the definition (``.maitu/workflow.json``)."""
 
 WORKFLOW_VERSION = 1
 """The only definition format version this build understands."""
@@ -525,7 +529,7 @@ class WorkflowLoad:
 
 
 async def load_workflow(workspace: BackendWorkspace) -> WorkflowLoad:
-    """Read ``.octop/workflow.json``.
+    """Read ``.maitu/workflow.json`` (legacy ``.octop/workflow.json`` until migrated).
 
     Absent is normal — a feature need not declare a workflow — and answers
     ``WorkflowLoad()``. A file that exists but cannot be read as a definition
@@ -533,13 +537,19 @@ async def load_workflow(workspace: BackendWorkspace) -> WorkflowLoad:
     (a broken definition must not take the conversation down), while the editor
     surfaces it so its author can fix it.
     """
-    text = await workspace.aread_text(WORKSPACE_WORKFLOW_PATH)
+    text: Any = None
+    read_path = WORKSPACE_WORKFLOW_PATH
+    for rel in system_dir_relpaths(WORKFLOW_FILENAME):
+        text = await workspace.aread_text(rel)
+        if text is not None and str(text).strip():
+            read_path = rel
+            break
     if text is None or not str(text).strip():
         return WorkflowLoad()
     try:
         raw = json.loads(str(text))
     except (json.JSONDecodeError, UnicodeDecodeError, TypeError, ValueError) as exc:
-        return WorkflowLoad(error=f"{WORKSPACE_WORKFLOW_PATH} is not valid JSON: {exc}")
+        return WorkflowLoad(error=f"{read_path} is not valid JSON: {exc}")
     problems = validate_workflow(raw)
     if problems:
         return WorkflowLoad(error="; ".join(problems))
@@ -572,8 +582,16 @@ async def save_workflow(workspace: BackendWorkspace, raw: Any) -> dict[str, Any]
 
 
 async def clear_workflow(workspace: BackendWorkspace) -> None:
-    """Remove the definition. A feature without one is a plain conversational agent."""
+    """Remove the definition. A feature without one is a plain conversational agent.
+
+    Both possible locations are removed: a workspace whose layout has not been
+    migrated keeps the document in the legacy system directory, and leaving that
+    behind would make an explicitly deleted workflow reappear on the next read.
+    """
     await workspace.adelete(WORKSPACE_WORKFLOW_PATH)
+    for legacy_rel in system_dir_relpaths(WORKFLOW_FILENAME)[1:]:
+        if legacy_rel != WORKSPACE_WORKFLOW_PATH and workspace.exists(legacy_rel):
+            await workspace.adelete(legacy_rel)
 
 
 @dataclass(frozen=True)
@@ -640,7 +658,7 @@ async def read_capabilities(workspace: BackendWorkspace) -> WorkflowCapabilities
     so a refusal's "available:" list is the truth about *this* feature rather than
     the catalog's — which is exactly what someone fixing a typo needs.
     """
-    skills = await _entry_names(workspace, ("skills", f"{DEFAULT_SYSTEM_FILES_PATH}/skills"))
+    skills = await _entry_names(workspace, ("skills", *system_dir_relpaths("skills")))
     subagents = await _entry_names(workspace, ("agents",), strip_suffix=".md", dirs_only=False)
     return WorkflowCapabilities(skills=frozenset(skills), subagents=frozenset(subagents))
 

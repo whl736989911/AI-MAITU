@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Octop FnOS 打包共享函数库。
+# 麦途智造 FnOS 打包共享函数库。
 # 仓库唯一来源：scripts/fnos/common.sh
 # 打包时由 scripts/build-fpk.sh 注入到包内 cmd/common.sh；
 # fnos/docker/ 与 fnos/native/ 的 cmd 脚本及 app/bin 脚本统一 source 本文件，
@@ -9,9 +9,9 @@
 set -u
 
 # ---------------------------------------------------------------------------
-# 释放 Octop 端口（8088=Docker 版，8089=本地版）并清理本应用残留进程。
-# 仅清理：(1) 占用 Octop 端口的进程；(2) 本安装目录（TRIM_APPDEST）下的
-# octop 服务进程。不使用宽泛的 `pgrep -f octop`，避免误杀其它用户/其它
+# 释放麦途智造端口（8088=Docker 版，8089=本地版）并清理本应用残留进程。
+# 仅清理：(1) 占用麦途智造端口的进程；(2) 本安装目录（TRIM_APPDEST）下的
+# maitu 服务进程。不使用宽泛的 `pgrep -f maitu`，避免误杀其它用户/其它
 # 安装路径下的同名进程。
 # ---------------------------------------------------------------------------
 free_octop_ports() {
@@ -27,7 +27,7 @@ free_octop_ports() {
         for pid in $pids; do
             [ -n "$pid" ] || continue
             if kill -TERM "$pid" 2>/dev/null; then
-                echo "[octop] 已发送 TERM 给占用 ${port} 的进程 ${pid}" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null || true
+                echo "[maitu] 已发送 TERM 给占用 ${port} 的进程 ${pid}" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null || true
             fi
         done
         sleep 1
@@ -35,17 +35,17 @@ free_octop_ports() {
             [ -n "$pid" ] || continue
             if kill -0 "$pid" 2>/dev/null; then
                 kill -KILL "$pid" 2>/dev/null || true
-                echo "[octop] 已强制 KILL 占用 ${port} 的进程 ${pid}" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null || true
+                echo "[maitu] 已强制 KILL 占用 ${port} 的进程 ${pid}" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>/dev/null || true
             fi
         done
     done
 
     # 兜底：只按本安装目录精确匹配，防止误杀其它实例。
     appdir="${TRIM_APPDEST:-/var/apps/octop-native}"
-    for pat in "$appdir/bin/octop" "$appdir/app/bin/octop"; do
+    for pat in "$appdir/bin/maitu" "$appdir/app/bin/maitu"; do
         pids="$(pgrep -f -- "$pat" 2>/dev/null | tr '\n' ' ')" || true
         [ -z "$pids" ] && continue
-        echo "[octop] 发现本应用残留服务进程（$pat）: $pids，准备清理" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+        echo "[maitu] 发现本应用残留服务进程（$pat）: $pids，准备清理" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
         for pid in $pids; do
             kill -TERM "$pid" 2>/dev/null || true
         done
@@ -53,7 +53,7 @@ free_octop_ports() {
         for pid in $pids; do
             if kill -0 "$pid" 2>/dev/null; then
                 kill -KILL "$pid" 2>/dev/null || true
-                echo "[octop] 已强制 KILL 残留服务进程 ${pid}" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+                echo "[maitu] 已强制 KILL 残留服务进程 ${pid}" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
             fi
         done
     done
@@ -69,7 +69,7 @@ fix_ownership_and_perms() {
     local pkgvar="$1" envfile="$2"
     local octop_user="octop-native"
     id "$octop_user" >/dev/null 2>&1 || {
-        echo "[octop] 警告：${octop_user} 账户不存在，跳过数据目录 chown（服务将回退以 root 运行）" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+        echo "[maitu] 警告：${octop_user} 账户不存在，跳过数据目录 chown（服务将回退以 root 运行）" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
         return 0
     }
 
@@ -100,7 +100,7 @@ fix_ownership_and_perms() {
         fi
     fi
 
-    echo "[octop] 已修正数据目录/.env 属主与权限（${octop_user}:${octop_user}）" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+    echo "[maitu] 已修正数据目录/.env 属主与权限（${octop_user}:${octop_user}）" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
 }
 
 # ---------------------------------------------------------------------------
@@ -129,7 +129,7 @@ find_python312() {
 # 管理员密码：生成 / 校验 / 凭据回落保存。
 #
 # 背景（issue #502）：src/octop/infra/users/password.py 的弱密码黑名单包含
-# "octop123"，而 FPK 旧版把初始密码写死为 Octop123，导致 octop init 在首次
+# "octop123"，而 FPK 旧版把初始密码写死为麦途智造123，导致 maitu init 在首次
 # 启动时报 "password is too common" 直接退出、应用永远起不来。这里的函数
 # 让安装向导接管密码设置：用户自定义（先本地校验，杜绝无效密码进入 init）
 # 或自动生成随机强密码，并回落保存到数据目录，保证用户不丢密码。
@@ -226,16 +226,16 @@ octop_env_set() {
     chmod 600 "$file" 2>/dev/null || true
 }
 
-# 管理员凭据回落保存（数据目录 octop-login.txt，永久保留、只随密码修改刷新）。
+# 管理员凭据回落保存（数据目录 maitu-login.txt，永久保留、只随密码修改刷新）。
 # 这是「用户不丢密码」的最后防线：设置窗口显示 + 本文件备份，双通道。
 # 调用方需保证 data_dir 已存在；文件属主交给 fix_ownership_and_perms 统一修正。
 octop_write_login_file() {
     local data_dir="$1" username="$2" password="$3" port="${4:-8089}" file
     [ -n "$data_dir" ] && [ -d "$data_dir" ] || return 0
-    file="${data_dir}/octop-login.txt"
+    file="${data_dir}/maitu-login.txt"
     cat > "$file" << EOF
 ==========================================================
- Octop 管理员登录信息（请妥善保管，勿泄露给他人）
+ 麦途智造管理员登录信息（请妥善保管，勿泄露给他人）
 ==========================================================
 访问地址：http://<飞牛IP>:${port}
 管理员账号：${username}
@@ -243,7 +243,7 @@ octop_write_login_file() {
 
 说明：
 - 本文件是管理员密码的备份副本，每次通过应用「设置」修改密码后会自动更新。
-- 也可以随时在飞牛应用中心 → Octop → 「设置」窗口中直接查看当前密码。
+- 也可以随时在飞牛应用中心 → 麦途智造 → 「设置」窗口中直接查看当前密码。
 - 建议登录后在 Web 控制台「头像菜单 → 修改密码」中更换为自己的密码。
 EOF
     chmod 600 "$file" 2>/dev/null || true

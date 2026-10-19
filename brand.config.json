@@ -32,15 +32,18 @@
   },
 
   "links": {
-    "$comment": "账户菜单里的「项目地址」。留空 = 不显示该项（企业内部部署）。",
-    "project_repo": ""
+    "$comment": "账户菜单里的「项目地址」「帮助与反馈」。help 留空 = 回退到站内 API 文档；project_repo 留空 = 不显示该项（企业内部部署）。",
+    "project_repo": "",
+    "help": ""
   },
 
   "$tokens": {
-    "$comment": "源文件里用这些占位符，apply_brand.py 负责替换。这样脚本可重复运行、可白标。%BRAND_KEY% 专用于 i18n 的 key：key 是各语言共用的标识符，一律解析为语言无关的 slug（取 short_name.en 的字母数字，如 MAITU），绝不套用按语言分的产品名。",
+    "$comment": "源文件里用这些占位符，apply_brand.py 负责替换。这样脚本可重复运行、可白标。%BRAND%/%BRAND_FULL% 是按语言的展示名；%BRAND_KEY% 是语言无关的 key slug（如 MAITU）；%BRAND_ID% 是小写 ASCII 标识（命令/目录/文件名，如 maitu）；%BRAND_ENV% 是环境变量前缀（如 MAITU）。",
     "brand": "%BRAND%",
     "full_name": "%BRAND_FULL%",
-    "key": "%BRAND_KEY%"
+    "key": "%BRAND_KEY%",
+    "id": "%BRAND_ID%",
+    "env_prefix": "%BRAND_ENV%"
   },
 
   "$exceptions": {

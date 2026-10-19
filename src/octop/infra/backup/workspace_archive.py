@@ -97,7 +97,8 @@ def _clear_local_workspace(workspace_dir: Path) -> None:
     """Clear ordinary workspace content while retaining hidden state.
 
     Older archives did not include hidden files, so replacing from one must not
-    erase local state such as ``.octop`` sessions or ``.env`` configuration.
+    erase local state such as the workspace system directory's sessions or
+    ``.env`` configuration.
     """
     if not workspace_dir.is_dir():
         return
@@ -213,7 +214,7 @@ async def import_workspace_zip(
     skipped = len(entries) - len(pairs)
     if skipped:
         warnings.append(
-            f"skipped {skipped} {OCTOP_BUILTIN_SKILLS_ROOT!r} entry/entries (owned by Octop)"
+            f"skipped {skipped} {OCTOP_BUILTIN_SKILLS_ROOT!r} entry/entries (owned by MAITU Smart Manufacturing)"
         )
 
     if pairs:

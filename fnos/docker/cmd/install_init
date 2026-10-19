@@ -1,6 +1,6 @@
 #!/bin/bash
 #
-# Octop — 安装前回调
+# 麦途智造 — 安装前回调
 # 在安装文件应用之前预校验安装向导的密码输入：无效密码在此拦截，
 # 避免装到一半才失败（错误信息经 TRIM_TEMP_LOGFILE 展示给用户）。
 #
@@ -11,8 +11,8 @@ _OCTOP_COMMON="$(dirname "$0")/common.sh"
 [ -f "$_OCTOP_COMMON" ] && source "$_OCTOP_COMMON"
 
 fail_init() {
-    echo "[octop] $1" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
-    echo "[octop] $1" >&2 || true
+    echo "[maitu] $1" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+    echo "[maitu] $1" >&2 || true
     exit 1
 }
 

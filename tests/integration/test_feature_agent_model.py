@@ -267,7 +267,7 @@ async def test_feature_training_memory_and_published_caller_memory(
     frozen_wal = await client.put(
         workspace_file,
         headers=author_auth,
-        params={"path": ".octop/memory.sqlite-wal", "from_workspace": True},
+        params={"path": ".maitu/memory.sqlite-wal", "from_workspace": True},
         json={"content": "不得改写数据库"},
     )
     assert frozen_wal.status_code == 403, frozen_wal.text

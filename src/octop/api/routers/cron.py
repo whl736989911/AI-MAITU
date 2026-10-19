@@ -103,7 +103,7 @@ async def cron_examples(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> CronExamplesResponse:
-    """Return ``task_examples`` from the agent workspace ``.octop/manifest.json``.
+    """Return ``task_examples`` from the agent workspace ``.maitu/manifest.json``.
 
     Missing field / missing manifest → ``task_examples: null`` (dashboard defaults).
     """

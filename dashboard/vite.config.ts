@@ -180,15 +180,15 @@ export default defineConfig(({ mode }) => {
         injectRegister: false,
         // Use public/manifest.json directly instead of auto-generating one.
         manifest: false,
-        // Include the offline fallback in the SW precache.
+        // Include the offline fallback and the brand assets it references in
+        // the SW precache. Asset paths follow ``brand.config.json``.
         includeAssets: [
           "offline.html",
-          "logo.svg",
-          "logo_name.png",
-          "logo_name_dark.png",
-          "pwa-192.png",
-          "pwa-512.png",
-          "apple-touch-icon.png",
+          "brand/favicon.png",
+          "brand/mark-512.png",
+          "brand/pwa-192.png",
+          "brand/pwa-512.png",
+          "brand/apple-touch-icon.png",
         ],
         workbox: {
           // Precache hashed entry + vendor chunks. Do NOT precache index.html:

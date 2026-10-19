@@ -1,4 +1,4 @@
-"""`octop init` — bootstrap a fresh Octop install (DB + first admin)."""
+"""`maitu init` — bootstrap a fresh MAITU install (DB + first admin)."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ import click
     "--force",
     is_flag=True,
     default=False,
-    help="Wipe existing ~/.octop contents before bootstrapping.",
+    help="Wipe existing ~/maitu contents before bootstrapping.",
 )
 @click.option(
     "--yes",
@@ -46,7 +46,7 @@ def init(
     force: bool,
     non_interactive: bool,
 ) -> None:
-    """Bootstrap an application server (~/.octop dir, DB migrations, first admin)."""
+    """Bootstrap an application server (~/maitu dir, DB migrations, first admin)."""
     from octop.config import load_config
     from octop.infra.agents.plugins.manager import PluginManager
     from octop.infra.db.factory import open_database
@@ -128,4 +128,6 @@ def init(
 
     click.echo(f"\u2705 {platform_name()} bootstrapped at {home}")
     click.echo(f"   admin user: {username}")
-    click.echo("   next: `octop run` (optional: `octop agent use <id>` to pin default agent)")
+    click.echo(
+        "   next: `MAITU Smart Manufacturing run` (optional: `MAITU Smart Manufacturing agent use <id>` to pin default agent)"
+    )

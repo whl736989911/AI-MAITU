@@ -2,9 +2,9 @@
 
 面向制造企业的**自托管企业 AI 工作台**。
 
-基于 **[腾讯云 Octop](https://github.com/TencentCloud/Octop)**（多用户、多 Agent 的自托管 AI 助手）改造，扩展为**有治理的业务能力平台**。
+基于 **[腾讯云麦途智造](https://github.com/TencentCloud/麦途智造)**（多用户、多 Agent 的自托管 AI 助手）改造，扩展为**有治理的业务能力平台**。
 
-> **本项目是一个派生（fork）项目。** 我们更换了品牌，并新增了下文描述的企业模块。上游项目本身、它的架构与工程质量，属于 Octop 的作者们。详见 [开源协议与署名](#开源协议与署名)。
+> **本项目是一个派生（fork）项目。** 我们更换了品牌，并新增了下文描述的企业模块。上游项目本身、它的架构与工程质量，属于麦途智造的作者们。详见 [开源协议与署名](#开源协议与署名)。
 
 ---
 
@@ -21,7 +21,7 @@
 
 **为制造业而做**：能力本身是流程密集型的（多步骤、需人工把关、产出文档），产出的东西要交给工艺员、车间和机床用。
 
-## 我们在 Octop 之上做了什么
+## 我们在麦途智造之上做了什么
 
 | 模块 | 作用 |
 |---|---|
@@ -73,10 +73,10 @@ uv sync --inexact --no-dev --extra office --extra knowledge-ocr
 cd dashboard && npm ci && npm run build && cd ..
 
 # 启动
-uv run --no-sync octop run --port 8088
+uv run --no-sync maitu run --port 8088
 ```
 
-**首次启动**会打印一次性安装密码和密码文件路径（`octop-login.txt`）。打开 `http://127.0.0.1:8088` 粘贴密码，向导会：
+**首次启动**会打印一次性安装密码和密码文件路径（`maitu-login.txt`）。打开 `http://127.0.0.1:8088` 粘贴密码，向导会：
 1. 选择数据库后端（SQLite 或 PostgreSQL）
 2. 创建第一个管理员
 3. 可选：配置模型提供商
@@ -86,7 +86,7 @@ uv run --no-sync octop run --port 8088
 
 已有部署同步始终保留 `--inexact`，避免静默卸载已装可选包；重复声明选用的 extras 才会同步更新其依赖。
 Release ZIP 没有 `.git`，不能使用 `git pull`；请按[原生 ZIP 升级、依赖检查和无 make 命令](scripts/README.md#原生-release-zip-升级不需要-git)操作。
-升级复用原环境和 `OCTOP_HOME`，新源码独立准备，手动切换服务，不重建配置或授权身份。
+升级复用原环境和 `MAITU_HOME`，新源码独立准备，手动切换服务，不重建配置或授权身份。
 
 ### Ubuntu 原生沙箱（源码安装）
 
@@ -123,8 +123,8 @@ make precommit      # 格式化、lint、类型检查、受影响测试
 
 ## 配置
 
-数据存放在 `OCTOP_HOME`（默认 `~/.octop`）：数据库、Agent 工作区、日志、插件、嵌入模型。
-启动前设置 `OCTOP_HOME` 可以并行跑多个实例。
+数据存放在 `MAITU_HOME`（默认 `~/.maitu`）：数据库、Agent 工作区、日志、插件、嵌入模型。
+启动前设置 `MAITU_HOME` 可以并行跑多个实例。
 
 品牌配置在 `brand.config.json`，应用方式：
 
@@ -138,13 +138,13 @@ uv run python scripts/apply_brand.py
 
 ### 上游项目
 
-本项目派生自 **[TencentCloud/Octop](https://github.com/TencentCloud/Octop)**，该项目同样采用 MIT 协议。
+本项目派生自 **[TencentCloud/麦途智造](https://github.com/TencentCloud/麦途智造)**，该项目同样采用 MIT 协议。
 
 MIT 协议要求：**原始版权声明与许可声明必须包含在本软件的所有副本和实质性部分中**。
 **上游声明已在 [`LICENSE`](LICENSE) 中原样保留**：
 
 ```
-Copyright (c) 2026 Octop
+Copyright (c) 2026 麦途智造
 ```
 
 我们的修改记录在其下方：
@@ -164,10 +164,10 @@ Copyright (c) 2026 Suzhou Maitou — modifications in this fork
 - 新增：功能目录、权限模型、共享治理、自我改进闭环、数据源模块
 - 新增数据库迁移 `016`–`022`
 
-**其余部分均为上游 Octop 的成果。** 如需同步上游更新，可添加上游仓库：
+**其余部分均为上游麦途智造的成果。** 如需同步上游更新，可添加上游仓库：
 
 ```bash
-git remote add upstream https://github.com/TencentCloud/Octop.git
+git remote add upstream https://github.com/TencentCloud/麦途智造.git
 git fetch upstream
 ```
 
@@ -181,4 +181,4 @@ git fetch upstream
 
 ## 致谢
 
-本项目的基石——Agent 运行时、工具与技能系统、网关、多渠道架构、以及整个仪表盘——**是 [Octop](https://github.com/TencentCloud/Octop) 作者与贡献者们的成果**。在此致谢。
+本项目的基石——Agent 运行时、工具与技能系统、网关、多渠道架构、以及整个仪表盘——**是 [麦途智造](https://github.com/TencentCloud/麦途智造) 作者与贡献者们的成果**。在此致谢。

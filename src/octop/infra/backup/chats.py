@@ -6,7 +6,10 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from octop.infra.agents.workspace_dir import DEFAULT_SYSTEM_FILES_PATH
+from octop.infra.agents.workspace_dir import (
+    DEFAULT_SYSTEM_FILES_PATH,
+    LEGACY_SYSTEM_FILES_DIRNAME,
+)
 from octop.infra.backup.snapshot import _patch_channel_metadata, _rewrite_session_key
 from octop.infra.db.pool import DatabasePool
 
@@ -38,10 +41,15 @@ def is_chat_workspace_rel(rel: Path, *, system_files_path: str = "") -> bool:
     """Return True when *rel* is session logs / checkpoints / offloaded history.
 
     When *system_files_path* is empty, skip both workspace-root chat dirs
-    (legacy layout) and ``.octop/`` (current default).
+    (legacy layout) and the current system directory. The previous system
+    directory is always checked too: an unmigrated workspace still keeps its
+    sessions there, and a backup that promised to skip chats must not pack them.
     """
+    primary = system_files_path.strip()
     prefixes = (
-        (system_files_path,) if system_files_path.strip() else ("", DEFAULT_SYSTEM_FILES_PATH)
+        (primary, LEGACY_SYSTEM_FILES_DIRNAME)
+        if primary
+        else ("", DEFAULT_SYSTEM_FILES_PATH, LEGACY_SYSTEM_FILES_DIRNAME)
     )
     return any(_matches_chat_under_prefix(rel, prefix) for prefix in prefixes)
 

@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# Octop 本地版 — 重新配置回调（应用「设置」窗口提交后执行）
+# 麦途智造本地版 — 重新配置回调（应用「设置」窗口提交后执行）
 #
 # 功能：
 #   - 管理员密码三选一：保持不变（keep）/ 自动生成新的随机密码（random）/
 #     自己设置新密码（custom，先按应用侧策略校验）；
-#   - 修改密码时同步：PKGVAR/.env、数据目录 octop-login.txt 回落备份、
+#   - 修改密码时同步：PKGVAR/.env、数据目录 maitu-login.txt 回落备份、
 #     「设置」窗口的当前密码显示，并对已初始化的实例调用官方 CLI
-#     `octop user passwd` 离线改密（服务先停后启，避免与在线服务写库冲突）；
+#     `maitu user passwd` 离线改密（服务先停后启，避免与在线服务写库冲突）；
 #   - API Key / 日志级别可选更新，重启后生效。
 #
 set -euo pipefail
@@ -29,9 +29,9 @@ fi
 mkdir -p "$DATA_DIR"
 
 # 现有配置（.env 不存在时给安全默认值，正常情况下 install_callback 已写入）
-CUR_USER="$(octop_env_get "$ENV_FILE" OCTOP_ADMIN_USERNAME)"
-CUR_PASS="$(octop_env_get "$ENV_FILE" OCTOP_DEFAULT_PASSWORD)"
-CUR_LOG="$(octop_env_get "$ENV_FILE" OCTOP_LOG_LEVEL)"
+CUR_USER="$(octop_env_get "$ENV_FILE" MAITU_ADMIN_USERNAME)"
+CUR_PASS="$(octop_env_get "$ENV_FILE" MAITU_DEFAULT_PASSWORD)"
+CUR_LOG="$(octop_env_get "$ENV_FILE" MAITU_LOG_LEVEL)"
 CUR_OPENAI="$(octop_env_get "$ENV_FILE" OPENAI_API_KEY)"
 CUR_DASH="$(octop_env_get "$ENV_FILE" DASHSCOPE_API_KEY)"
 [ -n "$CUR_USER" ] || CUR_USER="admin"
@@ -95,15 +95,15 @@ DASHSCOPE="$CUR_DASH"
 # 已初始化的实例：停服 → 官方 CLI 离线改密 → 启服
 # （未初始化的实例没有数据库，首次启动 init 会直接使用 .env 里的密码）
 # ---------------------------------------------------------------------------
-OCTOP_HOME="${DATA_DIR}/.octop"
+MAITU_HOME="${DATA_DIR}/.maitu"
 MAIN="$APPDEST/cmd/main"
-if [ "$PASS_CHANGED" = "1" ] && [ -f "$OCTOP_HOME/octop.db" ]; then
+if [ "$PASS_CHANGED" = "1" ] && [ -f "$MAITU_HOME/maitu.db" ]; then
     echo "[octop-native] 检测到已初始化实例，先停止服务再离线修改管理员密码 ..." > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
     [ -x "$MAIN" ] && "$MAIN" stop >/dev/null 2>&1 || true
-    if "$APPDEST/bin/octop-cli" user passwd "$ADMIN_USER" --password "$ADMIN_PASS" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1; then
-        echo "[octop-native] 已通过官方 CLI（octop user passwd）修改管理员密码" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+    if "$APPDEST/bin/maitu-cli" user passwd "$ADMIN_USER" --password "$ADMIN_PASS" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1; then
+        echo "[octop-native] 已通过官方 CLI（maitu user passwd）修改管理员密码" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
     else
-        echo "[octop-native] 警告：离线改密未成功（octop user passwd 执行失败），将仅更新 .env；首次重启 init / 重新安装时生效。" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
+        echo "[octop-native] 警告：离线改密未成功（maitu user passwd 执行失败），将仅更新 .env；首次重启 init / 重新安装时生效。" > "${TRIM_TEMP_LOGFILE:-/dev/null}" 2>&1 || true
     fi
     [ -x "$MAIN" ] && "$MAIN" start >/dev/null 2>&1 || true
 fi
@@ -111,12 +111,12 @@ fi
 # ---------------------------------------------------------------------------
 # 写回 .env（逐键更新，保留未知键）
 # ---------------------------------------------------------------------------
-octop_env_set "$ENV_FILE" OCTOP_PORT "8089"
-octop_env_set "$ENV_FILE" OCTOP_BIND_HOST "0.0.0.0"
-octop_env_set "$ENV_FILE" OCTOP_LOG_LEVEL "$LOG_LEVEL"
-octop_env_set "$ENV_FILE" OCTOP_ADMIN_USERNAME "$ADMIN_USER"
-octop_env_set "$ENV_FILE" OCTOP_DEFAULT_PASSWORD "$ADMIN_PASS"
-octop_env_set "$ENV_FILE" OCTOP_ADMIN_DISPLAY_NAME "Admin"
+octop_env_set "$ENV_FILE" MAITU_PORT "8089"
+octop_env_set "$ENV_FILE" MAITU_BIND_HOST "0.0.0.0"
+octop_env_set "$ENV_FILE" MAITU_LOG_LEVEL "$LOG_LEVEL"
+octop_env_set "$ENV_FILE" MAITU_ADMIN_USERNAME "$ADMIN_USER"
+octop_env_set "$ENV_FILE" MAITU_DEFAULT_PASSWORD "$ADMIN_PASS"
+octop_env_set "$ENV_FILE" MAITU_ADMIN_DISPLAY_NAME "Admin"
 octop_env_set "$ENV_FILE" OPENAI_API_KEY "$OPENAI"
 octop_env_set "$ENV_FILE" DASHSCOPE_API_KEY "$DASHSCOPE"
 

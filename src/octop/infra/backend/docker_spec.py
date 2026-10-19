@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SANDBOX_PREFIX = "octop_sandbox"
+DEFAULT_SANDBOX_PREFIX = "maitu_sandbox"
 
 _DOCKER_PASSTHROUGH_KEYS = (
     "allow_network",

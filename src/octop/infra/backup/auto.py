@@ -23,6 +23,8 @@ from octop.infra.backup.system_archive import create_system_backup
 from octop.infra.cron.trigger import build_trigger
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.utils.legacy_names import LEGACY_MANUAL_BACKUP_PREFIX
+from octop.infra.utils.paths import BRAND_ID
 
 if TYPE_CHECKING:
     from octop.config import DatabaseConfig
@@ -34,8 +36,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 AUTO_BACKUP_JOB_ID = "octop_auto_backup"
-_AUTO_FILENAME_PREFIX = "octop-auto-backup-"
-_MANUAL_FILENAME_PREFIX = "octop-backup-"
+_AUTO_FILENAME_PREFIX = f"{BRAND_ID}-auto-backup-"
+_MANUAL_FILENAME_PREFIX = f"{BRAND_ID}-backup-"
+_LEGACY_MANUAL_FILENAME_PREFIX = LEGACY_MANUAL_BACKUP_PREFIX
+_MANUAL_FILENAME_PREFIXES = (_MANUAL_FILENAME_PREFIX, _LEGACY_MANUAL_FILENAME_PREFIX)
 
 BackupOperation = Literal["create", "restore", "auto", "export"]
 
@@ -79,12 +83,17 @@ def raise_if_backup_busy() -> None:
 
 
 def to_auto_backup_filename(suggested: str) -> str:
-    """Map ``octop-backup-*.tar.gz`` → ``octop-auto-backup-*.tar.gz``."""
+    """Map a manual ``*-backup-*.tar.gz`` name to an automatic backup name.
+
+    Accepts both the current brand prefix and the pre-white-label prefix; the
+    result always uses the current brand.
+    """
     name = Path(suggested).name
     if is_auto_backup_filename(name):
         return name
-    if name.startswith(_MANUAL_FILENAME_PREFIX):
-        return _AUTO_FILENAME_PREFIX + name.removeprefix(_MANUAL_FILENAME_PREFIX)
+    for prefix in _MANUAL_FILENAME_PREFIXES:
+        if name.startswith(prefix):
+            return _AUTO_FILENAME_PREFIX + name.removeprefix(prefix)
     raise OctopError(ErrorCode.SLASH_BAD_ARGS, f"unexpected backup filename: {name!r}")
 
 

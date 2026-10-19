@@ -2,7 +2,7 @@
 
 An *expert* is metadata in ``manifest.json`` plus files on disk under
 ``library/<id>/``. At seed time files (including a copy of ``manifest.json``)
-are written into the agent workspace under ``.octop/manifest.json``.
+are written into the agent workspace under ``.maitu/manifest.json``.
 ``prompt_files`` in the manifest is metadata for the dashboard only — persona
 text is read from the workspace. ``task_examples`` is an optional locale-keyed
 string array shown as empty-state cards on the tasks page.
@@ -22,7 +22,10 @@ from harness_agent.backends.workspace import BackendWorkspace
 
 from octop.infra.agents.manager import AgentCreateSpec
 from octop.infra.agents.middleware.platform_identity import render_platform_identity
-from octop.infra.agents.workspace_dir import DEFAULT_SYSTEM_FILES_PATH
+from octop.infra.agents.workspace_dir import (
+    DEFAULT_SYSTEM_FILES_PATH,
+    LEGACY_SYSTEM_FILES_DIRNAME,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +33,15 @@ MANIFEST_FILENAME = "manifest.json"
 """Expert template / published-snapshot welcome metadata filename (dir root)."""
 
 WORKSPACE_MANIFEST_PATH = f"{DEFAULT_SYSTEM_FILES_PATH}/{MANIFEST_FILENAME}"
-"""Agent-workspace path for welcome metadata (under ``.octop/``)."""
+"""Agent-workspace path for welcome metadata (under ``.maitu/``)."""
 
-# Prefer system path; keep root ``manifest.json`` readable for pre-migration agents.
-_WORKSPACE_MANIFEST_READ_PATHS = (WORKSPACE_MANIFEST_PATH, MANIFEST_FILENAME)
+# Prefer the system path; keep the old system directory and root ``manifest.json``
+# readable so unmigrated / pre-migration agents still show their welcome cards.
+_WORKSPACE_MANIFEST_READ_PATHS = (
+    WORKSPACE_MANIFEST_PATH,
+    f"{LEGACY_SYSTEM_FILES_DIRNAME}/{MANIFEST_FILENAME}",
+    MANIFEST_FILENAME,
+)
 
 # Bundled illustrated portraits live in the dashboard public assets tree.
 _BUILTIN_AVATAR_URL_TEMPLATE = "/experts/avatars/{expert_id}.svg"
@@ -206,6 +214,21 @@ def _is_subagent_path(rel: str) -> bool:
     return rel.startswith("agents/") and rel.endswith(".md")
 
 
+def seed_relpath(rel: str) -> str:
+    """A snapshot/template path as the current workspace layout stores it.
+
+    Snapshots are layout-neutral (publishing strips the system prefix), but one
+    written by an older build can still carry the previous system directory.
+    Installing it lands the files under the current directory, so a fresh
+    workspace never gains a dead legacy tree.
+    """
+    normalized = rel.replace("\\", "/").lstrip("/")
+    legacy_prefix = f"{LEGACY_SYSTEM_FILES_DIRNAME}/"
+    if normalized.startswith(legacy_prefix):
+        return f"{DEFAULT_SYSTEM_FILES_PATH}/{normalized[len(legacy_prefix) :]}"
+    return normalized
+
+
 def _is_prompt_md_path(rel: str) -> bool:
     """Workspace-root persona markdown listed in ``prompt_files``."""
     return "/" not in rel and rel.endswith(".md")
@@ -263,7 +286,7 @@ async def seed_expert_directory(
         contents = fpath.read_bytes()
         if bundled and fpath.suffix.lower() in {".md", ".json"}:
             contents = _render_bundled_contents(fpath, contents)
-        pairs.append((rel.lstrip("/"), contents))
+        pairs.append((seed_relpath(rel), contents))
     manifest_path = expert_dir / MANIFEST_FILENAME
     if manifest_path.is_file():
         contents = manifest_path.read_bytes()
@@ -277,7 +300,7 @@ async def seed_expert_directory(
 
 
 async def read_workspace_manifest_text(workspace: BackendWorkspace) -> str | None:
-    """Read welcome manifest text from the agent workspace (``.octop`` then legacy root)."""
+    """Read welcome manifest text (current system dir, legacy system dir, then root)."""
     for rel in _WORKSPACE_MANIFEST_READ_PATHS:
         text = await workspace.aread_text(rel)
         if text is not None and str(text).strip():
@@ -286,7 +309,7 @@ async def read_workspace_manifest_text(workspace: BackendWorkspace) -> str | Non
 
 
 async def read_workspace_manifest_bytes(workspace: BackendWorkspace) -> bytes | None:
-    """Read welcome manifest bytes from the agent workspace (``.octop`` then legacy root)."""
+    """Read welcome manifest bytes (current system dir, legacy system dir, then root)."""
     for rel in _WORKSPACE_MANIFEST_READ_PATHS:
         raw = await workspace.adownload_bytes(rel)
         if raw is not None and raw.strip():
@@ -383,7 +406,7 @@ def default_welcome_payload(catalog: ExpertCatalog | None = None) -> dict[str, A
 async def read_workspace_manifest_data(
     workspace: BackendWorkspace,
 ) -> dict[str, Any] | None:
-    """Parse workspace ``.octop/manifest.json`` (legacy root fallback) as a dict."""
+    """Parse workspace ``.maitu/manifest.json`` (legacy dir / root fallbacks) as a dict."""
     text = await read_workspace_manifest_text(workspace)
     if text is None:
         return None
@@ -398,7 +421,7 @@ async def read_workspace_manifest_data(
 async def read_workspace_manifest_welcome(
     workspace: BackendWorkspace,
 ) -> dict[str, Any] | None:
-    """Parse workspace welcome manifest (``.octop/manifest.json``), if present and valid."""
+    """Parse workspace welcome manifest (``.maitu/manifest.json``), if present and valid."""
     data = await read_workspace_manifest_data(workspace)
     if data is None:
         return None

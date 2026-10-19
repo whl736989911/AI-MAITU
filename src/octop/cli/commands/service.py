@@ -1,4 +1,4 @@
-"""`octop service` — install and manage the application system service."""
+"""`maitu service` — install and manage the application system service."""
 
 from __future__ import annotations
 
@@ -58,17 +58,18 @@ def _resolve_scope(value: str) -> ServiceScope | None:
 
 
 def _health_failure_hint(runtime: ServiceRuntime) -> str:
-    log_path = runtime.home / "logs" / "octop.log"
+    # The log *file* name is a runtime artifact owned by PathLayout (kept for
+    # compatibility); point users at the directory instead of hardcoding it.
+    log_dir = runtime.home / "logs"
     if runtime.mode == "systemd":
         journal = (
-            "journalctl --user -u octop -n 80 --no-pager"
+            "journalctl --user -u MAITU Smart Manufacturing -n 80 --no-pager"
             if runtime.scope == "user"
-            else "journalctl -u octop -n 80 --no-pager"
+            else "journalctl -u MAITU Smart Manufacturing -n 80 --no-pager"
         )
-        return f"hint: inspect logs with `{journal}` or `tail -n 80 {log_path}`"
+        return f"hint: inspect logs with `{journal}` or under `{log_dir}`"
     return (
-        f"hint: inspect logs with `tail -n 80 {log_path}` "
-        f"or `launchctl print {launchd_domain(runtime.scope)}`"
+        f"hint: inspect logs under `{log_dir}` or `launchctl print {launchd_domain(runtime.scope)}`"
     )
 
 

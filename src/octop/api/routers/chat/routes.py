@@ -66,7 +66,7 @@ async def get_chat_welcome(
 
     Resolution order:
     1. Agent row ``welcome_message`` (instance-owned; set at create/edit).
-    2. Agent workspace ``.octop/manifest.json`` (seeded at create; quick cards + fallback copy).
+    2. Agent workspace ``.maitu/manifest.json`` (seeded at create; quick cards + fallback copy).
     3. Default quick cards (``general-assistant`` or a small built-in set).
     """
     assert_agent_access(server, agent_id, user)

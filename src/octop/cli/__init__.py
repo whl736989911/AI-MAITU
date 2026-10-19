@@ -1,1 +1,1 @@
-"""octop CLI package."""
+"""maitu CLI package."""

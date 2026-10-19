@@ -37,9 +37,11 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 CFG = json.loads((ROOT / "brand.config.json").read_text(encoding="utf-8"))
 
-TOKEN = CFG["$tokens"]["brand"]            # %BRAND%
-TOKEN_FULL = CFG["$tokens"]["full_name"]   # %BRAND_FULL%
-TOKEN_KEY = CFG["$tokens"]["key"]          # %BRAND_KEY%
+TOKEN = CFG["$tokens"]["brand"]  # %BRAND%
+TOKEN_FULL = CFG["$tokens"]["full_name"]  # %BRAND_FULL%
+TOKEN_KEY = CFG["$tokens"]["key"]  # %BRAND_KEY%
+TOKEN_ID = CFG["$tokens"]["id"]  # %BRAND_ID%
+TOKEN_ENV = CFG["$tokens"]["env_prefix"]  # %BRAND_ENV%
 KEEP = tuple(CFG["$exceptions"]["keep_literal"])
 
 # i18n keys are identifiers: every locale shares them, so a key must never carry
@@ -51,14 +53,32 @@ KEEP = tuple(CFG["$exceptions"]["keep_literal"])
 KEY_SLUG = re.sub(r"[^0-9A-Za-z]+", "", CFG["short_name"]["en"])
 if not KEY_SLUG:
     raise SystemExit("brand.config.json: short_name.en must yield an ASCII slug")
+# Lowercase identifier used for commands, directories and file names; the
+# display casing lives in name/short_name and must not leak into identifiers.
+ID_SLUG = re.sub(r"[^0-9a-z]+", "", CFG["short_name"]["en"].lower())
+ENV_PREFIX = re.sub(r"[^0-9A-Z_]+", "", CFG["short_name"]["en"].upper())
+if not ID_SLUG or not ENV_PREFIX:
+    raise SystemExit("brand.config.json: short_name.en must yield ASCII id/env names")
 
 # Remembers what the last run wrote, as token -> value maps per locale.
 MARKER = ROOT / ".brand.applied.json"
 
 # Per-locale replacements, longest token last is irrelevant — exact tokens.
+# ID/env are language-independent; they still go through the same table so a
+# brand change can detokenise the previous values before applying new ones.
 BY_LOCALE = {
-    "zh": [(TOKEN_FULL, CFG["full_name"]["zh"]), (TOKEN, CFG["name"]["zh"])],
-    "en": [(TOKEN_FULL, CFG["full_name"]["en"]), (TOKEN, CFG["name"]["en"])],
+    "zh": [
+        (TOKEN_FULL, CFG["full_name"]["zh"]),
+        (TOKEN, CFG["name"]["zh"]),
+        (TOKEN_ID, ID_SLUG),
+        (TOKEN_ENV, ENV_PREFIX),
+    ],
+    "en": [
+        (TOKEN_FULL, CFG["full_name"]["en"]),
+        (TOKEN, CFG["name"]["en"]),
+        (TOKEN_ID, ID_SLUG),
+        (TOKEN_ENV, ENV_PREFIX),
+    ],
 }
 
 TEXT_FILES = {
@@ -106,10 +126,16 @@ def load_previous() -> dict[str, dict[str, str]]:
 
 
 def _prose_tokens(previous: dict[str, str]) -> dict[str, str]:
-    """One locale's marker entry, minus the key slug — that is not prose."""
-    if TOKEN_KEY not in previous:
-        return previous
-    return {token: value for token, value in previous.items() if token != TOKEN_KEY}
+    """One locale's marker entry, minus identifier tokens — those are not prose.
+
+    The id/env values are lowercase technical identifiers: treating them as
+    prose would let a rerun rewrite ``maitu.db`` into the display name.
+    """
+    return {
+        token: value
+        for token, value in previous.items()
+        if token not in {TOKEN_KEY, TOKEN_ID, TOKEN_ENV}
+    }
 
 
 def detokenise(text: str, previous: dict[str, str]) -> str:
@@ -169,6 +195,120 @@ def brand_text(text: str, locale: str, previous: dict[str, str]) -> tuple[str, i
     text, n1 = tokenise(text)
     text, n2 = apply_locale(text, locale)
     return text, n1, n2
+
+
+# --------------------------------------------------------------------------
+# Technical identifiers that users can still see in prose, scripts and paths
+# --------------------------------------------------------------------------
+# Capital "Octop" is the display name (handled above). These are the lowercase
+# forms users encounter on disk / in a terminal: home directory, database,
+# logs, login file, backups, auth directory, CLI commands and env vars. The
+# Python package/import name and wire identifiers are intentionally left alone.
+
+TECH_PATH_TOKENS = [
+    ("~/.octop", f"~/.{TOKEN_ID}"),
+    ("$HOME/.octop", f"$HOME/.{TOKEN_ID}"),
+    (".octop-auth", f".{TOKEN_ID}-auth"),
+    ("octop-login.txt", f"{TOKEN_ID}-login.txt"),
+    ("octop-auto-backup", f"{TOKEN_ID}-auto-backup"),
+    ("octop-backup", f"{TOKEN_ID}-backup"),
+    ("octop.db", f"{TOKEN_ID}.db"),
+    ("octop.log", f"{TOKEN_ID}.log"),
+    ("octop_sandbox", f"{TOKEN_ID}_sandbox"),
+    ("octop.example.com", f"{TOKEN_ID}.example.com"),
+    (".octop", f".{TOKEN_ID}"),
+]
+
+# Lines that describe the *Python distribution* keep its real name: a doc that
+# says `pip install maitu` would be wrong while the wheel is still `octop`.
+TECH_PACKAGE_HINTS = (
+    "pip install octop",
+    "pip3 install octop",
+    "uv pip install octop",
+    "import octop",
+    "from octop",
+    "python -m octop",
+    "pypi.org/project/octop",
+    "github.com/TencentCloud/Octop",
+    "octop[",
+    "octop==",
+)
+
+# Standalone command word, not part of `octop.infra`, `/octop/`, `X-Octop-*`.
+OCTOP_COMMAND_RE = re.compile(r"(?<![A-Za-z0-9_./\\-])octop(?![A-Za-z0-9_/.-])")
+OCTOP_ENV_RE = re.compile(r"(?<![A-Za-z0-9_])OCTOP_")
+
+# Files whose text is user/operator visible but which apply_brand previously
+# did not touch. Package/import lines inside them stay untouched.
+EXTRA_TEXT_FILES = {
+    "dashboard/public/offline.html": "zh",
+    "dashboard/vite.config.ts": "en",
+    "README.md": "en",
+    "README_CN.md": "zh",
+    "SECURITY.md": "en",
+    "CONTRIBUTING.md": "en",
+    ".env.example": "en",
+    "scripts/README.md": "en",
+    "scripts/install-maitu.sh": "en",
+    "scripts/build-fpk.sh": "zh",
+    "scripts/fnos/common.sh": "zh",
+    "fnos/README.md": "zh",
+    "fnos/docker/wizard/install": "zh",
+}
+
+# Globs for user/operator-visible prose and packaging files that the first
+# white-label pass missed (docs, plugin descriptions, FnOS app-center files).
+EXTRA_TEXT_GLOBS = [
+    ("docs/*.md", "zh"),
+    ("docs/*.html", "zh"),
+    ("plugins/**/*.md", "en"),
+    ("fnos/**/*", "zh"),
+    ("scripts/*.sh", "en"),
+]
+_SKIP_BRAND_GLOBS = ("docs/superpowers/**", "docs/adr/**", "**/node_modules/**")
+
+
+def tech_tokenise_text(text: str, *, package_sensitive: bool = False) -> tuple[str, int]:
+    """Tokenise lowercase technical brand names in user/operator-visible text."""
+    n = 0
+    for old, new in TECH_PATH_TOKENS:
+        hits = text.count(old)
+        if hits:
+            text = text.replace(old, new)
+            n += hits
+    # A value that names the Python distribution (`octop[browser]`, `pip install
+    # octop`, an import path) keeps the distribution name; only path tokens are
+    # safe there.
+    if package_sensitive and any(hint in text for hint in TECH_PACKAGE_HINTS):
+        return text, n
+    out_lines: list[str] = []
+    for line in text.splitlines(keepends=True):
+        if any(hint in line for hint in TECH_PACKAGE_HINTS):
+            out_lines.append(line)
+            continue
+        line, c1 = OCTOP_COMMAND_RE.subn(TOKEN_ID, line)
+        line, c2 = OCTOP_ENV_RE.subn(f"{TOKEN_ENV}_", line)
+        n += c1 + c2
+        out_lines.append(line)
+    return "".join(out_lines), n
+
+
+def brand_value(text: str, locale: str, prev: dict[str, str]) -> tuple[str, int, int, int]:
+    """Brand one i18n value: display name plus lowercase paths/commands."""
+    text = detokenise(text, _prose_tokens(prev))
+    text, n1 = tokenise(text)
+    text, n2 = tech_tokenise_text(text, package_sensitive=True)
+    text, n3 = apply_locale(text, locale)
+    return text, n1, n2, n3
+
+
+def tokenise_text_file(text: str, locale: str, prev: dict[str, str]) -> tuple[str, int, int, int]:
+    """Brand one non-JSON text file (docs/scripts/offline page)."""
+    text = detokenise(text, _prose_tokens(prev))
+    text, n1 = tokenise(text)
+    text, n2 = tech_tokenise_text(text)
+    text, n3 = apply_locale(text, locale)
+    return text, n1, n2, n3
 
 
 # --------------------------------------------------------------------------
@@ -253,7 +393,7 @@ def brand_key(key: str, brand_values: list[str]) -> tuple[str, int]:
     for value in brand_values:  # longest first, prefixes lose
         n += key.count(value)
         key = key.replace(value, KEY_SLUG)
-    for token in (TOKEN_FULL, TOKEN_KEY, TOKEN):
+    for token in (TOKEN_FULL, TOKEN_KEY, TOKEN_ID, TOKEN_ENV, TOKEN):
         n += key.count(token)
         key = key.replace(token, KEY_SLUG)
     return key, n
@@ -284,9 +424,9 @@ def brand_json(
             new, n = brand_key(current, brand_values)
             keys += n
         else:
-            new, n1, n2 = brand_text(current, locale, previous)
-            tokenised += n1
-            applied += n2
+            new, n1, n2, n3 = brand_value(current, locale, previous)
+            tokenised += n1 + n2
+            applied += n3
         if new != current:
             edits.append((start, end, json.dumps(new, ensure_ascii=False)))
 
@@ -328,23 +468,28 @@ def _docstring_nodes(tree: ast.AST) -> set[ast.AST]:
         if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
             continue
         holder = parents.get(node)
-        if isinstance(holder, ast.Expr) and holder.value is node:
-            if isinstance(parents.get(holder), _DEF_NODES):
-                found.add(node)
+        if (
+            isinstance(holder, ast.Expr)
+            and holder.value is node
+            and isinstance(parents.get(holder), _DEF_NODES)
+        ):
+            found.add(node)
     return found
 
 
 def _candidate_values(prev: dict[str, dict[str, str]]) -> list[str]:
     """Previously applied brand strings, longest first so prefixes lose.
 
-    The key slug is not one of them: it belongs to identifiers, and reverting it
-    inside a Python literal would brand code-ish strings that only look like it.
+    The key/id/env tokens are not prose: they belong to identifiers, and
+    reverting them inside a Python literal would rewrite code-ish strings such
+    as ``"maitu.db"`` as a product name. Only display names are reverted here.
     """
+    skip = {TOKEN_KEY, TOKEN_ID, TOKEN_ENV}
     seen = {
         value
         for per_locale in prev.values()
         for token, value in per_locale.items()
-        if value and token != TOKEN_KEY
+        if value and token not in skip
     }
     return sorted(seen, key=len, reverse=True)
 
@@ -463,6 +608,48 @@ def main() -> int:
         total_tokenised += n1
         total_applied += n2
 
+    # ---- docs / scripts / offline page / installer text ------------------
+    for rel, locale in EXTRA_TEXT_FILES.items():
+        fp = ROOT / rel
+        if not fp.is_file():
+            continue
+        before = fp.read_text(encoding="utf-8")
+        text, n1, n2, n3 = tokenise_text_file(before, locale, prev.get(locale, {}))
+        if rel == "dashboard/public/offline.html":
+            text = re.sub(r'src="logo\.svg"', f'src="{lg["mark"]}"', text)
+        if text != before:
+            write(fp, text)
+            changed.append(f"{rel}  (tokenised {n1 + n2}, applied {n3})")
+            total_tokenised += n1 + n2
+            total_applied += n3
+
+    # ---- docs / plugin descriptions / FnOS packaging prose ---------------
+    processed = set(EXTRA_TEXT_FILES)
+    for pattern, locale in EXTRA_TEXT_GLOBS:
+        for fp in sorted(ROOT.glob(pattern)):
+            if not fp.is_file():
+                continue
+            rel = fp.relative_to(ROOT).as_posix()
+            if rel in processed:
+                continue
+            if fp.name.upper() in PROTECTED:
+                continue
+            if any(rel.startswith(prefix.removesuffix("/**")) for prefix in _SKIP_BRAND_GLOBS):
+                continue
+            processed.add(rel)
+            try:
+                before = fp.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if not any(marker in before for marker in ("Octop", "octop", f"{TOKEN_ENV}_")):
+                continue
+            text, n1, n2, n3 = tokenise_text_file(before, locale, prev.get(locale, {}))
+            if text != before:
+                write(fp, text)
+                changed.append(f"{rel}  (tokenised {n1 + n2}, applied {n3})")
+                total_tokenised += n1 + n2
+                total_applied += n3
+
     # ---- PWA manifest (fully derived, no history needed) -----------------
     p = ROOT / "dashboard/public/manifest.json"
     man = json.loads(p.read_text(encoding="utf-8"))
@@ -477,7 +664,12 @@ def main() -> int:
             "icons": [
                 {"src": lg["pwa_192"], "sizes": "192x192", "type": "image/png", "purpose": "any"},
                 {"src": lg["pwa_512"], "sizes": "512x512", "type": "image/png", "purpose": "any"},
-                {"src": lg["pwa_512"], "sizes": "512x512", "type": "image/png", "purpose": "maskable"},
+                {
+                    "src": lg["pwa_512"],
+                    "sizes": "512x512",
+                    "type": "image/png",
+                    "purpose": "maskable",
+                },
                 {
                     "src": lg["apple_touch_icon"],
                     "sizes": "180x180",
@@ -497,6 +689,7 @@ def main() -> int:
     ds = CFG["description"]
     col = CFG["color"]
     lnk = CFG.get("links", {}).get("project_repo", "")
+    lnk_help = CFG.get("links", {}).get("help", "")
     body = f'''// AUTO-GENERATED by scripts/apply_brand.py — do not edit by hand.
 // Source of truth: brand.config.json
 
@@ -504,6 +697,8 @@ export const BRAND = {{
   name: {{ zh: "{nm["zh"]}", en: "{nm["en"]}" }},
   fullName: {{ zh: "{fl["zh"]}", en: "{fl["en"]}" }},
   shortName: {{ zh: "{sh["zh"]}", en: "{sh["en"]}" }},
+  id: "{ID_SLUG}",
+  envPrefix: "{ENV_PREFIX}",
   description: {{ zh: "{ds["zh"]}", en: "{ds["en"]}" }},
   logo: {{
     mark: "{lg["mark"]}",
@@ -521,6 +716,8 @@ export const BRAND = {{
   links: {{
     // Empty string hides the "project URL" entry in the account menu.
     projectRepo: "{lnk}",
+    // Empty string falls back to the in-app API docs page.
+    help: "{lnk_help}",
   }},
 }} as const;
 
@@ -582,6 +779,8 @@ export function wordmark(isDark: boolean): string {{
                     TOKEN: CFG["name"][locale],
                     TOKEN_FULL: CFG["full_name"][locale],
                     TOKEN_KEY: KEY_SLUG,
+                    TOKEN_ID: ID_SLUG,
+                    TOKEN_ENV: ENV_PREFIX,
                 }
                 for locale in ("zh", "en")
             },

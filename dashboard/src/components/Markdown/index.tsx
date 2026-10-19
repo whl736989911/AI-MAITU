@@ -145,8 +145,10 @@ function resolveImageSrc(src: string): string {
     }
   }
 
-  // Match workspace path: ends in /.octop/workspace/<rest>
-  const workspaceMatch = filePath.match(/[/\\]\.octop[/\\]workspace[/\\](.*)/);
+  // Match workspace path: ends in /.maitu/workspace/<rest> (legacy .octop too).
+  const workspaceMatch = filePath.match(
+    /[/\\]\.(?:maitu|octop)[/\\]workspace[/\\](.*)/,
+  );
   if (workspaceMatch) {
     const relPath = workspaceMatch[1].replace(/\\/g, "/");
     return `/api/workspace/media?path=${encodeURIComponent(relPath)}`;

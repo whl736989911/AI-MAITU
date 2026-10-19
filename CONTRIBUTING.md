@@ -1,14 +1,14 @@
-# Contributing to Octop
+# Contributing to MAITU Smart Manufacturing
 
-Thank you for your interest in contributing! Octop is the control-plane application in the [Octop Harness](https://github.com/TencentCloud) ecosystem.
+Thank you for your interest in contributing! MAITU Smart Manufacturing is the control-plane application in the [MAITU Smart Manufacturing Harness](https://github.com/TencentCloud) ecosystem.
 
 ## Getting started
 
 **Prerequisites:** Python 3.12+, Node.js 18+, [uv](https://docs.astral.sh/uv/)
 
 ```bash
-git clone https://github.com/TencentCloud/Octop.git octop
-cd octop
+git clone https://github.com/TencentCloud/MAITU Smart Manufacturing.git maitu
+cd maitu
 make install          # backend dev dependencies
 make install-hooks    # once per clone: pre-commit runs make all + dashboard build
 make all              # format-all + lint + typecheck + test, backend and dashboard (ship bar)
@@ -85,15 +85,15 @@ Branch from `main` → PR into `main` (tag if shipping a patch) → PR into `dev
 
 # 贡献指南
 
-感谢你对 Octop 的关注！Octop 是 [Octop Harness](https://github.com/TencentCloud) 生态中的可自托管 AI 助手平台，支持多用户与多 Agent。
+感谢你对 MAITU Smart Manufacturing 的关注！MAITU Smart Manufacturing 是 [MAITU Smart Manufacturing Harness](https://github.com/TencentCloud) 生态中的可自托管 AI 助手平台，支持多用户与多 Agent。
 
 ## 环境搭建
 
 **前置条件：** Python 3.12+、Node.js 18+、[uv](https://docs.astral.sh/uv/)
 
 ```bash
-git clone https://github.com/TencentCloud/Octop.git octop
-cd octop
+git clone https://github.com/TencentCloud/MAITU Smart Manufacturing.git maitu
+cd maitu
 make install
 make install-hooks    # 每个 clone 执行一次：提交前跑 make all + 前端 build
 make all              # format-all + 后端 lint / typecheck / test + 前端 vitest

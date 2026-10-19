@@ -27,7 +27,7 @@ _DEFAULT_TIMEOUT = 120
 _MAX_TIMEOUT = 300
 _OUTPUT_LIMIT = 64 * 1024
 _DOCKER_TIMEOUT = 5
-_IMAGE_NATIVE = "maitu:latest"
+_IMAGE_NATIVE = "MAITU Smart Manufacturing:latest"
 
 
 def isolated_execute_enabled() -> bool:
@@ -104,7 +104,7 @@ merged = "/sandbox/root"
 os.mkdir(lower)
 os.mkdir(merged)
 for name in ("bin", "lib", "lib64", "usr", "proc", "dev", "tmp", "etc",
-             ".octop", "sessions", "conversation_history", "large_tool_results"):
+             ".maitu", ".octop", "sessions", "conversation_history", "large_tool_results"):
     os.mkdir(os.path.join(lower, name))
 for name in ("USER.md", "MEMORY.md", "memory.sqlite", "memory.sqlite-wal",
              "memory.sqlite-shm", "checkpoints.sqlite", "checkpoints.sqlite-wal",
@@ -129,7 +129,7 @@ for fd, destination in system_fds:
     argv.extend(("--ro-bind", f"/proc/self/fd/{keep_fd(fd)}", destination))
 argv.extend((
     "--size", "67108864", "--tmpfs", "/tmp",
-    "--tmpfs", "/.octop", "--tmpfs", "/sessions",
+    "--tmpfs", "/.maitu", "--tmpfs", "/.octop", "--tmpfs", "/sessions",
     "--tmpfs", "/conversation_history", "--tmpfs", "/large_tool_results",
 ))
 
@@ -166,7 +166,11 @@ if policy["feature"] and not policy["shared_writable"]:
         if name not in found:
             argv.extend(("--ro-bind-data", empty_fd(), "/" + name))
 
-private_root = os.path.realpath(os.path.join(workspace, ".octop"))
+private_roots = [os.path.realpath(os.path.join(workspace, name)) for name in (".maitu", ".octop")]
+private_root = next(
+    (root for root in private_roots if os.path.isdir(root)),
+    private_roots[0],
+)
 private_paths = {
     os.path.join(private_root, name)
     for name in ("memory.sqlite", "memory.sqlite-wal", "memory.sqlite-shm",
@@ -180,9 +184,9 @@ for relative in policy["readonly_dirs"]:
     source = os.path.realpath(os.path.join(workspace, relative))
     path_parts = os.path.normpath(relative).split(os.sep)
     is_system_state = (
-        source == private_root
+        any(source == root for root in private_roots)
         or any(source == hidden or source.startswith(hidden + os.sep) for hidden in private_paths)
-        or (path_parts and path_parts[0] == ".octop" and len(path_parts) > 1
+        or (path_parts and path_parts[0] in {".maitu", ".octop"} and len(path_parts) > 1
             and path_parts[1] not in {"skills", "auth"})
     )
     if (

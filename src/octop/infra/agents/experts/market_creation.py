@@ -244,7 +244,7 @@ async def create_agent_from_skillhub_skillset(
 
     Welcome / quick-prompt cards use the deterministic SkillHub workflow first so
     create stays fast. Optional LLM enrichment runs in the background and updates
-    only this agent's workspace ``.octop/manifest.json`` when ready.
+    only this agent's workspace ``.maitu/manifest.json`` when ready.
     """
     catalog = server.expert_catalog
     if catalog is None:

@@ -12,6 +12,7 @@ import { Database, ChevronDown, ChevronUp } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import { authApi } from "../../../api/modules/auth";
+import { BRAND } from "../../../brand.generated";
 import { wizardApi, type DatabaseSetupBody } from "../wizardClient";
 import { apiErrorMessage } from "../../../utils/apiError";
 import setupStyles from "../setup.module.less";
@@ -62,15 +63,15 @@ export default function DatabaseStep({ onContinue, onBack }: Props) {
 
   const buildSqliteBody = (values: DatabaseSetupBody): DatabaseSetupBody => ({
     driver: "sqlite",
-    sqlite_path: values.sqlite_path?.trim() || "octop.db",
+    sqlite_path: values.sqlite_path?.trim() || `${BRAND.id}.db`,
   });
 
   const buildPostgresBody = (values: DatabaseSetupBody): DatabaseSetupBody => ({
     driver: "postgresql",
     host: values.host?.trim() || "127.0.0.1",
     port: values.port ?? 5432,
-    database: values.database?.trim() || "octop",
-    user: values.user?.trim() || "octop",
+    database: values.database?.trim() || BRAND.id,
+    user: values.user?.trim() || BRAND.id,
     password: values.password || undefined,
   });
 
@@ -176,11 +177,11 @@ export default function DatabaseStep({ onContinue, onBack }: Props) {
         form={form}
         layout="vertical"
         initialValues={{
-          sqlite_path: "octop.db",
+          sqlite_path: `${BRAND.id}.db`,
           host: "127.0.0.1",
           port: 5432,
-          database: "octop",
-          user: "octop",
+          database: BRAND.id,
+          user: BRAND.id,
         }}
       >
         <Form.Item
@@ -194,7 +195,10 @@ export default function DatabaseStep({ onContinue, onBack }: Props) {
           ]}
           extra={t("wizard.database.sqlitePathHint")}
         >
-          <Input prefix={<Database size={14} />} placeholder="octop.db" />
+          <Input
+            prefix={<Database size={14} />}
+            placeholder={`${BRAND.id}.db`}
+          />
         </Form.Item>
 
         <Button

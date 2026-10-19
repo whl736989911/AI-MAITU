@@ -44,7 +44,7 @@
 - 修改名称、提示词、删除或主动整理要求目标原件写权限或知识库管理权限；普通读取可自动积累证据。
 - 文件夹权限逐级收窄，单文件明确授权仍沿用既有例外规则，不能突破库级权限。撤销后不返回此前缓存的正文。
 - 文件改名保持稳定身份；删除后在原路径创建的新文件不会自动接管旧整理集。
-- Markdown 是可重建的调用者权限过滤视图，存放于 `<OCTOP_HOME>/knowledge-collections/<collection_id>/<user_id>/`，不写入源目录。系统知识备份仍包含整理数据。
+- Markdown 是可重建的调用者权限过滤视图，存放于 `<MAITU_HOME>/knowledge-collections/<collection_id>/<user_id>/`，不写入源目录。系统知识备份仍包含整理数据。
 - 数据库迁移 `041_knowledge_prompt_collections.sql` / `041_knowledge_prompt_collections.pg.sql` 保存原件证据和专题结果，迁移旧提示词及匹配源版本的阅读记录，移除旧个人检索规则和关键词归类数据表。
 
 ## 5. 知识库页面授权
@@ -82,12 +82,12 @@ HTTP 契约见 [API 文档](api.md#source-authorized-two-document-collections)�
 
 ## 7. 本地部署记录
 
-- 2026-10-09 使用本工作区的 `uv run octop run` 启动原本地数据目录 `C:\Users\73698\.octop`；部署前未发现运行中的 Octop 实例。
-- 启动前通过 SQLite backup API 备份数据库，并复制配置至 `C:\Users\73698\.octop\backups\pre-knowledge-collections-20261009-163811`；备份完整性检查为 `ok`。
+- 2026-10-09 使用本工作区的 `uv run maitu run` 启动原本地数据目录 `C:\Users\73698\.maitu`；部署前未发现运行中的麦途智造实例。
+- 启动前通过 SQLite backup API 备份数据库，并复制配置至 `C:\Users\73698\.maitu\backups\pre-knowledge-collections-20261009-163811`；备份完整性检查为 `ok`。
 - 数据库从版本 36 迁移至 40。迁移前后用户 2、Agent 4、知识库 1、知识文档记录 481、对话线程 7，数量一致；未在原实例中创建测试整理集。
 - `http://127.0.0.1:8088/api/health` 返回 200，数据库正常、4 个 Agent 运行；原知识库列表与个人整理集列表接口均返回 200。
 - 已在实际部署页面打开“资料整理”，确认原文件和目录可供独立勾选。访问入口为 `http://127.0.0.1:8088/knowledge-bases`，使用原账号登录。
-- 服务保留在 Orca 的“Octop 本地服务 8088”终端中运行，关闭该服务终端会停止服务；未配置 Windows 开机自启，未提交或推送代码。
+- 服务保留在 Orca 的“麦途智造本地服务 8088”终端中运行，关闭该服务终端会停止服务；未配置 Windows 开机自启，未提交或推送代码。
 
 ### 资料整理树形选择界面
 
