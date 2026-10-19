@@ -10,6 +10,7 @@ from typing import Any
 
 import pytest
 from harness_gateway.models import ChannelSubject, ImageContent, InboundMessage, TextContent
+from tests.support.fakes import fake_thread_registry
 
 from octop.infra.gateway.media.tool_media import enrich_media_block_preview
 from octop.infra.gateway.ws import WS_CHANNEL_ID, WebSocketChannel, WebSocketHub
@@ -532,7 +533,7 @@ async def test_global_processor_iter_turn_chunks_registers_hitl() -> None:
     agent_manager.merge_turn_mcp_servers = MagicMock(return_value=None)
     agent_manager.prepare_chat_mcp = AsyncMock(return_value=[])
 
-    thread_registry = MagicMock()
+    thread_registry = fake_thread_registry(agent_id="agent-1", user_id=1)
     thread_registry.get_or_create_by_key = AsyncMock(return_value="thread-hitl")
 
     hitl = HitlChannelCoordinator()
@@ -597,7 +598,7 @@ async def test_global_processor_iter_turn_chunks_slash(tmp_path: Path) -> None:
         session_key="sk",
     )
     history_repo = ThreadMessageRepo(db)
-    thread_registry = MagicMock()
+    thread_registry = fake_thread_registry(agent_id="agent-1", user_id=user_id)
     thread_registry.get_or_create_by_key = AsyncMock(return_value="thread-1")
     human = HumanMessage(content="/help", id="slash:x:human")
     ai = AIMessage(content="help-text", id="slash:x:assistant")
@@ -651,6 +652,53 @@ async def test_global_processor_iter_turn_chunks_slash(tmp_path: Path) -> None:
     assert json.loads(messages[0].message_json)["data"]["content"] == "/help"
     assert json.loads(messages[1].message_json)["data"]["content"] == "help-text"
     db.close()
+
+
+@pytest.mark.asyncio
+async def test_global_processor_refuses_dashboard_turn_for_another_users_thread() -> None:
+    """Defense in depth: a crafted metadata thread_id must not run a turn."""
+    from unittest.mock import MagicMock
+
+    from octop.infra.gateway.process.processor import GlobalProcessor
+    from octop.infra.gateway.slash.dispatcher import SlashDispatcher
+
+    streamed: list[object] = []
+
+    async def _stream(*_args: object, **_kwargs: object):
+        streamed.append(True)
+        yield {"type": "token", "content": "leaked"}
+
+    agent_manager = MagicMock()
+    agent_manager.stream = _stream
+    # The thread belongs to user 2; the turn claims to be user 1.
+    thread_registry = fake_thread_registry(agent_id="agent-1", user_id=2)
+    processor = GlobalProcessor(
+        agent_manager=agent_manager,
+        thread_registry=thread_registry,
+        audit_repo=MagicMock(),
+        agent_repo=MagicMock(),
+        user_repo=MagicMock(),
+        connector_repo=MagicMock(),
+        dispatcher=SlashDispatcher(),
+        usage_repo=None,
+        gateway=None,
+    )
+    msg = InboundMessage(
+        channel_id=WS_CHANNEL_ID,
+        channel_type="dashboard",
+        tenant_id="agent-1",
+        channel_subject=ChannelSubject(subject_id="1"),
+        content=[TextContent(text="read the other thread")],
+        metadata={"session_key": "sk", "thread_id": "thread-somebody-else"},
+    )
+
+    chunks = [chunk async for chunk in processor.iter_turn_chunks(msg)]
+
+    assert chunks == [
+        {"type": "error", "message": "thread not owned by user"},
+        {"type": "done"},
+    ]
+    assert streamed == []
 
 
 @pytest.mark.asyncio

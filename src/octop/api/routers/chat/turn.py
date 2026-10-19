@@ -58,6 +58,49 @@ class PreparedDashboardTurn:
     inbound_attachments: list[dict[str, str]]
 
 
+def _assert_client_session_owned(
+    thread_registry: Any,
+    *,
+    session_key: str,
+    own_session_key: str,
+    agent_id: str,
+    user_id: int,
+) -> None:
+    """Refuse a client-supplied session key that is not this caller's own.
+
+    The dashboard has one session per (agent, user) and its key is derivable
+    from the user id (``<agent>:dashboard:<user_id>:dm``), so a client-supplied
+    key may only name that same key. Two checks, both fail closed:
+
+    * the key must be the caller's own dashboard key. Accepting any other key
+      would let a caller enter somebody else's bound thread, or let
+      ``get_or_create_by_key`` pre-create a session row under a victim's
+      predictable key (storing the attacker's user id there and locking the
+      victim out of their own dashboard session);
+    * a session row that already exists for that key must belong to this
+      caller and this agent — a row poisoned by an earlier build (or by any
+      other write path) never decides another user's thread.
+    """
+    if session_key != own_session_key:
+        raise OctopError(ErrorCode.FORBIDDEN, "session not owned by user")
+    session = thread_registry.get_session(session_key)
+    if session is not None and (session.user_id != user_id or session.agent_id != agent_id):
+        raise OctopError(ErrorCode.FORBIDDEN, "session not owned by user")
+
+
+def _assert_bound_thread_owned(
+    thread_registry: Any,
+    thread_id: str,
+    *,
+    agent_id: str,
+    user_id: int,
+) -> None:
+    """Refuse a session whose bound thread row belongs to somebody else."""
+    row = thread_registry.get_thread(thread_id)
+    if row is None or row.agent_id != agent_id or row.user_id != user_id:
+        raise OctopError(ErrorCode.FORBIDDEN, "session not owned by user")
+
+
 async def resolve_thread_id(
     *,
     agent_id: str,
@@ -66,7 +109,16 @@ async def resolve_thread_id(
     thread_id: str | None,
     session_key: str | None,
 ) -> tuple[str, str]:
-    sk = session_key or ThreadRegistry.dashboard_key(agent_id=agent_id, user_id=user_id)
+    own_session_key = ThreadRegistry.dashboard_key(agent_id=agent_id, user_id=user_id)
+    sk = session_key or own_session_key
+    if session_key is not None:
+        _assert_client_session_owned(
+            thread_registry,
+            session_key=session_key,
+            own_session_key=own_session_key,
+            agent_id=agent_id,
+            user_id=user_id,
+        )
     if thread_id:
         row = thread_registry.get_thread(thread_id)
         if row is None or row.agent_id != agent_id:
@@ -77,6 +129,7 @@ async def resolve_thread_id(
         return thread_id, sk
     bound = thread_registry.get_bound_thread_id(sk)
     if bound:
+        _assert_bound_thread_owned(thread_registry, bound, agent_id=agent_id, user_id=user_id)
         return bound, sk
     tid = await thread_registry.get_or_create_by_key(
         session_key=sk,

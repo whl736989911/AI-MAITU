@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from harness_gateway.models import ChannelSubject, InboundMessage, TextContent
+from tests.support.fakes import fake_thread_registry
 
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.process.history_projection import _wire_text
@@ -54,9 +55,11 @@ def _processor_with_stream(
         appended.append(list(inputs)) or len(inputs)
     )
 
+    thread_registry = fake_thread_registry(agent_id="agent-1", user_id=1)
+
     processor = GlobalProcessor(
         agent_manager=agent_manager,
-        thread_registry=MagicMock(),
+        thread_registry=thread_registry,
         audit_repo=MagicMock(),
         agent_repo=agent_repo,
         user_repo=MagicMock(),

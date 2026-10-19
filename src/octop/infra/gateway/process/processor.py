@@ -1002,6 +1002,18 @@ class GlobalProcessor:
                 await self._finish_history(history_tracker, completed=stream_ok and not hitl_paused)
         yield MessageEvent.completed()
 
+    def _dashboard_thread_owned(self, *, thread_id: str, agent_id: str, user_id: int) -> bool:
+        """Whether *thread_id* is a dashboard thread owned by this caller.
+
+        The WebSocket router already refuses a turn whose resolved thread
+        belongs to somebody else; this is the processor's own last-decision
+        check so a future caller of ``iter_turn_chunks`` carrying a crafted
+        ``metadata["thread_id"]`` cannot run a turn on another user's thread
+        (its checkpointer state and history).
+        """
+        row = self._thread_registry.get_thread(thread_id)
+        return row is not None and row.agent_id == agent_id and row.user_id == user_id
+
     # -- Raw harness-chunk stream (Dashboard WS, etc.) -------------------------
     # IM channels (DingTalk, Feishu, …) stream via __call__ → MessageEvent instead.
 
@@ -1039,6 +1051,24 @@ class GlobalProcessor:
         channel_type = msg.channel_type or "unknown"
         im_meta = sanitize_im_metadata(msg)
         meta = msg.metadata or {}
+
+        # Defense in depth for the dashboard thread-ownership boundary: the WS
+        # router resolves and validates this id, but every dashboard turn must
+        # still be refused here if it points at another user's thread.
+        dashboard_thread_id = meta.get("thread_id")
+        if (
+            channel_type == ThreadRegistry.CHANNEL_DASHBOARD
+            and isinstance(dashboard_thread_id, str)
+            and dashboard_thread_id.strip()
+            and not self._dashboard_thread_owned(
+                thread_id=dashboard_thread_id.strip(),
+                agent_id=agent_id,
+                user_id=user_id,
+            )
+        ):
+            yield {"type": "error", "message": "thread not owned by user"}
+            yield {"type": "done"}
+            return
 
         handled, slash_lines, slash_actions = await try_handle_slash(
             msg.text,

@@ -10,6 +10,7 @@ from langchain_core.messages import (
     message_to_dict,
     messages_from_dict,
 )
+from tests.support.fakes import fake_thread_registry
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
@@ -476,7 +477,7 @@ async def test_dashboard_processor_writes_only_new_archive(archive):
     service = TrajectoryService(ArchiveTrajectoryStore(archive), TrajectoryLiveBus())
     processor = GlobalProcessor(
         agent_manager=manager,
-        thread_registry=MagicMock(),
+        thread_registry=fake_thread_registry(agent_id="a", user_id=1),
         audit_repo=MagicMock(),
         agent_repo=MagicMock(),
         user_repo=MagicMock(),
@@ -639,7 +640,7 @@ def _dashboard_with_chunks(archive, chunks):
     manager.prepare_chat_mcp = AsyncMock(return_value=[])
     processor = GlobalProcessor(
         agent_manager=manager,
-        thread_registry=MagicMock(),
+        thread_registry=fake_thread_registry(agent_id="a", user_id=1),
         audit_repo=MagicMock(),
         agent_repo=MagicMock(),
         user_repo=MagicMock(),
@@ -748,7 +749,7 @@ async def test_dashboard_error_keeps_partial_tokens_and_error(archive):
     manager.prepare_chat_mcp = AsyncMock(return_value=[])
     processor = GlobalProcessor(
         agent_manager=manager,
-        thread_registry=MagicMock(),
+        thread_registry=fake_thread_registry(agent_id="a", user_id=1),
         audit_repo=MagicMock(),
         agent_repo=MagicMock(),
         user_repo=MagicMock(),

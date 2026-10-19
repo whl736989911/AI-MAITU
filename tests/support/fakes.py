@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 from deepagents.backends.protocol import (
     FileDownloadResponse,
@@ -21,6 +22,8 @@ from harness_agent.backends.workspace import BackendWorkspace
 from harness_gateway.channel import BaseChannel
 from harness_gateway.models import InboundMessage, MessageEvent
 
+from octop.infra.db.repos.threads import ThreadRow
+
 
 def fake_bin_path(name: str) -> str:
     """Host-agnostic fake binary path for mocks (never opened as a real file).
@@ -29,6 +32,40 @@ def fake_bin_path(name: str) -> str:
     valid on Windows CI (uses ``pathlib`` / ``os.sep``).
     """
     return str(Path("fake-bin") / name)
+
+
+def fake_thread_row(
+    *, thread_id: str, agent_id: str, user_id: int, session_key: str = "sk"
+) -> ThreadRow:
+    """Real ``ThreadRow`` shape for code paths that read thread metadata."""
+    return ThreadRow(
+        id=1,
+        thread_id=thread_id,
+        agent_id=agent_id,
+        user_id=user_id,
+        channel_type="dashboard",
+        session_key=session_key,
+        title=None,
+        last_active=0,
+        created_at=0,
+    )
+
+
+def fake_thread_registry(*, agent_id: str, user_id: int) -> MagicMock:
+    """``ThreadRegistry`` double whose threads belong to one dashboard caller.
+
+    ``GlobalProcessor.iter_turn_chunks`` checks that a dashboard turn's
+    ``thread_id`` belongs to its caller before running it; processor unit tests
+    need thread rows that satisfy that check and still carry the metadata
+    attributes the request builder reads.
+    """
+    registry = MagicMock()
+    registry.get_thread = MagicMock(
+        side_effect=lambda thread_id: fake_thread_row(
+            thread_id=str(thread_id), agent_id=agent_id, user_id=user_id
+        )
+    )
+    return registry
 
 
 class FakeHarnessAgent:

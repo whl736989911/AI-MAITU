@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from harness_gateway.models import ChannelSubject, InboundMessage, TextContent
+from tests.support.fakes import fake_thread_registry
 
 from octop.infra.gateway.process.processor import GlobalProcessor
 from octop.infra.gateway.slash.dispatcher import SlashDispatcher
@@ -64,7 +65,7 @@ def _processor(
 
     return GlobalProcessor(
         agent_manager=agent_manager,
-        thread_registry=MagicMock(),
+        thread_registry=fake_thread_registry(agent_id="agent-1", user_id=1),
         audit_repo=MagicMock(),
         agent_repo=agent_repo,
         user_repo=MagicMock(),
