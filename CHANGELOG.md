@@ -27,6 +27,11 @@
 
 ### 修复
 
+- 修复聊天 WebSocket 信任客户端 `session_key` 的越权问题：只传 `session_key` 时服务端强制校验会话与线程归属，跨用户/跨智能体伪造会话键返回 403，dashboard 线程写入再做一次属主校验。
+- 修复共享/公开智能体的工作区读接口可读取系统状态文件的问题：非 owner/管理员读取 `memory.sqlite`、`checkpoints.sqlite`、`.octop/sessions`、`.octop/auth`、`.env` 时返回 403，普通附件与输出文件的共享读取保持不变。
+- 修复记忆迁移 `adopt`/`doctor` 的写入目标由客户端目标宿主和命名空间决定的问题：只允许迁移到当前智能体自己的记忆库，拒绝 `..`、路径分隔符与其他宿主目标。
+- 修复普通登录用户可通过 `/api/providers`、`/api/voice/providers` 读取明文 API Key 的问题：非管理接口只返回 `has_api_key`；语音 Provider 列表与写接口使用同一 `voice` 权限。
+- 修复首次运行 setup 的数据库探测/绑定接口无鉴权的问题：`/api/setup/test-database` 与 `/api/setup/database` 现在要求 wizard token（或已有管理员 JWT），未登录调用返回 401。
 - 专家和功能卡片的「工作区」入口仅系统管理员可见，专家表格视图同步收口；企业管理员、部门管理员、普通用户及身份未加载时不显示该入口，其他管理操作和后端工作区权限保持不变。
 - 原生升级使用 `uv sync --inexact` 保留已安装的可选能力，并明确补装办公解析/OCR 与所选 extras；补齐无需 Git 的源码 ZIP 升级、Release ZIP 的停服准备入口，以及原生环境只读自检、编译依赖和独立授权目录备份说明。
 - Linux 原生智能体默认保留受限的 `local_shell` 执行能力；旧配置的宿主根目录夹取到受管理工作区并告警，不再静默降级为无执行工具的文件后端，沙箱不可用时仍拒绝绕过隔离。
