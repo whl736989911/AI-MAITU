@@ -11,7 +11,7 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
-from octop.api.deps import current_user, get_server, require_permission
+from octop.api.deps import current_user, get_server, request_unit_grants, require_permission
 from octop.infra.agents.providers.model_flags import is_local_runtime_provider
 from octop.infra.agents.providers.presets import load_provider_presets
 from octop.infra.agents.providers.probe import (
@@ -36,6 +36,7 @@ from octop.infra.providers.codex_oauth import (
     poll_device_token,
     request_device_code,
 )
+from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils.locale import resolve_request_locale
 from octop.infra.utils.ulid import new_ulid
 
@@ -115,7 +116,14 @@ async def _maybe_refresh_codex_row(server: Any, row: Any) -> Any:
     return row
 
 
-def _row_to_dict(r: Any) -> dict[str, Any]:
+def _row_to_dict(r: Any, *, reveal_api_key: bool = False) -> dict[str, Any]:
+    """Serialize a provider row.
+
+    ``api_key`` is only echoed to callers allowed to manage providers (the admin
+    routes, or a caller holding the ``providers`` module key). Everyone else
+    gets ``api_key=None`` plus ``has_api_key`` so pickers can still tell that a
+    row is configured without receiving the secret.
+    """
     models: list[dict[str, Any]] = []
     for stored in r.get_models():
         model = dict(stored)
@@ -129,7 +137,8 @@ def _row_to_dict(r: Any) -> dict[str, Any]:
         "name": r.name,
         "kind": r.kind,
         "base_url": r.base_url,
-        "api_key": r.api_key,
+        "api_key": r.api_key if reveal_api_key else None,
+        "has_api_key": bool(r.api_key),
         "models": models,
         "note": r.note,
         "enabled": bool(r.enabled),
@@ -186,11 +195,17 @@ async def set_active_model(
 
 @router.get("")
 async def list_providers(
-    _: Any = Depends(current_user),
+    request: Request,
+    user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    """Return all providers. Read-only for regular users."""
-    return [_row_to_dict(r) for r in server.services.provider_repo.list_all()]
+    """Return all providers. API keys are only echoed to provider managers."""
+    grants = request_unit_grants(request, server, user)
+    reveal_api_key = user_has_permission(user, "providers", unit_grants=grants)
+    return [
+        _row_to_dict(r, reveal_api_key=reveal_api_key)
+        for r in server.services.provider_repo.list_all()
+    ]
 
 
 # ── Admin endpoints ─────────────────────────────────────────────────────────
@@ -203,7 +218,7 @@ async def admin_list_providers(
     _: Any = Depends(require_permission("providers")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
-    return [_row_to_dict(r) for r in server.services.provider_repo.list_all()]
+    return [_row_to_dict(r, reveal_api_key=True) for r in server.services.provider_repo.list_all()]
 
 
 @admin_router.post("", status_code=201)
@@ -226,7 +241,7 @@ async def admin_create_provider(
     )
     if server.app_runtime:
         await server.app_runtime.agent_registry.on_provider_changed(provider_name=body.name)
-    return _row_to_dict(server.services.provider_repo.get(pid))
+    return _row_to_dict(server.services.provider_repo.get(pid), reveal_api_key=True)
 
 
 @admin_router.patch("/{provider_id}")
@@ -261,7 +276,7 @@ async def admin_patch_provider(
         )
     if server.app_runtime and _patch_requires_provider_rehydrate(body):
         await server.app_runtime.agent_registry.on_provider_changed(provider_name=row.name)
-    return _row_to_dict(server.services.provider_repo.get(provider_id))
+    return _row_to_dict(server.services.provider_repo.get(provider_id), reveal_api_key=True)
 
 
 @admin_router.delete("/{provider_id}", status_code=204)

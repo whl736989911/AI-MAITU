@@ -87,9 +87,12 @@ async def list_voice_presets(_: Any = Depends(current_user)) -> list[dict[str, A
 
 @router.get("/providers")
 async def list_voice_providers(
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("voice")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
+    """Return all voice providers. Same gate as the write endpoints: the rows
+    carry the configured API keys, so callers without the ``voice`` key must
+    not receive them."""
     return [_row_to_dict(r) for r in server.services.voice_provider_repo.list_all()]
 
 
