@@ -2,6 +2,10 @@
 
 在**仓库根目录**运行以下命令。
 
+> 从完整源码 ZIP 部署到 Ubuntu 主机（原生 systemd 或 Docker Compose），
+> 使用 [`deploy/ubuntu/README.md`](../deploy/ubuntu/README.md) 中的脚本；它覆盖首次安装、升级、
+> 数据备份和防火墙/安全边界。
+
 ## 麦途智造源码安装与升级
 
 项目地址：<https://github.com/whl736989911/AI-MAITU>。
