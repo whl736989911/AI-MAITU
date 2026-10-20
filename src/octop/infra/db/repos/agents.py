@@ -440,6 +440,7 @@ class AgentRepo:
     def delete(self, agent_id: str) -> None:
         with self._db.transaction() as conn:
             row = conn.execute("SELECT kind FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
+            conn.execute("DELETE FROM feature_data_records WHERE agent_id = ?", (agent_id,))
             conn.execute("DELETE FROM agents WHERE agent_id = ?", (agent_id,))
             self._acl.delete("agent", agent_id, conn=conn)
             # A feature's agent carries a second entry, filed under the feature's

@@ -1,0 +1,100 @@
+{
+  "version": 1,
+  "objects": [
+    {
+      "key": "supplier",
+      "name": {
+        "zh": "供应商",
+        "en": "Supplier"
+      },
+      "kind": "ledger",
+      "title_field": "name",
+      "fields": [
+        {
+          "key": "name",
+          "label": {
+            "zh": "名称",
+            "en": "Name"
+          },
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "scope",
+          "label": {
+            "zh": "批准范围",
+            "en": "Approved scope"
+          },
+          "type": "textarea"
+        },
+        {
+          "key": "contact",
+          "label": {
+            "zh": "联系人",
+            "en": "Contact"
+          },
+          "type": "text"
+        },
+        {
+          "key": "phone",
+          "label": {
+            "zh": "联系方式",
+            "en": "Phone"
+          },
+          "type": "text"
+        },
+        {
+          "key": "status",
+          "label": {
+            "zh": "状态",
+            "en": "Status"
+          },
+          "type": "enum",
+          "options": [
+            "approved",
+            "conditional",
+            "suspended",
+            "expired"
+          ]
+        },
+        {
+          "key": "expires_at",
+          "label": {
+            "zh": "资质到期日",
+            "en": "Qualification expires"
+          },
+          "type": "date",
+          "reminder_days": [
+            90,
+            60,
+            30
+          ]
+        },
+        {
+          "key": "license",
+          "label": {
+            "zh": "营业执照",
+            "en": "Business license"
+          },
+          "type": "file"
+        },
+        {
+          "key": "certificate",
+          "label": {
+            "zh": "体系证书",
+            "en": "System certificate"
+          },
+          "type": "file"
+        },
+        {
+          "key": "annual_review",
+          "label": {
+            "zh": "年审复审资料",
+            "en": "Annual review"
+          },
+          "type": "file"
+        }
+      ]
+    }
+  ]
+}

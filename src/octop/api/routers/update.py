@@ -10,7 +10,7 @@ import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from octop.api.deps import current_user, require_permission
 from octop.i18n import tr
@@ -56,6 +56,9 @@ class UpdateStatus(BaseModel):
     service_mode: str | None
     desktop: bool
     center_configured: bool
+    missing_configuration: list[str] = Field(
+        description="Missing release-check environment variable names; credential values are never returned"
+    )
     install_available: bool
     checked_at: str | None
     upgrade_phase: UpgradePhase
@@ -89,7 +92,13 @@ def _status(locale: str) -> dict[str, Any]:
     data["is_editable"] = get_editable_path() is not None
     data["service_mode"] = detect_service_mode()
     data["desktop"] = _is_desktop_process()
-    if data["error"]:
+    if data["missing_configuration"]:
+        data["error"] = tr(
+            "update.configuration_incomplete",
+            locale,
+            fields=", ".join(data["missing_configuration"]),
+        )
+    elif data["error"]:
         data["error"] = tr("update.check_failed", locale, detail=data["error"])
     if data["upgrade_phase"] == "failed" and data["upgrade_error"]:
         data["upgrade_error"] = tr("update.host_failed", locale, detail=data["upgrade_error"])

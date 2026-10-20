@@ -21,10 +21,11 @@ import EditAgentDrawer from "../Experts/components/EditAgentDrawer";
 import { EmptyStateIcon } from "../../components/EmptyState";
 import MemoryCatalogDrawer from "../Experts/components/MemoryCatalogDrawer";
 import FeatureCreateDrawer from "./components/FeatureCreateDrawer";
-import FeatureWorkflowPanel from "./components/FeatureWorkflowPanel";
+import FeatureWorkspaceTabs from "./components/FeatureWorkspaceTabs";
 // The experts' own grid, toolbar and empty-state styles: a feature's list is the
 // same list, so it is the same stylesheet rather than a look-alike of it.
 import styles from "../Experts/index.module.less";
+import drawerStyles from "./components/FeatureDrawerTabs.module.less";
 
 /** Show the caller's own draft features before other visible features. */
 function orderFeatures(features: OctopAgent[]): OctopAgent[] {
@@ -229,19 +230,22 @@ export default function FeaturesPage() {
       />
       <Drawer
         open={workflowFeature !== null}
-        title={`${workflowFeature?.name ?? ""} · ${t("features.tabWorkflow")}`}
-        width="min(960px, 100vw)"
+        title={workflowFeature?.name ?? t("features.tabWorkflow")}
+        width="min(1120px, 100vw)"
         onClose={() => setWorkflowFeature(null)}
         destroyOnHidden
       >
         {currentWorkflowFeature && (
-          <FeatureWorkflowPanel
-            key={currentWorkflowFeature.agent_id}
-            agentId={currentWorkflowFeature.agent_id}
-            canWrite={canManageExpert(currentWorkflowFeature, role)}
-            enterpriseManaged={currentWorkflowFeature.user_id === null}
-            onSaved={() => void refresh({ silent: true, force: true })}
-          />
+          <div className={drawerStyles.pane}>
+            <FeatureWorkspaceTabs
+              className={drawerStyles.tabs}
+              agentId={currentWorkflowFeature.agent_id}
+              canWrite={canManageExpert(currentWorkflowFeature, role)}
+              canEditRecords
+              enterpriseManaged={currentWorkflowFeature.user_id === null}
+              onSaved={() => void refresh({ silent: true, force: true })}
+            />
+          </div>
         )}
       </Drawer>
       <MemoryCatalogDrawer

@@ -14,6 +14,7 @@ from octop.infra.db.repos.channels import ChannelRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.cron import CronJobRepo
 from octop.infra.db.repos.data_sources import DataSourceRepo
+from octop.infra.db.repos.feature_data import FeatureDataRepo
 from octop.infra.db.repos.feature_overlays import FeatureOverlayRepo
 from octop.infra.db.repos.feature_runs import FeatureRunRepo
 from octop.infra.db.repos.feature_workflow_changes import FeatureChangeRepo
@@ -77,6 +78,7 @@ class RepoBundle:
     feature_overlay_repo: FeatureOverlayRepo
     feature_run_repo: FeatureRunRepo
     feature_change_repo: FeatureChangeRepo
+    feature_data_repo: FeatureDataRepo
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
@@ -114,6 +116,7 @@ class RepoBundle:
             feature_overlay_repo=FeatureOverlayRepo(db),
             feature_run_repo=FeatureRunRepo(db),
             feature_change_repo=FeatureChangeRepo(db),
+            feature_data_repo=FeatureDataRepo(db),
         )
 
 

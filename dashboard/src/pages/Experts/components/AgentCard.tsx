@@ -595,6 +595,11 @@ export const AgentCard = memo(function AgentCard({
                     : () => setMemoryCatalogOpen(true)
                 }
                 onChannels={() => setChannelCatalogOpen(true)}
+                onFiles={
+                  isFeatureAgent(agent)
+                    ? () => onEdit(agent.agent_id)
+                    : undefined
+                }
               />
             </>
           )}

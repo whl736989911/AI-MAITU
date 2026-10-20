@@ -37,7 +37,19 @@ def signed_center(
     monkeypatch.setenv("MAITU_UPDATE_ALLOW_LOOPBACK", "true")
     monkeypatch.setenv("MAITU_UPDATE_CLIENT_TOKEN", "test-client-token")
     monkeypatch.setenv("MAITU_UPDATE_TRUSTED_KEYS_FILE", str(key_path))
-    monkeypatch.setenv("MAITU_UPDATE_QUEUE_DIR", str(tmp_path / "queue"))
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    (queue / "updater-ready.json").write_text(
+        json.dumps(
+            {
+                "mode": "docker",
+                "ready": True,
+                "updated_at": datetime.now(UTC).isoformat(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAITU_UPDATE_QUEUE_DIR", str(queue))
     monkeypatch.setenv("MAITU_UPDATE_CHECK_INTERVAL", "3600")
     monkeypatch.setattr(client_module.platform, "machine", lambda: "x86_64")
     monkeypatch.setattr(client_module, "get_local_version", lambda: "1.2.3")
@@ -220,6 +232,151 @@ def test_rejects_non_loopback_http_before_network(
     status = client.check(force=True)
     assert status["error"] is not None
     assert calls == 0
+
+
+@pytest.mark.parametrize("partial", [False, True])
+def test_missing_configuration_is_not_a_successful_check(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, partial: bool
+) -> None:
+    fields = (
+        "MAITU_UPDATE_CENTER_URL",
+        "MAITU_UPDATE_CLIENT_TOKEN",
+        "MAITU_UPDATE_TRUSTED_KEYS_FILE",
+    )
+    for name in fields:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    monkeypatch.delenv("MAITU_UPDATE_QUEUE_DIR", raising=False)
+    if partial:
+        monkeypatch.setenv(fields[0], "https://updates.example.test")
+
+    def unexpected(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("incomplete configuration must not contact the center")
+
+    monkeypatch.setattr(client_module.urllib.request, "build_opener", unexpected)
+    client = UpdateClient()
+    status = client.check(force=True)
+    assert status["center_configured"] is False
+    assert status["missing_configuration"] == list(fields[1:] if partial else fields)
+    assert status["error"]
+    assert status["checked_at"] is None
+    assert status["latest_version"] is None
+    assert status["has_update"] is False
+    assert not (tmp_path / "update-cache.json").exists()
+
+
+def test_removing_configuration_discards_cached_release(
+    signed_center: tuple[UpdateClient, dict[str, Any], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = signed_center
+    assert client.check(force=True)["has_update"] is True
+    monkeypatch.delenv("MAITU_UPDATE_CLIENT_TOKEN")
+    # A fresh successful cache must not mask missing configuration.
+    status = client.check()
+    assert status["missing_configuration"] == ["MAITU_UPDATE_CLIENT_TOKEN"]
+    assert status["error"]
+    assert status["checked_at"] is None
+    assert status["latest_version"] is None
+    assert status["has_update"] is False
+
+
+def test_missing_configuration_invalidates_disk_cache_before_restart(
+    signed_center: tuple[UpdateClient, dict[str, Any], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = signed_center
+    assert client.check(force=True)["has_update"] is True
+    monkeypatch.delenv("MAITU_UPDATE_CLIENT_TOKEN")
+    assert client.check()["checked_at"] is None
+    monkeypatch.setenv("MAITU_UPDATE_CLIENT_TOKEN", "replacement-test-token")
+    restarted = UpdateClient()
+    calls = 0
+
+    def unavailable() -> None:
+        nonlocal calls
+        calls += 1
+        raise UpdateClientError("unavailable after restart")
+
+    monkeypatch.setattr(restarted, "_fetch_manifest", unavailable)
+    status = restarted.check()
+    assert calls == 1
+    assert status["latest_version"] is None
+    assert status["has_update"] is False
+    assert status["error"] == "unavailable after restart"
+
+
+def test_configured_center_without_a_release_is_a_completed_check(
+    signed_center: tuple[UpdateClient, dict[str, Any], Any],
+) -> None:
+    client, response, _ = signed_center
+    response["manifest"] = None
+    status = client.check(force=True)
+    assert status["center_configured"] is True
+    assert status["missing_configuration"] == []
+    assert status["checked_at"]
+    assert status["error"] is None
+    assert status["latest_version"] is None
+    assert status["has_update"] is False
+
+
+def test_same_version_is_not_an_upgrade(
+    signed_center: tuple[UpdateClient, dict[str, Any], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = signed_center
+    monkeypatch.setattr(client_module, "get_local_version", lambda: "1.3.0")
+    status = client.check(force=True)
+    assert status["latest_version"] == "1.3.0"
+    assert status["has_update"] is False
+    assert status["error"] is None
+
+
+def test_release_check_does_not_require_a_host_installer(
+    signed_center: tuple[UpdateClient, dict[str, Any], Any],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, _ = signed_center
+    monkeypatch.delenv("MAITU_UPDATE_QUEUE_DIR")
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    status = client.check(force=True)
+    assert status["has_update"] is True
+    assert status["install_available"] is False
+    with pytest.raises(UpdateClientError, match="Host updater is not configured"):
+        client.queue_upgrade(status["latest_version"])
+
+
+def test_install_requires_a_live_host_updater_heartbeat(
+    signed_center: tuple[UpdateClient, dict[str, Any], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = signed_center
+    assert client.check(force=True)["install_available"] is True
+    assert client.queue_dir is not None
+    heartbeat = client.queue_dir / "updater-ready.json"
+    heartbeat.unlink()
+    status = client.check(force=True)
+    assert status["has_update"] is True
+    assert status["install_available"] is False
+    with pytest.raises(UpdateClientError, match="Host updater is not configured"):
+        client.queue_upgrade(status["latest_version"])
+    heartbeat.write_text(
+        json.dumps(
+            {
+                "mode": "native",
+                "ready": True,
+                "updated_at": "2020-01-01T00:00:00+00:00",
+            }
+        ),
+        encoding="utf-8",
+    )
+    assert client.check(force=True)["install_available"] is False
+    heartbeat.write_text(
+        json.dumps({"mode": "native", "ready": True, "updated_at": "not-a-time"}),
+        encoding="utf-8",
+    )
+    assert client.check(force=True)["install_available"] is False
 
 
 def test_center_failure_is_reported_without_claiming_latest(

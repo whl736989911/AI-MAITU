@@ -54,6 +54,23 @@ def test_update_yes_queues_only_center_release(monkeypatch: Any) -> None:
     assert queued == ["1.3.0"]
 
 
+def test_update_reports_missing_configuration_in_user_locale(monkeypatch: Any) -> None:
+    from octop.cli.commands import update as command
+
+    status = {
+        "current_version": "0.1.0",
+        "error": "internal configuration failure",
+        "missing_configuration": ["MAITU_UPDATE_CLIENT_TOKEN"],
+    }
+    monkeypatch.setattr(command.update_client, "check", lambda *, force: status)
+    monkeypatch.setattr(command, "resolve_cli_locale", lambda: "zh")
+    result = CliRunner().invoke(command.update, ["--check"])
+    assert result.exit_code != 0
+    assert "尚未配置更新检查" in result.output
+    assert "MAITU_UPDATE_CLIENT_TOKEN" in result.output
+    assert "internal configuration failure" not in result.output
+
+
 def test_update_does_not_offer_upgrade_without_host_updater(monkeypatch: Any) -> None:
     from octop.cli.commands import update as command
 

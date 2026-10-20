@@ -30,7 +30,9 @@ FILES = (
     ".dockerignore",
     "brand.config.json",
     "scripts/maitu_updater.py",
+    "scripts/install_native_updater.py",
     "scripts/maitu-updater-requirements.txt",
+    "docs/native-update-troubleshooting.md",
 )
 EXCLUDED = {
     "node_modules",

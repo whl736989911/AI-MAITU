@@ -3,12 +3,14 @@ import { useTranslation } from "react-i18next";
 import { Modal } from "antd";
 import { BookOpen, Power, RefreshCw } from "lucide-react";
 import { updateApi } from "../../../api/modules/update";
+import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import { useServiceRestartContext } from "../../../context/ServiceRestartContext";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useUpdateStatus } from "../../../hooks/useUpdateStatus";
 import { storeUpdateStatus } from "../../../utils/updateStatusCache";
 import { userCan } from "../../../utils/permissions";
 import { apiErrorMessage } from "../../../utils/apiError";
+import { formatServerIsoDateTime } from "../../../utils/formatMessageTime";
 import { TabPanelHeader } from "./TabPanelHeader";
 import styles from "./UpdateConfig.module.less";
 
@@ -24,9 +26,28 @@ const ACTIVE_PHASES: Record<string, true> = {
   verifying: true,
 };
 
+type FeedbackTone = "error" | "warning" | "info" | "success";
+
+interface Feedback {
+  tone: FeedbackTone;
+  title?: string;
+  message: string;
+  detail?: string | null;
+  missing?: string[];
+  queueHint?: boolean;
+}
+
+const FEEDBACK_CLASS: Record<FeedbackTone, string> = {
+  error: styles.errorMessage,
+  warning: styles.statusMessage,
+  info: styles.statusMessage,
+  success: styles.successMessage,
+};
+
 export default function UpdateConfig() {
   const { t } = useTranslation();
   const { status, refreshStatus, isUnavailable } = useUpdateStatus();
+  const timeZone = useServerTimezone();
   const user = useCurrentUser();
   const canUpdate = userCan(user, "update");
   const [checking, setChecking] = useState(false);
@@ -37,6 +58,31 @@ export default function UpdateConfig() {
   const phase = status?.upgrade_phase ?? "idle";
   const upgradeActive = ACTIVE_PHASES[phase] === true;
   const upgradeVersion = status?.latest_version;
+  const missingConfiguration = status?.missing_configuration ?? [];
+  const configurationIncomplete =
+    Boolean(status) &&
+    (missingConfiguration.length > 0 || status?.center_configured === false);
+  const queueUnavailable = status?.install_available === false;
+  const checkedAtRaw = status?.checked_at ?? null;
+  const checkedAt = checkedAtRaw
+    ? formatServerIsoDateTime(checkedAtRaw, timeZone)
+    : "";
+  // A check really ran, the center is configured and healthy, and it returned
+  // no release for this platform. Only then may the panel say so — an old or
+  // never-requested cached status must not claim a completed check.
+  const checkSucceededNoRelease = Boolean(
+    status &&
+      checkedAtRaw &&
+      !status.error &&
+      status.center_configured !== false &&
+      missingConfiguration.length === 0 &&
+      !status.latest_version,
+  );
+  const latestVersionText =
+    status?.latest_version ??
+    (checkSucceededNoRelease
+      ? t("advancedSettings.update.noCompatibleRelease")
+      : t("advancedSettings.update.notChecked"));
 
   useEffect(() => {
     if (
@@ -86,6 +132,63 @@ export default function UpdateConfig() {
     }
   };
 
+  // One result notice for one check: HTTP 200 bodies carry the outcome, so the
+  // panel must render exactly one message instead of stacking config, error and
+  // connectivity alerts for the same result. A historical finished/failed
+  // upgrade state must not hide an independent version check.
+  let feedback: Feedback | null = null;
+  if (!upgradeActive) {
+    if (actionError) {
+      feedback = { tone: "error", message: actionError };
+    } else if (status && configurationIncomplete) {
+      feedback = {
+        tone: "warning",
+        title: t("advancedSettings.update.notConfiguredTitle"),
+        message: t("advancedSettings.update.notConfiguredDesc"),
+        // The backend error repeats the same names when they are listed below.
+        detail: missingConfiguration.length === 0 ? status.error : null,
+        missing: missingConfiguration,
+      };
+    } else if (status?.error) {
+      feedback = {
+        tone: "error",
+        title: t("advancedSettings.update.checkFailedTitle"),
+        message: t("advancedSettings.update.networkFailedHint"),
+        detail: status.error,
+      };
+    } else if (status?.has_update && status.latest_version) {
+      feedback = {
+        tone: "success",
+        message: t("advancedSettings.update.resultUpdateAvailable", {
+          version: status.latest_version,
+        }),
+      };
+    } else if (status?.latest_version) {
+      feedback = {
+        tone: "success",
+        message: t("advancedSettings.update.resultNoNewer", {
+          version: status.latest_version,
+        }),
+      };
+    } else if (checkSucceededNoRelease) {
+      feedback = {
+        tone: "info",
+        message: t("advancedSettings.update.resultNoRelease"),
+      };
+    }
+  }
+  if (feedback && queueUnavailable) {
+    feedback = { ...feedback, queueHint: true };
+  }
+
+  const canUpgrade = Boolean(
+    status?.has_update &&
+      upgradeVersion &&
+      !status.error &&
+      !configurationIncomplete &&
+      status.install_available !== false,
+  );
+
   return (
     <div className={styles.container}>
       <TabPanelHeader
@@ -122,10 +225,7 @@ export default function UpdateConfig() {
               <span className={styles.versionLabel}>
                 {t("advancedSettings.update.latestVersion")}
               </span>
-              <span className={styles.versionValue}>
-                {status?.latest_version ??
-                  t("advancedSettings.update.notChecked")}
-              </span>
+              <span className={styles.versionValue}>{latestVersionText}</span>
             </div>
           </div>
           {status?.release_notes && (
@@ -134,29 +234,49 @@ export default function UpdateConfig() {
               <pre>{status.release_notes}</pre>
             </div>
           )}
-          {status?.checked_at && (
+          {checkedAt && (
             <p className={styles.checkedAt}>
-              {t("advancedSettings.update.checkedAt", {
-                date: new Date(status.checked_at).toLocaleString(),
-              })}
+              {t("advancedSettings.update.checkedAt", { date: checkedAt })}
             </p>
           )}
-          {status?.center_configured === false && (
-            <p className={styles.statusMessage}>
-              {t("advancedSettings.update.centerUnavailable")}
-            </p>
+          {feedback && (
+            <div
+              className={FEEDBACK_CLASS[feedback.tone]}
+              role={
+                feedback.tone === "error" || feedback.tone === "warning"
+                  ? "alert"
+                  : "status"
+              }
+            >
+              {feedback.title ? (
+                <strong style={{ display: "block", marginBottom: 4 }}>
+                  {feedback.title}
+                </strong>
+              ) : null}
+              <p style={{ margin: 0 }}>{feedback.message}</p>
+              {feedback.detail ? (
+                <p style={{ margin: "6px 0 0" }}>{feedback.detail}</p>
+              ) : null}
+              {feedback.missing && feedback.missing.length > 0 ? (
+                <div style={{ marginTop: 6 }}>
+                  <span>{t("advancedSettings.update.missingVariables")}</span>
+                  <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                    {feedback.missing.map((name) => (
+                      <li key={name}>
+                        <code>{name}</code>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
+              {feedback.queueHint ? (
+                <p style={{ margin: "6px 0 0" }}>
+                  {t("advancedSettings.update.installerUnavailable")}
+                </p>
+              ) : null}
+            </div>
           )}
-          {status?.install_available === false && (
-            <p className={styles.statusMessage}>
-              {t("advancedSettings.update.installerUnavailable")}
-            </p>
-          )}
-          {(actionError || status?.error) && (
-            <p className={styles.errorMessage} role="alert">
-              {actionError ?? status?.error}
-            </p>
-          )}
-          {isUnavailable && !upgradeActive && (
+          {isUnavailable && !upgradeActive && !feedback && (
             <p className={styles.statusMessage} role="status">
               {t("advancedSettings.update.statusUnavailable")}
             </p>
@@ -206,16 +326,11 @@ export default function UpdateConfig() {
                   ? t("advancedSettings.update.checking")
                   : t("advancedSettings.update.checkNow")}
               </button>
-              {status?.has_update && (
+              {canUpgrade && (
                 <button
                   type="button"
                   className={styles.btnPrimary}
-                  disabled={
-                    !status.install_available ||
-                    !upgradeVersion ||
-                    upgradeActive ||
-                    submittingUpgrade
-                  }
+                  disabled={upgradeActive || submittingUpgrade}
                   onClick={() =>
                     Modal.confirm({
                       title: t("advancedSettings.update.upgradeConfirmTitle"),

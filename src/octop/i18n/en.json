@@ -366,6 +366,7 @@
   "update": {
     "host_failed": "The host updater reported a failure: {detail}",
     "check_failed": "Could not check the update center: {detail}",
+    "configuration_incomplete": "Update checks are not configured. Missing: {fields}. License activation does not configure release access; ask the deployment administrator to configure the update center URL, release reader token, and release signing public keyring.",
     "queue_failed": "Could not request an upgrade: {detail}",
     "queue_conflict": "Another upgrade is already queued or running."
   },

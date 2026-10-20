@@ -213,6 +213,10 @@ powershell -File scripts/wheel_build.ps1
 
 ---
 
+## 源码 / systemd 的应用更新
+
+授权激活、发行版本检查和安装是独立链路。原生源码 / systemd 部署可运行 `scripts/install_native_updater.py` 一次性接通检查与原生自动升级：使用独立 release 虚拟环境、停服备份、原子切换、健康校验和失败回滚；只有 `maitu-updater.service` 心跳有效时页面才允许排队。不要给原生服务安装 Docker 更新器，也不要只添加队列目录。安装参数、同版本不触发升级和回滚边界见[源码 / systemd 更新排障](../docs/native-update-troubleshooting.md)。
+
 ## 平台说明
 
 - **macOS / Linux**：`install.sh` 支持自动安装 uv、创建 venv；Playwright Chromium 仅在 `--extras browser` 时下载（系统已有 Chrome 则跳过）。

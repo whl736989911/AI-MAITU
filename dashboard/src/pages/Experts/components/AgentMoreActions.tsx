@@ -3,6 +3,7 @@ import type { MenuProps } from "antd";
 import {
   Bot,
   Brain,
+  FileText,
   MoreHorizontal,
   Notebook,
   Puzzle,
@@ -23,6 +24,8 @@ interface AgentMoreActionsProps {
   onMbti: () => void;
   onMemory?: () => void;
   onChannels: () => void;
+  /** A feature's persona files; experts edit them in their profile instead. */
+  onFiles?: () => void;
 }
 
 /** Catalog actions shared by experts and features; workflow belongs to features only. */
@@ -36,6 +39,7 @@ export default function AgentMoreActions({
   onMbti,
   onMemory,
   onChannels,
+  onFiles,
 }: AgentMoreActionsProps) {
   const { t } = useTranslation();
 
@@ -53,31 +57,31 @@ export default function AgentMoreActions({
     {
       key: "skills",
       icon: <Sparkles size={14} />,
-      label: t("experts.skillsBtn"),
+      label: t("personalization.tabs.skills"),
       onClick: onSkills,
     },
     {
       key: "subagents",
       icon: <Bot size={14} />,
-      label: t("experts.subagentsBtn"),
+      label: t("personalization.tabs.subagents"),
       onClick: onSubagents,
     },
     {
       key: "tools",
       icon: <Wrench size={14} />,
-      label: t("experts.toolsBtn"),
+      label: t("personalization.tabs.tools"),
       onClick: onTools,
     },
     {
       key: "plugins",
       icon: <Puzzle size={14} />,
-      label: t("experts.pluginsBtn"),
+      label: t("personalization.tabs.plugins"),
       onClick: onPlugins,
     },
     {
       key: "mbti",
       icon: <Brain size={14} />,
-      label: t("experts.mbtiBtn"),
+      label: t("personalization.tabs.mbti"),
       onClick: onMbti,
     },
     ...(onMemory
@@ -85,7 +89,7 @@ export default function AgentMoreActions({
           {
             key: "memory",
             icon: <Notebook size={14} />,
-            label: t("experts.memoryBtn"),
+            label: t("personalization.tabs.memory"),
             onClick: onMemory,
           },
         ]
@@ -93,9 +97,19 @@ export default function AgentMoreActions({
     {
       key: "channels",
       icon: <Waypoints size={14} />,
-      label: t("experts.channelsBtn"),
+      label: t("personalization.tabs.channels"),
       onClick: onChannels,
     },
+    ...(onFiles
+      ? [
+          {
+            key: "files",
+            icon: <FileText size={14} />,
+            label: t("personalization.tabs.files"),
+            onClick: onFiles,
+          },
+        ]
+      : []),
   ];
 
   return (

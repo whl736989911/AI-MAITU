@@ -3991,6 +3991,14 @@ class AgentManager:
                 registry=self,
                 repos=self._repos,
             )
+            from octop.infra.agents.feature_data_tools import (  # noqa: PLC0415
+                build_feature_data_tools,
+            )
+
+            feature_workflow_tools = [
+                *feature_workflow_tools,
+                *build_feature_data_tools(registry=self, repos=self._repos),
+            ]
 
         skill_market_tools: list[Any] = []
         if not team_host and (row.kind == KIND_AGENT or is_feature_agent(row.kind)):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +22,13 @@ def configured_release_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -
     monkeypatch.setenv(
         "MAITU_UPDATE_TRUSTED_KEYS_FILE", str(tmp_path / "release-trusted-keys.json")
     )
-    monkeypatch.setenv("MAITU_UPDATE_QUEUE_DIR", str(tmp_path / "queue"))
+    queue = tmp_path / "queue"
+    queue.mkdir()
+    (queue / "updater-ready.json").write_text(
+        '{"mode":"docker","ready":true,"updated_at":"' + datetime.now(UTC).isoformat() + '"}',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MAITU_UPDATE_QUEUE_DIR", str(queue))
     claims = {
         "product": "maitu",
         "protocol": 1,
@@ -71,6 +78,34 @@ async def test_authenticated_release_check_queues_exact_version_once(
 
     collision = await client.post("/api/update/upgrade", json={"version": "1.3.0"}, headers=auth)
     assert collision.status_code == 409
+
+
+async def test_unconfigured_check_reports_missing_fields_without_a_completed_check(
+    env_admin_client: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    fields = (
+        "MAITU_UPDATE_CENTER_URL",
+        "MAITU_UPDATE_CLIENT_TOKEN",
+        "MAITU_UPDATE_TRUSTED_KEYS_FILE",
+    )
+    for name in (*fields, "MAITU_UPDATE_QUEUE_DIR"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    monkeypatch.setattr(update_module.update_client, "_loaded", False)
+    monkeypatch.setattr(update_module.update_client, "_cache", {})
+    client, auth = env_admin_client
+    response = await client.post("/api/update/check", headers={**auth, "Accept-Language": "zh"})
+    assert response.status_code == 200
+    status = response.json()
+    assert status["missing_configuration"] == list(fields)
+    assert status["center_configured"] is False
+    assert status["checked_at"] is None
+    assert status["has_update"] is False
+    assert status["latest_version"] is None
+    assert "尚未配置更新检查" in status["error"]
+    assert status["install_available"] is False
 
 
 async def test_non_admin_cannot_queue_upgrade(

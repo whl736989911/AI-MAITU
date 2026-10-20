@@ -366,6 +366,7 @@
   "update": {
     "host_failed": "主机升级器报告执行失败：{detail}",
     "check_failed": "无法检查更新中心：{detail}",
+    "configuration_incomplete": "尚未配置更新检查，缺少：{fields}。授权激活不会自动配置发行包访问，请部署管理员配置更新中心地址、发行包读取令牌及发行签名公钥 keyring。",
     "queue_failed": "无法发起升级：{detail}",
     "queue_conflict": "已有升级排队或执行中。"
   },

@@ -51,7 +51,7 @@ import ChannelsPanel from "../../Channels/ChannelsPanel";
 import MBTISelector from "./MBTISelector";
 import AgentPluginsPanel from "./AgentPluginsPanel";
 import AgentPersonaFiles from "./AgentPersonaFiles";
-import FeatureWorkflowPanel from "../../../Features/components/FeatureWorkflowPanel";
+import FeatureWorkspaceTabs from "../../../Features/components/FeatureWorkspaceTabs";
 import styles from "../index.module.less";
 
 export type PersonalizationTab =
@@ -258,11 +258,11 @@ export default function PersonalizationPanels({
             style={{ display: activeTab === "workflow" ? "flex" : "none" }}
             aria-hidden={activeTab !== "workflow"}
           >
-            <div className={pageShellStyles.fillChild}>
-              <FeatureWorkflowPanel
-                key={agentId}
+            <div className={styles.workflowPane}>
+              <FeatureWorkspaceTabs
                 agentId={agentId}
                 canWrite={writesFor(policy.workflow)}
+                canEditRecords
               />
             </div>
           </div>

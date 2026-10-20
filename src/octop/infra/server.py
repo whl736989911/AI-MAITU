@@ -702,6 +702,21 @@ class OctopServer:
 
         install_auto_backup_job(cron_mgr, server=self)
 
+        from octop.infra.agents.feature_data_reminders import (  # noqa: PLC0415
+            FEATURE_REMINDER_INTERVAL_SECONDS,
+            FEATURE_REMINDER_JOB,
+            dispatch_due_feature_reminders,
+        )
+
+        async def _feature_data_reminders() -> None:
+            await dispatch_due_feature_reminders(self)
+
+        cron_mgr.schedule_system_job(
+            FEATURE_REMINDER_JOB,
+            trigger=f"interval:{FEATURE_REMINDER_INTERVAL_SECONDS}",
+            func=_feature_data_reminders,
+        )
+
         registry.set_cron_manager(cron_mgr)
         registry.set_team_processor(gateway.processor)
         hitl_session_store = gateway.processor.hitl_coordinator.session_policies

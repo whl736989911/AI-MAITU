@@ -1,0 +1,18 @@
+/**
+ * The feature drawer's tab shell.
+ *
+ * Both tabs are full panels that own their scrolling; Tabs only has to hand them
+ * the whole body and keep the tab strip at the top, so the pane is the flex
+ * column the workflow's ``flex: 1`` already expects.
+ */
+
+.tabs {
+  min-height: 100%;
+}
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}

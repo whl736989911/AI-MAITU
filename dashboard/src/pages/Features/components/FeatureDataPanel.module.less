@@ -1,0 +1,510 @@
+/**
+ * The business-data panel's own shape — and only that.
+ *
+ * The drawer, the table, the tags and the buttons are antd's; the page around
+ * this panel is the feature page's stylesheet. What is left here is the panel's
+ * layout (objects beside records, form fields, attachment rows, history and
+ * notification rows, the schema editor) and its responsive collapse.
+ */
+
+.panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 200px;
+}
+
+.hint {
+  margin: 0;
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.notice {
+  margin: 0;
+}
+
+/* Objects on the left, the selected object's records on the right. */
+.layout {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  min-height: 0;
+}
+
+.objectList {
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  overflow: hidden;
+}
+
+.objectRow,
+.objectRowActive {
+  padding: 8px 10px !important;
+  cursor: pointer;
+  user-select: none;
+}
+
+.objectRow:hover {
+  background: var(--fn-bg-hover);
+}
+
+.objectRowActive {
+  background: var(--fn-color-brand-soft);
+  border-left: 2px solid var(--fn-color-brand);
+}
+
+.objectMain {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.objectName {
+  font-size: 13px;
+  color: var(--fn-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.objectMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.recordsPane {
+  min-width: 0;
+}
+
+.recordsTab,
+.records {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  flex-shrink: 0;
+}
+
+.search {
+  max-width: 280px;
+  flex: 1;
+  min-width: 180px;
+}
+
+.toolbarGap {
+  flex: 1;
+}
+
+.table {
+  min-width: 0;
+}
+
+.recordTitleCell {
+  font-size: 13px;
+  color: var(--fn-text-primary);
+  word-break: break-word;
+}
+
+.empty {
+  padding: 32px 16px;
+}
+
+.emptyText {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+}
+
+/* One record: header, fields, attachments, history. */
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+
+.detailHeader {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.detailTitle {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+  word-break: break-word;
+}
+
+.fields {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.fieldLabel {
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+}
+
+.fieldError {
+  color: var(--fn-color-danger);
+  font-size: 12px;
+}
+
+.requiredMark {
+  color: var(--fn-color-danger);
+  margin-left: 4px;
+}
+
+.numberInput {
+  width: 100%;
+}
+
+.readonlyValue {
+  color: var(--fn-text-primary);
+  font-size: 13px;
+  line-height: 1.7;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  flex-shrink: 0;
+  padding-top: 4px;
+}
+
+/* Attachments: one block per file field, versions newest first. */
+.attachments {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  border-top: 1px solid var(--fn-border-secondary);
+  padding-top: 14px;
+}
+
+.attachmentField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.attachmentHeader {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.fieldHint {
+  color: var(--fn-text-tertiary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.fileEmpty {
+  margin: 0 !important;
+  padding: 8px 0 !important;
+}
+
+.fileList {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  overflow: hidden;
+}
+
+.fileRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--fn-border-secondary);
+}
+
+.fileRow:last-child {
+  border-bottom: 0;
+}
+
+.fileMain {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.fileName {
+  font-size: 13px;
+  color: var(--fn-text-primary);
+  word-break: break-all;
+}
+
+.fileMeta {
+  color: var(--fn-text-tertiary);
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.fileNote {
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.uploadRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fileInput {
+  flex: 1;
+  min-width: 160px;
+  padding: 4px 10px;
+  border: 1px solid var(--fn-border-input);
+  border-radius: var(--fn-radius-md);
+  background: var(--fn-bg-primary);
+  color: var(--fn-text-primary);
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.fileInput:focus {
+  outline: none;
+  border-color: var(--fn-border-focus);
+}
+
+.fileInputHidden {
+  display: none;
+}
+
+.uploadTrigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 12px;
+  border: 1px dashed var(--fn-border-primary);
+  border-radius: var(--fn-radius-md);
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.uploadTrigger:hover {
+  border-color: var(--fn-color-brand);
+  color: var(--fn-color-brand);
+}
+
+/* History. */
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border-top: 1px solid var(--fn-border-secondary);
+  padding-top: 14px;
+}
+
+.sectionTitle {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+}
+
+.historyList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.historyRow {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+}
+
+.historyHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.historySummary {
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+}
+
+.historyItems {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  line-height: 1.8;
+  word-break: break-word;
+}
+
+/* Notifications. */
+.notifications {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.notificationList {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: var(--fn-radius-md);
+  overflow: hidden;
+}
+
+.notificationRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px;
+  border-bottom: 1px solid var(--fn-border-secondary);
+}
+
+.notificationRow:last-child {
+  border-bottom: 0;
+}
+
+.notificationMain {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+}
+
+.notificationHead {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.notificationTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+  word-break: break-word;
+}
+
+.notificationBody {
+  margin: 0;
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.notificationActions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* The schema JSON editor. */
+.schemaPane {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+}
+
+.schemaArea {
+  width: 100%;
+  min-height: 420px;
+  padding: 12px;
+  border: 1px solid var(--fn-border-input);
+  border-radius: var(--fn-radius-md);
+  background: var(--fn-bg-code);
+  color: var(--fn-text-primary);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.7;
+  resize: vertical;
+}
+
+.schemaArea:focus {
+  outline: none;
+  border-color: var(--fn-border-focus);
+}
+
+.problemList {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  line-height: 1.8;
+  word-break: break-word;
+}
+
+@media (max-width: 768px) {
+  .layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .objectList {
+    max-height: 180px;
+    overflow: auto;
+  }
+
+  .notificationRow {
+    flex-wrap: wrap;
+  }
+
+  .notificationActions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+}

@@ -21,6 +21,14 @@ def update(check: bool, yes: bool) -> None:
     locale = resolve_cli_locale()
     status = update_client.check(force=True)
     click.echo(tr("cli.update.installed", locale, version=status["current_version"]))
+    if status.get("missing_configuration"):
+        raise click.ClickException(
+            tr(
+                "update.configuration_incomplete",
+                locale,
+                fields=", ".join(status["missing_configuration"]),
+            )
+        )
     if status["error"]:
         raise click.ClickException(status["error"])
     if not status["center_configured"]:

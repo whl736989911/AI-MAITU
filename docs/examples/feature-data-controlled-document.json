@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "objects": [
+    {
+      "key": "controlled_document",
+      "name": {
+        "zh": "受控文件",
+        "en": "Controlled document"
+      },
+      "kind": "document",
+      "title_field": "title",
+      "controlled": true,
+      "fields": [
+        {
+          "key": "doc_no",
+          "label": {
+            "zh": "文件编号",
+            "en": "Document no."
+          },
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "title",
+          "label": {
+            "zh": "文件名称",
+            "en": "Title"
+          },
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "version",
+          "label": {
+            "zh": "版本",
+            "en": "Version"
+          },
+          "type": "text",
+          "required": true
+        },
+        {
+          "key": "status",
+          "label": {
+            "zh": "状态",
+            "en": "Status"
+          },
+          "type": "enum",
+          "options": [
+            "draft",
+            "approved",
+            "effective",
+            "obsolete"
+          ]
+        },
+        {
+          "key": "effective_at",
+          "label": {
+            "zh": "生效日期",
+            "en": "Effective date"
+          },
+          "type": "date"
+        },
+        {
+          "key": "revision_reason",
+          "label": {
+            "zh": "修订原因",
+            "en": "Revision reason"
+          },
+          "type": "textarea"
+        },
+        {
+          "key": "approved_by",
+          "label": {
+            "zh": "审批人",
+            "en": "Approved by"
+          },
+          "type": "text"
+        },
+        {
+          "key": "file",
+          "label": {
+            "zh": "文件正文",
+            "en": "Document file"
+          },
+          "type": "file"
+        }
+      ]
+    }
+  ]
+}

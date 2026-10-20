@@ -40,6 +40,13 @@ _PHASES = {
     "failed",
 }
 _ARCHITECTURES = {"x86_64": "amd64", "amd64": "amd64", "aarch64": "arm64", "arm64": "arm64"}
+_CENTER_CONFIGURATION = (
+    "MAITU_UPDATE_CENTER_URL",
+    "MAITU_UPDATE_CLIENT_TOKEN",
+    "MAITU_UPDATE_TRUSTED_KEYS_FILE",
+)
+# Native builds can legitimately block the updater loop for several minutes.
+_UPDATER_HEARTBEAT_SECONDS = 900
 _MANIFEST_CLAIMS = {
     "iss",
     "aud",
@@ -149,23 +156,13 @@ class UpdateClient:
         self._loaded = False
 
     @property
-    def configured(self) -> bool:
-        return (
-            bool(os.environ.get("MAITU_UPDATE_CENTER_URL", "").strip())
-            and bool(os.environ.get("MAITU_UPDATE_CLIENT_TOKEN", "").strip())
-            and bool(os.environ.get("MAITU_UPDATE_TRUSTED_KEYS_FILE", "").strip())
-        )
+    def missing_configuration(self) -> list[str]:
+        """Return names only: never expose update credentials in status responses."""
+        return [name for name in _CENTER_CONFIGURATION if not os.environ.get(name, "").strip()]
 
     @property
-    def configuration_requested(self) -> bool:
-        return any(
-            os.environ.get(key, "").strip()
-            for key in (
-                "MAITU_UPDATE_CENTER_URL",
-                "MAITU_UPDATE_CLIENT_TOKEN",
-                "MAITU_UPDATE_TRUSTED_KEYS_FILE",
-            )
-        )
+    def configured(self) -> bool:
+        return not self.missing_configuration
 
     @property
     def queue_dir(self) -> Path | None:
@@ -173,8 +170,36 @@ class UpdateClient:
         return Path(raw).expanduser() if raw else None
 
     @property
+    def updater_ready(self) -> bool:
+        """Only a live host updater may advertise install capability.
+
+        A queue directory can be mounted without any process consuming it.  The
+        updater writes a heartbeat only after it has started and validated its
+        configuration, so a stale file cannot make the UI queue an upgrade that
+        nobody will install.
+        """
+        if self.queue_dir is None:
+            return False
+        heartbeat = _read_json(self.queue_dir / "updater-ready.json")
+        if not heartbeat or heartbeat.get("ready") is not True:
+            return False
+        if heartbeat.get("mode") not in {"docker", "native"}:
+            return False
+        updated_at = heartbeat.get("updated_at")
+        if not isinstance(updated_at, str):
+            return False
+        try:
+            updated = datetime.fromisoformat(updated_at)
+        except ValueError:
+            return False
+        if updated.tzinfo is None:
+            return False
+        age = (datetime.now(UTC) - updated.astimezone(UTC)).total_seconds()
+        return -30 <= age <= _UPDATER_HEARTBEAT_SECONDS
+
+    @property
     def install_available(self) -> bool:
-        return self.queue_dir is not None
+        return self.queue_dir is not None and self.updater_ready
 
     def _cache_path(self) -> Path:
         if self.queue_dir is not None:
@@ -314,6 +339,25 @@ class UpdateClient:
     def check(self, *, force: bool = False) -> dict[str, Any]:
         with self._lock:
             self._load_cache()
+            missing = self.missing_configuration
+            if missing:
+                # No request was made. Do not report a successful check or reuse
+                # a manifest cached before the center configuration was removed.
+                had_cached_result = (
+                    self._cache.get("checked_at") is not None
+                    or self._cache.get("manifest") is not None
+                )
+                self._cache.update(
+                    {
+                        "checked_at": None,
+                        "manifest": None,
+                        "error": "Update center configuration is incomplete. Missing: "
+                        + ", ".join(missing),
+                    }
+                )
+                if had_cached_result:
+                    self._save_cache()
+                return self.status_payload()
             interval = self._check_interval()
             checked_at = self._cache.get("checked_at")
             age = (
@@ -324,9 +368,7 @@ class UpdateClient:
             due = force or age is None or age < 0 or age >= interval
             if due:
                 try:
-                    if self.configuration_requested and not self.configured:
-                        raise UpdateClientError("Update center configuration is incomplete.")
-                    manifest = self._fetch_manifest() if self.configured else None
+                    manifest = self._fetch_manifest()
                     self._cache.update({"checked_at": _now(), "error": None, "manifest": manifest})
                 except UpdateClientError as exc:
                     self._cache.update({"checked_at": _now(), "error": str(exc)})
@@ -401,6 +443,7 @@ class UpdateClient:
             "service_mode": None,
             "desktop": False,
             "center_configured": self.configured,
+            "missing_configuration": self.missing_configuration,
             "install_available": self.install_available,
             "checked_at": self._cache.get("checked_at")
             if isinstance(self._cache.get("checked_at"), str)

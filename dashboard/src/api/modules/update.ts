@@ -28,6 +28,8 @@ export interface UpdateStatus {
   /** Markdown changelog for latest_version, null if not available. */
   release_notes: string | null;
   center_configured?: boolean;
+  /** Names of the update-center variables missing from the server environment. */
+  missing_configuration?: string[];
   install_available?: boolean;
   checked_at?: string | null;
   upgrade_phase?: UpgradePhase;

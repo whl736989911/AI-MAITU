@@ -397,6 +397,35 @@ memory. It is injected after the feature definition and takes precedence over
 both that definition and retrieved memories. It changes nobody else's feature
 and is not visible to another caller.
 
+## Feature business data
+
+A feature may also keep generic business records (a supplier ledger, a controlled
+document register, equipment, contracts) under its own agent. The object/field
+schema is a workspace document (`.maitu/feature-data/schema.json`); records and
+audit rows are database rows, and attachment versions live in the feature
+workspace. Suppliers and controlled documents are configurations, not code paths.
+
+Records created while a feature is `draft` are private to their creator. After
+activation new records follow the feature ACL; a draft record stays private until
+its creator publishes it. Record edits use an `expected_revision` optimistic lock
+(409 `WORKFLOW_CHANGE_CONFLICT` when stale). File fields never enter `values`: each
+upload creates a new version and the previous current version is retained.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/agents/{aid}/feature-data/schema` | agent access | `{schema, error}`; `schema` is the manager-authored object document |
+| `PUT` | `/agents/{aid}/feature-data/schema` | feature manager (`configuration`) | body `{schema}`; validates object/field keys, types, controlled-document file field, and writes atomically |
+| `GET` | `/agents/{aid}/feature-data/{object}/records` | agent access | `{records, total}`; private records are visible only to their creator |
+| `POST` | `/agents/{aid}/feature-data/{object}/records` | agent access | body `{values}`; draft feature → private, active → feature visibility |
+| `GET/PATCH/DELETE` | `/agents/{aid}/feature-data/records/{rid}` | record read; update/delete creator or feature manager | `PATCH` body `{values, expected_revision}`; delete is a soft delete |
+| `POST` | `/agents/{aid}/feature-data/records/{rid}/publish` | creator or manager; active feature | private → feature visibility |
+| `GET` | `/agents/{aid}/feature-data/records/{rid}/history` | record read | field/file/action audit, newest first |
+| `GET/POST` | `/agents/{aid}/feature-data/records/{rid}/files[/{field}]` | record read / write | list versions or upload a new version (`file`, `note`) |
+| `GET` | `/agents/{aid}/feature-data/records/{rid}/files/{fid}/download` | record read | version bytes |
+| `GET` | `/agents/{aid}/feature-data/notifications` | agent access | current caller's in-app reminders; `unread_only` |
+| `POST` | `/agents/{aid}/feature-data/notifications/{id}/read` | caller | mark read |
+| `POST` | `/agents/{aid}/feature-data/reminders/{id}/complete` | record creator or feature manager | stop further reminder delivery |
+
 ## Workspace, skills, subagents, memory, files
 
 | Method | Path | Auth | Notes |
