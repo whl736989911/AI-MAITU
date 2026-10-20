@@ -4,7 +4,7 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)，版本号遵循 [语义化版本规范](https://semver.org/spec/v2.0.0.html)。
 
-## [Unreleased]
+## [0.1.1] - 2026-10-20
 ### 新增
 
 - 完成可配置品牌白标（默认 `麦途智造` / `MAITU Smart Manufacturing`，技术标识小写 `maitu`）：由 `brand.config.json` 驱动展示名、命令、数据目录、数据库/日志/登录文件、工作区系统目录、systemd/launchd 服务、安装器、FnOS 包、文档与发布脚本；用户界面、错误提示、离线页、帮助链接不再出现上游 Octop 品牌；旧 `~/.octop`、工作区 `.octop`、`octop` CLI、`OCTOP_*` 环境变量和旧服务单元在启动时自动迁移或兼容（Python 包名/import 与协议头等内部标识保留）。
