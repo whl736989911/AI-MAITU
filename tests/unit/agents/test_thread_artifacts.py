@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from octop.infra.agents.middleware.thread_artifacts import (
     ThreadArtifactsMiddleware,
@@ -89,7 +89,7 @@ def test_failed_write_does_not_offer_an_unwritten_plan(tmp_path: Path) -> None:
     assert threads.pending_plan is None
 
 
-def test_agent_snapshot_records_script_written_docx(tmp_path: Path) -> None:
+def test_agent_snapshot_records_only_declared_script_output(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     unchanged = workspace / "notes.md"
@@ -105,10 +105,65 @@ def test_agent_snapshot_records_script_written_docx(tmp_path: Path) -> None:
         generated = workspace / "申报书.docx"
         generated.write_text("binary-ish", encoding="utf-8")
         os.utime(generated, None)
-        middleware.after_agent(None, None)
+        state = {"messages": [AIMessage(content=f"已生成 {generated.name}")]}
+        middleware.after_agent(state, None)
 
     assert len(threads.artifacts) == 1
     thread_id, paths = threads.artifacts[0]
     assert thread_id == "thread-a"
     assert generated.as_posix() in paths
-    assert unchanged.as_posix() in paths
+    assert unchanged.as_posix() not in paths
+
+
+def test_explicit_send_request_finds_previous_workspace_file(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    report = workspace / "report.docx"
+    report.write_text("already generated", encoding="utf-8")
+    threads = _Threads()
+    middleware = ThreadArtifactsMiddleware(thread_repo=threads, workspace_dir=workspace)
+    with patch(
+        "octop.infra.agents.middleware.thread_artifacts.current_thread_id",
+        return_value="thread-a",
+    ):
+        middleware.before_agent(None, None)
+        state = {"messages": [HumanMessage(content="把 report.docx 发给我")]}
+        middleware.after_agent(state, None)
+
+    assert threads.artifacts == [("thread-a", [report.as_posix()])]
+
+
+def test_helper_script_is_not_auto_delivered(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    script = workspace / "gen_docx.py"
+    threads = _Threads()
+    middleware = ThreadArtifactsMiddleware(thread_repo=threads, workspace_dir=workspace)
+    with patch(
+        "octop.infra.agents.middleware.thread_artifacts.current_thread_id",
+        return_value="thread-a",
+    ):
+        middleware.before_agent(None, None)
+        script.write_text("print('generate')", encoding="utf-8")
+        state = {"messages": [AIMessage(content="已生成 gen_docx.py")]}
+        middleware.after_agent(state, None)
+
+    assert threads.artifacts == []
+
+
+def test_explicit_send_request_matches_requested_file_type(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    report = workspace / "report.docx"
+    report.write_text("already generated", encoding="utf-8")
+    threads = _Threads()
+    middleware = ThreadArtifactsMiddleware(thread_repo=threads, workspace_dir=workspace)
+    with patch(
+        "octop.infra.agents.middleware.thread_artifacts.current_thread_id",
+        return_value="thread-a",
+    ):
+        middleware.before_agent(None, None)
+        state = {"messages": [HumanMessage(content="把刚才生成的 Word 文件发给我")]}
+        middleware.after_agent(state, None)
+
+    assert threads.artifacts == [("thread-a", [report.as_posix()])]

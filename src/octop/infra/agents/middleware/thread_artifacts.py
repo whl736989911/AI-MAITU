@@ -9,6 +9,7 @@ import os
 import re
 import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -34,6 +35,66 @@ ARTIFACT_TOOL_BASES = frozenset(
 )
 _PATH_KEYS = ("path", "file_path", "filepath", "dest", "target_path", "output_path")
 _PATH_EXT_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9._+-]{0,11}$")
+_SEND_INTENT_RE = re.compile(
+    r"发(?:给|到|我|送)|发送|传给我|打包|压缩包|下载|附件|给我|"
+    r"send\s+(?:me|these|the|all)|attach|zip|share|email",
+    re.IGNORECASE,
+)
+_CODE_INTENT_RE = re.compile(r"代码|脚本|源码|程序|source\s*code|script|\.py\b", re.IGNORECASE)
+_SOURCE_SUFFIXES = frozenset(
+    {
+        ".py",
+        ".pyi",
+        ".js",
+        ".jsx",
+        ".ts",
+        ".tsx",
+        ".sh",
+        ".bat",
+        ".ps1",
+        ".cmd",
+        ".java",
+        ".go",
+        ".rs",
+        ".c",
+        ".cc",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".rb",
+        ".php",
+    }
+)
+_NON_DELIVERABLE_SUFFIXES = _SOURCE_SUFFIXES | frozenset(
+    {
+        ".log",
+        ".tmp",
+        ".bak",
+        ".swp",
+        ".pyc",
+        ".pyo",
+        ".lock",
+        ".cache",
+        ".db",
+        ".sqlite",
+        ".sqlite3",
+    }
+)
+_DELIVERABLE_SUFFIX_HINTS: tuple[tuple[re.Pattern[str], frozenset[str]], ...] = (
+    (re.compile(r"word|文档|docx?|\.docx?\b", re.I), frozenset({".doc", ".docx"})),
+    (re.compile(r"excel|表格|xlsx?|\.xlsx?\b", re.I), frozenset({".xls", ".xlsx", ".csv"})),
+    (re.compile(r"ppt|幻灯片|演示|pptx?|\.pptx?\b", re.I), frozenset({".ppt", ".pptx"})),
+    (re.compile(r"pdf|\.pdf\b", re.I), frozenset({".pdf"})),
+    (re.compile(r"markdown|\.md\b", re.I), frozenset({".md", ".markdown"})),
+    (
+        re.compile(r"图片|截图|照片|image|photo|\.png\b", re.I),
+        frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp"}),
+    ),
+    (
+        re.compile(r"压缩包|打包|zip|archive", re.I),
+        frozenset({".zip", ".tar", ".gz", ".7z"}),
+    ),
+)
 _MAX_SNAPSHOT_FILES = 5000
 _SNAPSHOT_SKIP_DIRS = frozenset(
     {
@@ -177,10 +238,136 @@ def _changed_workspace_paths(
         previous = before.get(rel)
         if previous == state:
             continue
-        # New and modified files are both deliverables; unchanged files are
-        # deliberately excluded so a turn that only reads does not create noise.
+        # New and modified files are both candidates; whether they belong to the
+        # user is decided from the conversation below, not from the change alone.
         changed.append((workspace_dir.expanduser().resolve() / rel).as_posix())
     return changed
+
+
+def _message_text(message: Any) -> str:
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, Mapping):
+                text = block.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(parts)
+    return ""
+
+
+def _message_role(message: Any) -> str:
+    role = getattr(message, "type", None)
+    if isinstance(role, str):
+        return role
+    if isinstance(message, Mapping):
+        value = message.get("role") or message.get("type")
+        return value if isinstance(value, str) else ""
+    return ""
+
+
+def _conversation_messages(state: Any) -> list[Any]:
+    if isinstance(state, Mapping):
+        messages = state.get("messages")
+    else:
+        messages = getattr(state, "messages", None)
+    return list(messages) if isinstance(messages, (list, tuple)) else []
+
+
+def _referenced_workspace_paths(
+    texts: Sequence[str], candidates: Sequence[str], workspace_dir: Path
+) -> list[str]:
+    text = "\n".join(texts).replace("\\", "/").casefold()
+    if not text:
+        return []
+    root = workspace_dir.expanduser().resolve()
+    found: list[str] = []
+    for raw in candidates:
+        path = Path(raw)
+        names = {path.name, path.as_posix()}
+        with suppress(OSError, ValueError):
+            names.add(path.resolve().relative_to(root).as_posix())
+        if any(name and name.casefold() in text for name in names):
+            found.append(path.as_posix())
+    return list(dict.fromkeys(found))
+
+
+def _requested_suffixes(text: str) -> frozenset[str]:
+    suffixes: set[str] = set()
+    for pattern, values in _DELIVERABLE_SUFFIX_HINTS:
+        if pattern.search(text):
+            suffixes.update(values)
+    return frozenset(suffixes)
+
+
+def _is_auto_deliverable(path: str, user_text: str) -> bool:
+    """Keep source/scripts/runtime noise out of automatic deliverables."""
+    suffix = Path(path).suffix.casefold()
+    return not (suffix in _NON_DELIVERABLE_SUFFIXES and not _CODE_INTENT_RE.search(user_text))
+
+
+def select_turn_artifacts(
+    *,
+    changed: Sequence[str],
+    after: Mapping[str, tuple[int, int]],
+    state: Any,
+    workspace_dir: Path,
+) -> list[str]:
+    """Pick files the user asked for, not every file a script happened to touch.
+
+    Two signals are intentional:
+    * the final assistant answer naming files (the model's declared outputs);
+    * an explicit user "send/attach/zip these files" request, which may refer to
+      files produced on an earlier turn, so the whole workspace is searched.
+    """
+    messages = _conversation_messages(state)
+    user_text = ""
+    last_user_index = -1
+    for index in range(len(messages) - 1, -1, -1):
+        if _message_role(messages[index]) in {"human", "user"}:
+            user_text = _message_text(messages[index])
+            last_user_index = index
+            break
+    assistant_texts = [
+        _message_text(message)
+        for message in messages
+        if _message_role(message) in {"ai", "assistant"} and _message_text(message)
+    ]
+    assistant_texts = assistant_texts[-5:]
+    current_assistant_texts = [
+        _message_text(message)
+        for message in messages[last_user_index + 1 :]
+        if _message_role(message) in {"ai", "assistant"} and _message_text(message)
+    ]
+    send_intent = bool(_SEND_INTENT_RE.search(user_text))
+    if send_intent:
+        all_paths = [(workspace_dir.expanduser().resolve() / rel).as_posix() for rel in after]
+        referenced = _referenced_workspace_paths(
+            [user_text, *assistant_texts], all_paths, workspace_dir
+        )
+        if referenced:
+            return referenced
+        # The user explicitly asked for files. Without a name to match, the
+        # current turn's produced files are safe; otherwise use a file-type
+        # hint such as "把刚才的 Word 文件发给我".
+        if changed:
+            return list(changed)
+        suffixes = _requested_suffixes(user_text)
+        if suffixes:
+            return [path for path in all_paths if Path(path).suffix.casefold() in suffixes]
+        return []
+    auto_changed = [path for path in changed if _is_auto_deliverable(path, user_text)]
+    referenced = _referenced_workspace_paths(
+        [current_assistant_texts[-1]] if current_assistant_texts else [],
+        auto_changed,
+        workspace_dir,
+    )
+    return referenced
 
 
 class ThreadArtifactsMiddleware(AgentMiddleware[Any, Any]):
@@ -212,11 +399,11 @@ class ThreadArtifactsMiddleware(AgentMiddleware[Any, Any]):
             self._snapshots[tid] = snapshot
 
     def after_agent(self, state: Any, runtime: Any) -> None:
-        del state, runtime
-        self._record_workspace_changes(current_thread_id())
+        del runtime
+        self._record_workspace_changes(current_thread_id(), state)
 
     async def aafter_agent(self, state: Any, runtime: Any) -> None:
-        del state, runtime
+        del runtime
         tid = current_thread_id()
         if not tid:
             return
@@ -226,10 +413,16 @@ class ThreadArtifactsMiddleware(AgentMiddleware[Any, Any]):
             return
         after = await asyncio.to_thread(_workspace_snapshot, self._workspace_dir)
         changed = _changed_workspace_paths(before, after, self._workspace_dir)
-        if changed:
-            self._append(tid, changed)
+        selected = select_turn_artifacts(
+            changed=changed,
+            after=after,
+            state=state,
+            workspace_dir=self._workspace_dir,
+        )
+        if selected:
+            self._append(tid, selected)
 
-    def _record_workspace_changes(self, tid: str) -> None:
+    def _record_workspace_changes(self, tid: str, state: Any) -> None:
         if not tid:
             return
         with self._snapshot_lock:
@@ -238,8 +431,14 @@ class ThreadArtifactsMiddleware(AgentMiddleware[Any, Any]):
             return
         after = _workspace_snapshot(self._workspace_dir)
         changed = _changed_workspace_paths(before, after, self._workspace_dir)
-        if changed:
-            self._append(tid, changed)
+        selected = select_turn_artifacts(
+            changed=changed,
+            after=after,
+            state=state,
+            workspace_dir=self._workspace_dir,
+        )
+        if selected:
+            self._append(tid, selected)
 
     def _append(self, tid: str, paths: Sequence[str]) -> None:
         try:
