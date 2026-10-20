@@ -19,6 +19,7 @@ import {
 } from "../../../utils/parseWriteTodos";
 import MessageBubble from "./MessageBubble";
 import { ToolMediaStrip } from "./ToolMediaStrip";
+import ArtifactFilesCard from "./ArtifactFilesCard";
 import {
   TurnProcessBlocks,
   turnHasProcessSummary,
@@ -49,6 +50,9 @@ interface AssistantTurnViewProps {
   ) => void;
   onOpenBrowser?: () => void;
   onEditFile?: () => void;
+  onOpenFiles?: () => void;
+  /** Thread files written during the turn (including via scripts/shell). */
+  artifactFiles?: readonly string[];
   onRunShellCommand?: (code: string) => void;
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;
@@ -75,6 +79,8 @@ export default function AssistantTurnView({
   onHitlDecision,
   onOpenBrowser,
   onEditFile,
+  onOpenFiles,
+  artifactFiles = [],
   onRunShellCommand,
   shellCommandDisabled,
   shellCommandDisabledTitle,
@@ -120,7 +126,9 @@ export default function AssistantTurnView({
   const usedBrowser = turnUsedBrowserTool(fullSplit);
   const showOpenBrowser = usedBrowser && !!onOpenBrowser;
   const usedFileTool = turnUsedFileTool(fullSplit);
-  const showEditFile = usedFileTool && !!onEditFile;
+  const showArtifacts =
+    !turnStreaming && Boolean(agentId) && artifactFiles.length > 0;
+  const showEditFile = !showArtifacts && usedFileTool && !!onEditFile;
   const turnFileCount = useMemo(() => {
     const fromPaths = collectChatFilePaths(messages, agentId).length;
     if (fromPaths > 0) return fromPaths;
@@ -249,6 +257,15 @@ export default function AssistantTurnView({
             onRunShellCommand={onRunShellCommand}
             shellCommandDisabled={shellCommandDisabled}
             shellCommandDisabledTitle={shellCommandDisabledTitle}
+          />
+        </div>
+      ) : null}
+      {showArtifacts && agentId ? (
+        <div className={styles.turnInset}>
+          <ArtifactFilesCard
+            agentId={agentId}
+            files={artifactFiles}
+            onOpenFiles={onOpenFiles}
           />
         </div>
       ) : null}

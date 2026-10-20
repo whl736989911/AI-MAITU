@@ -106,6 +106,8 @@ interface MessageListProps {
   ) => void;
   onOpenBrowser?: () => void;
   onEditFile?: () => void;
+  onOpenFiles?: () => void;
+  artifactFiles?: string[];
   onRunShellCommand?: (code: string) => void;
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;
@@ -132,6 +134,8 @@ interface GroupRenderContext {
   ) => void;
   onOpenBrowser?: () => void;
   onEditFile?: () => void;
+  onOpenFiles?: () => void;
+  artifactFiles?: string[];
   onRunShellCommand?: (code: string) => void;
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;
@@ -154,6 +158,8 @@ function renderMessageGroup(
     lastAssistantGroupIndex: ctx.lastAssistantGroupIndex,
     lastUserGroupIndex: ctx.lastUserGroupIndex,
   });
+  const artifactFiles =
+    groupIndex === ctx.lastAssistantGroupIndex ? ctx.artifactFiles ?? [] : [];
 
   if (!group.isGroup || group.messages.length === 1) {
     const msg = group.messages[0];
@@ -179,6 +185,8 @@ function renderMessageGroup(
             onHitlDecision={ctx.onHitlDecision}
             onOpenBrowser={openBrowserHandler}
             onEditFile={ctx.onEditFile}
+            onOpenFiles={ctx.onOpenFiles}
+            artifactFiles={artifactFiles}
             onRunShellCommand={ctx.onRunShellCommand}
             shellCommandDisabled={ctx.shellCommandDisabled}
             shellCommandDisabledTitle={ctx.shellCommandDisabledTitle}
@@ -231,6 +239,8 @@ function renderMessageGroup(
         onHitlDecision={ctx.onHitlDecision}
         onOpenBrowser={openBrowserHandler}
         onEditFile={ctx.onEditFile}
+        onOpenFiles={ctx.onOpenFiles}
+        artifactFiles={artifactFiles}
         onRunShellCommand={ctx.onRunShellCommand}
         shellCommandDisabled={ctx.shellCommandDisabled}
         shellCommandDisabledTitle={ctx.shellCommandDisabledTitle}
@@ -264,6 +274,8 @@ export default function MessageList(props: MessageListProps) {
     onHitlDecision,
     onOpenBrowser,
     onEditFile,
+    onOpenFiles,
+    artifactFiles,
     onRunShellCommand,
     shellCommandDisabled,
     shellCommandDisabledTitle,
@@ -698,6 +710,8 @@ export default function MessageList(props: MessageListProps) {
       onHitlDecision,
       onOpenBrowser,
       onEditFile,
+      onOpenFiles,
+      artifactFiles,
       onRunShellCommand,
       shellCommandDisabled,
       shellCommandDisabledTitle,
@@ -720,6 +734,8 @@ export default function MessageList(props: MessageListProps) {
       onHitlDecision,
       onOpenBrowser,
       onEditFile,
+      onOpenFiles,
+      artifactFiles,
       onRunShellCommand,
       shellCommandDisabled,
       shellCommandDisabledTitle,

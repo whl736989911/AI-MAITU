@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
 import re
+import threading
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from pathlib import Path
 from typing import Any, Protocol
@@ -32,6 +34,21 @@ ARTIFACT_TOOL_BASES = frozenset(
 )
 _PATH_KEYS = ("path", "file_path", "filepath", "dest", "target_path", "output_path")
 _PATH_EXT_RE = re.compile(r"\.[A-Za-z][A-Za-z0-9._+-]{0,11}$")
+_MAX_SNAPSHOT_FILES = 5000
+_SNAPSHOT_SKIP_DIRS = frozenset(
+    {
+        ".git",
+        ".octop",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".mypy_cache",
+        "inbound",
+    }
+)
 
 
 class ArtifactThreadStore(Protocol):
@@ -114,13 +131,121 @@ def artifacts_for_response(paths: Sequence[str], workspace_dir: Path) -> list[st
     return list(dict.fromkeys(p for raw in paths if (p := _path(raw, workspace_dir))))
 
 
+def _workspace_snapshot(workspace_dir: Path) -> dict[str, tuple[int, int]]:
+    """Cheap stat snapshot used to catch files written by scripts/commands.
+
+    The artifact-tool path extractor cannot see a ``python gen_docx.py`` call
+    write ten output files. Comparing the workspace before and after the agent
+    run gives every produced user file the same downloadable artifact treatment
+    as an explicit ``write_file`` result, without trusting text in the answer.
+    """
+    root = workspace_dir.expanduser().resolve()
+    if not root.is_dir():
+        return {}
+    snapshot: dict[str, tuple[int, int]] = {}
+    for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name not in _SNAPSHOT_SKIP_DIRS and not name.startswith(".")
+        )
+        for filename in sorted(filenames):
+            absolute = Path(dirpath) / filename
+            try:
+                rel = absolute.relative_to(root).as_posix()
+            except ValueError:
+                continue
+            if not _artifact_path_allowed(rel):
+                continue
+            try:
+                stat = absolute.stat()
+            except OSError:
+                continue
+            snapshot[rel] = (stat.st_mtime_ns, stat.st_size)
+            if len(snapshot) >= _MAX_SNAPSHOT_FILES:
+                return snapshot
+    return snapshot
+
+
+def _changed_workspace_paths(
+    before: Mapping[str, tuple[int, int]],
+    after: Mapping[str, tuple[int, int]],
+    workspace_dir: Path,
+) -> list[str]:
+    changed: list[str] = []
+    for rel, state in after.items():
+        previous = before.get(rel)
+        if previous == state:
+            continue
+        # New and modified files are both deliverables; unchanged files are
+        # deliberately excluded so a turn that only reads does not create noise.
+        changed.append((workspace_dir.expanduser().resolve() / rel).as_posix())
+    return changed
+
+
 class ThreadArtifactsMiddleware(AgentMiddleware[Any, Any]):
     """Persist successful artifact paths and Plan-mode pending plan path."""
 
     def __init__(self, *, thread_repo: ArtifactThreadStore, workspace_dir: Path) -> None:
         super().__init__()
         self._threads = thread_repo
-        self._workspace_dir = workspace_dir.expanduser()
+        self._workspace_dir = workspace_dir.expanduser().resolve()
+        self._snapshots: dict[str, dict[str, tuple[int, int]]] = {}
+        self._snapshot_lock = threading.Lock()
+
+    def before_agent(self, state: Any, runtime: Any) -> None:
+        del state, runtime
+        tid = current_thread_id()
+        if not tid:
+            return
+        snapshot = _workspace_snapshot(self._workspace_dir)
+        with self._snapshot_lock:
+            self._snapshots[tid] = snapshot
+
+    async def abefore_agent(self, state: Any, runtime: Any) -> None:
+        del state, runtime
+        tid = current_thread_id()
+        if not tid:
+            return
+        snapshot = await asyncio.to_thread(_workspace_snapshot, self._workspace_dir)
+        with self._snapshot_lock:
+            self._snapshots[tid] = snapshot
+
+    def after_agent(self, state: Any, runtime: Any) -> None:
+        del state, runtime
+        self._record_workspace_changes(current_thread_id())
+
+    async def aafter_agent(self, state: Any, runtime: Any) -> None:
+        del state, runtime
+        tid = current_thread_id()
+        if not tid:
+            return
+        with self._snapshot_lock:
+            before = self._snapshots.pop(tid, None)
+        if before is None:
+            return
+        after = await asyncio.to_thread(_workspace_snapshot, self._workspace_dir)
+        changed = _changed_workspace_paths(before, after, self._workspace_dir)
+        if changed:
+            self._append(tid, changed)
+
+    def _record_workspace_changes(self, tid: str) -> None:
+        if not tid:
+            return
+        with self._snapshot_lock:
+            before = self._snapshots.pop(tid, None)
+        if before is None:
+            return
+        after = _workspace_snapshot(self._workspace_dir)
+        changed = _changed_workspace_paths(before, after, self._workspace_dir)
+        if changed:
+            self._append(tid, changed)
+
+    def _append(self, tid: str, paths: Sequence[str]) -> None:
+        try:
+            self._threads.append_artifacts(tid, list(paths))
+        except Exception:
+            logger.warning("Failed to persist thread artifacts for %s", tid, exc_info=True)
 
     def wrap_tool_call(
         self,

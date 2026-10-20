@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -86,3 +87,28 @@ def test_failed_write_does_not_offer_an_unwritten_plan(tmp_path: Path) -> None:
         middleware.wrap_tool_call(_request("plans/review.md"), lambda _req: failed)
     assert threads.artifacts == []
     assert threads.pending_plan is None
+
+
+def test_agent_snapshot_records_script_written_docx(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    unchanged = workspace / "notes.md"
+    unchanged.write_text("before", encoding="utf-8")
+    threads = _Threads()
+    middleware = ThreadArtifactsMiddleware(thread_repo=threads, workspace_dir=workspace)
+    with patch(
+        "octop.infra.agents.middleware.thread_artifacts.current_thread_id",
+        return_value="thread-a",
+    ):
+        middleware.before_agent(None, None)
+        unchanged.write_text("after modified", encoding="utf-8")
+        generated = workspace / "申报书.docx"
+        generated.write_text("binary-ish", encoding="utf-8")
+        os.utime(generated, None)
+        middleware.after_agent(None, None)
+
+    assert len(threads.artifacts) == 1
+    thread_id, paths = threads.artifacts[0]
+    assert thread_id == "thread-a"
+    assert generated.as_posix() in paths
+    assert unchanged.as_posix() in paths

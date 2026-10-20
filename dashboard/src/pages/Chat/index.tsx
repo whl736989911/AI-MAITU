@@ -1271,6 +1271,14 @@ function ChatPageInner() {
                     onAcpPermissionSelect={handleAcpPermissionSelect}
                     onHitlDecision={handleHitlDecision}
                     onTurnRailVisibilityChange={setTurnRailVisible}
+                    artifactFiles={
+                      sharedExpertViewer ? [] : composerSession?.artifacts ?? []
+                    }
+                    onOpenFiles={
+                      !sharedExpertViewer && !isMobile
+                        ? openFileList
+                        : undefined
+                    }
                     onOpenBrowser={
                       hasBrowserTool && !isMobile ? openBrowserTab : undefined
                     }
