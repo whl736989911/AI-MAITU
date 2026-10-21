@@ -187,9 +187,9 @@ export function agentIdFromWorkspacePath(path: string): string | null {
 /**
  * Build a workspace download URL.
  *
- * Absolute / ``file://`` paths are passed through (API default treats leading
- * ``/`` as host-absolute). Legacy ``/outbound|inbound/…`` keys are rewritten to
- * relative workspace paths. Other relative keys omit the leading slash.
+ * Explicit virtual ``/workspace/…`` and legacy ``/outbound|inbound/…`` keys are
+ * rewritten to workspace-relative paths. Other absolute paths and ``file://``
+ * URIs are passed through so host-path checks remain authoritative.
  */
 export function workspaceDownloadUrl(
   agentId: string,
@@ -200,9 +200,17 @@ export function workspaceDownloadUrl(
   if (raw.toLowerCase().startsWith("file://")) {
     pathParam = raw;
   } else {
-    const mediaRel = extractWorkspaceRel(raw);
-    if (mediaRel) {
-      pathParam = mediaRel;
+    const normalized = raw.replace(/\\/g, "/");
+    const virtualRel = stripVirtualWorkspaceRoot(normalized);
+    if (virtualRel !== normalized) {
+      pathParam = virtualRel;
+    } else if (
+      normalized === "/outbound" ||
+      normalized === "/inbound" ||
+      normalized.startsWith("/outbound/") ||
+      normalized.startsWith("/inbound/")
+    ) {
+      pathParam = normalized.replace(/^\/+/, "");
     } else if (
       raw.startsWith("/") ||
       /^[A-Za-z]:[\\/]/.test(raw) ||

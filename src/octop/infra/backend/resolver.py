@@ -183,13 +183,15 @@ def find_agents_using_storage_backend(
 
 
 def backend_spec_supports_execution(spec: Any) -> bool:
-    """True when the backend spec resolves to a sandbox/shell backend.
+    """Whether the backend selected for ordinary workspace paths can execute.
 
-    deepagents ``FilesystemMiddleware`` rejects filesystem ``permissions`` when
-    the backend implements ``SandboxBackendProtocol`` (e.g. ``local_shell``).
+    For composites, deepagents dispatches unmatched paths to ``default``;
+    execution-capable route backends do not make the default backend executable.
+    A missing spec is deliberately unknown here: callers should resolve the
+    agent's actual default backend before asking this question.
     """
     if spec is None:
-        return True
+        return False
     if isinstance(spec, str):
         return spec in {"local_shell", "docker", "opensandbox"}
     if not isinstance(spec, dict):
@@ -198,9 +200,5 @@ def backend_spec_supports_execution(spec: Any) -> bool:
     if kind in {"local_shell", "docker", "opensandbox"}:
         return True
     if kind == "composite":
-        if backend_spec_supports_execution(spec.get("default")):
-            return True
-        routes = spec.get("routes")
-        if isinstance(routes, dict):
-            return any(backend_spec_supports_execution(route) for route in routes.values())
+        return backend_spec_supports_execution(spec.get("default"))
     return False

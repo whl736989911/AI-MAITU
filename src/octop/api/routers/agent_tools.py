@@ -32,7 +32,13 @@ class ToolSettingsItem(BaseModel):
     description: str | None = None
     enabled: bool
     disableable: bool
-    available: bool = True
+    available: bool = Field(
+        default=True,
+        description=(
+            "Whether configured capabilities provide this tool, independent of "
+            "its enabled setting and transient runtime constraints."
+        ),
+    )
     plugin_id: str | None = None
 
 
@@ -78,6 +84,7 @@ async def get_tool_settings(
     assert server.app_runtime is not None
     registry = server.app_runtime.require_agent_registry()
     agent_cfg = registry.get_config(agent_id)
+    backend_spec = registry.resolved_backend_spec(agent_id)
     disabled = set(normalize_tools_disabled(agent_cfg.get("tools_disabled")))
     mobile_enabled = bool(server.config is not None and server.config.capabilities.mobile.enabled)
 
@@ -97,6 +104,7 @@ async def get_tool_settings(
                     entry.name,
                     agent_cfg=agent_cfg,
                     mobile_enabled=mobile_enabled,
+                    backend_spec=backend_spec,
                 ),
                 plugin_id=None,
             )

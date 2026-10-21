@@ -34,6 +34,7 @@ from octop.infra.agents.workspace_dir import (
     LEGACY_SYSTEM_FILES_DIRNAME,
     MIGRATED_AUTH_DIRNAME,
     SYSTEM_FILES_DIRNAME,
+    agent_facing_workspace_dir_from_config,
 )
 from octop.infra.backup.workspace_archive import export_workspace_zip, import_workspace_zip
 from octop.infra.errors import ErrorCode, OctopError
@@ -276,6 +277,33 @@ def _workspace_io_path(
         if ".harness-browser" in str(resolved).lower():
             raise OctopError(ErrorCode.FORBIDDEN, "browser profile paths are not allowed")
     return io_path
+
+
+def _agent_facing_virtual_workspace_rel(path: str, *, server: Any, agent_id: str) -> str | None:
+    """Map only this agent's configured virtual workspace root to a relative key."""
+    if path.strip().lower().startswith("file://"):
+        return None
+    registry = getattr(getattr(server, "app_runtime", None), "agent_registry", None)
+    get_config = getattr(registry, "get_config", None)
+    if not callable(get_config):
+        return None
+    cfg = get_config(agent_id)
+    facing_root = agent_facing_workspace_dir_from_config(cfg).replace("\\", "/").rstrip("/")
+    root_parts = facing_root.split("/")
+    if (
+        len(root_parts) != 4
+        or root_parts[0] != ""
+        or root_parts[1] not in {SYSTEM_FILES_DIRNAME, LEGACY_SYSTEM_FILES_DIRNAME}
+        or root_parts[2] != "workspaces"
+        or not root_parts[3]
+    ):
+        return None
+    raw = path.strip().replace("\\", "/")
+    if raw == facing_root:
+        return "."
+    if raw.startswith(f"{facing_root}/"):
+        return raw[len(facing_root) + 1 :]
+    return None
 
 
 _FROM_WORKSPACE_DESC = (
@@ -535,7 +563,19 @@ async def upload_file(
     return {"path": target, "size": len(data)}
 
 
-@router.get("/agents/{agent_id}/workspace/download")
+@router.get(
+    "/agents/{agent_id}/workspace/download",
+    summary="Download a workspace file",
+    response_class=StreamingResponse,
+    responses={
+        200: {
+            "description": "Binary workspace file download.",
+            "content": {
+                "application/octet-stream": {"schema": {"type": "string", "format": "binary"}}
+            },
+        }
+    },
+)
 async def download_file(
     agent_id: str,
     path: str,
@@ -544,10 +584,17 @@ async def download_file(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> StreamingResponse:
-    """Stream a file contained in this agent's workspace."""
+    """Download within this workspace, including its configured agent-facing virtual root.
+
+    Recognizes only the current agent's configured ``/.maitu/workspaces/<id>``
+    (or legacy ``/.octop/workspaces/<id>``) prefix. Explicit ``file://`` paths keep
+    host-path semantics. All paths retain workspace confinement and system-file checks.
+    """
     ws = await require_running_workspace(agent_id, user=user, as_user=as_user, server=server)
+    virtual_rel = _agent_facing_virtual_workspace_rel(path, server=server, agent_id=agent_id)
+    download_path = virtual_rel if virtual_rel is not None else path
     io_path = _workspace_io_path(
-        path, from_workspace=from_workspace, workspace_dir=ws.workspace_dir
+        download_path, from_workspace=from_workspace, workspace_dir=ws.workspace_dir
     )
     _assert_workspace_readable(
         io_path,

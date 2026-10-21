@@ -174,7 +174,7 @@ ownership, feature workflow/shared-memory rules, or the licensed deployment floo
 | `POST`   | `/agents/{id}/read` | owner | `204` (mark unread badge cleared) |
 | `GET`    | `/agents/{id}/status` | owner | `{state, last_error?, ...}` |
 | `POST`   | `/agents/from-expert/{expert_id}` | user | body `{name, ...}` → `201` (creates from bundled expert template) |
-| `GET`    | `/agents/{id}/tool-settings` | owner | built-in + installed plugin tools with enable / disableable / available flags |
+| `GET`    | `/agents/{id}/tool-settings` | agent access + `tools` | built-in + installed plugin tools with enabled / disableable / available flags |
 | `PUT`    | `/agents/{id}/tool-settings` | owner | body `{disabled_builtin: string[], plugins?}` — persists denylist + plugin flags (hot-sync, no reload) |
 | `PATCH`  | `/agents/{id}/tool-settings/{tool_name}` | owner | body `{enabled, source, plugin_id?}` — toggle one tool (hot-sync) |
 
@@ -184,6 +184,16 @@ first, then the thread's saved mode, then the agent default, finally Craft.
 An unset thread mode remains unset in list/history responses so the dashboard
 can follow a changed agent default. The business-operations, productivity,
 design and engineering templates are available to experts and feature creation.
+
+The dashboard's explicit feature-workflow **Run** action selects Craft for that
+turn and saves it on the caller's thread. Ordinary Ask/Plan messages remain
+read-only. This does not enable disabled tools, bypass approvals, or grant access
+to an execution backend.
+
+`execute.available` describes the resolved backend's configured execution
+capability, independently of `enabled`. Filesystem-only backends do not provide
+execution; a composite must have an executable default backend. Ask/Plan policy,
+agent running state, and sandbox startup failures remain separate runtime limits.
 
 ## Skills and skill packages
 
@@ -545,7 +555,7 @@ upload creates a new version and the previous current version is retained.
 | `DELETE` | `/agents/{aid}/workspace/file` | owner | delete a content file |
 | `POST`   | `/agents/{aid}/workspace/rename` | owner | rename / move |
 | `POST`   | `/agents/{aid}/workspace/upload` | owner | multipart upload → backend (not `max_upload_mb`) |
-| `GET`    | `/agents/{aid}/workspace/download` | owner | download a file |
+| `GET`    | `/agents/{aid}/workspace/download` | agent access | download an authorized workspace file; system paths remain owner/admin-only |
 | `GET`    | `/agents/{aid}/workspace/glob` | owner | glob backend paths |
 | `GET`    | `/agents/{aid}/workspace/grep` | owner | grep backend files |
 | `GET`    | `/agents/{aid}/workspace/...` | owner | see `api/routers/workspace.py` |
@@ -573,6 +583,14 @@ upload creates a new version and the previous current version is retained.
 | `GET` | `/agents/{aid}/memory/backups/{backup_id}/download` | same caller/agent/scope | ZIP download; shared-scope archives are also caller-bound |
 | `DELETE` | `/agents/{aid}/memory/backups/{backup_id}` | same caller/agent/scope | `scope` and `confirmed=true` query parameters |
 | `POST` | `/agents/{aid}/memory/restore` | scoped memory write | `{scope, backup_id, confirmed:true}`; creates a safety backup before restoring |
+
+Workspace downloads accept relative file keys and host-absolute paths that resolve
+inside the current agent's workspace. The dashboard converts the canonical
+`/workspace/...` virtual prefix to a relative key. The download API also recognizes
+only that agent's configured `/.maitu/workspaces/<id>/...` (or legacy
+`/.octop/workspaces/<id>/...`) prefix; other agent namespaces are not remapped.
+Explicit `file://` paths retain host-path semantics. Normalization never removes
+traversal checks or owner-only system-file restrictions.
 
 For a feature, its author may edit shared memory while the workflow is a draft;
 in-scope enterprise administrators may inspect the draft and training memory.

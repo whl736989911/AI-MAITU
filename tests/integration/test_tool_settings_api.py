@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -37,6 +38,55 @@ async def test_tool_settings_list_and_put(env: Any) -> None:
 
     cfg = srv.app_runtime.agent_registry.get_config(aid)
     assert cfg.get("tools_disabled") == ["execute", "web_fetch"]
+
+
+async def test_execute_availability_reflects_configured_backend(env: Any) -> None:
+    client, srv, auth = env
+    created = await client.post(
+        "/api/agents",
+        headers=auth,
+        json={"name": "tool-settings-backend-agent"},
+    )
+    assert created.status_code == 201, created.text
+    aid = created.json()["agent_id"]
+    registry = srv.app_runtime.agent_registry
+
+    for backend, expected in (
+        ({"type": "filesystem", "virtual_mode": True}, False),
+        ({"type": "local_shell", "virtual_mode": True}, True),
+        (
+            {
+                "type": "composite",
+                "default": {"type": "filesystem", "virtual_mode": True},
+                "routes": {"/shell": {"type": "local_shell", "virtual_mode": True}},
+            },
+            False,
+        ),
+        (
+            {
+                "type": "composite",
+                "default": {"type": "docker", "image": "python:3.12-slim"},
+                "routes": {"/files": {"type": "filesystem", "virtual_mode": True}},
+            },
+            True,
+        ),
+    ):
+        await registry.update_config_json(aid, json.dumps({"backend": backend}))
+        response = await client.get(f"/api/agents/{aid}/tool-settings", headers=auth)
+        assert response.status_code == 200, response.text
+        execute = next(tool for tool in response.json()["tools"] if tool["name"] == "execute")
+        assert execute["available"] is expected
+        assert execute["enabled"] is True
+
+    disabled = await client.put(
+        f"/api/agents/{aid}/tool-settings",
+        headers=auth,
+        json={"disabled_builtin": ["execute"]},
+    )
+    assert disabled.status_code == 200, disabled.text
+    execute = next(tool for tool in disabled.json()["tools"] if tool["name"] == "execute")
+    assert execute["enabled"] is False
+    assert execute["available"] is True
 
 
 async def test_tool_settings_patch_builtin_and_plugin(env: Any) -> None:

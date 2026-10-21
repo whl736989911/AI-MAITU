@@ -17,6 +17,12 @@ describe("workspaceDownloadUrl", () => {
     expect(url).toContain("path=%2FUsers%2Fme%2FDesktop%2Fa.pptx");
   });
 
+  it("rewrites explicit virtual /workspace artifacts to workspace keys", () => {
+    const url = workspaceDownloadUrl("main", "/workspace/report.docx");
+    expect(url).toContain("path=report.docx");
+    expect(url).not.toContain("path=%2Fworkspace");
+  });
+
   it("rewrites legacy /outbound/… to relative workspace keys", () => {
     const url = workspaceDownloadUrl("main", "/outbound/chart.png");
     expect(url).toContain("path=outbound%2Fchart.png");
@@ -26,6 +32,49 @@ describe("workspaceDownloadUrl", () => {
   it("passes relative outbound without adding a slash", () => {
     const url = workspaceDownloadUrl("main", "outbound/chart.png");
     expect(url).toContain("path=outbound%2Fchart.png");
+  });
+
+  it("does not collapse nested or traversing outbound segments", () => {
+    const nested = new URL(
+      workspaceDownloadUrl("main", "reports/outbound/report.docx"),
+      "http://localhost",
+    );
+    expect(nested.searchParams.get("path")).toBe(
+      "reports/outbound/report.docx",
+    );
+    const traversal = new URL(
+      workspaceDownloadUrl("main", "../outbound/report.docx"),
+      "http://localhost",
+    );
+    expect(traversal.searchParams.get("path")).toBe("../outbound/report.docx");
+  });
+
+  it("keeps host paths with a workspace segment and file URIs intact", () => {
+    const host = workspaceDownloadUrl(
+      "main",
+      "/Users/me/workspace/report.docx",
+    );
+    expect(host).toContain("path=%2FUsers%2Fme%2Fworkspace%2Freport.docx");
+    const file = workspaceDownloadUrl("main", "file:///tmp/report.docx");
+    expect(file).toContain("path=file%3A%2F%2F%2Ftmp%2Freport.docx");
+    expect(
+      workspaceDownloadUrl("main", "C:\\Users\\me\\workspace\\report.docx"),
+    ).toContain("path=C%3A%5CUsers%5Cme%5Cworkspace%5Creport.docx");
+    expect(
+      workspaceDownloadUrl("main", "/home/me/.octop/agents/other/report.docx"),
+    ).toContain("path=%2Fhome%2Fme%2F.octop%2Fagents%2Fother%2Freport.docx");
+    expect(
+      workspaceDownloadUrl(
+        "main",
+        "/.maitu/workspaces/agt_current/report.docx",
+      ),
+    ).toContain("path=%2F.maitu%2Fworkspaces%2Fagt_current%2Freport.docx");
+    expect(
+      workspaceDownloadUrl("main", "/Users/me/workspace/outbound/report.docx"),
+    ).toContain("path=%2FUsers%2Fme%2Fworkspace%2Foutbound%2Freport.docx");
+    expect(workspaceDownloadUrl("main", "../report.docx")).toContain(
+      "path=..%2Freport.docx",
+    );
   });
 });
 

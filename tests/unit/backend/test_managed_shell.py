@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from tests.support.fakes import fake_bin_path
 
 from octop.infra.backend import managed_shell
 from octop.infra.backend.managed_shell import ManagedShellBackend, SourceShellBackend
@@ -254,6 +255,75 @@ def test_managed_with_runtime_still_refuses_host_fallback(
         backend.execute("touch host-execution.txt")
     assert caught.value.code == ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED
     assert not sentinel.exists()
+
+
+def test_managed_execute_accepts_trusted_platform_python_environment(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("octop.infra.utils.host_dirs.license_managed_install", lambda: True)
+    site = str(tmp_path / "plat" / ".venv" / "site-packages")
+    runtime_root = str(tmp_path / "plat" / ".venv")
+    mounts = managed_shell._PythonRuntimeMounts(
+        binds=((runtime_root, runtime_root),),
+        bin_dir=str(tmp_path / "plat" / ".venv" / "bin"),
+        site_packages=site,
+    )
+    monkeypatch.setattr(managed_shell, "_platform_python_runtime", lambda: mounts)
+    captured: dict[str, Any] = {}
+
+    def fake_run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
+        captured["argv"] = argv
+        captured["env"] = kwargs["env"]
+        return subprocess.CompletedProcess([], 0, stdout="ok", stderr="")
+
+    monkeypatch.setattr(managed_shell.subprocess, "run", fake_run)
+    backend = ManagedShellBackend(
+        root_dir=tmp_path,
+        workspace_dir=tmp_path,
+        virtual_mode=True,
+        bwrap_path=fake_bin_path("bwrap"),
+        env={},
+        inherit_env=False,
+    )
+
+    response = backend.execute("python -c 'import sys; print(sys.executable)'")
+
+    assert getattr(response, "exit_code", None) == 0
+    assert captured["env"]["PATH"].split(os.pathsep)[0] == mounts.bin_dir
+    assert captured["env"]["PYTHONPATH"] == site
+    assert captured["argv"][0] == fake_bin_path("bwrap")
+    argv = captured["argv"]
+    runtime_bind = argv.index(runtime_root)
+    assert argv[runtime_bind - 1 : runtime_bind + 2] == [
+        "--ro-bind",
+        runtime_root,
+        runtime_root,
+    ]
+
+
+@pytest.mark.parametrize("name", ["PATH", "PYTHONPATH"])
+def test_managed_execute_still_rejects_caller_runtime_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str
+) -> None:
+    monkeypatch.setattr("octop.infra.utils.host_dirs.license_managed_install", lambda: True)
+    monkeypatch.setenv(name, fake_bin_path("trusted-host-runtime"))
+    monkeypatch.setattr(
+        managed_shell,
+        "_platform_python_runtime",
+        lambda: managed_shell._PythonRuntimeMounts(
+            binds=(), bin_dir=None, site_packages=fake_bin_path("platform-site-packages")
+        ),
+    )
+    backend = ManagedShellBackend(
+        root_dir=tmp_path,
+        workspace_dir=tmp_path,
+        virtual_mode=True,
+        bwrap_path=fake_bin_path("bwrap"),
+        env={name: fake_bin_path("caller-runtime")},
+    )
+
+    with pytest.raises(ValueError, match=name):
+        backend.execute("python -c 'print(1)'")
 
 
 @posix_only

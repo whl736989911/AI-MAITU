@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from io import BytesIO
+
 import pytest
+from docx import Document
 
 from tests.support.auth import create_user, resolve_user_id
 
@@ -333,6 +336,101 @@ async def test_a_directed_grant_puts_the_agent_in_the_list(env) -> None:
     stranger_list = await client.get("/api/agents", headers=stranger_auth)
     assert stranger_list.status_code == 200, stranger_list.text
     assert agent_id not in {row["agent_id"] for row in stranger_list.json()}
+
+
+async def test_shared_peer_downloads_only_its_agent_facing_artifact_namespace(
+    env, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, server, admin_auth = env
+    owner_auth = await create_user(client, admin_auth, username="artifact_owner")
+    peer_auth = await create_user(client, admin_auth, username="artifact_peer")
+    created = await client.post(
+        "/api/features",
+        headers=owner_auth,
+        json={"feature_id": "shared-artifact", "name": "shared-artifact-bot"},
+    )
+    assert created.status_code == 201, created.text
+    agent_id = created.json()["agent_id"]
+    document = Document()
+    document.add_paragraph("共享功能生成的文档")
+    output = BytesIO()
+    document.save(output)
+    body = output.getvalue()
+    written = await client.post(
+        f"/api/agents/{agent_id}/workspace/upload",
+        headers=owner_auth,
+        params={"path": "report.docx"},
+        files={
+            "file": (
+                "report.docx",
+                body,
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            )
+        },
+    )
+    assert written.status_code == 200, written.text
+    published = await client.put(
+        f"/api/agents/{agent_id}/workflow",
+        headers=owner_auth,
+        json={
+            "workflow": {
+                "version": 1,
+                "status": "active",
+                "inputs": {
+                    "type": "object",
+                    "properties": {
+                        "topic": {"type": "string", "title": {"zh": "主题", "en": "Topic"}}
+                    },
+                },
+                "steps": [{"id": "generate", "name": "生成", "prompt": "生成报告"}],
+                "outputs": [{"name": "报告", "form": "file"}],
+            }
+        },
+    )
+    assert published.status_code == 200, published.text
+    peer_id = await resolve_user_id(client, admin_auth, "artifact_peer")
+    shared = await client.post(
+        "/api/sharing/acl/feature/shared-artifact",
+        headers=admin_auth,
+        json={
+            "visibility": "private",
+            "grants": [{"grantee_type": "user", "grantee_id": str(peer_id)}],
+        },
+    )
+    assert shared.status_code == 200, shared.text
+
+    registry = server.app_runtime.agent_registry
+    original_get_config = registry.get_config
+    facing_root = f"/.maitu/workspaces/{agent_id}"
+
+    def get_config(requested_agent_id: str) -> dict[str, object]:
+        if requested_agent_id == agent_id:
+            return {"workspace_dir": facing_root}
+        return original_get_config(requested_agent_id)
+
+    monkeypatch.setattr(registry, "get_config", get_config)
+    downloaded = await client.get(
+        f"/api/agents/{agent_id}/workspace/download",
+        headers=peer_auth,
+        params={"path": f"{facing_root}/report.docx"},
+    )
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.content == body
+    assert Document(BytesIO(downloaded.content)).paragraphs[0].text == "共享功能生成的文档"
+
+    foreign = await client.get(
+        f"/api/agents/{agent_id}/workspace/download",
+        headers=peer_auth,
+        params={"path": "/.maitu/workspaces/another-agent/report.docx"},
+    )
+    assert foreign.status_code == 403, foreign.text
+
+    protected = await client.get(
+        f"/api/agents/{agent_id}/workspace/download",
+        headers=peer_auth,
+        params={"path": f"{facing_root}/.maitu/sessions/x.jsonl"},
+    )
+    assert protected.status_code == 403, protected.text
 
 
 async def test_peer_cannot_read_shared_agent_system_files(env) -> None:
