@@ -25,34 +25,35 @@ export default function FinishStep({ adminCreds, providerDraft }: Props) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [running, setRunning] = useState(true);
+  const [attempt, setAttempt] = useState(0);
   const [errors, setErrors] = useState<{ login?: string; provider?: string }>(
     {},
   );
 
   useEffect(() => {
     let cancelled = false;
+    setRunning(true);
+    setErrors({});
     (async () => {
       const wizardToken = await resolveSetupProbeToken();
-
-      if (wizardToken) {
-        try {
-          await wizardApi.finish(
-            { provider_draft: providerDraft },
-            wizardToken,
-          );
-        } catch (e) {
-          if (!cancelled) {
-            setErrors((s) => ({
-              ...s,
-              provider: e instanceof Error ? e.message : String(e),
-            }));
-          }
+      if (!wizardToken) {
+        if (!cancelled) {
+          setErrors({ provider: t("wizard.sessionExpired") });
+          setRunning(false);
         }
-      } else if (!wizardToken && !cancelled) {
-        setErrors((s) => ({
-          ...s,
-          provider: t("wizard.sessionExpired"),
-        }));
+        return;
+      }
+
+      try {
+        await wizardApi.finish({ provider_draft: providerDraft }, wizardToken);
+      } catch (e) {
+        if (!cancelled) {
+          setErrors({
+            provider: e instanceof Error ? e.message : String(e),
+          });
+          setRunning(false);
+        }
+        return;
       }
 
       try {
@@ -68,14 +69,18 @@ export default function FinishStep({ adminCreds, providerDraft }: Props) {
         } else if (setupJwt) {
           setAuthToken(setupJwt);
         } else {
-          throw new Error(t("wizard.sessionExpired"));
+          wizardSession.clearAll();
+          if (!cancelled) {
+            setRunning(false);
+            navigate("/login", { replace: true });
+          }
+          return;
         }
       } catch (e) {
         if (!cancelled) {
-          setErrors((s) => ({
-            ...s,
+          setErrors({
             login: e instanceof Error ? e.message : String(e),
-          }));
+          });
           setRunning(false);
         }
         return;
@@ -92,9 +97,9 @@ export default function FinishStep({ adminCreds, providerDraft }: Props) {
     return () => {
       cancelled = true;
     };
-  }, [adminCreds, providerDraft, navigate, t]);
+  }, [adminCreds, providerDraft, navigate, t, attempt]);
 
-  if (running && !errors.login) {
+  if (running) {
     return (
       <Space direction="vertical" align="center" style={{ width: "100%" }}>
         <Spin />
@@ -108,23 +113,34 @@ export default function FinishStep({ adminCreds, providerDraft }: Props) {
       {errors.login && (
         <Alert type="error" showIcon message={t("wizard.finish.loginFailed")} />
       )}
-      {errors.provider && !errors.login && (
+      {errors.provider && (
         <Alert
-          type="warning"
+          type="error"
           showIcon
-          message={t("wizard.finish.providerFailed")}
+          message={t("wizard.finish.failed")}
+          description={errors.provider}
         />
       )}
-      <Button
-        type="primary"
-        block
-        onClick={() => {
-          wizardSession.clearAll();
-          navigate("/login", { replace: true });
-        }}
-      >
-        {t("wizard.finish.fallbackToLogin")}
-      </Button>
+      {errors.provider && (
+        <Button
+          type="primary"
+          block
+          onClick={() => setAttempt((value) => value + 1)}
+        >
+          {t("common.retry")}
+        </Button>
+      )}
+      {errors.login && (
+        <Button
+          block
+          onClick={() => {
+            wizardSession.clearAll();
+            navigate("/login", { replace: true });
+          }}
+        >
+          {t("wizard.finish.fallbackToLogin")}
+        </Button>
+      )}
     </Space>
   );
 }

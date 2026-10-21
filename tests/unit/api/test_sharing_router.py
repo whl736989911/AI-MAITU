@@ -237,14 +237,88 @@ async def test_rollback_restores_the_replaced_state(api: dict[str, Any]) -> None
     )
     assert rolled_back.status_code == 200, rolled_back.text
     body = rolled_back.json()
-    assert body["status"] == "rolled_back"
-    assert body["applied"] is False
-    # ``entry`` is the state now in force: the one the rollback restored.
-    assert body["entry"]["visibility"] == "private"
-    assert body["entry"]["version"] > applied.json()["entry"]["version"]
+    assert body["status"] == "applied"
+    assert body["applied"] is True
 
     read = await client.get(_acl_url(api), headers=api["member"])
     assert read.json()["entry"]["visibility"] == "private"
+
+
+async def test_public_rollback_requires_approval_and_marks_source_only_after_apply(
+    api: dict[str, Any],
+) -> None:
+    client: httpx.AsyncClient = api["client"]
+
+    publish = await client.post(_acl_url(api), headers=api["member"], json={"visibility": "public"})
+    assert publish.status_code == 200, publish.text
+    approved_publish = await client.post(
+        f"/api/sharing/changes/{publish.json()['change_id']}/approve", headers=api["admin"]
+    )
+    assert approved_publish.status_code == 200, approved_publish.text
+    make_private = await client.post(
+        _acl_url(api), headers=api["member"], json={"visibility": "private"}
+    )
+    source_id = make_private.json()["change_id"]
+    assert make_private.json()["status"] == "applied"
+
+    rollback = await client.post(
+        f"/api/sharing/changes/{source_id}/rollback", headers=api["member"]
+    )
+    assert rollback.status_code == 200, rollback.text
+    reversal = rollback.json()
+    assert reversal["change_id"] != source_id
+    assert reversal["status"] == "pending_approval"
+    assert reversal["applied"] is False
+    assert reversal["entry"]["visibility"] == "private"
+
+    duplicate = await client.post(
+        f"/api/sharing/changes/{source_id}/rollback", headers=api["member"]
+    )
+    assert duplicate.status_code == 409, duplicate.text
+    still_private = await client.get(_acl_url(api), headers=api["member"])
+    assert still_private.json()["entry"]["visibility"] == "private"
+    source = await client.get("/api/sharing/changes?status=applied", headers=api["admin"])
+    assert source_id in [row["change_id"] for row in source.json()["changes"]]
+
+    pending = await client.get("/api/sharing/changes?status=pending_approval", headers=api["admin"])
+    reversal_row = next(
+        row for row in pending.json()["changes"] if row["change_id"] == reversal["change_id"]
+    )
+    assert reversal_row["rollback_of"] == source_id
+    approved = await client.post(
+        f"/api/sharing/changes/{reversal['change_id']}/approve", headers=api["admin"]
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "applied"
+    live = await client.get(_acl_url(api), headers=api["member"])
+    assert live.json()["entry"]["visibility"] == "public"
+    rolled_back = await client.get("/api/sharing/changes?status=rolled_back", headers=api["admin"])
+    assert source_id in [row["change_id"] for row in rolled_back.json()["changes"]]
+
+    repeated = await client.post(
+        f"/api/sharing/changes/{source_id}/rollback", headers=api["member"]
+    )
+    assert repeated.status_code == 409, repeated.text
+
+
+async def test_stale_pending_change_cannot_overwrite_new_acl(api: dict[str, Any]) -> None:
+    client: httpx.AsyncClient = api["client"]
+    pending = await client.post(_acl_url(api), headers=api["member"], json={"visibility": "public"})
+    assert pending.json()["status"] == "pending_approval"
+
+    newer = await client.post(
+        _acl_url(api),
+        headers=api["member"],
+        json={"visibility": "unit", "unit_key": "eng"},
+    )
+    assert newer.json()["status"] == "applied"
+    rejected = await client.post(
+        f"/api/sharing/changes/{pending.json()['change_id']}/approve", headers=api["admin"]
+    )
+    assert rejected.status_code == 409, rejected.text
+    current = await client.get(_acl_url(api), headers=api["member"])
+    assert current.json()["entry"]["visibility"] == "unit"
+    assert current.json()["entry"]["version"] == newer.json()["entry"]["version"]
 
 
 async def test_a_resource_without_an_acl_row_reports_no_entry(api: dict[str, Any]) -> None:

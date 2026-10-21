@@ -434,7 +434,16 @@ async def get_user(
     return _row_to_dict(row, server.services.user_policy_repo.list_for_user(row.id))
 
 
-@router.patch("/{user_id}")
+@router.patch(
+    "/{user_id}",
+    summary="Update an account atomically",
+    description=(
+        "Requires user-management permission and scope over the account. Validates "
+        "the entire patch before committing profile, access, policy and audit changes "
+        "together. Omitted fields are unchanged; null email, org_unit and "
+        "denied_permissions clear those values when permitted."
+    ),
+)
 async def patch_user(
     user_id: int,
     request: Request,
@@ -488,41 +497,18 @@ async def patch_user(
             # whose consequence the actor cannot undo: it drops the reach it
             # would need to take the role back.
             raise OctopError(ErrorCode.FORBIDDEN, "cannot demote yourself")
-        await server.user_manager.set_role(row.username, role)
-    if body.display_name is not None:
-        await server.user_manager.set_display_name(row.username, body.display_name)
-    if "email" in body.model_fields_set:
-        await server.user_manager.set_email(row.username, body.email)
     if "org_unit" in body.model_fields_set:
-        # Explicit ``null`` clears the binding; an omitted field was filtered out
-        # above, so this branch never runs for "leave it as it is". Clearing is
-        # a system administrator's move: an unbound account is outside every
-        # department tree, so a scoped administrator could otherwise park a user
-        # out of its own reach.
         _assert_target_unit(
             server, scope, body.org_unit, action="change the department of an account"
         )
-        await server.user_manager.set_org_unit(row.username, body.org_unit)
-    if body.disabled is True:
-        await server.user_manager.disable(row.username)
-    elif body.disabled is False:
-        await server.user_manager.enable(row.username)
-    if body.permissions is not None:
-        await server.user_manager.set_permissions(row.username, body.permissions)
     if "denied_permissions" in body.model_fields_set:
-        # Denies land after every grant above, because that is what they do:
-        # the key is taken away whatever granted it. Both directions are
-        # boundary moves — an explicit ``null``/``[]`` hands back whatever the
-        # deny was holding down — so neither is open to a non-admin.
         _assert_admin(actor, "deny permissions for an account")
-        await server.user_manager.set_denied_permissions(row.username, body.denied_permissions)
+    await server.user_manager.update_account(row.username, body.model_dump(exclude_unset=True))
     if _writes_access(body):
         # The account's effective ``channel_<kind>`` may have just changed, and
         # a channel that lost its type key stops now rather than at its next
         # restart (design §2.3/§2.4).
         await sync_channel_runtime(server, user_ids=[user_id])
-    if policy_kwargs:
-        await server.user_manager.set_resource_policy(row.username, **policy_kwargs)
     updated = server.user_manager.get_row(user_id)
     assert updated is not None
     return _row_to_dict(

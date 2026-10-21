@@ -1294,3 +1294,40 @@ async def test_permission_catalog_reports_can_grant_and_dynamic(
     assert held["users"]["can_grant"] is True
     assert held["providers"]["can_grant"] is False
     assert held["experts"]["can_grant"] is False
+
+
+@pytest.mark.parametrize(
+    ("invalid_patch", "status"),
+    [
+        ({"org_unit": "unknown-unit"}, 404),
+        ({"denied_permissions": ["not_a_permission"]}, 400),
+        ({"email": "not-an-email"}, 400),
+    ],
+)
+async def test_rejected_account_patch_keeps_other_fields(env, invalid_patch, status):
+    client, _server, auth = env
+    await ensure_test_org_unit(client, auth)
+    created = await client.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "atomic-patch",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "test-unit",
+            "display_name": "Original",
+        },
+    )
+    assert created.status_code == 201, created.text
+    user_id = created.json()["id"]
+
+    rejected = await client.patch(
+        f"/api/users/{user_id}",
+        headers=auth,
+        json={"display_name": "Must not save", "token_quota": 100, **invalid_patch},
+    )
+    assert rejected.status_code == status, rejected.text
+    stored = (await client.get(f"/api/users/{user_id}", headers=auth)).json()
+    assert stored["display_name"] == "Original"
+    assert stored["org_unit"] == "test-unit"
+    assert stored["token_quota"] is None

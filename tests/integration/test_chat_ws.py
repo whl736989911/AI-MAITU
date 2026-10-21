@@ -588,3 +588,166 @@ async def test_fork_thread_from_assistant_message(env: Any) -> None:
         json={"message_id": "a1", "assistant_turns_from_end": 2},
     )
     assert denied.status_code in {403, 404}
+
+
+async def _thread_history_texts(c: Any, aid: str, tid: str, auth: Any) -> list[str]:
+    history = await c.get(f"/api/agents/{aid}/threads/{tid}/history", headers=auth)
+    assert history.status_code == 200
+    texts: list[str] = []
+    for msg in history.json()["messages"]:
+        content = msg.get("content")
+        if isinstance(content, str):
+            texts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    texts.append(str(block.get("text") or ""))
+    return texts
+
+
+async def test_fork_thread_before_user_turn_cuts_context(env: Any) -> None:
+    """Edit/regenerate: the fork keeps only the history *before* the located
+    user turn, and the source thread stays untouched."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    created = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    source_id = created.json()["thread_id"]
+    agent = srv.app_runtime.agent_registry.get_agent(aid)
+    agent.seed_thread_messages(
+        source_id,
+        [
+            HumanMessage(content="first question", id="h1"),
+            AIMessage(content="first answer", id="a1"),
+            HumanMessage(content="second question", id="h2"),
+            AIMessage(content="second answer", id="a2"),
+        ],
+    )
+
+    forked = await c.post(
+        f"/api/agents/{aid}/threads/{source_id}/fork",
+        headers=alice_auth,
+        json={
+            "user_turns_from_end": 1,
+            "user_message_content": "second question",
+        },
+    )
+    assert forked.status_code == 201, forked.text
+    dest_id = forked.json()["thread_id"]
+    assert forked.json()["copied_messages"] == 2
+
+    texts = await _thread_history_texts(c, aid, dest_id, alice_auth)
+    assert "first question" in texts
+    assert "first answer" in texts
+    # The retried question and the stale answer never enter the fork context.
+    assert "second question" not in texts
+    assert "second answer" not in texts
+
+    source_texts = await _thread_history_texts(c, aid, source_id, alice_auth)
+    assert "second question" in source_texts
+    assert "second answer" in source_texts
+
+    mixed = await c.post(
+        f"/api/agents/{aid}/threads/{source_id}/fork",
+        headers=alice_auth,
+        json={"message_id": "a1", "user_turns_from_end": 1},
+    )
+    assert mixed.status_code == 400
+
+
+async def test_fork_thread_before_first_user_turn_is_empty(env: Any) -> None:
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    created = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    source_id = created.json()["thread_id"]
+    agent = srv.app_runtime.agent_registry.get_agent(aid)
+    agent.seed_thread_messages(
+        source_id,
+        [
+            HumanMessage(content="only question", id="h1"),
+            AIMessage(content="only answer", id="a1"),
+        ],
+    )
+
+    forked = await c.post(
+        f"/api/agents/{aid}/threads/{source_id}/fork",
+        headers=alice_auth,
+        json={"user_message_id": "h1"},
+    )
+    assert forked.status_code == 201, forked.text
+    dest_id = forked.json()["thread_id"]
+    assert forked.json()["copied_messages"] == 0
+    texts = await _thread_history_texts(c, aid, dest_id, alice_auth)
+    assert "only question" not in texts
+
+
+async def test_fork_thread_before_user_turn_refuses_while_busy(env: Any) -> None:
+    """Editing history mid-generation would seed the fork from a half-written
+    checkpoint — the before-user-turn mode must refuse with a clear error."""
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    created = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    source_id = created.json()["thread_id"]
+    agent = srv.app_runtime.agent_registry.get_agent(aid)
+    agent.seed_thread_messages(
+        source_id,
+        [
+            HumanMessage(content="first question", id="h1"),
+            AIMessage(content="first answer", id="a1"),
+            HumanMessage(content="second question", id="h2"),
+        ],
+    )
+
+    registry = srv.app_runtime.agent_registry
+    async with registry._track_invocation(aid):
+        busy = await c.post(
+            f"/api/agents/{aid}/threads/{source_id}/fork",
+            headers=alice_auth,
+            json={"user_turns_from_end": 1},
+        )
+    assert busy.status_code == 409, busy.text
+
+    # The identical request succeeds once the agent is idle again.
+    idle = await c.post(
+        f"/api/agents/{aid}/threads/{source_id}/fork",
+        headers=alice_auth,
+        json={"user_turns_from_end": 1},
+    )
+    assert idle.status_code == 201, idle.text
+
+
+async def test_fork_thread_before_user_turn_refuses_with_pending_hitl(env: Any) -> None:
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    created = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    source_id = created.json()["thread_id"]
+    agent = srv.app_runtime.agent_registry.get_agent(aid)
+    agent.seed_thread_messages(
+        source_id,
+        [
+            HumanMessage(content="first question", id="h1"),
+            AIMessage(content="first answer", id="a1"),
+            HumanMessage(content="second question", id="h2"),
+        ],
+    )
+    row = srv.app_runtime.gateway.thread_registry.get_thread(source_id)
+    store = srv.app_runtime.gateway.processor.hitl_coordinator.store
+    store.register(
+        thread_id=source_id,
+        agent_id=aid,
+        user_id=row.user_id,
+        session_key=row.session_key,
+        channel_type="dashboard",
+        action_requests=[{"name": "run_command", "args": {"cmd": "ls"}}],
+        review_configs=None,
+    )
+
+    paused = await c.post(
+        f"/api/agents/{aid}/threads/{source_id}/fork",
+        headers=alice_auth,
+        json={"user_turns_from_end": 1},
+    )
+    assert paused.status_code == 409, paused.text

@@ -48,6 +48,28 @@ from octop.infra.utils.ulid import new_ulid
 _ADMIN_ROLE = "admin"
 
 
+def _acl_state_key(entry: AclEntry) -> tuple[object, ...]:
+    """Compare governed ACL semantics independent of JSON/grant ordering."""
+    return (
+        entry.owner_user_id,
+        entry.visibility,
+        entry.unit_key,
+        entry.permission,
+        tuple(sorted(entry.grants)),
+    )
+
+
+def _logged_acl_state_key(change: AclChangeRow, payload: str) -> tuple[object, ...]:
+    return _acl_state_key(
+        decode_acl_state(
+            payload,
+            resource_type=change.resource_type,
+            resource_id=change.resource_id,
+            version=0,
+        )
+    )
+
+
 @dataclass(frozen=True)
 class ChangeResult:
     """Outcome of :meth:`SharingService.apply_change`."""
@@ -147,29 +169,63 @@ class SharingService:
         )
 
     def approve(self, change_id: str, approver: int) -> None:
-        """Apply a pending change (admins only).
-
-        The recorded ``after`` state is re-applied at ``current version + 1`` so
-        a change parked for a while cannot rewind numbers written since; the
-        change row keeps the version it actually landed as.
-        """
-        change = self._require_change(change_id)
+        """Apply a pending change only if its recorded base is still current."""
         self._require_admin(approver)
-        if change.status != CHANGE_PENDING:
-            raise ValueError(f"change {change_id!r} is {change.status!r}, not {CHANGE_PENDING!r}")
-        current = self._repo.get(change.resource_type, change.resource_id)
-        version = (current.version if current is not None else 0) + 1
-        after = decode_acl_state(
-            change.after_json,
-            resource_type=change.resource_type,
-            resource_id=change.resource_id,
-            version=version,
-        )
-        if current is not None:
-            after = replace(after, owner_user_id=current.owner_user_id)
         with self._db.transaction() as conn:
+            change = self._repo.get_change(change_id, conn=conn)
+            if change is None:
+                raise OctopError(ErrorCode.NOT_FOUND, f"change {change_id!r} not found")
+            if change.status != CHANGE_PENDING:
+                raise ValueError(
+                    f"change {change_id!r} is {change.status!r}, not {CHANGE_PENDING!r}"
+                )
+            current = self._repo.get(change.resource_type, change.resource_id, conn=conn)
+            current_version = current.version if current is not None else 0
+            if current is not None:
+                state_matches = _acl_state_key(current) == _logged_acl_state_key(
+                    change, change.before_json
+                )
+            else:
+                baseline = decode_acl_state(
+                    change.before_json,
+                    resource_type=change.resource_type,
+                    resource_id=change.resource_id,
+                    version=0,
+                )
+                state_matches = (
+                    baseline.visibility == VISIBILITY_PRIVATE
+                    and baseline.unit_key is None
+                    and baseline.permission == "read"
+                    and not baseline.grants
+                    and _acl_state_key(baseline)
+                    == _logged_acl_state_key(change, change.before_json)
+                )
+            if current_version != change.from_version or not state_matches:
+                raise ValueError(f"change {change_id!r} is stale; its base ACL has changed")
+            version = current_version + 1
+            after = decode_acl_state(
+                change.after_json,
+                resource_type=change.resource_type,
+                resource_id=change.resource_id,
+                version=version,
+            )
+            if current is not None:
+                after = replace(after, owner_user_id=current.owner_user_id)
             self._repo.upsert(after, conn=conn)
-            self._repo.set_change_status(change_id, CHANGE_APPLIED, to_version=version, conn=conn)
+            self._repo.set_change_status(
+                change_id,
+                CHANGE_APPLIED,
+                to_version=version,
+                expected_status=CHANGE_PENDING,
+                conn=conn,
+            )
+            if change.rollback_of is not None:
+                self._repo.set_change_status(
+                    change.rollback_of,
+                    CHANGE_ROLLED_BACK,
+                    expected_status=CHANGE_APPLIED,
+                    conn=conn,
+                )
 
     def reject(self, change_id: str, approver: int, reason: str | None = None) -> None:
         """Refuse a pending change (admins only); nothing is applied."""
@@ -179,65 +235,84 @@ class SharingService:
             raise ValueError(f"change {change_id!r} is {change.status!r}, not {CHANGE_PENDING!r}")
         self._repo.set_change_status(change_id, CHANGE_REJECTED, reason=reason)
 
-    def rollback(self, change_id: str, actor: int) -> None:
-        """Restore the state a change replaced, at ``current version + 1``.
+    def rollback(self, change_id: str, actor: int) -> str:
+        """Request restoration through the normal ACL approval policy.
 
-        The old version number is never reused, and the restored state is itself
-        logged as a fresh applied change — so the state being discarded survives
-        in the log and can be re-applied by rolling that change back.
+        Returns the newly created reversal change id. The original change is
+        marked rolled back only when that reversal actually takes effect.
         """
-        change = self._require_change(change_id)
         actor_role = self._role_of(actor)
+        initial = self._require_change(change_id)
         if actor_role != _ADMIN_ROLE and (
             (
-                self._is_published_feature(change.resource_type, change.resource_id)
+                self._is_published_feature(initial.resource_type, initial.resource_id)
                 and not self._manages_published_feature(
-                    actor, change.resource_type, change.resource_id
+                    actor, initial.resource_type, initial.resource_id
                 )
             )
             or (
-                not self._is_published_feature(change.resource_type, change.resource_id)
-                and change.actor_user_id != actor
+                not self._is_published_feature(initial.resource_type, initial.resource_id)
+                and initial.actor_user_id != actor
             )
         ):
             raise OctopError(
                 ErrorCode.FORBIDDEN,
                 f"user {actor} may not roll back change {change_id!r}",
             )
-        if change.status != CHANGE_APPLIED:
-            raise ValueError(f"change {change_id!r} is {change.status!r}, not {CHANGE_APPLIED!r}")
-        current = self._repo.get(change.resource_type, change.resource_id)
-        if current is None:
-            raise OctopError(
-                ErrorCode.NOT_FOUND,
-                f"{change.resource_type} {change.resource_id!r} has no ACL entry to roll back",
-            )
-        version = current.version + 1
-        restored = decode_acl_state(
-            change.before_json,
-            resource_type=change.resource_type,
-            resource_id=change.resource_id,
-            version=version,
-        )
-        restored = replace(restored, owner_user_id=current.owner_user_id)
-        rollback = AclChangeRow(
-            id=new_ulid(),
-            resource_type=change.resource_type,
-            resource_id=change.resource_id,
-            actor_user_id=actor,
-            from_version=current.version,
-            to_version=version,
-            before_json=encode_acl_state(current),
-            after_json=encode_acl_state(restored),
-            impact_scope=impact_scope(current, restored),
-            status=CHANGE_APPLIED,
-            reason=f"rollback of {change.id}",
-            created_at=now_ts(),
-        )
         with self._db.transaction() as conn:
-            self._repo.upsert(restored, conn=conn)
+            change = self._repo.get_change(change_id, conn=conn)
+            if change is None:
+                raise OctopError(ErrorCode.NOT_FOUND, f"change {change_id!r} not found")
+            if change.status != CHANGE_APPLIED:
+                raise ValueError(
+                    f"change {change_id!r} is {change.status!r}, not {CHANGE_APPLIED!r}"
+                )
+            if self._repo.has_pending_rollback(change_id, conn=conn):
+                raise ValueError(f"change {change_id!r} already has a pending rollback")
+            current = self._repo.get(change.resource_type, change.resource_id, conn=conn)
+            if current is None:
+                raise OctopError(
+                    ErrorCode.NOT_FOUND,
+                    f"{change.resource_type} {change.resource_id!r} has no ACL entry to roll back",
+                )
+            if current.version != change.to_version or _acl_state_key(
+                current
+            ) != _logged_acl_state_key(change, change.after_json):
+                raise ValueError(f"change {change_id!r} is stale and cannot be rolled back")
+            version = current.version + 1
+            restored = decode_acl_state(
+                change.before_json,
+                resource_type=change.resource_type,
+                resource_id=change.resource_id,
+                version=version,
+            )
+            restored = replace(restored, owner_user_id=current.owner_user_id)
+            status = CHANGE_PENDING if requires_approval(current, restored) else CHANGE_APPLIED
+            rollback = AclChangeRow(
+                id=new_ulid(),
+                resource_type=change.resource_type,
+                resource_id=change.resource_id,
+                actor_user_id=actor,
+                from_version=current.version,
+                to_version=version,
+                before_json=encode_acl_state(current),
+                after_json=encode_acl_state(restored),
+                impact_scope=impact_scope(current, restored),
+                status=status,
+                reason=f"rollback of {change.id}",
+                created_at=now_ts(),
+                rollback_of=change.id,
+            )
             self._repo.insert_change(rollback, conn=conn)
-            self._repo.set_change_status(change_id, CHANGE_ROLLED_BACK, conn=conn)
+            if status == CHANGE_APPLIED:
+                self._repo.upsert(restored, conn=conn)
+                self._repo.set_change_status(
+                    change_id,
+                    CHANGE_ROLLED_BACK,
+                    expected_status=CHANGE_APPLIED,
+                    conn=conn,
+                )
+        return rollback.id
 
     # ------------------------------------------------------------------
     # Internals

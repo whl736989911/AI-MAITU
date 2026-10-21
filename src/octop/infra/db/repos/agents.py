@@ -38,6 +38,16 @@ def _opt_str(r: DbRow, key: str) -> str | None:
 
 
 @dataclass(frozen=True)
+class FeaturePublicationReceipt:
+    """State needed to conditionally undo one feature ownership transfer."""
+
+    author_user_id: int
+    enterprise_unit_key: str
+    author_grant_added: bool
+    acl_states: tuple[tuple[int | None, int] | None, tuple[int | None, int] | None]
+
+
+@dataclass(frozen=True)
 class AgentRow:
     id: int
     agent_id: str
@@ -177,7 +187,7 @@ class AgentRepo:
             r = conn.execute("SELECT * FROM agents WHERE agent_id = ?", (agent_id,)).fetchone()
         return AgentRow.from_row(r) if r else None
 
-    def publish_feature(self, agent_id: str) -> None:
+    def publish_feature(self, agent_id: str) -> FeaturePublicationReceipt | None:
         """Detach a feature from its author and bind it to its enterprise once.
 
         Both ACL entries and the agent row cross the ownership boundary in one
@@ -191,7 +201,7 @@ class AgentRepo:
         if current is None or not is_feature_agent(current.kind):
             raise ValueError(f"agent {agent_id!r} is not a feature")
         if current.enterprise_unit_key is not None:
-            return
+            return None
         author_id = current.user_id
         if author_id is None:
             raise ValueError("an unpublished feature must have an author")
@@ -211,9 +221,27 @@ class AgentRepo:
             if row is None or not is_feature_agent(str(row["kind"])):
                 raise ValueError(f"agent {agent_id!r} is not a feature")
             if row["enterprise_unit_key"] is not None:
-                return
+                return None
             if row["user_id"] is None or int(row["user_id"]) != author_id:
                 raise ValueError("feature author changed during publication")
+            acl_states: list[tuple[int | None, int] | None] = []
+            for resource_type, resource_id in (
+                ("agent", agent_id),
+                ("feature", feature_id),
+            ):
+                acl = conn.execute(
+                    "SELECT owner_user_id, updated_at FROM resource_acl "
+                    "WHERE resource_type = ? AND resource_id = ?",
+                    (resource_type, resource_id),
+                ).fetchone()
+                acl_states.append(
+                    None
+                    if acl is None
+                    else (
+                        None if acl["owner_user_id"] is None else int(acl["owner_user_id"]),
+                        int(acl["updated_at"]),
+                    )
+                )
             ts = now_ts()
             conn.execute(
                 "UPDATE agents SET user_id = NULL, enterprise_unit_key = ?, updated_at = ? "
@@ -229,11 +257,82 @@ class AgentRepo:
                     "WHERE resource_type = ? AND resource_id = ?",
                     (ts, resource_type, resource_id),
                 )
+            grant = conn.execute(
+                "SELECT 1 FROM resource_acl_grants WHERE resource_type = 'agent' "
+                "AND resource_id = ? AND grantee_type = 'user' AND grantee_id = ?",
+                (agent_id, str(author_id)),
+            ).fetchone()
             conn.execute(
                 "INSERT INTO resource_acl_grants(resource_type, resource_id, grantee_type, "
                 "grantee_id) VALUES ('agent', ?, 'user', ?) ON CONFLICT DO NOTHING",
                 (agent_id, str(author_id)),
             )
+            return FeaturePublicationReceipt(
+                author_user_id=author_id,
+                enterprise_unit_key=enterprise_unit_key,
+                author_grant_added=grant is None,
+                acl_states=(acl_states[0], acl_states[1]),
+            )
+
+    def rollback_feature_publication(
+        self, agent_id: str, receipt: FeaturePublicationReceipt
+    ) -> None:
+        """Restore ownership only if this exact publication is still current."""
+        feature_id = feature_id_of_agent(agent_id)
+        if feature_id is None:
+            raise ValueError(f"agent {agent_id!r} is not a feature agent")
+        with self._db.transaction() as conn:
+            row = conn.execute(
+                "SELECT user_id, enterprise_unit_key, kind FROM agents WHERE agent_id = ?",
+                (agent_id,),
+            ).fetchone()
+            if (
+                row is None
+                or not is_feature_agent(str(row["kind"]))
+                or row["user_id"] is not None
+                or row["enterprise_unit_key"] != receipt.enterprise_unit_key
+            ):
+                raise ValueError("feature ownership changed after publication; refusing rollback")
+            resources = (("agent", agent_id), ("feature", feature_id))
+            for index, (resource_type, resource_id) in enumerate(resources):
+                previous_acl = receipt.acl_states[index]
+                acl = conn.execute(
+                    "SELECT owner_user_id FROM resource_acl "
+                    "WHERE resource_type = ? AND resource_id = ?",
+                    (resource_type, resource_id),
+                ).fetchone()
+                if previous_acl is None:
+                    if acl is not None:
+                        raise ValueError(
+                            "feature ACL appeared after publication; refusing rollback"
+                        )
+                elif acl is None or acl["owner_user_id"] is not None:
+                    raise ValueError("feature ACL changed after publication; refusing rollback")
+            conn.execute(
+                "UPDATE agents SET user_id = ?, enterprise_unit_key = NULL, updated_at = ? "
+                "WHERE agent_id = ?",
+                (receipt.author_user_id, now_ts(), agent_id),
+            )
+            for index, (resource_type, resource_id) in enumerate(resources):
+                previous_acl = receipt.acl_states[index]
+                if previous_acl is None:
+                    continue
+                conn.execute(
+                    "UPDATE resource_acl SET owner_user_id = ?, updated_at = ? "
+                    "WHERE resource_type = ? AND resource_id = ?",
+                    (
+                        previous_acl[0],
+                        previous_acl[1],
+                        resource_type,
+                        resource_id,
+                    ),
+                )
+            if receipt.author_grant_added:
+                conn.execute(
+                    "DELETE FROM resource_acl_grants WHERE resource_type = 'agent' "
+                    "AND resource_id = ? AND grantee_type = 'user' AND grantee_id = ?",
+                    (agent_id, str(receipt.author_user_id)),
+                )
 
     def list_by_user(self, user_id: int, *, include_disabled: bool = True) -> list[AgentRow]:
         sql = "SELECT * FROM agents WHERE user_id = ?"

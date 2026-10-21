@@ -30,6 +30,7 @@ import { BRAND, wordmark } from "../../brand.generated";
 import {
   wizardApi,
   wizardSession,
+  resolveSetupProbeToken,
   STEP_DATABASE,
   STEP_PASSWORD,
   STEP_LICENSE,
@@ -49,6 +50,7 @@ export default function SetupPage() {
   const [offline, setOffline] = useState(false);
   const [statusRetryKey, setStatusRetryKey] = useState(0);
   const [passwordRequired, setPasswordRequired] = useState(true);
+  const [passwordNextStep, setPasswordNextStep] = useState(STEP_DATABASE);
   const [current, setCurrentRaw] = useState<number>(STEP_PASSWORD);
   const [adminCreds, setAdminCreds] = useState<{
     username: string;
@@ -93,13 +95,31 @@ export default function SetupPage() {
         }
 
         setPasswordRequired(status.wizard_password_required);
+        setPasswordNextStep(STEP_DATABASE);
 
         const savedStep = wizardSession.loadStep();
         const draft = wizardSession.loadDraft();
         if (draft.provider) {
           setProviderDraft(draft.provider);
         }
-
+        if (status.admin_created) {
+          const nextStep = savedStep === STEP_FINISH ? STEP_FINISH : STEP_MODEL;
+          setPasswordNextStep(nextStep);
+          if (!(await resolveSetupProbeToken())) {
+            if (status.wizard_password_required) {
+              setCurrentRaw(STEP_PASSWORD);
+              setChecking(false);
+              return;
+            }
+            await ensureWizardToken();
+          }
+          if (cancelled) return;
+          const setupJwt = wizardSession.loadSetupJwt();
+          if (setupJwt) setAuthToken(setupJwt);
+          goToStep(nextStep);
+          setChecking(false);
+          return;
+        }
         const token = wizardSession.loadToken();
         if (token) {
           try {
@@ -167,7 +187,7 @@ export default function SetupPage() {
   }, [navigate, goToStep, ensureWizardToken, statusRetryKey]);
 
   const handlePasswordVerified = () => {
-    goToStep(STEP_DATABASE);
+    goToStep(passwordNextStep);
   };
 
   const handleDatabaseContinue = async () => {
@@ -353,13 +373,9 @@ export default function SetupPage() {
               }}
             />
           )}
-          {current === STEP_FINISH &&
-            (adminCreds || wizardSession.loadSetupJwt()) && (
-              <FinishStep
-                adminCreds={adminCreds}
-                providerDraft={providerDraft}
-              />
-            )}
+          {current === STEP_FINISH && (
+            <FinishStep adminCreds={adminCreds} providerDraft={providerDraft} />
+          )}
         </div>
       </div>
     </div>

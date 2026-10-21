@@ -175,8 +175,8 @@ async def test_finish_requires_wizard_token(env: Any) -> None:
     assert r.status_code == 401
 
 
-async def test_finish_returns_ok_with_valid_token(env: Any) -> None:
-    c, _srv, home = env
+async def test_finish_requires_initial_admin(env: Any) -> None:
+    c, _srv, _home = env
     pw = read_password(Path.home())
     tok = (await c.post("/api/setup/verify-password", json={"password": pw})).json()["wizard_token"]
     r = await c.post(
@@ -184,8 +184,8 @@ async def test_finish_returns_ok_with_valid_token(env: Any) -> None:
         json={"provider_draft": None},
         headers={"Authorization": f"Bearer {tok}"},
     )
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
+    assert r.status_code == 400
+    assert (await c.get("/api/setup/status")).json()["setup_required"] is True
 
 
 async def test_finish_works_after_admin_created(env: Any) -> None:
@@ -423,18 +423,23 @@ async def test_lockdown_allows_health_path(env: Any) -> None:
     assert r.status_code == 200
 
 
-async def test_lockdown_lifts_after_admin_created(env: Any) -> None:
+async def test_lockdown_stays_active_after_admin_created(env: Any) -> None:
     c, _srv, home = env
     pw = read_password(Path.home())
     tok = (await c.post("/api/setup/verify-password", json={"password": pw})).json()["wizard_token"]
-    await c.post(
+    admin = await c.post(
         "/api/setup/initial-admin",
         json={"username": "admin", "password": "TestPass12"},
         headers={"Authorization": f"Bearer {tok}"},
     )
-    r = await c.get("/api/agents")
-    # No JWT ⇒ 401 (auth, not lockdown).
-    assert r.status_code == 401
+    assert admin.status_code == 201
+    assert (await c.get("/api/setup/status")).json()["setup_required"] is True
+    assert (await c.get("/api/agents")).status_code == 503
+    login = await c.post(
+        "/api/auth/login",
+        json={"username": "admin", "password": "TestPass12"},
+    )
+    assert login.status_code == 200
 
 
 async def test_finish_rejects_invalid_token_after_admin_exists(env: Any) -> None:

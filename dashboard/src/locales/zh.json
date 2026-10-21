@@ -23,6 +23,7 @@
     "upload": "上传",
     "download": "下载",
     "refresh": "刷新",
+    "retry": "重试",
     "enable": "启用",
     "disable": "禁用",
     "enabled": "已启用",
@@ -1646,6 +1647,7 @@
       "approved": "已通过，现已生效。",
       "rejected": "已驳回，未做任何变更。",
       "rolledBack": "已回滚，恢复到之前的状态。",
+      "rollbackPending": "已提交回滚申请，等待管理员审批。",
       "rejectTitle": "驳回该变更",
       "rejectHint": "理由会随变更记录保存，并展示给发起人。",
       "rejectReasonPlaceholder": "为什么驳回这次变更？",
@@ -5528,7 +5530,7 @@
     "finish": {
       "running": "正在准备工作区…",
       "loginFailed": "自动登录失败，请手动登录。",
-      "providerFailed": "提供商保存失败，登录后请到「模型」页重试。",
+      "failed": "安装未能完成，当前进度已保留；请重试以继续。",
       "fallbackToLogin": "跳过并去登录"
     }
   },

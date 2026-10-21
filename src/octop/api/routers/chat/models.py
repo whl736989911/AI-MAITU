@@ -234,6 +234,22 @@ class ForkThreadBody(BaseModel):
         ge=1,
         description="1 = latest assistant answer, 2 = second-to-last, … (preferred locator).",
     )
+    user_message_id: str | None = Field(
+        default=None,
+        description=(
+            "Selected user message id — fork copies everything *before* this "
+            "turn (edit/regenerate). Mutually exclusive with assistant locators."
+        ),
+    )
+    user_message_content: str | None = Field(
+        default=None,
+        description="Plain text of that user message, used when ids differ.",
+    )
+    user_turns_from_end: int | None = Field(
+        default=None,
+        ge=1,
+        description="1 = latest user turn, 2 = previous, … (preferred user-turn locator).",
+    )
 
 
 class RenameThreadBody(BaseModel):

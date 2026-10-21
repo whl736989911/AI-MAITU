@@ -72,6 +72,7 @@ export default function LicenseGate({
           ? await licensingApi.getDetails()
           : publicStatus;
       setSnapshot(next);
+      if (next.business_allowed) setLockedSignal(false);
       setLoadError(null);
       setLoading(false);
       return next;

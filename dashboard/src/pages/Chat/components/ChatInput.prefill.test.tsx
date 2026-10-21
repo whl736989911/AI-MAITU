@@ -134,7 +134,7 @@ describe("ChatInput prefill clear-on-send", () => {
     // 2) parent keeps the prefill in a ref and re-passes it as initialText on
     //    the next render (e.g. after send updates chat state)
     // 3) composer must stay empty after send — not re-filled from that prop
-    const onSend = vi.fn();
+    const onSend = vi.fn(() => true);
     const onCancel = vi.fn();
     const onNewChat = vi.fn();
     const inputRef = createRef<ChatInputHandle>();
@@ -182,7 +182,7 @@ describe("ChatInput prefill clear-on-send", () => {
   });
 
   it("clears parent prefill via onComposerCleared so edited text cannot be overwritten", () => {
-    const onSend = vi.fn();
+    const onSend = vi.fn(() => true);
     const onCancel = vi.fn();
     const onNewChat = vi.fn();
     const inputRef = createRef<ChatInputHandle>();
@@ -241,7 +241,7 @@ describe("ChatInput prefill clear-on-send", () => {
 
   it("uses the target agent draft instead of carrying the previous prefill", () => {
     const props = {
-      onSend: vi.fn(),
+      onSend: vi.fn(() => true),
       onCancel: vi.fn(),
       onNewChat: vi.fn(),
       isStreaming: false,

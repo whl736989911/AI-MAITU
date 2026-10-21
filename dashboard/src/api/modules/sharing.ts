@@ -107,6 +107,8 @@ export interface SharingChange {
   /** Epoch seconds. */
   created_at: number;
   before: SharingAclEntry;
+  /** Source change for a rollback request, when this row is a reversal. */
+  rollback_of: string | null;
   after: SharingAclEntry;
 }
 

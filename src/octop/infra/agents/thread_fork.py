@@ -23,10 +23,17 @@ _FORK_HISTORY_LIMIT = 100_000
 
 
 def _fork_title(source_title: str | None, locale: str) -> str:
-    """Return a sidebar title that distinguishes a fork from its source thread."""
+    """Return a sidebar title that distinguishes a fork from its source thread.
+
+    Editing/regenerating forks a thread repeatedly; re-appending the suffix
+    would grow titles like "Chat (fork) (fork)". Keep one suffix.
+    """
     base = (source_title or "").strip()
     if base:
-        return f"{base}{tr('threads.fork_title_suffix', locale)}"
+        suffix = tr("threads.fork_title_suffix", locale)
+        if not base.endswith(suffix):
+            return f"{base}{suffix}"
+        return base
     return tr("threads.fork_default_title", locale)
 
 
@@ -65,6 +72,20 @@ def _message_text(msg: Any) -> str:
                     parts.append(text)
         return "\n".join(parts).strip()
     return str(content or "").strip()
+
+
+def _is_user_message(msg: Any) -> bool:
+    if isinstance(msg, dict):
+        role = str(msg.get("role") or "").lower()
+        if role:
+            return role == "user"
+        msg_type = str(msg.get("type") or "")
+        return msg_type in ("human", "user")
+    type_name = type(msg).__name__
+    if "HumanMessage" in type_name:
+        return True
+    role = str(getattr(msg, "role", None) or getattr(msg, "type", "") or "")
+    return role in ("user", "human")
 
 
 def _has_tool_calls(msg: Any) -> bool:
@@ -135,6 +156,42 @@ def find_assistant_fork_index(
     raise OctopError(ErrorCode.NOT_FOUND, "assistant message not found in thread")
 
 
+def find_user_message_index(
+    messages: list[Any],
+    *,
+    message_id: str | None = None,
+    content: str | None = None,
+    user_turns_from_end: int | None = None,
+) -> int:
+    """Return the index of the selected user message in *messages*.
+
+    Mirrors :func:`find_assistant_fork_index`: a suffix count of user turns is
+    authoritative when present (stable across client-generated UI ids);
+    id/content are only used as fallbacks when the count is absent or out of
+    range. A content match takes the *last* occurrence.
+    """
+    users = [i for i, msg in enumerate(messages) if _is_user_message(msg)]
+    if not users:
+        raise OctopError(ErrorCode.NOT_FOUND, "no user message to locate")
+
+    if user_turns_from_end is not None and 1 <= user_turns_from_end <= len(users):
+        return users[-user_turns_from_end]
+
+    wanted_id = (message_id or "").strip()
+    if wanted_id:
+        for idx in users:
+            if _msg_id(messages[idx]) == wanted_id:
+                return idx
+
+    wanted_text = (content or "").strip()
+    if wanted_text:
+        matches = [idx for idx in users if _message_text(messages[idx]) == wanted_text]
+        if matches:
+            return matches[-1]
+
+    raise OctopError(ErrorCode.NOT_FOUND, "user message not found in thread")
+
+
 async def load_checkpoint_messages(harness: Any, thread_id: str) -> list[Any]:
     """Return the full checkpoint transcript (oldest first)."""
     graph = getattr(harness, "graph", None)
@@ -187,11 +244,21 @@ async def fork_dashboard_thread(
     message_id: str | None = None,
     content: str | None = None,
     assistant_turns_from_end: int | None = None,
+    user_message_id: str | None = None,
+    user_message_content: str | None = None,
+    user_turns_from_end: int | None = None,
     locale: str = "en",
     thread_message_repo: Any | None = None,
     history_archive: Any | None = None,
 ) -> dict[str, Any]:
-    """Create a dashboard thread seeded through the selected assistant reply."""
+    """Create a dashboard thread seeded through the selected assistant reply.
+
+    With a user-message locator (``user_message_id`` / ``user_message_content``
+    / ``user_turns_from_end``) the fork instead copies everything *before* that
+    user turn — edit/regenerate continue from there by sending a fresh turn,
+    so the replaced question and the answers after it never enter the new
+    context. The prefix may be empty when the located message is the first.
+    """
     from langchain_core.messages import message_to_dict, messages_from_dict  # noqa: PLC0415
 
     from octop.infra.history.legacy import checkpoint_wires  # noqa: PLC0415
@@ -212,14 +279,29 @@ async def fork_dashboard_thread(
         messages = messages_from_dict(await archive.all_messages(source.thread_id, read_legacy))
     else:
         messages = await load_checkpoint_messages(harness, source.thread_id)
-    idx = find_assistant_fork_index(
-        messages,
-        message_id=message_id,
-        content=content,
-        assistant_turns_from_end=assistant_turns_from_end,
-    )
-    # Include the selected assistant message (and any tool traffic before it).
-    prefix = messages[: idx + 1]
+    if (
+        user_turns_from_end is not None
+        or (user_message_id or "").strip()
+        or (user_message_content or "").strip()
+    ):
+        user_idx = find_user_message_index(
+            messages,
+            message_id=user_message_id,
+            content=user_message_content,
+            user_turns_from_end=user_turns_from_end,
+        )
+        # Copy everything before the edited/retried user turn; the turn itself
+        # is re-sent by the client as a fresh dashboard turn in the fork.
+        prefix = messages[:user_idx]
+    else:
+        idx = find_assistant_fork_index(
+            messages,
+            message_id=message_id,
+            content=content,
+            assistant_turns_from_end=assistant_turns_from_end,
+        )
+        # Include the selected assistant message (and any tool traffic before it).
+        prefix = messages[: idx + 1]
     prefix_projection_inputs: list[Any] | None = None
     if thread_message_repo is not None:
         from octop.infra.gateway.process.history_projection import (  # noqa: PLC0415

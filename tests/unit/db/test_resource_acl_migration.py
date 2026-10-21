@@ -12,6 +12,10 @@ from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.agents import AgentRepo
 from octop.infra.db.repos.connectors import ConnectorRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
+from octop.infra.db.repos.users import UserRepo
+from octop.infra.sharing import AclEntry
+from octop.infra.sharing.service import SharingService
 
 _ACL_TABLES = ("resource_acl", "resource_acl_grants", "resource_acl_changes")
 
@@ -136,7 +140,125 @@ def test_run_migrations_creates_acl_tables(tmp_path: Path) -> None:
         "status",
         "reason",
         "created_at",
+        "rollback_of",
     }
+
+
+def _approved_connector_change(
+    pool: SqlitePool,
+) -> tuple[SharingService, ResourceAclRepo, str, int]:
+    """A connector flipped private→public by one approved ACL change.
+
+    Returns the service, the repo, the change id, and the approving admin.
+    """
+    users = UserRepo(pool)
+    owner = users.create(username="acl_owner", password_hash="h", role="user")
+    admin = users.create(username="acl_admin", password_hash="h", role="admin")
+    acl = ResourceAclRepo(pool)
+    acl.upsert(
+        AclEntry(
+            resource_type="connector",
+            resource_id="cn_migration",
+            owner_user_id=owner,
+            visibility="private",
+            unit_key=None,
+            version=1,
+        )
+    )
+    sharing = SharingService(pool)
+    pending = sharing.apply_change(
+        owner,
+        "connector",
+        "cn_migration",
+        AclEntry(
+            resource_type="connector",
+            resource_id="cn_migration",
+            owner_user_id=owner,
+            visibility="public",
+            unit_key=None,
+            version=0,
+        ),
+    )
+    sharing.approve(pending.change_id, admin)
+    return sharing, acl, pending.change_id, admin
+
+
+def _acl_changes_without_rollback_link(pool: SqlitePool, *, version: int) -> None:
+    """Rebuild ``resource_acl_changes`` pre-``rollback_of``, keeping its rows.
+
+    The released v42 build created the table without the rollback-source link;
+    rebuilding it and stamping *version* models both that build's databases
+    (42) and any later build stamped before the link landed (44). The upgrade
+    has to add the column without losing the recorded changes.
+    """
+    with pool.connect() as conn:
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            "CREATE TABLE resource_acl_changes_backup AS "
+            "SELECT id, resource_type, resource_id, actor_user_id, from_version, to_version, "
+            "before_json, after_json, impact_scope, status, reason, created_at "
+            "FROM resource_acl_changes"
+        )
+        conn.execute("DROP TABLE resource_acl_changes")
+        conn.execute(
+            "CREATE TABLE resource_acl_changes ("
+            "id TEXT PRIMARY KEY, resource_type TEXT NOT NULL, resource_id TEXT NOT NULL, "
+            "actor_user_id INTEGER NOT NULL, from_version INTEGER NOT NULL, "
+            "to_version INTEGER NOT NULL, before_json TEXT NOT NULL, after_json TEXT NOT NULL, "
+            "impact_scope TEXT NOT NULL, status TEXT NOT NULL, reason TEXT, "
+            "created_at INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT INTO resource_acl_changes SELECT * FROM resource_acl_changes_backup")
+        conn.execute("DROP TABLE resource_acl_changes_backup")
+        conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        conn.execute("PRAGMA foreign_keys = ON")
+
+
+def test_v42_database_without_rollback_link_is_repaired_idempotently(
+    tmp_path: Path,
+) -> None:
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    sharing, acl, change_id, admin = _approved_connector_change(pool)
+    change_before_repair = acl.get_change(change_id)
+    assert change_before_repair is not None
+
+    _acl_changes_without_rollback_link(pool, version=42)
+
+    run_migrations(pool)
+    run_migrations(pool)
+
+    assert "rollback_of" in _columns(pool, "resource_acl_changes")
+    after_repair = acl.get_change(change_id)
+    assert after_repair == change_before_repair
+    reversal_id = sharing.rollback(change_id, admin)
+    reversal = acl.get_change(reversal_id)
+    assert reversal is not None and reversal.rollback_of == change_id
+    restored = acl.get("connector", "cn_migration")
+    assert restored is not None and restored.visibility == "private"
+
+
+def test_v44_watermark_without_rollback_link_still_converges(tmp_path: Path) -> None:
+    """A database stamped 44 by an intermediate build gets the link in place.
+
+    The numbered migrations are all recorded, so nothing re-runs; the guarded
+    post-migration ensure must still deliver the column the intermediate build
+    predated, without disturbing the ACL history it keeps.
+    """
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    sharing, acl, change_id, admin = _approved_connector_change(pool)
+
+    _acl_changes_without_rollback_link(pool, version=44)
+
+    run_migrations(pool)
+    run_migrations(pool)
+
+    assert _version(pool) == 44
+    assert "rollback_of" in _columns(pool, "resource_acl_changes")
+    reversal_id = sharing.rollback(change_id, admin)
+    reversal = acl.get_change(reversal_id)
+    assert reversal is not None and reversal.rollback_of == change_id
 
 
 def test_acl_tables_reject_duplicate_rows(tmp_path: Path) -> None:

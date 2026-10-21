@@ -148,7 +148,7 @@ async def put_workflow(
         capability=AgentCapability.CONFIGURATION,
     )
     if body.workflow is None:
-        await wf.clear_workflow(workspace)
+        await workflow_service.clear_definition(workspace, agent_id=agent_id)
         return WorkflowResponse()
     stored = await workflow_service.save_definition(
         workspace, body.workflow, repos=_services(server).repos, agent_id=agent_id
@@ -178,7 +178,7 @@ async def delete_workflow(
         server=server,
         capability=AgentCapability.CONFIGURATION,
     )
-    await wf.clear_workflow(workspace)
+    await workflow_service.clear_definition(workspace, agent_id=agent_id)
     return WorkflowResponse()
 
 

@@ -101,6 +101,17 @@ async def test_publishing_with_an_installed_skill_is_accepted(
 ) -> None:
     workspace = _workspace(tmp_path / "ws")
     await workspace.aupload_bytes("skills/xlsx/SKILL.md", b"---\nname: xlsx\n---\n")
+    with repos.db.transaction() as conn:
+        conn.execute(
+            "INSERT INTO resource_acl_grants(resource_type, resource_id, grantee_type, grantee_id) "
+            "VALUES ('agent', ?, 'user', '991')",
+            (FEATURE_AGENT,),
+        )
+        conn.execute(
+            "INSERT INTO resource_acl_grants(resource_type, resource_id, grantee_type, grantee_id) "
+            "VALUES ('feature', ?, 'user', '992')",
+            (FEATURE_ID,),
+        )
 
     stored = await service.save_definition(
         workspace,
@@ -111,6 +122,137 @@ async def test_publishing_with_an_installed_skill_is_accepted(
 
     assert stored["status"] == "active"
     assert (await wf.load_workflow(workspace)).definition == stored
+    owner = repos.agent_repo.get(FEATURE_AGENT)
+    assert owner is not None and owner.user_id is None
+    assert owner.enterprise_unit_key == "*"
+    owners = _ownership_and_acl(repos)[1]
+    assert [row[0] for row in owners] == ["agent"]
+    grants = _ownership_and_acl(repos)[2]
+    assert ("agent", FEATURE_AGENT, "user", "991") in grants
+    assert ("feature", FEATURE_ID, "user", "992") in grants
+
+
+def _ownership_and_acl(repos: RepoBundle) -> tuple[Any, Any, Any]:
+    with repos.db.connect() as conn:
+        agent = conn.execute(
+            "SELECT user_id, enterprise_unit_key FROM agents WHERE agent_id = ?",
+            (FEATURE_AGENT,),
+        ).fetchone()
+        owners = conn.execute(
+            "SELECT resource_type, resource_id, owner_user_id FROM resource_acl "
+            "WHERE resource_id IN (?, ? ) ORDER BY resource_type",
+            (FEATURE_AGENT, FEATURE_ID),
+        ).fetchall()
+        grants = conn.execute(
+            "SELECT resource_type, resource_id, grantee_type, grantee_id "
+            "FROM resource_acl_grants WHERE resource_id IN (?, ?) "
+            "ORDER BY resource_type, grantee_type, grantee_id",
+            (FEATURE_AGENT, FEATURE_ID),
+        ).fetchall()
+    return tuple(
+        tuple(tuple(row) for row in rows) if isinstance(rows, list) else tuple(rows)
+        for rows in (agent, owners, grants)
+    )
+
+
+@pytest.mark.asyncio
+async def test_failed_workflow_write_preserves_document_owner_and_acl(
+    tmp_path: Path, repos: RepoBundle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path / "ws")
+    previous = await service.save_definition(
+        workspace, _definition(status="draft"), repos=repos, agent_id=FEATURE_AGENT
+    )
+    before_acl = _ownership_and_acl(repos)
+    before_text = await workspace.aread_text(wf.WORKSPACE_WORKFLOW_PATH)
+    original_write = workspace.awrite_text
+    failed = False
+
+    async def fail_first_write(path: str, content: str, **kwargs: Any) -> Any:
+        nonlocal failed
+        if not failed and ".pending-" in path:
+            failed = True
+            raise OSError("injected workspace write failure")
+        return await original_write(path, content, **kwargs)
+
+    monkeypatch.setattr(workspace, "awrite_text", fail_first_write)
+    with pytest.raises(OSError, match="injected workspace write failure"):
+        await service.save_definition(
+            workspace, _definition(status="active"), repos=repos, agent_id=FEATURE_AGENT
+        )
+
+    assert (await wf.load_workflow(workspace)).definition == previous
+    assert await workspace.aread_text(wf.WORKSPACE_WORKFLOW_PATH) == before_text
+    assert _ownership_and_acl(repos) == before_acl
+
+
+@pytest.mark.asyncio
+async def test_failed_publish_restores_existing_workflow_owner_and_acl(
+    tmp_path: Path, repos: RepoBundle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path / "ws")
+    previous = await service.save_definition(
+        workspace, _definition(status="draft"), repos=repos, agent_id=FEATURE_AGENT
+    )
+    before_acl = _ownership_and_acl(repos)
+
+    def fail_publish(_agent_id: str) -> None:
+        raise RuntimeError("injected publish failure")
+
+    monkeypatch.setattr(repos.agent_repo, "publish_feature", fail_publish)
+    with pytest.raises(RuntimeError, match="injected publish failure"):
+        await service.save_definition(
+            workspace, _definition(status="active"), repos=repos, agent_id=FEATURE_AGENT
+        )
+
+    assert (await wf.load_workflow(workspace)).definition == previous
+    assert _ownership_and_acl(repos) == before_acl
+
+
+@pytest.mark.asyncio
+async def test_failed_install_after_ownership_transfer_rolls_back_database_and_file(
+    tmp_path: Path, repos: RepoBundle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path / "ws")
+    previous = await service.save_definition(
+        workspace, _definition(status="draft"), repos=repos, agent_id=FEATURE_AGENT
+    )
+    before_acl = _ownership_and_acl(repos)
+    original_move = workspace.amove
+
+    async def fail_staged_install(source: str, destination: str) -> None:
+        if ".pending-" in source and destination == wf.WORKSPACE_WORKFLOW_PATH:
+            raise OSError("injected staged install failure")
+        await original_move(source, destination)
+
+    monkeypatch.setattr(workspace, "amove", fail_staged_install)
+    with pytest.raises(OSError, match="injected staged install failure"):
+        await service.save_definition(
+            workspace, _definition(status="active"), repos=repos, agent_id=FEATURE_AGENT
+        )
+
+    assert (await wf.load_workflow(workspace)).definition == previous
+    assert _ownership_and_acl(repos) == before_acl
+
+
+@pytest.mark.asyncio
+async def test_failed_first_publish_removes_staged_workflow_and_keeps_author_acl(
+    tmp_path: Path, repos: RepoBundle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path / "ws")
+    before_acl = _ownership_and_acl(repos)
+
+    def fail_publish(_agent_id: str) -> None:
+        raise RuntimeError("injected publish failure")
+
+    monkeypatch.setattr(repos.agent_repo, "publish_feature", fail_publish)
+    with pytest.raises(RuntimeError, match="injected publish failure"):
+        await service.save_definition(
+            workspace, _definition(status="active"), repos=repos, agent_id=FEATURE_AGENT
+        )
+
+    assert (await wf.load_workflow(workspace)).present is False
+    assert _ownership_and_acl(repos) == before_acl
 
 
 @pytest.mark.asyncio

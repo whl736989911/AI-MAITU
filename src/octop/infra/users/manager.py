@@ -10,6 +10,7 @@ import re
 import shutil
 import sqlite3
 import time
+from collections.abc import Mapping
 from typing import Any
 
 try:
@@ -500,6 +501,102 @@ class UserManager:
         self._services.audit_repo.write(
             actor=ACTOR_ADMIN, action="user.password_reset", target=username
         )
+
+    async def update_account(self, username: str, changes: Mapping[str, Any]) -> None:
+        """Commit a validated profile, access and policy patch before updating the cache."""
+        from octop.infra.users.resource_policy import (
+            POLICY_TOKEN_QUOTA,
+            POLICY_WORKSPACE_ROOT_DIR,
+            normalize_token_quota,
+            normalize_workspace_root_dir,
+        )
+
+        updates = {
+            key: changes[key]
+            for key in ("display_name", "disabled", "permissions")
+            if changes.get(key) is not None
+        }
+        for key in ("email", "org_unit", "denied_permissions"):
+            if key in changes:
+                updates[key] = changes[key]
+        if changes.get("role") is not None:
+            updates["role"] = Role(changes["role"]).value
+        if "email" in updates:
+            updates["email"] = parse_optional_email(updates["email"])
+        for key in ("permissions", "denied_permissions"):
+            if key in updates:
+                try:
+                    updates[key] = validate_permission_keys(updates[key] or [])
+                except ValueError as exc:
+                    raise OctopError(ErrorCode.FORBIDDEN, str(exc), status=400) from exc
+
+        policies: dict[str, str | None] = {}
+        if POLICY_WORKSPACE_ROOT_DIR in changes:
+            policies[POLICY_WORKSPACE_ROOT_DIR] = normalize_workspace_root_dir(
+                changes[POLICY_WORKSPACE_ROOT_DIR]
+            )
+        if POLICY_TOKEN_QUOTA in changes:
+            quota = normalize_token_quota(changes[POLICY_TOKEN_QUOTA])
+            policies[POLICY_TOKEN_QUOTA] = None if quota is None else str(quota)
+
+        async with self._lock:
+            row = self._services.user_repo.get_by_username(username)
+            if row is None:
+                raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+            email = updates.get("email")
+            if email is not None:
+                owner = self._services.user_repo.get_by_email(email)
+                if owner is not None and owner.id != row.id:
+                    raise OctopError(ErrorCode.EMAIL_TAKEN, f"email {email!r} already exists")
+            try:
+                with self._services.db.transaction() as conn:
+                    updated = self._services.user_repo.update_account(row.id, updates, conn=conn)
+                    if updated is None:
+                        raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+                    self._services.user_policy_repo.merge(row.id, policies, conn=conn)
+                    for key in ("role", "email", "org_unit", "permissions", "denied_permissions"):
+                        if key not in updates:
+                            continue
+                        value = updates[key]
+                        payload = (
+                            ",".join(value)
+                            if isinstance(value, list)
+                            else str(value)
+                            if value is not None
+                            else None
+                        )
+                        self._services.audit_repo.write(
+                            actor=ACTOR_ADMIN,
+                            action=f"user.set_{key}",
+                            target=username,
+                            payload=payload,
+                            conn=conn,
+                        )
+                    if "disabled" in updates:
+                        self._services.audit_repo.write(
+                            actor=ACTOR_ADMIN,
+                            action="user.disable" if updates["disabled"] else "user.enable",
+                            target=username,
+                            conn=conn,
+                        )
+                    for key, value in policies.items():
+                        self._services.audit_repo.write(
+                            actor=ACTOR_ADMIN,
+                            action=f"user.set_{key}",
+                            target=username,
+                            payload=value,
+                            conn=conn,
+                        )
+            except Exception as exc:
+                if email is not None and _is_unique_violation(exc):
+                    raise OctopError(
+                        ErrorCode.EMAIL_TAKEN, f"email {email!r} already exists"
+                    ) from exc
+                raise
+            if updated.disabled:
+                self._users.pop(username, None)
+            else:
+                self._users[username] = _user_from_row(updated)
 
     async def set_permissions(self, username: str, permissions: builtins.list[str]) -> None:
         row = self._services.user_repo.get_by_username(username)

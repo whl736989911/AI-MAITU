@@ -52,7 +52,7 @@ export class SetupRequiredError extends Error {
   }
 }
 
-/** Session flag: backend reported no admin yet (setup lockdown active). */
+/** Session flag: backend reported that first-run setup is still pending. */
 let _setupRequiredKnown = false;
 
 /** Mark that first-run setup is still required (skips further locked APIs). */
@@ -60,7 +60,7 @@ export function markSetupRequired(): void {
   _setupRequiredKnown = true;
 }
 
-/** Clear the setup-lockdown short-circuit (after admin exists / login). */
+/** Clear the local short-circuit so login or wizard recovery can recheck the server. */
 export function clearSetupRequired(): void {
   _setupRequiredKnown = false;
 }

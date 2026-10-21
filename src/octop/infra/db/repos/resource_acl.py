@@ -61,6 +61,7 @@ class AclChangeRow:
     status: str
     reason: str | None
     created_at: int
+    rollback_of: str | None = None
 
     @classmethod
     def from_row(cls, r: DbRow) -> AclChangeRow:
@@ -77,6 +78,7 @@ class AclChangeRow:
             status=str(r["status"]),
             reason=r["reason"],
             created_at=int(r["created_at"]),
+            rollback_of=r["rollback_of"],
         )
 
 
@@ -212,17 +214,21 @@ class ResourceAclRepo:
     # Reads
     # ------------------------------------------------------------------
 
-    def get(self, resource_type: str, resource_id: str) -> AclEntry | None:
-        with self._db.connect() as conn:
-            rows = conn.execute(
-                "SELECT acl.*, g.grantee_type, g.grantee_id "
-                "FROM resource_acl AS acl "
-                "LEFT JOIN resource_acl_grants AS g "
-                "  ON g.resource_type = acl.resource_type AND g.resource_id = acl.resource_id "
-                "WHERE acl.resource_type = ? AND acl.resource_id = ? "
-                "ORDER BY g.grantee_type, g.grantee_id",
-                (resource_type, resource_id),
-            ).fetchall()
+    def get(
+        self, resource_type: str, resource_id: str, *, conn: Any | None = None
+    ) -> AclEntry | None:
+        if conn is None:
+            with self._db.connect() as owned:
+                return self.get(resource_type, resource_id, conn=owned)
+        rows = conn.execute(
+            "SELECT acl.*, g.grantee_type, g.grantee_id "
+            "FROM resource_acl AS acl "
+            "LEFT JOIN resource_acl_grants AS g "
+            "  ON g.resource_type = acl.resource_type AND g.resource_id = acl.resource_id "
+            "WHERE acl.resource_type = ? AND acl.resource_id = ? "
+            "ORDER BY g.grantee_type, g.grantee_id",
+            (resource_type, resource_id),
+        ).fetchall()
         entries = _entries_from_join(rows)
         return entries[0] if entries else None
 
@@ -483,8 +489,8 @@ class ResourceAclRepo:
             c.execute(
                 "INSERT INTO resource_acl_changes("
                 "id, resource_type, resource_id, actor_user_id, from_version, to_version, "
-                "before_json, after_json, impact_scope, status, reason, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "before_json, after_json, impact_scope, status, reason, created_at, rollback_of) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     change.id,
                     change.resource_type,
@@ -498,15 +504,25 @@ class ResourceAclRepo:
                     change.status,
                     change.reason,
                     change.created_at,
+                    change.rollback_of,
                 ),
             )
 
-    def get_change(self, change_id: str) -> AclChangeRow | None:
-        with self._db.connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM resource_acl_changes WHERE id = ?", (change_id,)
-            ).fetchone()
+    def get_change(self, change_id: str, *, conn: Any | None = None) -> AclChangeRow | None:
+        if conn is None:
+            with self._db.connect() as owned:
+                return self.get_change(change_id, conn=owned)
+        row = conn.execute(
+            "SELECT * FROM resource_acl_changes WHERE id = ?", (change_id,)
+        ).fetchone()
         return AclChangeRow.from_row(row) if row else None
+
+    def has_pending_rollback(self, change_id: str, *, conn: Any) -> bool:
+        row = conn.execute(
+            "SELECT 1 FROM resource_acl_changes WHERE rollback_of = ? AND status = ? LIMIT 1",
+            (change_id, CHANGE_PENDING),
+        ).fetchone()
+        return row is not None
 
     def list_changes(
         self,
@@ -550,6 +566,7 @@ class ResourceAclRepo:
         *,
         reason: str | None | object = UNSET,
         to_version: int | None | object = UNSET,
+        expected_status: str | None = None,
         conn: Any | None = None,
     ) -> None:
         if status not in (CHANGE_APPLIED, CHANGE_PENDING, CHANGE_REJECTED, CHANGE_ROLLED_BACK):
@@ -562,6 +579,14 @@ class ResourceAclRepo:
         if to_version is not UNSET:
             fields.append("to_version = ?")
             params.append(to_version)
+        where = "id = ?"
         params.append(change_id)
+        if expected_status is not None:
+            where += " AND status = ?"
+            params.append(expected_status)
         with self._tx(conn) as c:
-            c.execute(f"UPDATE resource_acl_changes SET {', '.join(fields)} WHERE id = ?", params)
+            cursor = c.execute(
+                f"UPDATE resource_acl_changes SET {', '.join(fields)} WHERE {where}", params
+            )
+            if expected_status is not None and cursor.rowcount != 1:
+                raise ValueError(f"change {change_id!r} is no longer {expected_status!r}")

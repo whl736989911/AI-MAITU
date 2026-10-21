@@ -420,6 +420,25 @@ def test_run_block_reads_inputs_steps_rules_and_outputs_in_order() -> None:
     assert "报价单（markdown）" in block
 
 
+def test_run_block_serializes_actual_input_values_for_json_placeholders() -> None:
+    values = {"客户": None, "nested": {"items": [1, False]}}
+    definition = _definition(
+        steps=[
+            {
+                "id": "extract",
+                "name": "提取",
+                "prompt": "<inputs>{{inputs_json}}</inputs> {{unknown}}",
+            }
+        ]
+    )
+
+    block = render_run_block(definition, locale="zh", values=values)
+
+    payload = block.split("<inputs>", 1)[1].split("</inputs>", 1)[0]
+    assert json.loads(payload) == values
+    assert "{{unknown}}" in block
+
+
 def test_only_a_confirm_step_says_to_stop() -> None:
     one_gate = _definition(
         steps=[
@@ -435,22 +454,6 @@ def test_only_a_confirm_step_says_to_stop() -> None:
 def test_run_block_without_inputs_says_the_step_should_ask() -> None:
     block = render_run_block(_definition(), locale="en")
     assert "No input card came with this message" in block
-
-
-def test_placeholders_are_replaced_and_unknown_ones_survive() -> None:
-    definition = _definition(
-        steps=[
-            {
-                "id": "draft",
-                "name": "起草",
-                "prompt": "按 {{inputs}} 起草，参考 {{inputs_json}}，不要动 {{tomorrow}}",
-            }
-        ]
-    )
-    block = render_run_block(definition, locale="zh", values={"customer_name": "ACME"})
-    assert "按 - 客户名称: ACME 起草" in block
-    assert "{}" in block
-    assert "{{tomorrow}}" in block
 
 
 def test_overlay_block_is_empty_for_empty_text_and_states_its_priority() -> None:

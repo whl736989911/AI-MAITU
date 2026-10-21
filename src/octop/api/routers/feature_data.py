@@ -32,7 +32,8 @@ router = APIRouter(prefix="/agents", tags=["agents"])
 
 def _services(server: OctopServer) -> SharedServices:
     services = server.services
-    assert services is not None
+    if services is None:
+        raise OctopError(ErrorCode.INTERNAL_ERROR, "server services are not initialized")
     return services
 
 

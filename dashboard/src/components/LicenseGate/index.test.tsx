@@ -197,6 +197,43 @@ describe("LicenseGate", () => {
       screen.queryByRole("heading", { name: "License required" }),
     ).not.toBeInTheDocument();
   });
+
+  it("recovers from a lock event when a later status refresh is healthy", async () => {
+    render(
+      <LicenseGate>
+        <div>business-shell</div>
+      </LicenseGate>,
+    );
+    expect(await screen.findByText("business-shell")).toBeInTheDocument();
+
+    const lockedSnapshot = {
+      ...activeSnapshot,
+      state: "LOCKED",
+      business_allowed: false,
+      reason: "revoked",
+    };
+    mocks.getDetails.mockResolvedValue(lockedSnapshot);
+    mocks.getStatus.mockResolvedValue(lockedSnapshot);
+    act(() => window.dispatchEvent(new Event("octop:license-locked")));
+    expect(
+      await screen.findByRole("heading", { name: "License required" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("business-shell")).not.toBeInTheDocument();
+
+    mocks.getDetails.mockResolvedValue(activeSnapshot);
+    mocks.getStatus.mockResolvedValue(activeSnapshot);
+    act(() => window.dispatchEvent(new Event("focus")));
+    expect(await screen.findByText("business-shell")).toBeInTheDocument();
+    expect(mocks.activate).not.toHaveBeenCalled();
+
+    mocks.getDetails.mockResolvedValue(lockedSnapshot);
+    mocks.getStatus.mockResolvedValue(lockedSnapshot);
+    act(() => window.dispatchEvent(new Event("octop:license-locked")));
+    expect(
+      await screen.findByRole("heading", { name: "License required" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("business-shell")).not.toBeInTheDocument();
+  });
   it("restores the business shell only after administrator activation succeeds", async () => {
     const user = userEvent.setup();
     mocks.getDetails.mockResolvedValue({

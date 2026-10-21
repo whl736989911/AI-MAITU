@@ -268,6 +268,51 @@ def test_rollback_restores_the_previous_state_at_a_fresh_version(world: World) -
     assert json.loads(undo.after_json)["visibility"] == "private"
 
 
+def test_rollback_matches_grants_independent_of_request_order(world: World) -> None:
+    seed_private(world)
+    granted = world.service.apply_change(
+        world.owner,
+        "agent",
+        "a1",
+        entry(
+            world,
+            grants=(("user", str(world.member)), ("user", str(world.other))),
+        ),
+    )
+    current = world.acl.get("agent", "a1")
+    assert current is not None
+    assert current.grants == (("user", str(world.other)), ("user", str(world.member)))
+
+    reversal_id = world.service.rollback(granted.change_id, world.owner)
+
+    restored = world.acl.get("agent", "a1")
+    assert restored is not None
+    assert restored.grants == ()
+    assert world.acl.get_change(reversal_id).status == CHANGE_APPLIED
+
+
+def test_rollback_decodes_historical_acl_json_shape(world: World, db: SqlitePool) -> None:
+    seed_private(world)
+    applied = world.service.apply_change(
+        world.owner, "agent", "a1", entry(world, visibility="unit", unit_key="sales")
+    )
+    stored = world.acl.get_change(applied.change_id)
+    assert stored is not None
+    legacy = json.loads(stored.after_json)
+    legacy.pop("permission")
+    reordered = json.dumps(dict(reversed(tuple(legacy.items()))))
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE resource_acl_changes SET after_json = ? WHERE id = ?",
+            (reordered, applied.change_id),
+        )
+
+    world.service.rollback(applied.change_id, world.owner)
+
+    restored = world.acl.get("agent", "a1")
+    assert restored is not None and restored.visibility == "private"
+
+
 def test_rollback_needs_admin_or_the_original_actor(world: World) -> None:
     seed_private(world)
     applied = world.service.apply_change(

@@ -182,8 +182,14 @@ export default function ApprovalQueue() {
         await sharingApi.approveChange(change.change_id);
         message.success(t("sharing.queue.approved"));
       } else {
-        await sharingApi.rollbackChange(change.change_id);
-        message.success(t("sharing.queue.rolledBack"));
+        const result = await sharingApi.rollbackChange(change.change_id);
+        message.success(
+          t(
+            result.status === "pending_approval"
+              ? "sharing.queue.rollbackPending"
+              : "sharing.queue.rolledBack",
+          ),
+        );
       }
       setReloadToken((n) => n + 1);
     } catch (error) {

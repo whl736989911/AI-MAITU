@@ -817,7 +817,10 @@ def render_run_block(
             )
             prompt = str(step.get("prompt") or "").strip()
             if prompt:
-                rendered = apply_placeholders(prompt, inputs_text=inputs_text, inputs_json="{}")
+                inputs_json = json.dumps(values if values is not None else {}, ensure_ascii=False)
+                rendered = apply_placeholders(
+                    prompt, inputs_text=inputs_text, inputs_json=inputs_json
+                )
                 step_lines.append(tr("workflow.block.step_prompt", loc, prompt=rendered))
             uses = _step_uses(step, locale=loc)
             if uses:

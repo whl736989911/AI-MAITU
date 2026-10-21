@@ -493,6 +493,54 @@ async def test_update_persists_prompt_change(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("foreign_owner", ["user", "agent"])
+async def test_update_rejects_foreign_session_without_changing_job(
+    tmp_path: Path, foreign_owner: str
+) -> None:
+    from octop.infra.errors import ErrorCode, OctopError
+
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    gateway = _make_gateway()
+    mgr = _make_manager(services, gateway=gateway)
+    cid = _cron_id()
+    original = await mgr.create(
+        cron_id=cid, agent_id=aid, user_id=uid, trigger="interval:10", prompt="original"
+    )
+    gateway.thread_registry.get_session.return_value = MagicMock(
+        agent_id=aid if foreign_owner == "user" else "another-agent",
+        user_id=uid + 1 if foreign_owner == "user" else uid,
+    )
+
+    with pytest.raises(OctopError) as exc:
+        await mgr.update(cid, session_key="foreign-session", prompt="must-not-save")
+
+    assert exc.value.code is ErrorCode.FORBIDDEN
+    saved = mgr.get(cid)
+    assert saved is not None
+    assert saved.session_key == original.session_key
+    assert saved.prompt == "original"
+
+
+@pytest.mark.asyncio
+async def test_update_accepts_owned_session(tmp_path: Path) -> None:
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    gateway = _make_gateway()
+    mgr = _make_manager(services, gateway=gateway)
+    cid = _cron_id()
+    await mgr.create(
+        cron_id=cid, agent_id=aid, user_id=uid, trigger="interval:10", prompt="original"
+    )
+    gateway.thread_registry.get_session.return_value = MagicMock(agent_id=aid, user_id=uid)
+
+    updated = await mgr.update(cid, session_key="owned-session", prompt="updated")
+
+    assert updated.session_key == "owned-session"
+    assert updated.prompt == "updated"
+
+
+@pytest.mark.asyncio
 async def test_update_reschedules_on_trigger_change(tmp_path: Path) -> None:
     """update() with a new trigger removes old job and re-adds."""
     services = _make_services(tmp_path)

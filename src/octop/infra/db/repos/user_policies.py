@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass
+from typing import Any
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import DbRow, now_ts, sql_in_placeholders
@@ -81,11 +83,13 @@ class UserPolicyRepo:
     def set(self, user_id: int, name: str, value: str | None) -> None:
         self.merge(user_id, {name: value})
 
-    def merge(self, user_id: int, updates: Mapping[str, str | None]) -> None:
+    def merge(
+        self, user_id: int, updates: Mapping[str, str | None], *, conn: Any | None = None
+    ) -> None:
         if not updates:
             return
         ts = now_ts()
-        with self._db.transaction() as conn:
+        with nullcontext(conn) if conn is not None else self._db.transaction() as conn:
             for name, value in updates.items():
                 if value is None:
                     conn.execute(

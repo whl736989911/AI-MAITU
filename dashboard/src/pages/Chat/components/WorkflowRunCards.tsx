@@ -29,12 +29,13 @@ export interface WorkflowRunCardsProps {
   /** A turn is in flight, or the thread is still being created. */
   busy: boolean;
   isStreaming: boolean;
-  /** Send the run: one ordinary chat turn, carrying this run as ``feature_run``. */
+  /** Send the run: one ordinary chat turn, carrying this run as ``feature_run``.
+   *  Return false when the send was rejected (HITL pause, …). */
   onRun: (
     text: string,
     attachments: ChatAttachment[],
     payload: FeatureRunPayload,
-  ) => void;
+  ) => boolean;
 }
 
 export default function WorkflowRunCards({
@@ -66,14 +67,16 @@ export default function WorkflowRunCards({
     attachments: ChatAttachment[],
     payload: FeatureRunPayload,
   ) => {
-    markSubmitted(payload.inputs);
-    onRun(
+    // The card turns read-only only once the turn actually left — a rejected
+    // send (HITL pause, no agent, …) must keep the form editable.
+    const accepted = onRun(
       name
         ? t("chat.workflow.runMessage", { name })
         : t("chat.workflow.runMessagePlain"),
       attachments,
       payload,
     );
+    if (accepted) markSubmitted(payload.inputs);
   };
 
   return (

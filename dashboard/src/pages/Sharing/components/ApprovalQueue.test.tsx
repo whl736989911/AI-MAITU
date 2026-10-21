@@ -2,21 +2,28 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
-const { listChanges, approveChange, rejectChange, request, currentUser } =
-  vi.hoisted(() => ({
-    listChanges: vi.fn(),
-    approveChange: vi.fn(),
-    rejectChange: vi.fn(),
-    request: vi.fn(),
-    currentUser: { value: null as null | { id: number; role: string } },
-  }));
+const {
+  listChanges,
+  approveChange,
+  rejectChange,
+  rollbackChange,
+  request,
+  currentUser,
+} = vi.hoisted(() => ({
+  listChanges: vi.fn(),
+  approveChange: vi.fn(),
+  rejectChange: vi.fn(),
+  rollbackChange: vi.fn(),
+  request: vi.fn(),
+  currentUser: { value: null as null | { id: number; role: string } },
+}));
 
 vi.mock("../../../api/modules/sharing", () => ({
   sharingApi: {
     listChanges,
     approveChange,
     rejectChange,
-    rollbackChange: vi.fn(),
+    rollbackChange,
     getAcl: vi.fn(),
     listOrgUnits: vi.fn(),
   },
@@ -54,6 +61,7 @@ const ORG_CHANGE = {
   to_version: 2,
   reason: "onboarding for everyone",
   created_at: 1_700_000_000,
+  rollback_of: null,
   before: {
     resource_type: "knowledge_base",
     resource_id: "kb-1",
@@ -175,5 +183,42 @@ describe("<ApprovalQueue />", () => {
       screen.queryByRole("button", { name: "sharing.queue.reject" }),
     ).not.toBeInTheDocument();
     expect(screen.getByText("sharing.queue.adminOnlyHint")).toBeInTheDocument();
+  });
+  it("reports that a rollback is pending approval instead of claiming it took effect", async () => {
+    listChanges
+      .mockResolvedValueOnce({
+        status: "pending_approval",
+        limit: 50,
+        changes: [],
+      })
+      .mockResolvedValue({
+        status: "applied",
+        limit: 50,
+        changes: [{ ...ORG_CHANGE, status: "applied", applied: true }],
+      });
+    rollbackChange.mockResolvedValue({
+      change_id: "reversal",
+      status: "pending_approval",
+      applied: false,
+      impact_scope: "org",
+      resource_type: "knowledge_base",
+      resource_id: "kb-1",
+      entry: ORG_CHANGE.before,
+    });
+
+    render(<ApprovalQueue />);
+    await userEvent.click(screen.getByText("sharing.status.applied"));
+    await screen.findByText("Handbook");
+    await userEvent.click(
+      screen.getByRole("button", { name: "sharing.queue.rollback" }),
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "common.confirm" }),
+    );
+
+    await waitFor(() => expect(rollbackChange).toHaveBeenCalledWith("01H"));
+    expect(message.success).toHaveBeenCalledWith(
+      "sharing.queue.rollbackPending",
+    );
   });
 });

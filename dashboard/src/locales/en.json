@@ -23,6 +23,7 @@
     "upload": "Upload",
     "download": "Download",
     "refresh": "Refresh",
+    "retry": "Retry",
     "enable": "Enable",
     "disable": "Disable",
     "enabled": "Enabled",
@@ -1646,6 +1647,7 @@
       "approved": "Approved — now in effect.",
       "rejected": "Rejected — nothing was applied.",
       "rolledBack": "Rolled back — the previous state is in effect again.",
+      "rollbackPending": "Rollback requested — waiting for administrator approval.",
       "rejectTitle": "Reject the change",
       "rejectHint": "The reason is stored with the change and shown to the requester.",
       "rejectReasonPlaceholder": "Why is this change refused?",
@@ -5528,7 +5530,7 @@
     "finish": {
       "running": "Setting up your workspace…",
       "loginFailed": "Auto-login failed. Please log in manually.",
-      "providerFailed": "Could not save the provider just now. Open the Models page after login to retry.",
+      "failed": "Setup could not be completed. Your progress is saved; retry to continue.",
       "fallbackToLogin": "Skip and go to login"
     }
   },

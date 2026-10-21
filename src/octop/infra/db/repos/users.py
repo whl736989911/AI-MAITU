@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import builtins
 import json
+from collections.abc import Mapping
+from contextlib import nullcontext
 from dataclasses import dataclass, field
+from typing import Any
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import DbRow, bool_int, insert_returning_id, map_rows, now_ts
@@ -135,9 +138,9 @@ class UserRepo:
                 ),
             )
 
-    def get(self, user_id: int) -> UserRow | None:
-        with self._db.connect() as conn:
-            r = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+    def get(self, user_id: int, *, conn: Any | None = None) -> UserRow | None:
+        with nullcontext(conn) if conn is not None else self._db.connect() as active:
+            r = active.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
         return UserRow.from_row(r) if r else None
 
     def get_by_username(self, username: str) -> UserRow | None:
@@ -272,6 +275,35 @@ class UserRepo:
         with self._db.connect() as conn:
             rows = conn.execute(sql).fetchall()
         return map_rows(rows, UserRow)
+
+    def update_account(
+        self, user_id: int, updates: Mapping[str, Any], *, conn: Any
+    ) -> UserRow | None:
+        """Write normalized account fields inside the caller's transaction."""
+        fields: list[str] = []
+        params: list[object] = []
+        for column in (
+            "role",
+            "display_name",
+            "email",
+            "org_unit",
+            "disabled",
+            "permissions",
+            "denied_permissions",
+        ):
+            if column not in updates:
+                continue
+            value = updates[column]
+            if column in {"permissions", "denied_permissions"}:
+                value = json.dumps(value, ensure_ascii=False)
+            elif column == "disabled":
+                value = bool_int(value)
+            fields.append(f"{column} = ?")
+            params.append(value)
+        if fields:
+            params.append(user_id)
+            conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", params)
+        return self.get(user_id, conn=conn)
 
     def set_disabled(self, user_id: int, disabled: bool) -> None:
         with self._db.transaction() as conn:

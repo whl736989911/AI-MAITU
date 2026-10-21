@@ -18,6 +18,10 @@ workspace and user, and refuses only what is wrong about the *change*.
 
 from __future__ import annotations
 
+import asyncio
+import json
+import uuid
+import weakref
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -31,6 +35,18 @@ from octop.infra.db.repos.feature_workflow_changes import (
     FeatureChangeRow,
 )
 from octop.infra.errors import ErrorCode, OctopError
+
+_definition_save_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def _definition_save_lock(agent_id: str) -> asyncio.Lock:
+    lock = _definition_save_locks.get(agent_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _definition_save_locks[agent_id] = lock
+    return lock
 
 
 def _invalid(reason: str) -> OctopError:
@@ -61,6 +77,29 @@ def _apply(
     return resolved, updated
 
 
+def _record_change(
+    repos: Any,
+    *,
+    feature_id: str,
+    user_id: int,
+    target: str,
+    summary: str,
+    items: list[dict[str, Any]],
+    run_id: str | None,
+) -> FeatureChangeRow:
+    return cast(
+        "FeatureChangeRow",
+        repos.feature_change_repo.record(
+            feature_id=feature_id,
+            user_id=user_id,
+            target=target,
+            summary=summary,
+            items=items,
+            run_id=run_id,
+        ),
+    )
+
+
 async def apply_change(
     *,
     workspace: Any | None,
@@ -79,23 +118,32 @@ async def apply_change(
     — so undoing it later deletes that element rather than guessing which one moved.
     """
     if target == TARGET_DEFINITION:
-        applied = await _apply_to_definition(
-            workspace, items, repos=repos, agent_id=agent_id or feature_agent_id_for(feature_id)
-        )
-    elif target == TARGET_OVERLAY:
+        resolved_agent_id = agent_id or feature_agent_id_for(feature_id)
+        async with _definition_save_lock(resolved_agent_id):
+            applied = await _apply_to_definition(
+                workspace, items, repos=repos, agent_id=resolved_agent_id
+            )
+            return _record_change(
+                repos,
+                feature_id=feature_id,
+                user_id=user_id,
+                target=target,
+                summary=summary,
+                items=applied,
+                run_id=run_id,
+            )
+    if target == TARGET_OVERLAY:
         applied = _apply_to_overlay(repos, feature_id=feature_id, user_id=user_id, items=items)
     else:
         raise _invalid(f"target must be one of {', '.join(TARGETS)}")
-    return cast(
-        "FeatureChangeRow",
-        repos.feature_change_repo.record(
-            feature_id=feature_id,
-            user_id=user_id,
-            target=target,
-            summary=summary,
-            items=applied,
-            run_id=run_id,
-        ),
+    return _record_change(
+        repos,
+        feature_id=feature_id,
+        user_id=user_id,
+        target=target,
+        summary=summary,
+        items=applied,
+        run_id=run_id,
     )
 
 
@@ -106,20 +154,83 @@ async def save_definition(
     repos: Any,
     agent_id: str,
 ) -> dict[str, Any]:
-    """Validate the definition and transfer first publication to its enterprise.
+    """Serialize workflow mutations and publish without exposing staged content."""
+    lock = _definition_save_lock(agent_id)
+    async with lock:
+        return await _save_definition_locked(workspace, raw, repos=repos, agent_id=agent_id)
 
-    The ownership change happens after validation but before writing the active
-    document. A failed workspace write can leave a draft under enterprise control;
-    the reverse order could leave a published document editable by its author.
-    """
+
+async def clear_definition(workspace: Any, *, agent_id: str) -> None:
+    """Remove both supported workflow paths under the same per-agent save lock."""
+    async with _definition_save_lock(agent_id):
+        await wf.clear_workflow(workspace)
+
+
+async def _save_definition_locked(
+    workspace: Any,
+    raw: Any,
+    *,
+    repos: Any,
+    agent_id: str,
+) -> dict[str, Any]:
     definition = wf.parse_workflow(raw)
-    if wf.workflow_status(definition) == wf.STATUS_ACTIVE:
-        capabilities = await wf.read_capabilities(workspace)
-        problems = wf.validate_references(definition, capabilities)
-        if problems:
-            raise _invalid("; ".join(problems))
-        repos.agent_repo.publish_feature(agent_id)
-    return await wf.save_workflow(workspace, definition)
+    if wf.workflow_status(definition) != wf.STATUS_ACTIVE:
+        return await wf.save_workflow(workspace, definition)
+
+    capabilities = await wf.read_capabilities(workspace)
+    problems = wf.validate_references(definition, capabilities)
+    if problems:
+        raise _invalid("; ".join(problems))
+
+    path = wf.WORKSPACE_WORKFLOW_PATH
+    previous_exists = await workspace.aexists(path)
+    token = uuid.uuid4().hex
+    pending = f"{path}.pending-{token}"
+    backup = f"{path}.backup-{token}"
+    payload = json.dumps(definition, ensure_ascii=False, indent=2, sort_keys=False) + "\n"
+    old_moved = False
+    staged_moved = False
+    receipt = None
+
+    try:
+        await workspace.awrite_text(pending, payload, force=True)
+        if previous_exists:
+            await workspace.amove(path, backup)
+            old_moved = True
+        receipt = repos.agent_repo.publish_feature(agent_id)
+        await workspace.amove(pending, path)
+        staged_moved = True
+        if old_moved:
+            await workspace.adelete(backup)
+        return definition
+    except Exception as original:
+        rollback_errors: list[Exception] = []
+        try:
+            if (staged_moved or old_moved or not previous_exists) and await workspace.aexists(path):
+                await workspace.adelete(path)
+        except Exception as exc:
+            rollback_errors.append(exc)
+        if receipt is not None:
+            try:
+                repos.agent_repo.rollback_feature_publication(agent_id, receipt)
+            except Exception as exc:
+                rollback_errors.append(exc)
+        if old_moved:
+            try:
+                await workspace.amove(backup, path)
+            except Exception as exc:
+                rollback_errors.append(exc)
+        try:
+            if await workspace.aexists(pending):
+                await workspace.adelete(pending)
+        except Exception as exc:
+            rollback_errors.append(exc)
+        if rollback_errors:
+            raise ExceptionGroup(
+                "workflow save failed and compensation was incomplete",
+                [original, *rollback_errors],
+            ) from original
+        raise
 
 
 async def _apply_to_definition(
@@ -136,7 +247,7 @@ async def _apply_to_definition(
     if loaded.definition is None:
         raise _invalid(loaded.error or "this feature has no workflow to change")
     resolved, updated = _apply(loaded.definition, items)
-    await save_definition(workspace, updated, repos=repos, agent_id=agent_id)
+    await _save_definition_locked(workspace, updated, repos=repos, agent_id=agent_id)
     return resolved
 
 
@@ -188,13 +299,22 @@ async def revert_change(
     row = repo.get(change_id)
     if row is None or row.feature_id != feature_id:
         raise OctopError(ErrorCode.NOT_FOUND, f"change {change_id!r} not found")
+    if row.target == TARGET_DEFINITION:
+        resolved_agent_id = agent_id or feature_agent_id_for(feature_id)
+        async with _definition_save_lock(resolved_agent_id):
+            row = repo.get(change_id)
+            if row is None or row.feature_id != feature_id:
+                raise OctopError(ErrorCode.NOT_FOUND, f"change {change_id!r} not found")
+            if row.is_reverted:
+                return cast("FeatureChangeRow", row)
+            await _revert_definition(workspace, row, repos=repos, agent_id=resolved_agent_id)
+            repo.mark_reverted(change_id)
+            refreshed = repo.get(change_id)
+            assert refreshed is not None
+            return cast("FeatureChangeRow", refreshed)
     if row.is_reverted:
         return cast("FeatureChangeRow", row)
-    if row.target == TARGET_DEFINITION:
-        await _revert_definition(
-            workspace, row, repos=repos, agent_id=agent_id or feature_agent_id_for(feature_id)
-        )
-    elif row.target == TARGET_OVERLAY:
+    if row.target == TARGET_OVERLAY:
         _revert_overlay(repos, row, user_id=user_id)
     else:
         raise _invalid(f"unknown change target {row.target!r}")
@@ -218,7 +338,7 @@ async def _revert_definition(
         raise _invalid(str(exc)) from exc
     if conflicts:
         raise _conflict(conflicts)
-    await save_definition(workspace, restored, repos=repos, agent_id=agent_id)
+    await _save_definition_locked(workspace, restored, repos=repos, agent_id=agent_id)
 
 
 def _revert_overlay(repos: Any, row: FeatureChangeRow, *, user_id: int) -> None:
@@ -245,4 +365,4 @@ def _revert_overlay(repos: Any, row: FeatureChangeRow, *, user_id: int) -> None:
         repo.delete(feature_id=row.feature_id, user_id=row.user_id)
 
 
-__all__ = ["apply_change", "revert_change", "save_definition"]
+__all__ = ["apply_change", "clear_definition", "revert_change", "save_definition"]

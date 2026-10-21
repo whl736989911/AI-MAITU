@@ -25,7 +25,11 @@ import {
   isPendingThread,
 } from "./hooks/useSessions";
 import * as chatStore from "./hooks/chatStore";
-import { formatRunUsage, assistantTurnsFromEnd } from "./utils/chatMessages";
+import {
+  formatRunUsage,
+  assistantTurnsFromEnd,
+  userTurnsFromEnd,
+} from "./utils/chatMessages";
 import { useChatSidebarState } from "./hooks/useChatSidebarState";
 import { useChatHistoryRail } from "./hooks/useChatHistoryRail";
 import { useChatDockPanel } from "./hooks/useChatDockPanel";
@@ -330,7 +334,6 @@ function ChatPageInner() {
     historyHydrated,
     contextUsage,
     sendMessage,
-    editAndResend,
     cancelStream,
     loadHistory,
     loadMoreHistory,
@@ -663,15 +666,18 @@ function ChatPageInner() {
   // Wrap handleSend: skill-recording keywords, then pending HITL routing.
   // An open ask pause must become respond-resume (not a new turn); any other
   // pending HITL must not start a turn that would cancel the interrupt.
+  // Returns false when the send was rejected so the composer keeps its content
+  // (and a workflow input card stays editable).
   const wrappedHandleSend = useCallback(
     (
       text: string,
       attachments?: ChatAttachment[],
       overrides?: ChatSendOverrides,
-    ) => {
+    ): boolean => {
       if (interceptUserMessage(text)) {
-        // The workflow intercepted the message — don't send it to the agent
-        return;
+        // The workflow intercepted the message — don't send it to the agent.
+        // The input was consumed, so the composer may clear.
+        return true;
       }
       const targetThreadId = overrides?.threadId ?? activeThreadId ?? undefined;
       const ask =
@@ -684,14 +690,14 @@ function ChatPageInner() {
         const trimmed = text.trim();
         if (attachments && attachments.length > 0) {
           antMessage.warning(t("chat.ask.useCardForAttachments"));
-          return;
+          return false;
         }
-        if (!trimmed) return;
+        if (!trimmed) return false;
         resumeHitl(
           ask.actions.map(() => ({ type: "respond", message: trimmed })),
           targetThreadId,
         );
-        return;
+        return true;
       }
       const blocked =
         targetThreadId && targetThreadId === activeThreadId
@@ -701,9 +707,9 @@ function ChatPageInner() {
           : hasPendingHitlPause;
       if (blocked) {
         antMessage.warning(t("chat.hitl.finishPendingFirst"));
-        return;
+        return false;
       }
-      handleSend(text, attachments, overrides);
+      return handleSend(text, attachments, overrides);
     },
     [
       interceptUserMessage,
@@ -958,43 +964,6 @@ function ChatPageInner() {
     };
   }, [t, canRecordBrowser]);
 
-  // Regenerate: re-send the last user message before this assistant message
-  const handleRegenerate = useCallback(
-    (messageId: string) => {
-      if (hasPendingHitlPause) {
-        antMessage.warning(t("chat.hitl.finishPendingFirst"));
-        return;
-      }
-      const idx = messages.findIndex((m) => m.id === messageId);
-      if (idx < 0) return;
-      // Find the user message that preceded this assistant response
-      let userMsg: (typeof messages)[0] | undefined;
-      for (let i = idx - 1; i >= 0; i--) {
-        if (messages[i].role === "user") {
-          userMsg = messages[i];
-          break;
-        }
-      }
-      if (!userMsg) return;
-      wrappedHandleSend(userMsg.content, userMsg.attachments);
-    },
-    [messages, wrappedHandleSend, hasPendingHitlPause, t],
-  );
-
-  // Edit user message: truncate history from that message onwards, replace
-  // its content, and re-send — mirrors Claude / ChatGPT "edit message" behaviour.
-  const handleEditUserMessage = useCallback(
-    (messageId: string, newText: string) => {
-      if (!activeThreadId) return;
-      if (hasPendingHitlPause) {
-        antMessage.warning(t("chat.hitl.finishPendingFirst"));
-        return;
-      }
-      editAndResend(messageId, newText, "", resolvedAgentId ?? "");
-    },
-    [activeThreadId, editAndResend, resolvedAgentId, hasPendingHitlPause, t],
-  );
-
   const [forking, setForking] = useState(false);
   const forkDisabled = forking || isStreaming || hasPendingHitlPause;
   const forkDisabledHint =
@@ -1033,6 +1002,50 @@ function ChatPageInner() {
       );
     },
     [ensureThreadInList, navigate, t],
+  );
+
+  // Edit/regenerate shared flow: ask the server to fork the thread at the
+  // selected user turn — the fork copies only the history *before* that turn —
+  // then continue in the fork by sending the (possibly edited) question with
+  // its original attachments as a fresh turn. The source thread keeps its
+  // original history untouched; checkpoint history and a refresh agree.
+  const forkFromUserTurnAndResend = useCallback(
+    async (userMsg: (typeof messages)[0], text: string) => {
+      const agent = resolvedAgentId;
+      if (!agent || !activeThreadId) return;
+      const turnsFromEnd = userTurnsFromEnd(messages, userMsg.id);
+      if (turnsFromEnd < 1) return;
+      setForking(true);
+      try {
+        const created = await octopThreadsApi.fork(agent, activeThreadId, {
+          user_turns_from_end: turnsFromEnd,
+          user_message_content: userMsg.content,
+        });
+        // Load copied turns before the optimistic send populates the new cache.
+        await loadHistory(created.thread_id);
+        await navigateToForkedThread(agent, created);
+        // Bypass the composer wrapper deliberately: a fresh fork has no
+        // pending HITL, and skill-recording keywords must not swallow a
+        // resent question.
+        handleSend(text, userMsg.attachments, {
+          threadId: created.thread_id,
+          agentId: agent,
+        });
+      } catch (error) {
+        antMessage.error(apiErrorMessage(error, t("chat.forkFailed"), t));
+      } finally {
+        setForking(false);
+      }
+    },
+    [
+      activeThreadId,
+      handleSend,
+      loadHistory,
+      messages,
+      navigateToForkedThread,
+      resolvedAgentId,
+      t,
+    ],
   );
 
   const handleForkAssistantMessage = useCallback(
@@ -1103,6 +1116,47 @@ function ChatPageInner() {
       resolvedAgentId,
       t,
     ],
+  );
+
+  // Regenerate: re-ask the user turn that preceded this assistant answer in a
+  // fork whose checkpoint history ends before that user turn, excluding its
+  // superseded answer and question from the copied checkpoint.
+  const handleRegenerate = useCallback(
+    (messageId: string) => {
+      if (forkDisabled) {
+        antMessage.warning(t("chat.forkDisabledWhileBusy"));
+        return;
+      }
+      const idx = messages.findIndex((m) => m.id === messageId);
+      if (idx < 0) return;
+      // Find the user message that preceded this assistant response
+      let userMsg: (typeof messages)[0] | undefined;
+      for (let i = idx - 1; i >= 0; i--) {
+        if (messages[i].role === "user") {
+          userMsg = messages[i];
+          break;
+        }
+      }
+      if (!userMsg) return;
+      void forkFromUserTurnAndResend(userMsg, userMsg.content);
+    },
+    [forkDisabled, forkFromUserTurnAndResend, messages, t],
+  );
+
+  // Edit user message: fork before that turn and re-send the edited text with
+  // the original attachments — mirrors Claude / ChatGPT "edit message", but
+  // with a real server-side branch instead of a client-only truncation.
+  const handleEditUserMessage = useCallback(
+    (messageId: string, newText: string) => {
+      if (forkDisabled) {
+        antMessage.warning(t("chat.forkDisabledWhileBusy"));
+        return;
+      }
+      const userMsg = messages.find((m) => m.id === messageId);
+      if (!userMsg || userMsg.role !== "user") return;
+      void forkFromUserTurnAndResend(userMsg, newText);
+    },
+    [forkDisabled, forkFromUserTurnAndResend, messages, t],
   );
 
   const hasMessages = messages.length > 0;

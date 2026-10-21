@@ -1115,40 +1115,6 @@ export function useChat(
     else await loadHistory(stableSessionId);
   }, [loadMoreHistory, refreshHistory, loadHistory, stableSessionId]);
 
-  /**
-   * Edit a historical user message: truncate everything from that message
-   * onwards, replace its content, then re-send to the backend.
-   * Mirrors the behaviour of Claude / ChatGPT "edit message".
-   */
-  const editAndResend = useCallback(
-    (
-      messageId: string,
-      newText: string,
-      _sessionKey: string,
-      agentId: string,
-    ) => {
-      const ok = chatStore.truncateAndReplaceUserMessage(
-        stableSessionId,
-        messageId,
-        newText,
-      );
-      if (!ok) return;
-
-      // Re-send without appending a new user message — it is already in the store
-      chatStore.sendTurn(
-        stableSessionId,
-        newText,
-        agentId,
-        "",
-        undefined,
-        undefined,
-        undefined,
-        stableSessionId !== "__empty__" ? stableSessionId : undefined,
-      );
-    },
-    [stableSessionId],
-  );
-
   const clearMessages = useCallback(() => {
     chatStore.clearMessages(stableSessionId);
   }, [stableSessionId]);
@@ -1194,7 +1160,6 @@ export function useChat(
     historyRefreshing,
     historyHydrated,
     sendMessage,
-    editAndResend,
     cancelStream,
     loadHistory,
     loadMoreHistory,

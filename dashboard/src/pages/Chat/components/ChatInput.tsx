@@ -65,7 +65,9 @@ export interface ChatInputHandle {
 }
 
 interface ChatInputProps {
-  onSend: (text: string, attachments?: ChatAttachment[]) => void;
+  /** Return false when the send was rejected — the composer then keeps the
+   *  text, draft, and attachments so the user can retry. */
+  onSend: (text: string, attachments?: ChatAttachment[]) => boolean;
   /** Queue a message while the current turn is still streaming. */
   onQueue?: (item: EnqueueChatItemInput) => "ok" | "empty" | "full";
   queuedItems?: QueuedChatItem[];
@@ -534,7 +536,10 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
         return;
       }
 
-      onSend(wireText, attachments.length > 0 ? attachments : undefined);
+      // Only an explicit acceptance may discard the retryable composer state.
+      if (!onSend(wireText, attachments.length > 0 ? attachments : undefined)) {
+        return;
+      }
       resetComposerAfterSubmit(prevHeight, trimmed);
     }, [
       text,

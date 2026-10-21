@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -49,6 +50,20 @@ def _session(*, channel_type: str, thread_id: str = "thr1") -> MagicMock:
     session.session_key = "sk"
     session.channel_id = "ch-1"
     return session
+
+
+@pytest.fixture
+def registry(tmp_path: Path) -> Iterator[ThreadRegistry]:
+    db = SqlitePool(tmp_path / "delivery.db")
+    run_migrations(db)
+    users = UserRepo(db)
+    users.create(username="owner", password_hash="h", role="user")
+    users.create(username="peer", password_hash="h", role="user")
+    AgentRepo(db).create(agent_id="a1", user_id=1, name="bot")
+    try:
+        yield ThreadRegistry(session_repo=SessionRepo(db), thread_repo=ThreadRepo(db))
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio
@@ -274,49 +289,66 @@ async def test_agent_strips_orphan_thinking_prefix() -> None:
 
 
 @pytest.mark.asyncio
-async def test_fresh_thread_resets_before_require_session() -> None:
-    session = _session(channel_type="feishu")
-    order: list[str] = []
-
-    async def reset(_key: str) -> str:
-        order.append("reset")
-        return "thr_new"
-
-    def require(_agent_id: str, _key: str):
-        order.append("require")
-        return session
-
+async def test_fresh_thread_delivers_to_new_binding(registry: ThreadRegistry) -> None:
+    key = ThreadRegistry.dashboard_key(agent_id="a1", user_id=1)
+    original = await registry.get_or_create_by_key(
+        session_key=key,
+        agent_id="a1",
+        user_id=1,
+        channel_type=ThreadRegistry.CHANNEL_DASHBOARD,
+    )
     gateway = MagicMock()
     gateway.run_in_session = _run_locked
-    gateway.thread_registry.reset_by_session_key = reset
-    gateway.require_session = require
+    gateway.thread_registry = registry
+    gateway.require_session = lambda _agent, session_key: registry.get_session(session_key)
     gateway.push_session_text = AsyncMock()
-
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=MagicMock(),
         repos=MagicMock(),
     )
-    await service.deliver(_command(fresh_thread=True, task_type="text"))
-    assert order == ["reset", "require"]
+    service._agent_manager.get_agent.return_value.aappend_messages = AsyncMock(return_value=[])
+
+    await service.deliver(_command(session_key=key, fresh_thread=True))
+
+    current = registry.get_session(key)
+    assert current is not None
+    assert current.thread_id != original
+    delivered_session = gateway.push_session_text.await_args.args[0]
+    assert delivered_session.thread_id == current.thread_id
+    assert delivered_session.user_id == 1
 
 
 @pytest.mark.asyncio
-async def test_wrong_user_rejects_session() -> None:
-    session = _session(channel_type="dashboard")
-    session.user_id = 9
+@pytest.mark.parametrize("fresh_thread", [False, True])
+async def test_wrong_user_does_not_change_session(
+    registry: ThreadRegistry, fresh_thread: bool
+) -> None:
+    key = ThreadRegistry.dashboard_key(agent_id="a1", user_id=2)
+    original = await registry.get_or_create_by_key(
+        session_key=key,
+        agent_id="a1",
+        user_id=2,
+        channel_type=ThreadRegistry.CHANNEL_DASHBOARD,
+    )
     gateway = MagicMock()
     gateway.run_in_session = _run_locked
-    gateway.require_session = MagicMock(return_value=session)
+    gateway.thread_registry = registry
+    gateway.require_session = lambda _agent, session_key: registry.get_session(session_key)
     gateway.push_session_text = AsyncMock()
-
     service = CronDeliveryService(
         gateway=gateway,
         agent_manager=MagicMock(),
         repos=MagicMock(),
     )
+
     with pytest.raises(ValueError, match="does not belong to user"):
-        await service.deliver(_command())
+        await service.deliver(_command(session_key=key, fresh_thread=fresh_thread))
+
+    current = registry.get_session(key)
+    assert current is not None
+    assert current.thread_id == original
+    assert current.user_id == 2
     gateway.push_session_text.assert_not_awaited()
 
 

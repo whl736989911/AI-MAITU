@@ -2169,6 +2169,25 @@ def _ensure_feature_change_schema(db: DatabasePool) -> None:
         )
 
 
+def _ensure_acl_rollback_link_schema(db: DatabasePool) -> None:
+    """Add the v44 rollback-source link, including to already-stamped v44 DBs."""
+    if not _table_exists(db, "resource_acl_changes"):
+        return
+    if "rollback_of" in _table_columns(db, "resource_acl_changes"):
+        return
+    with db.connect() as conn:
+        if db.dialect == "postgresql":
+            conn.execute(
+                "ALTER TABLE resource_acl_changes ADD COLUMN IF NOT EXISTS "
+                "rollback_of TEXT REFERENCES resource_acl_changes(id)"
+            )
+        else:
+            conn.execute(
+                "ALTER TABLE resource_acl_changes ADD COLUMN rollback_of TEXT "
+                "REFERENCES resource_acl_changes(id)"
+            )
+
+
 def _ensure_resource_acl_schema(db: DatabasePool) -> None:
     """Create the unified ACL tables (schema v18) and mirror the legacy flags.
 
@@ -3306,6 +3325,9 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     ensure helper (also part of ``_repair_legacy_schema``).
     Version 43 adds the per-package ``allow_download`` switch through the
     skill-packages ensure helper, for the same repair-order reason as 41.
+    Version 44 backfills the personalization module permissions in Python and
+    adds the ``resource_acl_changes`` rollback-source link through a guarded
+    helper, so databases already stamped 44 without them still converge.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -3498,7 +3520,12 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
     if version == 44:
+        # ``044_personalization_permissions.sql`` is the readable record; the
+        # permission backfill is Python in both dialects, and the rollback link
+        # goes through the guarded helper so its plain ALTER cannot fail on a
+        # column a repair pass already added.
         _backfill_personalization_permissions(db)
+        _ensure_acl_rollback_link_schema(db)
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
@@ -3600,6 +3627,10 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_sso_provider_kind_schema(db)
     _ensure_org_units_schema(db)
     _ensure_resource_acl_schema(db)
+    # v44 carries the ACL rollback link; a database stamped 44 by an
+    # intermediate build must still converge onto it.
+    if _current_version(db) >= 44:
+        _ensure_acl_rollback_link_schema(db)
     _ensure_agent_enterprise_unit_key(db)
     _ensure_acl_permission_level(db)
     _ensure_thread_policy_columns(db)

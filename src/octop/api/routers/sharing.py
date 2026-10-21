@@ -244,6 +244,7 @@ def _change_payload(
         "to_version": change.to_version,
         "reason": change.reason,
         "created_at": change.created_at,
+        "rollback_of": change.rollback_of,
         "before": _state_payload(change, change.before_json, change.from_version),
         "after": _state_payload(change, change.after_json, change.to_version),
     }
@@ -422,11 +423,10 @@ async def rollback_sharing_change(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Restore the state a change replaced, logged as a new change.
+    """Request a reversal, which may itself wait for administrator approval.
 
-    Who may roll back is the service's call: an admin, or the user who made the
-    change. The reply describes the change that was rolled back and the state now
-    in force — which is the restored one, not ``after``.
+    The response describes the newly logged reversal request and the ACL
+    currently in force; the source change remains applied until reversal lands.
     """
     change = _services(server).repos.resource_acl_repo.get_change(change_id)
     if change is not None and not _may_manage_acl(
@@ -436,8 +436,8 @@ async def rollback_sharing_change(
             ErrorCode.FORBIDDEN, "permission required", details={"permission": "users"}
         )
     try:
-        _sharing(server).rollback(change_id, user.id)
+        reversal_id = _sharing(server).rollback(change_id, user.id)
     except ValueError as exc:
-        # Only an applied change can be rolled back; anything else is a conflict.
+        # Only a current applied change can be rolled back; otherwise it conflicts.
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-    return _outcome(server, change_id)
+    return _outcome(server, reversal_id)

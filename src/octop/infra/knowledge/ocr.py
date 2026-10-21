@@ -301,7 +301,8 @@ def _png_bytes(image: Any) -> bytes:
     ok, encoded = cv2.imencode(".png", _bgr_image(image))
     if not ok:
         raise RuntimeError("could not encode rendered PDF page")
-    return encoded.tobytes()
+    result: bytes = encoded.tobytes()
+    return result
 
 
 def _image_inputs(path: Path) -> Iterator[tuple[bytes, str]]:

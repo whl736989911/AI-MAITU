@@ -505,7 +505,13 @@ async def mark_thread_read(
 @router.post(
     "/agents/{agent_id}/threads/{thread_id}/fork",
     status_code=201,
-    summary="Fork thread from an assistant message",
+    summary="Branch a conversation at an assistant reply or before a user turn",
+    description=(
+        "Creates a new thread without modifying the source. Assistant locators include "
+        "the selected reply; user-message locators copy only the preceding context for "
+        "editing or regeneration. The locator modes are mutually exclusive. User-turn "
+        "branching requires an idle agent and no pending approval on the source thread."
+    ),
 )
 async def fork_thread(
     agent_id: str,
@@ -520,14 +526,53 @@ async def fork_thread(
 
     The original thread is left unchanged. History includes the selected
     assistant reply so the user can continue from that point.
+
+    With a user-message locator the fork copies everything *before* that user
+    turn instead (chat edit/regenerate): the client re-sends the question as a
+    fresh turn in the fork, so replaced answers never re-enter the context.
+    That mode refuses while the agent is generating or the thread has a pending
+    approval — editing history mid-turn would seed the fork from a half-written
+    checkpoint.
     """
-    if not (body.message_id or "").strip() and body.assistant_turns_from_end is None:
+    assistant_locator = bool(
+        (body.message_id or "").strip() or body.content or body.assistant_turns_from_end is not None
+    )
+    user_locator = bool(
+        (body.user_message_id or "").strip()
+        or (body.user_message_content or "").strip()
+        or body.user_turns_from_end is not None
+    )
+    if assistant_locator and user_locator:
+        raise OctopError(
+            ErrorCode.SLASH_BAD_ARGS,
+            "assistant and user-message locators are mutually exclusive",
+        )
+    if not user_locator and not (
+        (body.message_id or "").strip() or body.assistant_turns_from_end is not None
+    ):
         raise OctopError(
             ErrorCode.SLASH_BAD_ARGS,
             "message_id or assistant_turns_from_end is required",
         )
     row = _require_thread(server, agent_id, thread_id, user, as_user)
     effective_uid = as_user if as_user is not None else user.id
+    if user_locator:
+        if _agent_is_busy(server, agent_id):
+            raise OctopError(
+                ErrorCode.AGENT_BUSY,
+                "agent is generating; wait for the turn to finish before editing this conversation",
+            )
+        hitl_store = server.app_runtime.gateway.processor.hitl_coordinator.store
+        pending = hitl_store.resolve_pending_for_thread(
+            thread_id,
+            agent_id=agent_id,
+            user_id=effective_uid,
+        )
+        if pending is not None:
+            raise OctopError(
+                ErrorCode.AGENT_BUSY,
+                "thread has a pending approval; resolve it before editing this conversation",
+            )
     harness = server.app_runtime.agent_registry.get_agent(agent_id)
     return await fork_dashboard_thread(
         thread_registry=server.app_runtime.gateway.thread_registry,
@@ -537,6 +582,9 @@ async def fork_thread(
         message_id=body.message_id,
         content=body.content,
         assistant_turns_from_end=body.assistant_turns_from_end,
+        user_message_id=body.user_message_id,
+        user_message_content=body.user_message_content,
+        user_turns_from_end=body.user_turns_from_end,
         locale=resolve_request_locale(request),
         thread_message_repo=server.services.thread_message_repo,
         history_archive=getattr(server.app_runtime, "history_archive", None),

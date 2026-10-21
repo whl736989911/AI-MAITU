@@ -79,6 +79,10 @@ and maintenance routes remain available. Finishing setup does not grant a licens
 | `POST` | `/license/activate` | system/enterprise admin or pending first-run wizard | Body `{activation_code}`; one-time center registration and signed response validation; rate-limited |
 | `POST` | `/license/refresh` | system/enterprise admin or pending first-run wizard | Body `{}`; sync with the operator-controlled center; rate-limited and single-flight |
 
+A successful status refresh with `business_allowed: true` clears the dashboard's
+previous lock signal, including renewal performed in another tab or by the
+operator. Later lock events still close the business surface.
+
 Customer host capabilities remain restricted even with a valid license. This includes
 host terminal/filesystem access, deployment environment changes, custom executable
 plugins, stdio MCP servers, and arbitrary host workspace policies. Business permissions
@@ -89,15 +93,15 @@ for trusted-key configuration, activation, renewal, revocation, and backup bound
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| `GET`    | `/setup/status` | public | `{required, completed, has_admin}` |
+| `GET`    | `/setup/status` | public | `{setup_required, admin_created, wizard_password_required, wizard_password_exists, wizard_password_path, database_bound, database_driver}` |
 | `GET`    | `/setup/presets` | public | Provider templates for the wizard |
 | `POST`   | `/setup/begin` | public | Begin a wizard session (no password) |
 | `POST`   | `/setup/verify-password` | public | Exchange the wizard password for a session token |
 | `GET`    | `/setup/validate-token` | public | Check a wizard session token |
 | `POST`   | `/setup/initial-admin` | public | body `{username, password, display_name?, email?}` → `201` |
 | `POST`   | `/setup/test-provider` | public | Ping a provider draft (kind/base_url/api_key/model) |
-| `POST`   | `/setup/finish` | public | Finalise setup; business initialization remains deferred until the instance license is valid |
-| `GET`    | `/auth/captcha` | public | `{provider, site_key?}` for the login widget; 503 while setup is required |
+| `POST`   | `/setup/finish` | wizard token | body `{provider_draft?}`; persist completion only after provider configuration and bootstrap succeed; an invalid instance license explicitly defers business bootstrap |
+| `GET`    | `/auth/captcha` | public | `{provider, site_key?}` for the login widget; 503 before the initial administrator is created |
 | `POST`   | `/auth/login` | public | body `{username, password, captcha_token?}` (`username` may be email) → `{access_token, role, user, ...}` |
 | `GET`    | `/auth/oidc/status` | public | OIDC login availability and provider display name |
 | `POST`   | `/auth/oidc/start` | public | body `{redirect_after?}` → identity-provider authorization URL |
@@ -126,6 +130,17 @@ the initial administrator, the dashboard retains that administrator's JWT to
 complete setup even if the earlier wizard token expires. There is no public
 resume-token minting endpoint.
 
+Without retained credentials, the dashboard repeats the configured bootstrap
+password challenge (or `/setup/begin` when explicitly disabled), then resumes
+the saved model/finish step instead of creating another administrator.
+
+Creating the administrator does not complete installation. Before that account
+exists, login and captcha requests return `503 {"setup_required": true}`. After
+it exists, authentication can resume the wizard, but normal business endpoints
+remain unavailable while `setup_required` is true. A failed finish preserves the
+pending state and wizard credentials for retry; retrying a saved provider draft
+updates the same provider instead of creating duplicates.
+
 ## Users (admin)
 
 | Method | Path | Auth | Notes |
@@ -133,7 +148,7 @@ resume-token minting endpoint.
 | `GET`    | `/users` | admin | `[{id, username, role, display_name, email, enabled, ...}]` |
 | `POST`   | `/users` | admin | body `{username, password, role, display_name?, email?, permissions?, workspace_root_dir?, token_quota?}` → `201` |
 | `GET`    | `/users/{id}` | admin | full user row |
-| `PATCH`  | `/users/{id}` | admin | body subset of `{role, display_name, email, enabled, locale, permissions}` |
+| `PATCH`  | `/users/{id}` | scoped user manager (`users`) | body subset of `{role, display_name, email, disabled, permissions, org_unit, denied_permissions, workspace_root_dir, token_quota}`; all account, policy and audit writes commit together after the whole patch is validated |
 | `POST`   | `/users/{id}/reset-password` | admin | body `{new_password}` → `204` |
 | `POST`   | `/users/{id}/unlock-login` | admin | `204` (clears the lockout) |
 | `DELETE` | `/users/{id}` | admin | `204` |
@@ -248,6 +263,22 @@ because each request is a one-shot continuation.
 | `PATCH`  | `/agents/{id}/chat/sessions/{thread_id}` | owner | body `{title?, pinned?}` → updated row |
 | `DELETE` | `/agents/{id}/chat/sessions/{thread_id}` | owner | `204` (archives the active row) |
 | `GET`    | `/agents/{id}/chat/sessions/{thread_id}/history` | owner | paginated message history; `turn_active` tells a reconnecting client whether to re-`subscribe` over the chat WebSocket |
+| `POST`   | `/agents/{id}/threads/{thread_id}/fork` | thread owner | body selects an assistant answer or a user turn; returns `201` with `{thread_id, session_key, source_thread_id, copied_messages, title, ...}` |
+
+For an assistant-answer fork, use `message_id`, `content`, or
+`assistant_turns_from_end` (1 is latest); the selected answer is included. For
+editing or regeneration, use `user_message_id`, `user_message_content`, or
+`user_turns_from_end`; only messages **before** that user turn are copied.
+Assistant and user selectors cannot be mixed. The first user turn therefore
+produces an empty branch. Before-user forks return 409 while the agent is busy
+or the source has pending human approval. The source history is unchanged.
+
+The dashboard loads the copied branch history, then sends the selected text and
+original attachments to its new thread. A history-resume probe preserves an
+existing connecting or open socket for that thread, so it cannot discard the
+first outgoing turn. A rejected send retains the composer draft and attachments;
+workflow cards are marked submitted only after the send is accepted. Branching
+changes checkpoint history, not the separate reference-memory retrieval policy.
 
 ### Trajectory ledger
 
@@ -304,6 +335,10 @@ the server derives one from `prompt`.
 Date jobs are one-shot: an atomic persisted claim prevents scheduled/manual
 races and restart replay. Success and failure both disable the job while
 retaining the outcome. Missed date windows are not replayed at startup.
+
+A supplied `session_key` must belong to the task's user and agent, both when
+creating and updating the task. Execution checks that ownership before a
+`fresh_thread` reset; an invalid binding cannot reset another user's thread.
 
 ## Providers
 
@@ -448,6 +483,28 @@ An **overlay** is explicitly written by the calling user, never generated from
 memory. It is injected after the feature definition and takes precedence over
 both that definition and retrieved memories. It changes nobody else's feature
 and is not visible to another caller.
+
+`{{inputs_json}}` in a workflow prompt expands to the actual run inputs as JSON
+(including nested values and Unicode); absent inputs expand to `{}`.
+
+Definition saves, changes, reverts and deletion are serialized per feature.
+First activation stages the new workspace document before transferring ownership,
+then installs it. A failed publication or installation restores the previous
+document and compensates the ownership and ACL changes made by that attempt.
+
+## Resource sharing approvals
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `POST` | `/sharing/acl/{type}/{id}` | ACL manager | Request an access change; response `status` distinguishes `pending` from `applied` |
+| `GET` | `/sharing/changes` | scoped user | Change history or approval queue; includes before/after ACL snapshots and `rollback_of` for reversals |
+| `POST` | `/sharing/changes/{change_id}/approve` | admin | Apply a pending request only when its baseline ACL version and effective state still match; stale requests return 409 |
+| `POST` | `/sharing/changes/{change_id}/rollback` | ACL manager | Create a new reversal request and return its outcome, not the original change |
+
+A reversal follows the same widening/approval rules as a normal access change.
+Pending reversals do not alter the live ACL or mark the original change rolled
+back. That happens only when the reversal is applied; duplicate pending reversals
+are rejected. Approval checks and ACL writes share one database transaction.
 
 ## Feature business data
 

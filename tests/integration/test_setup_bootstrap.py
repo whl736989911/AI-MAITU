@@ -6,12 +6,14 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from fastapi import HTTPException
 
 from octop.api.app import build_app
+from octop.api.routers import setup as setup_router
 from octop.infra.server import OctopServer
 from octop.infra.setup.password_file import WIZARD_FILE_NAME, read_password
 from tests.support.app import ensure_control_plane_bound, write_octop_config
-from tests.support.auth import auth_header, bootstrap_admin
+from tests.support.auth import auth_header, bootstrap_admin, wizard_token
 from tests.support.harness import patch_harness
 from tests.support.licensing import CenterSigner
 
@@ -102,17 +104,85 @@ async def test_locked_setup_defers_then_resumes_managed_defaults_once(
             await srv.stop()
 
 
-async def test_setup_status_flips_after_bootstrap(patched_app_client: Any) -> None:
+async def test_setup_status_remains_pending_after_admin_until_finish(
+    patched_app_client: Any,
+) -> None:
     c, _srv, home = patched_app_client
     r = await c.get("/api/setup/status")
     assert r.status_code == 200
     assert r.json()["setup_required"] is True
 
-    r = await bootstrap_admin(c, home)
+    token = await wizard_token(c, home)
+    r = await c.post(
+        "/api/setup/initial-admin",
+        json={"username": "admin", "password": "TestPass12"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
     assert r.status_code == 201
+    status_after_admin = await c.get("/api/setup/status")
+    assert status_after_admin.json()["setup_required"] is True
+    assert status_after_admin.json()["admin_created"] is True
+    assert (await c.get("/api/auth/captcha")).status_code == 200
+    login = await c.post("/api/auth/login", json={"username": "admin", "password": "TestPass12"})
+    assert login.status_code == 200, login.text
+    business = await c.get(
+        "/api/agents",
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+    assert business.status_code == 503
+    assert business.json() == {"setup_required": True}
 
-    r = await c.get("/api/setup/status")
-    assert r.json()["setup_required"] is False
+    r = await c.post(
+        "/api/setup/finish",
+        json={"provider_draft": None},
+        headers={"Authorization": f"Bearer {login.json()['access_token']}"},
+    )
+    assert r.status_code == 200
+    assert (await c.get("/api/setup/status")).json()["setup_required"] is False
+
+
+async def test_finish_bootstrap_failure_is_retryable(
+    patched_app_client: Any,
+    monkeypatch: Any,
+) -> None:
+    c, _srv, home = patched_app_client
+    token = await wizard_token(c, home)
+    created = await c.post(
+        "/api/setup/initial-admin",
+        json={"username": "admin", "password": "TestPass12"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert created.status_code == 201
+
+    async def fail_bootstrap(*_args: Any, **_kwargs: Any) -> None:
+        raise HTTPException(status_code=503, detail="bootstrap temporarily unavailable")
+
+    monkeypatch.setattr(setup_router, "_bootstrap_default_agent", fail_bootstrap)
+    failed = await c.post(
+        "/api/setup/finish",
+        json={"provider_draft": None},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert failed.status_code == 503
+    assert (await c.get("/api/setup/status")).json()["setup_required"] is True
+
+    async def bootstrap_succeeds(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(setup_router, "_bootstrap_default_agent", bootstrap_succeeds)
+    assert (
+        await c.get(
+            "/api/setup/validate-token",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    ).json()["valid"] is True
+    succeeded = await c.post(
+        "/api/setup/finish",
+        json={"provider_draft": None},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert succeeded.status_code == 200
+    assert (await c.get("/api/setup/status")).json()["setup_required"] is False
 
 
 async def test_bootstrap_creates_default_main_agent(patched_app_client: Any) -> None:
@@ -145,8 +215,9 @@ async def test_main_not_created_until_finish(patched_app_client: Any) -> None:
     ).json()
     auth = {"Authorization": f"Bearer {admin['access_token']}"}
     r = await c.get("/api/agents", headers=auth)
-    assert r.status_code == 200
-    assert r.json() == []
+    assert r.status_code == 503
+    assert r.json()["setup_required"] is True
+    assert _srv.services.agent_repo.get("main") is None
 
     finish = await c.post(
         "/api/setup/finish",

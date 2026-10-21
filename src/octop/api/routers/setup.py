@@ -192,14 +192,18 @@ async def _apply_provider_draft(server: Any, draft: ProviderDraftBody) -> None:
         models[0]["enabled"] = True
     if not models:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "at least one model is required", status=400)
-    server.services.provider_repo.create(
-        name=draft.name,
-        kind=draft.type,
-        base_url=base_url,
-        api_key=api_key,
-        models_json=json.dumps(models),
-        extra_json=json.dumps(draft.extras) if draft.extras else None,
-    )
+    existing = server.services.provider_repo.get_by_name(draft.name)
+    provider_values = {
+        "kind": draft.type,
+        "base_url": base_url,
+        "api_key": api_key,
+        "models_json": json.dumps(models),
+        "extra_json": json.dumps(draft.extras) if draft.extras else None,
+    }
+    if existing is None:
+        server.services.provider_repo.create(name=draft.name, **provider_values)
+    else:
+        server.services.provider_repo.update(existing.id, **provider_values, enabled=True)
     server.services.settings_repo.set_active_model(draft.name, models[0]["id"])
     if server.app_runtime is not None and current_license().business_allowed:
         await server.app_runtime.agent_registry.on_provider_changed()
@@ -226,17 +230,20 @@ async def validate_wizard_token(
 
 @router.get("/setup/status", summary="Setup wizard status")
 async def status(server: Any = Depends(get_server)) -> dict[str, Any]:
-    """Whether initial admin creation is still required and wizard password file state."""
+    """Whether first-run setup is still pending and wizard password file state."""
     wizard_path = str(Path.home() / _wizard.WIZARD_FILE_NAME)
     password_required = _setup_password_required(server)
-    um = server.user_manager
-    setup_required = um is None or um.count() == 0
+    setup_required = is_setup_pending(server)
     database_driver = None
     if server.database_bound and server.services is not None:
         database_driver = server.services.config.database.driver
     return {
         "setup_required": setup_required,
         "wizard_password_required": password_required,
+        "admin_created": bool(
+            server.user_manager is not None
+            and any(user.is_admin for user in server.user_manager.list())
+        ),
         "wizard_password_exists": (
             password_required and _wizard.read_password(Path.home()) is not None
         ),
@@ -427,11 +434,13 @@ async def finish(
             ) from exc
     users = server.user_manager.list()
     admin = next((u for u in users if u.is_admin), users[0] if users else None)
-    if admin is not None:
-        try:
-            await _bootstrap_default_agent(server, user_id=admin.id, locale=admin.locale)
-        except Exception as exc:  # pragma: no cover
-            logger.warning("could not auto-create default agent: %s", exc)
+    if admin is None:
+        raise OctopError(ErrorCode.SETUP_TOKEN_INVALID, "admin not created yet", status=400)
+
+    # An explicit license lock is recorded as deferred work by the
+    # bootstrap service. Any other failure must leave setup retryable.
+    await _bootstrap_default_agent(server, user_id=admin.id, locale=admin.locale)
+
     mark_setup_completed(server)
     if wizard_token is not None:
         server.wizard_tokens.consume(wizard_token)

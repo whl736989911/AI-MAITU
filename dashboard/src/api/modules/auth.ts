@@ -18,7 +18,7 @@ import { clearSetupRequired, markSetupRequired, request } from "../request";
  */
 
 export interface AuthStatus {
-  /** True when no admin exists yet — UI must redirect to /setup. */
+  /** True while first-run setup remains pending; UI must redirect to /setup. */
   setup_required: boolean;
   /** Legacy alias of ``!setup_required`` kept for compat. */
   setup_done: boolean;
@@ -32,6 +32,8 @@ export interface AuthStatus {
   wizard_password_required: boolean;
   /** Absolute path to the one-time bootstrap password file on the server. */
   wizard_password_path?: string;
+  /** Whether a first administrator already exists during setup recovery. */
+  admin_created: boolean;
   /** True after `/setup/database` has bound the control-plane pool. */
   database_bound: boolean;
   /** Active control-plane driver when bound (`sqlite` | `postgresql`). */
@@ -110,6 +112,7 @@ interface RawSetupStatus {
   wizard_password_required?: boolean;
   wizard_password_exists?: boolean;
   wizard_password_path?: string;
+  admin_created?: boolean;
   database_bound?: boolean;
   database_driver?: string | null;
 }
@@ -139,7 +142,7 @@ function applySetupFlags(status: AuthStatus): AuthStatus {
 }
 
 export const authApi = {
-  /** Probe whether the initial admin has been created. */
+  /** Probe setup state and whether first administrator creation has occurred. */
   getAuthStatus: async (): Promise<AuthStatus> => {
     if (statusInFlight) return statusInFlight;
 
@@ -154,6 +157,7 @@ export const authApi = {
           wizard_password_exists: raw.wizard_password_exists ?? false,
           wizard_password_required: raw.wizard_password_required ?? true,
           wizard_password_path: raw.wizard_password_path,
+          admin_created: raw.admin_created ?? false,
           database_bound: raw.database_bound ?? false,
           database_driver: raw.database_driver ?? null,
         };

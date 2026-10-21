@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import dataclass
+from typing import Any
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import DbRow, map_rows, now_ts
@@ -43,8 +45,9 @@ class AuditRepo:
         action: str,
         target: str | None = None,
         payload: str | None = None,
+        conn: Any | None = None,
     ) -> None:
-        with self._db.transaction() as conn:
+        with nullcontext(conn) if conn is not None else self._db.transaction() as conn:
             conn.execute(
                 "INSERT INTO audit_log(ts, actor, action, target, payload) VALUES (?, ?, ?, ?, ?)",
                 (now_ts(), actor, action, target, payload or None),

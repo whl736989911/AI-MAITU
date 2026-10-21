@@ -470,3 +470,80 @@ async def test_boot_loads_users(tmp_path: Path):
         assert not hasattr(user, "agent_manager") or True  # just verify no crash
     finally:
         await manager.shutdown_all()
+
+
+async def test_account_patch_validates_email_before_any_write(manager: UserManager):
+    await manager.create(
+        username="owner", password="TestPass12", role=Role.USER, display_name="Original"
+    )
+    await manager.create(
+        username="other", password="TestPass12", role=Role.USER, email="taken@example.com"
+    )
+
+    with pytest.raises(OctopError) as exc:
+        await manager.update_account(
+            "owner",
+            {"role": "admin", "display_name": "Changed", "email": "TAKEN@example.com"},
+        )
+
+    assert exc.value.code is ErrorCode.EMAIL_TAKEN
+    cached = manager.get("owner")
+    assert cached.role is Role.USER
+    assert cached.display_name == "Original"
+    stored = manager.get_row(cached.id)
+    assert stored is not None
+    assert stored.role == "user"
+    assert stored.display_name == "Original"
+    assert stored.email is None
+
+
+async def test_account_patch_rolls_back_profile_policy_and_cache_on_failure(
+    manager: UserManager, monkeypatch: pytest.MonkeyPatch
+):
+    user = await manager.create(
+        username="owner", password="TestPass12", role=Role.USER, display_name="Original"
+    )
+    await manager.set_token_quota("owner", 50)
+
+    def fail_audit(**_kwargs):
+        raise RuntimeError("audit unavailable")
+
+    monkeypatch.setattr(manager._services.audit_repo, "write", fail_audit)
+    with pytest.raises(RuntimeError, match="audit unavailable"):
+        await manager.update_account(
+            "owner", {"role": "admin", "display_name": "Changed", "token_quota": 100}
+        )
+
+    stored = manager.get_row(user.id)
+    assert stored is not None
+    assert stored.role == "user"
+    assert stored.display_name == "Original"
+    assert manager.get("owner").role is Role.USER
+    assert manager.get("owner").display_name == "Original"
+    assert manager._services.user_policy_repo.get(user.id, "token_quota").value == "50"
+
+
+async def test_account_patch_commits_access_profile_and_policy_together(manager: UserManager):
+    user = await manager.create(username="owner", password="TestPass12", role=Role.USER)
+    await manager.update_account(
+        "owner",
+        {
+            "role": "unit_admin",
+            "display_name": "Updated",
+            "email": "OWNER@Example.com",
+            "permissions": ["users", "features"],
+            "denied_permissions": ["features"],
+            "token_quota": 100,
+        },
+    )
+
+    stored = manager.get_row(user.id)
+    assert stored is not None
+    assert stored.email == "owner@example.com"
+    assert stored.display_name == "Updated"
+    assert stored.role == "unit_admin"
+    assert stored.permissions == ["users", "features"]
+    assert stored.denied_permissions == ["features"]
+    assert manager.get("owner").role is Role.UNIT_ADMIN
+    assert manager.get("owner").denied_permissions == ["features"]
+    assert manager._services.user_policy_repo.get(user.id, "token_quota").value == "100"

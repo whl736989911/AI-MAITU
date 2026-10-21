@@ -214,6 +214,10 @@ export const octopThreadsApi = {
       message_id?: string;
       content?: string;
       assistant_turns_from_end?: number;
+      /** Edit/regenerate: copy everything before this user turn instead. */
+      user_message_id?: string;
+      user_message_content?: string;
+      user_turns_from_end?: number;
     },
   ) =>
     request<{
