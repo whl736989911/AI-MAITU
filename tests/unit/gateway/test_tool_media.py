@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import tempfile
 import time
@@ -23,6 +24,7 @@ from octop.infra.gateway.media.tool_media import (
     enrich_media_block_preview,
     enrich_tool_result_with_backend,
     iter_media_blocks,
+    media_events_from_tool_result,
 )
 
 
@@ -280,7 +282,6 @@ def testenrich_media_block_preview_outbound() -> None:
     enriched = enrich_media_block_preview(block, agent_id="agent-x")
     assert enriched["preview_url"].startswith("/api/agents/agent-x/media/preview?")
     assert enriched["source"]["url"] == enriched["preview_url"]
-    assert enriched["path"] == "outbound/chart.png"
     assert enriched["filename"] == "chart.png"
 
 
@@ -327,6 +328,154 @@ async def test_enrich_send_file_normalizes_owned_absolute_path() -> None:
         assert "source" not in content
         outbound = Path(ws) / "outbound"
         assert not outbound.exists() or list(outbound.iterdir()) == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("directory", ["outbound", "inbound"])
+async def test_send_file_virtual_path_preserves_live_and_history_cards(
+    tmp_path: Path, directory: str
+) -> None:
+    workspace = _workspace(str(tmp_path), virtual_mode=True)
+    document = tmp_path / directory / "修改意见.docx"
+    document.parent.mkdir()
+    document.write_bytes(b"PK-document")
+    block = {
+        "type": "file",
+        "path": f"/{directory}/{document.name}",
+        "source": {
+            "type": "url",
+            "url": document.as_uri(),
+            "media_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        },
+        "filename": document.name,
+    }
+    chunk = {"type": "tool_result", "messages": [{"content": block}]}
+    enriched = await enrich_tool_result_with_backend(chunk, agent_id="agent-1", workspace=workspace)
+    key = f"{directory}/{document.name}"
+    assert enriched["messages"][0]["content"]["path"] == key
+    assert enrich_media_block_preview(block, agent_id="agent-1")["path"] == key
+    for result in (chunk, enriched):
+        frames = [
+            frame
+            async for frame in attachment_frames_from_tool_result(
+                result, agent_id="agent-1", workspace=workspace
+            )
+        ]
+        assert len(frames) == 1
+        assert frames[0]["kind"] == "file"
+        assert frames[0]["filename"] == document.name
+        assert frames[0]["path"] == key
+        assert await workspace.adownload_bytes(frames[0]["path"]) == b"PK-document"
+
+
+@pytest.mark.asyncio
+async def test_send_file_falls_back_to_owned_materialized_url(tmp_path: Path) -> None:
+    workspace = _workspace(str(tmp_path), virtual_mode=True)
+    document = tmp_path / "generated" / "report.docx"
+    document.parent.mkdir()
+    document.write_bytes(b"PK-generated-document")
+    chunk = {
+        "type": "tool_result",
+        "messages": [
+            {
+                "content": {
+                    "type": "file",
+                    "path": "/generated/report.docx",
+                    "source": {"type": "url", "url": document.as_uri()},
+                    "filename": document.name,
+                }
+            }
+        ],
+    }
+    enriched = await enrich_tool_result_with_backend(chunk, agent_id="agent-1", workspace=workspace)
+    assert enriched["messages"][0]["content"]["path"] == "generated/report.docx"
+    frames = [
+        frame
+        async for frame in attachment_frames_from_tool_result(
+            enriched, agent_id="agent-1", workspace=workspace
+        )
+    ]
+    assert len(frames) == 1
+    assert await workspace.adownload_bytes(frames[0]["path"]) == b"PK-generated-document"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["relative", "absolute", "file_url"])
+async def test_send_file_keeps_nested_outbound_file_not_same_name_shadow(
+    tmp_path: Path, shape: str
+) -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    workspace = _workspace(str(tmp_path), virtual_mode=True)
+    document = tmp_path / "reports" / "outbound" / "report.docx"
+    document.parent.mkdir(parents=True)
+    document.write_bytes(b"PK-correct-nested-document")
+    shadow = tmp_path / "outbound" / document.name
+    shadow.parent.mkdir()
+    shadow.write_bytes(b"PK-wrong-shadow")
+    key = "reports/outbound/report.docx"
+    path = (
+        key if shape == "relative" else str(document) if shape == "absolute" else document.as_uri()
+    )
+    chunk = {
+        "type": "tool_result",
+        "messages": [{"content": {"type": "file", "path": path, "filename": document.name}}],
+    }
+    enriched = await enrich_tool_result_with_backend(chunk, agent_id="agent-1", workspace=workspace)
+    assert enriched["messages"][0]["content"]["path"] == key
+    frames = [
+        frame
+        async for frame in attachment_frames_from_tool_result(
+            enriched, agent_id="agent-1", workspace=workspace
+        )
+    ]
+    assert len(frames) == 1
+    download_key = parse_qs(urlsplit(frames[0]["url"]).query)["path"][0]
+    assert download_key == key
+    assert await workspace.adownload_bytes(download_key) == b"PK-correct-nested-document"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["absolute", "traversal", "network"])
+async def test_send_file_rejects_foreign_candidates_even_with_local_shadow(
+    tmp_path: Path, shape: str
+) -> None:
+    root = tmp_path / "current"
+    root.mkdir()
+    workspace = _workspace(str(root), virtual_mode=True)
+    foreign = tmp_path / "foreign" / "outbound" / "report.docx"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_bytes(b"PK-private-foreign-document")
+    shadow = root / "outbound" / foreign.name
+    shadow.parent.mkdir()
+    shadow.write_bytes(b"PK-local-shadow")
+    path = {
+        "absolute": str(foreign),
+        "traversal": "../foreign/outbound/report.docx",
+        "network": "//foreign/outbound/report.docx",
+    }[shape]
+    chunk = {
+        "type": "tool_result",
+        "messages": [
+            {
+                "content": {
+                    "type": "file",
+                    "path": path,
+                    "source": {"type": "url", "url": foreign.as_uri()},
+                    "filename": foreign.name,
+                }
+            }
+        ],
+    }
+    enriched = await enrich_tool_result_with_backend(chunk, agent_id="agent-1", workspace=workspace)
+    assert "path" not in enriched["messages"][0]["content"]
+    for result in (chunk, enriched):
+        assert [
+            frame
+            async for frame in attachment_frames_from_tool_result(
+                result, agent_id="agent-1", workspace=workspace
+            )
+        ] == []
 
 
 @pytest.mark.asyncio
@@ -448,3 +597,82 @@ def test_plain_text_image_scan_handles_long_web_output() -> None:
     started = time.perf_counter()
     assert enrich_tool_output_string_sync(text, agent_id="A1") == text
     assert time.perf_counter() - started < 1.0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["source", "top_level"])
+async def test_inline_files_keep_downloadable_bytes_without_overwriting_same_name(
+    tmp_path: Path, shape: str
+) -> None:
+    workspace = _workspace(str(tmp_path), virtual_mode=True)
+    paths = []
+    for data in (b"%PDF-first-document", b"%PDF-second-document"):
+        payload = base64.b64encode(data).decode("ascii")
+        block = {"type": "file", "filename": "修改意见.pdf", "mime_type": "application/pdf"}
+        if shape == "source":
+            block["source"] = {"type": "base64", "data": payload, "media_type": "application/pdf"}
+        else:
+            block["base64"] = payload
+        chunk = {"type": "tool_result", "messages": [{"content": block}]}
+        enriched = await enrich_tool_result_with_backend(
+            chunk, agent_id="agent-1", workspace=workspace
+        )
+        frames = [
+            frame
+            async for frame in attachment_frames_from_tool_result(
+                enriched, agent_id="agent-1", workspace=workspace
+            )
+        ]
+        assert len(frames) == 1
+        assert frames[0]["filename"] == "修改意见.pdf"
+        assert await workspace.adownload_bytes(frames[0]["path"]) == data
+        paths.append(frames[0]["path"])
+    assert paths[0] != paths[1]
+    assert await workspace.adownload_bytes(paths[0]) == b"%PDF-first-document"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["file", "image", "video", "audio"])
+@pytest.mark.parametrize("shape", ["relative", "virtual"])
+async def test_im_workspace_media_sends_exact_bytes(tmp_path: Path, kind: str, shape: str) -> None:
+    workspace = _workspace(str(tmp_path), virtual_mode=True)
+    key = "reports/outbound/结果.pdf" if shape == "relative" else "outbound/结果.pdf"
+    data = b"correct-workspace-media"
+    await workspace.aupload_bytes(key, data)
+    path = key if shape == "relative" else f"/{key}"
+    chunk = {
+        "type": "tool_result",
+        "messages": [
+            {
+                "content": {
+                    "type": kind,
+                    "source": {"type": "url", "url": path},
+                    "filename": "结果.pdf",
+                }
+            }
+        ],
+    }
+    events = [event async for event in media_events_from_tool_result(chunk, workspace=workspace)]
+    assert len(events) == 1
+    part = events[0].content[0]
+    assert base64.b64decode(part.data) == data
+    assert not part.url
+
+
+@pytest.mark.asyncio
+async def test_im_file_rejects_foreign_file_even_with_same_name_shadow(tmp_path: Path) -> None:
+    root = tmp_path / "current"
+    root.mkdir()
+    workspace = _workspace(str(root), virtual_mode=True)
+    foreign = tmp_path / "foreign" / "outbound" / "report.pdf"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_bytes(b"foreign-private-data")
+    await workspace.aupload_bytes("outbound/report.pdf", b"local-shadow")
+    for path in ("../foreign/outbound/report.pdf", foreign.as_uri()):
+        chunk = {
+            "type": "tool_result",
+            "messages": [{"content": {"type": "file", "source": {"type": "url", "url": path}}}],
+        }
+        assert [
+            event async for event in media_events_from_tool_result(chunk, workspace=workspace)
+        ] == []

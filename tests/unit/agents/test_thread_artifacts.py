@@ -56,6 +56,65 @@ def test_artifact_paths_reject_escaping_the_workspace(tmp_path: Path) -> None:
     assert artifacts_for_response(["plans/review.md", inside, outside], workspace) == [inside]
 
 
+def test_artifact_paths_keep_virtual_roots_and_full_nested_paths(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    expected = [
+        (workspace / "outbound" / "x.docx").as_posix(),
+        (workspace / "inbound" / "y.pdf").as_posix(),
+        (workspace / "reports" / "outbound" / "x.docx").as_posix(),
+    ]
+    assert extract_artifact_paths(
+        tool_name="send_file_to_user",
+        args={"path": "/outbound/x.docx"},
+        workspace_dir=workspace,
+    ) == [expected[0]]
+    assert extract_artifact_paths(
+        tool_name="write_file",
+        args={"path": "/inbound/y.pdf"},
+        workspace_dir=workspace,
+    ) == [expected[1]]
+    assert extract_artifact_paths(
+        tool_name="write_file",
+        args={"path": "reports/outbound/x.docx"},
+        workspace_dir=workspace,
+    ) == [expected[2]]
+
+
+def test_artifact_paths_reject_traversal_and_outside_workspace(tmp_path: Path) -> None:
+    workspace = tmp_path / "workspace"
+    outside = tmp_path / "foreign" / "outbound" / "x.docx"
+    assert (
+        extract_artifact_paths(
+            tool_name="write_file",
+            args={"path": "../foreign/outbound/x.docx"},
+            workspace_dir=workspace,
+        )
+        == []
+    )
+    assert (
+        extract_artifact_paths(
+            tool_name="write_file",
+            args={"path": outside.as_posix()},
+            workspace_dir=workspace,
+        )
+        == []
+    )
+
+
+def test_same_named_artifacts_in_different_directories_remain_distinct(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "workspace"
+    paths = artifacts_for_response(
+        ["reports/outbound/x.docx", "archive/outbound/x.docx"],
+        workspace,
+    )
+    assert paths == [
+        (workspace / "reports" / "outbound" / "x.docx").as_posix(),
+        (workspace / "archive" / "outbound" / "x.docx").as_posix(),
+    ]
+
+
 def test_team_artifact_reference_keeps_producer_and_validates_its_workspace(
     tmp_path: Path,
 ) -> None:

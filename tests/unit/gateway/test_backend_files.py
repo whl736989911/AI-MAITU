@@ -103,3 +103,45 @@ async def test_ensure_workspace_media_rejects_external_host_path() -> None:
         )
         assert rel is None
         assert not (Path(ws) / "outbound").exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shadow_exists", [False, True])
+async def test_nested_media_reads_exact_file(tmp_path: Path, shadow_exists: bool) -> None:
+    workspace = _workspace(str(tmp_path), virtual_mode=True)
+    image = tmp_path / "reports" / "outbound" / "图.png"
+    image.parent.mkdir(parents=True)
+    image.write_bytes(b"\x89PNG-correct-nested-image")
+    if shadow_exists:
+        shadow = tmp_path / "outbound" / image.name
+        shadow.parent.mkdir()
+        shadow.write_bytes(b"\x89PNG-wrong-shadow")
+
+    preview = await resolve_preview_payload(
+        source="reports/outbound/图.png", workspace=workspace, mime_hint="image/png"
+    )
+    assert preview == (b"\x89PNG-correct-nested-image", "image/png")
+    assert await read_file_url_bytes(workspace, image.as_uri()) == image.read_bytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["relative", "absolute", "file_url"])
+async def test_media_read_rejects_foreign_path_with_local_shadow(
+    tmp_path: Path, shape: str
+) -> None:
+    root = tmp_path / "current"
+    root.mkdir()
+    workspace = _workspace(str(root), virtual_mode=True)
+    foreign = tmp_path / "foreign" / "outbound" / "chart.png"
+    foreign.parent.mkdir(parents=True)
+    foreign.write_bytes(b"foreign-image")
+    shadow = root / "outbound" / foreign.name
+    shadow.parent.mkdir()
+    shadow.write_bytes(b"local-shadow")
+    source = {
+        "relative": "../foreign/outbound/chart.png",
+        "absolute": str(foreign),
+        "file_url": foreign.as_uri(),
+    }[shape]
+    assert await read_file_url_bytes(workspace, source) is None
+    assert await resolve_preview_payload(source=source, workspace=workspace) is None

@@ -501,3 +501,100 @@ async def test_owner_can_read_shared_agent_system_files(env) -> None:
             f"download {path}: {response.status_code} {response.text}"
         )
         assert response.content == content.encode()
+
+
+@pytest.mark.parametrize("storage", ["projection", "archive"])
+async def test_shared_history_restores_virtual_and_inline_file_downloads(
+    env, tmp_path, storage: str
+) -> None:
+    import base64
+    import json
+
+    from harness_agent.builtin.tools.send_file import build_send_file_to_user_tool
+    from langchain_core.messages import HumanMessage, ToolMessage
+
+    from octop.infra.gateway.process.history_projection import message_inputs
+    from octop.infra.history.recorder import RecordingTracker
+    from octop.infra.history.service import HistoryArchive
+    from octop.infra.history.store import HistoryStore
+
+    client, server, admin_auth = env
+    _, owner_auth, peer_auth, agent_id = await _shared_agent(env)
+    response = await client.patch(
+        f"/api/agents/{agent_id}", headers=owner_auth, json={"is_shared": True}
+    )
+    assert response.status_code == 200, response.text
+    workspace = server.app_runtime.agent_registry.get_agent(agent_id).workspace
+    document = b"%PDF-generated-document"
+    inline_data = b"%PDF-inline-document"
+    await workspace.aupload_bytes("generated/report.pdf", document)
+    tool = build_send_file_to_user_tool(workspace)
+    block = await tool.ainvoke({"file_path": "/generated/report.pdf"})
+    inline = {
+        "type": "file",
+        "filename": "inline.pdf",
+        "source": {
+            "type": "base64",
+            "data": base64.b64encode(inline_data).decode("ascii"),
+            "media_type": "application/pdf",
+        },
+    }
+    messages = [
+        HumanMessage(content="send both files", id="history-user"),
+        ToolMessage(content=json.dumps(block), tool_call_id="send", name="send_file_to_user"),
+        ToolMessage(content=json.dumps(inline), tool_call_id="inline", name="custom_file"),
+    ]
+    peer_id = await resolve_user_id(client, admin_auth, "share_peer")
+    thread_id = f"file-history-{storage}"
+    server.services.thread_repo.insert(
+        thread_id=thread_id,
+        agent_id=agent_id,
+        user_id=peer_id,
+        channel_type="dashboard",
+        session_key=thread_id,
+        last_active=0,
+    )
+    previous = server.app_runtime.history_archive
+    store = None
+    try:
+        if storage == "archive":
+            store = HistoryStore(tmp_path / "history.sqlite", identity="file-history")
+            archive = HistoryArchive(
+                store,
+                server.services.thread_message_repo,
+                server.services.trajectory_event_repo,
+                enabled=True,
+            )
+            server.app_runtime.history_archive = archive
+            turn = archive.begin(agent_id, thread_id)
+            recorder = RecordingTracker(archive, turn, messages[:1])
+            for message in messages[1:]:
+                recorder.observe({"type": "tool_result", "messages": [message]})
+            await recorder.finish(completed=True)
+        else:
+            server.app_runtime.history_archive = None
+            server.services.thread_message_repo.replace_all(thread_id, message_inputs(messages))
+        response = await client.get(
+            f"/api/agents/{agent_id}/threads/{thread_id}/history", headers=peer_auth
+        )
+        assert response.status_code == 200, response.text
+        files = {
+            value["filename"]: value
+            for message in response.json()["messages"]
+            for item in message.get("content", [])
+            if isinstance(item, dict) and item.get("type") == "tool_result"
+            for value in [json.loads(item["output"])]
+        }
+        assert files["report.pdf"]["path"] == "generated/report.pdf"
+        for filename, data in (("report.pdf", document), ("inline.pdf", inline_data)):
+            downloaded = await client.get(
+                f"/api/agents/{agent_id}/workspace/download",
+                params={"path": files[filename]["path"]},
+                headers=peer_auth,
+            )
+            assert downloaded.status_code == 200, downloaded.text
+            assert downloaded.content == data
+    finally:
+        server.app_runtime.history_archive = previous
+        if store is not None:
+            store.close()

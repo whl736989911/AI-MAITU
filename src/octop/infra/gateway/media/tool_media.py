@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import mimetypes
@@ -33,14 +34,17 @@ from harness_gateway.models import (
 from octop.infra.gateway.media.backend_files import (
     dashboard_media_url,
     ensure_workspace_media_path,
-    extract_workspace_rel,
     file_url_to_abs_path,
+    is_host_absolute_path,
     media_preview_url,
     read_file_url_bytes,
     resolve_dashboard_media_url,
     workspace_download_url,
 )
-from octop.infra.gateway.media.inbound_store import display_name_from_stored
+from octop.infra.gateway.media.inbound_store import (
+    display_name_from_stored,
+    sanitize_inbound_filename,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,31 +149,24 @@ def _block_file_refs(block: dict[str, Any]) -> tuple[str, str, str]:
 
 
 def _workspace_rel_from_preview(preview: str) -> str | None:
-    if "path=" not in preview:
-        return None
-    try:
-        query = preview.split("?", 1)[1]
-    except IndexError:
-        return None
-    for part in query.split("&"):
-        if part.startswith("path="):
-            return extract_workspace_rel(urllib.parse.unquote(part[5:]))
+    query = urllib.parse.parse_qs(urllib.parse.urlsplit(preview).query)
+    for key in ("path", "source"):
+        values = query.get(key)
+        if values:
+            candidate = values[0]
+            if not is_host_absolute_path(candidate) and not urllib.parse.urlsplit(candidate).scheme:
+                return candidate
     return None
 
 
 def _resolve_block_workspace_rel(block: dict[str, Any], preview: str = "") -> str | None:
-    """Return inbound/outbound relative path when present (image/media convention)."""
-    raw_path = block.get("path")
-    if isinstance(raw_path, str) and raw_path.strip():
-        rel = extract_workspace_rel(raw_path.strip())
+    """Preserve a validated preview key or the full caller path, never a suffix."""
+    if preview:
+        rel = _workspace_rel_from_preview(preview)
         if rel:
             return rel
-    if preview:
-        return _workspace_rel_from_preview(preview)
     raw_url, _, _ = _block_file_refs(block)
-    if raw_url:
-        return extract_workspace_rel(raw_url)
-    return None
+    return _file_block_path(block, raw_url)
 
 
 def _slim_file_block(block: dict[str, Any], *, rel: str | None, mime: str) -> dict[str, Any]:
@@ -333,7 +330,7 @@ async def enrich_tool_result_with_backend(
     agent_id: str,
     workspace: BackendWorkspace,
 ) -> dict[str, Any]:
-    """Import external ``file://`` media into workspace and set ``preview_url``."""
+    """Normalize tool media through this workspace before streaming or recording."""
     messages = chunk.get("messages")
     if not isinstance(messages, list):
         return chunk
@@ -382,30 +379,45 @@ async def enrich_tool_result_with_backend(
 
 
 def _file_block_path(block: dict[str, Any], raw_url: str) -> str | None:
-    """Resolve the path to store on a slimmed file block.
-
-    Prefer an explicit absolute / ``file://`` path from the tool (BackendWorkspace
-    can read it directly). Fall back to inbound/outbound relatives. Never invent
-    a relative rewrite of a host-absolute path.
-    """
+    """Normalize agent-facing inbound/outbound roots, preserving host and nested paths."""
     raw_path = block.get("path")
-    if isinstance(raw_path, str) and raw_path.strip():
-        candidate = raw_path.strip()
-        if candidate.startswith("file://"):
-            return file_url_to_abs_path(candidate)
-        # Leading '/' (and Windows drive) = host absolute under download default.
-        if candidate.startswith("/") or (len(candidate) >= 2 and candidate[1] == ":"):
-            return candidate
-        rel = extract_workspace_rel(candidate)
-        if rel:
-            return rel
-        return candidate.lstrip("/") or None
+    path = raw_path.strip() if isinstance(raw_path, str) else ""
+    candidate = path or raw_url.strip()
+    if not candidate:
+        return None
+    if candidate.startswith("file://"):
+        return file_url_to_abs_path(candidate)
+    normalized = candidate.replace("\\", "/")
+    if normalized.startswith(("/outbound/", "/inbound/")):
+        return normalized[1:]
+    if path or is_host_absolute_path(candidate):
+        return candidate
+    return candidate if normalized.startswith(("outbound/", "inbound/")) else None
 
-    if raw_url.startswith("file://"):
-        return file_url_to_abs_path(raw_url)
-    if raw_url.startswith("/") or (len(raw_url) >= 2 and raw_url[1] == ":"):
-        return raw_url
-    return extract_workspace_rel(raw_url)
+
+async def _resolve_file_block_rel(
+    block: dict[str, Any],
+    raw_url: str,
+    *,
+    workspace: BackendWorkspace,
+    filename: str,
+    mime: str,
+) -> str | None:
+    """Try the caller path, then its materialized file URL, without bypassing containment."""
+    source_url = raw_url.strip()
+    candidates = (
+        _file_block_path(block, raw_url),
+        source_url if source_url.startswith("file://") else None,
+    )
+    seen: set[str] = set()
+    for candidate in candidates:
+        if not candidate or candidate in seen:
+            continue
+        seen.add(candidate)
+        rel = await ensure_workspace_media_path(workspace, candidate, filename=filename, mime=mime)
+        if rel is not None:
+            return rel
+    return None
 
 
 async def _enrich_block_with_backend(
@@ -420,11 +432,21 @@ async def _enrich_block_with_backend(
 
     raw_url, mime, filename = _block_file_refs(block)
     if btype == "file":
-        path = _file_block_path(block, raw_url)
-        rel = (
-            await ensure_workspace_media_path(workspace, path, filename=filename, mime=mime)
-            if path
-            else None
+        source = block.get("source")
+        if block.get("base64") or (isinstance(source, dict) and source.get("type") == "base64"):
+            inline = await read_media_block_bytes(block, workspace=workspace)
+            if inline is None:
+                return block
+            data, mime = inline
+            filename = sanitize_inbound_filename(
+                filename or f"file{mimetypes.guess_extension(mime) or '.bin'}"
+            )
+            inline_rel = f"outbound/{hashlib.sha256(data).hexdigest()}/{filename}"
+            if not await workspace.aexists(inline_rel):
+                await workspace.aupload_bytes(inline_rel, data)
+            return _slim_file_block({**block, "filename": filename}, rel=inline_rel, mime=mime)
+        rel = await _resolve_file_block_rel(
+            block, raw_url, workspace=workspace, filename=filename, mime=mime
         )
         return _slim_file_block(block, rel=rel, mime=mime)
 
@@ -586,11 +608,8 @@ async def attachment_frames_from_tool_result(
             file_path: str | None = None
             if btype == "file":
                 raw_url, mime, filename = _block_file_refs(block)
-                path = _file_block_path(block, raw_url)
-                file_path = (
-                    await ensure_workspace_media_path(workspace, path, filename=filename, mime=mime)
-                    if path
-                    else None
+                file_path = await _resolve_file_block_rel(
+                    block, raw_url, workspace=workspace, filename=filename, mime=mime
                 )
                 preview_url = workspace_download_url(agent_id, file_path) if file_path else None
             else:
@@ -668,10 +687,8 @@ async def read_media_block_bytes(
     src_type = str(source.get("type") or "")
     raw_url, mime, filename = _block_file_refs(block)
 
-    if src_type == "base64":
-        payload = str(source.get("data") or "")
-        if not payload:
-            return None
+    payload = block.get("base64") or (source.get("data") if src_type == "base64" else None)
+    if payload:
         try:
             return base64.b64decode(payload), mime or "application/octet-stream"
         except (ValueError, TypeError):
@@ -714,17 +731,26 @@ async def block_to_content_part(
         if not payload:
             return None
         data_field = payload
-    elif raw_url.startswith("file://"):
-        file_bytes = await read_file_url_bytes(workspace, raw_url, filename=filename, mime=mime)
+    elif raw_url and urllib.parse.urlsplit(raw_url).scheme in ("http", "https"):
+        url_field = raw_url
+    else:
+        file_bytes = None
+        for candidate in (_file_block_path(block, raw_url), raw_url):
+            if not candidate:
+                continue
+            normalized = candidate.replace("\\", "/")
+            if normalized.startswith(("/outbound/", "/inbound/")):
+                candidate = normalized[1:]
+            file_bytes = await read_file_url_bytes(
+                workspace, candidate, filename=filename, mime=mime
+            )
+            if file_bytes is not None:
+                break
         if file_bytes is None:
             return None
         data_field = base64.b64encode(file_bytes).decode("ascii")
         if not mime:
             mime = mimetypes.guess_type(filename or raw_url)[0] or "application/octet-stream"
-    elif raw_url:
-        url_field = raw_url
-    else:
-        return None
 
     if btype == "image":
         return ImageContent(

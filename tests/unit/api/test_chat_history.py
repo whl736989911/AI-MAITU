@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import sqlite3
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call
 
 import pytest
 from langchain_core.messages import HumanMessage
@@ -16,8 +18,10 @@ from octop.api.routers.chat.serialize import (
     HISTORY_DEFAULT_LIMIT,
     HISTORY_MAX_LIMIT,
     _clamp_history_limit,
+    _enrich_history_tool_media,
     _isolated_sqlite_checkpoint_messages,
     _load_checkpoint_messages,
+    _serialize_history_message,
     _slice_message_page,
 )
 from octop.infra.db.repos.thread_messages import (
@@ -256,7 +260,7 @@ async def test_get_thread_history_returns_has_more(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(
         history_mod,
         "_load_projected_thread_messages",
-        MagicMock(return_value=([{"role": "user", "content": "hi"}], True)),
+        AsyncMock(return_value=([{"role": "user", "content": "hi"}], True)),
     )
     out = await history_mod.get_thread_history(
         "agt_1",
@@ -442,3 +446,44 @@ async def test_load_checkpoint_messages_paginates_with_aget_history() -> None:
     assert more1 is True
     assert [m.content for m in page2] == [f"m{i}" for i in range(0, 10)]
     assert more2 is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("shape", ["virtual_path", "inline"])
+async def test_history_file_restores_downloadable_workspace_bytes(
+    tmp_path: Path, shape: str
+) -> None:
+    from deepagents.backends.local_shell import LocalShellBackend
+    from harness_agent.backends.workspace import BackendWorkspace
+    from langchain_core.messages import ToolMessage
+
+    workspace = BackendWorkspace(
+        LocalShellBackend(root_dir=str(tmp_path), virtual_mode=True), tmp_path
+    )
+    data = b"%PDF-history-document"
+    block = {"type": "file", "filename": "修改意见.pdf"}
+    if shape == "virtual_path":
+        await workspace.aupload_bytes("generated/修改意见.pdf", data)
+        block["path"] = "/generated/修改意见.pdf"
+        block["source"] = {
+            "type": "url",
+            "url": (tmp_path / "generated" / "修改意见.pdf").as_uri(),
+            "media_type": "application/pdf",
+        }
+    else:
+        block["source"] = {
+            "type": "base64",
+            "data": base64.b64encode(data).decode("ascii"),
+            "media_type": "application/pdf",
+        }
+    message = _serialize_history_message(
+        ToolMessage(content=json.dumps(block), tool_call_id="send-1", name="send_file_to_user")
+    )
+    assert message is not None
+    restored = await _enrich_history_tool_media([message], agent_id="agent-1", workspace=workspace)
+    output = json.loads(restored[0]["content"][0]["output"])
+    assert output["filename"] == "修改意见.pdf"
+    if shape == "virtual_path":
+        assert output["path"] == "generated/修改意见.pdf"
+    assert await workspace.adownload_bytes(output["path"]) == data
+    assert "source" not in output

@@ -144,19 +144,7 @@ def workspace_download_url(agent_id: str, workspace_path: str) -> str:
     remain absolute so the authenticated workspace route can enforce containment.
     """
     raw = workspace_path.strip()
-    if (
-        raw.startswith("file://")
-        or raw.startswith("/")
-        or (len(raw) >= 2 and raw[1] == ":")
-        or raw.startswith("\\\\")
-    ):
-        path_param = raw
-    else:
-        rel = extract_workspace_rel(raw) or raw.lstrip("/")
-        path_param = rel
-    return (
-        f"/api/agents/{agent_id}/workspace/download?path={urllib.parse.quote(path_param, safe='')}"
-    )
+    return f"/api/agents/{agent_id}/workspace/download?path={urllib.parse.quote(raw, safe='')}"
 
 
 def media_preview_url(agent_id: str, source: str, mime_hint: str = "") -> str:
@@ -285,39 +273,35 @@ async def _read_host_file_bytes(abs_path: str) -> bytes | None:
         return None
 
 
+def _workspace_relative_path(workspace: BackendWorkspace, source: str) -> str | None:
+    """Resolve a contained file without guessing a different inbound/outbound key."""
+    path = backend_workspace_path(source)
+    if path is None:
+        return None
+    if _is_host_absolute(path) and not _abs_path_allowed(path, workspace=workspace.workspace_dir):
+        return None
+    try:
+        return (
+            (workspace.workspace_dir / path)
+            .resolve()
+            .relative_to(workspace.workspace_dir.resolve())
+            .as_posix()
+        )
+    except (OSError, ValueError):
+        return None
+
+
 async def resolve_preview_payload(
     *,
     source: str,
     workspace: BackendWorkspace,
     mime_hint: str = "",
 ) -> tuple[bytes, str] | None:
-    """Return preview bytes only for paths contained by this workspace."""
-    path = backend_workspace_path(source)
-    if path is None:
-        return None
-
-    root = workspace.workspace_dir.resolve()
-    if _is_host_absolute(path):
-        if not _abs_path_allowed(path, workspace=workspace.workspace_dir):
-            return None
-        resolved = Path(path).resolve()
-        rel = resolved.relative_to(root).as_posix()
-        data = await _download_via_workspace(workspace, rel)
-        if data is None:
-            data = await _read_host_file_bytes(path)
-        used = path
-    else:
-        try:
-            (root / path).resolve().relative_to(root)
-        except (OSError, ValueError):
-            return None
-        read_path = extract_workspace_rel(path) or path
-        data = await _download_via_workspace(workspace, read_path)
-        used = read_path
-
+    """Return preview bytes only for the exact file contained by this workspace."""
+    data = await read_file_url_bytes(workspace, source)
     if data is None:
         return None
-    mime = _guess_mime(used, mime_hint)
+    mime = _guess_mime(source, mime_hint)
     if not is_previewable_mime(mime):
         return None
     return data, mime
@@ -330,30 +314,15 @@ async def read_file_url_bytes(
     filename: str = "",
     mime: str = "",
 ) -> bytes | None:
-    """Read workspace-contained file URLs; reject host paths outside this agent."""
-    path = backend_workspace_path(file_url)
-    if path is None:
+    """Read an exact workspace-contained relative path or local file URL."""
+    rel = _workspace_relative_path(workspace, file_url)
+    if rel is None:
         return None
-    if _is_host_absolute(path):
-        if not _abs_path_allowed(path, workspace=workspace.workspace_dir):
-            return None
-    else:
-        try:
-            (workspace.workspace_dir / path).resolve().relative_to(
-                workspace.workspace_dir.resolve()
-            )
-        except (OSError, ValueError):
-            return None
-
-    rel = extract_workspace_rel(file_url)
-    if rel:
-        data = await _download_via_workspace(workspace, rel)
-        if data is not None:
-            return data
-    data = await _download_via_workspace(workspace, path)
+    data = await _download_via_workspace(workspace, rel)
     if data is not None:
         return data
-    if _is_host_absolute(path):
+    path = backend_workspace_path(file_url)
+    if path is not None and _is_host_absolute(path):
         return await _read_host_file_bytes(path)
     return None
 
@@ -365,33 +334,11 @@ async def ensure_workspace_media_path(
     filename: str = "",
     mime: str = "",
 ) -> str | None:
-    """Return the workspace-relative key for an existing contained media file."""
-    path = backend_workspace_path(file_url)
-    if path is None:
+    """Return the exact workspace-relative key for an existing contained media file."""
+    rel = _workspace_relative_path(workspace, file_url)
+    if rel is None:
         return None
-    if _is_host_absolute(path):
-        if not _abs_path_allowed(path, workspace=workspace.workspace_dir):
-            return None
-        try:
-            rel = Path(path).resolve().relative_to(workspace.workspace_dir.resolve()).as_posix()
-        except (OSError, ValueError):
-            return None
-    else:
-        try:
-            rel = (
-                (workspace.workspace_dir / path)
-                .resolve()
-                .relative_to(workspace.workspace_dir.resolve())
-                .as_posix()
-            )
-        except (OSError, ValueError):
-            return None
 
-    existing = extract_workspace_rel(file_url)
-    if existing:
-        data = await _download_via_workspace(workspace, existing)
-        if data is not None:
-            return existing
     data = await _download_via_workspace(workspace, rel)
     return rel if data is not None else None
 
