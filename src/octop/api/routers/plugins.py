@@ -493,7 +493,7 @@ def _agent_plugins_response(
 async def list_agent_plugins(
     agent_id: str,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(require_permission("plugins")),
+    user: Any = Depends(require_permission("agent_plugins")),
 ) -> AgentPluginsResponse:
     """List global and per-agent plugin state. Missing agent switches default on."""
     _, cfg = _agent_row_and_config(server, agent_id, user)
@@ -509,7 +509,7 @@ async def patch_agent_plugins(
     agent_id: str,
     body: AgentPluginsPatch,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(require_permission("plugins")),
+    user: Any = Depends(require_permission("agent_plugins")),
 ) -> AgentPluginsResponse:
     """Merge plugin switches, preserve tool settings, and reload only this agent."""
     _, cfg = _agent_row_and_config(server, agent_id, user)
@@ -538,7 +538,7 @@ async def patch_agent_plugins(
 async def list_agent_plugin_tools(
     agent_id: str,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(require_permission("plugins")),
+    user: Any = Depends(require_permission("agent_plugins")),
 ) -> dict[str, Any]:
     assert server.app_runtime is not None
     registry = server.app_runtime.require_agent_registry()
@@ -591,7 +591,7 @@ async def patch_agent_plugin_tools(
     agent_id: str,
     body: AgentPluginToolsPatch,
     server: OctopServer = Depends(get_server),
-    user: Any = Depends(require_permission("plugins")),
+    user: Any = Depends(require_permission("agent_plugins")),
 ) -> dict[str, str]:
     """Persist per-agent plugin tool enable flags and hot-sync the denylist.
 

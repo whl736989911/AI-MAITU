@@ -1,20 +1,9 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import JSZip from "jszip";
 
-vi.mock("./parseSkillZip", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("./parseSkillZip")>();
-  return {
-    ...actual,
-    parseSkillZip: vi.fn(actual.parseSkillZip),
-  };
-});
-
-import { parseSkillZip } from "./parseSkillZip";
 import { SkillImportModal } from "./SkillImportModal";
-
-const mockedParse = vi.mocked(parseSkillZip);
 
 async function makeZipFile(
   tree: Record<string, string>,
@@ -42,17 +31,6 @@ async function switchToZipMode(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("<SkillImportModal /> local zip import", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    mockedParse.mockReset();
-    mockedParse.mockImplementation(async (...args) => {
-      const actual = await vi.importActual<typeof import("./parseSkillZip")>(
-        "./parseSkillZip",
-      );
-      return actual.parseSkillZip(...args);
-    });
-  });
-
   it("imports a selected zip with overwrite flag", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
@@ -62,7 +40,7 @@ describe("<SkillImportModal /> local zip import", () => {
       failed: 0,
     });
     const zipFile = await makeZipFile({
-      "demo/SKILL.md": "---\nname: demo\n---\n",
+      "demo/SKILL.md": "---\nname: demo\n---\n中文技能内容\n",
     });
 
     render(
@@ -91,13 +69,12 @@ describe("<SkillImportModal /> local zip import", () => {
     await waitFor(() => {
       expect(onImportZip).toHaveBeenCalledTimes(1);
     });
-    const [skills, options] = onImportZip.mock.calls[0];
+    const [archiveBase64, options] = onImportZip.mock.calls[0];
+    const imported = await JSZip.loadAsync(archiveBase64, { base64: true });
+    expect(await imported.file("demo/SKILL.md")?.async("string")).toBe(
+      "---\nname: demo\n---\n中文技能内容\n",
+    );
     expect(options).toEqual({ overwrite: true });
-    expect(skills).toHaveLength(1);
-    expect(skills[0].slug).toBe("demo");
-    expect(
-      skills[0].files.some((f: { path: string }) => f.path === "SKILL.md"),
-    ).toBe(true);
     expect(onClose).toHaveBeenCalled();
   });
 
@@ -126,37 +103,6 @@ describe("<SkillImportModal /> local zip import", () => {
     expect(
       screen.getByRole("button", { name: "skills.importSkills" }),
     ).toBeDisabled();
-    expect(onImportZip).not.toHaveBeenCalled();
-  });
-
-  it("shows parse errors from the zip parser", async () => {
-    const user = userEvent.setup();
-    mockedParse.mockRejectedValueOnce(new Error("ZIP_NO_SKILLS"));
-    const onImportZip = vi.fn();
-    const zipFile = await makeZipFile({ "docs/readme.md": "x" });
-
-    render(
-      <SkillImportModal
-        open
-        importing={false}
-        onClose={vi.fn()}
-        onImportUrl={vi.fn()}
-        onImportZip={onImportZip}
-      />,
-    );
-
-    await switchToZipMode(user);
-    const fileInput = document.querySelector(
-      'input[type="file"]',
-    ) as HTMLInputElement;
-    setInputFiles(fileInput, [zipFile]);
-    await user.click(
-      screen.getByRole("button", { name: "skills.importSkills" }),
-    );
-
-    await waitFor(() => {
-      expect(screen.getByText("skills.zipNoSkills")).toBeInTheDocument();
-    });
     expect(onImportZip).not.toHaveBeenCalled();
   });
 

@@ -52,9 +52,10 @@ _LOCAL_PROBE_TEXT = "octop onnx probe"
 
 # FastEmbed defaults to a machine-wide thread count; keep its worker pool bounded.
 _LOCAL_EMBEDDING_THREADS = 2
-_EMBEDDING_LOCK = threading.Lock()
-_CACHED_EMBEDDING_MODEL: str | None = None
+_CACHED_EMBEDDING_KEY: tuple[str, str, str] | None = None
 _CACHED_EMBEDDING: Any | None = None
+_EMBEDDING_BATCH_SIZE = 64
+_EMBEDDING_LOCK = threading.Lock()
 
 
 def runtime_pip_allowed() -> bool:
@@ -301,28 +302,35 @@ def list_downloaded_models() -> list[str]:
 
 
 def delete_downloaded_model(model_name: str) -> bool:
+    """Delete a catalog model from disk and evict its live instance."""
+    global _CACHED_EMBEDDING_KEY, _CACHED_EMBEDDING
     name = assert_catalog_model(model_name)
     removed = False
-    targets = [model_cache_dir(name), _downloaded_marker_path(name)]
-    for alias in _alias_cache_names(name):
-        targets.append(model_cache_dir(alias))
-        suffix = alias.split("/")[-1] if "/" in alias else alias
-        targets.extend(
-            [
-                embedding_models_dir() / suffix,
-                embedding_models_dir() / f"fast-{suffix}",
-            ]
-        )
-    for path in targets:
-        safe = _safe_under_cache(path)
-        if safe is None:
-            continue
-        if safe.is_file():
-            safe.unlink(missing_ok=True)
-            removed = True
-        elif safe.is_dir():
-            shutil.rmtree(safe, ignore_errors=True)
-            removed = True
+    with _EMBEDDING_LOCK:
+        key = _CACHED_EMBEDDING_KEY
+        if key is not None and key[0] == str(embedding_models_dir().resolve()) and key[1] == name:
+            _CACHED_EMBEDDING = None
+            _CACHED_EMBEDDING_KEY = None
+        targets = [model_cache_dir(name), _downloaded_marker_path(name)]
+        for alias in _alias_cache_names(name):
+            targets.append(model_cache_dir(alias))
+            suffix = alias.split("/")[-1] if "/" in alias else alias
+            targets.extend(
+                [
+                    embedding_models_dir() / suffix,
+                    embedding_models_dir() / f"fast-{suffix}",
+                ]
+            )
+        for path in targets:
+            safe = _safe_under_cache(path)
+            if safe is None:
+                continue
+            if safe.is_file():
+                safe.unlink(missing_ok=True)
+                removed = True
+            elif safe.is_dir():
+                shutil.rmtree(safe, ignore_errors=True)
+                removed = True
     return removed
 
 
@@ -392,6 +400,47 @@ def require_embedding_prerequisites(settings_get: Any) -> OnnxServiceConfig:
     return cfg
 
 
+def _specific_model_path(model: str) -> Path:
+    """Return the verified local model directory, preferring HF snapshots."""
+    for name in _alias_cache_names(model):
+        cache = model_cache_dir(name)
+        snapshots = cache / "snapshots"
+        if snapshots.is_dir():
+            reference = cache / "refs" / "main"
+            try:
+                snapshot_id = reference.read_text(encoding="utf-8").strip()
+                pinned = snapshots / snapshot_id
+            except OSError:
+                pinned = None
+            if (
+                pinned is not None
+                and snapshot_id
+                and Path(snapshot_id).name == snapshot_id
+                and _cache_has_onnx_weights(pinned)
+            ):
+                return pinned
+            try:
+                candidates = sorted(
+                    snapshots.iterdir(),
+                    key=lambda p: p.stat().st_mtime_ns,
+                    reverse=True,
+                )
+            except OSError:
+                candidates = []
+            for snapshot in candidates:
+                if _cache_has_onnx_weights(snapshot):
+                    return snapshot
+        suffix = name.split("/")[-1] if "/" in name else name
+        for candidate in (
+            embedding_models_dir() / suffix,
+            embedding_models_dir() / f"fast-{suffix}",
+            cache,
+        ):
+            if _cache_has_onnx_weights(candidate):
+                return candidate
+    raise RuntimeError(f"Downloaded ONNX model files are unavailable for {model}")
+
+
 def _build_text_embedding(model: str) -> Any:
     from fastembed import TextEmbedding
 
@@ -399,17 +448,22 @@ def _build_text_embedding(model: str) -> Any:
         model_name=model,
         cache_dir=str(embedding_models_dir()),
         threads=_LOCAL_EMBEDDING_THREADS,
+        specific_model_path=str(_specific_model_path(model)),
+        local_files_only=True,
     )
 
 
 def _cached_text_embedding(model: str) -> Any:
-    global _CACHED_EMBEDDING_MODEL, _CACHED_EMBEDDING
-    if model != _CACHED_EMBEDDING_MODEL or _CACHED_EMBEDDING is None:
+    global _CACHED_EMBEDDING_KEY, _CACHED_EMBEDDING
+    root = str(embedding_models_dir().resolve())
+    snapshot = str(_specific_model_path(model).resolve())
+    key = (root, model, snapshot)
+    if key != _CACHED_EMBEDDING_KEY or _CACHED_EMBEDDING is None:
         _CACHED_EMBEDDING = None
-        _CACHED_EMBEDDING_MODEL = None
+        _CACHED_EMBEDDING_KEY = None
         embedding = _build_text_embedding(model)
         _CACHED_EMBEDDING = embedding
-        _CACHED_EMBEDDING_MODEL = model
+        _CACHED_EMBEDDING_KEY = key
     return _CACHED_EMBEDDING
 
 
@@ -419,7 +473,14 @@ def embed_texts(model: str, texts: Sequence[str]) -> list[list[float]]:
     require_local_embedding_deps()
     model = assert_catalog_model(model)
     with _EMBEDDING_LOCK:
-        out = [[float(x) for x in vec] for vec in _cached_text_embedding(model).embed(list(texts))]
+        embedding = _cached_text_embedding(model)
+        out: list[list[float]] = []
+        for start in range(0, len(texts), _EMBEDDING_BATCH_SIZE):
+            batch = texts[start : start + _EMBEDDING_BATCH_SIZE]
+            out.extend(
+                [float(x) for x in vec]
+                for vec in embedding.embed(batch, batch_size=_EMBEDDING_BATCH_SIZE)
+            )
     if len(out) != len(texts):
         raise RuntimeError("embedding count mismatch")
     return out

@@ -1,6 +1,7 @@
 import {
   Archive,
   Code2,
+  Download,
   FileSpreadsheet,
   FileText,
   Image,
@@ -22,6 +23,8 @@ interface SkillCardProps {
   onMouseLeave: () => void;
   onToggleEnabled: (e: React.MouseEvent) => void;
   onDelete?: (e?: React.MouseEvent) => void;
+  /** Export this single skill as a ZIP (customised skills only). */
+  onExport?: (e: React.MouseEvent) => void;
   /** When false, hide the enable/disable action (e.g. package not mounted). */
   showEnableToggle?: boolean;
 }
@@ -181,6 +184,7 @@ export function SkillCard({
   onMouseLeave,
   onToggleEnabled,
   onDelete,
+  onExport,
   showEnableToggle = true,
 }: SkillCardProps) {
   const { t } = useTranslation();
@@ -269,9 +273,23 @@ export function SkillCard({
             {t("common.viewDetail")}
           </button>
 
-          {(isCustomized && onDelete) || showEnableToggle ? (
+          {(isCustomized && (onDelete || onExport)) || showEnableToggle ? (
             <div className={styles.footerActions}>
-              {isCustomized && onDelete && (
+              {isCustomized && onExport ? (
+                <button
+                  type="button"
+                  className={styles.deleteIconBtn}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onExport(e);
+                  }}
+                  aria-label={t("skills.exportSkills")}
+                  title={t("skills.exportSkills")}
+                >
+                  <Download size={14} />
+                </button>
+              ) : null}
+              {isCustomized && onDelete ? (
                 <button
                   type="button"
                   className={styles.deleteIconBtn}
@@ -286,7 +304,7 @@ export function SkillCard({
                 >
                   <Trash2 size={14} />
                 </button>
-              )}
+              ) : null}
               {showEnableToggle ? (
                 <button
                   type="button"

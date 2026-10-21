@@ -157,6 +157,29 @@ class FeatureMemoryRuntime:
         self._services: dict[str, MemoryService] = {}
         self._identities: dict[str, MemoryIdentity] = {}
 
+    def set_llm(self, client: HarnessAgentLLMClient | None) -> None:
+        """Swap the extraction LLM on this runtime and every live service.
+
+        Called by ``configure_agent_memory_runtime`` after an agent start so
+        the dashboard's extraction budgets reach the services that already
+        exist — not only services opened later.
+        """
+        with self._lock:
+            self._llm = client
+            services = list(self._services.values())
+        for service in services:
+            runtime = getattr(service, "_runtime", None)
+            if runtime is None:  # pragma: no cover - defensive
+                continue
+            try:
+                runtime._llm = client
+                if getattr(runtime, "_llm_configured", None) is not None:
+                    runtime._llm_configured = client is not None
+            except Exception:  # pragma: no cover - defensive
+                logger.warning(
+                    "feature memory service LLM swap failed for %s", self._agent_id, exc_info=True
+                )
+
     def service(self, namespace: str) -> MemoryService | None:
         """The service for *namespace*, opening the backing memory on first use."""
         with self._lock:
@@ -288,7 +311,7 @@ class FeatureMemoryMiddleware(AgentMiddleware[Any, Any]):
     # ------------------------------------------------------------------
 
     def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
-        """Stamp shared (+ own private) recall onto a fresh user message."""
+        """Stamp shared (+ own private) recall, omitting exact manual duplicates."""
         try:
             messages = _extract_messages(state)
             self._cursors[threading.get_ident()] = len(messages)
@@ -303,7 +326,20 @@ class FeatureMemoryMiddleware(AgentMiddleware[Any, Any]):
                 else:
                     # Unstamped turn (HITL resume, cron): shared reads only.
                     namespaces = (memory_namespace(self._agent_id),)
-                rendered = self._recall_rendered(namespaces, messages[-1], runtime)
+                manual_docs: list[str] = []
+                for key in ("octop_workspace_manual_docs", "octop_private_manual_docs"):
+                    docs = (
+                        state.get(key) if isinstance(state, Mapping) else getattr(state, key, None)
+                    )
+                    if isinstance(docs, Mapping):
+                        manual_docs.extend(
+                            value.strip()
+                            for name, value in docs.items()
+                            if name != "__sealed__" and isinstance(value, str) and value.strip()
+                        )
+                rendered = self._recall_rendered(
+                    namespaces, messages[-1], runtime, manual_documents=manual_docs
+                )
                 return {"messages": [stamp_recall_snapshot(messages[-1], rendered)]}
         except Exception:  # pragma: no cover - never raise into the user turn
             logger.warning("feature memory recall failed", exc_info=True)
@@ -313,7 +349,12 @@ class FeatureMemoryMiddleware(AgentMiddleware[Any, Any]):
         return self.before_model(state, runtime)
 
     def _recall_rendered(
-        self, namespaces: tuple[str, ...], message: HumanMessage, runtime: Any
+        self,
+        namespaces: tuple[str, ...],
+        message: HumanMessage,
+        runtime: Any,
+        *,
+        manual_documents: list[str] | None = None,
     ) -> str:
         query = _stringify_content(message.content).strip()
         if not query:
@@ -334,8 +375,12 @@ class FeatureMemoryMiddleware(AgentMiddleware[Any, Any]):
                 logger.warning("feature memory recall failed ns=%s", namespace, exc_info=True)
                 continue
             rendered = getattr(result, "rendered", None) or ""
-            if rendered:
-                blocks.append(rendered)
+            if isinstance(rendered, str):
+                for document in manual_documents or ():
+                    rendered = rendered.replace(document, "")
+                rendered = rendered.strip()
+                if rendered:
+                    blocks.append(rendered)
             logger.info(
                 "feature memory recall ns=%s thread=%s session=%s hit=%s",
                 namespace,

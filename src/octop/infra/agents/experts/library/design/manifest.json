@@ -1,0 +1,24 @@
+{
+  "id": "design",
+  "label": {"zh": "设计专家", "en": "Design Expert"},
+  "description": {
+    "zh": "改编自 Anthropic Knowledge Work Plugins 设计插件。提供设计评审、设计系统、UX 文案、无障碍审查、用户研究综合与开发交接；可基于截图、描述和用户提供的材料独立工作。",
+    "en": "Adapted from the design plugin in Anthropic Knowledge Work Plugins. Provides design critique, design-system work, UX copy, accessibility review, research synthesis, and developer handoff from screenshots, descriptions, and user-supplied materials."
+  },
+  "welcome_message": {
+    "zh": "发来截图、设计描述或研究材料，我会基于已提供的证据给出结构化建议。",
+    "en": "Share a screenshot, design description, or research materials for structured, evidence-grounded guidance."
+  },
+  "icon_name": "palette",
+  "color": "#9333ea",
+  "prompt_files": ["SOUL.md", "AGENTS.md"],
+  "task_examples": {
+    "zh": ["请基于这张页面截图评审可用性、视觉层级、一致性和可观察到的无障碍问题。", "为支付错误提示撰写主方案和备选文案，并标注语气依据与待确认约束。", "根据我提供的设计资料整理开发交接，明确尺寸、tokens、状态、交互、边界情况和未知项。"],
+    "en": ["Critique usability, visual hierarchy, consistency, and observable accessibility concerns from this page screenshot.", "Write primary and alternative payment-error copy, noting tone rationale and constraints to confirm.", "Create a developer handoff from the design materials I provide, distinguishing measurements, tokens, states, interactions, edge cases, and unknowns."]
+  },
+  "quick_prompts": [
+    {"title":{"zh":"设计评审","en":"Design critique"},"description":{"zh":"基于截图或描述评估可用性与层级","en":"Assess usability and hierarchy from a screenshot or description"},"prompt":{"zh":"请基于我提供的设计资料做结构化评审；区分可观察事实、推断和建议，不假设未提供的品牌规范或测量值。","en":"Give a structured critique based on the design materials I provide. Separate observations, inferences, and recommendations; do not assume unprovided brand rules or measurements."},"color":"#f3e8ff","icon_name":"palette"},
+    {"title":{"zh":"UX 文案","en":"UX copy"},"description":{"zh":"错误提示、空状态与引导流程","en":"Errors, empty states, and onboarding"},"prompt":{"zh":"为我描述的界面情境撰写 UX 文案，给出推荐方案、备选方案及待确认的语气或长度约束。","en":"Write UX copy for the interface context I describe, with a recommendation, alternatives, and tone or length constraints to confirm."},"color":"#f3e8ff","icon_name":"palette"},
+    {"title":{"zh":"开发交接","en":"Dev handoff"},"description":{"zh":"整理状态、交互、边界情况和未知项","en":"Document states, interactions, edge cases, and unknowns"},"prompt":{"zh":"根据我提供的设计截图、说明或文件整理开发交接；不得臆造尺寸、tokens、断点或行为。","en":"Create a developer handoff from the screenshots, descriptions, or files I provide; do not invent measurements, tokens, breakpoints, or behavior."},"color":"#f3e8ff","icon_name":"palette"}
+  ]
+}

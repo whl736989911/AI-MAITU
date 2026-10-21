@@ -19,6 +19,11 @@ export const PERM = {
   experts: ["experts"],
   teams: ["teams"],
   features: ["features"],
+  skills: ["skills"],
+  subagents: ["subagents"],
+  tools: ["tools"],
+  agentPlugins: ["agent_plugins"],
+  memory: ["memory"],
   channels: ["channels"],
   connectors: ["connectors"],
   skillPackages: ["skill_packages"],
@@ -63,24 +68,30 @@ export const NAV_PERMISSIONS = {
   "admin-plugins": PERM.plugins,
   "admin-security": PERM.securityPage,
   "admin-advanced": PERM.advancedPage,
+  personalization: [
+    "skills",
+    "subagents",
+    "tools",
+    "agent_plugins",
+    "mbti",
+    "memory",
+    "channels",
+  ],
 } as const satisfies Record<string, PermissionKeys>;
 
 export type NavPermissionKey = keyof typeof NAV_PERMISSIONS;
 
-/**
- * The personalization tabs a module key gates (design §2.4: an unauthorized
- * tab is not shown). A tab absent from this table is gated by nothing here —
- * the expert/feature capability rule (`agents.kind`) decides who may write it,
- * which is a different question and stays where it is.
- *
- * `channels` was the first of these and used to be filtered inline in the
- * page; the table is what the users', advanced and security pages already use
- * for the same job, so it is the one place to read.
- */
+/** Module keys independently gate the matching personalization tabs. */
 export const PERSONALIZATION_TAB_PERMISSIONS = {
-  channels: PERM.channels,
-  plugins: PERM.plugins,
+  workflow: PERM.features,
+  skills: PERM.skills,
+  subagents: PERM.subagents,
+  tools: PERM.tools,
+  plugins: PERM.agentPlugins,
   mbti: PERM.mbti,
+  memory: PERM.memory,
+  channels: PERM.channels,
+  files: PERM.features,
 } as const satisfies Record<string, readonly string[]>;
 
 /** True when the module keys attached to personalization tab `tab` allow it. */
@@ -276,6 +287,13 @@ export function pathPermissionKeys(pathname: string): PermissionKeys | null {
   }
   if (pathname.startsWith("/admin/")) {
     return "admin";
+  }
+  if (pathname.startsWith("/personalization/")) {
+    const tab = pathname.slice("/personalization/".length).split("/")[0];
+    const tabKeys = (
+      PERSONALIZATION_TAB_PERMISSIONS as Record<string, readonly string[]>
+    )[tab];
+    if (tabKeys) return tabKeys;
   }
   if (
     pathname === "/personalization/channels" ||

@@ -17,7 +17,11 @@ from typing import Any
 from octop.infra.agents.kinds import KIND_FEATURE
 from octop.infra.agents.profile import dump_id_list, parse_id_list_json
 from octop.infra.db.pool import DatabasePool
-from octop.infra.users.permissions import CHANNEL_PERMISSION_KEYS
+from octop.infra.users.permissions import (
+    CHANNEL_PERMISSION_KEYS,
+    RESTRICTED_DEPLOYMENT_PERMISSIONS,
+)
+from octop.infra.utils.host_dirs import license_managed_install
 from octop.infra.utils.ulid import new_short_id, new_ulid
 
 _MIGRATIONS_DIR = Path(__file__).parent / "migrations"
@@ -357,6 +361,7 @@ def _create_skill_packages_identity_table(db: DatabasePool) -> None:
               skill_count INTEGER NOT NULL DEFAULT 0,
               icon_name TEXT NOT NULL DEFAULT '',
               icon_url TEXT NOT NULL DEFAULT '',
+              allow_download INTEGER NOT NULL DEFAULT 1,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             )
@@ -378,6 +383,10 @@ def _rebuild_skill_packages_identity_schema(db: DatabasePool) -> None:
         _ensure_column(db, "skill_packages", "icon_name", "TEXT NOT NULL DEFAULT ''")
     if "icon_url" not in _table_columns(db, "skill_packages"):
         _ensure_column(db, "skill_packages", "icon_url", "TEXT NOT NULL DEFAULT ''")
+    # v43 added the download switch; a legacy table must carry it before the
+    # copy below or the rebuild would silently drop the column.
+    if "allow_download" not in _table_columns(db, "skill_packages"):
+        _ensure_column(db, "skill_packages", "allow_download", "INTEGER NOT NULL DEFAULT 1")
     pk = _integer_pk_sql(db)
     with db.transaction() as conn:
         if db.dialect == "sqlite":
@@ -394,6 +403,7 @@ def _rebuild_skill_packages_identity_schema(db: DatabasePool) -> None:
               skill_count INTEGER NOT NULL DEFAULT 0,
               icon_name TEXT NOT NULL DEFAULT '',
               icon_url TEXT NOT NULL DEFAULT '',
+              allow_download INTEGER NOT NULL DEFAULT 1,
               created_at TEXT NOT NULL,
               updated_at TEXT NOT NULL
             )
@@ -403,10 +413,11 @@ def _rebuild_skill_packages_identity_schema(db: DatabasePool) -> None:
             """
             INSERT INTO skill_packages(
               skill_package_id, name, description, created_by, skill_count,
-              icon_name, icon_url, created_at, updated_at
+              icon_name, icon_url, allow_download, created_at, updated_at
             )
             SELECT id, name, description, created_by, skill_count,
-              COALESCE(icon_name, ''), COALESCE(icon_url, ''), created_at, updated_at
+              COALESCE(icon_name, ''), COALESCE(icon_url, ''),
+              COALESCE(allow_download, 1), created_at, updated_at
             FROM skill_packages_legacy
             """
         )
@@ -421,6 +432,12 @@ def _rebuild_skill_packages_identity_schema(db: DatabasePool) -> None:
 def _ensure_skill_packages_schema(db: DatabasePool) -> None:
     """Create or rebuild skill_packages to the integer-PK identity schema."""
     _rebuild_skill_packages_identity_schema(db)
+    if _table_exists(db, "skill_packages"):
+        # v43 download switch. Applied here (not only in 043) so databases
+        # whose watermark was clamped past 43, or repaired before the numbered
+        # migration ran, converge on the same shape; SQLite ``ADD COLUMN``
+        # is not re-runnable, this guard is.
+        _ensure_column(db, "skill_packages", "allow_download", "INTEGER NOT NULL DEFAULT 1")
 
 
 def _published_experts_identity_ready(db: DatabasePool) -> bool:
@@ -1067,6 +1084,34 @@ def _backfill_new_module_permissions(db: DatabasePool) -> None:
                 conn.execute(
                     "INSERT INTO org_unit_permissions(unit_key, permission_key) VALUES (?, ?)",
                     (unit_key, key),
+                )
+
+
+def _backfill_personalization_permissions(db: DatabasePool) -> None:
+    """Preserve the pre-module-gate agent surfaces for existing accounts."""
+    module_keys: tuple[str, ...] = ("skills", "subagents", "tools", "agent_plugins", "memory")
+    if license_managed_install():
+        module_keys = tuple(
+            key for key in module_keys if key not in RESTRICTED_DEPLOYMENT_PERMISSIONS
+        )
+    if not _table_exists(db, "users"):
+        return
+    with db.transaction() as conn:
+        rows = conn.execute(
+            "SELECT id, role, permissions, denied_permissions FROM users"
+        ).fetchall()
+        for row in rows:
+            if str(row["role"]) == "admin":
+                continue
+            permissions = _parse_backfill_keys(row["permissions"])
+            if permissions is None:
+                continue
+            denied = _parse_backfill_keys(row["denied_permissions"]) or []
+            missing = [key for key in module_keys if key not in permissions and key not in denied]
+            if missing:
+                conn.execute(
+                    "UPDATE users SET permissions = ? WHERE id = ?",
+                    (json.dumps(permissions + missing, ensure_ascii=False), int(row["id"])),
                 )
 
 
@@ -3259,6 +3304,8 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
     whose access derives from the source ACL. The file's plain ``ADD COLUMN`` /
     ``DROP COLUMN`` statements are not re-runnable, so this branch calls the
     ensure helper (also part of ``_repair_legacy_schema``).
+    Version 43 adds the per-package ``allow_download`` switch through the
+    skill-packages ensure helper, for the same repair-order reason as 41.
     """
     if version == 2:
         if _table_exists(db, "cron_jobs"):
@@ -3450,11 +3497,25 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 44:
+        _backfill_personalization_permissions(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     if version == 41:
         # ``041_knowledge_prompt_collections.sql`` is the readable record; this
         # helper re-applies the same shape idempotently so a downstamped
         # watermark or repair pass cannot fail on its plain ALTER statements.
         _ensure_knowledge_prompt_collections_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
+    if version == 43:
+        # ``043_skill_package_allow_download.sql`` is the readable record;
+        # ``_repair_legacy_schema`` may already have added the column through
+        # the ensure helper before this migration ran, and the plain ALTER in
+        # the file would refuse a column that is already there.
+        _ensure_skill_packages_schema(db)
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
@@ -3520,6 +3581,8 @@ def run_migrations(db: DatabasePool) -> None:
                 _ensure_feature_overlay_schema(db)
                 _ensure_feature_run_schema(db)
                 _ensure_feature_change_schema(db)
+            if version == 44:
+                _backfill_personalization_permissions(db)
         else:
             _apply_sqlite_migration(db, version, path)
     _reconcile_pre_squash_schema_version(db)

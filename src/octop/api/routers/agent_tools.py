@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from octop.api.common.agent import AgentCapability, assert_agent_capability_write, require_agent_row
-from octop.api.deps import current_user, get_server
+from octop.api.deps import current_user, get_server, require_permission
 from octop.i18n.domains.tools import tool_display_name
 from octop.infra.agents.plugin_tool_defaults import merge_plugins_tool_settings
 from octop.infra.agents.tool_catalog import (
@@ -70,6 +70,7 @@ async def get_tool_settings(
     request: Request,
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
+    _module_user: Any = Depends(require_permission("tools")),
 ) -> ToolSettingsResponse:
     require_agent_row(agent_id, user=user, as_user=None, server=server)
 
@@ -114,6 +115,7 @@ async def put_tool_settings(
     request: Request,
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
+    _module_user: Any = Depends(require_permission("tools")),
 ) -> ToolSettingsResponse:
     assert server.app_runtime is not None
     registry = server.app_runtime.require_agent_registry()
@@ -143,6 +145,7 @@ async def patch_tool_setting(
     request: Request,
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
+    _module_user: Any = Depends(require_permission("tools")),
 ) -> ToolSettingsResponse:
     assert server.app_runtime is not None
     registry = server.app_runtime.require_agent_registry()

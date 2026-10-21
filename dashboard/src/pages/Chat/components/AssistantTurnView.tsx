@@ -1,3 +1,4 @@
+import type { ThreadArtifact } from "../../../api/modules/octopThreads";
 import { useMemo } from "react";
 import { ChevronRight, FilePen, Globe } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -52,7 +53,7 @@ interface AssistantTurnViewProps {
   onEditFile?: () => void;
   onOpenFiles?: () => void;
   /** Thread files written during the turn (including via scripts/shell). */
-  artifactFiles?: readonly string[];
+  artifactFiles?: readonly ThreadArtifact[];
   onRunShellCommand?: (code: string) => void;
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;

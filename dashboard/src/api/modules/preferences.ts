@@ -5,6 +5,11 @@ export interface RemoteBrowserBookmark {
   title: string;
 }
 
+export interface SidebarPreferences {
+  order: string[];
+  hidden: string[];
+}
+
 export interface UserPreferences {
   locale: string;
   remote_browser_bookmarks: RemoteBrowserBookmark[];
@@ -13,6 +18,8 @@ export interface UserPreferences {
     string,
     { mode: "auto" | "enabled" | "disabled"; effort?: string | null }
   >;
+  timezone?: string | null;
+  sidebar: SidebarPreferences;
 }
 
 export type PatchPreferencesBody = {
@@ -20,6 +27,8 @@ export type PatchPreferencesBody = {
   remote_browser_bookmarks?: RemoteBrowserBookmark[];
   preferred_model?: string | null;
   model_reasoning?: UserPreferences["model_reasoning"];
+  timezone?: string | null;
+  sidebar?: SidebarPreferences;
 };
 
 export const preferencesApi = {

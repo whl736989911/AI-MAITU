@@ -23,6 +23,7 @@ OCTOP_HOME="${OCTOP_HOME:-${HOME}/.octop}"
 export OCTOP_HOME
 DB_FILE="${OCTOP_HOME}/octop.db"
 CREDENTIAL_FILE="${OCTOP_HOME}/credential.txt"
+INITIALIZED_MARKER="${OCTOP_HOME}/.entrypoint-init-complete"
 ADMIN_USERNAME="${OCTOP_ADMIN_USERNAME:-admin}"
 ADMIN_DISPLAY_NAME="${OCTOP_ADMIN_DISPLAY_NAME:-Admin}"
 PORT="${OCTOP_PORT:-8088}"
@@ -46,7 +47,7 @@ octop_random_password() {
 
 DEFAULT_PASSWORD="${OCTOP_DEFAULT_PASSWORD:-}"
 
-if [ ! -f "$DB_FILE" ]; then
+if [ ! -f "$DB_FILE" ] && [ ! -f "$INITIALIZED_MARKER" ]; then
     echo "[entrypoint] 首次启动，正在初始化${PLATFORM_NAME}..."
 
     if [ -z "$DEFAULT_PASSWORD" ]; then
@@ -80,7 +81,12 @@ if [ ! -f "$DB_FILE" ]; then
         fi
     fi
     rm -f "$init_log"
+    # SQLite exposes a database file, but external databases do not. Persist a
+    # success marker only after init returns so PostgreSQL restarts are idempotent.
+    mkdir -p "$OCTOP_HOME"
+    : > "$INITIALIZED_MARKER"
 
+    chmod 600 "$INITIALIZED_MARKER"
     cat > "$CREDENTIAL_FILE" << EOF
 ${PLATFORM_NAME} Login Credential
 ======================

@@ -4,6 +4,7 @@ import {
   Button,
   Card,
   InputNumber,
+  Input,
   Radio,
   Select,
   Skeleton,
@@ -45,11 +46,15 @@ export default function MemorySettings({ agentId }: Props) {
   const [saving, setSaving] = useState(false);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
   const [mode, setMode] = useState<ExtractTriggerMode>("idle");
-  const [idleMinutes, setIdleMinutes] = useState(5);
-  const [intervalHours, setIntervalHours] = useState(6);
+  const [idleMinutes, setIdleMinutes] = useState<number | null>(5);
+  const [intervalHours, setIntervalHours] = useState<number | null>(6);
   const [auxModel, setAuxModel] = useState<string>(MODEL_AUTO_VALUE);
-  const [models, setModels] = useState<ModelPickerOption[]>([]);
+  const [lightTimeout, setLightTimeout] = useState(0);
+  const [heavyTimeout, setHeavyTimeout] = useState(0);
+  const [maxTokens, setMaxTokens] = useState(0);
+  const [extraBody, setExtraBody] = useState("{}");
   const [modelsLoading, setModelsLoading] = useState(false);
+  const [models, setModels] = useState<ModelPickerOption[]>([]);
 
   useEffect(() => {
     let cancelled = false;
@@ -83,6 +88,10 @@ export default function MemorySettings({ agentId }: Props) {
     setIntervalHours(
       Math.round((cfg.extract_interval_seconds / 3600) * 10) / 10,
     );
+    setLightTimeout(cfg.extract_light_timeout_s ?? 0);
+    setHeavyTimeout(cfg.extract_heavy_timeout_s ?? 0);
+    setMaxTokens(cfg.extract_max_tokens ?? 0);
+    setExtraBody(JSON.stringify(cfg.extract_extra_body ?? {}, null, 2));
   }, []);
 
   useEffect(() => {
@@ -107,6 +116,22 @@ export default function MemorySettings({ agentId }: Props) {
   }, [agentId, applyConfig, loadFailedMessage]);
 
   const handleSave = async () => {
+    let parsedExtraBody: Record<string, unknown>;
+    try {
+      const parsed: unknown = JSON.parse(extraBody);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        throw new Error("extra_body must be a JSON object");
+      }
+      parsedExtraBody = parsed as Record<string, unknown>;
+    } catch {
+      message.error(
+        t(
+          "memory.settings.extraBodyInvalid",
+          "额外请求参数必须是有效的 JSON 对象",
+        ),
+      );
+      return;
+    }
     setSaving(true);
     try {
       const cfg = await memoryDashboardApi.putExtractConfig(agentId, {
@@ -114,10 +139,17 @@ export default function MemorySettings({ agentId }: Props) {
         extract_on_session_end: true,
         extract_trigger_mode: mode,
         extract_idle_seconds: Math.round(
-          Math.max(MIN_IDLE_MINUTES, idleMinutes) * 60,
+          Math.max(MIN_IDLE_MINUTES, idleMinutes ?? MIN_IDLE_MINUTES) * 60,
         ),
-        extract_interval_seconds: Math.round(intervalHours * 3600),
+        extract_interval_seconds: Math.round(
+          Math.max(MIN_INTERVAL_HOURS, intervalHours ?? MIN_INTERVAL_HOURS) *
+            3600,
+        ),
         aux_model: defaultModelFromForm(auxModel) ?? "",
+        extract_light_timeout_s: lightTimeout,
+        extract_heavy_timeout_s: heavyTimeout,
+        extract_max_tokens: maxTokens,
+        extract_extra_body: parsedExtraBody,
       });
       applyConfig(cfg);
       message.success(t("memory.settings.saved", "已保存，agent 将自动重载"));
@@ -260,14 +292,11 @@ export default function MemorySettings({ agentId }: Props) {
               <>
                 <span>{t("memory.extractConfig.idlePrefix", "对话空闲")}</span>
                 <InputNumber
+                  aria-label={t("memory.extractConfig.idlePrefix", "对话空闲")}
                   min={MIN_IDLE_MINUTES}
                   max={7 * 24 * 60}
                   value={idleMinutes}
-                  onChange={(value) =>
-                    setIdleMinutes(
-                      Math.max(MIN_IDLE_MINUTES, value ?? MIN_IDLE_MINUTES),
-                    )
-                  }
+                  onChange={setIdleMinutes}
                 />
                 <span>{t("memory.extractConfig.minutes", "分钟后提炼")}</span>
               </>
@@ -275,13 +304,12 @@ export default function MemorySettings({ agentId }: Props) {
               <>
                 <span>{t("memory.extractConfig.intervalPrefix", "每隔")}</span>
                 <InputNumber
+                  aria-label={t("memory.extractConfig.intervalPrefix", "每隔")}
                   min={MIN_INTERVAL_HOURS}
                   max={7 * 24}
                   step={0.5}
                   value={intervalHours}
-                  onChange={(value) =>
-                    setIntervalHours(value ?? MIN_INTERVAL_HOURS)
-                  }
+                  onChange={setIntervalHours}
                 />
                 <span>{t("memory.extractConfig.hours", "小时提炼一次")}</span>
               </>
@@ -336,6 +364,56 @@ export default function MemorySettings({ agentId }: Props) {
             showSearch
             optionFilterProp="label"
           />
+        </fieldset>
+      </Card>
+      <Card className={styles.settingCard}>
+        <div className={styles.settingTitle}>
+          {t("memory.settings.budgetTitle", "提取请求预算")}
+        </div>
+        <div className={styles.settingDescription}>
+          {t(
+            "memory.settings.budgetDescription",
+            "按 light/heavy 调用分别设置超时；0 表示使用运行时默认值。",
+          )}
+        </div>
+        <fieldset className={styles.strategyFields} disabled={!memoryEnabled}>
+          <Space wrap>
+            <label>
+              {t("memory.settings.lightTimeout", "Light 超时（秒）")}
+              <InputNumber
+                min={0}
+                max={3600}
+                value={lightTimeout}
+                onChange={(value) => setLightTimeout(value ?? 0)}
+              />
+            </label>
+            <label>
+              {t("memory.settings.heavyTimeout", "Heavy 超时（秒）")}
+              <InputNumber
+                min={0}
+                max={3600}
+                value={heavyTimeout}
+                onChange={(value) => setHeavyTimeout(value ?? 0)}
+              />
+            </label>
+            <label>
+              {t("memory.settings.maxTokens", "最大输出 token")}
+              <InputNumber
+                min={0}
+                max={65536}
+                value={maxTokens}
+                onChange={(value) => setMaxTokens(value ?? 0)}
+              />
+            </label>
+          </Space>
+          <label style={{ display: "block", marginTop: 16 }}>
+            {t("memory.settings.extraBody", "额外模型请求参数（JSON object）")}
+            <Input.TextArea
+              value={extraBody}
+              onChange={(event) => setExtraBody(event.target.value)}
+              autoSize={{ minRows: 3, maxRows: 8 }}
+            />
+          </label>
         </fieldset>
       </Card>
 

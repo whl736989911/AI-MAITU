@@ -25,7 +25,11 @@ from octop.infra.agents.security.hitl_session import parse_hitl_session_policy
 from octop.infra.agents.thread_fork import fork_dashboard_thread
 from octop.infra.agents.workspace_dir import agent_facing_workspace_dir_from_config
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.gateway.hitl.coordinator import pending_hitl_payload
+from octop.infra.gateway.hitl.coordinator import (
+    HitlStreamContext,
+    pending_hitl_payload,
+)
+from octop.infra.gateway.hitl.format import normalize_hitl_request
 from octop.infra.gateway.threads import ThreadRegistry, thread_row_has_messages
 from octop.infra.history.service import HistoryArchive
 from octop.infra.trajectory.service import TrajectoryService
@@ -79,6 +83,17 @@ def _agent_facing_workspace_dir(server: Any, agent_id: str) -> Path:
     return resolve_agent_workspace_dir(server, agent_id)
 
 
+def _artifact_producer_workspace(
+    server: Any,
+    producer_id: str,
+    user: Any,
+    as_user: int | None,
+) -> Path:
+    """Resolve a producer only after applying the same agent ACL as its files API."""
+    require_agent_row(producer_id, user=user, as_user=as_user, server=server)
+    return _agent_facing_workspace_dir(server, producer_id)
+
+
 def _require_thread(
     server: Any, agent_id: str, thread_id: str, user: Any, as_user: int | None
 ) -> Any:
@@ -90,6 +105,82 @@ def _require_thread(
     if row.user_id != effective_uid:
         raise OctopError(ErrorCode.FORBIDDEN, "thread not owned by user")
     return row
+
+
+async def _pending_hitl_for_dashboard(
+    server: Any,
+    *,
+    thread_id: str,
+    agent_id: str,
+    user_id: int,
+    session_key: str,
+    channel_type: str,
+) -> dict[str, Any] | None:
+    processor = server.app_runtime.gateway.processor
+    coordinator = processor.hitl_coordinator
+    current = pending_hitl_payload(
+        coordinator.store,
+        thread_id=thread_id,
+        agent_id=agent_id,
+        user_id=user_id,
+    )
+    if current is not None:
+        return current
+
+    registry = server.app_runtime.agent_registry
+    if registry is None:
+        return None
+    try:
+        agent = registry.get_agent(agent_id)
+        state = await agent.graph.aget_state({"configurable": {"thread_id": thread_id}})
+    except Exception:
+        logger.exception(
+            "failed to inspect restored HITL checkpoint agent=%s thread=%s",
+            agent_id,
+            thread_id,
+        )
+        return None
+    interrupts = tuple(getattr(state, "interrupts", ()) or ()) if state is not None else ()
+    if not interrupts:
+        return None
+
+    action_requests: list[Any] = []
+    review_configs: list[Any] = []
+    interrupt_ids: list[str] = []
+    for interrupt in interrupts:
+        raw = getattr(interrupt, "value", None)
+        normalized = normalize_hitl_request(raw)
+        requests = normalized.get("action_requests")
+        if isinstance(requests, list):
+            action_requests.extend(requests)
+        configs = normalized.get("review_configs")
+        if isinstance(configs, list):
+            review_configs.extend(configs)
+        interrupt_id = getattr(interrupt, "id", None)
+        if isinstance(interrupt_id, str) and interrupt_id.strip():
+            interrupt_ids.append(interrupt_id.strip())
+    if not action_requests or not interrupt_ids:
+        return None
+
+    record = coordinator.register_from_request(
+        {
+            "action_requests": action_requests,
+            "review_configs": review_configs,
+        },
+        ctx=HitlStreamContext(
+            thread_id=thread_id,
+            agent_id=agent_id,
+            user_id=user_id,
+            session_key=session_key,
+            channel_type=channel_type,
+        ),
+        checkpoint_interrupt_ids=tuple(interrupt_ids),
+    )
+    return {
+        "pending_id": record.pending_id,
+        "action_requests": record.action_requests,
+        "review_configs": record.review_configs,
+    }
 
 
 @router.get("/agents/{agent_id}/threads", summary="List threads")
@@ -123,7 +214,7 @@ async def list_threads(
             "model_ref": r.model_ref,
             "reasoning_mode": r.reasoning_mode,
             "reasoning_effort": r.reasoning_effort,
-            "conversation_mode": r.conversation_mode or "craft",
+            "conversation_mode": r.conversation_mode,
             "pending_plan_path": r.pending_plan_path,
             "hitl_policy": parse_hitl_session_policy(r.hitl_policy).to_dict(),
             "artifacts": artifacts_for_response(r.artifacts, workspace_dir),
@@ -360,11 +451,13 @@ async def get_thread_history(
                 user=user,
             )
     effective_uid = as_user if as_user is not None else user.id
-    hitl_pending = pending_hitl_payload(
-        server.app_runtime.gateway.processor.hitl_coordinator.store,
+    hitl_pending = await _pending_hitl_for_dashboard(
+        server,
         thread_id=thread_id,
         agent_id=agent_id,
         user_id=effective_uid,
+        session_key=row.session_key,
+        channel_type=row.channel_type or "dashboard",
     )
     workspace_dir = _agent_facing_workspace_dir(server, agent_id)
     return {
@@ -377,10 +470,16 @@ async def get_thread_history(
         "history_loading": history_loading,
         "history_status": projection_status,
         "history_retry_after_ms": 1500 if history_loading else 0,
-        "turn_active": server.app_runtime.gateway.ws_hub.is_turn_active(thread_id),
         "hitl_pending": hitl_pending,
-        "artifacts": artifacts_for_response(row.artifacts, workspace_dir),
-        "conversation_mode": row.conversation_mode or "craft",
+        "turn_active": server.app_runtime.gateway.ws_hub.is_turn_active(thread_id),
+        "artifacts": artifacts_for_response(
+            row.artifacts,
+            workspace_dir,
+            producer_workspace=lambda producer_id: _artifact_producer_workspace(
+                server, producer_id, user, as_user
+            ),
+        ),
+        "conversation_mode": row.conversation_mode,
         "pending_plan_path": row.pending_plan_path,
         "hitl_policy": parse_hitl_session_policy(row.hitl_policy).to_dict(),
     }
@@ -525,7 +624,7 @@ async def patch_thread(
             "model_ref": row.model_ref,
             "reasoning_mode": row.reasoning_mode,
             "reasoning_effort": row.reasoning_effort,
-            "conversation_mode": row.conversation_mode or "craft",
+            "conversation_mode": row.conversation_mode,
             "pending_plan_path": row.pending_plan_path,
             "hitl_policy": parse_hitl_session_policy(row.hitl_policy).to_dict(),
         }
@@ -580,7 +679,7 @@ async def patch_thread(
         "model_ref": updated.model_ref,
         "reasoning_mode": updated.reasoning_mode,
         "reasoning_effort": updated.reasoning_effort,
-        "conversation_mode": updated.conversation_mode or "craft",
+        "conversation_mode": updated.conversation_mode,
         "pending_plan_path": updated.pending_plan_path,
         "hitl_policy": parse_hitl_session_policy(updated.hitl_policy).to_dict(),
     }
@@ -594,14 +693,7 @@ async def delete_thread(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> None:
-    """Remove a conversation thread, its actual checkpoint data, and its metadata.
-
-    Checkpoint deletion runs first: if it fails (as opposed to simply
-    finding nothing to delete — agent not running / no checkpointer),
-    the row is intentionally left in place so the thread stays visible
-    and the caller can retry, instead of orphaning undeleted data with
-    no remaining handle to it.
-    """
+    """Delete checkpoint data before the user-visible thread metadata."""
     _require_thread(server, agent_id, thread_id, user, as_user)
     await server.app_runtime.agent_registry.delete_thread_checkpoint(agent_id, thread_id)
     server.app_runtime.gateway.thread_registry.delete_thread(thread_id)

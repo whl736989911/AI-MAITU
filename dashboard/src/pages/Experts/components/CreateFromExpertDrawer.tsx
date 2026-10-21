@@ -195,13 +195,14 @@ export default function CreateFromExpertDrawer({
       agent_id?: string;
       welcome_message?: string;
       default_model: string;
+      conversation_mode: "ask" | "plan" | "craft";
+      enable_trajectory?: boolean;
       backend_choice: string;
       composite_default: string;
       root_dir?: string;
       skill_package_ids?: string[];
       knowledge_base_ids?: string[];
       mcp_servers?: string[];
-      enable_trajectory?: boolean;
     } & AgentRuntimeFormValues
   >();
   const [submitting, setSubmitting] = useState(false);
@@ -270,6 +271,7 @@ export default function CreateFromExpertDrawer({
       agent_id: undefined,
       welcome_message: defaults.welcome_message,
       default_model: MODEL_AUTO_VALUE,
+      conversation_mode: "craft",
       backend_choice: hostExecutionRestricted ? "" : DEFAULT_BACKEND,
       composite_default: DEFAULT_BACKEND,
       skill_package_ids: [],
@@ -395,8 +397,8 @@ export default function CreateFromExpertDrawer({
       const payload = {
         name: values.name,
         description: values.description || undefined,
-        agent_id: values.agent_id?.trim() || undefined,
         default_model: defaultModelFromForm(values.default_model) ?? undefined,
+        conversation_mode: values.conversation_mode,
         ...(hostExecutionRestricted &&
         !selectedBackendChoice.startsWith("named:")
           ? {}
@@ -713,6 +715,19 @@ export default function CreateFromExpertDrawer({
                 .toLowerCase()
                 .includes(input.toLowerCase())
             }
+          />
+        </Form.Item>
+        <Form.Item
+          name="conversation_mode"
+          label={t("experts.conversationModeLabel")}
+          extra={t("experts.conversationModeHint")}
+        >
+          <Select
+            options={[
+              { value: "ask", label: t("chat.conversationMode.ask") },
+              { value: "plan", label: t("chat.conversationMode.plan") },
+              { value: "craft", label: t("chat.conversationMode.craft") },
+            ]}
           />
         </Form.Item>
 

@@ -23,6 +23,7 @@ from octop.infra.agents.providers.probe import (
 from octop.infra.agents.providers.reasoning import reasoning_capability
 from octop.infra.agents.providers.resolved import list_resolved_models as _list_resolved_models
 from octop.infra.agents.providers.store import clear_stale_pins_for_provider
+from octop.infra.db.repos._base import UNSET as DB_UNSET
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.providers.codex_apply import (
     CODEX_PROVIDER_NAME,
@@ -261,7 +262,7 @@ async def admin_patch_provider(
         provider_id,
         kind=body.kind,
         base_url=body.base_url,
-        api_key=body.api_key,
+        api_key=body.api_key if "api_key" in body.model_fields_set else DB_UNSET,
         extra_json=body.extra_json,
         models_json=models_json,
         note=body.note,

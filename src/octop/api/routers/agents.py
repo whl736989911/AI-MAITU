@@ -26,6 +26,7 @@ from octop.infra.agents.avatar import (
     read_workspace_avatar,
     write_workspace_avatar,
 )
+from octop.infra.agents.conversation_mode import default_conversation_mode_from_config
 from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.agents.profile import (
     id_list_from_row,
@@ -52,6 +53,7 @@ class AgentCreateBody(AgentRuntimeFields):
     persona_mbti: str | None = None
     default_model: str | None = None
     system_prompt: str | None = None
+    conversation_mode: Literal["ask", "plan", "craft"] | None = None
     config: dict[str, Any] = {}
     icon: str | None = None
     template_name: str | None = None
@@ -71,6 +73,7 @@ class AgentPatchBody(AgentRuntimeFields):
     persona_mbti: str | None = None
     default_model: str | None = None
     system_prompt: str | None = None
+    conversation_mode: Literal["ask", "plan", "craft"] | None = None
     config: dict[str, Any] | None = None
     icon: str | None = None
     template_name: str | None = None
@@ -168,6 +171,7 @@ def _row_dict(
         "system_prompt": row.system_prompt,
         "state": row.last_state or "unknown",
         "last_error": row.last_error,
+        "conversation_mode": default_conversation_mode_from_config(cfg),
         "config": public_cfg,
         "icon": row.icon,
         "template_name": row.template_name,
@@ -333,12 +337,14 @@ async def create_agent(
     from octop.infra.agents.manager import AgentCreateSpec  # noqa: PLC0415
 
     assert server.app_runtime is not None
-    if isinstance(body.config, dict):
-        assert_user_backend_root_dirs(
-            user,
-            body.config.get("backend"),
-            policy_repo=server.services.user_policy_repo,
-        )
+    config = dict(body.config)
+    if body.conversation_mode is not None:
+        config["conversation_mode"] = body.conversation_mode
+    assert_user_backend_root_dirs(
+        user,
+        config.get("backend"),
+        policy_repo=server.services.user_policy_repo,
+    )
     knowledge_ids = (
         server.app_runtime.agent_registry.validate_knowledge_base_ids(
             user.id, body.knowledge_base_ids
@@ -358,7 +364,7 @@ async def create_agent(
         persona_mbti=body.persona_mbti,
         default_model=body.default_model,
         system_prompt=body.system_prompt,
-        config=body.config,
+        config=config,
         runtime_config=runtime_field_updates(body, exclude_unset=True),
         icon=body.icon,
         template_name=body.template_name,
@@ -446,6 +452,7 @@ async def patch_agent(
         if key
         not in {
             "config",
+            "conversation_mode",
             "is_shared",
             "welcome_message",
             "skill_package_ids",
@@ -453,8 +460,16 @@ async def patch_agent(
             "mcp_servers",
         }
     }
-    if body.config is not None:
-        updates["config_json"] = json.dumps(body.config)
+    if body.config is not None or "conversation_mode" in body.model_fields_set:
+        merged_config = (
+            dict(body.config) if body.config is not None else parse_config_json(row.config_json)
+        )
+        if "conversation_mode" in body.model_fields_set:
+            if body.conversation_mode is None:
+                merged_config.pop("conversation_mode", None)
+            else:
+                merged_config["conversation_mode"] = body.conversation_mode
+        updates["config_json"] = json.dumps(merged_config)
     if body.welcome_message is not None:
         updates["welcome_message"] = body.welcome_message
     if updates:

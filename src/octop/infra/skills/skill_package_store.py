@@ -71,6 +71,7 @@ class SkillPackageStore:
         created_by: str,
         icon_name: str = "",
         icon_url: str = "",
+        allow_download: bool = True,
     ) -> SkillPackageRow:
         row = self.repo.create(
             id=_allocate_package_id(self.repo),
@@ -79,6 +80,7 @@ class SkillPackageStore:
             created_by=created_by,
             icon_name=icon_name,
             icon_url=icon_url,
+            allow_download=allow_download,
         )
         self.package_skills_dir(row.id).mkdir(parents=True, exist_ok=True)
         return row
@@ -189,6 +191,22 @@ class SkillPackageStore:
 
     def can_mutate(self, row: SkillPackageRow, user: User) -> bool:
         return user.is_admin or str(user.id) == row.created_by
+
+    def can_download(self, row: SkillPackageRow, user: User) -> bool:
+        """Whether *user* may export the package as a ZIP.
+
+        The creator and system admins always can; everyone else needs the
+        package's ``allow_download`` switch on. Ordinary skill use and mounting
+        are unchanged by this — it only gates the ZIP export.
+        """
+        if self.can_mutate(row, user):
+            return True
+        return row.allow_download
+
+    def assert_can_download(self, row: SkillPackageRow, user: User) -> None:
+        if self.can_download(row, user):
+            return
+        raise OctopError.localized(ErrorCode.SKILL_PACKAGE_DOWNLOAD_DENIED)
 
     def _update_skill_count(self, pack_id: str) -> None:
         self.repo.update_skill_count(pack_id, len(self.list_skill_summaries(pack_id)))

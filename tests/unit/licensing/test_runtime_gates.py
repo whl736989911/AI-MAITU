@@ -42,6 +42,7 @@ async def test_cron_execution_is_denied_when_instance_license_is_revoked(
         delivery_service=delivery,
         cron_repo=cron_repo,
         audit_repo=audit_repo,
+        date_trigger=False,
     )
 
     with pytest.raises(OctopError) as exc_info:

@@ -381,18 +381,6 @@ async def initial_admin(
     }
 
 
-@router.post("/setup/resume-wizard", summary="Issue a fresh wizard token mid-setup")
-async def resume_wizard(server: Any = Depends(get_server)) -> dict[str, Any]:
-    """Issue a new wizard token after the admin exists but before finish."""
-    _enforce_wizard_token_phase(server)
-    require_database(server)
-    assert server.user_manager is not None
-    if server.user_manager.count() == 0:
-        raise OctopError(ErrorCode.SETUP_TOKEN_INVALID, "admin not created yet", status=400)
-    token, ttl = server.wizard_tokens.issue()
-    return {"wizard_token": token, "expires_in": ttl}
-
-
 @router.post("/setup/test-provider", summary="Test provider draft connectivity")
 async def test_provider_draft(
     body: ProviderTestBody,
@@ -497,7 +485,5 @@ async def setup_license_config(
         )
     except ValueError as exc:
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
-    configured = (
-        settings.trusted_keys_file is not None and settings.trusted_keys_file.is_file()
-    )
+    configured = settings.trusted_keys_file is not None and settings.trusted_keys_file.is_file()
     return {"ok": True, "configured": configured, "managed": server.license_manager is not None}

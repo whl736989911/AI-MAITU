@@ -21,6 +21,7 @@ from octop.i18n import (
     channel_runtime_reason,
     tr,
 )
+from octop.infra.agents.middleware.turn_steering import turn_steering_registry
 from octop.infra.db.repos.channels import ChannelRow
 from octop.infra.db.repos.sessions import SessionRow
 from octop.infra.errors import ErrorCode, OctopError
@@ -158,13 +159,76 @@ class Gateway:
         self._channel_manager: ChannelManager | None = None
         self._processor: GlobalProcessor | None = None
         self._dispatcher = build_default_dispatcher()
-        self._slash_meta: SlashRuntimeMeta | None = None
         self._ws_hub = WebSocketHub()
+        self._steer = turn_steering_registry()
+        self.steer = self._steer
+        self._steer.set_receipt_callback(self._on_steering_receipt)
         self._cli_hub = CliHub()
         self._ws_channel: WebSocketChannel | None = None
         self._cli_channel: CliChannel | None = None
         self._runtime_status: dict[str, ChannelRuntimeStatus] = {}
         self._history_backfill = HistoryBackfillQueue()
+
+    async def _on_steering_receipt(self, thread_id: str, receipt_type: str, item: Any) -> None:
+        await self._ws_hub.push_to_thread(
+            thread_id,
+            {
+                "type": receipt_type,
+                "thread_id": thread_id,
+                "turn_id": await self._steer.active_turn_id(thread_id),
+                "client_pending_id": item.client_turn_id,
+            },
+        )
+
+    async def complete_steering_turn(
+        self,
+        thread_id: str,
+        turn_id: str,
+        *,
+        cancelled: bool = False,
+    ) -> Any:
+        """Complete a turn and enqueue the next already-authorized follow-up."""
+        completion = await self._steer.complete_turn(
+            thread_id,
+            turn_id,
+            cancelled=cancelled,
+        )
+        for discarded in completion.discarded:
+            receipt_type = (
+                "steer.expired" if discarded.expires_at <= time.monotonic() else "steer.discarded"
+            )
+            await self._ws_hub.push_to_thread(
+                thread_id,
+                {
+                    "type": receipt_type,
+                    "turn_id": turn_id,
+                    "client_pending_id": discarded.client_turn_id,
+                    "thread_id": thread_id,
+                },
+            )
+        item = completion.next_followup
+        if item is None or not isinstance(item.payload, InboundMessage):
+            return completion
+        if self._channel_manager is None:
+            logger.error("cannot dispatch queued follow-up without channel manager")
+            return completion
+        inbound = item.payload
+        metadata = dict(inbound.metadata or {})
+        metadata["octop_steering_turn_id"] = completion.next_turn_id
+        metadata["client_pending_id"] = item.client_turn_id
+        metadata["ws_connection_id"] = ""
+        inbound.metadata = metadata
+        self._channel_manager.enqueue(WS_CHANNEL_ID, inbound)
+        await self._ws_hub.push_to_thread(
+            thread_id,
+            {
+                "type": "steer.drained",
+                "turn_id": completion.next_turn_id,
+                "client_pending_id": item.client_turn_id,
+                "thread_id": thread_id,
+            },
+        )
+        return completion
 
     def replace_repos(self, repos: RepoBundle) -> None:
         """Point channel/thread persistence at a rebound control-plane pool."""
@@ -291,7 +355,8 @@ class Gateway:
         self._ws_channel = WebSocketChannel(
             self._processor,
             hub=self._ws_hub,
-            channel_id=WS_CHANNEL_ID,
+            steer=self._steer,
+            complete_turn=self.complete_steering_turn,
         )
         await self._channel_manager.add_channel(self._ws_channel)
 

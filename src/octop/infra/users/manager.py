@@ -753,10 +753,19 @@ class UserManager:
             actor=ACTOR_ADMIN, action="user.unlock_login", target=username
         )
 
-    async def remove(self, username: str) -> None:
+    async def remove(self, username: str, *, agent_manager: Any | None = None) -> None:
         row = self._services.user_repo.get_by_username(username)
         if row is None:
             raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+        # Checkpoint data is external to the control-plane FK cascade. Delete
+        # user-owned thread state first so failures leave the account retryable.
+        if agent_manager is None:
+            from octop.infra.agents.checkpoint_cleanup import delete_user_thread_checkpoints
+
+            await asyncio.to_thread(delete_user_thread_checkpoints, self._services, row.id)
+        else:
+            for agent_id, thread_id in self._services.thread_repo.list_for_user(row.id):
+                await agent_manager.delete_thread_checkpoint(agent_id, thread_id)
         async with self._lock:
             self._users.pop(username, None)
         user_dir = self._services.paths.user_dir(row.username)

@@ -643,8 +643,16 @@ def _entry_matches_thread(
 
 
 def _merge_adjacent_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Collapse fragmented assistant text; keep each user turn separate."""
+    """Collapse adjacent assistant fragments only when their identities match."""
     merged: list[dict[str, Any]] = []
+    identity_keys = (
+        "pending_id",
+        "speaker_agent_id",
+        "speaker_name",
+        "team_wrapup",
+        "team_partial",
+        "team_snapshot",
+    )
     for msg in messages:
         role = str(msg.get("role") or "")
         content = str(msg.get("content") or "")
@@ -654,11 +662,16 @@ def _merge_adjacent_messages(messages: list[dict[str, Any]]) -> list[dict[str, A
             "role": role,
             "content": content,
             **({"id": msg["id"]} if msg.get("id") else {}),
+            **{key: msg[key] for key in identity_keys if key in msg},
         }
         if role == "user":
             merged.append(entry)
             continue
-        if merged and merged[-1]["role"] == role:
+        if (
+            merged
+            and merged[-1]["role"] == role
+            and all(merged[-1].get(key) == entry.get(key) for key in identity_keys)
+        ):
             merged[-1]["content"] = f"{merged[-1]['content']}\n\n{content}"
             if msg.get("id"):
                 merged[-1]["id"] = msg["id"]
@@ -1005,6 +1018,19 @@ def _serialize_history_message(
         code = additional_kwargs.get(STREAM_ERROR_CODE_KEY)
         if code:
             entry["error_code"] = str(code)
+    # Keep team/HITL identity on persisted messages. These values are authored
+    # by the server/runtime, not inferred from a client-supplied path or label.
+    for key in (
+        "pending_id",
+        "speaker_agent_id",
+        "speaker_name",
+        "team_wrapup",
+        "team_partial",
+        "team_snapshot",
+    ):
+        value = additional_kwargs.get(key)
+        if isinstance(value, (str, bool)) and value:
+            entry[key] = value
     return _apply_history_timestamp(entry, msg, fallback_created_at)
 
 

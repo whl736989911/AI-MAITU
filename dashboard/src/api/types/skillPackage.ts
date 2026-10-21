@@ -6,6 +6,10 @@ export interface SkillPackage {
   creator_username?: string | null;
   creator_display_name?: string | null;
   can_write?: boolean;
+  /** Whether users other than the creator/system admins may export the ZIP. */
+  allow_download: boolean;
+  /** Resolved export/copy right for the requesting user. */
+  can_download: boolean;
   skill_count: number;
   icon_name?: string;
   icon_url?: string;
@@ -44,6 +48,7 @@ export interface CreateSkillPackageBody {
   description?: string;
   icon_name?: string;
   icon_url?: string;
+  allow_download?: boolean;
 }
 
 export interface UpdateSkillPackageBody {
@@ -51,6 +56,7 @@ export interface UpdateSkillPackageBody {
   description?: string;
   icon_name?: string;
   icon_url?: string;
+  allow_download?: boolean;
 }
 
 export interface CreateSkillPackageSkillBody {

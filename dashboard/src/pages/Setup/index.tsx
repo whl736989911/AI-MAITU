@@ -15,6 +15,7 @@ import { ensureLocaleBundle } from "../../i18n";
 import { storeUiLocale, type UiLocale } from "../../utils/locale";
 
 import { authApi } from "../../api/modules/auth";
+import { setAuthToken } from "../../api/request";
 import { preferencesApi } from "../../api/modules/preferences";
 import BootOfflinePanel from "../../components/BootOfflinePanel";
 import { useTheme } from "../../context/ThemeContext";
@@ -129,6 +130,17 @@ export default function SetupPage() {
           } catch {
             /* fall through */
           }
+        }
+        const setupJwt = wizardSession.loadSetupJwt();
+        if (setupJwt) {
+          setAuthToken(setupJwt);
+          if (savedStep === STEP_FINISH) {
+            goToStep(STEP_FINISH);
+          } else {
+            goToStep(STEP_MODEL);
+          }
+          if (!cancelled) setChecking(false);
+          return;
         }
 
         // No valid wizard token yet.
@@ -341,9 +353,13 @@ export default function SetupPage() {
               }}
             />
           )}
-          {current === STEP_FINISH && adminCreds && (
-            <FinishStep adminCreds={adminCreds} providerDraft={providerDraft} />
-          )}
+          {current === STEP_FINISH &&
+            (adminCreds || wizardSession.loadSetupJwt()) && (
+              <FinishStep
+                adminCreds={adminCreds}
+                providerDraft={providerDraft}
+              />
+            )}
         </div>
       </div>
     </div>

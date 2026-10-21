@@ -69,6 +69,9 @@ export interface ChatMessage {
   hitlData?: HitlRequestData;
   usage?: TokenUsage;
   metadata?: MessageMetadata;
+  /** Team member identity that authored this assistant message, when present. */
+  speakerAgentId?: string;
+  speakerName?: string;
   errorInfo?: ProcessErrorInfo;
   status?: "streaming" | "done" | "error";
   timestamp: number;
@@ -95,6 +98,8 @@ export interface SessionStreamState {
   streamBlockType: "thinking" | "text" | "";
   /** Map from harness tool-call id (or ``idx-<n>`` fallback) → assistant bubble id. */
   toolCallIdIndex: Record<string, string>;
+  /** Current server-authored logical turn id used for optimistic steering. */
+  activeTurnId: string | null;
   historyHasMore: boolean;
   historyNextOffset: number;
   historyNextCursor?: string | null;
@@ -120,4 +125,5 @@ export interface SessionSnapshot {
   historyNextOffset: number;
   historyNextCursor?: string | null;
   historyHydrated: boolean;
+  activeTurnId: string | null;
 }

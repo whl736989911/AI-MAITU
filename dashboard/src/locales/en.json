@@ -95,6 +95,10 @@
     "AGENT_NOT_RUNNING": "This expert is not enabled.",
     "AGENT_FAILED": "Agent failed to start.",
     "AGENT_BUSY": "Agent is busy.",
+    "CHECKPOINT_DELETE_FAILED": "Could not delete this conversation's saved data. The conversation was kept so you can retry.",
+    "MODEL_UNAVAILABLE": "No eligible AI chat model is currently available.",
+    "MEMORY_DOCUMENT_CONFLICT": "This memory document changed elsewhere. Reload and review the current version before saving.",
+    "HITL_APPROVAL_STALE": "This approval is no longer pending. Reload the conversation and review its current approval card.",
     "AGENT_NAME_TAKEN": "This name is already in use. Please choose another.",
     "AGENT_ID_INVALID": "Invalid custom id: use 3-64 letters/digits/underscores/hyphens, starting and ending with a letter or digit.",
     "AGENT_ID_TAKEN": "This id is already in use. Please choose another.",
@@ -135,6 +139,7 @@
     "SKILL_ALREADY_EXISTS": "Skill {{name}} already exists. Enable overwrite to replace it.",
     "SKILL_PACKAGE_NOT_FOUND": "Skill package not found.",
     "SKILL_PACKAGE_NAME_TAKEN": "Skill package {{name}} already exists.",
+    "SKILL_PACKAGE_DOWNLOAD_DENIED": "The skill package owner has disabled downloading and copying this package.",
     "SKILL_PACKAGE_BACKEND_UNSUPPORTED": "Skill packages currently support only “Full local environment (filesystem + shell)” or “Local filesystem (no shell commands)”, with storage root / (POSIX) or the agent workspace root (Windows default).",
     "PUBLISHED_EXPERT_SLUG_TAKEN": "Published expert slug {{slug}} already exists.",
     "ACP_BACKEND_UNSUPPORTED": "This agent has a sandbox enabled, so external runners can’t be used. Connecting via IDE / maitu acp is unaffected.",
@@ -285,6 +290,10 @@
     }
   },
   "nav": {
+    "customize": "Customize navigation",
+    "moveUp": "Move up",
+    "moveDown": "Move down",
+    "preferencesSaveFailed": "Could not save navigation preferences",
     "chat": "Conversation",
     "common": "Common",
     "control": "Control",
@@ -351,6 +360,10 @@
     "paneRecords": "Tasks"
   },
   "skillPackages": {
+    "exportZip": "Export ZIP",
+    "exportFailed": "Failed to export package ZIP",
+    "allowDownload": "Allow ZIP downloads",
+    "allowDownloadHint": "Disabling downloads does not affect mounting or use. The owner and system administrators can still export.",
     "title": "Skill Packages",
     "subtitle": "Create and maintain reusable skill collections that can be mounted on agents.",
     "createPackage": "Create Skill Package",
@@ -930,6 +943,8 @@
     }
   },
   "experts": {
+    "conversationModeLabel": "Default conversation mode",
+    "conversationModeHint": "Used for new conversations unless a request or existing thread selects another mode.",
     "subtitle": "Spin up a pre-configured agent (with identity / soul / heartbeat baked in) from a scenario template. Each expert ships with its own system prompt — once created, just bind a provider and start it.",
     "loadFailed": "Failed to load experts",
     "loadDetailFailed": "Failed to load expert details",
@@ -1281,6 +1296,9 @@
     "memoryBtn": "Memory"
   },
   "features": {
+    "templateLabel": "Starting template",
+    "templateHint": "Optional template; its workspace files and skills are copied into this feature.",
+    "templateNone": "No template",
     "create": "New feature",
     "created": "Feature “{{name}}” created",
     "createFailed": "Could not create the feature",
@@ -1822,6 +1840,21 @@
     "model_call_failed_detail": "The model call failed: {{detail}}"
   },
   "chat": {
+    "steer": {
+      "withdraw": "Withdraw queued instruction",
+      "status": {
+        "queued": "Queued",
+        "drained": "Applied",
+        "withdrawn": "Withdrawn — draft kept",
+        "discarded": "Discarded — draft kept",
+        "expired": "Expired — draft kept",
+        "rejected": "Rejected — draft kept"
+      },
+      "send": "Send now as a steering instruction",
+      "followUp": "Queue for after this turn",
+      "unavailable": "Steering is unavailable for this turn."
+    },
+    "sessionPending": "Starting…",
     "conversationMode": {
       "ask": "Ask mode",
       "plan": "Plan mode",
@@ -2577,6 +2610,12 @@
     "autoNotScheduled": "Scheduler: inactive"
   },
   "skills": {
+    "exportSelected": "Export selected ({{count}})",
+    "exportSkills": "Export custom skills",
+    "exportPackage": "Export ZIP",
+    "importPackageZip": "Import ZIP",
+    "exportFailed": "Failed to export ZIP",
+    "importPackageSuccess": "Imported {{count}} skill(s) into the package",
     "title": "Skills",
     "description": "Manage agent skills and capabilities.",
     "customizedSkills": "Installed Skills",
@@ -2816,6 +2855,11 @@
     "pleaseInputText": "Please input text content",
     "pleaseSelectPreset": "Please select an execution frequency",
     "form": {
+      "scheduleModeDate": "Run once",
+      "dateRunAt": "Run at",
+      "dateRunAtRequired": "Choose a date and time.",
+      "dateRunAtInvalid": "Enter a local date and time in YYYY-MM-DDTHH:mm[:ss] format.",
+      "dateRunAtHint": "Interpreted in the server timezone ({{timezone}}); the task is disabled after its attempt.",
       "sectionBasic": "Basic Info",
       "sectionBasicDesc": "Set the name and enable status. Once enabled, the job will run automatically on schedule.",
       "id": "Job ID",
@@ -4388,6 +4432,55 @@
     "disableProtectionDesc": "Enter your current password to confirm disabling protection. After this, anyone can access the console without a password."
   },
   "memory": {
+    "backups": {
+      "title": "Memory backups",
+      "loadFailed": "Failed to load backups",
+      "operationFailed": "Operation failed",
+      "created": "Backup created",
+      "deleted": "Backup deleted",
+      "restored": "Memory restored; the safety backup was retained",
+      "restoreFailed": "Restore failed; inspect the safety backup",
+      "createdAt": "Created",
+      "rows": "Records",
+      "size": "Size",
+      "backend": "Storage",
+      "actions": "Actions",
+      "download": "Download",
+      "restore": "Restore",
+      "restoreConfirm": "Restore this backup? A safety backup of the current state will be created first.",
+      "deleteConfirm": "Permanently delete this backup?",
+      "scope": "Scope: {{scope}}. The archive includes only this memory namespace and caller-owned checkpoints.",
+      "restoreOutcome": "Restored {{backup}}; safety backup: {{safety}}; checkpoint threads: {{threads}}.",
+      "create": "Create backup"
+    },
+    "manual": {
+      "title": "Manual memory documents",
+      "description": "Manual content takes priority over structured recall. Changes apply to new sessions only.",
+      "private": "My private memory",
+      "shared": "Shared memory",
+      "editable": "Editable",
+      "readOnly": "Read-only",
+      "version": "Version {{version}}",
+      "stale": "This document changed elsewhere. Reload and review the current content before editing.",
+      "byteCount": "{{used}} / {{max}} bytes",
+      "loadFailed": "Could not load the manual memory document",
+      "saveFailed": "Save failed. Reload and review the document.",
+      "saved": "Saved. New sessions will load this version."
+    },
+    "review": {
+      "run": "Review manual documents against structured memories",
+      "unavailable": "Semantic review is unavailable; no changes were made",
+      "authoritative": "Manual documents remain authoritative; review results require your confirmation",
+      "coverage": "Reviewed {{reviewed}} of {{total}} structured facts",
+      "partial": "The fact limit was reached; review coverage is incomplete",
+      "fact": "Structured fact",
+      "evidence": "Manual-document evidence",
+      "keepManual": "Keep manual version and deactivate this contradictory fact",
+      "apply": "Confirm selection: keep manual version",
+      "applied": "Manual document retained; only selected contradictory facts were deactivated",
+      "stale": "Review is stale or state changed; review again",
+      "none": "No evidence-supported conflicts or duplicates found; this does not guarantee there are no conflicts"
+    },
     "title": "Memory",
     "description": "View and manage agent conversation history and daily logs.",
     "conversationHistory": "Conversations",
@@ -4453,6 +4546,8 @@
       "privateDescription": "Private memory is visible and editable only to you."
     },
     "tabs": {
+      "manual": "Manual docs",
+      "backups": "Backups",
       "overview": "Overview",
       "profile": "Profile",
       "library": "Memory tree",
@@ -4569,6 +4664,13 @@
       "saveFailed": "Save failed"
     },
     "settings": {
+      "extraBodyInvalid": "Extra request parameters must be a valid JSON object.",
+      "budgetTitle": "Extraction request budgets",
+      "budgetDescription": "Configure separate timeouts for light and heavy calls; 0 uses runtime defaults.",
+      "lightTimeout": "Light timeout (seconds)",
+      "heavyTimeout": "Heavy timeout (seconds)",
+      "maxTokens": "Maximum output tokens",
+      "extraBody": "Extra model request parameters (JSON object)",
       "title": "Memory settings",
       "description": "Control whether this agent uses memory and when conversations become long-term memory.",
       "storageTitle": "Store memory",

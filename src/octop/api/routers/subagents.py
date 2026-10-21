@@ -32,7 +32,7 @@ from octop.api.common.agent import (
     require_agent_owner_row,
 )
 from octop.api.common.workspace import require_running_workspace
-from octop.api.deps import current_user, get_server
+from octop.api.deps import get_server, require_permission
 from octop.infra.agents.subagents.catalog import SubagentDefinition
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.locale import (
@@ -106,7 +106,7 @@ def _resolve_install_locale(
 
 @router.get("/subagent-catalog/divisions", summary="List subagent catalog divisions")
 async def list_subagent_divisions(
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("subagents")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     catalog = _require_catalog(server)
@@ -121,7 +121,7 @@ async def list_subagent_catalog(
         None,
         description="When set, only return agents available in this locale (zh|en).",
     ),
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("subagents")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     catalog = _require_catalog(server)
@@ -138,7 +138,7 @@ async def list_subagent_catalog(
 @router.get("/subagent-catalog/{slug}", summary="Get bundled subagent definition")
 async def get_subagent_catalog_item(
     slug: str,
-    _: Any = Depends(current_user),
+    _: Any = Depends(require_permission("subagents")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     catalog = _require_catalog(server)
@@ -160,7 +160,7 @@ async def get_subagent_catalog_item(
 async def list_subagents(
     agent_id: str,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("subagents")),
     server: Any = Depends(get_server),
 ) -> list[dict[str, Any]]:
     require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
@@ -177,7 +177,7 @@ async def install_subagent(
     body: InstallSubagentBody,
     request: Request,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("subagents")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Copy a bundled subagent definition into the agent workspace ``agents/`` directory.

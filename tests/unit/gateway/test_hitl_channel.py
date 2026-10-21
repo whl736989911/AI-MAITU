@@ -78,6 +78,27 @@ def test_hitl_store_register_and_resolve() -> None:
     assert store.resolve_for_session("sk1") is None
 
 
+def test_checkpoint_restore_pending_registration_is_idempotent_and_interrupt_bound() -> None:
+    store = HitlPendingStore()
+    values = {
+        "thread_id": "thr-restore",
+        "agent_id": "agent1",
+        "user_id": 7,
+        "session_key": "sk-restore",
+        "channel_type": "dashboard",
+        "action_requests": [{"name": "execute", "args": {"command": "safe"}}],
+        "review_configs": None,
+    }
+    first = store.register(**values, checkpoint_interrupt_ids=("interrupt-a",))
+    repeated = store.register(**values, checkpoint_interrupt_ids=("interrupt-a",))
+    replacement = store.register(**values, checkpoint_interrupt_ids=("interrupt-b",))
+
+    assert repeated.pending_id == first.pending_id
+    assert replacement.pending_id != first.pending_id
+    assert store.get(first.pending_id).status == "expired"  # type: ignore[union-attr]
+    assert replacement.checkpoint_interrupt_ids == ("interrupt-b",)
+
+
 def test_format_hitl_card_contains_commands() -> None:
     text = format_hitl_card(
         [{"name": "execute", "args": {"command": "echo hi"}}],

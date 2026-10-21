@@ -34,7 +34,11 @@ vi.mock("../../../layouts/PageShell", () => ({
 }));
 vi.mock("../../../hooks/useIsMobile", () => ({ useIsMobile: () => false }));
 vi.mock("../../../hooks/useCurrentUser", () => ({
-  useCurrentUser: () => null,
+  useCurrentUser: () => ({
+    id: 1,
+    role: "user",
+    permissions: ["experts", "features", "memory"],
+  }),
 }));
 vi.mock("../../../hooks/useUserRole", () => ({ useUserRole: () => null }));
 vi.mock("../../../hooks/usePathTabs", () => ({

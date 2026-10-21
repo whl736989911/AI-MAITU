@@ -214,9 +214,49 @@ const EMPTY_SNAPSHOT: SessionSnapshot = Object.freeze({
   historyLoadingMore: false,
   historyNextOffset: 0,
   historyHydrated: false,
+  activeTurnId: null,
 });
 
 const sessionStates = new Map<string, SessionStreamState>();
+
+export interface SteeringReceipt {
+  type: string;
+  thread_id?: string;
+  client_pending_id?: string;
+  client_pending_ids?: string[];
+  turn_id?: string;
+  status?: string;
+  reason?: string;
+}
+
+const steeringReceiptListeners = new Map<
+  string,
+  Set<(receipt: SteeringReceipt) => void>
+>();
+
+export function subscribeSteeringReceipts(
+  threadId: string,
+  listener: (receipt: SteeringReceipt) => void,
+): () => void {
+  let listeners = steeringReceiptListeners.get(threadId);
+  if (!listeners) {
+    listeners = new Set();
+    steeringReceiptListeners.set(threadId, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners?.delete(listener);
+    if (listeners?.size === 0) steeringReceiptListeners.delete(threadId);
+  };
+}
+
+function publishSteeringReceipt(receipt: SteeringReceipt): void {
+  if (!receipt.thread_id) return;
+  for (const listener of steeringReceiptListeners.get(receipt.thread_id) ??
+    []) {
+    listener(receipt);
+  }
+}
 /** Per-call samples let reconnects replace replayed usage instead of double-counting. */
 const usageSamplesByState = new WeakMap<
   SessionStreamState,
@@ -344,6 +384,7 @@ function buildSnapshot(state: SessionStreamState): SessionSnapshot {
     historyNextOffset: state.historyNextOffset,
     historyNextCursor: state.historyNextCursor,
     historyHydrated: state.historyHydrated,
+    activeTurnId: state.activeTurnId,
   };
 }
 
@@ -361,6 +402,7 @@ function getOrCreate(sessionId: string): SessionStreamState {
       streamId: "",
       streamBlockType: "",
       toolCallIdIndex: {},
+      activeTurnId: null,
       historyHasMore: false,
       historyNextOffset: 0,
       historyLoadingMore: false,
@@ -433,6 +475,83 @@ function isLiveSocketOpen(sessionId: string): boolean {
 /** True when this session currently owns an open/connecting chat WebSocket. */
 export function hasLiveSocket(sessionId: string): boolean {
   return isLiveSocketOpen(sessionId);
+}
+
+/**
+ * Send a correction through the current authenticated turn socket. The server
+ * validates the expected logical turn and injects only at a safe model boundary.
+ */
+export function sendSteerWhileBusy(
+  sessionId: string,
+  text: string,
+  attachments: ChatAttachment[] = [],
+  opts: {
+    expectedTurnId?: string;
+    clientPendingId?: string;
+    delivery?: "auto" | "follow_up";
+  } = {},
+): "ok" | "no_socket" | "no_active_turn" | "empty" {
+  const normalized = text.trim();
+  if (!normalized && attachments.length === 0) return "empty";
+  const state = sessionStates.get(sessionId);
+  const live = liveSockets.get(sessionId);
+  if (!live || live.ws.readyState !== WebSocket.OPEN) return "no_socket";
+  const expectedTurnId = opts.expectedTurnId || state?.activeTurnId;
+  if (!expectedTurnId) return "no_active_turn";
+  try {
+    live.ws.send(
+      JSON.stringify({
+        type: "user_turn",
+        delivery: opts.delivery ?? "auto",
+        thread_id: live.threadId,
+        expected_turn_id: expectedTurnId,
+        client_pending_id: opts.clientPendingId || generateId(),
+        text: normalized,
+        messages: [
+          {
+            role: "user",
+            content: buildUserMessageContent(normalized, attachments),
+          },
+        ],
+      }),
+    );
+    return "ok";
+  } catch {
+    return "no_socket";
+  }
+}
+export function createSteeringPendingId(): string {
+  return generateId();
+}
+
+export function withdrawSteerWhileBusy(
+  sessionId: string,
+  clientPendingId: string,
+): boolean {
+  const state = sessionStates.get(sessionId);
+  const live = liveSockets.get(sessionId);
+  const expectedTurnId = state?.activeTurnId;
+  if (
+    !live ||
+    live.ws.readyState !== WebSocket.OPEN ||
+    !expectedTurnId ||
+    !clientPendingId
+  ) {
+    return false;
+  }
+  try {
+    live.ws.send(
+      JSON.stringify({
+        type: "steer_remove",
+        thread_id: live.threadId,
+        expected_turn_id: expectedTurnId,
+        client_pending_id: clientPendingId,
+      }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function clearStreamWatchdog(sessionId: string): void {
@@ -512,6 +631,15 @@ export function getSnapshot(sessionId: string): SessionSnapshot {
   return state._snapshot;
 }
 
+export function getPendingHitlId(sessionId: string): string | null {
+  const messages = sessionStates.get(sessionId)?.messages ?? [];
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const hitl = messages[index]?.hitlData;
+    if (hitl?.status === "pending" && hitl.pending_id) return hitl.pending_id;
+  }
+  return null;
+}
+
 /** Directly set messages for a session (e.g. from loadHistory). */
 export function setMessages(sessionId: string, messages: ChatMessage[]) {
   const state = getOrCreate(sessionId);
@@ -521,14 +649,52 @@ export function setMessages(sessionId: string, messages: ChatMessage[]) {
   notify(state);
 }
 
-/** Replace messages and pagination cursor after an initial history load. */
+/** Replace an initial history page without discarding messages received in flight. */
+
+export function captureHistoryBaseline(
+  sessionId: string,
+): ReadonlyMap<string, string> {
+  return new Map(
+    getOrCreate(sessionId).messages.map((message) => [
+      message.id,
+      JSON.stringify(message),
+    ]),
+  );
+}
 export function setHistoryPage(
   sessionId: string,
   messages: ChatMessage[],
-  opts: { hasMore: boolean; nextOffset: number; nextCursor?: string | null },
+  opts: {
+    hasMore: boolean;
+    nextOffset: number;
+    nextCursor?: string | null;
+    baseline?: ReadonlyMap<string, string>;
+  },
 ) {
   const state = getOrCreate(sessionId);
-  state.messages = messages;
+  const loadedIds = new Set(messages.map((message) => message.id));
+  const changedSinceBaseline = (message: ChatMessage): boolean => {
+    if (message.status === "streaming") return true;
+    if (!opts.baseline) return false;
+    const baselineValue = opts.baseline.get(message.id);
+    return (
+      baselineValue === undefined || baselineValue !== JSON.stringify(message)
+    );
+  };
+  const liveTail = state.messages.filter(
+    (message) => !loadedIds.has(message.id) && changedSinceBaseline(message),
+  );
+  const liveUpdates = new Map(
+    state.messages
+      .filter(
+        (message) => loadedIds.has(message.id) && changedSinceBaseline(message),
+      )
+      .map((message) => [message.id, message]),
+  );
+  state.messages = [
+    ...messages.map((message) => liveUpdates.get(message.id) ?? message),
+    ...liveTail,
+  ];
   state.runUsage = null;
   usageSamplesByState.delete(state);
   state.historyHasMore = opts.hasMore;
@@ -686,10 +852,20 @@ function clearLiveSocket(sessionId: string, ws?: WebSocket): void {
   liveSockets.delete(sessionId);
 }
 
-function sendCancelFrame(ws: WebSocket, threadId: string): void {
+function sendCancelFrame(
+  ws: WebSocket,
+  threadId: string,
+  expectedTurnId?: string | null,
+): void {
   if (ws.readyState !== WebSocket.OPEN) return;
   try {
-    ws.send(JSON.stringify({ type: "cancel", thread_id: threadId }));
+    ws.send(
+      JSON.stringify({
+        type: "cancel",
+        thread_id: threadId,
+        ...(expectedTurnId ? { expected_turn_id: expectedTurnId } : {}),
+      }),
+    );
   } catch {
     // ignore
   }
@@ -721,7 +897,7 @@ export function cancelStream(sessionId: string) {
   if (live) {
     live.intentionalClose = true;
     live.userCancelled = true;
-    sendCancelFrame(live.ws, live.threadId || sessionId);
+    sendCancelFrame(live.ws, live.threadId || sessionId, state.activeTurnId);
   }
   const hadAbort = Boolean(state.abortController);
   const hadStreaming = state.isStreaming;
@@ -951,6 +1127,47 @@ function handleHarnessChunk(
   chunk: HarnessChunk,
   sessionId?: string,
 ): void {
+  const control = chunk as unknown as {
+    type: string;
+    turn_id?: string;
+    active_turn_id?: string | null;
+    hitl_required?: boolean;
+    hitl_paused?: boolean;
+    status?: string;
+    reason?: string;
+    thread_id?: string;
+    client_pending_id?: string;
+    client_pending_ids?: string[];
+  };
+  if (control.type === "turn.started" || control.type === "turn.resumed") {
+    state.activeTurnId = control.turn_id || control.active_turn_id || null;
+    notify(state);
+    return;
+  }
+  if (control.type === "turn_status") {
+    state.activeTurnId = control.active_turn_id || null;
+    notify(state);
+    return;
+  }
+  if (control.type === "turn.ended") {
+    if (!control.hitl_required && !control.hitl_paused)
+      state.activeTurnId = null;
+    notify(state);
+    return;
+  }
+  if (control.type.startsWith("steer.")) {
+    publishSteeringReceipt(control);
+    if (control.type === "steer.ack" && control.status === "rejected") {
+      const reason = control.reason || "rejected";
+      appendErrorBubble(
+        state,
+        `Steering was rejected: ${reason}`,
+        "steering_rejected",
+      );
+      notify(state);
+    }
+    return;
+  }
   if (sessionId && state.isStreaming) {
     touchStreamActivity(sessionId);
   }
@@ -971,6 +1188,7 @@ function handleHarnessChunk(
       closeToolCall(state, chunk.messages, sessionId);
       break;
     case "done":
+      state.activeTurnId = null;
       finalizeStreamingMessages(state);
       break;
     case "error":
@@ -1051,6 +1269,17 @@ function handleHarnessChunk(
     case "custom":
       // Debug-only — phase 15 will add a debug toggle that surfaces these.
       break;
+  }
+  const speakerId = (chunk as HarnessChunk & { agent_id?: unknown }).agent_id;
+  if (typeof speakerId === "string" && speakerId) {
+    const lastIndex = state.messages.length - 1;
+    const last = state.messages[lastIndex];
+    if (last?.role === "assistant") {
+      state.messages[lastIndex] = {
+        ...last,
+        speakerAgentId: speakerId,
+      };
+    }
   }
   notify(state);
 }
@@ -1516,6 +1745,10 @@ function parseHitlRequest(raw: Record<string, unknown>) {
           typeof row.description === "string" ? row.description : undefined,
       };
     });
+  const pending_id =
+    typeof raw.pending_id === "string" && raw.pending_id.trim()
+      ? raw.pending_id.trim()
+      : undefined;
   const review_configs = Array.isArray(raw.review_configs)
     ? raw.review_configs
         .filter((item) => item && typeof item === "object")
@@ -1527,15 +1760,23 @@ function parseHitlRequest(raw: Record<string, unknown>) {
             },
         )
     : undefined;
-  return { action_requests, review_configs, status: "pending" as const };
+  return {
+    action_requests,
+    review_configs,
+    status: "pending" as const,
+    ...(pending_id ? { pending_id } : {}),
+  };
 }
 
 function resolveHitlPending(
   state: SessionStreamState,
   status: "approved" | "rejected",
+  pendingId: string,
 ): void {
-  state.messages = state.messages.map((m) =>
-    m.hitlData ? { ...m, hitlData: { ...m.hitlData, status } } : m,
+  state.messages = state.messages.map((message) =>
+    message.hitlData?.pending_id === pendingId
+      ? { ...message, hitlData: { ...message.hitlData, status } }
+      : message,
   );
 }
 
@@ -1672,7 +1913,7 @@ export async function attachThread(
     const onAbort = () => {
       live.intentionalClose = true;
       live.userCancelled = true;
-      sendCancelFrame(ws, threadId);
+      sendCancelFrame(ws, threadId, state.activeTurnId);
       try {
         ws.close();
       } catch {
@@ -1900,7 +2141,7 @@ async function sendTurnWebSocket(
     const onAbort = () => {
       live.intentionalClose = true;
       live.userCancelled = true;
-      sendCancelFrame(ws, resolvedThreadId);
+      sendCancelFrame(ws, resolvedThreadId, state.activeTurnId);
       try {
         ws.close();
       } catch {
@@ -2211,17 +2452,21 @@ export async function resumeHitl(
   sessionId: string,
   agentId: string,
   threadId: string,
+  pendingId: string,
   decisions: Array<{ type: string; message?: string }>,
   onStreamEnd?: () => void,
   dismissed = false,
 ): Promise<void> {
+  const normalizedPendingId = pendingId.trim();
+  if (!normalizedPendingId) {
+    throw new Error("HITL pending_id is required");
+  }
   const state = getOrCreate(sessionId);
   state.abortController?.abort();
   const hitlStatus =
     dismissed || decisions.some((d) => d.type === "reject")
       ? "rejected"
       : "approved";
-  resolveHitlPending(state, hitlStatus);
   beginStream(state, sessionId);
   notify(state);
   emitStreamEvent({ kind: "streamStart", sessionId });
@@ -2259,7 +2504,11 @@ export async function resumeHitl(
     const res = await fetch(getApiUrl(`/agents/${agentId}/chat/hitl/resume`), {
       method: "POST",
       headers,
-      body: JSON.stringify({ thread_id: threadId, decisions }),
+      body: JSON.stringify({
+        thread_id: threadId,
+        pending_id: normalizedPendingId,
+        decisions,
+      }),
       signal: controller.signal,
     });
     if (!res.ok) {
@@ -2267,6 +2516,7 @@ export async function resumeHitl(
       finish();
       return;
     }
+    resolveHitlPending(state, hitlStatus, normalizedPendingId);
     await consumeSseResponse(state, sessionId, res, controller, finish);
   } catch (err: unknown) {
     if ((err as Error).name === "AbortError") return;

@@ -10,6 +10,7 @@ import type {
   TokenUsage,
   CallEntry,
 } from "../../../api/types";
+import type { ThreadArtifact } from "../../../api/modules/octopThreads";
 import * as chatStore from "./chatStore";
 import {
   shouldProbeActiveTurn,
@@ -443,6 +444,16 @@ function convertCallEntries(entries: CallEntry[]): ChatMessage[] {
                 ?.composer_context,
             )
           : undefined,
+      speakerAgentId:
+        typeof (entry.metadata as Record<string, unknown> | null | undefined)
+          ?.speaker_agent_id === "string"
+          ? String((entry.metadata as Record<string, unknown>).speaker_agent_id)
+          : undefined,
+      speakerName:
+        typeof (entry.metadata as Record<string, unknown> | null | undefined)
+          ?.speaker_name === "string"
+          ? String((entry.metadata as Record<string, unknown>).speaker_name)
+          : undefined,
       toolData: tool?.data,
       usage: normalizeTokenUsage(entry.usage ?? undefined) ?? undefined,
       metadata: normalizeMessageMetadata(entry.metadata ?? undefined),
@@ -654,6 +665,12 @@ export function convertHistoryMessages(
     timestamp?: number;
     composer_context?: unknown;
     inbound_attachments?: unknown;
+    pending_id?: string | null;
+    speaker_agent_id?: string | null;
+    speaker_name?: string | null;
+    team_wrapup?: boolean;
+    team_partial?: boolean;
+    team_snapshot?: unknown;
     status?: string;
     error_code?: string;
   }>,
@@ -666,6 +683,17 @@ export function convertHistoryMessages(
     }
     if (message.inbound_attachments) {
       meta.inbound_attachments = message.inbound_attachments;
+    }
+    for (const key of [
+      "pending_id",
+      "speaker_agent_id",
+      "speaker_name",
+      "team_wrapup",
+      "team_partial",
+      "team_snapshot",
+    ] as const) {
+      const value = message[key];
+      if (value !== undefined && value !== null) meta[key] = value;
     }
     return {
       message_id: message.id,
@@ -698,7 +726,7 @@ async function loadThreadHistory(
   nextOffset: number;
   nextCursor: string | null;
   turnActive: boolean;
-  artifacts: string[];
+  artifacts: ThreadArtifact[];
   projectionLoading: boolean;
   retryAfterMs: number;
 }> {
@@ -713,10 +741,16 @@ async function loadThreadHistory(
     offset,
     cursor: params.cursor,
   });
-  const artifacts = Array.isArray(history.artifacts)
+  const artifacts: ThreadArtifact[] = Array.isArray(history.artifacts)
     ? history.artifacts.filter(
-        (path): path is string =>
-          typeof path === "string" && path.trim().length > 0,
+        (artifact): artifact is ThreadArtifact =>
+          (typeof artifact === "string" && artifact.trim().length > 0) ||
+          (typeof artifact === "object" &&
+            artifact !== null &&
+            typeof artifact.producer_agent_id === "string" &&
+            artifact.producer_agent_id.length > 0 &&
+            typeof artifact.path === "string" &&
+            artifact.path.length > 0),
       )
     : [];
   if (offset === 0) {
@@ -908,6 +942,7 @@ export function useChat(
 
       const gen = ++loadGenRef.current;
       setHistoryLoading(true);
+      const historyBaseline = chatStore.captureHistoryBaseline(key);
 
       try {
         let loaded = await loadThreadHistory(agentId, targetThreadId, {
@@ -930,6 +965,7 @@ export function useChat(
           hasMore: loaded.hasMore,
           nextOffset: loaded.nextOffset,
           nextCursor: loaded.nextCursor,
+          baseline: historyBaseline,
         });
         setHistoryError(false);
         if (
@@ -1030,6 +1066,7 @@ export function useChat(
       // Always clear the refreshing flag in finally so the footer cannot stick.
       const gen = ++loadGenRef.current;
       setHistoryRefreshing(true);
+      const historyBaseline = chatStore.captureHistoryBaseline(key);
 
       try {
         const {
@@ -1055,6 +1092,7 @@ export function useChat(
             olderPrefix.length > 0 ? snap.historyNextOffset : nextOffset,
           nextCursor:
             olderPrefix.length > 0 ? snap.historyNextCursor : nextCursor,
+          baseline: historyBaseline,
         });
         setHistoryError(false);
       } catch {
@@ -1126,10 +1164,13 @@ export function useChat(
       const threadId =
         storeKey || (stableSessionId !== "__empty__" ? stableSessionId : "");
       if (!threadId || threadId === "__empty__") return;
+      const pendingId = chatStore.getPendingHitlId(key);
+      if (!pendingId) return;
       void chatStore.resumeHitl(
         key,
         agentId,
         threadId,
+        pendingId,
         decisions,
         () => {
           void refreshHistory(threadId);

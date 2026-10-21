@@ -95,7 +95,6 @@ for trusted-key configuration, activation, renewal, revocation, and backup bound
 | `POST`   | `/setup/verify-password` | public | Exchange the wizard password for a session token |
 | `GET`    | `/setup/validate-token` | public | Check a wizard session token |
 | `POST`   | `/setup/initial-admin` | public | body `{username, password, display_name?, email?}` → `201` |
-| `POST`   | `/setup/resume-wizard` | public | Issue a fresh wizard token mid-setup |
 | `POST`   | `/setup/test-provider` | public | Ping a provider draft (kind/base_url/api_key/model) |
 | `POST`   | `/setup/finish` | public | Finalise setup; business initialization remains deferred until the instance license is valid |
 | `GET`    | `/auth/captcha` | public | `{provider, site_key?}` for the login widget; 503 while setup is required |
@@ -122,6 +121,11 @@ for trusted-key configuration, activation, renewal, revocation, and backup bound
 | `POST`   | `/auth/change-password` | user | body `{old_password, new_password}` → `204` |
 | `GET`    | `/health` | public | `{status: "ok", version}` |
 
+Setup endpoints validate wizard credentials inside their handlers. After creating
+the initial administrator, the dashboard retains that administrator's JWT to
+complete setup even if the earlier wizard token expires. There is no public
+resume-token minting endpoint.
+
 ## Users (admin)
 
 | Method | Path | Auth | Notes |
@@ -129,10 +133,16 @@ for trusted-key configuration, activation, renewal, revocation, and backup bound
 | `GET`    | `/users` | admin | `[{id, username, role, display_name, email, enabled, ...}]` |
 | `POST`   | `/users` | admin | body `{username, password, role, display_name?, email?, permissions?, workspace_root_dir?, token_quota?}` → `201` |
 | `GET`    | `/users/{id}` | admin | full user row |
-| `PATCH`  | `/users/{id}` | admin | body subset of `{role, display_name, email, enabled, locale}` |
+| `PATCH`  | `/users/{id}` | admin | body subset of `{role, display_name, email, enabled, locale, permissions}` |
 | `POST`   | `/users/{id}/reset-password` | admin | body `{new_password}` → `204` |
 | `POST`   | `/users/{id}/unlock-login` | admin | `204` (clears the lockout) |
 | `DELETE` | `/users/{id}` | admin | `204` |
+
+Agent personalization has separate `skills`, `subagents`, `tools`,
+`agent_plugins` and `memory` module grants. Existing accounts retain their
+previous surfaces during migration unless explicitly denied; new accounts
+require these grants to be assigned. Module grants do not override resource
+ownership, feature workflow/shared-memory rules, or the licensed deployment floor.
 
 ## Agents
 
@@ -153,6 +163,13 @@ for trusted-key configuration, activation, renewal, revocation, and backup bound
 | `PUT`    | `/agents/{id}/tool-settings` | owner | body `{disabled_builtin: string[], plugins?}` — persists denylist + plugin flags (hot-sync, no reload) |
 | `PATCH`  | `/agents/{id}/tool-settings/{tool_name}` | owner | body `{enabled, source, plugin_id?}` — toggle one tool (hot-sync) |
 
+Agents, bundled/published experts and features accept a default
+`conversation_mode` (`ask`, `plan`, `craft`). A turn resolves its explicit mode
+first, then the thread's saved mode, then the agent default, finally Craft.
+An unset thread mode remains unset in list/history responses so the dashboard
+can follow a changed agent default. The business-operations, productivity,
+design and engineering templates are available to experts and feature creation.
+
 ## Skills and skill packages
 
 Skill copy operations create snapshots; they do not keep the source and
@@ -163,6 +180,17 @@ destination synchronized after the request completes.
 | `GET` | `/skill-packages?writable_only=true` | user (`skill_packages`) | List only packages the current user may modify; admins may modify all packages |
 | `POST` | `/agents/{id}/skill-packages/{package_id}/copy` | owner (`skill_packages`) | body `{skill_slugs: string[], overwrite?: boolean}`; copy selected package skills into the workspace |
 | `POST` | `/agents/{id}/skills/{slug}/push-to-package` | owner (`skill_packages`) | body `{package_id, overwrite?: boolean}`; copy a workspace skill into a package created by the user (or any package for admins) |
+| `POST` | `/agents/{id}/skills/export-zip` | skills access | body `{slugs: string[]}`; selected custom workspace skills only, including feature workspaces |
+| `POST` | `/agents/{id}/skills/import-zip` | skills write | body `{archive_base64, overwrite?: boolean}`; validates the archive and all name collisions before writing |
+| `GET` | `/skill-packages/{package_id}/export` | `skill_packages` + download right | ZIP; creator/system-admin exception, otherwise `allow_download` must be true |
+| `POST` | `/skill-packages/{package_id}/import-zip` | package creator/admin | body `{archive_base64, overwrite?: boolean}` |
+
+Package creation/update persists `allow_download`. The switch also gates the
+package-to-workspace copy endpoint; ordinary mounting and use are unchanged.
+This is a platform transfer control, not DRM: mounted skills remain readable to
+the model and it cannot prevent copying content that is already accessible.
+ZIP handling rejects unsafe paths, symlinks and oversized content and excludes
+credential/system files from workspace exports.
 
 ## Chat (WebSocket)
 
@@ -171,13 +199,23 @@ destination synchronized after the request completes.
 | `WS /agents/{id}/chat/ws?token=<jwt>` | owner | Primary dashboard turn endpoint. Send `{"type":"user_turn", ...}` frames; server replies with harness stream chunks ending in `{"type":"done"}` or `{"type":"error","message":"..."}`. `{"type":"ping"}` → `{"type":"pong"}`. `{"type":"subscribe","thread_id"}` → `{"type":"turn_status","thread_id","active"}` (attach to an in-flight turn without cancelling on disconnect). `{"type":"cancel","thread_id"}` stops the active turn (explicit stop; disconnect alone does **not** cancel). |
 | `GET /agents/{id}/chat/welcome` | agent access | `{welcome_message, quick_prompts, task_examples}`; `task_examples` is `null` when the workspace field is absent |
 | `POST /agents/{id}/chat/polish` | owner | body `{text, default_model?}` → `{text}` (one-shot prompt refinement) |
-| `POST /agents/{id}/chat/hitl/resume` | owner | body `{thread_id, decisions: [...]}` → SSE chunk stream; finishes with `{"type":"done"}` |
+| `POST /agents/{id}/chat/hitl/resume` | thread owner | body `{thread_id, pending_id, decisions: [...]}` → SSE; the exact current approval identity is required; stale/missing identities return `409 HITL_APPROVAL_STALE` |
 | `PATCH /agents/{id}/threads/{thread_id}` | thread owner | persist `conversation_mode: "ask" \| "plan" \| "craft"` and/or `hitl_policy: {mode: "ask" \| "allow_all" \| "allow_tools", tools?: string[]}` on the thread |
 
 Dashboard `user_turn` frames may carry `conversation_mode` and `hitl_policy` to
 apply a per-turn change. Ask is read-only, Plan writes plans under `plans/*.md`,
 and Craft enables ordinary tools. HITL bypass is scoped to that thread;
 `ask_user_question` still requires interaction even under `allow_all`.
+
+While a turn is active, a `user_turn` can specify `delivery: "steer"` or
+`"follow_up"`, `client_pending_id`, and `expected_turn_id`. Steering enters at the
+next safe model boundary, never in the middle of an executing tool. Follow-ups
+wait for logical completion. The server acknowledges delivery and reports
+consumed, removed, expired or failed items; `steer_remove` withdraws an item that
+has not drained. HITL parks the same logical turn and resume retains its verified
+user, feature workflow/private-memory scope and steering context. A restored
+checkpoint requires a newly reconstructed approval card; an old card cannot
+authorize a different restored action.
 
 ### Feature runs over the chat socket
 
@@ -263,6 +301,10 @@ documented in `infra/cron/trigger.py`. `prompt` must be non-empty and
 ≤ 2000 characters. `name` is an optional display label; when omitted,
 the server derives one from `prompt`.
 
+Date jobs are one-shot: an atomic persisted claim prevents scheduled/manual
+races and restart replay. Success and failure both disable the job while
+retaining the outcome. Missed date windows are not replayed at startup.
+
 ## Providers
 
 | Method | Path | Auth | Notes |
@@ -276,6 +318,9 @@ the server derives one from `prompt`.
 | `PATCH`  | `/admin/providers/{id}` | admin | as user PATCH but works on shared rows |
 | `DELETE` | `/admin/providers/{id}` | admin | `204` |
 
+Provider updates distinguish an omitted `api_key` (keep the stored credential),
+JSON `null` (clear it), and a replacement string (replace it).
+
 ## Models
 
 | Method | Path | Auth | Notes |
@@ -284,6 +329,13 @@ the server derives one from `prompt`.
 | `GET` | `/models` | user | resolved models across enabled providers |
 | `GET` | `/models/active` | user | `{provider_name, model}` |
 | `PUT` | `/models/active` | admin | body `{provider_name, model}` |
+
+
+Automatic chat routing tracks model health and may try another eligible,
+configured model before any visible output. Explicit per-turn, thread and agent
+model choices are not silently switched. Fallback preserves provider/model
+allowlists and vision requirements; a failure after visible streaming does not
+replay the answer.
 
 ### Media generation models
 
@@ -452,11 +504,18 @@ upload creates a new version and the previous current version is retained.
 | `POST`   | `/agents/{aid}/subagents` | owner | install a bundled subagent |
 | `GET`    | `/agents/{aid}/heartbeat-config` | owner | read heartbeat YAML |
 | `PUT`    | `/agents/{aid}/heartbeat-config` | owner | write heartbeat YAML |
-| `GET`    | `/agents/{aid}/memory/access` | agent access | `{stage, default_scope, shared_writable, private_writable}` for the current caller |
+| `GET`    | `/agents/{aid}/memory/access` | memory + agent access | `{stage, default_scope, shared_writable, private_writable, configuration_writable}` for the current caller |
 | `GET`    | `/agents/{aid}/memory/daily` | owner, or active-feature caller | list shared daily memory files |
 | `GET`    | `/agents/{aid}/memory/daily/{filename}` | owner, or active-feature caller | read one shared daily memory |
 | `DELETE` | `/agents/{aid}/memory/daily/{filename}` | owner, draft only for features | delete one daily memory |
 | `GET`/`POST` | `/agents/{aid}/memory/...` | agent access | scoped memory API; `scope=shared|private` on memory operations, with omitted scope defaulting to shared in draft and private when active |
+| `GET`/`PUT` | `/agents/{aid}/memory/context/{name}` | scoped memory read/write | `USER.md` or `MEMORY.md`; PUT `{text, expected_snapshot}`, scope query; stale saves return 409 |
+| `POST` | `/agents/{aid}/memory/review` | scoped memory read | `{scope?}`; configured-model semantic review, bounded coverage and a caller/agent/scope-bound receipt; no mutation |
+| `POST` | `/agents/{aid}/memory/review/apply` | scoped memory write | `{scope?, receipt, fact_ids}`; revalidate documents/facts and deactivate only the selected reviewed contradictions |
+| `GET`/`POST` | `/agents/{aid}/memory/backups` | scoped memory access | GET scope query; POST `{scope, confirmed:true}` creates a caller-owned archive |
+| `GET` | `/agents/{aid}/memory/backups/{backup_id}/download` | same caller/agent/scope | ZIP download; shared-scope archives are also caller-bound |
+| `DELETE` | `/agents/{aid}/memory/backups/{backup_id}` | same caller/agent/scope | `scope` and `confirmed=true` query parameters |
+| `POST` | `/agents/{aid}/memory/restore` | scoped memory write | `{scope, backup_id, confirmed:true}`; creates a safety backup before restoring |
 
 For a feature, its author may edit shared memory while the workflow is a draft;
 in-scope enterprise administrators may inspect the draft and training memory.
@@ -465,6 +524,39 @@ is read-only to everyone. Each authenticated caller has a separate writable priv
 memory; automatic capture and extraction deposit only there, never into shared
 memory. Shared-feature callers can edit their private memory and overlay from
 Personalization without permission to manage the feature itself.
+
+Manual documents are limited to 65536 UTF-8 bytes. They are snapshotted on a
+thread's first use and remain stable for that conversation; new threads read
+later edits. Stale model file writes are refused. A clinical-profile-generated
+`USER.md` remains script-owned and read-only in the manual editor. Semantic review
+does not rewrite manual text; unavailable/invalid model reviews change nothing,
+and an explicit confirmation is required before deactivating selected facts.
+
+Current-agent backups include the selected namespace's tree, structured facts,
+episodes, digests and metadata, manual documents, and only verified caller-owned
+checkpoints/pending writes. SQLite and PostgreSQL are supported; disabled-memory
+agents include their SQLite fallback checkpointer. Restore is a replacement,
+not a merge of post-backup rows, and never copies a whole multi-user database.
+It reserves storage, pauses a previously running agent, closes owned handles,
+restores, then restarts only if it was running. Active feature shared memory
+remains read-only; private restore cannot target another caller.
+Read access still permits creating, downloading and deleting the caller's own
+archives of that shared scope. Those archive operations do not modify the live
+shared namespace and do not grant restore permission.
+
+Restore invalidates the affected caller's old approvals, paused invocation
+context, queued steering and session approval bypass, and refreshes the history
+projection. Immutable archived transcripts remain an audit trail; restoring
+runtime checkpoints does not undo external tool effects or rewrite that trail.
+Extraction settings include `extract_max_tokens`, `extract_light_timeout_s`,
+`extract_heavy_timeout_s` and `extract_extra_body`; they are applied to live
+expert and feature extraction clients, not merely stored in configuration.
+
+Personalization APIs additionally require their module key (`skills`,
+`subagents`, `tools`, `agent_plugins`, `memory`). These grants do not replace
+resource ACL, feature author/stage restrictions, or the licensed deployment floor.
+Upgrade backfill preserves explicit denies and does not grant restricted
+executable-plugin capabilities on managed customer installations.
 
 Workspace path arguments are limited to the authenticated agent's workspace, including
 `file://` URLs and host-absolute paths sent with `from_workspace=false`.
@@ -680,7 +772,7 @@ endpoint (public, mounted directly in `api/app.py`).
 | `GET` | `/i18n/tools` | user | server-owned tool display names (locale-aware) |
 | `GET` | `/i18n/locales` | public | available locales + fallback chain |
 | `GET` | `/i18n/locales/{locale}/{namespace}` | public | one namespace bundle (errors, tools, channel, slash) |
-| `GET`/`POST` | `/preferences` | user | UI preferences (per-user key/value) |
+| `GET`/`PATCH` | `/preferences` | user | per-account preferences, including `sidebar: {order: string[], hidden: string[]}` |
 | `GET` | `/slash/commands` | user | slash command catalog for the composer menu |
 | `GET`/`POST` | `/plugins` | user | installed plugin list / install flow |
 | `POST` | `/plugins/reload` | admin (`plugins`) | reload plugins from disk into process |
@@ -749,3 +841,7 @@ dashboard mirrors every code under `apiErrors.*` in
 | `STORAGE_BACKEND_UNREACHABLE` | 502 | Remote backend connect / list failed |
 | `CONNECTOR_OAUTH_FAILED` | 400 | OAuth flow could not complete |
 | `INTERNAL_ERROR` | 500 | Unhandled exception (logged with traceback) |
+| `CHECKPOINT_DELETE_FAILED` | 500 | Durable conversation cleanup failed; conversation metadata is retained for retry |
+| `MEMORY_DOCUMENT_CONFLICT` | 409 | Manual memory snapshot changed; reload and review before saving |
+| `HITL_APPROVAL_STALE` | 409 | Approval identity is missing, expired, resolved or invalidated by restore; reload the current approval card |
+| `MODEL_UNAVAILABLE` | 503 | No eligible healthy model, or streaming failed without safe replay |

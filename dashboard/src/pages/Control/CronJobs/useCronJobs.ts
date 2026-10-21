@@ -24,9 +24,10 @@ export interface CronJobFormValues {
   schedule: {
     type: "cron";
     cron?: string;
+    date?: string;
     timezone: string;
   };
-  _scheduleMode?: "preset" | "custom";
+  _scheduleMode?: "preset" | "custom" | "date";
   _preset?: string;
   prompt: string;
   task_type: "text" | "agent";
@@ -105,20 +106,20 @@ export function jobToFormValues(
     const part = last?.content?.find?.((c) => c.type === "text");
     if (part?.text) prompt = part.text;
   }
-  const idx = (job.schedule?.cron || "").indexOf(":");
-  const cronExpr =
-    idx >= 0 && job.schedule?.cron?.startsWith("cron:")
-      ? job.schedule.cron.slice(idx + 1)
-      : job.schedule?.cron || "";
-
-  const matchedPreset = cronToPreset(cronExpr);
+  const trigger = job.schedule?.cron || "";
+  const isDate = trigger.startsWith("date:");
+  const cronExpr = trigger.startsWith("cron:")
+    ? trigger.slice("cron:".length)
+    : trigger;
+  const matchedPreset = isDate ? null : cronToPreset(cronExpr);
   return {
     id: job.id,
     name: job.name || "",
     enabled: Boolean(job.enabled),
     schedule: {
       type: "cron",
-      cron: cronExpr,
+      cron: isDate ? undefined : cronExpr,
+      date: isDate ? cronExpr.slice("date:".length) : undefined,
       timezone,
     },
     prompt,
@@ -135,12 +136,16 @@ export function jobToFormValues(
     mcp_servers: Array.isArray(meta.octop_mcp_servers)
       ? (meta.octop_mcp_servers as string[])
       : [],
-    _scheduleMode: matchedPreset ? "preset" : "custom",
+    _scheduleMode: isDate ? "date" : matchedPreset ? "preset" : "custom",
     _preset: matchedPreset || "daily_9am",
   };
 }
 
 function resolveCronExpression(values: CronJobFormValues): string {
+  if (values._scheduleMode === "date") {
+    const date = values.schedule?.date?.trim() || "";
+    return date.startsWith("date:") ? date : `date:${date}`;
+  }
   if (values._scheduleMode === "preset" && values._preset) {
     const presetCron = presetToCron(values._preset);
     if (presetCron) return `cron:${presetCron}`;

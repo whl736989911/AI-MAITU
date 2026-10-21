@@ -15,6 +15,7 @@ import {
   List,
   Segmented,
   Spin,
+  Switch,
   Tag,
   Tooltip,
   Typography,
@@ -55,11 +56,7 @@ import { useHorizontalResize } from "../../hooks/useHorizontalResize";
 import { useIsMobile } from "../../hooks/useIsMobile";
 import { useListPanelCollapsed } from "../../hooks/useListPanelCollapsed";
 import PageShell from "../../layouts/PageShell";
-import {
-  apiErrorMessage,
-  isNotFoundApiError,
-  parseApiError,
-} from "../../utils/apiError";
+import { apiErrorMessage, isNotFoundApiError } from "../../utils/apiError";
 import {
   SkillDrawer,
   type SkillFormValues,
@@ -70,7 +67,6 @@ import {
 } from "../Agent/Skills/components/SkillImportModal";
 import SkillHubTab from "../Agent/Skills/components/SkillHubTab";
 import skillStyles from "../Agent/Skills/index.module.less";
-import type { ParsedZipSkill } from "../Agent/Skills/components/parseSkillZip";
 import {
   EXPERT_ICON_NAMES,
   iconForName,
@@ -88,6 +84,7 @@ type PackageFormValues = {
   description?: string;
   icon_name?: string;
   icon_url?: string;
+  allow_download?: boolean;
 };
 
 const EMPTY_SKILL = "---\nname: \ndescription: \n---\n\n";
@@ -280,6 +277,21 @@ export default function SkillPackagesPage() {
 
   const canMutate = Boolean(selected && canMutatePackage(selected, user));
 
+  const exportPackageZip = async () => {
+    if (!selected) return;
+    try {
+      const blob = await skillPackagesApi.exportPackage(selected.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `${selected.id}.zip`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      message.error(apiErrorMessage(error, t("skillPackages.exportFailed")));
+    }
+  };
+
   const selectPackage = (item: SkillPackage) => {
     if (item.id !== selectedId) {
       setSelectedId(item.id);
@@ -313,6 +325,7 @@ export default function SkillPackagesPage() {
       description: "",
       icon_name: undefined,
       icon_url: "",
+      allow_download: true,
     });
     setPackageDrawerOpen(true);
   };
@@ -324,6 +337,7 @@ export default function SkillPackagesPage() {
       description: item.description,
       icon_name: item.icon_name,
       icon_url: item.icon_url,
+      allow_download: item.allow_download !== false,
     });
     setPackageDrawerOpen(true);
   };
@@ -333,6 +347,7 @@ export default function SkillPackagesPage() {
     const payload = {
       ...values,
       icon_url: values.icon_url?.trim() || undefined,
+      allow_download: values.allow_download !== false,
     };
     try {
       const next = editingPackageId
@@ -494,41 +509,28 @@ export default function SkillPackagesPage() {
   };
 
   const confirmImportZip = async (
-    skillsToImport: ParsedZipSkill[],
+    archiveBase64: string,
     options?: { overwrite?: boolean },
   ): Promise<ZipImportSummary | false> => {
     if (!selected || importing) return false;
-    const overwrite = Boolean(options?.overwrite);
-    let imported = 0;
-    let skipped = 0;
-    let failed = 0;
     setImporting(true);
     try {
-      for (const skill of skillsToImport) {
-        try {
-          await skillPackagesApi.createSkill(selected.id, {
-            name: skill.slug,
-            files: skill.files.map((file) => ({
-              path: file.path,
-              content_base64: file.contentBase64,
-            })),
-            overwrite,
-          });
-          imported += 1;
-        } catch (error) {
-          const code = parseApiError(error)?.code;
-          if (!overwrite && code === "SKILL_ALREADY_EXISTS") {
-            skipped += 1;
-            continue;
-          }
-          failed += 1;
-        }
-      }
-      await refreshSelected();
-      message.success(
-        t("skills.zipImportSummary", { imported, skipped, failed }),
+      const result = await skillPackagesApi.importZip(
+        selected.id,
+        archiveBase64,
+        Boolean(options?.overwrite),
       );
-      return { imported, skipped, failed };
+      await refreshSelected();
+      const summary = {
+        imported: result.imported.length,
+        skipped: 0,
+        failed: 0,
+      };
+      message.success(t("skills.zipImportSummary", summary));
+      return summary;
+    } catch (error) {
+      message.error(apiErrorMessage(error, t("skills.importFailed")));
+      return false;
     } finally {
       setImporting(false);
     }
@@ -896,6 +898,16 @@ export default function SkillPackagesPage() {
                             />
                           </button>
                         </Tooltip>
+                        {selected.can_download ? (
+                          <button
+                            type="button"
+                            className={skillStyles.toolbarBtn}
+                            onClick={() => void exportPackageZip()}
+                          >
+                            <Download size={14} />
+                            {t("skillPackages.exportZip")}
+                          </button>
+                        ) : null}
                         {canMutate ? (
                           <>
                             <button
@@ -1013,6 +1025,14 @@ export default function SkillPackagesPage() {
                 </span>
               }
             />
+          </Form.Item>
+          <Form.Item
+            name="allow_download"
+            label={t("skillPackages.allowDownload")}
+            valuePropName="checked"
+            tooltip={t("skillPackages.allowDownloadHint")}
+          >
+            <Switch />
           </Form.Item>
         </Form>
       </Drawer>

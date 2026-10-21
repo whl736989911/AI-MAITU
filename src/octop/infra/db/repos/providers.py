@@ -8,11 +8,13 @@ from typing import TYPE_CHECKING
 
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos._base import (
+    UNSET,
     DbRow,
     bool_int,
     insert_returning_id,
     map_rows,
     now_ts,
+    optional_updates,
     partial_updates,
 )
 
@@ -108,7 +110,7 @@ class ProviderRepo:
         *,
         kind: str | None = None,
         base_url: str | None = None,
-        api_key: str | None = None,
+        api_key: str | None | object = UNSET,
         extra_json: str | None = None,
         models_json: str | None = None,
         note: str | None = None,
@@ -118,12 +120,14 @@ class ProviderRepo:
             [
                 ("kind", kind),
                 ("base_url", base_url),
-                ("api_key", api_key),
                 ("extra_json", extra_json),
                 ("models_json", models_json),
                 ("note", note),
             ]
         )
+        key_fields, key_params = optional_updates([("api_key", api_key)])
+        fields.extend(key_fields)
+        params.extend(key_params)
         if enabled is not None:
             fields.append("enabled = ?")
             params.append(bool_int(enabled))

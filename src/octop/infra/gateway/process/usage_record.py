@@ -115,7 +115,12 @@ def _message_usage(msg: Any) -> tuple[str, dict[str, Any]] | None:
     model = ""
     wire_usage: dict[str, Any] = {}
     if isinstance(response_metadata, dict):
-        model = str(response_metadata.get("model_name") or response_metadata.get("model") or "")
+        model = str(
+            response_metadata.get("octop_model_ref")
+            or response_metadata.get("model_name")
+            or response_metadata.get("model")
+            or ""
+        )
         candidate = response_metadata.get("token_usage") or response_metadata.get("usage")
         if isinstance(candidate, dict):
             wire_usage = candidate

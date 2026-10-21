@@ -28,6 +28,7 @@ import {
   type DirTreeNode,
 } from "./rootDirTree";
 import styles from "./RootDirSelect.module.less";
+import { isImeComposing } from "../../Chat/utils/ime";
 
 interface DirEntry {
   path: string;
@@ -341,8 +342,10 @@ function RootDirTreeSelect({
               disabled={busy}
               data-testid="root-dir-rename-input"
               onChange={(e) => setEditingName(e.target.value)}
-              onPressEnter={() => {
-                void commitRename(path, editingName);
+              onPressEnter={(event) => {
+                if (!isImeComposing(event)) {
+                  void commitRename(path, editingName);
+                }
               }}
               onBlur={() => {
                 void commitRename(path, editingName);

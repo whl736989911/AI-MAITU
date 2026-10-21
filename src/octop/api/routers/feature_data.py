@@ -23,10 +23,17 @@ from octop.api.deps import current_user, get_server
 from octop.infra.agents import feature_data as fd
 from octop.infra.agents import feature_workflow as wf
 from octop.infra.agents.kinds import is_feature_agent
+from octop.infra.db.services import SharedServices
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.server import OctopServer
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _services(server: OctopServer) -> SharedServices:
+    services = server.services
+    assert services is not None
+    return services
 
 
 class SchemaBody(BaseModel):
@@ -126,7 +133,7 @@ async def get_schema(
     _feature_row(agent_id, user, server)
     workspace = await _workspace(agent_id, user, server, write=False)
     loaded = await fd.load_schema(workspace)
-    return SchemaResponse(schema_data=loaded.schema, error=loaded.error)
+    return SchemaResponse.model_validate({"schema": loaded.schema, "error": loaded.error})
 
 
 @router.put(
@@ -148,7 +155,7 @@ async def put_schema(
         schema = await fd.save_schema(workspace, body.schema_data)
     except ValueError as exc:
         raise OctopError(ErrorCode.WORKFLOW_INVALID, str(exc)) from exc
-    return SchemaResponse(schema_data=schema)
+    return SchemaResponse.model_validate({"schema": schema})
 
 
 @router.get(
@@ -163,7 +170,7 @@ async def get_notifications(
     user: Any = Depends(current_user),
 ) -> NotificationResponse:
     _feature_row(agent_id, user, server)
-    repo = server.services.repos.feature_data_repo
+    repo = _services(server).repos.feature_data_repo
     rows = repo.list_notifications(agent_id=agent_id, user_id=user.id, unread_only=unread_only)
     return NotificationResponse(
         notifications=[
@@ -193,7 +200,7 @@ async def read_notification(
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
     _feature_row(agent_id, user, server)
-    changed = server.services.repos.feature_data_repo.mark_notification_read(
+    changed = _services(server).repos.feature_data_repo.mark_notification_read(
         notification_id, user.id
     )
     if not changed:
@@ -212,7 +219,7 @@ async def complete_reminder(
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
     row = _feature_row(agent_id, user, server)
-    repo = server.services.repos.feature_data_repo
+    repo = _services(server).repos.feature_data_repo
     reminder = repo.get_reminder(reminder_id)
     if reminder is None or reminder.agent_id != agent_id:
         raise OctopError(ErrorCode.NOT_FOUND, "reminder not found")
@@ -244,7 +251,7 @@ async def list_records(
             ErrorCode.WORKFLOW_INVALID, schema.error or "feature data schema is not configured"
         )
     fd.object_definition(schema.schema, object_key)
-    records, total = server.services.repos.feature_data_repo.list_records(
+    records, total = _services(server).repos.feature_data_repo.list_records(
         agent_id=agent_id,
         object_key=object_key,
         user_id=user.id,
@@ -255,7 +262,7 @@ async def list_records(
     return RecordListResponse(
         records=[
             fd.record_payload(
-                await fd.record_view(server.services.repos.feature_data_repo, workspace, record)
+                await fd.record_view(_services(server).repos.feature_data_repo, workspace, record)
             )
             for record in records
         ],
@@ -278,7 +285,7 @@ async def create_record(
     workspace = await _workspace(agent_id, user, server, write=False)
     try:
         record = await fd.create_record(
-            server.services.repos.feature_data_repo,
+            _services(server).repos.feature_data_repo,
             workspace,
             agent_id=agent_id,
             object_key=object_key,
@@ -289,13 +296,13 @@ async def create_record(
     except ValueError as exc:
         raise OctopError(ErrorCode.WORKFLOW_INVALID, str(exc)) from exc
     return fd.record_payload(
-        await fd.record_view(server.services.repos.feature_data_repo, workspace, record)
+        await fd.record_view(_services(server).repos.feature_data_repo, workspace, record)
     )
 
 
 async def _get_record_or_404(agent_id: str, record_id: str, user: Any, server: OctopServer) -> Any:
     _feature_row(agent_id, user, server)
-    record = _record(server.services.repos.feature_data_repo, agent_id, record_id)
+    record = _record(_services(server).repos.feature_data_repo, agent_id, record_id)
     _record_read(record, user)
     return record
 
@@ -313,7 +320,7 @@ async def get_record(
     record = await _get_record_or_404(agent_id, record_id, user, server)
     workspace = await _workspace(agent_id, user, server, write=False)
     return fd.record_payload(
-        await fd.record_view(server.services.repos.feature_data_repo, workspace, record)
+        await fd.record_view(_services(server).repos.feature_data_repo, workspace, record)
     )
 
 
@@ -329,13 +336,13 @@ async def patch_record(
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
     row = _feature_row(agent_id, user, server)
-    record = _record(server.services.repos.feature_data_repo, agent_id, record_id)
+    record = _record(_services(server).repos.feature_data_repo, agent_id, record_id)
     _record_read(record, user)
     _record_write(record, row, user, server)
     workspace = await _workspace(agent_id, user, server, write=False)
     try:
         updated = await fd.update_record(
-            server.services.repos.feature_data_repo,
+            _services(server).repos.feature_data_repo,
             workspace,
             agent_id=agent_id,
             record_id=record_id,
@@ -346,7 +353,7 @@ async def patch_record(
     except ValueError as exc:
         raise OctopError(ErrorCode.WORKFLOW_INVALID, str(exc)) from exc
     return fd.record_payload(
-        await fd.record_view(server.services.repos.feature_data_repo, workspace, updated)
+        await fd.record_view(_services(server).repos.feature_data_repo, workspace, updated)
     )
 
 
@@ -361,7 +368,7 @@ async def publish_record(
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
     row = _feature_row(agent_id, user, server)
-    repo = server.services.repos.feature_data_repo
+    repo = _services(server).repos.feature_data_repo
     record = _record(repo, agent_id, record_id)
     _record_read(record, user)
     _record_write(record, row, user, server)
@@ -383,7 +390,7 @@ async def remove_record(
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
     row = _feature_row(agent_id, user, server)
-    repo = server.services.repos.feature_data_repo
+    repo = _services(server).repos.feature_data_repo
     record = _record(repo, agent_id, record_id)
     _record_read(record, user)
     _record_write(record, row, user, server)
@@ -404,7 +411,7 @@ async def get_history(
     user: Any = Depends(current_user),
 ) -> ChangeListResponse:
     await _get_record_or_404(agent_id, record_id, user, server)
-    changes = server.services.repos.feature_data_repo.list_changes(record_id, limit=limit)
+    changes = _services(server).repos.feature_data_repo.list_changes(record_id, limit=limit)
     return ChangeListResponse(
         changes=[
             {
@@ -431,7 +438,7 @@ async def list_files(
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
     await _get_record_or_404(agent_id, record_id, user, server)
-    files = server.services.repos.feature_data_repo.list_files(record_id)
+    files = _services(server).repos.feature_data_repo.list_files(record_id)
     return {"files": [fd.file_payload(file) for file in files]}
 
 
@@ -449,7 +456,7 @@ async def upload_file(
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
     row = _feature_row(agent_id, user, server)
-    repo = server.services.repos.feature_data_repo
+    repo = _services(server).repos.feature_data_repo
     record = _record(repo, agent_id, record_id)
     _record_read(record, user)
     _record_write(record, row, user, server)
@@ -485,7 +492,7 @@ async def download_file(
     user: Any = Depends(current_user),
 ) -> Response:
     await _get_record_or_404(agent_id, record_id, user, server)
-    repo = server.services.repos.feature_data_repo
+    repo = _services(server).repos.feature_data_repo
     file_row = repo.get_file(file_id)
     if file_row is None or file_row.record_id != record_id:
         raise OctopError(ErrorCode.NOT_FOUND, "attachment not found")

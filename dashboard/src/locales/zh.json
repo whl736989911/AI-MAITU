@@ -97,6 +97,10 @@
     "AGENT_NOT_RUNNING": "此专家未启用。",
     "AGENT_FAILED": "Agent 启动失败。",
     "AGENT_BUSY": "Agent 正忙。",
+    "CHECKPOINT_DELETE_FAILED": "无法删除此对话的已保存数据。对话已保留，可重试。",
+    "MODEL_UNAVAILABLE": "当前没有可用的 AI 对话模型。",
+    "MEMORY_DOCUMENT_CONFLICT": "记忆文档已在其他位置更新，请重新加载并审阅当前版本后保存。",
+    "HITL_APPROVAL_STALE": "此审批已失效，请重新加载对话并审阅当前审批卡片。",
     "AGENT_NAME_TAKEN": "该名称已被使用，请换一个名称。",
     "AGENT_ID_INVALID": "自定义 ID 无效：需 3-64 位字母/数字/下划线/连字符，且以字母或数字开头结尾。",
     "AGENT_ID_TAKEN": "该 ID 已被使用，请换一个 ID。",
@@ -137,6 +141,7 @@
     "SKILL_ALREADY_EXISTS": "技能 {{name}} 已存在，如需覆盖请启用 overwrite。",
     "SKILL_PACKAGE_NOT_FOUND": "未找到技能包。",
     "SKILL_PACKAGE_NAME_TAKEN": "技能包 {{name}} 已存在。",
+    "SKILL_PACKAGE_DOWNLOAD_DENIED": "技能包所有者已禁止下载和复制此技能包。",
     "SKILL_PACKAGE_BACKEND_UNSUPPORTED": "技能包目前仅支持「本地完整环境（文件系统+指令执行）」或「本地文件系统（不能执行指令）」，且存储根目录须为 /（POSIX）或 专家的工作区根目录（Windows 默认）。",
     "PUBLISHED_EXPERT_SLUG_TAKEN": "已存在发布专家 slug：{{slug}}。",
     "ACP_BACKEND_UNSUPPORTED": "当前专家已启用沙箱环境，无法调用外部 Runner。通过 IDE / maitu acp 接入不受影响。",
@@ -285,6 +290,10 @@
     }
   },
   "nav": {
+    "customize": "自定义导航",
+    "moveUp": "上移",
+    "moveDown": "下移",
+    "preferencesSaveFailed": "无法保存导航偏好设置",
     "chat": "对话",
     "common": "常用",
     "control": "控制",
@@ -351,6 +360,10 @@
     "paneRecords": "任务"
   },
   "skillPackages": {
+    "exportZip": "导出 ZIP",
+    "exportFailed": "导出技能包 ZIP 失败",
+    "allowDownload": "允许下载 ZIP",
+    "allowDownloadHint": "关闭下载不影响挂载和使用；所有者及系统管理员仍可导出。",
     "title": "技能包",
     "subtitle": "创建和维护可复用的技能集合，并可挂载到专家。",
     "createPackage": "创建技能包",
@@ -930,6 +943,8 @@
     }
   },
   "experts": {
+    "conversationModeLabel": "新会话默认模式",
+    "conversationModeHint": "用于新会话；明确请求或已有会话模式优先。",
     "subtitle": "基于已配置的场景模板,一键创建预置身份/灵魂/心跳的智能体。每个专家自带 system prompt,新建后再为它绑定 provider 并启动即可。",
     "loadFailed": "加载专家失败",
     "loadDetailFailed": "加载详情失败",
@@ -1281,6 +1296,9 @@
     "memoryBtn": "记忆"
   },
   "features": {
+    "templateLabel": "起始模板",
+    "templateHint": "可选模板；其工作区文件和技能会复制到此功能。",
+    "templateNone": "不使用模板",
     "create": "新建功能",
     "created": "功能「{{name}}」已创建",
     "createFailed": "功能创建失败",
@@ -1822,6 +1840,21 @@
     "model_call_failed_detail": "模型调用失败：{{detail}}"
   },
   "chat": {
+    "steer": {
+      "withdraw": "撤回排队指令",
+      "status": {
+        "queued": "已排队",
+        "drained": "已应用",
+        "withdrawn": "已撤回，草稿已保留",
+        "discarded": "已丢弃，草稿已保留",
+        "expired": "已过期，草稿已保留",
+        "rejected": "已拒绝，草稿已保留"
+      },
+      "send": "立即作为转向指令发送",
+      "followUp": "排入当前轮次之后",
+      "unavailable": "当前轮次暂不可转向。"
+    },
+    "sessionPending": "正在启动…",
     "conversationMode": {
       "ask": "Ask 模式",
       "plan": "Plan 模式",
@@ -2577,6 +2610,12 @@
     "autoNotScheduled": "调度：未生效"
   },
   "skills": {
+    "exportSelected": "导出所选（{{count}}）",
+    "exportSkills": "导出自定义技能",
+    "exportPackage": "导出 ZIP",
+    "importPackageZip": "导入 ZIP",
+    "exportFailed": "导出 ZIP 失败",
+    "importPackageSuccess": "已向技能包导入 {{count}} 个技能",
     "title": "技能",
     "description": "管理智能体技能和能力。",
     "customizedSkills": "已安装技能",
@@ -2816,6 +2855,11 @@
     "pleaseInputText": "请输入文本内容",
     "pleaseSelectPreset": "请选择执行频率",
     "form": {
+      "scheduleModeDate": "单次运行",
+      "dateRunAt": "运行时间",
+      "dateRunAtRequired": "请选择日期和时间。",
+      "dateRunAtInvalid": "请输入 YYYY-MM-DDTHH:mm[:ss] 格式的本地日期和时间。",
+      "dateRunAtHint": "按服务器时区 {{timezone}} 解释；任务执行后会自动停用。",
       "sectionBasic": "基础信息",
       "sectionBasicDesc": "设置任务名称和启用状态，开启后任务将按计划自动执行。",
       "id": "任务 ID",
@@ -4388,6 +4432,55 @@
     "disableProtectionDesc": "输入当前密码以确认关闭保护。关闭后任何人都可以无需密码访问控制台。"
   },
   "memory": {
+    "backups": {
+      "title": "记忆备份",
+      "loadFailed": "备份列表加载失败",
+      "operationFailed": "操作失败",
+      "created": "备份已创建",
+      "deleted": "备份已删除",
+      "restored": "记忆已恢复，恢复前安全备份已保留",
+      "restoreFailed": "恢复失败；请检查安全备份",
+      "createdAt": "创建时间",
+      "rows": "记录数",
+      "size": "大小",
+      "backend": "存储",
+      "actions": "操作",
+      "download": "下载",
+      "restore": "恢复",
+      "restoreConfirm": "恢复此备份？系统会先创建当前状态的安全备份。",
+      "deleteConfirm": "永久删除此备份？",
+      "scope": "范围：{{scope}}。归档仅包含此记忆命名空间与调用者拥有的检查点。",
+      "restoreOutcome": "已恢复 {{backup}}；安全备份：{{safety}}；检查点会话：{{threads}}。",
+      "create": "创建备份"
+    },
+    "manual": {
+      "title": "手动记忆文档",
+      "description": "手动内容优先于结构化回忆。更改仅适用于之后开始的新会话。",
+      "private": "我的私有记忆",
+      "shared": "共享记忆",
+      "editable": "可编辑",
+      "readOnly": "只读",
+      "version": "版本 {{version}}",
+      "stale": "文档已被其他编辑更新。请重新加载并审阅当前内容后再编辑。",
+      "byteCount": "{{used}} / {{max}} 字节",
+      "loadFailed": "无法加载手动记忆文档",
+      "saveFailed": "保存失败，请重新加载并审阅",
+      "saved": "文档已保存；新会话会读取此版本"
+    },
+    "review": {
+      "run": "审查手动文档与结构化记忆",
+      "unavailable": "语义审查暂不可用，未作任何更改",
+      "authoritative": "手动文档保持权威；审查结果仅供确认",
+      "coverage": "已审查 {{reviewed}} / {{total}} 条结构化事实",
+      "partial": "事实数量达到本次审查上限，覆盖不完整",
+      "fact": "结构化事实",
+      "evidence": "文档证据",
+      "keepManual": "保留手动版本并停用此矛盾事实",
+      "apply": "确认所选项：保留手动版本",
+      "applied": "已保留手动文档，并仅停用所选矛盾事实",
+      "stale": "审查已过期或状态已变化；请重新审查",
+      "none": "未发现有证据支持的冲突或重复；这不代表绝对无冲突"
+    },
     "title": "记忆",
     "description": "查看麦途智造记下的重点：来源、内容，以及待处理的记忆草稿。",
     "conversationHistory": "对话记录",
@@ -4453,6 +4546,8 @@
       "privateDescription": "私有记忆仅对你可见并可编辑。"
     },
     "tabs": {
+      "manual": "手动文档",
+      "backups": "备份",
       "overview": "概览",
       "profile": "用户画像",
       "library": "记忆树",
@@ -4500,6 +4595,13 @@
       "saveFailed": "保存失败"
     },
     "settings": {
+      "extraBodyInvalid": "额外请求参数必须是有效的 JSON 对象",
+      "budgetTitle": "提取请求预算",
+      "budgetDescription": "按 light/heavy 调用分别设置超时；0 表示使用运行时默认值。",
+      "lightTimeout": "Light 超时（秒）",
+      "heavyTimeout": "Heavy 超时（秒）",
+      "maxTokens": "最大输出 token",
+      "extraBody": "额外模型请求参数（JSON object）",
       "title": "记忆设置",
       "description": "控制这个 Agent 是否使用记忆，以及对话内容何时被整理成长期记忆。",
       "storageTitle": "存储记忆",

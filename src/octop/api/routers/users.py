@@ -587,4 +587,8 @@ async def delete_user(
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
     assert_may_manage_account(_scope(server, actor), row, action="delete this account")
-    await server.user_manager.remove(row.username)
+    runtime = getattr(server, "app_runtime", None)
+    await server.user_manager.remove(
+        row.username,
+        agent_manager=getattr(runtime, "agent_registry", None) if runtime is not None else None,
+    )

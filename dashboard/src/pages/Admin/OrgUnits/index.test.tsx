@@ -10,7 +10,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEventLibrary, {
   PointerEventsCheckLevel,
   type UserEvent,
@@ -164,45 +164,90 @@ function renderPage(user: OctopUser = ADMIN) {
     </CurrentUserProvider>,
   );
 }
+function findButtonByText(
+  root: HTMLElement,
+  text: string,
+): HTMLElement | undefined {
+  return within(root)
+    .getAllByRole("button", { hidden: true })
+    .find(
+      (button) =>
+        button.closest('[aria-hidden="true"]') === null &&
+        (button.getAttribute("aria-label") ?? button.textContent)
+          ?.replace(/\s+/g, " ")
+          .trim() === text,
+    );
+}
+
+async function waitForButtonByText(
+  root: HTMLElement,
+  text: string,
+): Promise<HTMLElement> {
+  let button: HTMLElement | undefined;
+  await waitFor(() => {
+    button = findButtonByText(root, text);
+    expect(button).toBeDefined();
+  });
+  return button!;
+}
+
+function expectButtonName(button: HTMLElement, name: string): void {
+  expect(button).toBeVisible();
+  expect(button).toHaveAccessibleName(name);
+}
 
 async function openGrants() {
-  const button = await screen.findByRole("button", { name: "模块授权" });
+  const grantsButton = await waitForButtonByText(document.body, "模块授权");
+  expectButtonName(grantsButton, "模块授权");
   await waitFor(() => {
-    expect(button).toBeEnabled();
-    expect(window.getComputedStyle(button).pointerEvents).not.toBe("none");
+    expect(grantsButton).toBeEnabled();
+    expect(window.getComputedStyle(grantsButton).pointerEvents).not.toBe(
+      "none",
+    );
   });
-  await userEvent.click(button);
+  await userEvent.click(grantsButton);
+  const dialog = await screen.findByRole("dialog", { hidden: true });
+  expect(dialog).toBeVisible();
+  return dialog;
 }
 
 describe("Admin → Org units: department module grants", () => {
   it("offers the grantable modules and marks the department's own set", async () => {
     stored = ["channels"];
     renderPage();
-    await openGrants();
+    const dialog = await openGrants();
 
-    const granted = await screen.findByRole("button", { name: "通道" });
+    const granted = await waitForButtonByText(dialog, "通道");
+    expectButtonName(granted, "通道");
     await waitFor(() =>
       expect(granted).toHaveAttribute("aria-pressed", "true"),
     );
-    expect(screen.getByRole("button", { name: "工作台/终端" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
+    const terminal = findButtonByText(dialog, "工作台/终端");
+    expect(terminal).toBeDefined();
+    expectButtonName(terminal!, "工作台/终端");
+    expect(terminal).toHaveAttribute("aria-pressed", "false");
     // ``providers`` is neither stored nor grantable: offering it would only
     // produce a 403 on save.
-    expect(screen.queryByRole("button", { name: "云端" })).toBeNull();
+    expect(findButtonByText(dialog, "云端")).toBeUndefined();
   });
 
   it("keeps a stored module the operator may not grant, and saves the whole set", async () => {
     stored = ["channels", "providers"];
     renderPage();
-    await openGrants();
-
-    const kept = await screen.findByRole("button", { name: "云端" });
+    const dialog = await openGrants();
+    const kept = await waitForButtonByText(dialog, "云端");
+    expect(kept).toBeDefined();
+    expectButtonName(kept!, "云端");
     await waitFor(() => expect(kept).toHaveAttribute("aria-pressed", "true"));
 
-    await userEvent.click(screen.getByRole("button", { name: "工作台/终端" }));
-    await userEvent.click(screen.getByRole("button", { name: "保存授权" }));
+    const terminal = findButtonByText(dialog, "工作台/终端");
+    const saveButton = findButtonByText(dialog, "保存授权");
+    expect(terminal).toBeDefined();
+    expect(saveButton).toBeDefined();
+    expectButtonName(terminal!, "工作台/终端");
+    expectButtonName(saveButton!, "保存授权");
+    await userEvent.click(terminal!);
+    await userEvent.click(saveButton!);
 
     await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0].body).toEqual({
@@ -213,16 +258,18 @@ describe("Admin → Org units: department module grants", () => {
   it("revokes by clearing a box, since the body is the whole set", async () => {
     stored = ["channels", "terminal"];
     renderPage();
-    await openGrants();
-
-    const terminal = await screen.findByRole("button", {
-      name: "工作台/终端",
-    });
+    const dialog = await openGrants();
+    const terminal = await waitForButtonByText(dialog, "工作台/终端");
+    expect(terminal).toBeDefined();
+    expectButtonName(terminal!, "工作台/终端");
     await waitFor(() =>
       expect(terminal).toHaveAttribute("aria-pressed", "true"),
     );
-    await userEvent.click(terminal);
-    await userEvent.click(screen.getByRole("button", { name: "保存授权" }));
+    await userEvent.click(terminal!);
+    const saveButton = findButtonByText(dialog, "保存授权");
+    expect(saveButton).toBeDefined();
+    expectButtonName(saveButton!, "保存授权");
+    await userEvent.click(saveButton!);
 
     await waitFor(() => expect(saved).toHaveLength(1));
     expect(saved[0].body).toEqual({ permissions: ["channels"] });
@@ -236,15 +283,13 @@ describe("Admin → Org units: department module grants", () => {
       role: "enterprise_admin",
     };
     renderPage(enterpriseAdmin);
+    await screen.findByText("销售部");
 
-    expect(
-      await screen.findByRole("button", { name: "新建部门" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "编辑" })).toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: "模块授权" }),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "删除" })).toBeInTheDocument();
+    for (const name of ["新建部门", "编辑", "模块授权", "删除"]) {
+      const button = findButtonByText(document.body, name);
+      expect(button).toBeDefined();
+      expectButtonName(button!, name);
+    }
   });
 
   it("shows no grants control to an actor with no department to authorize", async () => {
@@ -252,6 +297,6 @@ describe("Admin → Org units: department module grants", () => {
 
     // The tree still renders — reads are the ``users`` key, not a role.
     expect(await screen.findByText("销售部")).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "模块授权" })).toBeNull();
+    expect(findButtonByText(document.body, "模块授权")).toBeUndefined();
   });
 });

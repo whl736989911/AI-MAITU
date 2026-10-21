@@ -1,0 +1,3 @@
+Business Process Specialist template
+
+This template is adapted from the operations plugin in Anthropic Knowledge Work Plugins (https://github.com/anthropics/knowledge-work-plugins), under the Apache License, Version 2.0. TencentCloud/Octop v1.0.2 also adapted this template; this MAITU fork changes platform-specific guidance and adds feature shared-memory safeguards. The Apache License, Version 2.0 applies to the upstream-derived template material. Its complete text is available at https://www.apache.org/licenses/LICENSE-2.0.

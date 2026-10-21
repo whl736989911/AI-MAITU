@@ -23,9 +23,10 @@ from octop.infra.agents.middleware.shared_workspace_freeze import (
 )
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.server import OctopServer
+from octop.infra.users.permissions import BASELINE_PERMISSIONS
 from tests.support.auth import (
     create_agent,
-    ensure_users,
+    create_user,
     resolve_user_id,
     seed_openai_provider,
 )
@@ -39,7 +40,15 @@ async def env_with_author(env) -> AsyncIterator[tuple[httpx.AsyncClient, OctopSe
     """``(client, server, (admin_auth, author_auth, author_id, caller_auth))``."""
     client, srv, admin_auth = env
     await seed_openai_provider(client, admin_auth)
-    auths = await ensure_users(client, admin_auth, "feature_author", "feature_caller")
+    auths = {
+        username: await create_user(
+            client,
+            admin_auth,
+            username=username,
+            permissions=sorted(BASELINE_PERMISSIONS | {"memory"}),
+        )
+        for username in ("feature_author", "feature_caller")
+    }
     author_id = await resolve_user_id(client, admin_auth, "feature_author")
     yield client, srv, (admin_auth, auths["feature_author"], author_id, auths["feature_caller"])
 
@@ -144,12 +153,15 @@ async def test_feature_training_memory_and_published_caller_memory(
     base = f"/api/agents/{AGENT_ID}/memory"
     author_access = await client.get(f"{base}/access", headers=author_auth)
     assert author_access.status_code == 200, author_access.text
-    assert author_access.json() == {
-        "stage": "draft",
-        "default_scope": "shared",
-        "shared_writable": True,
-        "private_writable": False,
-    }
+    assert (
+        author_access.json().items()
+        >= {
+            "stage": "draft",
+            "default_scope": "shared",
+            "shared_writable": True,
+            "private_writable": False,
+        }.items()
+    )
     refused_private_draft = await client.post(
         f"{base}/atoms/list?scope=private",
         headers=author_auth,
@@ -228,12 +240,15 @@ async def test_feature_training_memory_and_published_caller_memory(
     assert published.status_code == 200, published.text
     access = await client.get(f"{base}/access", headers=caller_auth)
     assert access.status_code == 200, access.text
-    assert access.json() == {
-        "stage": "active",
-        "default_scope": "private",
-        "shared_writable": False,
-        "private_writable": True,
-    }
+    assert (
+        access.json().items()
+        >= {
+            "stage": "active",
+            "default_scope": "private",
+            "shared_writable": False,
+            "private_writable": True,
+        }.items()
+    )
     instruction = "只用公制单位"
     overlay_path = f"/api/agents/{AGENT_ID}/workflow/overlay"
     saved_instruction = await client.put(

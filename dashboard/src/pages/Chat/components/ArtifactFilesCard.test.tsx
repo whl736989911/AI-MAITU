@@ -42,6 +42,27 @@ describe("ArtifactFilesCard", () => {
     expect(screen.getByText(/checklist\.md/)).toBeInTheDocument();
   });
 
+  it("resolves same relative names through each artifact producer", () => {
+    render(
+      <ArtifactFilesCard
+        agentId="host"
+        files={[
+          { producer_agent_id: "member-a", path: "/workspace/out/report.md" },
+          { producer_agent_id: "member-b", path: "/workspace/out/report.md" },
+        ]}
+      />,
+    );
+
+    const files = screen.getAllByTestId("message-file");
+    expect(files).toHaveLength(2);
+    expect(files[0].textContent).toContain(
+      "/agents/member-a/workspace/download",
+    );
+    expect(files[1].textContent).toContain(
+      "/agents/member-b/workspace/download",
+    );
+  });
+
   it("opens the complete file list when requested", async () => {
     const user = userEvent.setup();
     const onOpenFiles = vi.fn();

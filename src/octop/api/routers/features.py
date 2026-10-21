@@ -53,6 +53,32 @@ from octop.infra.agents.feature_agent import create_feature_agent
 router = APIRouter()
 
 
+@router.get("/templates", summary="List templates available to feature agents")
+async def list_feature_templates(
+    _user: Any = Depends(require_permission("features")),
+    server: Any = Depends(get_server),
+) -> list[dict[str, Any]]:
+    """Offer bundled expert workspace templates to feature creators."""
+    catalog = server.expert_catalog
+    if catalog is None:
+        return []
+    available: list[dict[str, Any]] = []
+    for item in catalog.list_summaries():
+        expert = catalog.get(item.id)
+        if expert is None or any(
+            path.rsplit("/", 1)[-1].casefold() in {"user.md", "memory.md"} for path in expert.files
+        ):
+            continue
+        available.append(
+            {
+                "id": item.id,
+                "label": {"zh": item.label_zh, "en": item.label_en},
+                "description": {"zh": item.description_zh, "en": item.description_en},
+            }
+        )
+    return available
+
+
 class FeatureCreateBody(BaseModel):
     """What a feature declares about itself when it is created.
 
@@ -74,6 +100,15 @@ class FeatureCreateBody(BaseModel):
     default_model: str | None = Field(
         default=None,
         description="Model the feature's agent runs with, as ``provider:model``.",
+    )
+    conversation_mode: str = Field(
+        default="craft",
+        pattern="^(ask|plan|craft)$",
+        description="Default conversation mode for new threads.",
+    )
+    template_name: str | None = Field(
+        default=None,
+        description="Optional bundled expert template whose workspace files seed this feature.",
     )
 
 
@@ -98,6 +133,8 @@ async def create_feature(
         icon_name=body.icon_name,
         color=body.color,
         default_model=body.default_model,
+        conversation_mode=body.conversation_mode,
+        template_name=body.template_name,
     )
     return {
         "agent_id": row.agent_id,

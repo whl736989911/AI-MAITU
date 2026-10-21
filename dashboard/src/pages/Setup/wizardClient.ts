@@ -98,9 +98,6 @@ export const wizardSession = {
   loadSetupJwt(): string | null {
     return sessionStorage.getItem(SETUP_JWT_KEY);
   },
-  clearSetupJwt(): void {
-    sessionStorage.removeItem(SETUP_JWT_KEY);
-  },
   clearToken(): void {
     sessionStorage.removeItem(TOKEN_KEY);
   },
@@ -203,11 +200,6 @@ export const wizardApi = {
       headers: bearer(wizardToken),
     }),
 
-  resumeWizard: () =>
-    request<VerifyResponse>("/setup/resume-wizard", {
-      method: "POST",
-    }),
-
   finish: (
     body: { provider_draft: ProviderDraft | null },
     wizardToken: string,
@@ -239,9 +231,7 @@ export const wizardApi = {
 };
 
 /**
- * Resolve a Bearer token for setup provider probes.
- * Prefers a valid wizard token, then the admin JWT issued at initial-admin,
- * then a freshly resumed wizard token.
+ * Prefer a valid wizard token, then the admin JWT issued at initial-admin.
  */
 export async function resolveSetupProbeToken(): Promise<string | null> {
   const wizardToken = wizardSession.loadToken();
@@ -257,11 +247,5 @@ export async function resolveSetupProbeToken(): Promise<string | null> {
   const setupJwt = wizardSession.loadSetupJwt();
   if (setupJwt) return setupJwt;
 
-  try {
-    const resumed = await wizardApi.resumeWizard();
-    wizardSession.saveToken(resumed.wizard_token);
-    return resumed.wizard_token;
-  } catch {
-    return null;
-  }
+  return null;
 }

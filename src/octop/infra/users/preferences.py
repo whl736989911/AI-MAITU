@@ -15,6 +15,40 @@ PREFERENCES_KEY_REMOTE_BROWSER_BOOKMARKS = "remote_browser_bookmarks"
 PREFERENCES_KEY_PREFERRED_MODEL = "preferred_model"
 PREFERENCES_KEY_MODEL_REASONING = "model_reasoning"
 PREFERENCES_KEY_TIMEZONE = "timezone"
+PREFERENCES_KEY_SIDEBAR = "sidebar"
+MAX_SIDEBAR_ITEMS = 64
+
+
+def get_sidebar_preferences_from_json(raw: str | None) -> dict[str, list[str]]:
+    value = parse_preferences_json(raw).get(PREFERENCES_KEY_SIDEBAR)
+    if not isinstance(value, dict):
+        return {"order": [], "hidden": []}
+    result: dict[str, list[str]] = {}
+    for key in ("order", "hidden"):
+        items = value.get(key)
+        if not isinstance(items, list):
+            result[key] = []
+            continue
+        seen: set[str] = set()
+        clean: list[str] = []
+        for item in items:
+            if isinstance(item, str) and item and len(item) <= 64 and item not in seen:
+                seen.add(item)
+                clean.append(item)
+                if len(clean) == MAX_SIDEBAR_ITEMS:
+                    break
+        result[key] = clean
+    return result
+
+
+def merge_sidebar_preferences_json(current_raw: str | None, sidebar: dict[str, list[str]]) -> str:
+    data = parse_preferences_json(current_raw)
+    data[PREFERENCES_KEY_SIDEBAR] = get_sidebar_preferences_from_json(
+        json.dumps({PREFERENCES_KEY_SIDEBAR: sidebar})
+    )
+    return json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+
+
 MAX_BOOKMARK_TITLE_LEN = 80
 
 REASONING_MODES = frozenset({"auto", "enabled", "disabled"})

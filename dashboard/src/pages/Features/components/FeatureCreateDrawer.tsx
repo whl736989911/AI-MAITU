@@ -15,12 +15,15 @@
  * feature's agent is an agent and its model is chosen the same way.
  */
 
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Alert, Drawer, Form, Input, Select } from "antd";
 import { useTranslation } from "react-i18next";
 import { message } from "@/utils/antdMessage";
 
-import { featuresApi } from "../../../api/modules/features";
+import {
+  featuresApi,
+  type FeatureTemplate,
+} from "../../../api/modules/features";
 import { apiErrorMessage } from "../../../utils/apiError";
 import {
   MODEL_AUTO_VALUE,
@@ -35,6 +38,8 @@ interface FeatureFormValues {
   name: string;
   description?: string;
   default_model: string;
+  conversation_mode: "ask" | "plan" | "craft";
+  template_name?: string;
 }
 
 export interface FeatureCreateDrawerProps {
@@ -49,9 +54,10 @@ export default function FeatureCreateDrawer({
   onClose,
   onCreated,
 }: FeatureCreateDrawerProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [form] = Form.useForm<FeatureFormValues>();
   const [submitting, setSubmitting] = useState(false);
+  const [templates, setTemplates] = useState<FeatureTemplate[]>([]);
 
   const { models, modelsLoading } = useAgentFormResources(open);
   const hasNoModels = !modelsLoading && models.length === 0;
@@ -59,6 +65,13 @@ export default function FeatureCreateDrawer({
     models,
     t("experts.defaultModelAuto"),
   );
+  useEffect(() => {
+    if (!open) return;
+    void featuresApi
+      .templates()
+      .then(setTemplates)
+      .catch(() => setTemplates([]));
+  }, [open]);
 
   const handleCreate = useCallback(async () => {
     let values: FeatureFormValues;
@@ -74,6 +87,8 @@ export default function FeatureCreateDrawer({
         name: values.name.trim(),
         description: values.description?.trim() || null,
         default_model: defaultModelFromForm(values.default_model),
+        conversation_mode: values.conversation_mode,
+        template_name: values.template_name || null,
       });
       message.success(t("features.created", { name: created.name }));
       form.resetFields();
@@ -126,7 +141,10 @@ export default function FeatureCreateDrawer({
         form={form}
         layout="vertical"
         size="middle"
-        initialValues={{ default_model: MODEL_AUTO_VALUE }}
+        initialValues={{
+          default_model: MODEL_AUTO_VALUE,
+          conversation_mode: "craft",
+        }}
       >
         <Form.Item
           name="feature_id"
@@ -149,6 +167,23 @@ export default function FeatureCreateDrawer({
           <Input.TextArea rows={3} />
         </Form.Item>
 
+        <Form.Item
+          name="template_name"
+          label={t("features.templateLabel")}
+          extra={t("features.templateHint")}
+        >
+          <Select
+            allowClear
+            placeholder={t("features.templateNone")}
+            options={templates.map((template) => ({
+              value: template.id,
+              label:
+                (i18n.resolvedLanguage?.startsWith("zh")
+                  ? template.label.zh
+                  : template.label.en) || template.id,
+            }))}
+          />
+        </Form.Item>
         <Form.Item name="default_model" label={t("experts.defaultModelLabel")}>
           <Select
             loading={modelsLoading}
@@ -160,6 +195,19 @@ export default function FeatureCreateDrawer({
                 .toLowerCase()
                 .includes(input.toLowerCase())
             }
+          />
+        </Form.Item>
+        <Form.Item
+          name="conversation_mode"
+          label={t("experts.conversationModeLabel")}
+          extra={t("experts.conversationModeHint")}
+        >
+          <Select
+            options={[
+              { value: "ask", label: t("chat.conversationMode.ask") },
+              { value: "plan", label: t("chat.conversationMode.plan") },
+              { value: "craft", label: t("chat.conversationMode.craft") },
+            ]}
           />
         </Form.Item>
       </Form>

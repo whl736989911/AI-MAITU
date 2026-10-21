@@ -33,11 +33,12 @@ behave exactly as they do for any other agent.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 from octop.infra.agents.kinds import KIND_FEATURE, feature_agent_id_for
 from octop.infra.agents.manager import AgentCreateSpec, validate_custom_agent_id
-from octop.infra.errors import OctopError
+from octop.infra.errors import ErrorCode, OctopError
 
 if TYPE_CHECKING:
     from octop.infra.db.repos.agents import AgentRow
@@ -87,6 +88,8 @@ async def create_feature_agent(
     icon_name: str | None = None,
     color: str | None = None,
     default_model: str | None = None,
+    conversation_mode: str = "craft",
+    template_name: str | None = None,
 ) -> AgentRow:
     """Create the agent that *feature_id* is, owned by *author_user_id*.
 
@@ -108,8 +111,35 @@ async def create_feature_agent(
     assert server.app_runtime is not None
     registry = server.app_runtime.require_agent_registry()
     agent_id = _checked_agent_id(feature_id)
-    return await registry.create(
-        AgentCreateSpec(
+    if template_name:
+        catalog = server.expert_catalog
+        expert = catalog.get(template_name) if catalog is not None else None
+        if expert is None or catalog is None or not catalog.is_bundled(template_name):
+            raise OctopError(ErrorCode.AGENT_NOT_FOUND, "feature template not found")
+        if any(
+            path.rsplit("/", 1)[-1].casefold() in {"user.md", "memory.md"} for path in expert.files
+        ):
+            raise OctopError(
+                ErrorCode.FORBIDDEN,
+                "feature templates cannot seed shared USER.md or MEMORY.md",
+            )
+        from octop.infra.agents.experts.catalog import build_create_spec_from_expert
+
+        spec = build_create_spec_from_expert(
+            expert_id=template_name,
+            expert=expert,
+            user_id=author_user_id,
+            name=name,
+            description=description,
+            default_model=default_model,
+            agent_id=agent_id,
+            icon_name=icon_name,
+            color=color,
+            config_extra={"conversation_mode": conversation_mode},
+        )
+        spec = replace(spec, kind=KIND_FEATURE)
+    else:
+        spec = AgentCreateSpec(
             agent_id=agent_id,
             name=name,
             user_id=author_user_id,
@@ -118,8 +148,9 @@ async def create_feature_agent(
             icon_name=icon_name,
             color=color,
             default_model=default_model,
+            config={"conversation_mode": conversation_mode},
         )
-    )
+    return await registry.create(spec)
 
 
 __all__ = ["create_feature_agent", "feature_agent_id"]

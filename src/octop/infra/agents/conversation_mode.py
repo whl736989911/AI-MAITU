@@ -49,16 +49,31 @@ _DASHBOARD_EXECUTE_RES = (
 _PUNCT_RE = re.compile(r"[\s，。！？、,.!?;:'\"“”‘’]+")
 
 
+def default_conversation_mode_from_config(config: Any) -> ConversationMode:
+    """Read the persisted agent default, using Craft for absent/invalid values."""
+    configured = config.get("conversation_mode") if isinstance(config, dict) else None
+    return parse_conversation_mode(configured)
+
+
 def resolve_conversation_mode(
-    *, explicit: object | None = None, thread_mode: object | None = None
+    *,
+    explicit: object | None = None,
+    thread_mode: object | None = None,
+    agent_default: object | None = None,
 ) -> ConversationMode:
-    """explicit mode → persisted thread mode → craft."""
+    """Resolve explicit mode → sticky thread mode → agent default → Craft.
+
+    An invalid explicit value retains the historical behavior of selecting Craft;
+    absent explicit input allows the sticky thread/default chain to apply.
+    """
     if isinstance(explicit, str) and explicit in {"ask", "plan", "craft"}:
         return explicit  # type: ignore[return-value]
     if explicit is not None:
         return DEFAULT_CONVERSATION_MODE
     if thread_mode is not None:
         return parse_conversation_mode(thread_mode)
+    if agent_default is not None:
+        return parse_conversation_mode(agent_default)
     return DEFAULT_CONVERSATION_MODE
 
 
@@ -117,6 +132,7 @@ __all__ = [
     "DEFAULT_CONVERSATION_MODE",
     "HOST_READ_TOOLS",
     "ConversationMode",
+    "default_conversation_mode_from_config",
     "execute_user_message",
     "is_allowed_plan_path",
     "is_plan_execute_utterance",

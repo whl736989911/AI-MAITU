@@ -33,6 +33,7 @@ from octop.api.routers.memory_portable import (
 )
 from octop.infra.agents.memory_backend import memory_namespace
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.permissions import BASELINE_PERMISSIONS
 from tests.support.auth import create_agent, create_user
 
 _AGENT_ID = "agent-under-test"
@@ -233,7 +234,12 @@ async def test_adopt_between_two_agents_of_one_owner_is_refused(
 async def test_peer_user_cannot_target_another_users_agent(env_with_agent) -> None:
     """B (a regular user) cannot point B's agent at A's memory store."""
     client, _srv, admin_auth, admin_agent = env_with_agent
-    peer_auth = await create_user(client, admin_auth, username="portable-peer")
+    peer_auth = await create_user(
+        client,
+        admin_auth,
+        username="portable-peer",
+        permissions=sorted(BASELINE_PERMISSIONS | {"memory"}),
+    )
     peer_agent = await create_agent(client, peer_auth, name="peer-bot")
     admin_namespace = memory_namespace(admin_agent)
 

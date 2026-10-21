@@ -29,7 +29,6 @@ from octop.infra.agents.experts.publish import (
 from octop.infra.agents.manager import AgentCreateSpec
 from octop.infra.db.repos.published_experts import PublishedExpertRow
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.trajectory.settings import apply_enable_trajectory
 from octop.infra.users.identity import User
 from octop.infra.utils.ulid import new_ulid
 
@@ -40,6 +39,7 @@ class PublishedExpertInstallOptions:
     description: str = ""
     providers: list[str] | None = None
     default_model: str | None = None
+    conversation_mode: str = "craft"
     backend: dict[str, Any] | None = None
     skill_package_ids: list[str] | None = None
     knowledge_base_ids: list[str] | None = None
@@ -340,11 +340,12 @@ async def install_published_expert(
         registry.assert_backend_supports_skill_packages(options.backend)
 
     config_extra: dict[str, Any] = {}
+    if options.conversation_mode:
+        config_extra["conversation_mode"] = options.conversation_mode
     if options.providers:
         config_extra["providers"] = list(options.providers)
     if options.backend:
         config_extra["backend"] = options.backend
-    apply_enable_trajectory(config_extra, options.enable_trajectory)
 
     async def seed_snapshot(created_row: Any, workspace: Any) -> None:
         await seed_expert_directory(expert_dir=snapshot_dir, workspace=workspace)

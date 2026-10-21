@@ -1,10 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
+import { Button, Checkbox, Drawer, message } from "antd";
 import AvatarDropdown from "../components/AvatarDropdown";
 import CurrentVersionBadge from "../components/CurrentVersionBadge";
-import { ArrowRightLeft, X, ChevronDown } from "lucide-react";
+import {
+  ArrowRightLeft,
+  X,
+  ChevronDown,
+  Settings2,
+  ArrowUp,
+  ArrowDown,
+} from "lucide-react";
 import { useTheme } from "../context/ThemeContext";
 import { useBranding } from "../context/BrandingContext";
 import { useLayoutMode } from "../context/LayoutModeContext";
@@ -13,6 +21,10 @@ import { prefetchRoute } from "../routes/prefetch";
 import { useServerCapabilities } from "../hooks/useServerCapabilities";
 import { useChatSidebarOpen } from "../pages/Chat/hooks/useChatSidebarState";
 import { EXPAND_CHAT_RAIL_EVENT } from "../pages/Chat/components/ChatSidebarPanel";
+import {
+  preferencesApi,
+  type SidebarPreferences,
+} from "../api/modules/preferences";
 import {
   CHAT_HISTORY_RAIL_ID,
   OPEN_NAV_RECORDS_EVENT,
@@ -31,7 +43,30 @@ import {
 } from "./sidebarNav";
 import styles from "./Sidebar.module.less";
 import { typeSize } from "../utils/mobileTypeScale";
+const DEFAULT_SIDEBAR_PREFERENCES: SidebarPreferences = {
+  order: [],
+  hidden: [],
+};
 
+function orderSidebarSections(
+  sections: NavSection[],
+  preferences: SidebarPreferences,
+): NavSection[] {
+  const hidden = new Set(preferences.hidden.filter((key) => key !== "chat"));
+  const rank = new Map(preferences.order.map((key, index) => [key, index]));
+  return sections
+    .map((section) => ({
+      ...section,
+      items: section.items
+        .filter((item) => !hidden.has(item.key))
+        .sort(
+          (a, b) =>
+            (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) -
+            (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
+        ),
+    }))
+    .filter((section) => section.items.length > 0);
+}
 const NAV_GROUPS_STORAGE_KEY = "octop:sidebar-nav-groups";
 /** Minimal settings pane: skip the "设置" group header (duplicates the pane title). */
 const MINIMAL_SETTINGS_HIDDEN_HEADERS = new Set(["nav.settings"]);
@@ -224,6 +259,7 @@ function NavItemButton({
 }
 
 function NavList({
+  sections,
   selectedKey,
   onNavigate,
   onExpandChatRail,
@@ -235,6 +271,7 @@ function NavList({
   /** Group keys whose section headers are omitted (items still render). */
   hideGroupHeaderKeys,
 }: {
+  sections: NavSection[];
   selectedKey: string;
   onNavigate: (path: string) => void;
   onExpandChatRail?: () => void;
@@ -247,15 +284,11 @@ function NavList({
   hideGroupHeaderKeys?: ReadonlySet<string>;
 }) {
   const { t } = useTranslation();
-  const user = useCurrentUser();
-  const { mobileEnabled } = useServerCapabilities();
-  const navSections = buildNavSections(user, { mobileEnabled }).filter(
-    (section) => {
-      if (sectionFilter === "primary") return !section.groupKey;
-      if (sectionFilter === "grouped") return Boolean(section.groupKey);
-      return true;
-    },
-  );
+  const navSections = sections.filter((section) => {
+    if (sectionFilter === "primary") return !section.groupKey;
+    if (sectionFilter === "grouped") return Boolean(section.groupKey);
+    return true;
+  });
 
   const MOBILE_HIDDEN_KEYS = new Set<string>();
 
@@ -366,7 +399,31 @@ export default function Sidebar({
   const { layoutMode, minimalPane, setMinimalPane } = useLayoutMode();
   const isMinimal = layoutMode === "minimal";
   const onChatPath = isChatPath(location.pathname);
-  const navSections = buildNavSections(user, { mobileEnabled });
+  const [sidebarPreferences, setSidebarPreferences] =
+    useState<SidebarPreferences>(DEFAULT_SIDEBAR_PREFERENCES);
+  const [navSettingsOpen, setNavSettingsOpen] = useState(false);
+  const [navSettingsSaving, setNavSettingsSaving] = useState(false);
+  const [navSettingsItems, setNavSettingsItems] = useState<NavItem[]>([]);
+  const [sidebarPreferenceUserId, setSidebarPreferenceUserId] = useState<
+    number | null
+  >(null);
+  const [navSettingsHidden, setNavSettingsHidden] = useState<string[]>([]);
+  const effectiveSidebarPreferences =
+    sidebarPreferenceUserId === user?.id
+      ? sidebarPreferences
+      : DEFAULT_SIDEBAR_PREFERENCES;
+  const availableSections = useMemo(
+    () => buildNavSections(user, { mobileEnabled }),
+    [user, mobileEnabled],
+  );
+  const navSections = useMemo(
+    () => orderSidebarSections(availableSections, effectiveSidebarPreferences),
+    [availableSections, effectiveSidebarPreferences],
+  );
+  const allNavItems = useMemo(
+    () => availableSections.flatMap((section) => section.items),
+    [availableSections],
+  );
   const { toggleGroup, isGroupCollapsed } = useNavGroupCollapse(
     navSections,
     selectedKey,
@@ -379,6 +436,98 @@ export default function Sidebar({
   const wordmarkSrc = isDark
     ? brand.logos.wordmark_dark
     : brand.logos.wordmark_light;
+
+  useEffect(() => {
+    let cancelled = false;
+    setSidebarPreferenceUserId(null);
+    if (!user?.id) return;
+    void preferencesApi.get().then(
+      (prefs) => {
+        if (!cancelled) {
+          setSidebarPreferences(prefs.sidebar ?? { order: [], hidden: [] });
+          setSidebarPreferenceUserId(user.id);
+        }
+      },
+      () => {
+        if (!cancelled) {
+          setSidebarPreferences({ order: [], hidden: [] });
+          setSidebarPreferenceUserId(user.id);
+        }
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.id]);
+
+  useEffect(() => {
+    if (!navSettingsOpen) return;
+    const rank = new Map(
+      effectiveSidebarPreferences.order.map((key, index) => [key, index]),
+    );
+    setNavSettingsItems(
+      [...allNavItems].sort(
+        (a, b) =>
+          (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
+      ),
+    );
+    setNavSettingsHidden(effectiveSidebarPreferences.hidden);
+  }, [allNavItems, navSettingsOpen, effectiveSidebarPreferences]);
+
+  const navSectionByItem = new Map(
+    availableSections.flatMap((section, index) =>
+      section.items.map((item) => [item.key, index] as const),
+    ),
+  );
+  const canMoveNavSetting = (index: number, offset: -1 | 1) => {
+    const target = index + offset;
+    return (
+      target >= 0 &&
+      target < navSettingsItems.length &&
+      navSectionByItem.get(navSettingsItems[index]?.key) ===
+        navSectionByItem.get(navSettingsItems[target]?.key)
+    );
+  };
+  const moveNavSetting = (index: number, offset: -1 | 1) => {
+    if (!canMoveNavSetting(index, offset)) return;
+    setNavSettingsItems((previous) => {
+      const target = index + offset;
+      const next = [...previous];
+      [next[index], next[target]] = [next[target], next[index]];
+      return next;
+    });
+  };
+
+  const toggleNavHidden = (key: string, hidden: boolean) => {
+    setNavSettingsHidden((previous) =>
+      hidden
+        ? [...new Set([...previous, key])]
+        : previous.filter((item) => item !== key),
+    );
+  };
+
+  const saveNavSettings = async () => {
+    setNavSettingsSaving(true);
+    try {
+      const next = {
+        order: navSettingsItems.map((item) => item.key),
+        hidden: navSettingsHidden.filter((key) =>
+          allNavItems.some((item) => item.key === key),
+        ),
+      };
+      const saved = await preferencesApi.patch({ sidebar: next });
+      setSidebarPreferences(saved.sidebar);
+      setSidebarPreferenceUserId(user?.id ?? null);
+      setNavSettingsOpen(false);
+    } catch {
+      message.error(
+        t("nav.preferencesSaveFailed", "Could not save navigation preferences"),
+      );
+    } finally {
+      setNavSettingsSaving(false);
+    }
+  };
 
   const selectMinimalPane = useCallback(
     (pane: MinimalNavPane, opts?: { expand?: boolean }) => {
@@ -466,8 +615,27 @@ export default function Sidebar({
         padding: isRailCollapsed ? "10px 0" : "10px 12px",
         display: "flex",
         justifyContent: isRailCollapsed ? "center" : "stretch",
+        alignItems: "center",
+        gap: 6,
       }}
     >
+      <button
+        type="button"
+        aria-label={t("nav.customize", "Customize navigation")}
+        title={t("nav.customize", "Customize navigation")}
+        onClick={() => setNavSettingsOpen(true)}
+        style={{
+          border: 0,
+          borderRadius: 8,
+          padding: 8,
+          background: "transparent",
+          color: "var(--fn-text-tertiary)",
+          cursor: "pointer",
+          display: "flex",
+        }}
+      >
+        <Settings2 size={16} strokeWidth={1.8} />
+      </button>
       <AvatarDropdown
         user={user}
         onUserChange={setUser}
@@ -475,6 +643,63 @@ export default function Sidebar({
         compact={isRailCollapsed}
         onBeforeOpenSettings={isMobile && !collapsed ? onToggle : undefined}
       />
+      <Drawer
+        title={t("nav.customize", "Customize navigation")}
+        open={navSettingsOpen}
+        onClose={() => setNavSettingsOpen(false)}
+        width={360}
+        destroyOnHidden
+        extra={
+          <Button
+            type="primary"
+            loading={navSettingsSaving}
+            onClick={() => void saveNavSettings()}
+          >
+            {t("common.save")}
+          </Button>
+        }
+      >
+        <div style={{ display: "grid", gap: 8 }}>
+          {navSettingsItems.map((item, index) => (
+            <div
+              key={item.key}
+              style={{ display: "flex", alignItems: "center", gap: 8 }}
+            >
+              <Checkbox
+                checked={
+                  item.key === "chat" || !navSettingsHidden.includes(item.key)
+                }
+                disabled={item.key === "chat"}
+                onChange={(event) =>
+                  toggleNavHidden(item.key, !event.target.checked)
+                }
+              />
+              <span
+                style={{ display: "flex", color: "var(--fn-text-tertiary)" }}
+              >
+                {item.icon}
+              </span>
+              <span style={{ flex: 1 }}>{t(item.labelKey)}</span>
+              <Button
+                size="small"
+                type="text"
+                icon={<ArrowUp size={14} />}
+                aria-label={t("nav.moveUp", "Move up")}
+                disabled={!canMoveNavSetting(index, -1)}
+                onClick={() => moveNavSetting(index, -1)}
+              />
+              <Button
+                size="small"
+                type="text"
+                icon={<ArrowDown size={14} />}
+                aria-label={t("nav.moveDown", "Move down")}
+                disabled={!canMoveNavSetting(index, 1)}
+                onClick={() => moveNavSetting(index, 1)}
+              />
+            </div>
+          ))}
+        </div>
+      </Drawer>
     </div>
   );
 
@@ -512,6 +737,7 @@ export default function Sidebar({
     </div>
   ) : (
     <NavList
+      sections={navSections}
       selectedKey={selectedKey}
       onNavigate={handleNavigate}
       onExpandChatRail={handleExpandChatRail}
@@ -546,6 +772,7 @@ export default function Sidebar({
         <>
           <div className={styles.minimalPrimaryBlock}>
             <NavList
+              sections={navSections}
               selectedKey={selectedKey}
               onNavigate={handleNavigate}
               onExpandChatRail={handleExpandChatRail}
@@ -562,6 +789,7 @@ export default function Sidebar({
             hidden={minimalPane !== "settings"}
           >
             <NavList
+              sections={navSections}
               selectedKey={selectedKey}
               onNavigate={handleNavigate}
               isMobile={isMobile}

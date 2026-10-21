@@ -65,15 +65,25 @@ async def _turn_then_rebind(
                 "thread_id": thread_id,
             }
         )
+        started = await ws_a.receive_json()
+        assert started.get("type") == "turn.started"
+        assert started.get("phase") == "streaming_text"
         first = await ws_a.receive_json()
         assert first.get("type") == "token"
         assert first.get("content") == "first"
+        turn_id = started["turn_id"]
+        assert turn_id
     # A is closed; turn is blocked on gate_release (still active, not cancelled).
 
     frames: list[dict[str, Any]] = []
     async with _chat_ws(c, aid, auth) as ws_b:
         await ws_b.send_json({"type": "subscribe", "thread_id": thread_id})
-        frames.append(await ws_b.receive_json())
+        status = await ws_b.receive_json()
+        assert status["type"] == "turn_status"
+        assert status["thread_id"] == thread_id
+        assert status["active"] is True
+        assert status["active_turn_id"] == turn_id
+        frames.append(status)
         # Release the slow stream only after B is subscribed.
         gate_release.set()
         frames.extend(await ws_b.drain_turn())
@@ -101,7 +111,10 @@ async def test_ws_rebind_after_disconnect_receives_later_chunks(env: Any) -> Non
     frames = await _turn_then_rebind(c, aid, alice_auth, tid, gate)
 
     cancel_spy.assert_not_called()
-    assert frames[0] == {"type": "turn_status", "thread_id": tid, "active": True}
+    assert frames[0]["type"] == "turn_status"
+    assert frames[0]["thread_id"] == tid
+    assert frames[0]["active"] is True
+    assert frames[0]["active_turn_id"]
     contents = [f.get("content") for f in frames if f.get("type") == "token"]
     assert "second" in contents
     assert frames[-1].get("type") == "done"
@@ -125,10 +138,19 @@ async def _turn_with_second_subscriber(
                 "thread_id": thread_id,
             }
         )
+        started = await ws_a.receive_json()
+        assert started.get("type") == "turn.started"
+        assert started.get("phase") == "streaming_text"
+        a_frames.append(started)
         a_frames.append(await ws_a.receive_json())
         async with _chat_ws(c, aid, auth) as ws_b:
             await ws_b.send_json({"type": "subscribe", "thread_id": thread_id})
-            b_frames.append(await ws_b.receive_json())
+            status = await ws_b.receive_json()
+            assert status["type"] == "turn_status"
+            assert status["thread_id"] == thread_id
+            assert status["active"] is True
+            assert status["active_turn_id"] == started["turn_id"]
+            b_frames.append(status)
             gate_release.set()
             rest_a, rest_b = await asyncio.gather(ws_a.drain_turn(), ws_b.drain_turn())
             a_frames.extend(rest_a)
@@ -183,10 +205,14 @@ async def test_ws_concurrent_subscribers_both_receive_later_chunks(env: Any) -> 
 
     a_frames, b_frames = await _turn_with_second_subscriber(c, aid, alice_auth, tid, gate)
 
-    assert a_frames[0].get("content") == "first"
+    assert a_frames[0]["type"] == "turn.started"
+    assert a_frames[0]["phase"] == "streaming_text"
     assert [f.get("content") for f in a_frames if f.get("type") == "token"] == ["first", "second"]
     assert a_frames[-1].get("type") == "done"
-    assert b_frames[0] == {"type": "turn_status", "thread_id": tid, "active": True}
+    assert b_frames[0]["type"] == "turn_status"
+    assert b_frames[0]["thread_id"] == tid
+    assert b_frames[0]["active"] is True
+    assert b_frames[0]["active_turn_id"] == a_frames[0]["turn_id"]
     assert [f.get("content") for f in b_frames if f.get("type") == "token"] == ["second"]
     assert b_frames[-1].get("type") == "done"
 
@@ -288,7 +314,10 @@ async def test_ws_subscribe_turn_status_idle(env: Any) -> None:
     tid = create.json()["thread_id"]
 
     frame = await _subscribe_ws(c, aid, alice_auth, tid)
-    assert frame == {"type": "turn_status", "thread_id": tid, "active": False}
+    assert frame["type"] == "turn_status"
+    assert frame["thread_id"] == tid
+    assert frame["active"] is False
+    assert frame["active_turn_id"] is None
 
 
 async def test_ws_subscribe_rejects_another_users_thread(env: Any) -> None:
@@ -325,8 +354,17 @@ async def test_ws_cancel_frame_cancels_active_turn(env: Any) -> None:
 
     async with _chat_ws(c, aid, alice_auth) as ws:
         await ws.send_json({"type": "user_turn", "text": "cancel me", "thread_id": tid})
-        await ws.receive_json()  # first token
-        await ws.send_json({"type": "cancel", "thread_id": tid})
+        started = await ws.receive_json()
+        assert started["type"] == "turn.started"
+        token = await ws.receive_json()
+        assert token["type"] == "token"
+        await ws.send_json(
+            {
+                "type": "cancel",
+                "thread_id": tid,
+                "expected_turn_id": started["turn_id"],
+            }
+        )
 
     for _ in range(40):
         if cancel_spy.called:
@@ -335,6 +373,47 @@ async def test_ws_cancel_frame_cancels_active_turn(env: Any) -> None:
     cancel_spy.assert_called()
     assert cancel_spy.call_args.args[0] == aid
     assert cancel_spy.call_args.args[1] == tid
+
+
+async def test_ws_cancel_frame_rejects_stale_turn_id(env: Any) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    agent = srv.app_runtime.agent_registry.get_agent(aid)
+    create = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    tid = create.json()["thread_id"]
+
+    async def slow_stream(request: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "token", "node": "agent", "content": "started"}
+        await asyncio.sleep(1)
+
+    agent.stream = slow_stream
+    cancel_spy = MagicMock(wraps=srv.app_runtime.agent_registry.cancel_stream)
+    srv.app_runtime.agent_registry.cancel_stream = cancel_spy
+
+    async with _chat_ws(c, aid, alice_auth) as ws:
+        await ws.send_json({"type": "user_turn", "text": "cancel me", "thread_id": tid})
+        started = await ws.receive_json()
+        assert started["type"] == "turn.started"
+        token = await ws.receive_json()
+        assert token["type"] == "token"
+        await ws.send_json({"type": "cancel", "thread_id": tid, "expected_turn_id": "stale-turn"})
+        rejected = await ws.receive_json()
+        assert rejected["type"] == "error"
+        assert rejected["code"] == "stale_turn"
+        assert rejected["turn_id"] == started["turn_id"]
+        cancel_spy.assert_not_called()
+        await ws.send_json(
+            {
+                "type": "cancel",
+                "thread_id": tid,
+                "expected_turn_id": started["turn_id"],
+            }
+        )
+
+    for _ in range(40):
+        if cancel_spy.called:
+            break
+        await asyncio.sleep(0.01)
+    cancel_spy.assert_called_once_with(aid, tid)
 
 
 async def test_ws_emits_error_frame_on_exception(env: Any) -> None:

@@ -1,7 +1,7 @@
-import { request } from "../request";
+import { request, requestBlob } from "../request";
 import type {
-  CreateSkillPackageBody,
   CopyPackageSkillsBody,
+  CreateSkillPackageBody,
   CreateSkillPackageSkillBody,
   SkillPackage,
   SkillPackageDetail,
@@ -12,6 +12,13 @@ import type {
 } from "../types/skillPackage";
 
 export const skillPackagesApi = {
+  exportPackage: (packageId: string) =>
+    requestBlob(`/skill-packages/${packageId}/export`),
+  importZip: (packageId: string, archive_base64: string, overwrite = false) =>
+    request<{ imported: string[] }>(`/skill-packages/${packageId}/import-zip`, {
+      method: "POST",
+      body: JSON.stringify({ archive_base64, overwrite }),
+    }),
   list: () => request<SkillPackage[]>("/skill-packages"),
 
   listWritable: () =>

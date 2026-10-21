@@ -242,6 +242,29 @@ class ProviderStore:
                     return f"{row.name}/{model_id}"
         return None
 
+    def resolve_failover_model_refs(
+        self,
+        *,
+        provider_names: set[str] | None = None,
+        needs_multimodal: bool = False,
+    ) -> list[str]:
+        """Return enabled chat candidates inside the agent's provider scope."""
+        refs: list[str] = []
+        for row in self.iter_usable_rows():
+            if provider_names is not None and row.name not in provider_names:
+                continue
+            for model in row.get_models():
+                if not is_chat_eligible_model(
+                    model, provider_name=row.name, provider_api_key=row.api_key
+                ):
+                    continue
+                if needs_multimodal and not _model_dict_supports_image(model):
+                    continue
+                model_id = str(model.get("id") or "").strip()
+                if model_id:
+                    refs.append(f"{row.name}/{model_id}")
+        return refs
+
     def is_model_ref_usable(self, ref: str) -> bool:
         """Return True when *ref* points at a chat-eligible model on a usable provider."""
         ref = ref.strip()

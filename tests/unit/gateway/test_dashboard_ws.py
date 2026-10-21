@@ -13,7 +13,22 @@ from harness_gateway.models import ChannelSubject, ImageContent, InboundMessage,
 from tests.support.fakes import fake_thread_registry
 
 from octop.infra.gateway.media.tool_media import enrich_media_block_preview
+from octop.infra.gateway.steering import TurnSteeringRegistry
 from octop.infra.gateway.ws import WS_CHANNEL_ID, WebSocketChannel, WebSocketHub
+
+
+def _channel(processor: Any, hub: WebSocketHub) -> WebSocketChannel:
+    steering = TurnSteeringRegistry()
+
+    async def complete_turn(thread_id: str, turn_id: str) -> Any:
+        return await steering.complete_turn(thread_id, turn_id)
+
+    return WebSocketChannel(
+        processor,
+        hub=hub,
+        steer=steering,
+        complete_turn=complete_turn,
+    )
 
 
 def _token(content: str, thread_id: str) -> dict[str, Any]:
@@ -180,7 +195,7 @@ async def test_ws_channel_streams_chunks() -> None:
             yield {"type": "token", "content": "hello"}
             yield {"type": "done"}
 
-    channel = WebSocketChannel(_FakeProcessor(), hub=hub)  # type: ignore[arg-type]
+    channel = _channel(_FakeProcessor(), hub)
     hub.register("conn-1", capture)
 
     msg = InboundMessage(
@@ -197,8 +212,18 @@ async def test_ws_channel_streams_chunks() -> None:
     )
     await channel.handle_inbound(msg)
 
-    assert {"type": "token", "content": "hello", "thread_id": "thread-1"} in frames
-    assert frames[-1] == {"type": "done", "thread_id": "thread-1"}
+    turn_id = frames[0]["turn_id"]
+    assert frames == [
+        {
+            "type": "turn.started",
+            "turn_id": turn_id,
+            "phase": "streaming_text",
+            "thread_id": "thread-1",
+        },
+        _token("hello", "thread-1"),
+        {"type": "turn.ended", "turn_id": turn_id, "hitl_paused": False, "thread_id": "thread-1"},
+        {"type": "done", "thread_id": "thread-1"},
+    ]
     assert hub.is_turn_active("thread-1") is False
 
 
@@ -224,7 +249,7 @@ async def test_ws_channel_rebinds_mid_turn_to_new_subscriber() -> None:
             yield {"type": "token", "content": "second"}
             yield {"type": "done"}
 
-    channel = WebSocketChannel(_FakeProcessor(), hub=hub)  # type: ignore[arg-type]
+    channel = _channel(_FakeProcessor(), hub)
     hub.register("a", capture_a)
     hub.register("b", capture_b)
 
@@ -243,10 +268,12 @@ async def test_ws_channel_rebinds_mid_turn_to_new_subscriber() -> None:
     task = asyncio.create_task(channel.handle_inbound(msg))
 
     for _ in range(50):
-        if a_frames:
+        if any(frame.get("type") == "token" for frame in a_frames):
             break
         await asyncio.sleep(0.01)
-    assert a_frames == [_token("first", "thread-1")]
+    assert a_frames[0]["type"] == "turn.started"
+    assert a_frames[0]["phase"] == "streaming_text"
+    assert a_frames[1] == _token("first", "thread-1")
     assert hub.is_turn_active("thread-1") is True
 
     hub.unsubscribe_connection("a")
@@ -256,6 +283,12 @@ async def test_ws_channel_rebinds_mid_turn_to_new_subscriber() -> None:
 
     assert b_frames == [
         _token("second", "thread-1"),
+        {
+            "type": "turn.ended",
+            "turn_id": a_frames[0]["turn_id"],
+            "hitl_paused": False,
+            "thread_id": "thread-1",
+        },
         {"type": "done", "thread_id": "thread-1"},
     ]
     assert hub.is_turn_active("thread-1") is False
@@ -283,7 +316,7 @@ async def test_ws_channel_fans_out_mid_turn_to_all_subscribers() -> None:
             yield {"type": "token", "content": "second"}
             yield {"type": "done"}
 
-    channel = WebSocketChannel(_FakeProcessor(), hub=hub)  # type: ignore[arg-type]
+    channel = _channel(_FakeProcessor(), hub)
     hub.register("a", capture_a)
     hub.register("b", capture_b)
 
@@ -302,29 +335,48 @@ async def test_ws_channel_fans_out_mid_turn_to_all_subscribers() -> None:
     task = asyncio.create_task(channel.handle_inbound(msg))
 
     for _ in range(50):
-        if a_frames:
+        if any(frame.get("type") == "token" for frame in a_frames):
             break
         await asyncio.sleep(0.01)
-    assert a_frames == [_token("first", "thread-1")]
+    assert a_frames[0]["type"] == "turn.started"
+    assert a_frames[1] == _token("first", "thread-1")
 
     hub.subscribe("thread-1", "b")
     gate.set()
     await task
 
     assert a_frames == [
+        {
+            "type": "turn.started",
+            "turn_id": a_frames[0]["turn_id"],
+            "phase": "streaming_text",
+            "thread_id": "thread-1",
+        },
         _token("first", "thread-1"),
         _token("second", "thread-1"),
+        {
+            "type": "turn.ended",
+            "turn_id": a_frames[0]["turn_id"],
+            "hitl_paused": False,
+            "thread_id": "thread-1",
+        },
         {"type": "done", "thread_id": "thread-1"},
     ]
     assert b_frames == [
         _token("second", "thread-1"),
+        {
+            "type": "turn.ended",
+            "turn_id": a_frames[0]["turn_id"],
+            "hitl_paused": False,
+            "thread_id": "thread-1",
+        },
         {"type": "done", "thread_id": "thread-1"},
     ]
     assert hub.is_turn_active("thread-1") is False
 
 
 def test_ws_channel_debounce_key_is_per_thread() -> None:
-    channel = WebSocketChannel(object(), hub=WebSocketHub())  # type: ignore[arg-type]
+    channel = _channel(object(), WebSocketHub())
     msg_a = InboundMessage(
         channel_id=WS_CHANNEL_ID,
         channel_type="dashboard",
@@ -431,7 +483,7 @@ async def test_ws_channel_concurrent_threads_do_not_cross() -> None:
             yield {"type": "token", "content": f"{tid}-2"}
             yield {"type": "done"}
 
-    channel = WebSocketChannel(_FakeProcessor(), hub=hub)  # type: ignore[arg-type]
+    channel = _channel(_FakeProcessor(), hub)
     hub.register("a", capture_a)
     hub.register("b", capture_b)
 
@@ -475,7 +527,7 @@ async def test_ws_channel_send_media_base64() -> None:
         async def iter_turn_chunks(self, msg: InboundMessage) -> AsyncIterator[dict[str, Any]]:
             yield {"type": "done"}
 
-    channel = WebSocketChannel(_FakeProcessor(), hub=hub)  # type: ignore[arg-type]
+    channel = _channel(_FakeProcessor(), hub)
     hub.register("conn-2", capture)
 
     raw = b"\x89PNG\r\n\x1a\n"
@@ -711,7 +763,7 @@ async def test_ws_channel_send_text_finalizes_with_done() -> None:
 
     hub.register("c1", capture)
     hub.subscribe("thr1", "c1")
-    channel = WebSocketChannel(object(), hub=hub)  # type: ignore[arg-type]
+    channel = _channel(object(), hub)
     subject = ChannelSubject(
         subject_id="u1",
         chat_type="dm",

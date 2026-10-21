@@ -181,8 +181,12 @@ export function useRunArtifacts({
       return;
     }
     let cancelled = false;
-    void fetchAndSyncSessionArtifacts(agentId, threadId).then((paths) => {
-      if (!cancelled) setArtifacts(paths);
+    void fetchAndSyncSessionArtifacts(agentId, threadId).then((items) => {
+      if (!cancelled) {
+        setArtifacts(
+          items.map((item) => (typeof item === "string" ? item : item.path)),
+        );
+      }
     });
     return () => {
       cancelled = true;

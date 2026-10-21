@@ -207,3 +207,31 @@ def test_assert_can_mutate_allows_creator_and_admin_only(
     with pytest.raises(OctopError) as exc_info:
         store.assert_can_mutate(row, other)
     assert exc_info.value.code is ErrorCode.FORBIDDEN
+
+
+def test_download_policy_persists_and_preserves_creator_admin_exceptions(
+    store: SkillPackageStore,
+) -> None:
+    row = store.create(
+        name="Private package",
+        description="",
+        created_by="42",
+        icon_name="box",
+        allow_download=False,
+    )
+    ordinary = User(id=7, username="other", role=Role.USER, display_name=None)
+    creator = User(id=42, username="creator", role=Role.USER, display_name=None)
+    admin = User(id=1, username="admin", role=Role.ADMIN, display_name=None)
+
+    persisted = store.repo.get_by_name("Private package")
+    assert persisted is not None
+    assert persisted.allow_download is False
+    assert persisted.icon_name == "box"
+    assert not store.can_download(persisted, ordinary)
+    assert store.can_download(persisted, creator)
+    assert store.can_download(persisted, admin)
+
+    store.repo.update(row.id, allow_download=True)
+    updated = store.repo.get(row.id)
+    assert updated is not None
+    assert store.can_download(updated, ordinary)

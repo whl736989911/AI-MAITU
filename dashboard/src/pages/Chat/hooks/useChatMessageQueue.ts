@@ -12,6 +12,16 @@ export type QueuedChatItem = {
   composerContext?: UserComposerContext;
   modelRef?: string | null;
   createdAt: number;
+  remotePending?: boolean;
+  remoteTurnId?: string;
+  remotePendingId?: string;
+  remoteStatus?:
+    | "queued"
+    | "drained"
+    | "withdrawn"
+    | "discarded"
+    | "expired"
+    | "rejected";
 };
 
 export type EnqueueChatItemInput = {
@@ -178,6 +188,66 @@ export function useChatMessageQueue({
     },
     [key, writeQueues],
   );
+  const markRemotePending = useCallback(
+    (id: string, turnId: string, pendingId: string) => {
+      const current = queuesRef.current[key] ?? [];
+      writeQueues({
+        ...queuesRef.current,
+        [key]: current.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                remotePending: true,
+                remoteTurnId: turnId,
+                remotePendingId: pendingId,
+                remoteStatus: "queued",
+              }
+            : item,
+        ),
+      });
+    },
+    [key, writeQueues],
+  );
+
+  useEffect(() => {
+    if (!threadId) return;
+    return chatStore.subscribeSteeringReceipts(threadId, (receipt) => {
+      const ids =
+        receipt.client_pending_ids ??
+        (receipt.client_pending_id ? [receipt.client_pending_id] : []);
+      if (ids.length === 0) return;
+      const status =
+        receipt.type === "steer.drained" || receipt.status === "already_drained"
+          ? "drained"
+          : receipt.type === "steer.withdrawn" || receipt.status === "removed"
+          ? "withdrawn"
+          : receipt.type === "steer.expired"
+          ? "expired"
+          : receipt.type === "steer.discarded"
+          ? "discarded"
+          : receipt.status === "rejected"
+          ? "rejected"
+          : receipt.type === "steer.queued" || receipt.status === "queued"
+          ? "queued"
+          : null;
+      if (!status) return;
+      const idsSet = new Set(ids);
+      const current = queuesRef.current[key] ?? [];
+      writeQueues({
+        ...queuesRef.current,
+        [key]: current.map((item) =>
+          idsSet.has(item.remotePendingId ?? item.id)
+            ? {
+                ...item,
+                remotePending: status === "queued",
+                remoteTurnId: receipt.turn_id || item.remoteTurnId,
+                remoteStatus: status,
+              }
+            : item,
+        ),
+      });
+    });
+  }, [key, threadId, writeQueues]);
 
   const reclaim = useCallback(
     (id: string): QueuedChatItem | null => {
@@ -196,7 +266,17 @@ export function useChatMessageQueue({
   );
 
   const clear = useCallback(() => {
-    writeQueues(withoutQueueKey(queuesRef.current, key));
+    const current = queuesRef.current[key] ?? [];
+    const retained = current.filter(
+      (item) =>
+        item.remotePending ||
+        (item.remoteStatus !== undefined && item.remoteStatus !== "drained"),
+    );
+    writeQueues(
+      retained.length
+        ? { ...queuesRef.current, [key]: retained }
+        : withoutQueueKey(queuesRef.current, key),
+    );
   }, [key, writeQueues]);
 
   /** Atomically pop head by id for the given queue key. */
@@ -257,6 +337,8 @@ export function useChatMessageQueue({
         ) {
           return;
         }
+        const queuedHead = queuesRef.current[queueKey]?.[0];
+        if (queuedHead?.remotePending || queuedHead?.remoteStatus) return;
         const head = dequeueHead(queueKey);
         if (!head) return;
         try {
@@ -313,5 +395,6 @@ export function useChatMessageQueue({
     remove,
     reclaim,
     clear,
+    markRemotePending,
   };
 }

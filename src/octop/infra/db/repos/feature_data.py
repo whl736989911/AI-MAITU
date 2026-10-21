@@ -309,7 +309,7 @@ class FeatureDataRepo:
                 "WHERE id = ? AND deleted_at IS NULL",
                 (now_ts(), now_ts(), record_id),
             )
-        return cursor.rowcount == 1
+        return bool(cursor.rowcount == 1)
 
     # history ---------------------------------------------------------------
     def add_change(
@@ -540,7 +540,7 @@ class FeatureDataRepo:
                 "WHERE id = ?",
                 (status, now_ts(), reminder_id),
             )
-        return cursor.rowcount == 1
+        return bool(cursor.rowcount == 1)
 
     # notifications ---------------------------------------------------------
     def add_notification(
@@ -621,7 +621,7 @@ class FeatureDataRepo:
                 "WHERE id = ? AND user_id = ? AND read_at IS NULL",
                 (now_ts(), notification_id, user_id),
             )
-        return cursor.rowcount == 1
+        return bool(cursor.rowcount == 1)
 
     def delete_for_feature(self, agent_id: str) -> None:
         with self._db.transaction() as conn:

@@ -66,7 +66,67 @@ describe("pathPermissionKeys", () => {
     expect(pathPermissionKeys("/chat")).toBeNull();
     expect(pathPermissionKeys("/tasks")).toBeNull();
     expect(pathPermissionKeys("/token-usage")).toBeNull();
-    expect(pathPermissionKeys("/personalization/skills")).toBeNull();
+  });
+
+  it("gates personalization tabs with their own module permissions", () => {
+    expect(pathPermissionKeys("/personalization/skills")).toEqual([
+      ...PERM.skills,
+    ]);
+    expect(pathPermissionKeys("/personalization/subagents")).toEqual([
+      ...PERM.subagents,
+    ]);
+    expect(pathPermissionKeys("/personalization/tools")).toEqual([
+      ...PERM.tools,
+    ]);
+    expect(pathPermissionKeys("/personalization/plugins")).toEqual([
+      ...PERM.agentPlugins,
+    ]);
+    expect(pathPermissionKeys("/personalization/memory")).toEqual([
+      ...PERM.memory,
+    ]);
+
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["skills"] },
+        "/personalization/skills",
+      ),
+    ).toBe(true);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["tools"] },
+        "/personalization/skills",
+      ),
+    ).toBe(false);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["subagents"] },
+        "/personalization/subagents",
+      ),
+    ).toBe(true);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["skills"] },
+        "/personalization/subagents",
+      ),
+    ).toBe(false);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["tools"] },
+        "/personalization/tools",
+      ),
+    ).toBe(true);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["agent_plugins"] },
+        "/personalization/plugins",
+      ),
+    ).toBe(true);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: ["memory"] },
+        "/personalization/memory",
+      ),
+    ).toBe(true);
   });
 
   it("gates experts and teams independently, with experts required by teams", () => {

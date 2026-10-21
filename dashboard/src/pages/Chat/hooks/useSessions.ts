@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
+import type { ThreadArtifact } from "../../../api/modules/octopThreads";
 import * as chatStore from "./chatStore";
 import { onSessionEvent } from "./chatStore";
 import { formatThreadTitle } from "../utils/threadTitle";
@@ -16,7 +17,7 @@ export interface Session {
   modelRef?: string | null;
   reasoningMode?: "auto" | "enabled" | "disabled" | null;
   reasoningEffort?: string | null;
-  artifacts?: string[];
+  artifacts?: ThreadArtifact[];
   conversationMode?: "ask" | "plan" | "craft";
   pendingPlanPath?: string | null;
   hitlPolicy?: { mode: "ask" | "allow_all" | "allow_tools"; tools?: string[] };
@@ -37,8 +38,8 @@ export function toSession(row: {
   model_ref?: string | null;
   reasoning_mode?: "auto" | "enabled" | "disabled" | null;
   reasoning_effort?: string | null;
-  artifacts?: string[] | null;
-  conversation_mode?: "ask" | "plan" | "craft";
+  artifacts?: ThreadArtifact[] | null;
+  conversation_mode?: "ask" | "plan" | "craft" | null;
   pending_plan_path?: string | null;
   hitl_policy?: { mode: "ask" | "allow_all" | "allow_tools"; tools?: string[] };
 }): Session {
@@ -63,13 +64,19 @@ export function toSession(row: {
     modelRef: row.model_ref ?? null,
     reasoningMode: row.reasoning_mode ?? null,
     reasoningEffort: row.reasoning_effort ?? null,
-    conversationMode: row.conversation_mode ?? "craft",
+    conversationMode: row.conversation_mode ?? undefined,
     pendingPlanPath: row.pending_plan_path ?? null,
     hitlPolicy: row.hitl_policy ?? { mode: "ask" },
     artifacts: Array.isArray(row.artifacts)
       ? row.artifacts.filter(
-          (path): path is string =>
-            typeof path === "string" && path.trim().length > 0,
+          (artifact): artifact is ThreadArtifact =>
+            (typeof artifact === "string" && artifact.trim().length > 0) ||
+            (typeof artifact === "object" &&
+              artifact !== null &&
+              typeof artifact.producer_agent_id === "string" &&
+              artifact.producer_agent_id.length > 0 &&
+              typeof artifact.path === "string" &&
+              artifact.path.length > 0),
         )
       : [],
   };
@@ -119,19 +126,35 @@ export function clearPendingThread(threadId: string) {
 }
 
 /** Patch artifacts for one thread in the module session store. */
-export function syncSessionArtifacts(threadId: string, artifacts: string[]) {
+export function syncSessionArtifacts(
+  threadId: string,
+  artifacts: ThreadArtifact[],
+) {
   if (!threadId) return;
   const normalized = artifacts.filter(
-    (path): path is string =>
-      typeof path === "string" && path.trim().length > 0,
+    (artifact): artifact is ThreadArtifact =>
+      (typeof artifact === "string" && artifact.trim().length > 0) ||
+      (typeof artifact === "object" &&
+        artifact !== null &&
+        typeof artifact.producer_agent_id === "string" &&
+        artifact.producer_agent_id.length > 0 &&
+        typeof artifact.path === "string" &&
+        artifact.path.length > 0),
   );
   setModuleSessions((prev) => {
-    const idx = prev.findIndex((s) => s.id === threadId);
+    const idx = prev.findIndex((session) => session.id === threadId);
     if (idx < 0) return prev;
     const current = prev[idx].artifacts ?? [];
     if (
       current.length === normalized.length &&
-      current.every((p, i) => p === normalized[i])
+      current.every((artifact, index) => {
+        const nextArtifact = normalized[index];
+        return typeof artifact === "string"
+          ? artifact === nextArtifact
+          : typeof nextArtifact === "object" &&
+              artifact.producer_agent_id === nextArtifact.producer_agent_id &&
+              artifact.path === nextArtifact.path;
+      })
     ) {
       return prev;
     }
@@ -145,17 +168,23 @@ export function syncSessionArtifacts(threadId: string, artifacts: string[]) {
 export async function fetchAndSyncSessionArtifacts(
   agentId: string,
   threadId: string,
-): Promise<string[]> {
+): Promise<ThreadArtifact[]> {
   if (!agentId || !threadId) return [];
   try {
     const history = await octopThreadsApi.history(agentId, threadId, {
       limit: 1,
       offset: 0,
     });
-    const artifacts = Array.isArray(history.artifacts)
+    const artifacts: ThreadArtifact[] = Array.isArray(history.artifacts)
       ? history.artifacts.filter(
-          (path): path is string =>
-            typeof path === "string" && path.trim().length > 0,
+          (artifact): artifact is ThreadArtifact =>
+            (typeof artifact === "string" && artifact.trim().length > 0) ||
+            (typeof artifact === "object" &&
+              artifact !== null &&
+              typeof artifact.producer_agent_id === "string" &&
+              artifact.producer_agent_id.length > 0 &&
+              typeof artifact.path === "string" &&
+              artifact.path.length > 0),
         )
       : [];
     syncSessionArtifacts(threadId, artifacts);

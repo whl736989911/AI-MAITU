@@ -15,7 +15,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEventLibrary, {
   PointerEventsCheckLevel,
   type UserEvent,
@@ -181,88 +181,184 @@ function renderPanel() {
     </CurrentUserProvider>,
   );
 }
+function normalizedText(element: HTMLElement): string {
+  return element.textContent?.replace(/\s+/g, " ").trim() ?? "";
+}
 
+async function findVisibleColumnHeader(
+  table: HTMLElement,
+  name: string,
+): Promise<HTMLElement> {
+  let header: HTMLElement | undefined;
+  await waitFor(() => {
+    header = within(table)
+      .getAllByRole("columnheader", { hidden: true })
+      .find(
+        (candidate) =>
+          candidate.closest('[aria-hidden="true"]') === null &&
+          normalizedText(candidate) === name,
+      );
+    expect(header).toBeDefined();
+  });
+  expect(header).toBeVisible();
+  expect(header).toHaveAccessibleName(name);
+  return header!;
+}
+
+function findButtonByAccessibleLabel(
+  root: HTMLElement,
+  name: string,
+): HTMLElement | undefined {
+  return within(root)
+    .getAllByRole("button", { hidden: true })
+    .find(
+      (candidate) =>
+        candidate.closest('[aria-hidden="true"]') === null &&
+        (
+          candidate.getAttribute("aria-label") ?? normalizedText(candidate)
+        ).replace(/\s+/g, "") === name.replace(/\s+/g, ""),
+    );
+}
+
+async function expectCountButton(
+  root: HTMLElement,
+  name: string,
+): Promise<void> {
+  let button: HTMLElement | undefined;
+  await waitFor(() => {
+    button = findButtonByAccessibleLabel(root, name);
+    expect(button).toBeDefined();
+  });
+  expect(button).toBeVisible();
+  expect(button).toHaveAccessibleName(name);
+}
+
+function findButtonByText(
+  root: HTMLElement,
+  text: string,
+): HTMLElement | undefined {
+  return within(root)
+    .getAllByRole("button", { hidden: true })
+    .find(
+      (candidate) =>
+        candidate.closest('[aria-hidden="true"]') === null &&
+        normalizedText(candidate) === text,
+    );
+}
+
+function findRadioByText(
+  root: HTMLElement,
+  text: string,
+): HTMLElement | undefined {
+  return within(root)
+    .getAllByRole("radio", { hidden: true })
+    .find((candidate) => {
+      const form = candidate.closest("form");
+      return (
+        candidate.closest('[aria-hidden="true"]') === null &&
+        normalizedText(candidate).startsWith(text) &&
+        form !== null &&
+        within(form).queryAllByRole("textbox", { hidden: true }).length > 0
+      );
+    });
+}
 describe("Admin → Users agent columns", () => {
   it("draws only the experts column when the deployment has no features", async () => {
     agents = [EXPERT, agent("reviewer", "agent", 1)];
     renderPanel();
 
-    expect(
-      await screen.findByRole("columnheader", { name: "专家" }),
-    ).toBeInTheDocument();
+    const tableElement = await screen.findByRole("table", { hidden: true });
+    expect(tableElement).toBeVisible();
+    await findVisibleColumnHeader(tableElement, "专家");
     // Bob owns nothing, but the column is about the deployment — his row reads
     // 0 rather than the column dropping out from under alice.
-    expect(await screen.findByRole("button", { name: "专家 2" })).toBeVisible();
-    expect(await screen.findByRole("button", { name: "专家 0" })).toBeVisible();
-    expect(screen.queryByRole("columnheader", { name: "功能" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "功能 0" })).toBeNull();
+    await expectCountButton(tableElement, "专家 2");
+    await expectCountButton(tableElement, "专家 0");
+    expect(
+      within(tableElement)
+        .getAllByRole("columnheader", { hidden: true })
+        .some(
+          (header) =>
+            header.closest('[aria-hidden="true"]') === null &&
+            normalizedText(header) === "功能",
+        ),
+    ).toBe(false);
+    expect(findButtonByAccessibleLabel(tableElement, "功能 0")).toBeUndefined();
   });
 
   it("draws only the features column when the deployment has no experts", async () => {
     agents = [FEATURE];
     renderPanel();
 
+    const tableElement = await screen.findByRole("table", { hidden: true });
+    expect(tableElement).toBeVisible();
+    expect(await findVisibleColumnHeader(tableElement, "功能")).toBeVisible();
+    await expectCountButton(tableElement, "功能 1");
+    await expectCountButton(tableElement, "功能 0");
     expect(
-      await screen.findByRole("columnheader", { name: "功能" }),
-    ).toBeInTheDocument();
-    expect(await screen.findByRole("button", { name: "功能 1" })).toBeVisible();
-    expect(await screen.findByRole("button", { name: "功能 0" })).toBeVisible();
-    expect(screen.queryByRole("columnheader", { name: "专家" })).toBeNull();
-    expect(screen.queryByRole("button", { name: "专家 0" })).toBeNull();
+      within(tableElement)
+        .getAllByRole("columnheader", { hidden: true })
+        .some(
+          (header) =>
+            header.closest('[aria-hidden="true"]') === null &&
+            normalizedText(header) === "专家",
+        ),
+    ).toBe(false);
+    expect(findButtonByAccessibleLabel(tableElement, "专家 0")).toBeUndefined();
   });
 
   it("draws both columns, each counting its own kind, when both exist", async () => {
     agents = [EXPERT, FEATURE, agent("second-feature", "feature", 1)];
     renderPanel();
 
-    expect(
-      await screen.findByRole("columnheader", { name: "专家" }),
-    ).toBeInTheDocument();
-    expect(
-      await screen.findByRole("columnheader", { name: "功能" }),
-    ).toBeInTheDocument();
+    const tableElement = await screen.findByRole("table", { hidden: true });
+    expect(tableElement).toBeVisible();
+    expect(await findVisibleColumnHeader(tableElement, "专家")).toBeVisible();
+    expect(await findVisibleColumnHeader(tableElement, "功能")).toBeVisible();
     // Alice's two kinds are told apart inside one row.
-    expect(await screen.findByRole("button", { name: "专家 1" })).toBeVisible();
-    expect(await screen.findByRole("button", { name: "功能 2" })).toBeVisible();
+    await expectCountButton(tableElement, "专家 1");
+    await expectCountButton(tableElement, "功能 2");
     // And a user with neither still reads 0 / 0, not a missing row.
-    expect(await screen.findByRole("button", { name: "专家 0" })).toBeVisible();
-    expect(await screen.findByRole("button", { name: "功能 0" })).toBeVisible();
+    await expectCountButton(tableElement, "专家 0");
+    await expectCountButton(tableElement, "功能 0");
   });
 
   it("carries both tallies on a card when both kinds exist", async () => {
     agents = [EXPERT, FEATURE];
     renderPanel();
-    await screen.findByRole("columnheader", { name: "专家" });
+    const tableElement = await screen.findByRole("table", { hidden: true });
+    expect(tableElement).toBeVisible();
+    await findVisibleColumnHeader(tableElement, "专家");
 
     await userEvent.click(screen.getByText("卡片"));
 
     // One tally per kind, per card: alice's, then bob's all-zero pair. Either
     // button opens the one drawer listing that user's agents.
-    expect(
-      await screen.findByRole("button", { name: /^专家\s*1$/ }),
-    ).toBeVisible();
-    expect(
-      await screen.findByRole("button", { name: /^功能\s*1$/ }),
-    ).toBeVisible();
-    expect(
-      await screen.findByRole("button", { name: /^专家\s*0$/ }),
-    ).toBeVisible();
-    expect(
-      await screen.findByRole("button", { name: /^功能\s*0$/ }),
-    ).toBeVisible();
+    await expectCountButton(document.body, "专家 1");
+    await expectCountButton(document.body, "功能 1");
+    await expectCountButton(document.body, "专家 0");
+    await expectCountButton(document.body, "功能 0");
   });
 
   it("drops a kind's tally from the cards too when the deployment has no such kind", async () => {
     agents = [EXPERT];
     renderPanel();
-    await screen.findByRole("columnheader", { name: "专家" });
+    const tableElement = await screen.findByRole("table", { hidden: true });
+    expect(tableElement).toBeVisible();
+    await findVisibleColumnHeader(tableElement, "专家");
 
     await userEvent.click(screen.getByText("卡片"));
 
+    await expectCountButton(document.body, "专家 1");
     expect(
-      await screen.findByRole("button", { name: /^专家\s*1$/ }),
-    ).toBeVisible();
-    expect(screen.queryByRole("button", { name: /^功能/ })).toBeNull();
+      screen
+        .getAllByRole("button", { hidden: true })
+        .some(
+          (button) =>
+            button.closest('[aria-hidden="true"]') === null &&
+            button.getAttribute("aria-label")?.startsWith("功能"),
+        ),
+    ).toBe(false);
   });
 });
 
@@ -270,64 +366,60 @@ describe("Admin → Users org-unit requirements", () => {
   it("does not offer an org unit when creating an enterprise administrator", async () => {
     renderPanel();
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "新建用户" }),
-    );
-    const drawer = screen.getByRole("dialog", { name: "新建用户" });
-    const role = within(drawer)
-      .getAllByRole("radio", { name: /^企业管理员/ })
-      .find((candidate) => {
-        const candidateForm = candidate.closest("form");
-        return (
-          candidateForm !== null &&
-          within(candidateForm).queryByRole("textbox", { name: "用户名" }) !==
-            null
-        );
-      });
+    const newUser = findButtonByText(document.body, "新建用户");
+    expect(newUser).toBeDefined();
+    expect(newUser).toBeVisible();
+    expect(newUser).toHaveAccessibleName("新建用户");
+    await userEvent.click(newUser!);
+    const drawer = screen.getByRole("dialog", { hidden: true });
+    expect(drawer).toBeVisible();
+    expect(drawer).toHaveAccessibleName("新建用户");
+    const role = findRadioByText(drawer, "企业管理员");
     expect(role).toBeDefined();
+    expect(role).toBeVisible();
+    expect(role).toHaveAccessibleName(/^企业管理员/);
     const form = role!.closest("form");
     expect(form).not.toBeNull();
-    await userEvent.click(role);
+    await userEvent.click(role!);
     expect(role).toHaveAttribute("aria-checked", "true");
 
     expect(
-      within(form as HTMLFormElement).queryByRole("combobox", {
-        name: "所属组织单元",
+      within(form as HTMLFormElement).queryAllByRole("combobox", {
+        hidden: true,
       }),
-    ).toBeNull();
+    ).toHaveLength(0);
   });
 
   it("keeps the org unit required for employees and unit administrators", async () => {
     renderPanel();
 
-    await userEvent.click(
-      await screen.findByRole("button", { name: "新建用户" }),
-    );
-    const drawer = screen.getByRole("dialog", { name: "新建用户" });
-    const rolePicker = within(drawer)
-      .getAllByRole("radio", { name: /^部门管理员/ })
-      .find((candidate) => {
-        const candidateForm = candidate.closest("form");
-        return (
-          candidateForm !== null &&
-          within(candidateForm).queryByRole("textbox", { name: "用户名" }) !==
-            null
-        );
-      });
+    const newUser = findButtonByText(document.body, "新建用户");
+    expect(newUser).toBeDefined();
+    expect(newUser).toBeVisible();
+    expect(newUser).toHaveAccessibleName("新建用户");
+    await userEvent.click(newUser!);
+    const drawer = screen.getByRole("dialog", { hidden: true });
+    expect(drawer).toBeVisible();
+    expect(drawer).toHaveAccessibleName("新建用户");
+    const rolePicker = findRadioByText(drawer, "部门管理员");
     expect(rolePicker).toBeDefined();
+    expect(rolePicker).toBeVisible();
+    expect(rolePicker).toHaveAccessibleName(/^部门管理员/);
     const form = rolePicker!.closest("form");
     expect(form).not.toBeNull();
-    const formQueries = within(form as HTMLFormElement);
-    const orgUnit = formQueries.getByRole("combobox", {
-      name: "所属组织单元",
-    });
+    const comboboxes = within(form as HTMLFormElement).getAllByRole(
+      "combobox",
+      { hidden: true },
+    );
+    expect(comboboxes).toHaveLength(1);
+    const orgUnit = comboboxes[0];
+    expect(orgUnit).toBeVisible();
+    expect(orgUnit).toHaveAccessibleName("所属组织单元");
     expect(orgUnit).toHaveAttribute("aria-required", "true");
 
-    await userEvent.click(rolePicker);
+    await userEvent.click(rolePicker!);
     expect(rolePicker).toHaveAttribute("aria-checked", "true");
-    expect(
-      formQueries.getByRole("combobox", { name: "所属组织单元" }),
-    ).toHaveAttribute("aria-required", "true");
+    expect(orgUnit).toHaveAttribute("aria-required", "true");
   });
 });
 
@@ -338,19 +430,27 @@ describe("Admin → Users team permissions", () => {
       { key: "teams", category: "settings", label: "团队", can_grant: true },
     ];
     renderPanel();
-    await userEvent.click(
-      await screen.findByRole("button", { name: "新建用户" }),
-    );
+    const newUser = findButtonByText(document.body, "新建用户");
+    expect(newUser).toBeDefined();
+    expect(newUser).toBeVisible();
+    expect(newUser).toHaveAccessibleName("新建用户");
+    await userEvent.click(newUser!);
 
-    const drawer = within(screen.getByRole("dialog", { name: "新建用户" }));
-    const experts = drawer.getByRole("button", { name: "专家" });
-    const teams = drawer.getByRole("button", { name: "团队" });
+    const drawerElement = screen.getByRole("dialog", { hidden: true });
+    expect(drawerElement).toBeVisible();
+    expect(drawerElement).toHaveAccessibleName("新建用户");
+    const experts = findButtonByText(drawerElement, "专家");
+    const teams = findButtonByText(drawerElement, "团队");
+    expect(experts).toBeDefined();
+    expect(teams).toBeDefined();
+    expect(experts).toHaveAccessibleName("专家");
+    expect(teams).toHaveAccessibleName("团队");
     expect(experts).toHaveAttribute("aria-pressed", "true");
     expect(teams).toHaveAttribute("aria-pressed", "false");
 
-    await userEvent.click(teams);
+    await userEvent.click(teams!);
     expect(teams).toHaveAttribute("aria-pressed", "true");
-    await userEvent.click(experts);
+    await userEvent.click(experts!);
     expect(experts).toHaveAttribute("aria-pressed", "false");
     expect(teams).toHaveAttribute("aria-pressed", "false");
   });

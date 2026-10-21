@@ -132,6 +132,7 @@ import DataSourcesPanel from "./components/DataSourcesPanel";
 import KnowledgeCollections from "./components/KnowledgeCollections";
 import KnowledgePermissionsDrawer from "./components/KnowledgePermissionsDrawer";
 import styles from "./index.module.less";
+import { isImeComposing } from "../Chat/utils/ime";
 
 type BaseFormValues = {
   name: string;
@@ -3617,7 +3618,9 @@ export default function KnowledgeBasesPage() {
           value={folderName}
           onChange={(event) => setFolderName(event.target.value)}
           placeholder={t("knowledgeBases.folderNamePlaceholder")}
-          onPressEnter={() => void createFolder()}
+          onPressEnter={(event) => {
+            if (!isImeComposing(event)) void createFolder();
+          }}
         />
       </Modal>
 
@@ -3634,7 +3637,9 @@ export default function KnowledgeBasesPage() {
           value={renameName}
           onChange={(event) => setRenameName(event.target.value)}
           placeholder={t("knowledgeBases.folderNamePlaceholder")}
-          onPressEnter={() => void renameFolder()}
+          onPressEnter={(event) => {
+            if (!isImeComposing(event)) void renameFolder();
+          }}
         />
       </Modal>
 

@@ -79,6 +79,7 @@ def _job(
         delivery_service=delivery_service,
         cron_repo=cron_repo,
         audit_repo=audit,
+        date_trigger=False,
     )
 
 

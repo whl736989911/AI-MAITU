@@ -89,7 +89,8 @@ interface AgentDetail {
   id: string;
   name: string;
   description: string | null;
-  default_model: string | null;
+  default_model?: string | null;
+  conversation_mode?: "ask" | "plan" | "craft";
   color?: string | null;
   icon_url?: string | null;
   max_iters?: number | null;
@@ -137,6 +138,7 @@ interface EditFormValues {
   welcome_message?: string;
   is_shared?: boolean;
   default_model: string;
+  conversation_mode: "ask" | "plan" | "craft";
   backend_choice: string;
   composite_default: string;
   root_dir?: string;
@@ -321,7 +323,13 @@ function EditAgentDrawerBody({
             typeof ag.welcome_message === "string" ? ag.welcome_message : "",
           is_shared: agent.is_shared ?? false,
           default_model: defaultModelToForm(ag.default_model),
-          backend_choice: parsedBackend.backendChoice,
+          conversation_mode:
+            ag.conversation_mode ??
+            (cfg.conversation_mode === "ask" ||
+            cfg.conversation_mode === "plan" ||
+            cfg.conversation_mode === "craft"
+              ? cfg.conversation_mode
+              : "craft"),
           composite_default: parsedBackend.compositeDefault,
           root_dir: parsedBackend.rootDir,
           ...readAgentRuntimeFormValues(ag),
@@ -495,8 +503,8 @@ function EditAgentDrawerBody({
           description: values.description || null,
           is_shared: values.is_shared ?? false,
           default_model: defaultModelFromForm(values.default_model),
+          conversation_mode: values.conversation_mode,
           color: nextColor,
-          config: nextConfig,
           welcome_message: stored.welcome_message ?? "",
           knowledge_base_ids: stored.knowledge_base_ids ?? [],
           mcp_servers: stored.mcp_servers ?? [],
@@ -842,6 +850,19 @@ function EditAgentDrawerBody({
                       .toLowerCase()
                       .includes(input.toLowerCase())
                   }
+                />
+              </Form.Item>
+              <Form.Item
+                name="conversation_mode"
+                label={t("experts.conversationModeLabel")}
+                extra={t("experts.conversationModeHint")}
+              >
+                <Select
+                  options={[
+                    { value: "ask", label: t("chat.conversationMode.ask") },
+                    { value: "plan", label: t("chat.conversationMode.plan") },
+                    { value: "craft", label: t("chat.conversationMode.craft") },
+                  ]}
                 />
               </Form.Item>
 

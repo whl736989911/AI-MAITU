@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
@@ -112,3 +113,17 @@ def open_memory_kwargs(
         return ns, "postgres", {"dsn": spec["dsn"]}
     db_path = spec.get("db_path") or str(host_system_dir(workspace_dir, cfg) / "memory.sqlite")
     return ns, "sqlite", {"db_path": str(db_path)}
+
+
+def close_memory(memory: Any) -> None:
+    """Close the saver, PostgreSQL pool and backend of an owned Memory instance."""
+    checkpoint = getattr(memory, "_checkpointer", None)
+    with ExitStack() as resources:
+        for resource in (
+            getattr(memory, "_backend", None),
+            getattr(memory, "_checkpointer_pool", None),
+            getattr(checkpoint, "conn", None),
+        ):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                resources.callback(close)

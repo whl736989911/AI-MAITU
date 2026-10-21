@@ -1,0 +1,61 @@
+{
+  "id": "productivity",
+  "label": {
+    "zh": "效率专家",
+    "en": "Productivity Expert"
+  },
+  "description": {
+    "zh": "帮助梳理优先级、维护经授权的任务清单，并从用户提供的材料中提炼行动项、术语和项目背景。仅在用户明确授权且确认共享工作区适合存放时写入 TASKS.md；不在共享文件中保存个人记忆。未配置连接器时请用户提供材料并说明无法直接访问外部工具。",
+    "en": "Organizes priorities, maintains an explicitly authorized task list, and extracts action items, terminology, and project context from user-provided materials. Writes TASKS.md only with explicit authorization and confirmation that the shared workspace is appropriate; never stores personal memory in shared files. If connectors are unavailable, asks for source materials and states that external tools cannot be accessed directly."
+  },
+  "welcome_message": {
+    "zh": "告诉我你想整理的任务或材料，我会帮你分清优先级并明确下一步。",
+    "en": "Share the tasks or materials you want to organize, and I’ll help prioritize them and clarify next steps."
+  },
+  "icon_name": "zap",
+  "icon_url": "/experts/avatars/scene-office.svg",
+  "color": "#16a34a",
+  "prompt_files": [
+    "SOUL.md",
+    "AGENTS.md"
+  ],
+  "task_examples": {
+    "zh": [
+      "帮我梳理这周的工作：周四前评审预算方案、等平台组回复 API 规范、下周起草路线图。先列出优先级和需要确认的日期。",
+      "我会把任务清单放在这个共享工作区。请先确认你会把哪些内容写入 TASKS.md，再帮我整理这些任务。",
+      "根据我贴出的会议纪要，提取可能的行动项和负责人；先列出来让我确认，不要自动写入清单。"
+    ],
+    "en": [
+      "Help me organize this week: review the budget proposal by Thursday, wait for Platform’s API-spec response, and draft the roadmap next week. Prioritize these and flag dates that need confirmation.",
+      "I want to keep a task list in this shared workspace. First confirm exactly what you would write to TASKS.md, then organize these tasks.",
+      "Extract possible action items and owners from the meeting notes I provide. List them for my confirmation; do not add them automatically."
+    ]
+  },
+  "quick_prompts": [
+    {
+      "title": { "zh": "梳理优先级", "en": "Prioritize" },
+      "description": { "zh": "根据截止日、影响和依赖排定下一步", "en": "Rank next steps by deadline, impact, and dependencies" },
+      "prompt": { "zh": "帮我根据截止日、影响和依赖梳理这些任务，并指出需要我补充的信息。", "en": "Prioritize these tasks by deadline, impact, and dependencies, and tell me what information is missing." },
+      "color": "#dcfce7",
+      "icon_name": "zap"
+    },
+    {
+      "title": { "zh": "提取行动项", "en": "Extract actions" },
+      "description": { "zh": "从我提供的会议或邮件内容中提取候选任务", "en": "Extract candidate tasks from meeting or email content I provide" },
+      "prompt": { "zh": "从我提供的材料中提取行动项、负责人和明确提到的期限；先列出候选项让我确认。", "en": "Extract action items, owners, and explicitly stated deadlines from the material I provide; show candidates for confirmation first." },
+      "color": "#dcfce7",
+      "icon_name": "zap"
+    },
+    {
+      "title": { "zh": "回顾任务", "en": "Review tasks" },
+      "description": { "zh": "标出逾期、阻塞和缺少信息的事项", "en": "Flag overdue, blocked, and underspecified items" },
+      "prompt": { "zh": "帮我回顾这份任务清单，标出逾期、等待他人和缺少上下文的事项；不要删除或改状态，先给我建议。", "en": "Review this task list and flag overdue, waiting, and underspecified items. Don’t delete or change statuses; give me recommendations first." },
+      "color": "#dcfce7",
+      "icon_name": "zap"
+    }
+  ],
+  "source": {
+    "type": "knowledge-work-plugins",
+    "plugin": "productivity"
+  }
+}

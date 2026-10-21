@@ -29,13 +29,18 @@ describe("resumeHitl", () => {
     );
     const onStreamEnd = vi.fn();
 
+    const fetchMock = vi.mocked(fetch);
     await resumeHitl(
       SESSION,
       "agent-1",
       "thread-1",
+      "pending-1",
       [{ type: "respond", message: "answer" }],
       onStreamEnd,
     );
+
+    const requestBody = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(requestBody.pending_id).toBe("pending-1");
 
     expect(getSnapshot(SESSION).messages.at(-1)?.content).toBe(
       "completed answer",

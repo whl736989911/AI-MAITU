@@ -15,7 +15,6 @@ from octop.infra.desktop.setup import (
     parse_geometry,
     python_deps_install_cmd,
     read_geometry,
-    vnc_listens_localhost_only,
 )
 
 
@@ -160,10 +159,6 @@ def test_parse_geometry() -> None:
 
 def test_read_geometry_default() -> None:
     assert read_geometry().endswith("x1080") or "x" in read_geometry()
-
-
-def test_vnc_localhost_only() -> None:
-    assert vnc_listens_localhost_only() in {True, False, None}
 
 
 def test_desktop_status_deps_missing() -> None:

@@ -49,7 +49,7 @@ from octop.api.common.agent import (
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.common.memory_client import feature_memory_reason, resolve_memory_access
 from octop.api.common.workspace import require_running_workspace
-from octop.api.deps import current_user, get_server
+from octop.api.deps import current_user, get_server, require_permission
 from octop.infra.agents.feature_workflow import STATUS_ACTIVE, feature_memory_stage
 from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.errors import ErrorCode, OctopError
@@ -132,6 +132,7 @@ async def get_heartbeat_config(
     as_user: int | None = None,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _module_user: Any = Depends(require_permission("subagents")),
 ) -> dict[str, Any]:
     # Resolve runtime first — this enforces user ownership before we
     # peek at the config row.
@@ -157,6 +158,7 @@ async def put_heartbeat_config(
     as_user: int | None = None,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _module_user: Any = Depends(require_permission("subagents")),
 ) -> dict[str, Any]:
     _resolve_runtime(
         agent_id,
@@ -197,6 +199,7 @@ async def list_daily_memory(
     as_user: int | None = None,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _module_user: Any = Depends(require_permission("memory")),
 ) -> list[dict[str, Any]]:
     rt = await _resolve_memory_reader(agent_id, user=user, as_user=as_user, server=server)
     ws = await require_running_workspace(rt.agent_id, user=user, as_user=as_user, server=server)
@@ -238,6 +241,7 @@ async def read_daily_memory(
     as_user: int | None = None,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _module_user: Any = Depends(require_permission("memory")),
 ) -> dict[str, Any]:
     date = _validate_filename(filename)
     rt = await _resolve_memory_reader(agent_id, user=user, as_user=as_user, server=server)
@@ -256,6 +260,7 @@ async def delete_daily_memory(
     as_user: int | None = None,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
+    _module_user: Any = Depends(require_permission("memory")),
 ) -> Response:
     _validate_filename(filename)
     rt = _resolve_runtime(

@@ -1,0 +1,33 @@
+{
+  "id": "engineering",
+  "label": {"zh": "工程专家", "en": "Engineering Expert"},
+  "description": {
+    "zh": "基于 Anthropic Knowledge Work Plugins 工程插件改编，提供代码评审、调试、架构设计、事故响应、测试策略、发布检查和技术文档工作流。",
+    "en": "Adapted from the engineering plugin in Anthropic Knowledge Work Plugins. Provides structured workflows for code review, debugging, architecture, incident response, testing, release readiness, and technical documentation."
+  },
+  "welcome_message": {
+    "zh": "提供代码变更、错误信息、设计约束或运行材料；我会区分证据、假设与建议。",
+    "en": "Share a change, error, design constraints, or operational evidence. I will distinguish evidence, assumptions, and recommendations."
+  },
+  "icon_name": "cpu",
+  "icon_url": "/experts/avatars/scene-tech.svg",
+  "color": "#2563eb",
+  "prompt_files": ["SOUL.md", "AGENTS.md"],
+  "task_examples": {
+    "zh": [
+      "根据我提供的 diff 评审安全性、正确性、性能和边界情况，并标注证据位置。",
+      "根据这些日志和影响信息做事故分级、拟定状态更新和安全的缓解选项。",
+      "比较两个服务间异步通信方案，输出含约束、权衡和待确认假设的 ADR。"
+    ],
+    "en": [
+      "Review this supplied diff for security, correctness, performance, and edge cases; cite evidence locations.",
+      "Triage this incident from the supplied logs and impact, and draft an update and safe mitigation options.",
+      "Compare asynchronous communication options for these services in an ADR with constraints, trade-offs, and open assumptions."
+    ]
+  },
+  "quick_prompts": [
+    {"title":{"zh":"代码评审","en":"Code review"},"description":{"zh":"基于提供的变更开展结构化审查","en":"Structured review of supplied changes"},"prompt":{"zh":"请评审我提供的代码变更，按严重性列出可定位的发现，并区分事实与推断。","en":"Review the code change I provide. Rank actionable, locatable findings by severity and distinguish facts from inference."},"color":"#dbeafe","icon_name":"cpu"},
+    {"title":{"zh":"事故响应","en":"Incident response"},"description":{"zh":"依据给定证据进行分级、沟通和缓解规划","en":"Triage, communicate, and plan mitigation from supplied evidence"},"prompt":{"zh":"请根据我提供的事故证据评估影响、整理事实时间线，并提出需经负责人批准的缓解选项。","en":"Assess impact from the incident evidence I provide, build a factual timeline, and propose mitigations for the incident lead's approval."},"color":"#fee2e2","icon_name":"cpu"},
+    {"title":{"zh":"架构决策","en":"Architecture decision"},"description":{"zh":"明确选项、约束、权衡和后果","en":"Make options, constraints, trade-offs, and consequences explicit"},"prompt":{"zh":"请将我的需求和约束整理成 ADR；标明未经验证的假设及需由决策者确认的事项。","en":"Turn my requirements and constraints into an ADR; flag unvalidated assumptions and decisions requiring stakeholder confirmation."},"color":"#dbeafe","icon_name":"cpu"}
+  ]
+}

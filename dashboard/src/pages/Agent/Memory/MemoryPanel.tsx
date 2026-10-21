@@ -18,6 +18,7 @@ import {
 import type { LucideIcon } from "lucide-react";
 import {
   Bell,
+  Archive,
   Heart,
   Inbox,
   LayoutDashboard,
@@ -26,6 +27,7 @@ import {
   ScrollText,
   Settings,
   User,
+  FileText,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import TabLabel from "../../../components/TabLabel";
@@ -41,6 +43,8 @@ import CandidatesReview from "./CandidatesReview";
 import MemoryTree from "./MemoryTree";
 import ProactiveConfig from "./ProactiveConfig";
 import MemorySettings from "./MemorySettings";
+import ManualDocuments from "./ManualDocuments";
+import MemoryBackups from "./MemoryBackups";
 
 import memoryDashboardApi, {
   type MemoryAccess,
@@ -58,7 +62,9 @@ type MemoryTab =
   | "journal"
   | "conversations"
   | "proactive"
-  | "settings";
+  | "settings"
+  | "manual"
+  | "backups";
 
 type LibraryView = "tree" | "atoms" | "raw";
 
@@ -132,6 +138,18 @@ const TABS: TabDef[] = [
     fallback: "设置",
     icon: Settings,
     writes: true,
+  },
+  {
+    key: "manual",
+    labelKey: "memory.tabs.manual",
+    fallback: "USER.md / MEMORY.md",
+    icon: FileText,
+  },
+  {
+    key: "backups",
+    labelKey: "memory.backups.title",
+    fallback: "记忆备份",
+    icon: Archive,
   },
 ];
 
@@ -356,16 +374,21 @@ export default function MemoryPanel({
       </div>
     );
 
-    const offered = TABS.filter(
-      (tab) =>
+    const offered = TABS.filter((tab) => {
+      if (tab.key === "settings") {
+        return (
+          !readOnly &&
+          (!featureMemory || currentAccess?.configuration_writable === true)
+        );
+      }
+      return (
         !(effectiveReadOnly && tab.writes) &&
         !(
           featureMemory &&
-          (tab.key === "proactive" ||
-            tab.key === "settings" ||
-            tab.key === "conversations")
-        ),
-    );
+          (tab.key === "proactive" || tab.key === "conversations")
+        )
+      );
+    });
     return offered.map((tab) => {
       const showBadge = tab.showPendingBadge && pendingCount > 0;
       const label = (
@@ -459,6 +482,26 @@ export default function MemoryPanel({
         case "settings":
           children = <MemorySettings agentId={agentId} />;
           break;
+        case "manual":
+          children = (
+            <ManualDocuments
+              agentId={agentId}
+              scope={memoryScope}
+              availableScopes={availableScopes}
+              readOnly={readOnly}
+            />
+          );
+          break;
+        case "backups":
+          children = (
+            <MemoryBackups
+              key={`${agentId}:${memoryScope ?? "shared"}`}
+              agentId={agentId}
+              scope={memoryScope}
+              readonly={effectiveReadOnly}
+            />
+          );
+          break;
       }
       return { key: tab.key, label, children };
     });
@@ -468,8 +511,10 @@ export default function MemoryPanel({
     expandKey,
     libraryView,
     featureMemory,
+    currentAccess,
     memoryScope,
     effectiveReadOnly,
+    readOnly,
     pendingCount,
     t,
   ]);

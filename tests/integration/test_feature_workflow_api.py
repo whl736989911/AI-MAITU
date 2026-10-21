@@ -140,6 +140,7 @@ async def test_publication_transfers_feature_to_enterprise_role_and_survives_aut
         username="published_manager",
         role="enterprise_admin",
         org_unit=TEST_ORG_UNIT,
+        permissions=sorted(BASELINE_PERMISSIONS | {"memory"}),
     )
     second_manager_auth = await create_user(
         client,
@@ -147,6 +148,7 @@ async def test_publication_transfers_feature_to_enterprise_role_and_survives_aut
         username="published_second",
         role="enterprise_admin",
         org_unit=TEST_ORG_UNIT,
+        permissions=sorted(BASELINE_PERMISSIONS | {"memory"}),
     )
     assert (await _create_feature(client, author_auth)).status_code == 201
     path = "/api/agents/feat-quote-helper/workflow"

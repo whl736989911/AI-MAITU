@@ -19,7 +19,7 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEventLibrary, {
   PointerEventsCheckLevel,
   type UserEvent,
@@ -82,9 +82,27 @@ function renderDrawer(editing: StorageBackendRow = DOCKER_ROW) {
     />,
   );
 }
+function findButtonByText(
+  root: HTMLElement,
+  text: string,
+): HTMLElement | undefined {
+  return within(root)
+    .getAllByRole("button", { hidden: true })
+    .find(
+      (button) =>
+        button.closest('[aria-hidden="true"]') === null &&
+        button.textContent?.replace(/\s+/g, " ").trim() === text,
+    );
+}
 
 async function save(): Promise<void> {
-  await userEvent.click(screen.getByRole("button", { name: "common.save" }));
+  const dialog = screen.getByRole("dialog", { hidden: true });
+  expect(dialog).toBeVisible();
+  const saveButton = findButtonByText(dialog, "common.save");
+  expect(saveButton).toBeDefined();
+  expect(saveButton).toBeVisible();
+  expect(saveButton).toHaveAccessibleName("common.save");
+  await userEvent.click(saveButton!);
 }
 
 beforeEach(() => {
@@ -115,9 +133,12 @@ describe("<StorageBackendDrawer /> docker config", () => {
 
   it("takes an edited advanced document as the document, not just a hint", async () => {
     renderDrawer();
-    await userEvent.click(await screen.findByText("storage.advancedConfig"));
+    const dialog = screen.getByRole("dialog", { hidden: true });
+    expect(dialog).toBeVisible();
+    const drawer = within(dialog);
+    await userEvent.click(drawer.getByText("storage.advancedConfig"));
 
-    const textarea = await screen.findByPlaceholderText('{"path_style": true}');
+    const textarea = await drawer.findByPlaceholderText('{"path_style": true}');
     await userEvent.clear(textarea);
     await userEvent.paste('{"cpus":"2"}');
     await save();
@@ -134,9 +155,12 @@ describe("<StorageBackendDrawer /> docker config", () => {
 
   it("refuses an unparseable advanced document instead of saving an empty one", async () => {
     renderDrawer();
-    await userEvent.click(await screen.findByText("storage.advancedConfig"));
+    const dialog = screen.getByRole("dialog", { hidden: true });
+    expect(dialog).toBeVisible();
+    const drawer = within(dialog);
+    await userEvent.click(drawer.getByText("storage.advancedConfig"));
 
-    const textarea = await screen.findByPlaceholderText('{"path_style": true}');
+    const textarea = await drawer.findByPlaceholderText('{"path_style": true}');
     await userEvent.clear(textarea);
     await userEvent.paste("{not valid json");
     await save();
@@ -145,7 +169,7 @@ describe("<StorageBackendDrawer /> docker config", () => {
       false,
     );
     expect(
-      await screen.findByText("storage.invalidConfigJson"),
+      await drawer.findByText("storage.invalidConfigJson"),
     ).toBeInTheDocument();
   });
 });

@@ -311,10 +311,10 @@ describe("UpdateConfig", () => {
     expect(screen.getByText(/授权激活与更新配置相互独立/)).toBeInTheDocument();
     // No heartbeat means no automatic install. The hint must point to the
     // correct installer instead of implying that configuring a queue is enough.
+    expect(screen.getByText(/未检测到有效的更新器心跳/)).toBeInTheDocument();
     expect(
-      screen.getByText(/未检测到有效的更新器心跳/),
+      screen.getByText(/scripts\/install_native_updater\.py/),
     ).toBeInTheDocument();
-    expect(screen.getByText(/scripts\/install_native_updater\.py/)).toBeInTheDocument();
     expect(
       screen.queryByText(/MAITU_UPDATE_QUEUE_DIR/),
     ).not.toBeInTheDocument();

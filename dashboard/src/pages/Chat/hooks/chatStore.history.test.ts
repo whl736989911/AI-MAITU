@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  appendUserMessage,
+  captureHistoryBaseline,
   getSnapshot,
   invalidateHistory,
   isHistoryStale,
@@ -55,6 +57,58 @@ describe("prependHistoryMessages", () => {
     expect(getSnapshot(SESSION).messages).toHaveLength(1);
     expect(getSnapshot(SESSION).historyHasMore).toBe(false);
     expect(getSnapshot(SESSION).historyNextOffset).toBe(50);
+  });
+});
+
+describe("setHistoryPage live-tail merge", () => {
+  afterEach(() => {
+    removeSession(SESSION);
+  });
+
+  it("preserves post-request live messages despite server timestamp skew", () => {
+    const initial = makeMessage("old");
+    setHistoryPage(SESSION, [initial], {
+      hasMore: false,
+      nextOffset: 1,
+    });
+    const baseline = captureHistoryBaseline(SESSION);
+    const live = { ...makeMessage("live"), timestamp: 1 };
+    appendUserMessage(SESSION, live);
+
+    setHistoryPage(SESSION, [{ ...initial, timestamp: 9_999_999 }], {
+      hasMore: true,
+      nextOffset: 2,
+      baseline,
+    });
+
+    expect(getSnapshot(SESSION).messages.map((message) => message.id)).toEqual([
+      "old",
+      "live",
+    ]);
+  });
+
+  it("uses the current streamed version when history has the same message id", () => {
+    const streaming = {
+      ...makeMessage("assistant"),
+      role: "assistant" as const,
+      content: "new streamed text",
+      status: "streaming" as const,
+    };
+    appendUserMessage(SESSION, streaming);
+
+    setHistoryPage(
+      SESSION,
+      [
+        {
+          ...streaming,
+          content: "stale persisted text",
+          status: "done",
+        },
+      ],
+      { hasMore: false, nextOffset: 1 },
+    );
+
+    expect(getSnapshot(SESSION).messages[0].content).toBe("new streamed text");
   });
 });
 

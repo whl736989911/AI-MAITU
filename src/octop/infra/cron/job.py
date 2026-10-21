@@ -33,6 +33,7 @@ class CronJob:
         mcp_servers: list[str] | None,
         user_id: int,
         delivery_service: CronDeliveryService,
+        date_trigger: bool,
         cron_repo: CronJobRepo,
         audit_repo: AuditRepo,
     ) -> None:
@@ -47,6 +48,7 @@ class CronJob:
         self._mcp_servers = list(mcp_servers or [])
         self._user_id = user_id
         self._delivery_service = delivery_service
+        self._date_trigger = date_trigger
         self._cron_repo = cron_repo
         self._audit_repo = audit_repo
 
@@ -68,8 +70,9 @@ class CronJob:
             session_key=row.session_key,
             model=row.model,
             task_type=row.task_type,
-            mcp_servers=list(row.mcp_servers),
+            mcp_servers=row.mcp_servers,
             user_id=row.user_id,
+            date_trigger=row.trigger.startswith("date:"),
             delivery_service=delivery_service,
             cron_repo=cron_repo,
             audit_repo=audit_repo,
@@ -86,37 +89,47 @@ class CronJob:
 
         METRICS.inc("cron_runs_total")
         ts = int(time.time())
-
+        if self._date_trigger and not self._cron_repo.claim_date_run(self._cron_id, ts=ts):
+            # A scheduled callback, manual run, or restart catch-up already owns
+            # this one-shot task.
+            self._cron_repo.update(self._cron_id, enabled=False)
+            return
         try:
-            await self._delivery_service.deliver(
-                CronDeliveryCommand(
-                    cron_id=self._cron_id,
-                    cron_name=self._name,
-                    agent_id=self._agent_id,
-                    user_id=self._user_id,
-                    session_key=self._session_key,
-                    prompt=self._prompt,
-                    fresh_thread=self._fresh_thread,
-                    task_type=self._task_type,
-                    model=self._model,
-                    mcp_servers=tuple(self._mcp_servers),
+            try:
+                await self._delivery_service.deliver(
+                    CronDeliveryCommand(
+                        cron_id=self._cron_id,
+                        cron_name=self._name,
+                        agent_id=self._agent_id,
+                        user_id=self._user_id,
+                        session_key=self._session_key,
+                        prompt=self._prompt,
+                        fresh_thread=self._fresh_thread,
+                        task_type=self._task_type,
+                        model=self._model,
+                        mcp_servers=tuple(self._mcp_servers),
+                    )
                 )
-            )
-        except Exception as exc:
-            METRICS.inc("cron_errors_total")
-            logger.exception("cron job %s failed", self._cron_id)
-            err = str(exc)
-            self._cron_repo.set_run_status(self._cron_id, ts=ts, status="error", error=err)
+            except Exception as exc:
+                METRICS.inc("cron_errors_total")
+                logger.exception("cron job %s failed", self._cron_id)
+                err = str(exc)
+                self._cron_repo.set_run_status(self._cron_id, ts=ts, status="error", error=err)
+                self._audit_repo.write(
+                    actor=ACTOR_SYSTEM,
+                    action="cron.run_failed",
+                    target=self._cron_id,
+                    payload=err,
+                )
+                return
+            self._cron_repo.set_run_status(self._cron_id, ts=ts, status="ok", error=None)
             self._audit_repo.write(
                 actor=ACTOR_SYSTEM,
-                action="cron.run_failed",
+                action="cron.run_ok",
                 target=self._cron_id,
-                payload=err,
             )
-            return
-        self._cron_repo.set_run_status(self._cron_id, ts=ts, status="ok", error=None)
-        self._audit_repo.write(
-            actor=ACTOR_SYSTEM,
-            action="cron.run_ok",
-            target=self._cron_id,
-        )
+        finally:
+            # A date task is a one-shot even when delivery fails. Keep its row
+            # and final status for history; only disable future scheduling.
+            if self._date_trigger:
+                self._cron_repo.update(self._cron_id, enabled=False)

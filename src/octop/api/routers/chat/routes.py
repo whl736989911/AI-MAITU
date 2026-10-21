@@ -113,6 +113,7 @@ async def iter_dashboard_hitl_resume_sse(
     channel_type: str,
     locale: str,
     is_disconnected: Callable[[], Awaitable[bool]],
+    gateway: Any | None = None,
 ) -> AsyncIterator[str]:
     """Stream dashboard HITL resume chunks and persist any nested ``hitl_required``.
 
@@ -128,6 +129,13 @@ async def iter_dashboard_hitl_resume_sse(
         channel_type=channel_type,
     )
     disconnected = False
+    steer_registry = getattr(gateway, "steer", None)
+    steering_turn_id = (
+        await steer_registry.active_turn_id(thread_id) if steer_registry is not None else None
+    )
+    if steer_registry is not None and steering_turn_id is not None:
+        # A valid approval decision resumes this exact parked logical turn.
+        await steer_registry.set_parked(thread_id, steering_turn_id, False)
     # Remove the resolved card before the resumed turn starts streaming, so
     # a concurrent history reload cannot re-inject it.
     if pending is not None:
@@ -145,6 +153,8 @@ async def iter_dashboard_hitl_resume_sse(
             if not disconnected:
                 disconnected = await is_disconnected()
             if isinstance(chunk, dict) and chunk.get("type") == "hitl_required":
+                if steering_turn_id is not None and steer_registry is not None:
+                    await steer_registry.set_parked(thread_id, steering_turn_id, True)
                 request_payload = chunk.get("request")
                 if isinstance(request_payload, dict):
                     request_payload = {
@@ -160,9 +170,17 @@ async def iter_dashboard_hitl_resume_sse(
             if not disconnected:
                 yield format_sse("chunk", chunk)
 
+        if steering_turn_id is not None and gateway is not None:
+            await gateway.complete_steering_turn(thread_id, steering_turn_id)
         if not disconnected:
             yield format_sse("chunk", {"type": "done"})
     except Exception as exc:
+        if steering_turn_id is not None and gateway is not None:
+            await gateway.complete_steering_turn(
+                thread_id,
+                steering_turn_id,
+                cancelled=True,
+            )
         if pending is not None:
             hitl_coordinator.store.mark_resolved(pending.pending_id, "expired")
         yield format_sse(
@@ -199,11 +217,22 @@ async def resume_hitl(
     assert_agent_access(server, agent_id, user)
     processor = server.app_runtime.gateway.processor
     hitl_coordinator = processor.hitl_coordinator
-    pending = hitl_coordinator.store.resolve_pending_for_thread(
-        body.thread_id,
-        agent_id=agent_id,
-        user_id=user.id,
-    )
+    pending_id = (body.pending_id or "").strip()
+    pending = hitl_coordinator.store.get(pending_id) if pending_id else None
+    thread = server.app_runtime.gateway.thread_registry.get_thread(body.thread_id)
+    if (
+        pending is None
+        or pending.status != "pending"
+        or pending.pending_id != pending_id
+        or pending.thread_id != body.thread_id
+        or pending.agent_id != agent_id
+        or pending.user_id != user.id
+        or thread is None
+        or thread.agent_id != agent_id
+        or thread.user_id != user.id
+        or pending.session_key != thread.session_key
+    ):
+        raise OctopError.localized(ErrorCode.HITL_APPROVAL_STALE)
     session_key, channel_type = _dashboard_hitl_stream_context(
         server,
         agent_id=agent_id,
@@ -211,10 +240,9 @@ async def resume_hitl(
         user_id=user.id,
         pending=pending,
     )
-    if pending is not None:
-        reason = decision_rejection_reason(pending, body.decisions)
-        if reason is not None:
-            raise HTTPException(status_code=400, detail=reason)
+    reason = decision_rejection_reason(pending, body.decisions)
+    if reason is not None:
+        raise HTTPException(status_code=400, detail=reason)
     if body.hitl_policy is not None:
         hitl_coordinator.session_policies.set(body.thread_id, body.hitl_policy.model_dump())
 
@@ -231,6 +259,7 @@ async def resume_hitl(
             channel_type=channel_type,
             locale=resolve_request_locale(request),
             is_disconnected=request.is_disconnected,
+            gateway=server.app_runtime.gateway,
         ):
             yield frame
 

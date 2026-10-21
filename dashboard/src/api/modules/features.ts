@@ -29,9 +29,18 @@ export interface FeatureCreateInput {
   icon_name?: string | null;
   color?: string | null;
   default_model?: string | null;
+  conversation_mode?: "ask" | "plan" | "craft";
+  template_name?: string | null;
+}
+
+export interface FeatureTemplate {
+  id: string;
+  label: { zh: string; en: string };
+  description: { zh: string; en: string };
 }
 
 export const featuresApi = {
+  templates: () => request<FeatureTemplate[]>("/features/templates"),
   /** Create a feature and its agent. Refusals are the manager's own, as they are. */
   create: (body: FeatureCreateInput) =>
     request<FeatureCreated>("/features", {

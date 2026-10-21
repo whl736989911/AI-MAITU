@@ -12,10 +12,11 @@ import {
   GitFork,
   ChevronRight,
   Plus,
+  Search,
 } from "lucide-react";
-import type { OctopAgent } from "../../../context/AgentContext";
 import { ExpertIcon } from "../../Experts/components/iconForName";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
+import type { OctopAgent } from "../../../context/AgentContext";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { message as antMessage } from "../../../utils/antdMessage";
 import { showConfirmModal } from "../../../utils/confirmModal";
@@ -28,9 +29,15 @@ import {
   emptyAgentAccessKey,
   emptyAgentAccessPath,
 } from "../utils/emptyAgentAccess";
-import { sortSessions, toSession, type Session } from "../hooks/useSessions";
+import {
+  isPendingThread,
+  sortSessions,
+  toSession,
+  type Session,
+} from "../hooks/useSessions";
 import { formatThreadTitle } from "../utils/threadTitle";
 import { onSessionEvent, onStreamEvent } from "../hooks/chatStore";
+import { isImeComposing } from "../utils/ime";
 import SharedExpertHint from "./SharedExpertHint";
 import styles from "../index.module.less";
 
@@ -98,6 +105,7 @@ const PreviewSessionRow = memo(function PreviewSessionRow({
   session,
   isActive,
   working,
+  pending,
   onSelect,
   onDelete,
   onRename,
@@ -109,6 +117,7 @@ const PreviewSessionRow = memo(function PreviewSessionRow({
   session: Session;
   isActive: boolean;
   working: boolean;
+  pending: boolean;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
@@ -211,6 +220,7 @@ const PreviewSessionRow = memo(function PreviewSessionRow({
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === "Enter" && !isEditing) onSelect(session.id);
       }}
     >
@@ -222,6 +232,7 @@ const PreviewSessionRow = memo(function PreviewSessionRow({
           onChange={(e) => setEditValue(e.target.value)}
           onBlur={commitEdit}
           onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
             if (e.key === "Enter") commitEdit();
             if (e.key === "Escape") {
               setEditValue(session.name);
@@ -235,8 +246,16 @@ const PreviewSessionRow = memo(function PreviewSessionRow({
           {working ? (
             <span
               className={styles.sessionRowWorkingDot}
-              title={t("chat.sessionWorking")}
-              aria-label={t("chat.sessionWorking")}
+              title={
+                pending
+                  ? t("chat.sessionPending", "Starting…")
+                  : t("chat.sessionWorking")
+              }
+              aria-label={
+                pending
+                  ? t("chat.sessionPending", "Starting…")
+                  : t("chat.sessionWorking")
+              }
             />
           ) : null}
           <span className={styles.sessionRowTitle}>{session.name}</span>
@@ -328,6 +347,61 @@ export default function MinimalAgentSessionNav({
     [sortedAgents],
   );
 
+  const [agentSearch, setAgentSearch] = useState("");
+  const agentPinsStorageKey = `octop:sidebar-agent-pins:${
+    currentUser?.id ?? "anonymous"
+  }`;
+  const [pinnedAgentIds, setPinnedAgentIds] = useState<Set<string>>(() => {
+    try {
+      return new Set(
+        JSON.parse(localStorage.getItem(agentPinsStorageKey) || "[]"),
+      );
+    } catch {
+      return new Set();
+    }
+  });
+  useEffect(() => {
+    try {
+      setPinnedAgentIds(
+        new Set(JSON.parse(localStorage.getItem(agentPinsStorageKey) || "[]")),
+      );
+    } catch {
+      setPinnedAgentIds(new Set());
+    }
+  }, [agentPinsStorageKey]);
+  const toggleAgentPin = (agentId: string) => {
+    setPinnedAgentIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      try {
+        localStorage.setItem(agentPinsStorageKey, JSON.stringify([...next]));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
+
+  const query = agentSearch.trim().toLocaleLowerCase();
+  const hasAgentSearch = Boolean(query);
+  const matchingAgents = (items: OctopAgent[]) =>
+    items.filter(
+      (agent) =>
+        !query ||
+        agent.name.toLocaleLowerCase().includes(query) ||
+        (byAgent[agent.agent_id] ?? []).some((session) =>
+          session.name.toLocaleLowerCase().includes(query),
+        ),
+    );
+  const sortedAgentGroup = (items: OctopAgent[]) => {
+    const filtered = matchingAgents(items);
+    return [
+      ...filtered.filter((agent) => pinnedAgentIds.has(agent.agent_id)),
+      ...filtered.filter((agent) => !pinnedAgentIds.has(agent.agent_id)),
+    ];
+  };
+
   // Ensure the active expert folder stays open.
   useEffect(() => {
     if (!activeAgentId) return;
@@ -364,22 +438,23 @@ export default function MinimalAgentSessionNav({
     [onAgentSelect],
   );
 
-  const refreshAgentPreview = useCallback(async (agentId: string) => {
-    if (!agentId) return;
-    try {
-      const rows = await octopThreadsApi.list(
-        agentId,
-        MINIMAL_AGENT_SESSION_PREVIEW,
-      );
-      const list = sortSessions(rows.map(toSession)).slice(
-        0,
-        MINIMAL_AGENT_SESSION_PREVIEW,
-      );
-      setByAgent((prev) => ({ ...prev, [agentId]: list }));
-    } catch {
-      /* ignore */
-    }
-  }, []);
+  const refreshAgentPreview = useCallback(
+    async (agentId: string) => {
+      if (!agentId) return;
+      try {
+        const rows = await octopThreadsApi.list(
+          agentId,
+          hasAgentSearch ? 50 : MINIMAL_AGENT_SESSION_PREVIEW,
+        );
+        const limit = hasAgentSearch ? 50 : MINIMAL_AGENT_SESSION_PREVIEW;
+        const list = sortSessions(rows.map(toSession)).slice(0, limit);
+        setByAgent((prev) => ({ ...prev, [agentId]: list }));
+      } catch {
+        /* ignore */
+      }
+    },
+    [hasAgentSearch],
+  );
 
   // Fetch preview threads for every expert (independent of classic session store).
   useEffect(() => {
@@ -396,14 +471,12 @@ export default function MinimalAgentSessionNav({
           try {
             const rows = await octopThreadsApi.list(
               id,
-              MINIMAL_AGENT_SESSION_PREVIEW,
+              hasAgentSearch ? 50 : MINIMAL_AGENT_SESSION_PREVIEW,
             );
+            const limit = hasAgentSearch ? 50 : MINIMAL_AGENT_SESSION_PREVIEW;
             return [
               id,
-              sortSessions(rows.map(toSession)).slice(
-                0,
-                MINIMAL_AGENT_SESSION_PREVIEW,
-              ),
+              sortSessions(rows.map(toSession)).slice(0, limit),
             ] as const;
           } catch {
             return [id, [] as Session[]] as const;
@@ -418,7 +491,7 @@ export default function MinimalAgentSessionNav({
     return () => {
       cancelled = true;
     };
-  }, [agentKey]);
+  }, [agentKey, hasAgentSearch]);
 
   // Keep the active agent's preview aligned with live chat session store.
   // Skip empty lists — standalone host passes [] and must not wipe fetched previews
@@ -606,6 +679,27 @@ export default function MinimalAgentSessionNav({
           </span>
           <button
             type="button"
+            className={styles.minimalAgentNewChatBtn}
+            aria-label={
+              pinnedAgentIds.has(agent.agent_id)
+                ? t("chat.unpin")
+                : t("chat.pin")
+            }
+            title={
+              pinnedAgentIds.has(agent.agent_id)
+                ? t("chat.unpin")
+                : t("chat.pin")
+            }
+            onClick={() => toggleAgentPin(agent.agent_id)}
+          >
+            {pinnedAgentIds.has(agent.agent_id) ? (
+              <PinOff size={13} aria-hidden />
+            ) : (
+              <Pin size={13} aria-hidden />
+            )}
+          </button>
+          <button
+            type="button"
             className={styles.minimalAgentFolderBtn}
             onClick={() => openFolderAndSelect(agent.agent_id)}
           >
@@ -636,34 +730,45 @@ export default function MinimalAgentSessionNav({
               <div className={styles.minimalAgentEmpty}>
                 {t("common.loading")}
               </div>
-            ) : list.length === 0 ? (
+            ) : list.filter(
+                (session) =>
+                  !query || session.name.toLocaleLowerCase().includes(query),
+              ).length === 0 ? (
               <div className={styles.minimalAgentEmpty}>
                 {t("chat.noSessionsYet", "直接发消息即可开始对话")}
               </div>
             ) : (
-              list.map((session) => (
-                <PreviewSessionRow
-                  key={session.id}
-                  session={session}
-                  isActive={session.id === activeId}
-                  working={workingIds.has(session.id)}
-                  onSelect={(id) => onSelect(id, agent.agent_id)}
-                  onDelete={(id) => void handleDelete(agent.agent_id, id)}
-                  onRename={(id, name) =>
-                    void handleRename(agent.agent_id, id, name)
-                  }
-                  onPin={(id, pinned) =>
-                    void handlePin(agent.agent_id, id, pinned)
-                  }
-                  onFork={(id) => onFork(id, agent.agent_id)}
-                  forkDisabled={
-                    session.id === activeId ? activeForkDisabled : undefined
-                  }
-                  forkDisabledHint={
-                    session.id === activeId ? activeForkDisabledHint : undefined
-                  }
-                />
-              ))
+              list
+                .filter(
+                  (session) =>
+                    !query || session.name.toLocaleLowerCase().includes(query),
+                )
+                .map((session) => (
+                  <PreviewSessionRow
+                    key={session.id}
+                    session={session}
+                    isActive={session.id === activeId}
+                    working={workingIds.has(session.id)}
+                    pending={isPendingThread(session.id)}
+                    onSelect={(id) => onSelect(id, agent.agent_id)}
+                    onDelete={(id) => void handleDelete(agent.agent_id, id)}
+                    onRename={(id, name) =>
+                      void handleRename(agent.agent_id, id, name)
+                    }
+                    onPin={(id, pinned) =>
+                      void handlePin(agent.agent_id, id, pinned)
+                    }
+                    onFork={(id) => onFork(id, agent.agent_id)}
+                    forkDisabled={
+                      session.id === activeId ? activeForkDisabled : undefined
+                    }
+                    forkDisabledHint={
+                      session.id === activeId
+                        ? activeForkDisabledHint
+                        : undefined
+                    }
+                  />
+                ))
             )}
           </div>
         ) : null}
@@ -673,13 +778,28 @@ export default function MinimalAgentSessionNav({
 
   return (
     <div className={`${styles.sessionList} ${styles.minimalAgentNav}`}>
-      {expertAgents.map(renderAgentSection)}
+      <div className={styles.sessionSearchWrap}>
+        <Search
+          size={14}
+          className={styles.sessionSearchIcon}
+          strokeWidth={2}
+        />
+        <input
+          type="search"
+          className={styles.sessionSearchInput}
+          value={agentSearch}
+          onChange={(event) => setAgentSearch(event.target.value)}
+          placeholder={t("chat.searchSessions", "搜索会话或专家")}
+          aria-label={t("chat.searchSessions", "搜索会话或专家")}
+        />
+      </div>
+      {sortedAgentGroup(expertAgents).map(renderAgentSection)}
       {held.features ? (
         <>
           <div className={styles.sessionGroupLabel}>
             {t("chat.featuresGroup", "功能")}
           </div>
-          {featureAgents.map(renderAgentSection)}
+          {sortedAgentGroup(featureAgents).map(renderAgentSection)}
         </>
       ) : null}
     </div>

@@ -313,23 +313,6 @@ def test_build_harness_config_suppresses_system_prompt_while_bootstrap_pending(
     assert cfg.memory == ()
 
 
-def test_build_harness_config_keeps_memory_after_bootstrap(
-    manager: AgentManager,
-) -> None:
-    from dataclasses import replace
-
-    agent_id = "AGT_MEM"
-    ws = manager._paths.ensure_agent_workspace(agent_id)
-    (ws / ".bootstrapped").write_text("", encoding="utf-8")
-    row = replace(
-        _row(agent_id=agent_id),
-        system_prompt="MBTI persona prompt",
-        config_json=json.dumps({"backend": _fs_backend(ws)}),
-    )
-    cfg = manager._build_harness_config(row)
-    assert cfg.memory is None
-
-
 def test_build_harness_config_keeps_system_prompt_after_bootstrap(
     manager: AgentManager,
 ) -> None:
@@ -345,25 +328,6 @@ def test_build_harness_config_keeps_system_prompt_after_bootstrap(
     )
     cfg = manager._build_harness_config(row)
     assert cfg.system_prompt == "MBTI persona prompt"
-
-
-def test_bootstrap_complete_defers_graph_refresh(manager: AgentManager) -> None:
-    agent_id = "AGT_BOOT"
-    manager._repos.agent_repo.create(agent_id=agent_id, user_id=None, name="boot")
-    manager._repos.agent_repo.update_config(agent_id, system_prompt="Persona from DB")
-
-    agent = MagicMock()
-    cfg = MagicMock()
-    cfg.memory = ()
-    cfg.system_prompt = None
-    agent._config = cfg
-
-    manager._mark_bootstrap_graph_refresh_pending(agent_id, agent)
-
-    assert cfg.system_prompt == "Persona from DB"
-    assert cfg.memory is None
-    agent._init_graph.assert_not_called()
-    assert agent_id in manager._bootstrap_graph_refresh_pending
 
 
 def test_apply_pending_bootstrap_graph_refresh_recompiles_graph(manager: AgentManager) -> None:
@@ -395,58 +359,37 @@ def test_is_bootstrapped_assumes_true_when_backend_check_fails(manager: AgentMan
 
 
 @pytest.mark.asyncio
-async def test_delete_thread_checkpoint_returns_false_when_agent_not_running(
+async def test_delete_thread_checkpoint_rejects_a_missing_agent(
     manager: AgentManager,
 ) -> None:
-    # Fresh fixture has no _harness_manager wired up — get_agent raises
-    # OctopError, which must be swallowed (checkpoint cleanup is best-effort).
-    result = await manager.delete_thread_checkpoint("NOPE", "thr_1")
-    assert result is False
+    with pytest.raises(OctopError) as exc_info:
+        await manager.delete_thread_checkpoint("NOPE", "thr_1")
+    assert exc_info.value.code is ErrorCode.AGENT_NOT_FOUND
 
 
 @pytest.mark.asyncio
-async def test_delete_thread_checkpoint_delegates_to_harness_adelete_thread(
+async def test_delete_thread_checkpoint_preserves_corrupt_store_for_retry(
     manager: AgentManager,
 ) -> None:
-    agent = MagicMock()
-    agent.adelete_thread = AsyncMock(return_value=True)
-    harness_manager = MagicMock()
-    harness_manager.get_agent.return_value = MagicMock(agent=agent)
-    manager._harness_manager = harness_manager
+    agent_id = "AGT_CPFAIL"
+    workspace = manager._paths.ensure_agent_workspace(agent_id)
+    manager._repos.agent_repo.create(
+        agent_id=agent_id,
+        user_id=None,
+        name="checkpoint-failure",
+        config_json=json.dumps(
+            {**_MEMORY_OFF, "workspace_dir": str(workspace), "system_files_path": ".maitu"}
+        ),
+    )
+    system_dir = workspace / ".maitu"
+    system_dir.mkdir()
+    checkpoint = system_dir / "checkpoints.sqlite"
+    checkpoint.write_text("corrupt checkpoint data", encoding="utf-8")
 
-    result = await manager.delete_thread_checkpoint("AGT1", "thr_1")
-
-    assert result is True
-    agent.adelete_thread.assert_awaited_once_with("thr_1")
-
-
-@pytest.mark.asyncio
-async def test_delete_thread_checkpoint_returns_false_when_harness_lacks_adelete_thread(
-    manager: AgentManager,
-) -> None:
-    agent = MagicMock(spec=[])  # no adelete_thread attribute at all
-    harness_manager = MagicMock()
-    harness_manager.get_agent.return_value = MagicMock(agent=agent)
-    manager._harness_manager = harness_manager
-
-    result = await manager.delete_thread_checkpoint("AGT1", "thr_1")
-
-    assert result is False
-
-
-@pytest.mark.asyncio
-async def test_delete_thread_checkpoint_propagates_unexpected_errors(
-    manager: AgentManager,
-) -> None:
-    """A live agent whose checkpointer delete genuinely fails must not report success."""
-    agent = MagicMock()
-    agent.adelete_thread = AsyncMock(side_effect=RuntimeError("db unavailable"))
-    harness_manager = MagicMock()
-    harness_manager.get_agent.return_value = MagicMock(agent=agent)
-    manager._harness_manager = harness_manager
-
-    with pytest.raises(RuntimeError, match="db unavailable"):
-        await manager.delete_thread_checkpoint("AGT1", "thr_1")
+    with pytest.raises(OctopError) as exc_info:
+        await manager.delete_thread_checkpoint(agent_id, "thr_1")
+    assert exc_info.value.code is ErrorCode.CHECKPOINT_DELETE_FAILED
+    assert checkpoint.read_text(encoding="utf-8") == "corrupt checkpoint data"
 
 
 @pytest.mark.asyncio

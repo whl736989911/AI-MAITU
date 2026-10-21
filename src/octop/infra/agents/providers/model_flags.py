@@ -102,19 +102,19 @@ def is_embedding_model(
     provider_name: str | None = None,
     provider_api_key: str | None = None,
 ) -> bool:
-    """True when *model* is embedding-only (not for chat / auto-route).
+    """True when *model* is embedding- or rerank-only (not for chat / auto-route).
 
-    Explicit flags win:
-    - ``embedding: true``
-    - ``task: "embedding"``
-
-    Legacy fallback: models under the ONNX local provider are treated as
-    embedding-only even if the flag was missing.
+    Explicit flags win: embedding/rerank booleans or ``task`` values.
+    A model id naming a reranker is the legacy fallback for catalogs without
+    those task fields. ONNX local provider entries are also embedding-only.
     """
-    if model.get("embedding") is True:
+    if model.get("embedding") is True or model.get("rerank") is True:
         return True
     task = str(model.get("task") or "").strip().lower()
-    if task == "embedding":
+    if task in {"embedding", "rerank", "reranking"}:
+        return True
+    model_id = str(model.get("id") or "").strip().lower()
+    if "rerank" in model_id or "reranker" in model_id:
         return True
     return is_onnx_local_provider(provider_name, provider_api_key=provider_api_key)
 

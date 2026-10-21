@@ -1,5 +1,11 @@
 import type { HitlPendingPayload } from "../types/hitl";
 import { request } from "../request";
+export interface ArtifactRef {
+  producer_agent_id: string;
+  path: string;
+}
+
+export type ThreadArtifact = string | ArtifactRef;
 
 export interface OctopThread {
   thread_id: string;
@@ -15,10 +21,10 @@ export interface OctopThread {
   model_ref?: string | null;
   reasoning_mode?: "auto" | "enabled" | "disabled" | null;
   reasoning_effort?: string | null;
-  conversation_mode?: "ask" | "plan" | "craft";
+  conversation_mode?: "ask" | "plan" | "craft" | null;
   pending_plan_path?: string | null;
   hitl_policy?: HitlSessionPolicy;
-  artifacts?: string[];
+  artifacts?: ThreadArtifact[];
 }
 export interface HitlSessionPolicy {
   mode: "ask" | "allow_all" | "allow_tools";
@@ -39,7 +45,7 @@ export interface OctopThreadHistory {
   pinned?: boolean;
   model_ref?: string | null;
   reasoning_mode?: "auto" | "enabled" | "disabled" | null;
-  conversation_mode?: "ask" | "plan" | "craft";
+  conversation_mode?: "ask" | "plan" | "craft" | null;
   pending_plan_path?: string | null;
   hitl_policy?: HitlSessionPolicy;
   reasoning_effort?: string | null;
@@ -55,7 +61,7 @@ export interface OctopThreadHistory {
   turn_active?: boolean;
   /** Pending tool approval for this thread (survives page reload). */
   hitl_pending?: HitlPendingPayload | null;
-  artifacts?: string[];
+  artifacts?: ThreadArtifact[];
 }
 
 export interface OctopThreadPatch {

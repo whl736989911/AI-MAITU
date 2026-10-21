@@ -43,6 +43,7 @@ import {
 import { useTranslation } from "react-i18next";
 import { request, requestBlob, requestUpload } from "../../../../api/request";
 import { withFromWorkspace } from "../../../../utils/fromWorkspace";
+import { isImeComposing } from "../../../Chat/utils/ime";
 import { workspaceApi } from "../../../../api/modules/workspace";
 import { useAgent } from "../../../../context/AgentContext";
 import { useIsMobile } from "../../../../hooks/useIsMobile";
@@ -1210,7 +1211,9 @@ export default function WorkspaceDrawer({
         <Input
           value={createName}
           onChange={(e) => setCreateName(e.target.value)}
-          onPressEnter={() => void confirmCreate()}
+          onPressEnter={(event) => {
+            if (!isImeComposing(event)) void confirmCreate();
+          }}
           placeholder={
             createKind === "folder"
               ? t("workspace.newFolderName")
@@ -1234,7 +1237,9 @@ export default function WorkspaceDrawer({
         <Input
           value={renameValue}
           onChange={(e) => setRenameValue(e.target.value)}
-          onPressEnter={() => void confirmRename()}
+          onPressEnter={(event) => {
+            if (!isImeComposing(event)) void confirmRename();
+          }}
           autoFocus
         />
       </Modal>

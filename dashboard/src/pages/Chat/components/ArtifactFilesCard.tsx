@@ -1,3 +1,4 @@
+import type { ThreadArtifact } from "../../../api/modules/octopThreads";
 import { Download, FilePen, FolderOpen } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -8,22 +9,38 @@ import styles from "./ArtifactFilesCard.module.less";
 
 interface Props {
   agentId: string;
-  files: readonly string[];
+  files: readonly ThreadArtifact[];
   onOpenFiles?: () => void;
 }
 
-/**
- * Files written by the turn (including via shell/scripts) are collected by the
- * backend into thread artifacts. Show them in the transcript so an answer that
- * only printed a path still gives the user a direct download.
- */
 export default function ArtifactFilesCard({
   agentId,
   files,
   onOpenFiles,
 }: Props) {
   const { t } = useTranslation();
-  const visible = files.filter((path) => path.trim());
+  const visible = files.flatMap((artifact) => {
+    if (typeof artifact === "string") {
+      return artifact.trim()
+        ? [{ path: artifact, producerAgentId: agentId }]
+        : [];
+    }
+    if (
+      artifact &&
+      typeof artifact.producer_agent_id === "string" &&
+      artifact.producer_agent_id.trim() &&
+      typeof artifact.path === "string" &&
+      artifact.path.trim()
+    ) {
+      return [
+        {
+          path: artifact.path,
+          producerAgentId: artifact.producer_agent_id,
+        },
+      ];
+    }
+    return [];
+  });
   if (!agentId || visible.length === 0) return null;
 
   return (
@@ -48,12 +65,12 @@ export default function ArtifactFilesCard({
         ) : null}
       </div>
       <div className={styles.files}>
-        {visible.map((path) => (
+        {visible.map(({ path, producerAgentId }) => (
           <MessageFileCard
-            key={path}
-            url={agentAttachmentAccessUrl(agentId, path)}
+            key={`${producerAgentId}:${path}`}
+            url={agentAttachmentAccessUrl(producerAgentId, path)}
             filename={dockFileBasename(path)}
-            agentId={agentId}
+            agentId={producerAgentId}
             workspacePath={path}
           />
         ))}

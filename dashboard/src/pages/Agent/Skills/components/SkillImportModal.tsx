@@ -3,7 +3,8 @@ import { Button, Checkbox, Modal, Segmented } from "antd";
 import { Upload as UploadIcon } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import styles from "../index.module.less";
-import { parseSkillZip, type ParsedZipSkill } from "./parseSkillZip";
+
+const MAX_ZIP_BYTES = 64 * 1024 * 1024;
 
 const DEFAULT_SKILL_URL_PREFIXES = [
   "https://skills.sh/",
@@ -22,16 +23,16 @@ export interface SkillImportModalProps {
   open: boolean;
   importing: boolean;
   onClose: () => void;
+  urlPrefixes?: readonly string[];
   /** Return true on success so the modal can clear/close. */
   onImportUrl: (
     bundleUrl: string,
     options: { overwrite: boolean },
   ) => Promise<boolean>;
   onImportZip: (
-    skills: ParsedZipSkill[],
+    archiveBase64: string,
     options: { overwrite: boolean },
   ) => Promise<ZipImportSummary | false>;
-  urlPrefixes?: readonly string[];
 }
 
 function isHttpUrl(value: string): boolean {
@@ -85,6 +86,11 @@ export function SkillImportModal({
       setZipError(t("skills.zipOnly"));
       return;
     }
+    if (file.size > MAX_ZIP_BYTES) {
+      setZipFile(null);
+      setZipError(t("skills.zipTooLarge"));
+      return;
+    }
     setZipError("");
     setZipFile(file);
   };
@@ -123,17 +129,21 @@ export function SkillImportModal({
     setParsing(true);
     setZipError("");
     try {
-      const skills = await parseSkillZip(zipFile);
-      const summary = await onImportZip(skills, { overwrite });
+      const archiveBase64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(reader.error);
+        reader.onload = () => {
+          const result = reader.result as string;
+          resolve(result.slice(result.indexOf(",") + 1));
+        };
+        reader.readAsDataURL(zipFile);
+      });
+      const summary = await onImportZip(archiveBase64, { overwrite });
       if (summary) onClose();
     } catch (error) {
       const code = error instanceof Error ? error.message : "";
       if (code === "ZIP_TOO_LARGE") {
         setZipError(t("skills.zipTooLarge"));
-      } else if (code === "ZIP_EMPTY") {
-        setZipError(t("skills.zipEmpty"));
-      } else if (code === "ZIP_NO_SKILLS") {
-        setZipError(t("skills.zipNoSkills"));
       } else {
         setZipError(t("skills.zipParseFailed"));
       }

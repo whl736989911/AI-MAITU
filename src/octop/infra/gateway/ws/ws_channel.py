@@ -39,10 +39,14 @@ class WebSocketChannel(BaseChannel):
         processor: MessageProcessor,
         *,
         hub: WebSocketHub,
+        steer: Any,
+        complete_turn: Any,
         channel_id: str = WS_CHANNEL_ID,
     ) -> None:
         super().__init__(processor, channel_id=channel_id, debounce_seconds=0.0)
         self._hub = hub
+        self._steer = steer
+        self._complete_turn = complete_turn
 
     def _default_constraints(self) -> ChannelConstraints:
         return ChannelConstraints(
@@ -96,7 +100,14 @@ class WebSocketChannel(BaseChannel):
 
         msg_meta = message.metadata or {}
         conn_id = str(msg_meta.get("ws_connection_id") or "")
-        if not conn_id:
+        thread_id = str(msg_meta.get("thread_id") or "").strip()
+        if not thread_id:
+            logger.warning("websocket inbound missing thread_id")
+            if conn_id:
+                await self._hub.push(conn_id, {"type": "error", "message": "missing thread_id"})
+                await self._hub.push(conn_id, {"type": "done"})
+            return
+        if not conn_id and not msg_meta.get("octop_steering_turn_id"):
             logger.warning("websocket inbound missing ws_connection_id")
             return
 
@@ -143,12 +154,38 @@ class WebSocketChannel(BaseChannel):
             await self._hub.push_to_thread(thread_id, {"type": "done"})
             return
 
+        turn_id = str(msg_meta.get("octop_steering_turn_id") or "").strip()
+        if not turn_id:
+            try:
+                turn_id = await self._steer.begin_turn(
+                    thread_id,
+                    str(msg_meta.get("client_pending_id") or "server:" + thread_id),
+                )
+            except Exception as exc:
+                await self._hub.push_to_thread(
+                    thread_id,
+                    {"type": "error", "message": f"unable to start turn: {exc}"},
+                )
+                await self._hub.push_to_thread(thread_id, {"type": "done"})
+                return
+        msg_meta["octop_steering_turn_id"] = turn_id
+        message.metadata = msg_meta
         self._hub.mark_turn_active(thread_id)
+        hitl_paused = False
+        pending_done: dict[str, Any] | None = None
+        await self._hub.push_to_thread(
+            thread_id,
+            {"type": "turn.started", "turn_id": turn_id, "phase": "streaming_text"},
+        )
         try:
             async for chunk in processor.iter_turn_chunks(message):
-                # Never let delivery failures abort the harness turn — otherwise a
-                # flaky client disconnect can stop generation mid-node and leave
-                # an incomplete checkpoint.
+                if isinstance(chunk, dict) and chunk.get("type") == "hitl_required":
+                    hitl_paused = True
+                    await self._steer.set_parked(thread_id, turn_id, True)
+                if isinstance(chunk, dict) and chunk.get("type") == "done":
+                    pending_done = chunk
+                    continue
+                # A disconnect or subscriber error never aborts generation.
                 try:
                     await self._hub.push_to_thread(thread_id, chunk)
                 except Exception:
@@ -168,10 +205,21 @@ class WebSocketChannel(BaseChannel):
                     thread_id,
                     {"type": "error", "message": format_stream_error(exc, locale)},
                 )
-                await self._hub.push_to_thread(thread_id, {"type": "done"})
+                pending_done = {"type": "done"}
             except Exception:
                 logger.exception("websocket failed to deliver error frame thread=%s", thread_id)
         finally:
+            await self._hub.push_to_thread(
+                thread_id,
+                {"type": "turn.ended", "turn_id": turn_id, "hitl_paused": hitl_paused},
+            )
+            completion = None
+            if not hitl_paused:
+                completion = await self._complete_turn(thread_id, turn_id)
+            if (
+                hitl_paused or not getattr(completion, "next_followup", None)
+            ) and pending_done is not None:
+                await self._hub.push_to_thread(thread_id, pending_done)
             self._hub.mark_turn_idle(thread_id)
 
     async def _send_text(self, subject: ChannelSubject, text: str) -> None:

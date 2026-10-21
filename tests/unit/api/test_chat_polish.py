@@ -100,6 +100,25 @@ def test_serialize_history_message_includes_thinking_and_tools() -> None:
     assert stream_error["error_code"] == "TOKEN_QUOTA_EXCEEDED"
 
 
+def test_serialize_history_message_preserves_team_and_hitl_metadata() -> None:
+    message = _serialize_history_message(
+        AIMessage(
+            content="Approved member response",
+            additional_kwargs={
+                "pending_id": "p-123",
+                "speaker_agent_id": "expert-a",
+                "speaker_name": "Researcher",
+                "team_wrapup": True,
+            },
+        )
+    )
+    assert message is not None
+    assert message["pending_id"] == "p-123"
+    assert message["speaker_agent_id"] == "expert-a"
+    assert message["speaker_name"] == "Researcher"
+    assert message["team_wrapup"] is True
+
+
 def test_split_string_thinking_parses_redacted_block() -> None:
     from octop.api.routers.chat.serialize import _split_string_thinking
 
@@ -163,6 +182,27 @@ def test_merge_adjacent_messages_keeps_user_turns_separate() -> None:
     assert merged[2]["role"] == "assistant"
     assert "reply one" in merged[2]["content"]
     assert "reply two" in merged[2]["content"]
+
+
+def test_merge_adjacent_messages_keeps_distinct_team_speakers() -> None:
+    merged = _merge_adjacent_messages(
+        [
+            {
+                "role": "assistant",
+                "content": "member reply",
+                "speaker_agent_id": "member-a",
+            },
+            {
+                "role": "assistant",
+                "content": "host wrap-up",
+                "speaker_agent_id": "host",
+                "team_wrapup": True,
+            },
+        ]
+    )
+    assert len(merged) == 2
+    assert merged[0]["speaker_agent_id"] == "member-a"
+    assert merged[1]["speaker_agent_id"] == "host"
 
 
 def test_entry_matches_thread_by_thread_id() -> None:

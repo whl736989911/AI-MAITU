@@ -23,6 +23,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from octop.i18n import tr
 from octop.i18n.domains.stream import format_stream_error
 from octop.infra.agents.conversation_mode import (
+    default_conversation_mode_from_config,
     execute_user_message,
     is_plan_execute_utterance,
     resolve_conversation_mode,
@@ -298,9 +299,12 @@ class GlobalProcessor:
     ) -> None:
         row = self._thread_registry.get_thread(thread_id)
         explicit = (meta or {}).get("conversation_mode")
+        agent_id = request.get("agent_id") or getattr(row, "agent_id", None)
+        agent_config = self._agent_manager.get_config(agent_id) if isinstance(agent_id, str) else {}
         mode = resolve_conversation_mode(
             explicit=explicit if explicit in ("ask", "plan", "craft") else None,
             thread_mode=getattr(row, "conversation_mode", None),
+            agent_default=default_conversation_mode_from_config(agent_config),
         )
         if explicit in ("ask", "plan", "craft"):
             self._thread_registry.update_composer(thread_id, conversation_mode=mode)
@@ -645,6 +649,39 @@ class GlobalProcessor:
             )
         return resolved
 
+    def _stamp_turn_model_routing(
+        self,
+        request: dict[str, Any],
+        *,
+        agent_id: str,
+        thread_id: str,
+        user_id: int,
+        meta: dict[str, Any] | None,
+        needs_multimodal: bool,
+    ) -> None:
+        """Only automatic routing may change providers after a model failure."""
+        thread = self._thread_registry.get_thread(thread_id)
+        explicit = self._model_ref_from_meta(
+            self._agent_manager.get_thread_model(agent_id, thread_id),
+            meta,
+            thread.model_ref if thread is not None else None,
+        )
+        agent = self._agent_repo.get(agent_id)
+        if explicit is None and agent is not None:
+            explicit = self._agent_manager.providers.resolve_explicit_default_model(
+                agent, self._agent_manager.get_config(agent_id)
+            )
+        if explicit is None:
+            user = self._user_repo.get(user_id)
+            preferred = get_preferred_model_from_json(
+                user.preferences_json if user is not None else None
+            )
+            if preferred and self._agent_manager.providers.is_model_ref_usable(preferred):
+                explicit = preferred
+        configurable = request.setdefault("configurable", {})
+        configurable["octop_model_failover_auto"] = explicit is None
+        configurable["octop_model_failover_requires_vision"] = needs_multimodal
+
     def _resolve_reasoning_overrides(
         self,
         *,
@@ -897,6 +934,14 @@ class GlobalProcessor:
             content=content,
             model=model_ref,
             message_kwargs=message_kwargs,
+        )
+        self._stamp_turn_model_routing(
+            request,
+            agent_id=agent_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            meta=msg.metadata,
+            needs_multimodal=content_blocks_need_vision(content),
         )
         request.setdefault("configurable", {})[CONFIGURABLE_FEATURE_LOCALE_KEY] = locale
         self._attach_turn_knowledge_config(
@@ -1266,11 +1311,41 @@ class GlobalProcessor:
         from octop.infra.agents.teams.team_manager import stamp_team_host_chunk  # noqa: PLC0415
 
         team_host = is_team_agent(self._agent_repo.get(agent_id))
+        locale = resolve_user_locale(
+            user_repo=self._user_repo, user_id=user_id, channel_type="dashboard"
+        )
+        resume_request: dict[str, Any] = {
+            "messages": [],
+            "thread_id": thread_id,
+            "agent_id": agent_id,
+            "user": str(user_id),
+            "source": "dashboard",
+            "configurable": {CONFIGURABLE_FEATURE_LOCALE_KEY: locale},
+        }
+        workflow_context = await self._feature_workflow_context(
+            agent_id=agent_id,
+            user_id=user_id,
+            locale=locale,
+            run_payload=None,
+            thread_id=thread_id,
+        )
+        self._stamp_feature_workflow(resume_request, workflow_context)
+        self._stamp_feature_memory(
+            resume_request,
+            await self._feature_memory_context(
+                agent_id=agent_id,
+                row=self._agent_repo.get(agent_id),
+                user_id=user_id,
+                channel_type=ThreadRegistry.CHANNEL_DASHBOARD,
+                workflow_context=workflow_context,
+            ),
+        )
         try:
             async for chunk in self._agent_manager.resume_hitl(
                 agent_id,
                 thread_id,
                 decisions,
+                fallback_request=resume_request,
             ):
                 usage_tracker.observe(chunk)
                 history_tracker.observe(chunk)
@@ -1419,7 +1494,20 @@ class GlobalProcessor:
             message_kwargs=message_kwargs or None,
             reasoning_overrides=reasoning_overrides,
         )
+        self._stamp_turn_model_routing(
+            request,
+            agent_id=agent_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            meta=meta,
+            needs_multimodal=content_blocks_need_vision(content),
+        )
         request.setdefault("configurable", {})[CONFIGURABLE_FEATURE_LOCALE_KEY] = locale
+        from octop.infra.agents.middleware.turn_steering import STEERING_TURN_ID_KEY
+
+        steering_turn_id = meta.get(STEERING_TURN_ID_KEY)
+        if isinstance(steering_turn_id, str) and steering_turn_id:
+            request["configurable"][STEERING_TURN_ID_KEY] = steering_turn_id
         self._attach_turn_knowledge_config(
             request,
             user_id=user_id,

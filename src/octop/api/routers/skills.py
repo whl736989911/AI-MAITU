@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Any, cast
 
 import yaml
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Request, Response
 from pydantic import BaseModel
 
 from octop.api.common.agent import (
@@ -61,9 +61,12 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.skills.presentation import apply_skill_presentation
 from octop.infra.skills.skill_package_store import SkillPackageStore
 from octop.infra.skills.skill_packages import (
+    MAX_SKILL_BYTES,
     SkillPackageError,
     SkillPackageTooLarge,
+    build_skill_zip,
     read_cli_skill_install,
+    read_skill_zip,
     resolve_skill_package,
     validate_skill_slug,
 )
@@ -73,6 +76,7 @@ from octop.infra.skills.skill_transfer import (
     copy_package_skills_to_workspace,
     copy_workspace_skill_to_package,
     copy_workspace_skill_to_workspace,
+    read_workspace_skill_files,
 )
 from octop.infra.utils.locale import Locale, resolve_request_locale
 
@@ -509,6 +513,85 @@ class PushSkillToPackageBody(BaseModel):
     overwrite: bool = False
 
 
+class SkillZipExportBody(BaseModel):
+    slugs: list[str]
+
+
+class SkillZipImportBody(BaseModel):
+    archive_base64: str
+    overwrite: bool = False
+
+
+@router.post("/agents/{agent_id}/skills/export-zip")
+async def export_agent_skills_zip(
+    agent_id: str,
+    body: SkillZipExportBody,
+    as_user: int | None = None,
+    user: Any = Depends(require_permission("skills")),
+    server: Any = Depends(get_server),
+) -> Response:
+    ctx = await _ctx(agent_id, user=user, as_user=as_user, server=server)
+    slugs = list(dict.fromkeys(validate_skill_slug(slug) for slug in body.slugs))
+    if not slugs:
+        raise OctopError(ErrorCode.SLASH_BAD_ARGS, "select at least one custom skill")
+    skills = {}
+    for slug in slugs:
+        resolved = await _resolve_skill(ctx.workspace, slug)
+        if resolved is None or resolved[1] != "workspace":
+            raise OctopError(ErrorCode.NOT_FOUND, f"custom skill {slug!r} not found")
+        skills[slug] = await read_workspace_skill_files(ctx.workspace, slug)
+    archive = build_skill_zip(skills)
+    server.services.audit_repo.write(
+        actor=user.username,
+        action="skill.export_zip",
+        target=agent_id,
+        payload=",".join(slugs),
+    )
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{agent_id}-skills.zip"'},
+    )
+
+
+@router.post("/agents/{agent_id}/skills/import-zip")
+async def import_agent_skills_zip(
+    agent_id: str,
+    body: SkillZipImportBody,
+    as_user: int | None = None,
+    user: Any = Depends(require_permission("skills")),
+    server: Any = Depends(get_server),
+) -> dict[str, list[str]]:
+    ctx = await _ctx(agent_id, user=user, as_user=as_user, server=server)
+    try:
+        if len(body.archive_base64) > ((MAX_SKILL_BYTES + 2) // 3) * 4:
+            raise SkillPackageTooLarge("skill ZIP exceeds 64 MB")
+        skills = read_skill_zip(base64.b64decode(body.archive_base64, validate=True))
+        for slug in skills:
+            await _guard_package_only_skill_write(ctx.workspace, ctx.config, server, slug)
+            current = await _aread_text(ctx.workspace, f"skills/{slug}/SKILL.md")
+            if current is not None and not body.overwrite:
+                metadata, _ = _parse_frontmatter(current)
+                if not metadata.get("removed"):
+                    raise OctopError(
+                        ErrorCode.SKILL_ALREADY_EXISTS, f"skill {slug!r} already exists"
+                    )
+        for slug, files in skills.items():
+            with contextlib.suppress(Exception):
+                await ctx.workspace.adelete(f"skills/{slug}")
+            await _write_skill_files(ctx.workspace, f"skills/{slug}", files)
+        _note_catalog_changed(server, agent_id)
+    except (ValueError, SkillPackageError) as exc:
+        raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
+    server.services.audit_repo.write(
+        actor=user.username,
+        action="skill.import_zip",
+        target=agent_id,
+        payload=",".join(sorted(skills)),
+    )
+    return {"imported": sorted(skills)}
+
+
 @router.get(
     "/agents/{agent_id}/skill-packages",
     summary="List global skill packages mounted on an agent",
@@ -605,11 +688,21 @@ async def copy_skill_package_to_workspace(
 ) -> dict[str, list[str]]:
     ctx = await _ctx(agent_id, user=user, as_user=as_user, server=server)
     store = _skill_package_store(server)
-    if store.repo.get(package_id) is None:
+    package_row = store.repo.get(package_id)
+    if package_row is None:
         raise OctopError.localized(
             ErrorCode.SKILL_PACKAGE_NOT_FOUND,
             resolve_request_locale(request),
         )
+    try:
+        store.assert_can_download(package_row, user)
+    except OctopError:
+        server.services.audit_repo.write(
+            actor=user.username,
+            action="skill_package.copy_denied",
+            target=package_id,
+        )
+        raise
     try:
         requested_slugs = list(
             dict.fromkeys(validate_skill_slug(slug) for slug in body.skill_slugs)
@@ -651,7 +744,7 @@ async def copy_agent_skill_to_workspace(
     body: CopyAgentSkillBody,
     request: Request,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> dict[str, str]:
     target = await _ctx(agent_id, user=user, as_user=as_user, server=server)
@@ -846,7 +939,7 @@ async def create_skill(
     agent_id: str,
     body: CreateSkillBody,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     ctx = await _ctx(agent_id, user=user, as_user=as_user, server=server)
@@ -893,7 +986,7 @@ async def update_skill(
     name: str,
     body: UpdateSkillBody,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Overwrite an installed workspace skill via BackendWorkspace only.
@@ -990,7 +1083,7 @@ async def import_skill_from_url(
     body: ImportSkillBody,
     request: Request,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Import a skill bundle from a supported external URL into the agent workspace."""
@@ -1079,7 +1172,7 @@ async def delete_skill(
     agent_id: str,
     name: str,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> None:
     """Soft-delete via marker — see module docstring for rationale."""
@@ -1156,7 +1249,7 @@ async def enable_skill(
     agent_id: str,
     name: str,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> None:
     ctx = await _ctx(agent_id, user=user, as_user=as_user, server=server)
@@ -1172,7 +1265,7 @@ async def disable_skill(
     agent_id: str,
     name: str,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> None:
     ctx = await _ctx(agent_id, user=user, as_user=as_user, server=server)
@@ -1421,7 +1514,7 @@ async def hub_install_skill(
     agent_id: str,
     body: HubInstallBody,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("skills")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Install a SkillHub skill into the specified agent's workspace.

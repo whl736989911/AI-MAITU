@@ -7,7 +7,7 @@ import base64
 from dataclasses import asdict
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, status
+from fastapi import APIRouter, Depends, Request, Response, status
 from pydantic import BaseModel
 
 from octop.api.deps import get_server, require_permission
@@ -24,6 +24,15 @@ from octop.infra.skills.skill_package_store import (
     SkillPackageStore,
     is_skill_package_name_conflict,
     raise_skill_package_name_taken,
+)
+from octop.infra.skills.skill_packages import (
+    MAX_SKILL_BYTES,
+    SkillPackageError,
+    SkillPackageTooLarge,
+    build_skill_zip,
+    read_skill_directory,
+    read_skill_zip,
+    validate_skill_slug,
 )
 from octop.infra.skills.skillhub_market import SkillHubMarketError as SkillHubDownloadError
 from octop.infra.users.identity import User
@@ -49,6 +58,7 @@ class CreateSkillPackageBody(BaseModel):
     description: str = ""
     icon_name: str = ""
     icon_url: str = ""
+    allow_download: bool = True
 
 
 class UpdateSkillPackageBody(BaseModel):
@@ -56,6 +66,7 @@ class UpdateSkillPackageBody(BaseModel):
     description: str | None = None
     icon_name: str | None = None
     icon_url: str | None = None
+    allow_download: bool | None = None
 
 
 class FromSkillHubBody(BaseModel):
@@ -261,6 +272,7 @@ async def list_skill_packages(
             **_row_public_dict(row),
             **_creator_fields(server, row.created_by),
             "can_write": store.can_mutate(row, user),
+            "can_download": store.can_download(row, user),
         }
         for row in store.repo.list_all()
         if not writable_only or store.can_mutate(row, user)
@@ -326,6 +338,7 @@ async def create_skill_package(
             created_by=str(user.id),
             icon_name=body.icon_name.strip(),
             icon_url=_icon_url(body.icon_url),
+            allow_download=body.allow_download,
         )
     except Exception as exc:
         if is_skill_package_name_conflict(exc):
@@ -361,6 +374,96 @@ async def create_from_skillhub(
     return _package_payload_with_creator(server, store, result.row)
 
 
+@router.get("/{package_id}/export", summary="Download a complete skill package ZIP")
+async def export_skill_package(
+    package_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("skill_packages")),
+) -> Response:
+    store = _store(server)
+    assert server.services is not None
+    row = _package_or_404(store, package_id, locale=resolve_request_locale(request))
+    try:
+        store.assert_can_download(row, user)
+    except OctopError:
+        # Denied exports are audited like allowed ones: the switch only has
+        # value if attempts to bypass it leave a trace.
+        server.services.audit_repo.write(
+            actor=user.username,
+            action="skill_package.export_denied",
+            target=package_id,
+        )
+        raise
+    package_root = store.root / package_id
+    root = store.package_skills_dir(package_id)
+    if package_root.is_symlink() or root.is_symlink():
+        raise OctopError(ErrorCode.FORBIDDEN, "skill package storage path is unsafe")
+    skills = {}
+    if root.is_dir():
+        for child in sorted(root.iterdir()):
+            if child.is_symlink():
+                raise OctopError(ErrorCode.FORBIDDEN, "skill package contains a symbolic link")
+            if child.is_dir() and (child / "SKILL.md").is_file():
+                skills[child.name] = read_skill_directory(child)
+    archive = build_skill_zip(skills)
+    server.services.audit_repo.write(
+        actor=user.username, action="skill_package.export", target=package_id
+    )
+    return Response(
+        content=archive,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{package_id}.zip"'},
+    )
+
+
+class ImportSkillPackageZipBody(BaseModel):
+    archive_base64: str
+    overwrite: bool = False
+
+
+@router.post("/{package_id}/import-zip", summary="Import a skill ZIP into a package")
+async def import_skill_package_zip(
+    package_id: str,
+    body: ImportSkillPackageZipBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("skill_packages")),
+) -> dict[str, list[str]]:
+    store = _store(server)
+    assert server.services is not None
+    row = _package_or_404(store, package_id, locale=resolve_request_locale(request))
+    store.assert_can_mutate(row, user)
+    try:
+        if len(body.archive_base64) > ((MAX_SKILL_BYTES + 2) // 3) * 4:
+            raise SkillPackageTooLarge("skill ZIP exceeds 64 MB")
+        data = base64.b64decode(body.archive_base64, validate=True)
+        skills = read_skill_zip(data)
+        slugs = [validate_skill_slug(slug) for slug in skills]
+        if len(slugs) != len(set(slugs)):
+            raise SkillPackageError("duplicate skill names in ZIP")
+        if not body.overwrite:
+            collision = next(
+                (slug for slug in slugs if _package_skill_exists(store, package_id, slug)), None
+            )
+            if collision:
+                raise OctopError(
+                    ErrorCode.SKILL_ALREADY_EXISTS, f"skill {collision!r} already exists"
+                )
+        for slug, files in skills.items():
+            store.write_skill(package_id, slug, files)
+    except (ValueError, SkillPackageError) as exc:
+        raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
+    await _refresh_package(server, package_id)
+    server.services.audit_repo.write(
+        actor=user.username,
+        action="skill_package.import_zip",
+        target=package_id,
+        payload=",".join(sorted(skills)),
+    )
+    return {"imported": sorted(skills)}
+
+
 @router.get("/{package_id}", summary="Get a global skill package and its skills")
 async def get_skill_package(
     package_id: str,
@@ -378,6 +481,7 @@ async def get_skill_package(
             locale=resolve_request_locale(request),
         ),
         "can_write": store.can_mutate(row, user),
+        "can_download": store.can_download(row, user),
     }
 
 
@@ -403,6 +507,7 @@ async def update_skill_package(
             description=description,
             icon_name=icon_name,
             icon_url=icon_url,
+            allow_download=body.allow_download,
         )
     except Exception as exc:
         if name is not None and is_skill_package_name_conflict(exc):

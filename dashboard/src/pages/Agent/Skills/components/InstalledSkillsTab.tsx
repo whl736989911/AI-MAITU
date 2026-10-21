@@ -29,10 +29,7 @@ interface InstalledSkillsTabProps {
     options?: { overwrite?: boolean },
   ) => Promise<boolean>;
   importFromZip: (
-    skills: Array<{
-      slug: string;
-      files: Array<{ path: string; contentBase64: string }>;
-    }>,
+    archiveBase64: string,
     options?: { overwrite?: boolean },
   ) => Promise<
     | false
@@ -43,6 +40,11 @@ interface InstalledSkillsTabProps {
       }
   >;
   importing: boolean;
+  exportSkills: (
+    slugs: string[],
+    options?: { fileName?: string },
+  ) => Promise<boolean>;
+  exporting: boolean;
   toggleEnabled: (skill: SkillSpec) => Promise<boolean>;
   deleteSkill: (skill: SkillSpec) => Promise<boolean>;
 }
@@ -59,6 +61,8 @@ export default function InstalledSkillsTab({
   importFromUrl,
   importFromZip,
   importing,
+  exportSkills,
+  exporting,
   toggleEnabled,
   deleteSkill,
 }: InstalledSkillsTabProps) {
@@ -79,6 +83,7 @@ export default function InstalledSkillsTab({
   const [editingSkill, setEditingSkill] = useState<SkillDetail | null>(null);
   const [pushSkill, setPushSkill] = useState<SkillDetail | null>(null);
   const [hoverKey, setHoverKey] = useState<string | null>(null);
+  const [selectedSlugs, setSelectedSlugs] = useState<string[]>([]);
   const [form] = Form.useForm<SkillFormValues>();
 
   const filteredSkills = useMemo(
@@ -180,6 +185,11 @@ export default function InstalledSkillsTab({
             onDelete={
               kind === "custom" ? (e) => void handleDelete(skill, e) : undefined
             }
+            onExport={
+              kind === "custom"
+                ? () => void exportSkills([skill.slug])
+                : undefined
+            }
           />
         ))}
       </div>
@@ -192,6 +202,8 @@ export default function InstalledSkillsTab({
         onDelete={
           kind === "custom" ? (skill) => void handleDelete(skill) : undefined
         }
+        onExport={(skill) => void exportSkills([skill.slug])}
+        onSelectionChange={setSelectedSlugs}
       />
     );
 
@@ -242,6 +254,32 @@ export default function InstalledSkillsTab({
           </Tooltip>
           {kind === "custom" ? (
             <>
+              <button
+                type="button"
+                className={styles.toolbarBtn}
+                onClick={() =>
+                  void exportSkills(
+                    filteredSkills
+                      .filter((skill) => skill.kind === "workspace")
+                      .map((skill) => skill.slug),
+                  )
+                }
+                disabled={exporting || filteredSkills.length === 0}
+              >
+                <Download size={14} />
+                {t("skills.exportSkills")}
+              </button>
+              {viewMode === "table" && selectedSlugs.length > 0 ? (
+                <button
+                  type="button"
+                  className={styles.toolbarBtn}
+                  onClick={() => void exportSkills(selectedSlugs)}
+                  disabled={exporting}
+                >
+                  <Download size={14} />
+                  {t("skills.exportSelected", { count: selectedSlugs.length })}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className={styles.toolbarBtn}

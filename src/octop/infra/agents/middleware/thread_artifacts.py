@@ -12,6 +12,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import quote, unquote, urlsplit
 
 from langchain.agents.middleware import AgentMiddleware
 from langchain_core.messages import ToolMessage
@@ -188,8 +189,51 @@ def extract_artifact_paths(
     return list(dict.fromkeys(p for p in found if p))
 
 
-def artifacts_for_response(paths: Sequence[str], workspace_dir: Path) -> list[str]:
-    return list(dict.fromkeys(p for raw in paths if (p := _path(raw, workspace_dir))))
+def encode_team_artifact_ref(producer_agent_id: str, path: str) -> str:
+    """Encode a trusted producer/path pair into the existing string artifact store."""
+    producer = producer_agent_id.strip()
+    raw_path = path.strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,128}", producer) or not raw_path:
+        return ""
+    return f"team-artifact://{producer}/{quote(raw_path, safe='')}"
+
+
+def artifacts_for_response(
+    paths: Sequence[str],
+    workspace_dir: Path,
+    *,
+    producer_workspace: Callable[[str], Path | None] | None = None,
+) -> list[str | dict[str, str]]:
+    """Resolve stored artifacts, validating producer paths against that workspace."""
+    out: list[str | dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for raw in paths:
+        if not isinstance(raw, str):
+            continue
+        if raw.startswith("team-artifact://"):
+            parsed = urlsplit(raw)
+            producer = parsed.netloc
+            if not producer or producer_workspace is None:
+                continue
+            try:
+                source_workspace = producer_workspace(producer)
+            except Exception:
+                source_workspace = None
+            if source_workspace is None:
+                continue
+            candidate = unquote(parsed.path.lstrip("/"))
+            path = _path(candidate, source_workspace)
+            key = (producer, path)
+            if path and key not in seen:
+                seen.add(key)
+                out.append({"producer_agent_id": producer, "path": path})
+            continue
+        path = _path(raw, workspace_dir)
+        key = ("", path)
+        if path and key not in seen:
+            seen.add(key)
+            out.append(path)
+    return out
 
 
 def _workspace_snapshot(workspace_dir: Path) -> dict[str, tuple[int, int]]:
@@ -516,7 +560,7 @@ __all__ = [
     "ARTIFACT_TOOL_BASES",
     "ThreadArtifactsMiddleware",
     "artifacts_for_response",
-    "current_thread_id",
+    "encode_team_artifact_ref",
     "extract_artifact_paths",
     "is_artifact_tool_name",
     "tool_name_base",

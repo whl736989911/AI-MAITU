@@ -230,7 +230,9 @@ class CronManager:
         if row is None:
             raise OctopError(ErrorCode.NOT_FOUND, f"cron job {cron_id!r} not found")
         job = self._make_job(row)
-        asyncio.ensure_future(job.run())
+        if row.trigger.startswith("date:"):
+            self._unschedule(cron_id)
+        await job.run()
         logger.info("CronJob %s triggered manually", cron_id)
 
     def _make_job(self, row: Any) -> CronJob:
@@ -243,6 +245,19 @@ class CronManager:
 
     def _schedule(self, row: Any) -> None:
         if not row.enabled:
+            return
+        date_trigger = row.trigger.startswith("date:")
+        if date_trigger and row.last_run_at is not None:
+            # A prior claim is authoritative after restart, even if the process
+            # exited before recording a final status or disabling the row.
+            if row.last_status == "running":
+                self._repos.cron_repo.set_run_status(
+                    row.cron_id,
+                    ts=row.last_run_at,
+                    status="error",
+                    error="Date task interrupted before completion; not replayed after restart.",
+                )
+            self._repos.cron_repo.update(row.cron_id, enabled=False)
             return
         try:
             trigger = build_trigger(row.trigger, timezone=self._timezone)
@@ -261,7 +276,9 @@ class CronManager:
             trigger=trigger,
             id=row.cron_id,
             replace_existing=True,
-            misfire_grace_time=60,
+            # Date tasks missed while the service was down run once on restart.
+            # The persisted last_run_at check prevents replay after completion.
+            misfire_grace_time=None if date_trigger else 60,
         )
 
     def _unschedule(self, cron_id: str) -> None:

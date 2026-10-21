@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
 vi.mock("../../api/request", () => ({ request: requestMock }));
 
-import { wizardApi, wizardSession } from "./wizardClient";
+import {
+  resolveSetupProbeToken,
+  wizardApi,
+  wizardSession,
+} from "./wizardClient";
 
 describe("setup wizard bearer authorization", () => {
   beforeEach(() => {
@@ -50,6 +54,17 @@ describe("setup wizard bearer authorization", () => {
     wizardSession.saveSetupJwt("jwt");
     expect(wizardSession.loadToken()).toBe("wizard");
     expect(wizardSession.loadSetupJwt()).toBe("jwt");
+  });
+
+  it("uses the initial-admin JWT without requesting a resumed wizard token", async () => {
+    wizardSession.saveSetupJwt("admin-jwt");
+    await expect(resolveSetupProbeToken()).resolves.toBe("admin-jwt");
+    expect(requestMock).not.toHaveBeenCalled();
+  });
+
+  it("does not request a public fallback token when no setup authority remains", async () => {
+    await expect(resolveSetupProbeToken()).resolves.toBeNull();
+    expect(requestMock).not.toHaveBeenCalled();
   });
 
   it("maps a pre-license-step saved wizard position", () => {

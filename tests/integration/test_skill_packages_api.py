@@ -7,6 +7,8 @@ from typing import Any
 
 import pytest
 
+from tests.support.auth import auth_header
+
 SAMPLE_SKILL = """---
 name: pdf-reader
 description: Read PDF documents
@@ -224,6 +226,13 @@ async def test_regular_user_cannot_push_to_another_users_package(
     env_alice_bob_agent: Any,
 ) -> None:
     client, _server, alice_auth, bob_auth, alice_agent_id = env_alice_bob_agent
+    me = await client.get("/api/auth/me", headers=alice_auth)
+    granted = await client.patch(
+        f"/api/users/{me.json()['id']}",
+        headers=await auth_header(client),
+        json={"permissions": sorted(set(me.json()["permissions"]) | {"skills"})},
+    )
+    assert granted.status_code == 200, granted.text
     bob_package = (
         await client.post(
             "/api/skill-packages",

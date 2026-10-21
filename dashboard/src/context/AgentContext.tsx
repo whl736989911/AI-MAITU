@@ -46,6 +46,8 @@ export interface OctopAgent {
   description: string | null;
   persona_mbti: string | null;
   default_model: string | null;
+  /** Default mode for new conversations with this agent. */
+  conversation_mode?: "ask" | "plan" | "craft";
   system_prompt: string | null;
   template_name: string | null;
   state: "running" | "stopped" | "failed" | "starting" | "stopping" | string;

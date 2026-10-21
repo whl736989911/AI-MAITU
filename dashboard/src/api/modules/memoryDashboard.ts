@@ -101,6 +101,10 @@ export interface ExtractConfig {
    * (follow the chat model); send "" to reset back to AUTO.
    */
   aux_model?: string | null;
+  extract_light_timeout_s?: number | null;
+  extract_heavy_timeout_s?: number | null;
+  extract_max_tokens?: number | null;
+  extract_extra_body?: Record<string, unknown> | null;
 }
 
 export interface EntityItem {
@@ -380,6 +384,22 @@ export interface MemoryAccess {
   default_scope: MemoryScope;
   shared_writable: boolean;
   private_writable: boolean;
+  configuration_writable?: boolean;
+}
+
+export interface ManualMemoryDocument {
+  name: "USER.md" | "MEMORY.md";
+  text: string;
+  snapshot: string;
+  editable: boolean;
+  revision?: number | null;
+  scope?: MemoryScope;
+  max_bytes?: number;
+}
+
+export interface ManualMemoryDocumentWrite {
+  text: string;
+  expected_snapshot: string;
 }
 
 const scoped = (path: string, scope?: MemoryScope) =>
@@ -393,6 +413,24 @@ const post = <T>(path: string, body?: unknown) =>
 
 export const memoryDashboardApi = {
   getAccess: (aid: string) => request<MemoryAccess>(`${base(aid)}/access`),
+  getManualDocument: (
+    aid: string,
+    name: ManualMemoryDocument["name"],
+    scope?: MemoryScope,
+  ) =>
+    request<ManualMemoryDocument>(
+      scoped(`${base(aid)}/context/${encodeURIComponent(name)}`, scope),
+    ),
+  putManualDocument: (
+    aid: string,
+    name: ManualMemoryDocument["name"],
+    body: ManualMemoryDocumentWrite,
+    scope?: MemoryScope,
+  ) =>
+    request<Pick<ManualMemoryDocument, "name" | "text" | "snapshot">>(
+      scoped(`${base(aid)}/context/${encodeURIComponent(name)}`, scope),
+      { method: "PUT", body: JSON.stringify(body) },
+    ),
 
   listAtoms: (aid: string, body?: ListAtomsBody, scope?: MemoryScope) =>
     post<ListAtomsResponse>(scoped(`${base(aid)}/atoms/list`, scope), body),

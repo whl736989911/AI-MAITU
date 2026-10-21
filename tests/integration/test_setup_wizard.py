@@ -255,31 +255,23 @@ async def test_test_provider_returns_error_for_bad_key(env: Any) -> None:
     assert r.json()["ok"] is False
 
 
-async def test_resume_wizard_after_admin_created(env: Any) -> None:
-    c, _srv, home = env
-    pw = read_password(Path.home())
-    tok = (await c.post("/api/setup/verify-password", json={"password": pw})).json()["wizard_token"]
-    await c.post(
-        "/api/setup/initial-admin",
-        json={"username": "admin", "password": "TestPass12"},
-        headers={"Authorization": f"Bearer {tok}"},
-    )
+async def test_resume_wizard_route_is_removed(env: Any) -> None:
+    c, _srv, _home = env
     r = await c.post("/api/setup/resume-wizard")
-    assert r.status_code == 200
-    body = r.json()
-    assert isinstance(body["wizard_token"], str)
-    assert body["expires_in"] > 0
+    assert r.status_code == 401
 
 
 async def test_test_provider_accepts_admin_jwt_after_admin_created(env: Any) -> None:
     c, srv, home = env
     pw = read_password(Path.home())
-    tok = (await c.post("/api/setup/verify-password", json={"password": pw})).json()["wizard_token"]
+    token = (await c.post("/api/setup/verify-password", json={"password": pw})).json()[
+        "wizard_token"
+    ]
     admin = (
         await c.post(
             "/api/setup/initial-admin",
             json={"username": "admin", "password": "TestPass12"},
-            headers={"Authorization": f"Bearer {tok}"},
+            headers={"Authorization": f"Bearer {token}"},
         )
     ).json()
     assert "access_token" in admin
@@ -296,6 +288,30 @@ async def test_test_provider_accepts_admin_jwt_after_admin_created(env: Any) -> 
     )
     assert r.status_code == 200
     assert r.json()["ok"] is False
+
+
+async def test_setup_resumes_after_wizard_token_loss_with_initial_admin_jwt(env: Any) -> None:
+    """A browser can finish after restart using the JWT returned by initial-admin."""
+    c, srv, home = env
+    password = read_password(Path.home())
+    token = (await c.post("/api/setup/verify-password", json={"password": password})).json()[
+        "wizard_token"
+    ]
+    created = await c.post(
+        "/api/setup/initial-admin",
+        json={"username": "admin", "password": "TestPass12"},
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert created.status_code == 201
+    srv.wizard_tokens.clear()
+
+    finished = await c.post(
+        "/api/setup/finish",
+        json={"provider_draft": None},
+        headers={"Authorization": f"Bearer {created.json()['access_token']}"},
+    )
+    assert finished.status_code == 200
+    assert finished.json() == {"ok": True}
 
 
 async def test_finish_saves_provider_with_admin_jwt(env: Any) -> None:

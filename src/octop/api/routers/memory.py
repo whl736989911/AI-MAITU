@@ -34,6 +34,7 @@ Surface (mirrors the design doc §6.2):
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from typing import Any, cast
@@ -50,9 +51,22 @@ from octop.api.common.memory_client import (
     MemoryAccess,
     MemoryScope,
     call_memory_rpc,
+    open_memory_scope,
     resolve_memory_access,
 )
-from octop.api.deps import current_user, get_server
+from octop.api.deps import current_user, get_server, require_permission
+from octop.infra.agents.memory_context import (
+    ManagedMemoryContext,
+    MemoryContextConflict,
+    MemoryDocument,
+    canonical_manual_document,
+    document_lock_path,
+    exclusive_file_lock,
+    read_private_document,
+    read_workspace_document,
+    save_private_document,
+    save_workspace_document,
+)
 from octop.infra.errors import ErrorCode, OctopError
 
 logger = logging.getLogger(__name__)
@@ -72,6 +86,10 @@ _EXTRACT_DEFAULTS: dict[str, Any] = {
     # Model ref ("provider/model") used for extraction / promotion; None → AUTO
     # (follow the agent's effective chat model).
     "aux_model": None,
+    "extract_light_timeout_s": None,
+    "extract_heavy_timeout_s": None,
+    "extract_max_tokens": None,
+    "extract_extra_body": None,
 }
 # Guard rails so a bad UI value can't schedule a hot loop or a never-firing timer.
 _MIN_IDLE_SECONDS = 60.0  # UI minimum: one minute; zero must not disable extraction
@@ -201,6 +219,11 @@ class _ExtractConfigBody(BaseModel):
         description="'provider/model' ref for extraction; '' resets to AUTO",
     )
 
+    extract_light_timeout_s: float | None = Field(default=None, allow_inf_nan=False)
+    extract_heavy_timeout_s: float | None = Field(default=None, allow_inf_nan=False)
+    extract_max_tokens: int | None = None
+    extract_extra_body: dict[str, Any] | None = None
+
 
 class _RejectCandidateBody(BaseModel):
     reason: str | None = None
@@ -228,6 +251,155 @@ class _CreateAtomBody(BaseModel):
 class _ReplaceAtomBody(BaseModel):
     assertion: str
     reason: str | None = None
+
+
+class _ManualMemoryDocumentBody(BaseModel):
+    text: str = Field(
+        max_length=65536, description="Document text; also limited to 65536 UTF-8 bytes."
+    )
+    expected_snapshot: str = Field(description="Snapshot returned by the latest read.")
+
+
+class _ManualMemoryDocumentResponse(BaseModel):
+    name: str = Field(description="USER.md or MEMORY.md.")
+    text: str
+    snapshot: str = Field(description="CAS token for the current content and private revision.")
+    revision: int | None = None
+    scope: MemoryScope
+    editable: bool
+    max_bytes: int = 65536
+
+
+def _manual_workspace(server: Any, agent_id: str) -> Any:
+    return server.app_runtime.agent_registry.workspace_for_agent(agent_id)
+
+
+async def _manual_document(
+    agent_id: str,
+    name: str,
+    *,
+    scope: MemoryScope,
+    user: Any,
+    server: Any,
+) -> Any:
+    if scope == "private":
+        memory = await open_memory_scope(
+            agent_id=agent_id, scope="private", user=user, server=server
+        )
+        return await asyncio.to_thread(read_private_document, memory, name)
+    workspace = await asyncio.to_thread(_manual_workspace, server, agent_id)
+    if workspace is None:
+        raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+    return await asyncio.to_thread(read_workspace_document, workspace, name)
+
+
+@router.get(
+    "/agents/{agent_id}/memory/context/{name}",
+    summary="Read a scoped manual memory document",
+    response_model=_ManualMemoryDocumentResponse,
+)
+async def get_manual_memory_document(
+    agent_id: str,
+    name: str,
+    as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> _ManualMemoryDocumentResponse:
+    canonical = canonical_manual_document(name)
+    if canonical is None:
+        raise HTTPException(status_code=400, detail="only USER.md and MEMORY.md are supported")
+    registry = server.app_runtime.agent_registry
+    async with registry._track_invocation(agent_id):
+        access = await resolve_memory_access(agent_id, user=user, as_user=as_user, server=server)
+        selected = scope or access.default_scope
+        if selected == "private" and not access.private_writable:
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
+        operation = asyncio.create_task(
+            _manual_document(agent_id, canonical, scope=selected, user=user, server=server)
+        )
+        try:
+            document = await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            await operation
+            raise
+        can_edit = access.private_writable if selected == "private" else access.shared_writable
+        return _ManualMemoryDocumentResponse(
+            name=document.name,
+            text=document.text,
+            snapshot=document.snapshot,
+            revision=document.revision,
+            editable=document.editable and can_edit,
+            scope=selected,
+        )
+
+
+@router.put(
+    "/agents/{agent_id}/memory/context/{name}",
+    summary="Update a manual memory document with a version check",
+    response_model=_ManualMemoryDocumentResponse,
+)
+async def put_manual_memory_document(
+    agent_id: str,
+    name: str,
+    body: _ManualMemoryDocumentBody,
+    as_user: int | None = None,
+    scope: MemoryScope | None = Query(default=None),
+    user: Any = Depends(current_user),
+    server: Any = Depends(get_server),
+) -> _ManualMemoryDocumentResponse:
+    canonical = canonical_manual_document(name)
+    if canonical is None:
+        raise HTTPException(status_code=400, detail="only USER.md and MEMORY.md are supported")
+    if len(body.text.encode("utf-8")) > 65536:
+        raise OctopError(ErrorCode.SLASH_BAD_ARGS, "memory document exceeds 65536 UTF-8 bytes")
+    registry = server.app_runtime.agent_registry
+    async with registry._track_invocation(agent_id):
+        access = await resolve_memory_access(agent_id, user=user, as_user=as_user, server=server)
+        selected = scope or access.default_scope
+        writable = access.private_writable if selected == "private" else access.shared_writable
+        if not writable or (selected == "private" and as_user not in (None, user.id)):
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
+        if selected == "private":
+            target = await open_memory_scope(
+                agent_id=agent_id, scope="private", user=user, server=server
+            )
+        else:
+            target = await asyncio.to_thread(_manual_workspace, server, agent_id)
+            if target is None:
+                raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+        lock = document_lock_path(
+            server.paths,
+            agent_id,
+            scope=selected,
+            user_id=int(user.id) if selected == "private" else None,
+            name=canonical,
+        )
+
+        def persist() -> MemoryDocument:
+            with exclusive_file_lock(lock):
+                save = save_private_document if selected == "private" else save_workspace_document
+                return save(target, canonical, body.text, expected_snapshot=body.expected_snapshot)
+
+        try:
+            operation = asyncio.create_task(asyncio.to_thread(persist))
+            try:
+                document = await asyncio.shield(operation)
+            except asyncio.CancelledError:
+                await operation
+                raise
+        except MemoryContextConflict as exc:
+            raise OctopError.localized(ErrorCode.MEMORY_DOCUMENT_CONFLICT) from exc
+        except ManagedMemoryContext as exc:
+            raise OctopError.localized(ErrorCode.FORBIDDEN) from exc
+        return _ManualMemoryDocumentResponse(
+            name=document.name,
+            text=document.text,
+            snapshot=document.snapshot,
+            revision=document.revision,
+            editable=document.editable,
+            scope=selected,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -856,6 +1028,24 @@ def _coerce_seconds(value: Any, *, minimum: float) -> float:
     return seconds
 
 
+def _coerce_aux_timeout(value: Any) -> float | None:
+    seconds = float(value)
+    if seconds <= 0:
+        return None
+    return min(3600.0, max(30.0, seconds))
+
+
+def _coerce_aux_max_tokens(value: Any) -> int | None:
+    tokens = int(value)
+    return None if tokens <= 0 else max(128, min(tokens, 65536))
+
+
+def _coerce_aux_extra_body(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        raise HTTPException(status_code=400, detail="extract_extra_body must be a JSON object")
+    return dict(value) or None
+
+
 def _validated_aux_model(value: Any, providers: Any) -> str | None:
     """Normalize an ``aux_model`` patch value: empty / "auto" → None (AUTO)."""
     ref = str(value).strip()
@@ -873,7 +1063,7 @@ def _validated_aux_model(value: Any, providers: Any) -> str | None:
 async def get_extract_config(
     agent_id: str,
     as_user: int | None = None,
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("memory")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Return the agent's extraction-trigger configuration (with defaults)."""
@@ -885,7 +1075,7 @@ async def get_extract_config(
 async def put_extract_config(
     agent_id: str,
     body: _ExtractConfigBody = Body(default_factory=_ExtractConfigBody),
-    user: Any = Depends(current_user),
+    user: Any = Depends(require_permission("memory")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Persist the extraction-trigger config and hot-reload the agent.
@@ -925,6 +1115,13 @@ async def put_extract_config(
         )
     if "aux_model" in patch:
         merged["aux_model"] = _validated_aux_model(patch["aux_model"], registry.providers)
+    for key in ("extract_light_timeout_s", "extract_heavy_timeout_s"):
+        if key in patch:
+            merged[key] = _coerce_aux_timeout(patch[key])
+    if "extract_max_tokens" in patch:
+        merged["extract_max_tokens"] = _coerce_aux_max_tokens(patch["extract_max_tokens"])
+    if "extract_extra_body" in patch:
+        merged["extract_extra_body"] = _coerce_aux_extra_body(patch["extract_extra_body"])
 
     try:
         cfg = json.loads(row.config_json or "{}")

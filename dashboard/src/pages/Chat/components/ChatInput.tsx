@@ -71,6 +71,9 @@ interface ChatInputProps {
   queuedItems?: QueuedChatItem[];
   onRemoveQueued?: (id: string) => void;
   onReclaimQueued?: (id: string) => QueuedChatItem | null;
+  onSteerQueued?: (item: QueuedChatItem) => boolean;
+  onFollowUpQueued?: (item: QueuedChatItem) => boolean;
+  onWithdrawQueued?: (item: QueuedChatItem) => boolean;
   onCancel: () => void;
   onNewChat: () => void;
   onUserInput?: () => void;
@@ -135,6 +138,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       queuedItems = [],
       onRemoveQueued,
       onReclaimQueued,
+      onSteerQueued,
+      onFollowUpQueued,
+      onWithdrawQueued,
       onCancel,
       onNewChat,
       onUserInput,
@@ -725,6 +731,9 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
             items={queuedItems}
             onRemove={onRemoveQueued}
             onReclaim={handleReclaimQueued}
+            onSteer={onSteerQueued}
+            onFollowUp={onFollowUpQueued}
+            onWithdraw={onWithdrawQueued}
           />
         )}
         <div className={styles.inputWrapper}>

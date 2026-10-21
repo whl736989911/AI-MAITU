@@ -157,8 +157,12 @@ def disable_user_offline(username: str, *, home: Path | None = None) -> None:
 
 
 def delete_user_offline(username: str, *, home: Path | None = None) -> None:
+    _require_business_access()
     with open_cli_services(home) as svc:
         uid = _require_username(svc, username)
+        from octop.infra.agents.checkpoint_cleanup import delete_user_thread_checkpoints
+
+        delete_user_thread_checkpoints(svc, uid)
         svc.user_repo.delete(uid)
 
 
@@ -577,6 +581,27 @@ def delete_thread_offline(agent_id: str, thread_id: str, *, home: Path | None = 
         row = svc.thread_repo.get(thread_id)
         if row is None or row.agent_id != agent_id:
             raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"thread {thread_id!r} not found")
+        agent = svc.agent_repo.get(agent_id)
+        if agent is None:
+            raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
+        from octop.infra.agents.checkpoint_cleanup import (
+            agent_config_from_row,
+            delete_thread_checkpoints,
+        )
+        from octop.infra.agents.workspace_dir import workspace_dir_from_config_json
+
+        delete_thread_checkpoints(
+            agent_id=agent_id,
+            thread_id=thread_id,
+            cfg=agent_config_from_row(agent),
+            octop_config=svc.config,
+            workspace_dir=workspace_dir_from_config_json(
+                agent.config_json,
+                paths=svc.paths,
+                agent_id=agent_id,
+                ensure=False,
+            ),
+        )
         try:
             svc.trajectory_event_repo.delete_for_thread(thread_id)
         except Exception:

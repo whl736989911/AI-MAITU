@@ -1,0 +1,3 @@
+Engineering Expert template
+
+This template is adapted from the engineering plugin in Anthropic Knowledge Work Plugins (https://github.com/anthropics/knowledge-work-plugins), licensed under the Apache License, Version 2.0. TencentCloud/Octop v1.0.2 also adapted the upstream template; this MAITU adaptation revises platform-specific guidance and adds workspace authorization and shared-memory safeguards. The Apache License, Version 2.0 applies to upstream-derived template material. The complete license text is available at https://www.apache.org/licenses/LICENSE-2.0.

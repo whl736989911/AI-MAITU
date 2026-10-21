@@ -1,6 +1,6 @@
 import { Popconfirm, Switch, Table, Tag, Tooltip } from "antd";
 import type { ColumnsType } from "antd/es/table";
-import { Eye, Trash2 } from "lucide-react";
+import { Download, Eye, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SkillSpec } from "../useSkills";
 import { useSkillDisplayName } from "../skillDisplayNames";
@@ -12,6 +12,8 @@ interface SkillsTableProps {
   onView: (skill: SkillSpec) => void;
   onToggleEnabled: (skill: SkillSpec) => void;
   onDelete?: (skill: SkillSpec) => void;
+  onExport?: (skill: SkillSpec) => void;
+  onSelectionChange?: (slugs: string[]) => void;
 }
 
 export default function SkillsTable({
@@ -20,6 +22,8 @@ export default function SkillsTable({
   onView,
   onToggleEnabled,
   onDelete,
+  onExport,
+  onSelectionChange,
 }: SkillsTableProps) {
   const { t } = useTranslation();
   const skillDisplayName = useSkillDisplayName();
@@ -71,7 +75,7 @@ export default function SkillsTable({
     {
       title: t("skills.table.actions", "操作"),
       key: "actions",
-      width: kind === "custom" ? 88 : 56,
+      width: kind === "custom" ? 112 : 56,
       align: "center",
       render: (_v, row) => (
         <div className={styles.tableActions}>
@@ -88,6 +92,21 @@ export default function SkillsTable({
               <Eye size={13} />
             </button>
           </Tooltip>
+          {kind === "custom" && onExport ? (
+            <Tooltip title={t("skills.exportSkills")} mouseEnterDelay={0.5}>
+              <button
+                type="button"
+                className={styles.tableActionBtn}
+                aria-label={t("skills.exportSkills")}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onExport(row);
+                }}
+              >
+                <Download size={13} />
+              </button>
+            </Tooltip>
+          ) : null}
           {kind === "custom" && onDelete ? (
             <Popconfirm
               title={t("skills.deleteConfirmContent", { slug: row.slug })}
@@ -117,6 +136,14 @@ export default function SkillsTable({
       rowKey={(row) => `${row.kind}-${row.slug}`}
       columns={columns}
       dataSource={skills}
+      rowSelection={
+        kind === "custom"
+          ? {
+              onChange: (_keys, rows) =>
+                onSelectionChange?.(rows.map((row) => row.slug)),
+            }
+          : undefined
+      }
       pagination={false}
       size="middle"
       scroll={{ x: 720 }}

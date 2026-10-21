@@ -28,6 +28,7 @@ from octop.i18n.domains.agents import (
 )
 from octop.infra.agents import feature_workflow as feature_wf
 from octop.infra.agents.acp_settings import ACPSettingsStore
+from octop.infra.agents.hitl_resume import HitlResumeContexts, resume_hitl_with_config
 from octop.infra.agents.kinds import KIND_AGENT, KIND_TEAM, KINDS, is_feature_agent
 from octop.infra.agents.langfuse import LangfuseSettings, LangfuseSettingsStore
 from octop.infra.agents.media_generation import (
@@ -53,6 +54,7 @@ from octop.infra.agents.profile import (
     strip_profile_config,
 )
 from octop.infra.agents.providers import ProviderStore, sync_providers_to_harness
+from octop.infra.agents.providers.health import ModelHealthRegistry
 from octop.infra.agents.runtime_limits import (
     AGENT_RUNTIME_CONFIG_KEYS,
     apply_agent_runtime_to_stream_request,
@@ -398,9 +400,11 @@ class AgentManager:
         # A thread's LangGraph checkpoint must never be advanced by overlapping
         # turns or HITL resumes.
         self._thread_execution_locks: dict[tuple[str, str], asyncio.Lock] = {}
+        self._hitl_resume_contexts = HitlResumeContexts()
         self._active_invocations: dict[str, int] = {}
         self._invocation_waiters: dict[str, int] = {}
         self._history_backfills: dict[str, asyncio.Event] = {}
+        self._memory_storage_maintenance_agents: set[str] = set()
         self._reload_dirty: set[str] = set()
         self._reload_worker_running: dict[str, bool] = {}
         self._bootstrap_graph_refresh_pending: set[str] = set()
@@ -426,6 +430,7 @@ class AgentManager:
         self._providers = ProviderStore(
             provider_repo=repos.provider_repo,
         )
+        self._model_health = ModelHealthRegistry()
         self._connector_svc = ConnectorService(
             repo=repos.connector_repo,
             secret_repo=repos.secret_repo,
@@ -465,6 +470,7 @@ class AgentManager:
             agents_repo=repos.agent_repo,
         )
         self._providers = ProviderStore(provider_repo=repos.provider_repo)
+        self._model_health.clear()
         self._connector_svc = ConnectorService(
             repo=repos.connector_repo,
             secret_repo=repos.secret_repo,
@@ -1062,6 +1068,7 @@ class AgentManager:
                 await self._harness_manager.aremove_agent(agent_id)
         self._plugin_tool_labels.pop(agent_id, None)
         self.forget_turn_mcp_tools(agent_id)
+        self._hitl_resume_contexts.clear_agent(agent_id)
         try:
             if await asyncio.to_thread(workspace_dir.exists):
                 await asyncio.to_thread(shutil.rmtree, workspace_dir)
@@ -1091,7 +1098,7 @@ class AgentManager:
                 raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
             await self._start_agent(row, init_workspace=False)
 
-    async def stop(self, agent_id: str) -> None:
+    async def stop(self, agent_id: str, *, preserve_paused_contexts: bool = False) -> None:
         """Unload agent from harness runtime and persist ``last_state=stopped``."""
         async with self._lock:
             row = self._repos.agent_repo.get(agent_id)
@@ -1100,6 +1107,8 @@ class AgentManager:
             await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
             await self._harness_manager.aremove_agent(agent_id)  # type: ignore[union-attr]
             self.forget_turn_mcp_tools(agent_id)
+            if not preserve_paused_contexts:
+                self._hitl_resume_contexts.clear_agent(agent_id)
             self._repos.agent_repo.set_state(agent_id, "stopped", error=None)
 
     def _quiesce_harness_memory(self, agent_id: str) -> None:
@@ -1396,35 +1405,46 @@ class AgentManager:
         return OctopError(ErrorCode.AGENT_NOT_RUNNING, f"agent {agent_id!r} not running")
 
     async def delete_thread_checkpoint(self, agent_id: str, thread_id: str) -> bool:
-        """Best-effort delete of a thread's actual conversation data.
+        """Delete durable conversation state before callers remove its metadata."""
+        from octop.infra.agents.checkpoint_cleanup import delete_thread_checkpoints
+        from octop.infra.agents.workspace_dir import workspace_dir_from_config_json
 
-        Octop's own ``thread_registry`` only tracks UI metadata (title,
-        pinned, last_active) — the real message content lives in the
-        agent's LangGraph checkpointer. Deleting only the registry row
-        makes "delete conversation" cosmetic: the content stays in the
-        checkpoint store forever. Callers should call this *before*
-        removing their own thread row, so a checkpoint-delete failure
-        leaves the thread visible/retryable instead of orphaning data
-        with no remaining handle to it.
-
-        Returns ``True`` when checkpoint data was actually deleted,
-        ``False`` when there was nothing to delete (agent not currently
-        running, or no checkpointer configured for it) — both are normal,
-        expected states, not errors.
-        """
-        try:
-            harness = self.get_agent(agent_id)
-        except OctopError:
-            logger.warning(
-                "delete_thread_checkpoint: agent %r not running; skipping checkpoint cleanup for thread %r",
-                agent_id,
-                thread_id,
-            )
-            return False
-        adelete = getattr(harness, "adelete_thread", None)
-        if adelete is None:
-            return False
-        return bool(await adelete(thread_id))
+        row = self.get_row(agent_id)
+        if row is None:
+            raise self._unavailable_error(agent_id)
+        workspace = workspace_dir_from_config_json(
+            row.config_json, paths=self._paths, agent_id=agent_id, ensure=False
+        )
+        self._assert_managed_workspace_ok(agent_id, workspace)
+        async with self._thread_execution_lock(agent_id, thread_id):
+            try:
+                try:
+                    harness = self.get_agent(agent_id)
+                except OctopError as exc:
+                    if exc.code not in {ErrorCode.AGENT_NOT_RUNNING, ErrorCode.AGENT_FAILED}:
+                        raise
+                    harness = None
+                deleted = False
+                adelete = getattr(harness, "adelete_thread", None)
+                if callable(adelete):
+                    # Older memory runtimes expose the underlying saver only.
+                    with suppress(NotImplementedError):
+                        deleted = bool(await adelete(thread_id))
+                persisted = await asyncio.to_thread(
+                    delete_thread_checkpoints,
+                    agent_id=agent_id,
+                    thread_id=thread_id,
+                    cfg=self._agent_config_dict(row),
+                    octop_config=self._config,
+                    workspace_dir=workspace,
+                )
+                self._hitl_resume_contexts.take(agent_id, thread_id)
+                return persisted or deleted
+            except Exception as exc:
+                logger.exception(
+                    "Checkpoint deletion failed agent=%s thread=%s", agent_id, thread_id
+                )
+                raise OctopError.localized(ErrorCode.CHECKPOINT_DELETE_FAILED) from exc
 
     # ------------------------------------------------------------------
     # Chat / invoke — stream, call, HITL, thread model overrides
@@ -1450,6 +1470,53 @@ class AgentManager:
         event = self._history_backfills.pop(agent_id, None)
         if event is not None:
             event.set()
+
+    def is_memory_storage_maintenance(self, agent_id: str) -> bool:
+        return agent_id in self._memory_storage_maintenance_agents
+
+    def reset_restored_thread(self, agent_id: str, thread_id: str, *, user_id: int) -> None:
+        """Discard approvals tied to graph state replaced by a scoped restore."""
+        thread = self._repos.thread_repo.get(thread_id)
+        if thread is None or thread.agent_id != agent_id or thread.user_id != user_id:
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
+        self._hitl_resume_contexts.take(agent_id, thread_id)
+        if self._hitl_session_store is not None:
+            self._hitl_session_store.set(thread_id, {"mode": "ask"})
+            self._repos.thread_repo.update_composer(thread_id, pending_plan_path=None)
+        else:
+            self._repos.thread_repo.update_composer(
+                thread_id, pending_plan_path=None, hitl_policy=json.dumps({"mode": "ask"})
+            )
+
+    @asynccontextmanager
+    async def memory_storage_maintenance(self, agent_id: str) -> AsyncIterator[None]:
+        """Reserve and quiesce only this agent while its memory storage changes."""
+        if self.get_row(agent_id) is None:
+            raise self._unavailable_error(agent_id)
+        if not self.try_begin_history_backfill(agent_id):
+            raise OctopError.localized(ErrorCode.AGENT_BUSY)
+        self._memory_storage_maintenance_agents.add(agent_id)
+        was_running = False
+        stopped = False
+        try:
+            try:
+                self.get_agent(agent_id)
+                was_running = True
+            except OctopError as exc:
+                if exc.code not in {ErrorCode.AGENT_NOT_RUNNING, ErrorCode.AGENT_FAILED}:
+                    raise
+            if was_running:
+                await self.stop(agent_id, preserve_paused_contexts=True)
+                stopped = True
+            yield
+        finally:
+            try:
+                if was_running and stopped:
+                    await self.start(agent_id)
+                    self.get_agent(agent_id)
+            finally:
+                self._memory_storage_maintenance_agents.discard(agent_id)
+                self.end_history_backfill(agent_id)
 
     async def _begin_invocation(self, agent_id: str) -> None:
         self._invocation_waiters[agent_id] = self._invocation_waiters.get(agent_id, 0) + 1
@@ -1505,8 +1572,15 @@ class AgentManager:
         ):
             self._apply_pending_bootstrap_graph_refresh(agent_id)
             req = self._prepare_stream_request(agent_id, request)
+            self._hitl_resume_contexts.take(agent_id, thread_id)
             with hitl_thread_scope(thread_id_from_request(req)):
                 async for chunk in self._harness_manager.stream(agent_id, cast(Any, req)):
+                    if isinstance(chunk, dict) and chunk.get("type") == "hitl_required":
+                        from harness_agent.request import ChatRequest
+
+                        self._hitl_resume_contexts.remember(
+                            agent_id, thread_id, ChatRequest.coerce(req).to_runnable_config()
+                        )
                     yield chunk
             self._apply_pending_bootstrap_graph_refresh(agent_id)
 
@@ -1538,6 +1612,8 @@ class AgentManager:
         agent_id: str,
         thread_id: str,
         decisions: list[dict[str, Any]],
+        *,
+        fallback_request: dict[str, Any] | None = None,
     ) -> AsyncIterator[Any]:
         """Resume a paused HITL interrupt for *thread_id*."""
         from octop.infra.licensing import current_license
@@ -1552,10 +1628,27 @@ class AgentManager:
             self._track_invocation(agent_id),
         ):
             self._apply_pending_bootstrap_graph_refresh(agent_id)
+            config = self._hitl_resume_contexts.take(agent_id, thread_id)
+            if config is None and fallback_request is not None:
+                from harness_agent.request import ChatRequest
+
+                prepared = self._prepare_stream_request(agent_id, fallback_request)
+                config = ChatRequest.coerce(prepared).to_runnable_config()
+            chunks = (
+                resume_hitl_with_config(
+                    self._harness_manager, agent_id, thread_id, decisions, config
+                )
+                if config is not None
+                else self._harness_manager.resume_hitl(agent_id, thread_id, decisions)
+            )
             with hitl_thread_scope(thread_id):
-                async for chunk in self._harness_manager.resume_hitl(
-                    agent_id, thread_id, decisions
-                ):
+                async for chunk in chunks:
+                    if (
+                        config is not None
+                        and isinstance(chunk, dict)
+                        and chunk.get("type") == "hitl_required"
+                    ):
+                        self._hitl_resume_contexts.remember(agent_id, thread_id, config)
                     yield chunk
             self._apply_pending_bootstrap_graph_refresh(agent_id)
 
@@ -1582,9 +1675,13 @@ class AgentManager:
         name, model_id = self._repos.settings_repo.get_active_model()
         if name and model_id:
             ref = f"{name}/{model_id}"
-            if self._providers.is_model_ref_usable(ref):
+            if self._providers.is_model_ref_usable(ref) and self._model_health.is_available(ref):
                 return ref
-        return self._providers.resolve_first_model_ref()
+        candidates = self._providers.resolve_failover_model_refs()
+        return next(
+            (ref for ref in candidates if self._model_health.is_available(ref)),
+            candidates[0] if candidates else None,
+        )
 
     # ------------------------------------------------------------------
     # Hot-reload — rebuild harness agents after config / provider changes
@@ -1672,6 +1769,10 @@ class AgentManager:
         is rebuilt. With neither set (backup restore, OAuth, unknown), all enabled
         agents are rebuilt in parallel.
         """
+        if provider_name is not None:
+            self._model_health.clear_provider(provider_name)
+        else:
+            self._model_health.clear()
         if self._harness_manager is None:
             return
         providers = self._providers.build_harness_configs()
@@ -3147,6 +3248,13 @@ class AgentManager:
         *,
         user_display: str = "User",
     ) -> None:
+        from octop.infra.agents.memory_llm_adapter import configure_agent_memory_runtime
+
+        configure_agent_memory_runtime(
+            agent,
+            self._agent_config_dict(row),
+            feature_middleware=self._feature_memory_routings.get(row.agent_id),
+        )
         team_host = is_team_agent(row)
         uid = self._connector_uid_for(row)
         if uid is not None and not team_host:
@@ -3216,7 +3324,9 @@ class AgentManager:
             return
         agent._config.system_prompt = row.system_prompt
         if agent._config.memory == ():
-            agent._config.memory = None
+            from octop.infra.agents.middleware.manual_memory import filter_native_memory_sources
+
+            agent._config.memory = filter_native_memory_sources(None)
         self._bootstrap_graph_refresh_pending.add(agent_id)
         logger.info(
             "Bootstrap complete for agent %s — graph refresh deferred to next turn",
@@ -3796,6 +3906,46 @@ class AgentManager:
         if req.get("agent_id") is None:
             req["agent_id"] = agent_id
         agent_cfg = self.get_config(agent_id)
+        from octop.infra.agents.conversation_mode import (
+            CONFIG_MODE_KEY,
+            default_conversation_mode_from_config,
+            resolve_conversation_mode,
+            stamp_conversation_mode,
+        )
+
+        configurable = dict(req.get("configurable") or {})
+        thread_id = str(req.get("thread_id") or "")
+        thread = self._repos.thread_repo.get(thread_id) if thread_id else None
+        if CONFIG_MODE_KEY not in configurable:
+            stamp_conversation_mode(
+                req,
+                resolve_conversation_mode(
+                    explicit=req.get("conversation_mode"),
+                    thread_mode=thread.conversation_mode if thread is not None else None,
+                    agent_default=default_conversation_mode_from_config(agent_cfg),
+                ),
+            )
+            configurable = dict(req.get("configurable") or {})
+        if "octop_model_failover_auto" not in configurable:
+            row = self.get_row(agent_id)
+            explicit_model = (
+                req.get("model")
+                or configurable.get("model")
+                or (thread.model_ref if thread is not None else None)
+                or self.get_thread_model(agent_id, thread_id)
+            )
+            if row is not None and not explicit_model:
+                explicit_model = self._providers.resolve_explicit_default_model(row, agent_cfg)
+            configurable["octop_model_failover_auto"] = not bool(explicit_model)
+            from langchain_core.messages import convert_to_messages
+
+            from octop.infra.gateway.media.attachment_hints import content_blocks_need_vision
+
+            configurable["octop_model_failover_requires_vision"] = any(
+                content_blocks_need_vision(message.content)
+                for message in convert_to_messages(req.get("messages") or [])
+            )
+        req["configurable"] = configurable
         plugins_cfg = agent_cfg.get("plugins")
         tool_configs = collect_plugin_tool_configs(
             plugins_cfg if isinstance(plugins_cfg, dict) else None
@@ -4120,6 +4270,11 @@ class AgentManager:
         from octop.infra.agents.middleware.feature_workflow import (
             feature_workflow_chain,
         )
+        from octop.infra.agents.middleware.model_failover import (
+            AutoModelFailoverMiddleware,
+            current_failover_model_ref,
+            track_current_failover_model,
+        )
 
         # FilesystemGuard + ModelSettings live in harness-agent (auto-mounted).
         # BinaryReadGuard stays Octop-specific (inbound/attachment product policy).
@@ -4140,12 +4295,25 @@ class AgentManager:
         from octop.infra.agents.middleware.thread_artifacts import ThreadArtifactsMiddleware
         from octop.infra.agents.middleware.token_quota import TokenQuotaMiddleware
         from octop.infra.agents.middleware.turn_mcp import TurnMcpToolsMiddleware
+        from octop.infra.agents.middleware.turn_steering import TurnSteeringMiddleware
         from octop.infra.agents.middleware.workspace_image import (
             WorkspaceImageMaterializeMiddleware,
         )
         from octop.infra.knowledge.hint import KnowledgeToolsHintMiddleware
 
         alternate_image_models: dict[str, BaseChatModel] = {}
+        raw_provider_scope = cfg.get("providers")
+        provider_scope = (
+            {name for name in raw_provider_scope if isinstance(name, str)}
+            if isinstance(raw_provider_scope, list)
+            else None
+        )
+
+        def automatic_model_ref(request: ModelRequest[Any]) -> str | None:
+            from harness_agent.middleware.runtime import runtime_config
+
+            configured = (runtime_config(request).get("configurable") or {}).get("model")
+            return configured if isinstance(configured, str) else self.resolve_fallback_model_ref()
 
         def model_for_images(request: ModelRequest[Any], alternate: bool = False) -> BaseChatModel:
             from harness_agent.middleware.runtime import runtime_config
@@ -4153,7 +4321,7 @@ class AgentManager:
             from octop.i18n import tr
 
             configurable = runtime_config(request).get("configurable") or {}
-            current_ref = configurable.get("model")
+            current_ref = current_failover_model_ref() or configurable.get("model")
             ref = self._providers.resolve_model_for_multimodal_turn(
                 current_ref if isinstance(current_ref, str) else None,
                 needs_multimodal=True,
@@ -4168,11 +4336,11 @@ class AgentManager:
             assert self._harness_manager is not None
             agent = self._harness_manager.get_agent(row.agent_id).agent
             if not alternate:
-                return agent.model_factory.get(ref).chat_model
+                return track_current_failover_model(agent.model_factory.get(ref).chat_model)
 
             cached = alternate_image_models.get(ref)
             if cached is not None:
-                return cached
+                return track_current_failover_model(cached)
             provider_id, separator, model_id = ref.partition("/")
             if not separator or not provider_id or not model_id:
                 raise ValueError(f"Invalid model reference for alternate protocol: {ref!r}")
@@ -4193,13 +4361,22 @@ class AgentManager:
                 raise ValueError(f"Model configuration not found for model reference {ref!r}")
             result = build_chat_model(alternate_provider, alternate_model)
             alternate_image_models[ref] = result
-            return result
+            return track_current_failover_model(result)
 
         agent_middleware: list[Any] = [
             *plugin_middleware,
+            TurnSteeringMiddleware(),
             TokenQuotaMiddleware(
                 policy_repo=self._repos.user_policy_repo,
                 usage_repo=self._repos.usage_repo,
+            ),
+            AutoModelFailoverMiddleware(
+                factory=self._harness_manager.shared_factory if self._harness_manager else None,
+                health=self._model_health,
+                candidate_refs=lambda needs_vision: self._providers.resolve_failover_model_refs(
+                    provider_names=provider_scope, needs_multimodal=needs_vision
+                ),
+                primary_ref=automatic_model_ref,
             ),
             ReasoningRequestMiddleware(),
             PlatformIdentityMiddleware(),
@@ -4246,6 +4423,19 @@ class AgentManager:
         if feature_routing is not None:
             agent_middleware.append(feature_routing[0])
             merged_tools.extend(feature_routing[1])
+        from octop.infra.agents.middleware.manual_memory import (
+            filter_native_memory_sources,
+            manual_memory_chain,
+        )
+
+        agent_middleware.extend(
+            manual_memory_chain(
+                agent_id=row.agent_id,
+                kind=row.kind,
+                workspace=ws,
+                feature_runtime=(feature_routing[0]._runtime if feature_routing else None),
+            )
+        )
         if cron_tools:
             merged_tools.extend(cron_tools)
         merged_tools.extend(feature_creation_tools)
@@ -4395,7 +4585,7 @@ class AgentManager:
                 or self.resolve_fallback_model_ref()
             ),
             system_prompt=system_prompt,
-            memory=memory,
+            memory=filter_native_memory_sources(memory),
             backend=harness_backend,  # spec, or live OpenSandbox instance
             mcp_server_configs=mcp_server_configs,
             tools=merged_tools or None,

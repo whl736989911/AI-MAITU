@@ -13,6 +13,7 @@ import { Spin, Button } from "antd";
 import { Virtuoso, type Components, type VirtuosoHandle } from "react-virtuoso";
 import { useTranslation } from "react-i18next";
 import type { ChatMessage } from "../hooks/useChat";
+import type { ThreadArtifact } from "../../../api/modules/octopThreads";
 import type { ComposerTagLookups } from "./UserMessageComposerTags";
 import MessageBubble from "./MessageBubble";
 import AssistantTurnView from "./AssistantTurnView";
@@ -107,7 +108,7 @@ interface MessageListProps {
   onOpenBrowser?: () => void;
   onEditFile?: () => void;
   onOpenFiles?: () => void;
-  artifactFiles?: string[];
+  artifactFiles?: ThreadArtifact[];
   onRunShellCommand?: (code: string) => void;
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;
@@ -135,7 +136,7 @@ interface GroupRenderContext {
   onOpenBrowser?: () => void;
   onEditFile?: () => void;
   onOpenFiles?: () => void;
-  artifactFiles?: string[];
+  artifactFiles?: ThreadArtifact[];
   onRunShellCommand?: (code: string) => void;
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;

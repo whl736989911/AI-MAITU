@@ -27,6 +27,9 @@ import { ExpertIcon } from "../../Experts/components/iconForName";
 import SessionChannelIcon from "./SessionChannelIcon";
 import SharedExpertHint from "./SharedExpertHint";
 import styles from "../index.module.less";
+import { isImeComposing } from "../utils/ime";
+import { onStreamEvent } from "../hooks/chatStore";
+import { isPendingThread } from "../hooks/useSessions";
 
 function AgentUnreadBadge({ count }: { count: number }) {
   const { t } = useTranslation();
@@ -44,6 +47,8 @@ function AgentUnreadBadge({ count }: { count: number }) {
 interface SessionItemProps {
   session: Session;
   isActive: boolean;
+  working: boolean;
+  pending: boolean;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
   onRename: (id: string, name: string) => void;
@@ -62,6 +67,8 @@ const SessionItem = memo(function SessionItem({
   onPin,
   onFork,
   forkDisabled,
+  working,
+  pending,
   forkDisabledHint,
 }: SessionItemProps) {
   const { t } = useTranslation();
@@ -160,6 +167,7 @@ const SessionItem = memo(function SessionItem({
       title={session.name}
       aria-label={session.name}
       onKeyDown={(e) => {
+        if (isImeComposing(e)) return;
         if (e.key === "Enter" && !isEditing) onSelect(session.id);
       }}
     >
@@ -168,6 +176,21 @@ const SessionItem = memo(function SessionItem({
         size={12}
         className={styles.sessionRowIcon}
       />
+      {working ? (
+        <span
+          className={styles.sessionRowWorkingDot}
+          title={
+            pending
+              ? t("chat.sessionPending", "Starting…")
+              : t("chat.sessionWorking")
+          }
+          aria-label={
+            pending
+              ? t("chat.sessionPending", "Starting…")
+              : t("chat.sessionWorking")
+          }
+        />
+      ) : null}
       {isEditing ? (
         <input
           ref={inputRef}
@@ -176,9 +199,9 @@ const SessionItem = memo(function SessionItem({
           onChange={(e) => setEditValue(e.target.value)}
           onBlur={commitEdit}
           onKeyDown={(e) => {
+            if (isImeComposing(e)) return;
             if (e.key === "Enter") commitEdit();
             if (e.key === "Escape") {
-              setEditValue(session.name);
               setIsEditing(false);
             }
           }}
@@ -231,6 +254,9 @@ interface AgentCardProps {
   onFork: (id: string) => void;
   activeForkDisabled?: boolean;
   activeForkDisabledHint?: string;
+  pinnedAgent: boolean;
+  onToggleAgentPin: () => void;
+  workingThreadIds: ReadonlySet<string>;
 }
 
 function ActiveAgentCard({
@@ -249,6 +275,9 @@ function ActiveAgentCard({
   onFork,
   activeForkDisabled,
   activeForkDisabledHint,
+  pinnedAgent,
+  onToggleAgentPin,
+  workingThreadIds,
 }: AgentCardProps) {
   const { t } = useTranslation();
   const accent = agent.color || "#6366f1";
@@ -304,6 +333,20 @@ function ActiveAgentCard({
               <SharedExpertHint agent={agent} />
             </div>
             <AgentUnreadBadge count={agent.unread_count ?? 0} />
+            <button
+              type="button"
+              aria-label={pinnedAgent ? t("chat.unpin") : t("chat.pin")}
+              title={pinnedAgent ? t("chat.unpin") : t("chat.pin")}
+              onClick={onToggleAgentPin}
+              style={{
+                border: 0,
+                background: "transparent",
+                color: "var(--fn-text-tertiary)",
+                cursor: "pointer",
+              }}
+            >
+              {pinnedAgent ? <PinOff size={13} /> : <Pin size={13} />}
+            </button>
           </div>
           {agent.description ? (
             <div className={styles.agentCardDesc}>{agent.description}</div>
@@ -335,6 +378,8 @@ function ActiveAgentCard({
                 key={s.id}
                 session={s}
                 isActive={activeId === s.id}
+                working={workingThreadIds.has(s.id)}
+                pending={isPendingThread(s.id)}
                 onSelect={(id) => onSelect(id, agent.agent_id)}
                 onDelete={onDelete}
                 onRename={onRename}
@@ -370,37 +415,64 @@ function ActiveAgentCard({
 interface AgentRowProps {
   agent: OctopAgent;
   onSelect: () => void;
+  pinnedAgent: boolean;
+  onToggleAgentPin: () => void;
 }
 
-function InactiveAgentRow({ agent, onSelect }: AgentRowProps) {
+function InactiveAgentRow({
+  agent,
+  onSelect,
+  pinnedAgent,
+  onToggleAgentPin,
+}: AgentRowProps) {
+  const { t } = useTranslation();
   const accent = agent.color || "#6366f1";
-
   return (
-    <button type="button" className={styles.agentRow} onClick={onSelect}>
-      <div
-        className={styles.agentRowAvatar}
-        style={{ color: accent, background: `${accent}12` }}
-      >
-        <ExpertIcon
-          iconUrl={agent.icon_url}
-          iconName={agent.icon_name}
-          size={14}
-        />
-      </div>
-      <div className={styles.agentRowInfo}>
-        <div className={styles.agentRowNameRow}>
-          <div className={styles.agentNameCluster}>
-            <div className={styles.agentRowName}>{agent.name}</div>
-            <SharedExpertHint agent={agent} />
-          </div>
-          <AgentUnreadBadge count={agent.unread_count ?? 0} />
+    <div style={{ position: "relative" }}>
+      <button type="button" className={styles.agentRow} onClick={onSelect}>
+        <div
+          className={styles.agentRowAvatar}
+          style={{ color: accent, background: `${accent}12` }}
+        >
+          <ExpertIcon
+            iconUrl={agent.icon_url}
+            iconName={agent.icon_name}
+            size={14}
+          />
         </div>
-        <div className={styles.agentRowDesc}>{agent.description || "—"}</div>
-      </div>
-    </button>
+        <div className={styles.agentRowInfo}>
+          <div className={styles.agentRowNameRow}>
+            <div className={styles.agentNameCluster}>
+              <div className={styles.agentRowName}>{agent.name}</div>
+              <SharedExpertHint agent={agent} />
+            </div>
+            <AgentUnreadBadge count={agent.unread_count ?? 0} />
+          </div>
+          <div className={styles.agentRowDesc}>{agent.description || "—"}</div>
+        </div>
+      </button>
+      <button
+        type="button"
+        aria-label={
+          pinnedAgent ? t("chat.unpin", "Unpin") : t("chat.pin", "Pin")
+        }
+        title={pinnedAgent ? t("chat.unpin", "Unpin") : t("chat.pin", "Pin")}
+        onClick={onToggleAgentPin}
+        style={{
+          position: "absolute",
+          right: 8,
+          top: 8,
+          border: 0,
+          background: "transparent",
+          color: "var(--fn-text-tertiary)",
+          cursor: "pointer",
+        }}
+      >
+        {pinnedAgent ? <PinOff size={13} /> : <Pin size={13} />}
+      </button>
+    </div>
   );
 }
-
 interface SessionListProps {
   agents: OctopAgent[];
   sessions: Session[];
@@ -444,29 +516,89 @@ export default function SessionList({
   const emptyAgentAccess = emptyAgentAccessFor(currentUser);
   const emptyAgentAccessKeyName = emptyAgentAccessKey(emptyAgentAccess);
   const [searchQuery, setSearchQuery] = useState("");
+  const [workingThreadIds, setWorkingThreadIds] = useState<ReadonlySet<string>>(
+    () => new Set(),
+  );
+  useEffect(
+    () =>
+      onStreamEvent((event) => {
+        setWorkingThreadIds((previous) => {
+          const working = event.kind !== "streamEnd";
+          if (previous.has(event.sessionId) === working) return previous;
+          const next = new Set(previous);
+          if (working) next.add(event.sessionId);
+          else next.delete(event.sessionId);
+          return next;
+        });
+      }),
+    [],
+  );
+  const agentPinsStorageKey = `octop:sidebar-agent-pins:${
+    currentUser?.id ?? "anonymous"
+  }`;
+  const [pinnedAgentIds, setPinnedAgentIds] = useState<Set<string>>(() => {
+    try {
+      return new Set(
+        JSON.parse(localStorage.getItem(agentPinsStorageKey) || "[]"),
+      );
+    } catch {
+      return new Set();
+    }
+  });
+  useEffect(() => {
+    try {
+      setPinnedAgentIds(
+        new Set(JSON.parse(localStorage.getItem(agentPinsStorageKey) || "[]")),
+      );
+    } catch {
+      setPinnedAgentIds(new Set());
+    }
+  }, [agentPinsStorageKey]);
+  const toggleAgentPin = (agentId: string) => {
+    setPinnedAgentIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(agentId)) next.delete(agentId);
+      else next.add(agentId);
+      try {
+        localStorage.setItem(agentPinsStorageKey, JSON.stringify([...next]));
+      } catch {
+        /* ignore */
+      }
+      return next;
+    });
+  };
 
   const sortedAgents = useMemo(
-    () => [...agents].sort((a, b) => b.id - a.id),
-    [agents],
+    () =>
+      [...agents].sort(
+        (a, b) =>
+          Number(pinnedAgentIds.has(b.agent_id)) -
+            Number(pinnedAgentIds.has(a.agent_id)) || b.id - a.id,
+      ),
+    [agents, pinnedAgentIds],
   );
 
   const expandedAgentId = useMemo(
     () => activeAgentId ?? sortedAgents[0]?.agent_id ?? null,
     [activeAgentId, sortedAgents],
   );
-  const activeAgent = useMemo(
-    () => sortedAgents.find((a) => a.agent_id === expandedAgentId) ?? null,
-    [sortedAgents, expandedAgentId],
-  );
-  const showSessions = isAgentChatReady(activeAgent?.state);
 
   // The sidebar lists the caller's agents, and an agent says which half of them
   // it belongs to (``utils/agentKind``). Both halves are the same rows in the
   // same order; the features get a heading so a feature is readable as a feature
   // rather than as another expert. A caller with no feature renders the one
   // group this list has always rendered.
-  const expertRows = sortedAgents.filter((agent) => !isFeatureAgent(agent));
-  const featureRows = sortedAgents.filter(isFeatureAgent);
+  const query = searchQuery.trim().toLowerCase();
+  const matchesAgent = (agent: OctopAgent) =>
+    !query ||
+    agent.name.toLowerCase().includes(query) ||
+    agent.agent_id === expandedAgentId;
+  const expertRows = sortedAgents.filter(
+    (agent) => !isFeatureAgent(agent) && matchesAgent(agent),
+  );
+  const featureRows = sortedAgents.filter(
+    (agent) => isFeatureAgent(agent) && matchesAgent(agent),
+  );
 
   const renderAgentRow = (agent: OctopAgent) =>
     agent.agent_id === expandedAgentId ? (
@@ -474,6 +606,7 @@ export default function SessionList({
         key={agent.agent_id}
         agent={agent}
         sessions={sessions}
+        workingThreadIds={workingThreadIds}
         activeId={activeId}
         searchQuery={searchQuery}
         hasMore={hasMore}
@@ -487,34 +620,36 @@ export default function SessionList({
         onFork={onFork}
         activeForkDisabled={activeForkDisabled}
         activeForkDisabledHint={activeForkDisabledHint}
+        pinnedAgent={pinnedAgentIds.has(agent.agent_id)}
+        onToggleAgentPin={() => toggleAgentPin(agent.agent_id)}
       />
     ) : (
       <InactiveAgentRow
         key={agent.agent_id}
         agent={agent}
         onSelect={() => onAgentSelect(agent.agent_id)}
+        pinnedAgent={pinnedAgentIds.has(agent.agent_id)}
+        onToggleAgentPin={() => toggleAgentPin(agent.agent_id)}
       />
     );
 
   return (
     <div className={styles.sessionList}>
-      {showSessions ? (
-        <div className={styles.sessionSearchWrap}>
-          <Search
-            size={14}
-            className={styles.sessionSearchIcon}
-            strokeWidth={2}
-          />
-          <input
-            type="search"
-            className={styles.sessionSearchInput}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder={t("chat.searchSessions", "搜索会话")}
-            aria-label={t("chat.searchSessions", "搜索会话")}
-          />
-        </div>
-      ) : null}
+      <div className={styles.sessionSearchWrap}>
+        <Search
+          size={14}
+          className={styles.sessionSearchIcon}
+          strokeWidth={2}
+        />
+        <input
+          type="search"
+          className={styles.sessionSearchInput}
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          placeholder={t("chat.searchSessions", "搜索会话或专家")}
+          aria-label={t("chat.searchSessions", "搜索会话或专家")}
+        />
+      </div>
 
       {agents.length === 0 ? (
         <div className={styles.sessionEmptyAgents}>

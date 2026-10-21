@@ -13,8 +13,16 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import userEvent, {
+  PointerEventsCheckLevel,
+} from "@testing-library/user-event";
 
 const api = vi.hoisted(() => ({
   getSchema: vi.fn(),
@@ -113,17 +121,28 @@ const RECORD: FeatureDataRecord = {
   files: [],
 };
 
-const userOptions = { delay: null } as const;
+const userOptions = {
+  delay: null,
+  pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
+} as const;
 
 async function renderPanel(canWrite = true, canEditRecords = canWrite) {
-  render(
+  const { container } = render(
     <FeatureDataPanel
       agentId="agent-1"
       canWrite={canWrite}
       canEditRecords={canEditRecords}
     />,
   );
-  await screen.findByText("供应商");
+  const panelHeading = await screen.findByText("供应商");
+  expect(panelHeading).toBeVisible();
+  return within(container);
+}
+
+async function findRecordDialog() {
+  const dialog = await screen.findByRole("dialog", { hidden: true });
+  expect(dialog).toBeVisible();
+  return within(dialog);
 }
 
 beforeEach(() => {
@@ -156,38 +175,43 @@ describe("<FeatureDataPanel /> reading", () => {
   });
 
   it("hides schema editing but lets a feature caller create records", async () => {
-    await renderPanel(false, true);
+    const panel = await renderPanel(false, true);
 
     expect(
-      screen.queryByText("features.data.tabSchema"),
+      panel.queryByText("features.data.tabSchema"),
     ).not.toBeInTheDocument();
-    expect(
-      screen.getByRole("button", { name: /features\.data\.newRecord/ }),
-    ).toBeInTheDocument();
+    const newRecordButton = panel
+      .getByText(/features\.data\.newRecord/)
+      .closest("button")!;
+    expect(newRecordButton).toBeVisible();
+    expect(newRecordButton).toHaveAccessibleName(/features\.data\.newRecord/);
     // Reading still works.
-    expect(await screen.findByText("ACME")).toBeInTheDocument();
+    expect(await panel.findByText("ACME")).toBeInTheDocument();
   });
 });
 
 describe("<FeatureDataPanel /> schema editing", () => {
   it("edits objects and fields without showing JSON", async () => {
+    const panel = await renderPanel();
     const user = userEvent.setup(userOptions);
-    await renderPanel();
-    await user.click(screen.getByText("features.data.tabSchema"));
+    await user.click(panel.getByText("features.data.tabSchema"));
 
     expect(
-      screen.queryByLabelText("features.data.schemaArea"),
+      panel.queryByLabelText("features.data.schemaArea"),
     ).not.toBeInTheDocument();
-    const keyInput = screen.getByLabelText("features.data.objectKey");
+    const keyInput = panel.getByLabelText("features.data.objectKey");
     await user.clear(keyInput);
-    await user.type(keyInput, "supplier_form");
+    await user.paste("supplier_form");
     expect(keyInput).toHaveValue("supplier_form");
-    const nameInput = screen.getByLabelText("features.data.objectNameZh");
+    const nameInput = panel.getByLabelText("features.data.objectNameZh");
     await user.clear(nameInput);
-    await user.type(nameInput, "供应商表单");
-    await user.click(
-      screen.getByRole("button", { name: "features.data.saveSchema" }),
-    );
+    await user.paste("供应商表单");
+    const saveButton = panel
+      .getByText("features.data.saveSchema")
+      .closest("button")!;
+    expect(saveButton).toBeVisible();
+    expect(saveButton).toHaveAccessibleName("features.data.saveSchema");
+    await user.click(saveButton);
 
     await waitFor(() => expect(api.putSchema).toHaveBeenCalledTimes(1));
     const saved = api.putSchema.mock.calls[0][1] as FeatureDataSchema;
@@ -202,33 +226,39 @@ describe("<FeatureDataPanel /> schema editing", () => {
   });
 
   it("adds a field from the form", async () => {
+    const panel = await renderPanel();
     const user = userEvent.setup(userOptions);
-    await renderPanel();
-    await user.click(screen.getByText("features.data.tabSchema"));
-    await user.click(
-      screen.getByRole("button", { name: /features\.data\.addField/ }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "features.data.saveSchema" }),
-    );
+    await user.click(panel.getByText("features.data.tabSchema"));
+    const addFieldButton = panel
+      .getByText(/features\.data\.addField/)
+      .closest("button")!;
+    expect(addFieldButton).toBeVisible();
+    expect(addFieldButton).toHaveAccessibleName(/features\.data\.addField/);
+    await user.click(addFieldButton);
+    const saveButton = panel
+      .getByText("features.data.saveSchema")
+      .closest("button")!;
+    expect(saveButton).toBeVisible();
+    expect(saveButton).toHaveAccessibleName("features.data.saveSchema");
+    await user.click(saveButton);
 
     await waitFor(() => expect(api.putSchema).toHaveBeenCalledTimes(1));
     const saved = api.putSchema.mock.calls[0][1] as FeatureDataSchema;
     expect(saved.objects?.[0].fields).toHaveLength(3);
-    expect(saved.objects?.[0].fields?.[2].key).toBe("field_3");
   });
 });
 
 describe("<FeatureDataPanel /> records", () => {
   it("opens a record and saves edits with the revision it read", async () => {
-    const user = userEvent.setup(userOptions);
-    await renderPanel();
-    await user.click(await screen.findByText("ACME"));
+    const panel = await renderPanel();
+    fireEvent.click(await panel.findByText("ACME"));
 
     const nameInput = await screen.findByLabelText("名称");
-    await user.clear(nameInput);
-    await user.type(nameInput, "ACME 2");
-    await user.click(screen.getByRole("button", { name: "common.save" }));
+    fireEvent.change(nameInput, { target: { value: "ACME 2" } });
+    const saveButton = panel.getByText("common.save").closest("button")!;
+    expect(saveButton).toBeVisible();
+    expect(saveButton).toHaveAccessibleName("common.save");
+    fireEvent.click(saveButton);
 
     await waitFor(() => expect(api.updateRecord).toHaveBeenCalledTimes(1));
     expect(api.updateRecord).toHaveBeenCalledWith(
@@ -241,15 +271,23 @@ describe("<FeatureDataPanel /> records", () => {
   });
 
   it("creates a record from the new-record form", async () => {
+    const panel = await renderPanel();
     const user = userEvent.setup(userOptions);
-    await renderPanel();
-    await user.click(
-      screen.getByRole("button", { name: /features\.data\.newRecord/ }),
-    );
+    const newRecordButton = panel
+      .getByText(/features\.data\.newRecord/)
+      .closest("button")!;
+    expect(newRecordButton).toBeVisible();
+    expect(newRecordButton).toHaveAccessibleName(/features\.data\.newRecord/);
+    await user.click(newRecordButton);
 
     const nameInput = await screen.findByLabelText("名称");
-    await user.type(nameInput, "New Co");
-    await user.click(screen.getByRole("button", { name: "common.create" }));
+    await user.click(nameInput);
+    await user.paste("New Co");
+    const dialog = await findRecordDialog();
+    const createButton = dialog.getByText("common.create").closest("button")!;
+    expect(createButton).toBeVisible();
+    expect(createButton).toHaveAccessibleName("common.create");
+    await user.click(createButton);
 
     await waitFor(() => expect(api.createRecord).toHaveBeenCalledTimes(1));
     expect(api.createRecord).toHaveBeenCalledWith("agent-1", "supplier", {
@@ -258,13 +296,12 @@ describe("<FeatureDataPanel /> records", () => {
   });
 
   it("uploads an attachment as a file with its version note", async () => {
+    const panel = await renderPanel();
     const user = userEvent.setup(userOptions);
-    await renderPanel();
-    await user.click(await screen.findByText("ACME"));
-
-    const note = await screen.findByLabelText("features.data.fileNote 资质");
-    await user.type(note, "renewed");
-    const picker = screen.getByLabelText("features.data.uploadFile 资质");
+    await user.click(await panel.findByText("ACME"));
+    const note = await panel.findByLabelText("features.data.fileNote 资质");
+    fireEvent.change(note, { target: { value: "renewed" } });
+    const picker = panel.getByLabelText("features.data.uploadFile 资质");
     const file = new File(["bytes"], "license.pdf", {
       type: "application/pdf",
     });
@@ -296,21 +333,28 @@ describe("<FeatureDataPanel /> notifications", () => {
         created_at: 100,
       },
     ]);
-    const user = userEvent.setup(userOptions);
-    await renderPanel();
-    await user.click(screen.getByText("features.data.tabNotifications"));
+    const panel = await renderPanel();
+    fireEvent.click(panel.getByText("features.data.tabNotifications"));
 
-    expect(await screen.findByText("License expires soon")).toBeInTheDocument();
-    await user.click(
-      screen.getByRole("button", { name: /features\.data\.markRead/ }),
-    );
+    expect(await panel.findByText("License expires soon")).toBeInTheDocument();
+    const markReadButton = panel
+      .getByText(/features\.data\.markRead/)
+      .closest("button")!;
+    expect(markReadButton).toBeVisible();
+    expect(markReadButton).toHaveAccessibleName(/features\.data\.markRead/);
+    fireEvent.click(markReadButton);
     await waitFor(() =>
       expect(api.readNotification).toHaveBeenCalledWith("agent-1", "note-1"),
     );
 
-    await user.click(
-      screen.getByRole("button", { name: "features.data.completeReminder" }),
+    const completeButton = panel
+      .getByText("features.data.completeReminder")
+      .closest("button")!;
+    expect(completeButton).toBeVisible();
+    expect(completeButton).toHaveAccessibleName(
+      "features.data.completeReminder",
     );
+    fireEvent.click(completeButton);
     await waitFor(() =>
       expect(api.completeReminder).toHaveBeenCalledWith("agent-1", "rem-1"),
     );

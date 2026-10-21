@@ -1,8 +1,9 @@
 """Module-level permission catalog and checks.
 
 A permission is a module key (e.g. ``"browser"``, ``"users"``). Possessing a
-key grants access to that module's management page and write/configure actions.
-Read access and agent use in chat are never gated. ``admin`` bypasses all.
+key opens that module's management surface, including gated configuration reads.
+Resource ACLs and capability policy still apply; chat use is independent.
+``admin`` bypasses module grants except for the licensed deployment floor.
 
 Categories mirror dashboard nav groups: ``settings`` / ``control`` / ``admin``.
 ``settings`` is the functional-module group and includes optional capabilities
@@ -135,7 +136,13 @@ PERMISSIONS: dict[str, PermissionDef] = {
     "experts": _p("experts", "settings", "专家", "Experts"),
     "teams": _p("teams", "settings", "团队", "Teams"),
     "features": _p("features", "settings", "功能型智能体", "Feature agents"),
-    # --- control (nav.control) — page/tab labels ---
+    # Independent agent-configuration surfaces. These keys govern configuration
+    # APIs, not the underlying capability/ownership policy.
+    "skills": _p("skills", "settings", "技能", "Skills"),
+    "subagents": _p("subagents", "settings", "子智能体", "Subagents"),
+    "tools": _p("tools", "settings", "工具", "Tools"),
+    "agent_plugins": _p("agent_plugins", "settings", "智能体插件", "Agent plugins"),
+    "memory": _p("memory", "settings", "记忆", "Memory"),
     "terminal": _p("terminal", "control", "工作台/终端", "Workbench / Terminal"),
     "browser": _p("browser", "control", "工作台/浏览器", "Workbench / Browser"),
     "desktop": _p("desktop", "control", "远程桌面", "Remote Desktop"),
@@ -328,16 +335,18 @@ RESTRICTED_DEPLOYMENT_PERMISSIONS: frozenset[str] = frozenset(
         "mobile",
         "acp",
         "plugins",
-        "storage_backends",
+        "agent_plugins",
         "envs",
     }
 )
 
-# Settings-group keys are shown in the picker. ``teams`` is intentionally not
-# part of the pre-checked baseline: it is a new capability, unlike existing
-# settings modules that every account could reach before this catalog.
+# Settings keys that predate module-level grants stay pre-checked on account
+# creation; the newly split agent surfaces are explicitly assignable instead.
 BASELINE_PERMISSIONS: set[str] = {
-    key for key, p in PERMISSIONS.items() if p.category == "settings" and key != "teams"
+    key
+    for key, p in PERMISSIONS.items()
+    if p.category == "settings"
+    and key not in {"teams", "skills", "subagents", "tools", "agent_plugins", "memory"}
 }
 
 

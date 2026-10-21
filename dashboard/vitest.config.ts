@@ -12,9 +12,9 @@ import os from "os";
  *    place without polluting the prod build config.
  */
 
-// jsdom's synchronous style work competes with Docker builds on developer hosts.
-// Bound both CPU oversubscription and per-worker memory without relaxing test deadlines.
-const maxWorkers = Math.max(1, Math.min(4, Math.floor(os.cpus().length / 2)));
+// Synchronous jsdom/Antd CSS work becomes costly under CPU and memory contention.
+// Bound workers without weakening assertions or relaxing test deadlines.
+const maxWorkers = Math.max(1, Math.min(2, Math.floor(os.cpus().length / 2)));
 
 export default defineConfig({
   plugins: [react()],

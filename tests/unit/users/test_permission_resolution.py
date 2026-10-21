@@ -213,6 +213,23 @@ def test_resolve_permissions_explicit_browser_grant_matches_deployment_mode(
     assert ("browser" in resolved) is not managed
 
 
+@pytest.mark.parametrize("managed", [False, True])
+def test_agent_plugin_module_respects_managed_install_license(
+    monkeypatch: pytest.MonkeyPatch, managed: bool
+) -> None:
+    if managed:
+        monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "operator-trust.json")
+    else:
+        monkeypatch.delenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", raising=False)
+    resolved = resolve_permissions(
+        role=Role.USER,
+        permissions=["agent_plugins"],
+        denied=None,
+        unit_grants=None,
+    )
+    assert ("agent_plugins" in resolved) is not managed
+
+
 def test_resolve_permissions_difference_is_exact() -> None:
     resolved = resolve_permissions(
         role=Role.USER,
@@ -332,6 +349,20 @@ def test_assert_can_grant_uses_the_effective_set(monkeypatch: pytest.MonkeyPatch
     with pytest.raises(OctopError) as exc:
         assert_can_grant(holder, ["security"], details={"unit_key": "eng"})
     assert exc.value.details == {"missing": ["security"], "unit_key": "eng"}
+
+
+@pytest.mark.parametrize(
+    "key",
+    ["skills", "subagents", "tools", "agent_plugins", "memory", "mbti"],
+)
+def test_personalization_permissions_are_independent_and_deny_wins(key: str) -> None:
+    assert key in ALL_PERMISSION_KEYS
+    if key != "mbti":
+        assert key not in BASELINE_PERMISSIONS
+    granted = _user(Role.USER, permissions=[key])
+    assert user_has_permission(granted, key)
+    denied = _user(Role.USER, permissions=[key], denied=[key])
+    assert not user_has_permission(denied, key)
 
 
 def test_assert_can_grant_admin_bypasses_for_allowed_keys(

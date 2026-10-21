@@ -57,6 +57,8 @@ function makePackage(id: string, name: string): SkillPackage {
     description: `${name} description`,
     created_by: "system",
     skill_count: 1,
+    allow_download: true,
+    can_download: true,
     created_at: "2026-09-01T00:00:00Z",
     updated_at: "2026-09-01T00:00:00Z",
   };

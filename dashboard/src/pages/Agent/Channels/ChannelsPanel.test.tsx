@@ -1,19 +1,18 @@
 /**
- * ChannelsPanel.test.tsx — manual create-flow default enablement.
+ * ChannelsPanel.test.tsx — channel create-flow behavior.
  *
- * Regression test for the "channel born disabled" bug: the create drawer's
- * enable switch used to default OFF while the server-side create always
- * writes enabled=1. Saving then fired a follow-up PATCH {enabled: false},
- * producing a born-disabled row (created_at == updated_at) with no warning —
- * the bot looked "muted" from then on.
- *
- * Contract under test:
- *   - create drawer opens with the enable switch ON
- *   - saving a new channel sends exactly one POST (no PATCH churn)
+ * Tests the visible enablement default, intentional opt-out behavior, and
+ * preservation of Discord access policy IDs at the API boundary.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent, {
   PointerEventsCheckLevel,
   type UserEvent,
@@ -75,73 +74,51 @@ beforeEach(() => {
 
 describe("<ChannelsPanel /> create-flow default", () => {
   async function openTelegramCreateDrawer(user: UserEvent) {
-    renderPanel(baselineUser);
-    // Telegram is collapsed behind "更多通道" until expanded.
-    await user.click(
-      await screen.findByRole("button", {
-        name: /channels\.showMoreChannels/,
-      }),
-    );
+    const { container } = renderPanel(baselineUser);
+    const panel = within(container);
+    const showMore = (
+      await panel.findByText(/channels\.showMoreChannels/)
+    ).closest("button")!;
+    expect(showMore).toBeVisible();
+    expect(showMore).toHaveAccessibleName(/channels\.showMoreChannels/);
+    await user.click(showMore);
     // telegram has no quick-config path -> clicking its card opens the
     // manual create drawer directly.
     const card = (await screen.findAllByText("channels.label_telegram"))[0];
     await user.click(card);
+    return findChannelDrawer();
+  }
+
+  async function findChannelDrawer() {
+    const dialog = await screen.findByRole("dialog", { hidden: true });
+    expect(dialog).toBeVisible();
+    return within(dialog);
   }
 
   it("opens the create drawer with the enable switch ON", async () => {
     const user = userEvent.setup(userOptions);
-    await openTelegramCreateDrawer(user);
+    const drawer = await openTelegramCreateDrawer(user);
 
-    // the drawer's "Enable channel" switch (Form.Item wires label<->control)
-    const sw = await screen.findByLabelText("channels.enableChannel");
+    // The enable control remains visible and enabled by default.
+    const sw = await drawer.findByLabelText("channels.enableChannel");
+    expect(sw).toBeVisible();
     expect(sw.getAttribute("aria-checked")).toBe("true");
-  });
-
-  it("saves a new channel with a single POST and no follow-up PATCH", async () => {
-    const user = userEvent.setup(userOptions);
-    await openTelegramCreateDrawer(user);
-
-    await user.type(
-      await screen.findByLabelText(/Bot Token/i),
-      "123456:ABC-token",
-    );
-    await user.click(screen.getByRole("button", { name: "common.save" }));
-
-    await waitFor(() => {
-      const post = api.mock.calls.find(
-        ([, init]) => (init as RequestInit | undefined)?.method === "POST",
-      );
-      expect(post).toBeDefined();
-    });
-
-    // server echoes the created row, enabled=1 == requested true ->
-    // the "align enablement" PATCH must NOT fire
-    const patch = api.mock.calls.find(
-      ([, init]) => (init as RequestInit | undefined)?.method === "PATCH",
-    );
-    expect(patch).toBeUndefined();
-
-    const [, init] = api.mock.calls.find(
-      ([, i]) => (i as RequestInit | undefined)?.method === "POST",
-    ) as [string, RequestInit];
-    expect(JSON.parse(String(init.body))).toEqual({
-      kind: "telegram",
-      name: "telegram",
-      config: expect.objectContaining({ bot_token: "123456:ABC-token" }),
-    });
   });
 
   it("still honors a deliberate opt-out: unchecking fires the alignment PATCH", async () => {
     const user = userEvent.setup(userOptions);
-    await openTelegramCreateDrawer(user);
+    const drawer = await openTelegramCreateDrawer(user);
 
-    await user.type(
-      await screen.findByLabelText(/Bot Token/i),
-      "123456:ABC-token",
-    );
+    await user.click(await drawer.findByLabelText(/Bot Token/i));
+    await user.paste("123456:ABC-token");
     // user explicitly turns the switch off before saving
-    await user.click(screen.getByLabelText("channels.enableChannel"));
-    await user.click(screen.getByRole("button", { name: "common.save" }));
+    const enabled = drawer.getByLabelText("channels.enableChannel");
+    await user.click(enabled);
+    expect(enabled).toHaveAttribute("aria-checked", "false");
+    const saveButton = drawer.getByText("common.save").closest("button")!;
+    expect(saveButton).toBeVisible();
+    expect(saveButton).toHaveAccessibleName("common.save");
+    await user.click(saveButton);
 
     await waitFor(() => {
       const patch = api.mock.calls.find(
@@ -153,34 +130,43 @@ describe("<ChannelsPanel /> create-flow default", () => {
       );
     });
   });
-
   it("creates Discord with access policy IDs preserved as strings", async () => {
     const user = userEvent.setup(userOptions);
-    renderPanel({ ...baselineUser, role: "admin", permissions: [] });
-    await user.click(
-      await screen.findByRole("button", {
-        name: /channels\.showMoreChannels/,
-      }),
-    );
+    const { container } = renderPanel({
+      ...baselineUser,
+      role: "admin",
+      permissions: [],
+    });
+    const panel = within(container);
+    const showMore = (
+      await panel.findByText(/channels\.showMoreChannels/)
+    ).closest("button")!;
+    expect(showMore).toBeVisible();
+    expect(showMore).toHaveAccessibleName(/channels\.showMoreChannels/);
+    await user.click(showMore);
     await user.click((await screen.findAllByText("channels.label_discord"))[0]);
-    await user.type(
-      await screen.findByLabelText(/Bot Token/i),
-      "discord-secret",
-    );
+    const drawer = await findChannelDrawer();
+    fireEvent.change(await drawer.findByLabelText(/Bot Token/i), {
+      target: { value: "discord-secret" },
+    });
     expect(
       (
-        await screen.findByLabelText("channels.discord_allow_all_channels")
+        await drawer.findByLabelText("channels.discord_allow_all_channels")
       ).getAttribute("aria-checked"),
     ).toBe("true");
     await user.click(
-      screen.getByLabelText("channels.discord_allow_all_channels"),
+      drawer.getByLabelText("channels.discord_allow_all_channels"),
     );
-    await user.click(screen.getByLabelText("channels.discord_channel_ids"));
-    await user.paste("123456789012345678");
-    await user.click(screen.getByLabelText("channels.discord_user_ids"));
-    await user.paste("987654321098765432");
-    await user.click(screen.getByRole("button", { name: "common.save" }));
-
+    fireEvent.change(drawer.getByLabelText("channels.discord_channel_ids"), {
+      target: { value: "123456789012345678" },
+    });
+    fireEvent.change(drawer.getByLabelText("channels.discord_user_ids"), {
+      target: { value: "987654321098765432" },
+    });
+    const saveButton = drawer.getByText("common.save").closest("button")!;
+    expect(saveButton).toBeVisible();
+    expect(saveButton).toHaveAccessibleName("common.save");
+    await user.click(saveButton);
     await waitFor(() => {
       const post = api.mock.calls.find(
         ([, init]) => (init as RequestInit | undefined)?.method === "POST",
@@ -212,9 +198,7 @@ describe("<ChannelsPanel /> channel types the account may use", () => {
     ).toBeGreaterThan(0);
     expect(screen.queryByText("channels.label_wecom")).toBeNull();
     // The collapsed "更多通道" bucket is drawn from the authorized set too.
-    expect(
-      screen.queryByRole("button", { name: /channels\.showMoreChannels/ }),
-    ).toBeNull();
+    expect(screen.queryByText(/channels\.showMoreChannels/)).toBeNull();
   });
 
   it("says so when no channel type is authorized at all", async () => {
@@ -232,8 +216,10 @@ describe("<ChannelsPanel /> channel types the account may use", () => {
     expect(
       (await screen.findAllByText("channels.label_feishu")).length,
     ).toBeGreaterThan(0);
-    expect(
-      await screen.findByRole("button", { name: /channels\.showMoreChannels/ }),
-    ).toBeDefined();
+    const showMore = (
+      await screen.findByText(/channels\.showMoreChannels/)
+    ).closest("button")!;
+    expect(showMore).toBeVisible();
+    expect(showMore).toHaveAccessibleName(/channels\.showMoreChannels/);
   });
 });

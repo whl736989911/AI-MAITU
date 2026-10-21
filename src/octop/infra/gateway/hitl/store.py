@@ -26,6 +26,7 @@ class HitlPendingRecord:
     status: HitlPendingStatus = "pending"
     ask_question_index: int = 0
     ask_answers: list[str] = field(default_factory=list)
+    checkpoint_interrupt_ids: tuple[str, ...] | None = None
 
 
 @dataclass
@@ -45,8 +46,19 @@ class HitlPendingStore:
         channel_type: str,
         action_requests: list[dict[str, Any]],
         review_configs: list[dict[str, Any]] | None,
+        checkpoint_interrupt_ids: tuple[str, ...] | None = None,
     ) -> HitlPendingRecord:
         self._gc()
+        if checkpoint_interrupt_ids:
+            for existing in self._records.values():
+                if (
+                    existing.status == "pending"
+                    and existing.thread_id == thread_id
+                    and existing.agent_id == agent_id
+                    and existing.user_id == user_id
+                    and existing.checkpoint_interrupt_ids == checkpoint_interrupt_ids
+                ):
+                    return existing
         for existing in list(self._records.values()):
             if existing.session_key == session_key and existing.status == "pending":
                 existing.status = "expired"
@@ -62,6 +74,7 @@ class HitlPendingStore:
             channel_type=channel_type,
             action_requests=list(action_requests),
             review_configs=list(review_configs) if review_configs else None,
+            checkpoint_interrupt_ids=checkpoint_interrupt_ids,
             created_at=time.time(),
         )
         self._records[pending_id] = record

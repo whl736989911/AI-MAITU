@@ -28,6 +28,7 @@ import {
   skillComposerToken,
 } from "../utils/skillSlash";
 import { useWorkspaceFileMention } from "./useWorkspaceFileMention";
+import { isImeComposing } from "../utils/ime";
 
 export type SlashMenuItem = {
   command: string;
@@ -391,7 +392,7 @@ export function useSlashMentionInput({
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
-      if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+      if (isImeComposing(e)) return;
 
       if (mentionMenuOpen && (mentionItems.length > 0 || filesLoading)) {
         if (e.key === "ArrowDown") {

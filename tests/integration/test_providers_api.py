@@ -158,3 +158,43 @@ async def test_admin_cannot_delete_local_runtime_provider(env):
     r = await c.get("/api/admin/providers", headers=auth)
     ids = [p["id"] for p in r.json()]
     assert pid in ids
+
+
+async def test_provider_patch_api_key_omitted_preserves_and_null_clears(env):
+    """PATCH distinguishes an omitted API key from an explicit null."""
+    c, srv, auth = env
+    created = await c.post(
+        "/api/admin/providers",
+        headers=auth,
+        json={
+            "name": "patch-key",
+            "kind": "openai",
+            "base_url": "https://provider.example/v1",
+            "api_key": "stored-secret",
+            "extra_json": '{"keep":true}',
+            "note": "keep this",
+        },
+    )
+    assert created.status_code == 201
+    pid = created.json()["id"]
+
+    unchanged = await c.patch(f"/api/admin/providers/{pid}", headers=auth, json={"kind": "openai"})
+    assert unchanged.status_code == 200
+    assert unchanged.json()["api_key"] == "stored-secret"
+    assert unchanged.json()["base_url"] == "https://provider.example/v1"
+    assert srv.services.provider_repo.get(pid).extra_json == '{"keep":true}'
+    assert unchanged.json()["note"] == "keep this"
+
+    cleared = await c.patch(f"/api/admin/providers/{pid}", headers=auth, json={"api_key": None})
+    assert cleared.status_code == 200
+    assert cleared.json()["api_key"] is None
+    assert cleared.json()["has_api_key"] is False
+    assert cleared.json()["base_url"] == "https://provider.example/v1"
+    assert srv.services.provider_repo.get(pid).extra_json == '{"keep":true}'
+    assert cleared.json()["note"] == "keep this"
+
+    replaced = await c.patch(
+        f"/api/admin/providers/{pid}", headers=auth, json={"api_key": "new-secret"}
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["api_key"] == "new-secret"

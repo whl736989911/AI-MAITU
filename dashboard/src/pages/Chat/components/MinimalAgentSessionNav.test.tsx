@@ -278,6 +278,25 @@ describe("MinimalAgentSessionNav kind groups", () => {
     ).toHaveLength(2);
   });
 
+  it("searches and pins experts and features independently", async () => {
+    renderNav([
+      agent("A1", 1, "Expert One"),
+      agent("F1", 2, "Weekly digest", KIND_FEATURE),
+    ]);
+    await settle();
+
+    fireEvent.change(screen.getByRole("searchbox"), {
+      target: { value: "Weekly" },
+    });
+    expect(screen.getByText("Weekly digest")).toBeInTheDocument();
+    expect(screen.queryByText("Expert One")).toBeNull();
+
+    fireEvent.change(screen.getByRole("searchbox"), { target: { value: "" } });
+    const pin = screen.getAllByTitle("chat.pin");
+    fireEvent.click(pin[0]);
+    expect(screen.getByTitle("chat.unpin")).toBeInTheDocument();
+  });
+
   it("draws a feature-only nav as the one group it has", async () => {
     renderNav([agent("F1", 1, "Weekly digest", KIND_FEATURE)]);
     await settle();

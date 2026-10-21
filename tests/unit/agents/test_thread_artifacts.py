@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from octop.infra.agents.middleware.thread_artifacts import (
     ThreadArtifactsMiddleware,
     artifacts_for_response,
+    encode_team_artifact_ref,
     extract_artifact_paths,
 )
 
@@ -53,6 +54,35 @@ def test_artifact_paths_reject_escaping_the_workspace(tmp_path: Path) -> None:
         == []
     )
     assert artifacts_for_response(["plans/review.md", inside, outside], workspace) == [inside]
+
+
+def test_team_artifact_reference_keeps_producer_and_validates_its_workspace(
+    tmp_path: Path,
+) -> None:
+    host_workspace = tmp_path / "host"
+    member_a_workspace = tmp_path / "member-a"
+    member_b_workspace = tmp_path / "member-b"
+    member_a_path = (member_a_workspace / "out" / "same.md").as_posix()
+    member_b_path = (member_b_workspace / "out" / "same.md").as_posix()
+    refs = [
+        encode_team_artifact_ref("member-a", member_a_path),
+        encode_team_artifact_ref("member-b", member_b_path),
+    ]
+    assert all(refs)
+    workspaces = {
+        "member-a": member_a_workspace,
+        "member-b": member_b_workspace,
+    }
+    resolved = artifacts_for_response(
+        refs,
+        host_workspace,
+        producer_workspace=lambda producer: workspaces.get(producer),
+    )
+    assert resolved == [
+        {"producer_agent_id": "member-a", "path": member_a_path},
+        {"producer_agent_id": "member-b", "path": member_b_path},
+    ]
+    assert artifacts_for_response(refs, host_workspace) == []
 
 
 def test_successful_plan_write_tracks_artifact_and_pending_plan(tmp_path: Path) -> None:

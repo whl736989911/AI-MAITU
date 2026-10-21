@@ -30,6 +30,7 @@ from harness_agent.teams.util import (
 from langchain_core.messages import AIMessage, HumanMessage
 
 from octop.i18n import tr
+from octop.infra.agents.middleware.thread_artifacts import encode_team_artifact_ref
 from octop.infra.agents.teams.service import is_team_agent
 from octop.infra.gateway.process.history_projection import (
     live_message_inputs,
@@ -49,6 +50,7 @@ logger = logging.getLogger(__name__)
 _ROOM_HISTORY_LIMIT = 40
 _HOST_IDLE_POLL_SEC = 0.05
 _HOST_IDLE_WAIT_SEC = 45.0
+_FOLLOWUP_RESULT_MAX_CHARS = 6000
 _RELAY_CHUNK_TYPES = frozenset(
     {"token", "reasoning", "tool_call_chunk", "tool_result", "error", "attachment"}
 )
@@ -220,7 +222,11 @@ class TeamManager:
         result_text: str | None,
         error_text: str | None,
     ) -> str:
-        _ = result_text
+        result = str(result_text or "").strip()
+        if len(result) > _FOLLOWUP_RESULT_MAX_CHARS:
+            result = result[: _FOLLOWUP_RESULT_MAX_CHARS - 1].rstrip() + "…"
+        if not result:
+            result = "(empty)"
         child_name = self._display_name(msg.target_agent_id)
         locale = self._locale_for(_octop_user_id(msg.user_id))
         if error_text:
@@ -236,6 +242,7 @@ class TeamManager:
             locale,
             name=child_name,
             task=msg.message,
+            result=result,
         )
 
     async def on_reply(self, event: ReplyEvent) -> None:
@@ -425,6 +432,27 @@ class TeamManager:
         if not self._is_group_dispatch(call):
             return
         speaker = call.to_agent_id
+        room = str(call.source_thread_id or "").strip()
+        if room:
+            try:
+                member_thread_id = derive_peer_thread_id(room, speaker)
+                member_row = self._thread_registry.get_thread(member_thread_id)
+                member_artifacts = getattr(member_row, "artifacts", ()) if member_row else ()
+                refs = [
+                    ref
+                    for artifact in member_artifacts
+                    if isinstance(artifact, str)
+                    and (ref := encode_team_artifact_ref(speaker, artifact))
+                ]
+                if refs:
+                    self._thread_registry.append_artifacts(room, refs)
+            except Exception:
+                logger.warning(
+                    "failed to collect team member artifacts thread=%s speaker=%s",
+                    room,
+                    speaker,
+                    exc_info=True,
+                )
         stamped = [_with_speaker(msg, speaker) for msg in _room_peer_messages(visible)]
         final = _final_room_assistant(stamped)
         if final is None:

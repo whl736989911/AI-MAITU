@@ -56,6 +56,9 @@ def test_download_sync_reports_tqdm_bytes(monkeypatch, tmp_path) -> None:
         on_progress: object = None,
     ) -> str:
         del model_name, cache_dir
+        snapshot = mod.model_cache_dir("BAAI/bge-small-zh-v1.5") / "onnx"
+        snapshot.mkdir(parents=True)
+        (snapshot / "model.onnx").write_bytes(b"fixture weights handled by FakeEmbed")
         assert callable(on_progress)
         on_progress(50, 100, "Reconstructing")
         seen.append(mgr.state.progress)
@@ -253,32 +256,73 @@ def test_embedding_prerequisites_ignore_service_enabled(tmp_path, monkeypatch) -
     assert mod.embedding_prerequisites_ok(store.get) is True
 
 
-def test_embed_texts_reuses_model_and_replaces_it_on_switch(monkeypatch) -> None:
+def test_embed_texts_uses_offline_snapshot_and_reuses_model(monkeypatch, tmp_path) -> None:
     from octop.infra.agents.providers import onnx_service as mod
 
     calls: list[dict[str, object]] = []
+    snapshot = tmp_path / "snapshots" / "revision-a"
+    snapshot.mkdir(parents=True)
 
     class FakeEmbedding:
         def __init__(self, **kwargs: object) -> None:
             calls.append(kwargs)
             self.model = str(kwargs["model_name"])
 
-        def embed(self, texts):
+        def embed(self, texts, *, batch_size):
+            assert batch_size == mod._EMBEDDING_BATCH_SIZE
             for _ in texts:
                 yield [1.0 if self.model == ONNX_PRESET_MODEL_IDS[0] else 2.0]
 
     monkeypatch.setattr(mod, "local_embedding_deps_available", lambda: True)
+    monkeypatch.setattr(mod, "embedding_models_dir", lambda: tmp_path)
+    monkeypatch.setattr(mod, "_specific_model_path", lambda _model: snapshot)
     monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=FakeEmbedding))
-    monkeypatch.setattr(mod, "_CACHED_EMBEDDING_MODEL", None)
+    monkeypatch.setattr(mod, "_CACHED_EMBEDDING_KEY", None)
     monkeypatch.setattr(mod, "_CACHED_EMBEDDING", None)
 
-    first, second = ONNX_PRESET_MODEL_IDS[:2]
-    assert mod.embed_texts(first, ["a"]) == [[1.0]]
-    assert mod.embed_texts(first, ["b"]) == [[1.0]]
-    assert mod.embed_texts(second, ["c"]) == [[2.0]]
-    assert [call["model_name"] for call in calls] == [first, second]
-    mod._CACHED_EMBEDDING_MODEL = None
-    mod._CACHED_EMBEDDING = None
+    model = ONNX_PRESET_MODEL_IDS[0]
+    assert mod.embed_texts(model, ["a"]) == [[1.0]]
+    assert mod.embed_texts(model, ["b"]) == [[1.0]]
+    assert len(calls) == 1
+    assert calls[0]["specific_model_path"] == str(snapshot)
+    assert calls[0]["local_files_only"] is True
+
+
+def test_embed_texts_cache_tracks_root_and_delete_unloads_model(monkeypatch, tmp_path) -> None:
+    from octop.infra.agents.providers import onnx_service as mod
+
+    roots = [tmp_path / "root-a"]
+    snapshots = [roots[0] / "snapshot"]
+    for snapshot in snapshots:
+        snapshot.mkdir(parents=True)
+
+    class FakeEmbedding:
+        def __init__(self, **kwargs: object) -> None:
+            self.value = 2.0 if "root-b" in str(kwargs["cache_dir"]) else 1.0
+
+        def embed(self, texts, *, batch_size):
+            yield from ([self.value] for _ in texts)
+
+    monkeypatch.setattr(mod, "local_embedding_deps_available", lambda: True)
+    monkeypatch.setattr(mod, "embedding_models_dir", lambda: roots[-1])
+    monkeypatch.setattr(mod, "_specific_model_path", lambda _model: snapshots[-1])
+    monkeypatch.setitem(sys.modules, "fastembed", SimpleNamespace(TextEmbedding=FakeEmbedding))
+    monkeypatch.setattr(mod, "_CACHED_EMBEDDING_KEY", None)
+    monkeypatch.setattr(mod, "_CACHED_EMBEDDING", None)
+
+    model = ONNX_PRESET_MODEL_IDS[0]
+    assert mod.embed_texts(model, ["a"]) == [[1.0]]
+    roots.append(tmp_path / "root-b")
+    snapshots.append(roots[1] / "snapshot")
+    snapshots[1].mkdir(parents=True)
+    assert mod.embed_texts(model, ["b"]) == [[2.0]]
+
+    model_cache = mod.model_cache_dir(model) / "onnx"
+    model_cache.mkdir(parents=True)
+    (model_cache / "model.onnx").write_bytes(b"weights")
+    # The loaded model is released before the backing cache is removed.
+    assert mod.delete_downloaded_model(model) is True
+    assert not model_cache.exists()
 
 
 def test_embed_texts_empty_input(monkeypatch) -> None:

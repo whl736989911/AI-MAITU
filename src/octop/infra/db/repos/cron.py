@@ -205,6 +205,17 @@ class CronJobRepo:
             rows = conn.execute(sql).fetchall()
         return map_rows(rows, CronJobRow)
 
+    def claim_date_run(self, cron_id: str, *, ts: int) -> bool:
+        """Atomically claim an unattempted date job so restart/manual races do not replay it."""
+        with self._db.transaction() as conn:
+            result = conn.execute(
+                "UPDATE cron_jobs SET last_run_at = ?, last_status = 'running', "
+                "last_error = NULL, updated_at = ? "
+                "WHERE cron_id = ? AND last_run_at IS NULL",
+                (ts, now_ts(), cron_id),
+            )
+        return bool(result.rowcount == 1)
+
     def set_run_status(
         self,
         cron_id: str,

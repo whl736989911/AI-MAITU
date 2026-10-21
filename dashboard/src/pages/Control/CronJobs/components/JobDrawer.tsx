@@ -277,6 +277,9 @@ export function JobDrawer({
             <Select.Option value="custom">
               {t("cronJobs.form.scheduleModeCustom")}
             </Select.Option>
+            <Select.Option value="date">
+              {t("cronJobs.form.scheduleModeDate")}
+            </Select.Option>
           </Select>
         </Form.Item>
 
@@ -291,6 +294,21 @@ export function JobDrawer({
           >
             <Select options={presetOptions} />
           </Form.Item>
+        ) : scheduleMode === "date" ? (
+          <Form.Item
+            name={["schedule", "date"]}
+            label={t("cronJobs.form.dateRunAt")}
+            rules={[
+              { required: true, message: t("cronJobs.form.dateRunAtRequired") },
+              {
+                pattern: /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/,
+                message: t("cronJobs.form.dateRunAtInvalid"),
+              },
+            ]}
+            extra={t("cronJobs.form.dateRunAtHint", { timezone: cronTimezone })}
+          >
+            <Input type="datetime-local" step={1} />
+          </Form.Item>
         ) : (
           <>
             <Form.Item
@@ -304,9 +322,7 @@ export function JobDrawer({
                 onChange={(value) => {
                   if (!value) return;
                   const cron = presetToCron(value);
-                  if (cron) {
-                    form.setFieldValue(["schedule", "cron"], cron);
-                  }
+                  if (cron) form.setFieldValue(["schedule", "cron"], cron);
                 }}
               />
             </Form.Item>

@@ -1,0 +1,3 @@
+Design Expert template
+
+This template is adapted from the design plugin in Anthropic Knowledge Work Plugins (https://github.com/anthropics/knowledge-work-plugins), licensed under the Apache License, Version 2.0. TencentCloud/Octop v1.0.2 also adapted this template; this MAITU fork adapts the upstream-derived workflows for MAITU and adds workspace ACL and shared-memory safeguards. Apache License, Version 2.0 applies to the upstream-derived template material. The complete license text is available at https://www.apache.org/licenses/LICENSE-2.0.

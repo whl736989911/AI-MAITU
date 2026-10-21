@@ -24,16 +24,18 @@ from octop.api.common.agent import (
     require_agent_row,
 )
 from octop.api.common.workspace import require_agent_workspace
+from octop.api.deps import unit_grants_for
 from octop.i18n import tr
 from octop.infra.agents.feature_workflow import STATUS_ACTIVE, STATUS_DRAFT, feature_memory_stage
 from octop.infra.agents.kinds import is_feature_agent
-from octop.infra.agents.memory_backend import memory_namespace, open_memory_kwargs
+from octop.infra.agents.memory_backend import close_memory, memory_namespace, open_memory_kwargs
 from octop.infra.agents.workspace_dir import (
     LEGACY_SYSTEM_FILES_DIRNAME,
     SYSTEM_FILES_DIRNAME,
     host_system_dir,
 )
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils.locale import resolve_user_locale
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,7 @@ class MemoryAccess:
     default_scope: MemoryScope
     shared_writable: bool
     private_writable: bool
+    configuration_writable: bool = False
 
 
 def feature_memory_reason(key: str, *, user: Any, server: Any) -> str:
@@ -61,10 +64,22 @@ async def resolve_memory_access(
     agent_id: str, *, user: Any, as_user: int | None, server: Any
 ) -> MemoryAccess:
     row = require_agent_row(agent_id, user=user, as_user=as_user, server=server)
+    if not user_has_permission(user, "memory", unit_grants=unit_grants_for(server, user)):
+        raise OctopError(
+            ErrorCode.FORBIDDEN, "permission required", details={"permission": "memory"}
+        )
+    runtime = server.app_runtime
+    registry = runtime.agent_registry if runtime is not None else None
+    if registry is not None and registry.is_memory_storage_maintenance(agent_id):
+        raise OctopError.localized(ErrorCode.AGENT_BUSY)
     if not is_feature_agent(row.kind):
         require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
         return MemoryAccess(
-            stage=None, default_scope="shared", shared_writable=True, private_writable=False
+            stage=None,
+            default_scope="shared",
+            shared_writable=True,
+            private_writable=False,
+            configuration_writable=True,
         )
     workspace = await require_agent_workspace(agent_id, user=user, server=server)
     stage = cast('Literal["draft", "active"]', await feature_memory_stage(workspace))
@@ -80,6 +95,7 @@ async def resolve_memory_access(
         default_scope="private" if stage == STATUS_ACTIVE else "shared",
         shared_writable=stage == STATUS_DRAFT and row.enterprise_unit_key is None and manager,
         private_writable=stage == STATUS_ACTIVE and (as_user is None or as_user == user.id),
+        configuration_writable=manager,
     )
 
 
@@ -155,14 +171,15 @@ class _MemoryCache:
             return memory, bridge
 
     def invalidate(self, agent_id: str | None = None) -> None:
+        removed: list[Any] = []
         with self._lock:
-            if agent_id is None:
-                self._entries.clear()
-            else:
-                prefix = memory_namespace(agent_id)
-                for namespace in tuple(self._entries):
-                    if namespace == prefix or namespace.startswith(f"{prefix}_user_"):
-                        self._entries.pop(namespace, None)
+            prefix = memory_namespace(agent_id) if agent_id is not None else None
+            for namespace in tuple(self._entries):
+                if prefix is None or namespace == prefix or namespace.startswith(f"{prefix}_user_"):
+                    memory, _bridge, _fingerprint = self._entries.pop(namespace)
+                    removed.append(memory)
+        for memory in removed:
+            close_memory(memory)
 
 
 _CACHE = _MemoryCache()
@@ -281,7 +298,15 @@ async def call_memory_rpc(
             _ = memory.backend._conn
         return cast("dict[str, Any]", bridge.handle(payload))
 
-    response = await asyncio.to_thread(dispatch)
+    assert runtime is not None and runtime.agent_registry is not None
+    async with runtime.agent_registry._track_invocation(agent_id):
+        operation = asyncio.create_task(asyncio.to_thread(dispatch))
+        try:
+            response = await asyncio.shield(operation)
+        except asyncio.CancelledError:
+            # Do not release storage admission while its worker still writes.
+            await operation
+            raise
     if "error" in response:
         err = response["error"]
         code = err.get("code")
@@ -299,6 +324,24 @@ async def call_memory_rpc(
     return response["result"]
 
 
+async def open_memory_scope(
+    *,
+    agent_id: str,
+    scope: MemoryScope,
+    user: Any,
+    server: Any,
+) -> Any:
+    """Open only the agent-wide or authenticated caller's own memory namespace."""
+    return (
+        await asyncio.to_thread(
+            _open_memory_for_agent,
+            server,
+            agent_id,
+            user_id=int(user.id) if scope == "private" else None,
+        )
+    )[0]
+
+
 def invalidate_cached_memory(agent_id: str | None = None) -> None:
     _CACHE.invalidate(agent_id)
 
@@ -311,5 +354,6 @@ __all__ = [
     "invalidate_cached_memory",
     "memory_db_path",
     "memory_db_path_for_cfg",
+    "open_memory_scope",
     "resolve_memory_access",
 ]

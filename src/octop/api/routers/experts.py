@@ -12,7 +12,7 @@ POST /api/experts/hub/{slug}/install → create agent from market expert
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Response
 from pydantic import BaseModel, Field
@@ -129,6 +129,7 @@ class FromExpertBody(AgentRuntimeFields):
     description: str | None = None
     providers: list[str] | None = None
     default_model: str | None = None
+    conversation_mode: Literal["ask", "plan", "craft"] = "craft"
     backend: dict[str, Any] | None = None
     skill_package_ids: list[str] | None = None
     knowledge_base_ids: list[str] | None = None
@@ -169,6 +170,7 @@ class InstallPublishedExpertBody(AgentRuntimeFields):
     description: str = ""
     providers: list[str] | None = None
     default_model: str | None = None
+    conversation_mode: Literal["ask", "plan", "craft"] = "craft"
     backend: dict[str, Any] | None = None
     skill_package_ids: list[str] | None = None
     knowledge_base_ids: list[str] | None = None
@@ -623,6 +625,7 @@ async def install_published_expert(
             description=body.description,
             providers=body.providers,
             default_model=body.default_model,
+            conversation_mode=body.conversation_mode,
             backend=body.backend,
             skill_package_ids=body.skill_package_ids,
             knowledge_base_ids=kb_ids,
@@ -733,6 +736,7 @@ async def install_expert_hub_item(
                 description=body.description,
                 providers=body.providers,
                 default_model=body.default_model,
+                conversation_mode=body.conversation_mode,
                 backend=body.backend,
                 color=body.color,
                 agent_id=body.agent_id,
@@ -824,6 +828,7 @@ async def create_agent_from_expert(
         config_extra["providers"] = list(body.providers)
     if body.backend:
         config_extra["backend"] = body.backend
+    config_extra["conversation_mode"] = body.conversation_mode
     apply_enable_trajectory(config_extra, body.enable_trajectory)
 
     locale = resolve_user_locale(

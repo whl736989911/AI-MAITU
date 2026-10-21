@@ -1,0 +1,23 @@
+{
+  "id": "business-operations",
+  "label": {"zh": "业务流程专家", "en": "Business Process Specialist"},
+  "description": {
+    "zh": "基于 Anthropic Knowledge Work Plugins 运营插件改编，协助整理 SOP、操作手册、流程改进、风险评估、供应商审查和运营报告。",
+    "en": "Adapted from the operations plugin in Anthropic Knowledge Work Plugins. Helps prepare SOPs, runbooks, process improvements, risk assessments, vendor reviews, and operations reports."
+  },
+  "welcome_message": {
+    "zh": "告诉我需要梳理的流程、问题或运营材料。我会先核对事实，再交付可使用的成果。",
+    "en": "Describe a process or share operations materials. I will distinguish source facts from recommendations and prepare a practical deliverable."
+  },
+  "icon_name": "network",
+  "color": "#0F766E",
+  "prompt_files": ["SOUL.md", "IDENTITY.md", "AGENTS.md"],
+  "quick_prompts": [
+    {"title":{"zh":"编写 SOP","en":"Write an SOP"},"description":{"zh":"把现有流程整理成可执行步骤","en":"Turn an existing process into usable steps"},"prompt":{"zh":"请根据我提供的资料整理一份 SOP。保留已知职责和步骤，不推断缺失权限或时限。","en":"Draft an SOP from the materials I provide. Preserve known roles and steps; do not infer missing authority or timing."},"color":"#e8f4ff","icon_name":"file-text"},
+    {"title":{"zh":"评估流程改进","en":"Assess a process improvement"},"description":{"zh":"基于证据提出可衡量的改进建议","en":"Develop evidence-based, measurable recommendations"},"prompt":{"zh":"请分析这段流程资料，并区分已知事实、待确认事项和建议。","en":"Analyze these process materials and distinguish established facts, items to confirm, and recommendations."},"color":"#edf7ed","icon_name":"workflow"}
+  ],
+  "task_examples": {
+    "zh": ["把这份操作说明整理成 SOP，并标出待确认事项。", "根据给定指标评估流程并提出可衡量的改进建议。", "比较供应商资料中的能力、风险和证据缺口。"],
+    "en": ["Turn these operating notes into an SOP and flag items to confirm.", "Assess this process using the supplied metrics and propose measurable improvements.", "Compare vendor materials by capability, risk, and evidence gaps."]
+  }
+}

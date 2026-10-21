@@ -629,6 +629,9 @@ class OctopServer:
         from octop.infra.licensing import current_license
 
         current_license().require_business_access()
+        from octop.infra.agents.backend_compat import install_backend_compatibility_patches
+
+        install_backend_compatibility_patches()
 
         assert self.services is not None
         assert self.expert_catalog is not None

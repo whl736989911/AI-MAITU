@@ -17,7 +17,7 @@ import type { ProviderDraft } from "../wizardClient";
 const { Text } = Typography;
 
 interface Props {
-  adminCreds: { username: string; password: string };
+  adminCreds: { username: string; password: string } | null;
   providerDraft: ProviderDraft | null;
 }
 
@@ -56,10 +56,20 @@ export default function FinishStep({ adminCreds, providerDraft }: Props) {
       }
 
       try {
-        const r = await authApi.login(adminCreds.username, adminCreds.password);
-        setAuthToken(r.access_token);
-        await applyUserLocale(r.user.locale);
-        void refreshServerLabels(r.user.locale);
+        const setupJwt = wizardSession.loadSetupJwt();
+        if (adminCreds) {
+          const r = await authApi.login(
+            adminCreds.username,
+            adminCreds.password,
+          );
+          setAuthToken(r.access_token);
+          await applyUserLocale(r.user.locale);
+          void refreshServerLabels(r.user.locale);
+        } else if (setupJwt) {
+          setAuthToken(setupJwt);
+        } else {
+          throw new Error(t("wizard.sessionExpired"));
+        }
       } catch (e) {
         if (!cancelled) {
           setErrors((s) => ({

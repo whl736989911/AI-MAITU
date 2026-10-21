@@ -86,3 +86,39 @@ async def test_preferences_timezone_rejects_invalid_value(env) -> None:
     client, _srv, auth = env
     r = await client.patch("/api/preferences", headers=auth, json={"timezone": "BAD_ZONE"})
     assert r.status_code in (400, 422)
+
+
+@pytest.mark.asyncio
+async def test_preferences_sidebar_roundtrip_keeps_other_preferences(env) -> None:
+    client, _srv, auth = env
+    payload = {
+        "sidebar": {
+            "order": ["experts", "chat", "features", "experts"],
+            "hidden": ["tasks", "chat", "tasks"],
+        }
+    }
+    response = await client.patch("/api/preferences", headers=auth, json=payload)
+    assert response.status_code == 200
+    assert response.json()["sidebar"] == {
+        "order": ["experts", "chat", "features"],
+        "hidden": ["tasks", "chat"],
+    }
+
+    response = await client.patch("/api/preferences", headers=auth, json={"locale": "en"})
+    assert response.status_code == 200
+    fetched = await client.get("/api/preferences", headers=auth)
+    assert fetched.json()["sidebar"] == {
+        "order": ["experts", "chat", "features"],
+        "hidden": ["tasks", "chat"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_preferences_sidebar_rejects_unknown_catalog_keys_shape(env) -> None:
+    client, _srv, auth = env
+    response = await client.patch(
+        "/api/preferences",
+        headers=auth,
+        json={"sidebar": {"order": ["chat"], "hidden": [], "extra": ["admin"]}},
+    )
+    assert response.status_code == 422

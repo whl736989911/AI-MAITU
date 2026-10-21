@@ -1,6 +1,7 @@
 import { memo, useMemo, useState, useCallback, useRef, useEffect } from "react";
 import { Image, Tooltip } from "antd";
 import { message as antMessage } from "@/utils/antdMessage";
+import { isImeComposing } from "../utils/ime";
 
 import Markdown from "../../../components/Markdown/LazyMarkdown";
 import {
@@ -547,10 +548,13 @@ function MessageBubble({
   const { agents, activeAgent } = useAgent();
   const expert = useMemo(
     () =>
+      (message.speakerAgentId &&
+        agents.find((item) => item.agent_id === message.speakerAgentId)) ||
       (agentId && agents.find((item) => item.agent_id === agentId)) ||
       activeAgent,
-    [agentId, agents, activeAgent],
+    [message.speakerAgentId, agentId, agents, activeAgent],
   );
+  const expertName = message.speakerName || expert?.name;
   const userName = accountDisplayName(user);
 
   const [isEditing, setIsEditing] = useState(false);
@@ -739,7 +743,7 @@ function MessageBubble({
     />
   ) : expert ? (
     <ExpertMessageAvatar
-      name={expert.name}
+      name={expertName}
       color={expert.color}
       iconName={expert.icon_name}
       iconUrl={expert.icon_url}
@@ -777,6 +781,7 @@ function MessageBubble({
                     autoFocus
                     rows={4}
                     onKeyDown={(e) => {
+                      if (isImeComposing(e)) return;
                       if (e.key === "Enter" && !e.shiftKey) {
                         e.preventDefault();
                         handleEditSubmit();

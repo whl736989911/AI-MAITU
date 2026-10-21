@@ -10,7 +10,7 @@ SET prompt = COALESCE(sub.joined, '')
 FROM (
   SELECT k.collection_id AS cid, string_agg(j.value, '; ' ORDER BY j.ord) AS joined
   FROM knowledge_collections k
-  CROSS JOIN LATERAL json_array_elements_text(k.keywords_json) WITH ORDINALITY AS j(value, ord)
+  CROSS JOIN LATERAL json_array_elements_text(k.keywords_json::json) WITH ORDINALITY AS j(value, ord)
   GROUP BY k.collection_id
 ) AS sub
 WHERE c.collection_id = sub.cid;

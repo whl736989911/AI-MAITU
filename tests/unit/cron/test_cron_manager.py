@@ -7,7 +7,7 @@ real async tasks or LLM calls are made.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -632,29 +632,6 @@ async def test_run_now_raises_for_unknown(tmp_path: Path) -> None:
 
     with pytest.raises(OctopError):
         await mgr.run_now("no-such-id")
-
-
-@pytest.mark.asyncio
-async def test_run_now_fires_job(tmp_path: Path) -> None:
-    """run_now() schedules an immediate async task via ensure_future."""
-    services = _make_services(tmp_path)
-    aid, uid = _make_agent(services)
-    gateway = _make_gateway()
-    mgr = _make_manager(services, gateway=gateway)
-    cid = _cron_id()
-    await mgr.create(
-        cron_id=cid,
-        agent_id=aid,
-        user_id=uid,
-        trigger="interval:3600",
-        prompt="run",
-    )
-
-    with patch("octop.infra.cron.manager.asyncio.ensure_future") as mock_ef:
-        await mgr.run_now(cid)
-        mock_ef.assert_called_once()
-        coro = mock_ef.call_args[0][0]
-        coro.close()  # clean up without awaiting
 
 
 # ---------------------------------------------------------------------------

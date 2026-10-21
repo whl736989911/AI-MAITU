@@ -134,6 +134,9 @@ async def cmd_delete(d: SlashDispatcher, cmd: SlashCommand, ctx: SlashCtx, sink:
     if active and target.thread_id == active:
         await sink.text(tr("delete.active", lang))
         return
+    if ctx.agent_manager is None:
+        raise RuntimeError("thread checkpoint cleanup is unavailable")
+    await ctx.agent_manager.delete_thread_checkpoint(ctx.agent_id, target.thread_id)
     ctx.thread_registry.delete_thread(target.thread_id)
     await sink.text(tr("delete.done", lang, short=target.thread_id[-6:]))
 

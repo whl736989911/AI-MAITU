@@ -52,7 +52,10 @@ Text-type dashboard pushes (cron reminders, proactive care) also emit
 `{"type":"dashboard_push", ...}` on `/api/notifications/ws` (same `?token=` auth) so the
 SPA can show a toast even when the chat socket is not subscribed.
 
-HITL resume still uses `POST /api/agents/{agent_id}/chat/hitl/resume` (SSE).
+HITL resume uses `POST /api/agents/{agent_id}/chat/hitl/resume` (SSE).
+Pass the current server-issued `pending_id` from the approval card or thread history.
+Missing, stale and restored-away approval IDs return `409 HITL_APPROVAL_STALE`;
+reloading history reconstructs a fresh card from any restored pending interruption.
 """
 
 

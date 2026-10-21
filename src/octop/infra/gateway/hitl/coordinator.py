@@ -128,6 +128,7 @@ class HitlChannelCoordinator:
         raw_request: dict[str, Any],
         *,
         ctx: HitlStreamContext,
+        checkpoint_interrupt_ids: tuple[str, ...] | None = None,
     ) -> HitlPendingRecord:
         return self._store.register(
             thread_id=ctx.thread_id,
@@ -137,6 +138,7 @@ class HitlChannelCoordinator:
             channel_type=ctx.channel_type,
             action_requests=parse_action_requests(raw_request),
             review_configs=parse_review_configs(raw_request),
+            checkpoint_interrupt_ids=checkpoint_interrupt_ids,
         )
 
     @staticmethod

@@ -98,7 +98,6 @@ _JWT_EXEMPT_METHOD_PATHS = frozenset(
         ("POST", "/api/setup/begin"),
         ("POST", "/api/setup/verify-password"),
         ("POST", "/api/setup/initial-admin"),
-        ("POST", "/api/setup/resume-wizard"),
         ("POST", "/api/setup/test-provider"),
         ("POST", "/api/setup/license-config"),
         ("POST", "/api/setup/finish"),

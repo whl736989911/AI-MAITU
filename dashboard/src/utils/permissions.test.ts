@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { canAccessPath, navAllowed, userCan, userCanAny } from "./permissions";
+import {
+  canAccessPath,
+  navAllowed,
+  personalizationTabAllowed,
+  userCan,
+  userCanAny,
+} from "./permissions";
 
 const restrictedAdmin = {
   role: "admin",
@@ -37,5 +43,38 @@ describe("effective permission profile precedence", () => {
     const profile = { ...restrictedAdmin, permissions: ["terminal"] };
     expect(userCan(profile, "terminal")).toBe(true);
     expect(userCan(profile, "browser")).toBe(false);
+  });
+});
+
+describe("personalization module grants", () => {
+  it.each([
+    ["skills", "skills"],
+    ["subagents", "subagents"],
+    ["tools", "tools"],
+    ["plugins", "agent_plugins"],
+    ["mbti", "mbti"],
+    ["memory", "memory"],
+  ])("gates %s independently on %s", (tab, key) => {
+    const user = { role: "user", permissions: [key] };
+    expect(personalizationTabAllowed(user, tab)).toBe(true);
+    expect(
+      personalizationTabAllowed({ role: "user", permissions: [] }, tab),
+    ).toBe(false);
+    expect(canAccessPath(user, `/personalization/${tab}`)).toBe(true);
+    expect(
+      canAccessPath(
+        { role: "user", permissions: [] },
+        `/personalization/${tab}`,
+      ),
+    ).toBe(false);
+  });
+
+  it("shows the personalization navigation when any independent tab is granted", () => {
+    expect(
+      navAllowed({ role: "user", permissions: ["memory"] }, "personalization"),
+    ).toBe(true);
+    expect(
+      navAllowed({ role: "user", permissions: [] }, "personalization"),
+    ).toBe(false);
   });
 });

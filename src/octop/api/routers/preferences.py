@@ -18,6 +18,8 @@ from octop.infra.users.preferences import (
     get_model_reasoning_from_json,
     get_preferred_model_from_json,
     get_remote_browser_bookmarks_from_json,
+    get_sidebar_preferences_from_json,
+    merge_sidebar_preferences_json,
     parse_preferences_json,
 )
 from octop.infra.utils.locale import normalize_locale
@@ -50,6 +52,21 @@ class PreferencesResponse(BaseModel):
         description="Per-model reasoning defaults for this user.",
     )
     timezone: str | None = Field(default=None, description="Preferred IANA timezone.")
+    sidebar: dict[str, list[str]] = Field(
+        default_factory=lambda: dict[str, list[str]](order=[], hidden=[])
+    )
+
+
+def _validate_sidebar_preferences(value: dict[str, list[str]]) -> dict[str, list[str]]:
+    result: dict[str, list[str]] = {}
+    for key in ("order", "hidden"):
+        items = value.get(key, [])
+        if len(items) > 64 or any(not item or len(item) > 64 for item in items):
+            raise ValueError(f"sidebar.{key} entries must contain 1-64 characters (max 64 items)")
+        result[key] = list(dict.fromkeys(items))
+    if set(value).difference({"order", "hidden"}):
+        raise ValueError("sidebar accepts only order and hidden")
+    return result
 
 
 class PatchPreferencesBody(BaseModel):
@@ -60,14 +77,23 @@ class PatchPreferencesBody(BaseModel):
     )
     preferred_model: str | None = None
     model_reasoning: dict[str, ModelReasoningPreferenceModel] | None = None
+    sidebar: dict[str, list[str]] | None = None
     timezone: str | None = None
 
     @model_validator(mode="after")
     def at_least_one_field(self) -> Self:
         if not self.model_fields_set.intersection(
-            {"locale", "remote_browser_bookmarks", "preferred_model", "model_reasoning", "timezone"}
+            {
+                "locale",
+                "remote_browser_bookmarks",
+                "preferred_model",
+                "model_reasoning",
+                "timezone",
+                "sidebar",
+            }
         ):
             raise ValueError("at least one preference field is required")
+
         if (
             self.remote_browser_bookmarks is not None
             and len(self.remote_browser_bookmarks) > MAX_REMOTE_BROWSER_BOOKMARKS
@@ -75,6 +101,9 @@ class PatchPreferencesBody(BaseModel):
             raise ValueError(
                 f"remote_browser_bookmarks must have at most {MAX_REMOTE_BROWSER_BOOKMARKS} items"
             )
+        if self.sidebar is not None:
+            self.sidebar = _validate_sidebar_preferences(self.sidebar)
+
         return self
 
 
@@ -97,6 +126,7 @@ def _response(row: Any) -> PreferencesResponse:
             for ref, pref in get_model_reasoning_from_json(raw).items()
         },
         timezone=parse_preferences_json(raw).get(PREFERENCES_KEY_TIMEZONE),
+        sidebar=get_sidebar_preferences_from_json(raw),
     )
 
 
@@ -162,5 +192,11 @@ async def patch_preferences(
         else:
             data.pop(PREFERENCES_KEY_TIMEZONE, None)
         server.services.user_repo.set_preferences_json(user.id, json.dumps(data))
+    if body.sidebar is not None:
+        row = server.services.user_repo.get(user.id)
+        server.services.user_repo.set_preferences_json(
+            user.id,
+            merge_sidebar_preferences_json(row.preferences_json if row else None, body.sidebar),
+        )
     row = server.services.user_repo.get(user.id)
     return _response(row)

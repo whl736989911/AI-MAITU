@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Checkbox, Drawer, Empty, Modal, Spin, Switch } from "antd";
 import { Copy, Info } from "lucide-react";
+import { Download, Upload } from "lucide-react";
 import { message } from "@/utils/antdMessage";
 import { useTranslation } from "react-i18next";
 import { skillPackagesApi } from "../../../../api/modules/skillPackages";
@@ -334,14 +335,82 @@ export default function SkillPackagesTab({
                     className={styles.footerActions}
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <button
-                      type="button"
-                      className={styles.detailBtn}
-                      onClick={() => void openCopyModal(pack)}
-                    >
-                      <Copy size={14} />
-                      {t("skills.copySkills")}
-                    </button>
+                    {pack.can_download ? (
+                      <>
+                        <button
+                          type="button"
+                          className={styles.detailBtn}
+                          onClick={() => void openCopyModal(pack)}
+                        >
+                          <Copy size={14} />
+                          {t("skills.copySkills")}
+                        </button>
+                        <button
+                          type="button"
+                          className={styles.detailBtn}
+                          onClick={async () => {
+                            try {
+                              const blob = await skillPackagesApi.exportPackage(
+                                pack.id,
+                              );
+                              const url = URL.createObjectURL(blob);
+                              const link = document.createElement("a");
+                              link.href = url;
+                              link.download = `${pack.id}.zip`;
+                              link.click();
+                              URL.revokeObjectURL(url);
+                            } catch (error) {
+                              showApiError(error, t("skills.exportFailed"), t);
+                            }
+                          }}
+                        >
+                          <Download size={14} />
+                          {t("skills.exportPackage")}
+                        </button>
+                      </>
+                    ) : null}
+                    {pack.can_write ? (
+                      <label className={styles.detailBtn}>
+                        <Upload size={14} />
+                        {t("skills.importPackageZip")}
+                        <input
+                          type="file"
+                          accept=".zip,application/zip"
+                          hidden
+                          onChange={async (event) => {
+                            const file = event.target.files?.[0];
+                            event.target.value = "";
+                            if (!file) return;
+                            if (file.size > 64 * 1024 * 1024) {
+                              message.error(t("skills.zipTooLarge"));
+                              return;
+                            }
+                            try {
+                              const bytes = new Uint8Array(
+                                await file.arrayBuffer(),
+                              );
+                              let binary = "";
+                              for (let i = 0; i < bytes.length; i += 0x8000) {
+                                binary += String.fromCharCode(
+                                  ...bytes.subarray(i, i + 0x8000),
+                                );
+                              }
+                              const result = await skillPackagesApi.importZip(
+                                pack.id,
+                                btoa(binary),
+                              );
+                              message.success(
+                                t("skills.importPackageSuccess", {
+                                  count: result.imported.length,
+                                }),
+                              );
+                            } catch (error) {
+                              showApiError(error, t("skills.importFailed"), t);
+                            }
+                          }}
+                        />
+                      </label>
+                    ) : null}
                   </div>
                 </div>
               </div>

@@ -102,23 +102,23 @@ def test_user_has_permission_normal_hit_and_miss() -> None:
     assert user_has_permission(u, "unknown_key") is False
 
 
-def test_baseline_is_settings_group_except_new_teams_key() -> None:
-    assert {
-        key for key, p in PERMISSIONS.items() if p.category == "settings"
-    } == BASELINE_PERMISSIONS | {"teams"}
-    assert BASELINE_PERMISSIONS
-    assert all(PERMISSIONS[k].category == "settings" for k in BASELINE_PERMISSIONS)
+def test_baseline_excludes_newly_split_agent_modules() -> None:
+    newly_split = {"skills", "subagents", "tools", "agent_plugins", "memory"}
+    settings_keys = {
+        key for key, permission in PERMISSIONS.items() if permission.category == "settings"
+    }
+    assert settings_keys == BASELINE_PERMISSIONS | {"teams"} | newly_split
+    assert newly_split.isdisjoint(BASELINE_PERMISSIONS)
+    assert all(PERMISSIONS[key].category == "settings" for key in BASELINE_PERMISSIONS)
 
 
 def test_categories_match_nav_groups() -> None:
     """Every key sits in the group whose picker section it belongs to.
 
-    ``settings`` is the functional-module group and stays the one
-    :data:`BASELINE_PERMISSIONS` pre-checks for a new account: design §2.2's
-    functional modules (MBTI / experts / features) and the channel types join the
-    four that were already there, because every signed-in account could reach
-    them before they were catalogued. ``control`` gained ``acp`` — a remote
-    capability, not a baseline: before the catalog its entry was admin-only.
+    ``settings`` includes both the pre-catalog baseline and independently
+    assignable agent surfaces. MBTI / experts / features and channel types keep
+    their historical baseline access; the newly split surfaces are explicit.
+    ``control`` gained ``acp`` — a remote capability, not a baseline.
     """
     allowed = {"settings", "control", "admin"}
     for p in PERMISSIONS.values():
@@ -133,6 +133,11 @@ def test_categories_match_nav_groups() -> None:
         "experts",
         "teams",
         "features",
+        "skills",
+        "subagents",
+        "tools",
+        "agent_plugins",
+        "memory",
         *CHANNEL_PERMISSION_KEYS,
     }
     assert {k for k, p in PERMISSIONS.items() if p.category == "control"} == {

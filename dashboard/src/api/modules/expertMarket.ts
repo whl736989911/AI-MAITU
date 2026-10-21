@@ -64,6 +64,7 @@ export interface CreateMarketExpertBody {
   description?: string;
   providers?: string[];
   default_model?: string;
+  conversation_mode?: "ask" | "plan" | "craft";
   backend?: Record<string, unknown>;
   skill_package_ids?: string[];
   knowledge_base_ids?: string[];

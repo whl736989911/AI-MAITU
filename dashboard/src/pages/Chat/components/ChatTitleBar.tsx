@@ -10,6 +10,7 @@ import {
   Trash2,
   GitFork,
 } from "lucide-react";
+import { isImeComposing } from "../utils/ime";
 import { showConfirmModal } from "../../../utils/confirmModal";
 import type { Session } from "../hooks/useSessions";
 import SessionChannelIcon from "./SessionChannelIcon";
@@ -128,6 +129,7 @@ export default function ChatTitleBar({
             onChange={(e) => setEditValue(e.target.value)}
             onBlur={commitEdit}
             onKeyDown={(e) => {
+              if (isImeComposing(e)) return;
               if (e.key === "Enter") commitEdit();
               if (e.key === "Escape") {
                 setEditValue(title);

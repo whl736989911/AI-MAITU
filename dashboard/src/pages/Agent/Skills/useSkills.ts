@@ -2,9 +2,8 @@ import { useCallback, useState } from "react";
 import { App } from "antd";
 
 import { useTranslation } from "react-i18next";
-import { request } from "../../../api/request";
+import { request, requestBlob } from "../../../api/request";
 import { useAsyncResource } from "../../../hooks/useAsyncResource";
-import { parseApiError } from "../../../utils/apiError";
 import { showApiError } from "../../../utils/showApiToast";
 
 /**
@@ -262,6 +261,51 @@ export function useSkills(
   );
 
   const [importing, setImporting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const exportSkills = useCallback(
+    async (
+      slugs: string[],
+      options?: { fileName?: string },
+    ): Promise<boolean> => {
+      if (!agentId) return false;
+      const selected: string[] = [];
+      for (const slug of slugs) {
+        const trimmed = slug.trim();
+        if (trimmed && !selected.includes(trimmed)) selected.push(trimmed);
+      }
+      if (selected.length === 0) {
+        message.warning(t("skills.exportSelectAtLeastOne"));
+        return false;
+      }
+      try {
+        setExporting(true);
+        const blob = await requestBlob(`/agents/${agentId}/skills/export-zip`, {
+          method: "POST",
+          body: JSON.stringify({ slugs: selected }),
+        });
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download =
+          options?.fileName ||
+          (selected.length === 1
+            ? `${selected[0]}.zip`
+            : `${agentId}-skills.zip`);
+        link.click();
+        URL.revokeObjectURL(url);
+        message.success(t("skills.exportSuccess", { count: selected.length }));
+        return true;
+      } catch (error) {
+        console.error("Failed to export skills", error);
+        showApiError(error, t("skills.exportFailed"), t);
+        return false;
+      } finally {
+        setExporting(false);
+      }
+    },
+    [agentId, t],
+  );
 
   const importFromUrl = useCallback(
     async (
@@ -297,52 +341,38 @@ export function useSkills(
 
   const importFromZip = useCallback(
     async (
-      skillsToImport: Array<{
-        slug: string;
-        files: Array<{ path: string; contentBase64: string }>;
-      }>,
+      archiveBase64: string,
       options?: { overwrite?: boolean },
-    ) => {
-      if (!agentId) return false as const;
-      const overwrite = Boolean(options?.overwrite);
-      let imported = 0;
-      let skipped = 0;
-      let failed = 0;
+    ): Promise<
+      { imported: number; skipped: number; failed: number } | false
+    > => {
+      if (!agentId) return false;
       setImporting(true);
       try {
-        for (const skill of skillsToImport) {
-          try {
-            await request(`/agents/${agentId}/skills`, {
-              method: "POST",
-              body: JSON.stringify({
-                name: skill.slug,
-                files: skill.files.map((file) => ({
-                  path: file.path,
-                  content_base64: file.contentBase64,
-                })),
-                overwrite,
-              }),
-            });
-            imported += 1;
-          } catch (error) {
-            const code = parseApiError(error)?.code;
-            if (!overwrite && code === "SKILL_ALREADY_EXISTS") {
-              skipped += 1;
-              continue;
-            }
-            failed += 1;
-          }
-        }
-        await fetchSkills();
-        message.success(
-          t("skills.zipImportSummary", { imported, skipped, failed }),
+        const result = await request<{ imported: string[] }>(
+          `/agents/${agentId}/skills/import-zip`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              archive_base64: archiveBase64,
+              overwrite: Boolean(options?.overwrite),
+            }),
+          },
         );
-        return { imported, skipped, failed };
+        await fetchSkills();
+        const imported = result.imported.length;
+        message.success(
+          t("skills.zipImportSummary", { imported, skipped: 0, failed: 0 }),
+        );
+        return { imported, skipped: 0, failed: 0 };
+      } catch (error) {
+        showApiError(error, t("skills.importFailed"), t);
+        return false;
       } finally {
         setImporting(false);
       }
     },
-    [agentId, fetchSkills, t],
+    [agentId, fetchSkills, message, t],
   );
 
   return {
@@ -355,6 +385,8 @@ export function useSkills(
     importFromUrl,
     importFromZip,
     importing,
+    exportSkills,
+    exporting,
     toggleEnabled,
     deleteSkill,
   };

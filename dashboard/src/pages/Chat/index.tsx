@@ -440,11 +440,22 @@ function ChatPageInner() {
     [sessions, activeThreadId],
   );
   const [conversationMode, setConversationMode] = useState<ConversationMode>(
-    composerSession?.conversationMode ?? "craft",
+    composerSession?.conversationMode ??
+      activeAgent?.conversation_mode ??
+      "craft",
   );
   useEffect(() => {
-    setConversationMode(composerSession?.conversationMode ?? "craft");
-  }, [composerSession?.conversationMode, activeThreadId]);
+    setConversationMode(
+      composerSession?.conversationMode ??
+        activeAgent?.conversation_mode ??
+        "craft",
+    );
+  }, [
+    composerSession?.conversationMode,
+    activeThreadId,
+    resolvedAgentId,
+    activeAgent?.conversation_mode,
+  ]);
   const handleConversationModeChange = useCallback(
     (mode: ConversationMode) => {
       setConversationMode(mode);
@@ -453,7 +464,11 @@ function ChatPageInner() {
           .patch(resolvedAgentId, activeThreadId, { conversation_mode: mode })
           .then(() => fetchSessions(activeThreadId))
           .catch(() =>
-            setConversationMode(composerSession?.conversationMode ?? "craft"),
+            setConversationMode(
+              composerSession?.conversationMode ??
+                activeAgent?.conversation_mode ??
+                "craft",
+            ),
           );
       }
     },
@@ -461,6 +476,7 @@ function ChatPageInner() {
       resolvedAgentId,
       activeThreadId,
       composerSession?.conversationMode,
+      activeAgent?.conversation_mode,
       fetchSessions,
     ],
   );
@@ -481,7 +497,15 @@ function ChatPageInner() {
     const fromTabs = openTabs
       .filter((tab) => tab.kind === "file")
       .map((tab) => tab.path);
-    const fromThread = composerSession?.artifacts ?? [];
+    // This tree reads the current agent's workspace. Member-owned files keep
+    // their source and download action on the artifact cards.
+    const fromThread = (composerSession?.artifacts ?? []).flatMap((artifact) =>
+      typeof artifact === "string"
+        ? [artifact]
+        : artifact.producer_agent_id === resolvedAgentId
+        ? [artifact.path]
+        : [],
+    );
     return listDockFilePathsForTree(
       [...fromThread, ...fromTabs],
       resolvedAgentId,
@@ -729,6 +753,7 @@ function ChatPageInner() {
     remove: removeQueued,
     reclaim: reclaimQueued,
     clear: clearQueued,
+    markRemotePending,
   } = useChatMessageQueue({
     agentId: resolvedAgentId,
     threadId: activeThreadId,
@@ -736,6 +761,82 @@ function ChatPageInner() {
     onFlush: flushQueuedItem,
     shouldDeferFlush: shouldDeferQueueFlush,
   });
+  const steerQueuedItem = useCallback(
+    (item: QueuedChatItem): boolean => {
+      if (!activeThreadId) return false;
+      const pendingId = item.remoteStatus
+        ? chatStore.createSteeringPendingId()
+        : item.remotePendingId || item.id;
+      const result = chatStore.sendSteerWhileBusy(
+        activeThreadId,
+        item.text,
+        item.attachments,
+        { clientPendingId: pendingId },
+      );
+      if (result !== "ok") {
+        antMessage.error(t("chat.steer.unavailable"));
+        return false;
+      }
+      markRemotePending(
+        item.id,
+        chatStore.getSnapshot(activeThreadId).activeTurnId ?? "",
+        pendingId,
+      );
+      return true;
+    },
+    [activeThreadId, markRemotePending, t],
+  );
+
+  const followUpQueuedItem = useCallback(
+    (item: QueuedChatItem): boolean => {
+      if (!activeThreadId) return false;
+      const pendingId = item.remoteStatus
+        ? chatStore.createSteeringPendingId()
+        : item.remotePendingId || item.id;
+      const result = chatStore.sendSteerWhileBusy(
+        activeThreadId,
+        item.text,
+        item.attachments,
+        { delivery: "follow_up", clientPendingId: pendingId },
+      );
+      if (result !== "ok") {
+        antMessage.error(t("chat.steer.unavailable"));
+        return false;
+      }
+      markRemotePending(
+        item.id,
+        chatStore.getSnapshot(activeThreadId).activeTurnId ?? "",
+        pendingId,
+      );
+      return true;
+    },
+    [activeThreadId, markRemotePending, t],
+  );
+
+  const withdrawQueuedItem = useCallback(
+    (item: QueuedChatItem): boolean => {
+      if (!activeThreadId) return false;
+      const ok = chatStore.withdrawSteerWhileBusy(
+        activeThreadId,
+        item.remotePendingId || item.id,
+      );
+      if (!ok) antMessage.error(t("chat.steer.unavailable"));
+      return ok;
+    },
+    [activeThreadId, t],
+  );
+
+  const removeQueuedItem = useCallback(
+    (id: string) => {
+      const item = queuedItems.find((entry) => entry.id === id);
+      if (item?.remotePending) {
+        withdrawQueuedItem(item);
+        return;
+      }
+      removeQueued(id);
+    },
+    [queuedItems, removeQueued, withdrawQueuedItem],
+  );
 
   const {
     handleNewChat: startNewChat,
@@ -1527,8 +1628,11 @@ function ChatPageInner() {
               onSend={wrappedHandleSend}
               onQueue={enqueueQueued}
               queuedItems={queuedItems}
-              onRemoveQueued={removeQueued}
+              onRemoveQueued={removeQueuedItem}
               onReclaimQueued={reclaimQueued}
+              onSteerQueued={steerQueuedItem}
+              onFollowUpQueued={followUpQueuedItem}
+              onWithdrawQueued={withdrawQueuedItem}
               onCancel={cancelStream}
               onNewChat={handleNewChat}
               isStreaming={isStreaming}
