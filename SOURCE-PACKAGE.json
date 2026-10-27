@@ -4,10 +4,11 @@
   "project_version": "0.1.1",
   "created_at": "2026-10-27T10:24:00+08:00",
   "base_commit": "807154010b7179f8ef7fe6f0f28af7756fcd76f2",
+  "base_commit_note": "Source-content baseline on develop. Later metadata-only commits do not change source.",
   "contains_uncommitted_integrated_work": false,
   "archive_kind": "complete-source-not-center-release",
-  "archive": "dist/maitu-src-0.1.1-8071540.zip",
-  "sha256": "e182246b743ee9e982dd30fd07b3a346c1e8aeb1ff38162909806adc5d57c2f7",
+  "archive": "dist/maitu-src-0.1.1-develop.zip",
+  "archive_checksum": "dist/maitu-src-0.1.1-develop.zip.sha256",
   "file_count": 4003,
   "normalized_shell_files": [],
   "included_components": [
