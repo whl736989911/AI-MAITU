@@ -95,6 +95,7 @@ def encode_acl_state(entry: AclEntry) -> str:
             "unit_key": entry.unit_key,
             "permission": entry.permission,
             "grants": [[kind, grantee] for kind, grantee in entry.grants],
+            "grant_delegation": [[kind, grantee] for kind, grantee in entry.grant_delegation],
             "owner_user_id": entry.owner_user_id,
         },
         ensure_ascii=False,
@@ -124,6 +125,9 @@ def decode_acl_state(
         version=version,
         permission=str(data.get("permission") or PERMISSION_READ),
         grants=tuple((str(kind), str(grantee)) for kind, grantee in data.get("grants", ())),
+        grant_delegation=tuple(
+            (str(kind), str(grantee)) for kind, grantee in data.get("grant_delegation", ())
+        ),
     )
 
 
@@ -157,7 +161,34 @@ def _validate_grants(grants: Iterable[tuple[str, str]]) -> None:
             raise ValueError(f"empty grantee_id for grantee_type {kind!r}")
 
 
-def _entry_from_row(row: DbRow, grants: Sequence[tuple[str, str]]) -> AclEntry:
+def _validate_grant_delegation(
+    grants: Iterable[tuple[str, str]], delegated: Iterable[tuple[str, str]]
+) -> tuple[tuple[tuple[str, str], ...], tuple[tuple[str, str], ...]]:
+    """Normalize ``grants``/``delegated``, rejecting delegation on non-user grants.
+
+    Delegation authority is an *individual* property: a unit or role grant
+    carries no single holder who could pass it on, so flagging one is a caller
+    bug, not a narrowing.
+    """
+    pairs = list(dict.fromkeys((str(kind), str(grantee)) for kind, grantee in grants))
+    flags = {(str(kind), str(grantee)) for kind, grantee in delegated}
+    grant_set = set(pairs)
+    unknown = flags - grant_set
+    if unknown:
+        raise ValueError(f"grant_delegation references grants that do not exist: {sorted(unknown)}")
+    non_user = {pair for pair in flags if pair[0] != "user"}
+    if non_user:
+        raise ValueError(
+            f"can_delegate is only allowed for individual user grants: {sorted(non_user)}"
+        )
+    return tuple(pairs), tuple(sorted(flags))
+
+
+def _entry_from_row(
+    row: DbRow,
+    grants: Sequence[tuple[str, str]],
+    delegated: Sequence[tuple[str, str]] = (),
+) -> AclEntry:
     owner = row["owner_user_id"]
     permission = row["permission"]
     return AclEntry(
@@ -169,6 +200,7 @@ def _entry_from_row(row: DbRow, grants: Sequence[tuple[str, str]]) -> AclEntry:
         version=int(row["version"]),
         permission=str(permission) if permission else PERMISSION_READ,
         grants=tuple(grants),
+        grant_delegation=tuple(delegated),
     )
 
 
@@ -177,16 +209,22 @@ def _entries_from_join(rows: Sequence[DbRow]) -> list[AclEntry]:
     order: list[tuple[str, str]] = []
     heads: dict[tuple[str, str], DbRow] = {}
     grants: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    delegated: dict[tuple[str, str], list[tuple[str, str]]] = {}
+    has_flag = "grant_can_delegate"
     for row in rows:
         key = (str(row["resource_type"]), str(row["resource_id"]))
         if key not in heads:
             heads[key] = row
             grants[key] = []
+            delegated[key] = []
             order.append(key)
         kind = row["grantee_type"]
         if kind is not None:
-            grants[key].append((str(kind), str(row["grantee_id"])))
-    return [_entry_from_row(heads[key], grants[key]) for key in order]
+            pair = (str(kind), str(row["grantee_id"]))
+            grants[key].append(pair)
+            if has_flag and row[has_flag]:
+                delegated[key].append(pair)
+    return [_entry_from_row(heads[key], grants[key], delegated[key]) for key in order]
 
 
 class ResourceAclRepo:
@@ -221,7 +259,7 @@ class ResourceAclRepo:
             with self._db.connect() as owned:
                 return self.get(resource_type, resource_id, conn=owned)
         rows = conn.execute(
-            "SELECT acl.*, g.grantee_type, g.grantee_id "
+            "SELECT acl.*, g.grantee_type, g.grantee_id, g.can_delegate AS grant_can_delegate "
             "FROM resource_acl AS acl "
             "LEFT JOIN resource_acl_grants AS g "
             "  ON g.resource_type = acl.resource_type AND g.resource_id = acl.resource_id "
@@ -235,7 +273,7 @@ class ResourceAclRepo:
     def list_for_owner(self, user_id: int) -> list[AclEntry]:
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT acl.*, g.grantee_type, g.grantee_id "
+                "SELECT acl.*, g.grantee_type, g.grantee_id, g.can_delegate AS grant_can_delegate "
                 "FROM resource_acl AS acl "
                 "LEFT JOIN resource_acl_grants AS g "
                 "  ON g.resource_type = acl.resource_type AND g.resource_id = acl.resource_id "
@@ -246,7 +284,11 @@ class ResourceAclRepo:
         return _entries_from_join(rows)
 
     def list_for_type(
-        self, resource_type: str, *, resource_ids: Collection[str] | None = None
+        self,
+        resource_type: str,
+        *,
+        resource_ids: Collection[str] | None = None,
+        conn: Any | None = None,
     ) -> list[AclEntry]:
         """Every entry of one type, optionally narrowed to ``resource_ids``.
 
@@ -258,7 +300,8 @@ class ResourceAclRepo:
         if resource_type not in RESOURCE_TYPES:
             raise ValueError(f"unknown resource_type {resource_type!r}")
         sql = (
-            "SELECT acl.*, g.grantee_type, g.grantee_id "
+            "SELECT acl.*, g.grantee_type, g.grantee_id, "
+            "g.can_delegate AS grant_can_delegate "
             "FROM resource_acl AS acl "
             "LEFT JOIN resource_acl_grants AS g "
             "  ON g.resource_type = acl.resource_type AND g.resource_id = acl.resource_id "
@@ -272,8 +315,11 @@ class ResourceAclRepo:
             sql += f" AND acl.resource_id IN ({sql_in_placeholders(len(wanted))})"
             params.extend(wanted)
         sql += " ORDER BY acl.resource_id, g.grantee_type, g.grantee_id"
-        with self._db.connect() as conn:
+        if conn is not None:
             rows = conn.execute(sql, params).fetchall()
+            return _entries_from_join(rows)
+        with self._db.connect() as owned:
+            rows = owned.execute(sql, params).fetchall()
         return _entries_from_join(rows)
 
     def public_resource_ids(
@@ -341,7 +387,9 @@ class ResourceAclRepo:
             return ()
         return tuple(self._units.ancestor_keys(unit_key))
 
-    def scope_for_user(self, user_id: int) -> tuple[str, tuple[str, ...]]:
+    def scope_for_user(
+        self, user_id: int, *, conn: Any | None = None
+    ) -> tuple[str, tuple[str, ...]]:
         """``(role, unit_keys)`` for the pure rules, from the ``users`` row.
 
         ``sharing.can_access`` does no IO, so every caller that decides access
@@ -350,10 +398,12 @@ class ResourceAclRepo:
         read two different callers. An unknown user resolves to no role and no
         unit, which the rules then answer with "public only".
         """
-        with self._db.connect() as conn:
-            row = conn.execute(
-                "SELECT role, org_unit FROM users WHERE id = ?", (user_id,)
-            ).fetchone()
+        sql = "SELECT role, org_unit FROM users WHERE id = ?"
+        if conn is None:
+            with self._db.connect() as owned:
+                row = owned.execute(sql, (user_id,)).fetchone()
+        else:
+            row = conn.execute(sql, (user_id,)).fetchone()
         if row is None:
             return ("", ())
         return (str(row["role"]), self.unit_chain(row["org_unit"]))
@@ -380,7 +430,7 @@ class ResourceAclRepo:
         """Write the whole entry (visibility, unit_key, permission, version, grants)."""
         _validate_visibility(entry.visibility)
         _validate_permission(entry.permission)
-        _validate_grants(entry.grants)
+        pairs, delegated = _validate_grant_delegation(entry.grants, entry.grant_delegation)
         if entry.visibility == VISIBILITY_UNIT and not entry.unit_key:
             raise ValueError("unit visibility requires a unit_key snapshot")
         with self._tx(conn) as c:
@@ -404,7 +454,13 @@ class ResourceAclRepo:
                     now_ts(),
                 ),
             )
-            self.set_grants(entry.resource_type, entry.resource_id, entry.grants, conn=c)
+            self.set_grants(
+                entry.resource_type,
+                entry.resource_id,
+                pairs,
+                delegated=delegated,
+                conn=c,
+            )
 
     def set_visibility(
         self,
@@ -447,11 +503,15 @@ class ResourceAclRepo:
         resource_id: str,
         grants: Iterable[tuple[str, str]],
         *,
+        delegated: Iterable[tuple[str, str]] = (),
         conn: Any | None = None,
     ) -> None:
-        """Replace this resource's grants (grants only ever widen access)."""
-        pairs = list(dict.fromkeys((str(kind), str(grantee)) for kind, grantee in grants))
-        _validate_grants(pairs)
+        """Replace this resource's grants (grants only ever widen access).
+
+        ``delegated`` names the individual user grants that also carry
+        delegation authority; it must be a subset of ``grants``.
+        """
+        pairs, flags = _validate_grant_delegation(grants, delegated)
         with self._tx(conn) as c:
             c.execute(
                 "DELETE FROM resource_acl_grants WHERE resource_type = ? AND resource_id = ?",
@@ -460,8 +520,14 @@ class ResourceAclRepo:
             for kind, grantee in pairs:
                 c.execute(
                     "INSERT INTO resource_acl_grants(resource_type, resource_id, grantee_type, "
-                    "grantee_id) VALUES (?, ?, ?, ?)",
-                    (resource_type, resource_id, kind, grantee),
+                    "grantee_id, can_delegate) VALUES (?, ?, ?, ?, ?)",
+                    (
+                        resource_type,
+                        resource_id,
+                        kind,
+                        grantee,
+                        1 if (kind, grantee) in set(flags) else 0,
+                    ),
                 )
 
     def delete(self, resource_type: str, resource_id: str, *, conn: Any | None = None) -> None:

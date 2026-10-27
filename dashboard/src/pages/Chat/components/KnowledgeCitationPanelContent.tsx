@@ -213,6 +213,7 @@ export default function KnowledgeCitationPanelContent({
         const blob = await knowledgeBasesApi.fetchDocumentFile(
           citation.kbId,
           citation.docId,
+          undefined,
           "inline",
           onProgress,
           signal,
@@ -236,6 +237,7 @@ export default function KnowledgeCitationPanelContent({
       const blob = await knowledgeBasesApi.fetchDocumentFile(
         citation.kbId,
         citation.docId,
+        undefined,
         "attachment",
       );
       const url = URL.createObjectURL(blob);

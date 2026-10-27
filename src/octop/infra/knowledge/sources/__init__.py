@@ -9,6 +9,7 @@ kind is real.
 from __future__ import annotations
 
 from octop.infra.knowledge.sources.base import (
+    UPLOAD_TEMP_PREFIX,
     SourceConnector,
     SourceDependencyMissing,
     SourceEntry,
@@ -42,6 +43,7 @@ __all__ = [
     "SourceEntry",
     "SourceError",
     "SourceUnsupported",
+    "UPLOAD_TEMP_PREFIX",
     "build_connector",
     "filter_entries",
     "is_folder_kind",

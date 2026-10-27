@@ -73,6 +73,90 @@ describe("featureDataApi records", () => {
       "/agents/agent-1/feature-data/supplier/records",
     );
   });
+  it("sends structured AND filters and sorting without changing pagination", async () => {
+    await featureDataApi.listRecords("agent-1", "supplier", {
+      filters: [
+        { field: "weight", op: "gte", value: 100 },
+        { field: "made_on", op: "lte", value: "2026-10-23" },
+      ],
+      sort_by: "made_on",
+      sort_order: "asc",
+      limit: 10,
+      offset: 20,
+    });
+    const path = request.mock.calls[0][0] as string;
+    const params = new URLSearchParams(path.split("?")[1]);
+    expect(
+      path.startsWith("/agents/agent-1/feature-data/supplier/records?"),
+    ).toBe(true);
+    expect(JSON.parse(params.get("filters") ?? "[]")).toEqual([
+      { field: "weight", op: "gte", value: 100 },
+      { field: "made_on", op: "lte", value: "2026-10-23" },
+    ]);
+    expect(params.get("sort_by")).toBe("made_on");
+    expect(params.get("sort_order")).toBe("asc");
+    expect(params.get("limit")).toBe("10");
+    expect(params.get("offset")).toBe("20");
+  });
+
+  it("loads authorized reference choices and hands responsibility over", async () => {
+    await featureDataApi.listRecordReferenceOptions("agent-1", {
+      target_agent_id: "agent-2",
+      object_key: "contracts",
+      q: "ACME",
+      limit: 25,
+    });
+    await featureDataApi.handover("agent-1", {
+      from_user_id: 7,
+      to_user_id: 12,
+      object_key: "supplier",
+    });
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "/agents/agent-1/feature-data/references/records?target_agent_id=agent-2&object_key=contracts&q=ACME&limit=25",
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      2,
+      "/agents/agent-1/feature-data/handover",
+      {
+        method: "POST",
+        body: JSON.stringify({
+          from_user_id: 7,
+          to_user_id: 12,
+          object_key: "supplier",
+        }),
+      },
+    );
+  });
+  it("uses feature-scoped principals so normal feature callers need no user-management API", async () => {
+    await featureDataApi.listPrincipals("agent-1", { q: "ada", limit: 200 });
+    await featureDataApi.createRecord("agent-1", "supplier", { name: "ACME" });
+    await featureDataApi.updateRecord(
+      "agent-1",
+      "rec-1",
+      { name: "ACME Ltd" },
+      1,
+    );
+    expect(request).toHaveBeenNthCalledWith(
+      1,
+      "/agents/agent-1/feature-data/principals?q=ada&limit=200",
+    );
+    expect(request.mock.calls.some(([path]) => path === "/users")).toBe(false);
+    expect(request).toHaveBeenCalledWith(
+      "/agents/agent-1/feature-data/supplier/records",
+      { method: "POST", body: JSON.stringify({ values: { name: "ACME" } }) },
+    );
+    expect(request).toHaveBeenCalledWith(
+      "/agents/agent-1/feature-data/records/rec-1",
+      {
+        method: "PATCH",
+        body: JSON.stringify({
+          values: { name: "ACME Ltd" },
+          expected_revision: 1,
+        }),
+      },
+    );
+  });
 
   it("creates, updates and publishes a record", async () => {
     await featureDataApi.createRecord("agent-1", "supplier", { name: "ACME" });

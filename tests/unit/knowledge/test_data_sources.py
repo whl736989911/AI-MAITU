@@ -9,6 +9,7 @@ document status — is produced and asserted for real.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
 import shutil
@@ -32,6 +33,8 @@ from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.db.services import RepoBundle
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge import data_sources as data_sources_module
 from octop.infra.knowledge import jobs as jobs_module
 from octop.infra.knowledge import service as service_module
@@ -41,9 +44,10 @@ from octop.infra.knowledge.data_sources import (
     DataSourceSyncUnsupported,
     FolderSettings,
 )
-from octop.infra.knowledge.files import document_path
+from octop.infra.knowledge.files import document_digest, document_path
 from octop.infra.knowledge.index import KnowledgeIndex
-from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.knowledge.service import KnowledgeAccessDenied, KnowledgeService
+from octop.infra.knowledge.source_access import KnowledgeSourceService
 from octop.infra.knowledge.sources import (
     DELETE_CONFIRM_SECONDS,
     LocalFolderConnector,
@@ -70,6 +74,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     run_migrations(pool)
     services = SimpleNamespace(
         db=pool,
+        repos=RepoBundle.from_pool(pool),
         config=SimpleNamespace(max_upload_bytes=1_000_000, max_upload_mb=1),
         paths=PathLayout.from_env(),
         knowledge_repo=KnowledgeRepo(pool),
@@ -590,6 +595,56 @@ def _local_source(env: SimpleNamespace, owner_id: int, root: Path, *, name: str 
     return base, source
 
 
+def test_versioned_original_uses_verified_stable_bytes_for_local_source(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    root = _local_root(tmp_path)
+    base, source = _local_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert document is not None
+    access = KnowledgeSourceService(env.services)
+    pinned_version = access.read_document(
+        base.id, document.id, actor_user_id=people.owner, mode="metadata"
+    )["version"]
+
+    source_file = root / "policy.md"
+    source_file.write_text("new external source bytes", encoding="utf-8")
+    with (
+        pytest.raises(OctopError) as changed,
+        access.open_original_version(
+            base.id,
+            document.id,
+            expected_version=pinned_version,
+            actor_user_id=people.owner,
+        ),
+    ):
+        pass
+    assert changed.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
+
+    current_version = hashlib.sha256(source_file.read_bytes()).hexdigest()
+    with access.open_original_version(
+        base.id,
+        document.id,
+        expected_version=current_version,
+        actor_user_id=people.owner,
+    ) as snapshot:
+        assert snapshot.read_bytes() == b"new external source bytes"
+        source_file.write_text("changed after snapshot", encoding="utf-8")
+        assert snapshot.read_bytes() == b"new external source bytes"
+
+    with (
+        pytest.raises(KnowledgeAccessDenied),
+        access.open_original_version(
+            base.id,
+            document.id,
+            expected_version=current_version,
+            actor_user_id=people.viewer,
+        ),
+    ):
+        pass
+
+
 def test_local_source_records_its_connection_and_carries_no_secret(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
 ) -> None:
@@ -1065,11 +1120,12 @@ def test_a_scanned_file_stores_the_structure_it_yielded(
     assert document.derived["filename"] == "contract.md"
 
 
-def test_scan_marks_a_file_this_build_cannot_parse_unsupported(
+def test_scan_marks_a_file_this_build_cannot_parse_archive_only(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
 ) -> None:
-    """design §6.2: keep the metadata and mark it, rather than refuse the file."""
-    root = _local_root(tmp_path)
+    """Unsupported files retain source metadata but never enter searchable indexes."""
+    root = tmp_path / "archives"
+    root.mkdir()
     (root / "installer.exe").write_bytes(b"MZ\x00\x00binary")
     base, source = _scanned_source(env, people.owner, root)
     env.sources.sync(source.id, actor_user_id=people.owner)
@@ -1081,11 +1137,20 @@ def test_scan_marks_a_file_this_build_cannot_parse_unsupported(
         base.id, f"{source.id}/installer.exe"
     )
     assert document is not None
-    assert document.status == "unsupported"
+    assert document.status == "archive_only"
+    assert document.content_hash == document_digest(b"MZ\x00\x00binary")
     assert document.byte_size == len(b"MZ\x00\x00binary")
     # Marked, so it is not retried on every scan.
     assert document.source_size == len(b"MZ\x00\x00binary")
     assert _last_run(env, source.id).failed == 0
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    unchanged = env.services.knowledge_repo.get_document(document.id)
+    assert unchanged is not None and unchanged.status == "archive_only"
+    assert unchanged.content_hash == document.content_hash
+    run = _last_run(env, source.id)
+    assert run.added == 0
+    assert run.updated == 0
+    assert run.deferred == 0
 
 
 def test_scan_records_a_run_for_every_attempt(
@@ -1101,6 +1166,104 @@ def test_scan_records_a_run_for_every_attempt(
     assert [run.status for run in runs] == ["ok", "ok"]
     assert all(run.finished_at is not None for run in runs)
     assert all(run.trigger == "manual" for run in runs)
+
+
+def test_trusted_scheduled_sync_records_its_trigger(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    from octop.infra.knowledge.gate import set_feature_enabled
+
+    set_feature_enabled(
+        env.services.settings_repo.get, env.services.settings_repo.set, enabled=True, model=None
+    )
+    _base_row, source = _scanned_source(env, people.owner, _local_root(tmp_path))
+    _source_file(Path(source.root_path), "scheduled.md", "# Scheduled")
+
+    result = env.sources.sync_scheduled(source.id)
+
+    assert result.id == source.id
+    assert _last_run(env, source.id).trigger == "scheduled"
+    assert _last_run(env, source.id).status == "ok"
+
+
+def test_scheduled_preflight_failure_records_one_failed_run(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from octop.infra.knowledge.gate import set_feature_enabled
+
+    set_feature_enabled(
+        env.services.settings_repo.get, env.services.settings_repo.set, enabled=True, model=None
+    )
+    _base_row, source = _scanned_source(env, people.owner, _local_root(tmp_path))
+
+    def _deny(*_args: object, **_kwargs: object) -> object:
+        raise PermissionError("scheduled principal is no longer writable")
+
+    monkeypatch.setattr(env.sources._knowledge, "get_writable_base", _deny)
+    before = now_ts()
+    with pytest.raises(PermissionError, match="no longer writable"):
+        env.sources.sync_scheduled(source.id)
+
+    row = env.services.data_sources_repo.get(source.id)
+    assert row.sync_status == "failed"
+    assert "no longer writable" in (row.sync_error or "")
+    assert row.last_scan_at is not None and row.last_scan_at >= before
+    assert row.last_scan_ok_at is None
+    runs = env.services.knowledge_sync_runs_repo.list_for_source(source.id)
+    assert len(runs) == 1
+    assert runs[0].trigger == "scheduled"
+    assert runs[0].status == "failed"
+
+
+def test_scheduled_unexpected_scan_failure_records_and_propagates(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from octop.infra.knowledge.gate import set_feature_enabled
+
+    set_feature_enabled(
+        env.services.settings_repo.get, env.services.settings_repo.set, enabled=True, model=None
+    )
+    _base_row, source = _scanned_source(env, people.owner, _local_root(tmp_path))
+
+    def _crash(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("unexpected connector failure")
+
+    monkeypatch.setattr(LocalFolderConnector, "walk", _crash)
+    before = now_ts()
+    with pytest.raises(RuntimeError, match="unexpected connector failure"):
+        env.sources.sync_scheduled(source.id)
+
+    row = env.services.data_sources_repo.get(source.id)
+    assert row.sync_status == "failed"
+    assert "unexpected connector failure" in (row.sync_error or "")
+    assert row.last_scan_at is not None and row.last_scan_at >= before
+    assert _last_run(env, source.id).status == "failed"
+    assert _last_run(env, source.id).finished_at is not None
+
+
+def test_scheduled_source_error_is_not_recorded_twice(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from octop.infra.knowledge.gate import set_feature_enabled
+
+    set_feature_enabled(
+        env.services.settings_repo.get, env.services.settings_repo.set, enabled=True, model=None
+    )
+    _base_row, source = _scanned_source(env, people.owner, _local_root(tmp_path))
+
+    def _drop_connection(*_args: object, **_kwargs: object) -> object:
+        raise SourceError("cannot list the source root: connection reset")
+
+    monkeypatch.setattr(LocalFolderConnector, "walk", _drop_connection)
+    with pytest.raises(DataSourceSyncFailed):
+        env.sources.sync_scheduled(source.id)
+
+    row = env.services.data_sources_repo.get(source.id)
+    assert row.sync_status == "failed"
+    assert row.last_scan_at is not None
+    runs = env.services.knowledge_sync_runs_repo.list_for_source(source.id)
+    assert len(runs) == 1
+    assert runs[0].status == "failed"
 
 
 def test_a_viewer_can_read_the_runs_but_the_owner_alone_runs_them(

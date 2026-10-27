@@ -500,7 +500,10 @@
     "KNOWLEDGE_NOT_FOUND": "Knowledge base or document not found.",
     "KNOWLEDGE_FORBIDDEN": "You do not have access to this knowledge base.",
     "KNOWLEDGE_WRITE_FORBIDDEN": "You can read this knowledge base, but you do not have permission to change it.",
+    "KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN": "The selected upload permissions exceed your current authorization. Reload the available permissions and choose again.",
+    "KNOWLEDGE_DELEGATION_FORBIDDEN": "You cannot delegate this content or grant permissions beyond your current authorization.",
     "KNOWLEDGE_INDEX_NOT_READY": "The current document has not finished indexing. Please wait for indexing or rebuild its index.",
+    "KNOWLEDGE_SOURCE_VERSION_CHANGED": "The source file changed. Sync or refresh the knowledge source before downloading this version.",
     "KNOWLEDGE_COLLECTION_INVALID": "The collection selection, name, or prompt is invalid.",
     "KNOWLEDGE_COLLECTION_GENERATING": "This collection is already being organized. Wait for the current run to finish.",
     "KNOWLEDGE_DOC_LIMIT": "A knowledge base can contain at most 100 documents.",
@@ -515,6 +518,9 @@
     "DATA_SOURCE_SYNC_UNSUPPORTED": "This data source kind cannot be synced yet. Nothing was imported.",
     "DATA_SOURCE_FETCH_FAILED": "Could not fetch the URL: {reason}",
     "DATA_SOURCE_UNREACHABLE": "Could not reach the data source: {reason}",
+    "DATA_SOURCE_READ_ONLY": "This source folder is read-only. Choose another upload destination.",
+    "DATA_SOURCE_UPLOAD_CONFLICT": "A file with this name already exists in the source folder. Rename the file before uploading.",
+    "DATA_SOURCE_UPLOAD_INVALID": "The upload destination is invalid or excluded by the source rules. Choose an existing writable folder and a supported file.",
     "AVATAR_INVALID": "Avatar must be a PNG, JPEG, WebP, or GIF image.",
     "AVATAR_TOO_LARGE": "Avatar exceeds the 5 MB size limit.",
     "INVITE_INVALID": "This invite code is invalid.",
@@ -971,6 +977,9 @@
   },
   "feature_access": {
     "enterprise_only": "This published feature is managed by its enterprise administrators; {capability} is read-only for this caller."
+  },
+  "feature_data": {
+    "reminder_due": "Due date: {date}"
   },
   "feature_memory": {
     "draft_author_only": "Only the feature author may read or change shared training memory.",

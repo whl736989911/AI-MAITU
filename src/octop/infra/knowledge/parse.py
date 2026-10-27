@@ -188,6 +188,14 @@ def parse_document(
         return _xlsx_document(path, source_path)
     if suffix == ".xls":
         return _xls_document(path, source_path)
+    if suffix in {".dwg", ".dxf"}:
+        from octop.infra.knowledge.processors.libredwg import parse_dwg, parse_dxf
+
+        return (
+            parse_dwg(path, source_path=source_path)
+            if suffix == ".dwg"
+            else parse_dxf(path, source_path=source_path)
+        )
     raise ValueError(f"unsupported knowledge document extension: {suffix or '(none)'}")
 
 

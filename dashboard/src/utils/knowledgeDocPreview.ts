@@ -84,6 +84,8 @@ const TEXT_PREVIEW_EXTS: Record<string, true> = {
   // Legacy Word is a binary container, not a ZIP, so docx-preview cannot read
   // it; the server converts and extracts it instead (§6.1).
   doc: true,
+  dwg: true,
+  dxf: true,
 };
 
 /** Whether the Eye action should be enabled for this knowledge document. */
@@ -92,8 +94,11 @@ export function canPreviewKnowledgeDocument(doc: {
   content_type?: string;
   filename?: string;
   has_original?: boolean;
+  status?: string;
 }): boolean {
   if (doc.is_dir) return false;
+  if (doc.status === "archive_only" || doc.status === "unsupported")
+    return false;
   if (isKnowledgeMarkdownDocument(doc) || isEditableKnowledgeDocument(doc)) {
     return true;
   }

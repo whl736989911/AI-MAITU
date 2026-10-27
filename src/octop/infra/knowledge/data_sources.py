@@ -33,6 +33,7 @@ Four decisions shape this module:
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -60,23 +61,35 @@ from octop.infra.db.repos.knowledge_sync_runs import (
     RUN_FAILED,
     RUN_OK,
     TRIGGER_MANUAL,
+    TRIGGER_SCHEDULED,
     KnowledgeSyncRunRepo,
     SyncRunRow,
 )
+from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.knowledge.files import document_digest, file_digest
+from octop.infra.knowledge.gate import assert_knowledge_usable
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.jobs import process_document
-from octop.infra.knowledge.relpath import path_basename, path_parent
+from octop.infra.knowledge.permissions import KnowledgePermissionService
+from octop.infra.knowledge.relpath import (
+    ancestor_dirs,
+    normalize_kb_path,
+    path_basename,
+    path_parent,
+)
 from octop.infra.knowledge.service import KnowledgeService, knowledge_content_type
 from octop.infra.knowledge.source_crypto import decrypt_source_secret, encrypt_source_secret
 from octop.infra.knowledge.sources import (
     ScanPlan,
     SourceConnector,
+    SourceEntry,
     SourceError,
     build_connector,
     filter_entries,
     is_folder_kind,
     plan_scan,
 )
+from octop.infra.knowledge.sources.base import UPLOAD_TEMP_PREFIX
 from octop.infra.knowledge.url_fetch import FetchedDocument, UrlFetchError, fetch_document
 from octop.infra.utils.ssrf_guard import OutboundFetchError, validate_https_url
 
@@ -105,6 +118,26 @@ _KIND_CONFIG_KEYS = {
     KIND_SMB: frozenset(),
     KIND_NFS: frozenset(),
 }
+
+_source_locks: dict[str, threading.RLock] = {}
+_source_locks_guard = threading.Lock()
+
+
+def _source_lock(source_id: str) -> threading.RLock:
+    """Serialize source scans with staged upload registration in this process."""
+    with _source_locks_guard:
+        lock = _source_locks.get(source_id)
+        if lock is None:
+            lock = threading.RLock()
+            _source_locks[source_id] = lock
+        return lock
+
+
+@dataclass(frozen=True)
+class SourceUploadTarget:
+    id: str
+    name: str
+    folders: list[str]
 
 
 @dataclass(frozen=True)
@@ -192,6 +225,144 @@ class DataSourceService:
         )
         return data_source
 
+    def upload_targets(self, kb_id: str, *, actor_user_id: int) -> list[SourceUploadTarget]:
+        """Offer authorized indexed folders without disclosing storage addresses."""
+        self._knowledge.get_writable_base(kb_id, actor_user_id=actor_user_id)
+        _restricted, _readable, writable = self._knowledge.document_access_scope(actor_user_id)
+        documents = {row.path: row for row in self._knowledge_repo.list_documents(kb_id)}
+        targets: list[SourceUploadTarget] = []
+        for source in self._repo.list_for_base(kb_id):
+            if source.read_only or source.kind not in (KIND_LOCAL, KIND_SMB):
+                continue
+            prefix = self._source_root_prefix(source)
+            root_path = f"{source.id}/{prefix}".rstrip("/")
+            if any(
+                documents[path].id not in writable
+                for path in [*ancestor_dirs(root_path), root_path]
+                if path in documents
+            ):
+                continue
+            folders = {""}
+            for path, row in documents.items():
+                if not row.is_dir or row.id not in writable or not path.startswith(root_path + "/"):
+                    continue
+                folders.add(path[len(root_path) + 1 :])
+            targets.append(SourceUploadTarget(source.id, source.name, sorted(folders)))
+        return targets
+
+    @staticmethod
+    def _source_root_prefix(source: DataSourceRow) -> str:
+        # The existing SMB scanner includes root_path in its source-relative paths.
+        return normalize_kb_path(source.root_path) if source.kind == KIND_SMB else ""
+
+    def _require_upload_folder(self, kb_id: str, path: str, *, actor_user_id: int) -> None:
+        for parent in ancestor_dirs(path):
+            row = self._knowledge_repo.get_document_by_path(kb_id, parent)
+            if row is not None:
+                if not row.is_dir:
+                    raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_INVALID)
+                self._knowledge.require_document_writable(row, actor_user_id=actor_user_id)
+
+    def upload_document(
+        self,
+        kb_id: str,
+        ds_id: str,
+        *,
+        actor_user_id: int,
+        filename: str,
+        content: bytes,
+        path: str | None = None,
+        access_scope: str | None = None,
+        access_permission: str | None = None,
+        access_unit_key: str | None = None,
+    ) -> KnowledgeDocumentRow:
+        """Save a new original at its source and register the scanner's same identity."""
+        assert_knowledge_usable(
+            self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
+        )
+        with _source_lock(ds_id):
+            base = self._knowledge.get_writable_base(kb_id, actor_user_id=actor_user_id)
+            source = self._require(ds_id)
+            if source.knowledge_base_id != kb_id:
+                raise LookupError("knowledge source not found")
+            if source.read_only:
+                raise OctopError.localized(ErrorCode.DATA_SOURCE_READ_ONLY)
+            if source.kind not in (KIND_LOCAL, KIND_SMB):
+                raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_INVALID)
+            relative = (path if path is not None else filename).replace("\\", "/")
+            parts = relative.split("/")
+            if (
+                not relative
+                or any(char in relative for char in ":\0")
+                or any(
+                    part in ("", ".", "..")
+                    or part != part.strip()
+                    or part.startswith(UPLOAD_TEMP_PREFIX)
+                    for part in parts
+                )
+            ):
+                raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_INVALID)
+            limit = self._knowledge.max_document_bytes()
+            if len(content) > limit:
+                raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
+            suffix = Path(relative).suffix.lower()
+            content_type = knowledge_content_type(suffix) or _PLATFORM_CONTENT_TYPE
+            prefix = self._source_root_prefix(source)
+            source_path = f"{prefix}/{relative}" if prefix else relative
+            if not filter_entries(
+                [SourceEntry(source_path, len(content), None, False)],
+                include_globs=source.include_globs,
+                exclude_globs=source.exclude_globs,
+            ):
+                raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_INVALID)
+            document_path = f"{source.id}/{source_path}"
+            self._require_upload_folder(kb_id, document_path, actor_user_id=actor_user_id)
+            if self._knowledge_repo.get_document_by_path(kb_id, document_path) is not None:
+                raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_CONFLICT)
+            # Validate the upload choice against the current KB ceiling before
+            # the source write: a rejected selection leaves the original and
+            # the index untouched.
+            initial_acl = KnowledgePermissionService(self._services).validate_upload_access(
+                kb_id,
+                folder=path_parent(relative),
+                data_source_id=ds_id,
+                actor_user_id=actor_user_id,
+                scope=access_scope,
+                permission=access_permission,
+                unit_key=access_unit_key,
+            )
+            connector = self.connector(source)
+            document: KnowledgeDocumentRow | None = None
+            try:
+                with connector.stage_upload(source_path, content) as entry:
+                    document = self._knowledge_repo.create_document(
+                        kb_id=kb_id,
+                        filename=path_basename(relative),
+                        path=document_path,
+                        content_type=content_type,
+                        byte_size=entry.size,
+                        content_hash=document_digest(content),
+                        max_documents=base.max_documents,
+                        data_source_id=source.id,
+                        source_path=source_path,
+                        initial_acl=initial_acl,
+                    )
+                    self._knowledge_repo.record_observation(
+                        document.id, size=entry.size, modified_at=entry.modified_at, at=now_ts()
+                    )
+            except Exception as exc:
+                if document is not None:
+                    self._knowledge_repo.delete_document(document.id)
+                if isinstance(exc, FileExistsError):
+                    raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_CONFLICT) from exc
+                raise
+            assert document is not None
+            self._audit(actor_user_id, "knowledge.source.upload", source.id, source_path)
+            refreshed = self._knowledge_repo.get_document(document.id)
+            if refreshed is None:
+                raise LookupError("knowledge document not found")
+            return refreshed
+
     # ------------------------------------------------------------------
     # Writes
     # ------------------------------------------------------------------
@@ -216,6 +387,8 @@ class DataSourceService:
         if kind not in KINDS:
             raise ValueError(f"unknown data source kind {kind!r}; expected one of {KINDS}")
         settings = folder or FolderSettings()
+        if not settings.read_only and kind in (KIND_LOCAL, KIND_SMB):
+            self._knowledge.require_owner(kb_id, actor_user_id=actor_user_id)
         if kind in (KIND_LOCAL, KIND_SMB, KIND_NFS):
             self._validated_folder(kind=kind, folder=settings)
         return self._repo.create(
@@ -259,6 +432,14 @@ class DataSourceService:
         if cleaned is not None and not cleaned:
             raise ValueError("a data source needs a name")
         settings = folder
+        if (
+            settings is not None
+            and (not data_source.read_only or not settings.read_only)
+            and data_source.kind in (KIND_LOCAL, KIND_SMB)
+        ):
+            self._knowledge.require_owner(
+                data_source.knowledge_base_id, actor_user_id=actor_user_id
+            )
         if settings is not None and data_source.kind in (KIND_LOCAL, KIND_SMB, KIND_NFS):
             self._validated_folder(kind=data_source.kind, folder=settings)
         self._repo.update_source_fields(
@@ -343,6 +524,39 @@ class DataSourceService:
         self._repo.mark_sync(ds_id, status=SYNC_FAILED, error=str(error))
         raise error
 
+    def sync_scheduled(self, ds_id: str) -> DataSourceRow:
+        """Run a timer scan through the trusted internal source pipeline."""
+        assert_knowledge_usable(
+            self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
+        )
+        source = self._require(ds_id)
+        if not is_folder_kind(source.kind):
+            raise DataSourceSyncUnsupported(source.kind)
+        lock = _source_lock(ds_id)
+        if not lock.acquire(blocking=False):
+            return self._require(ds_id)
+        actor_user_id: int | None = None
+        try:
+            try:
+                base = self._knowledge_repo.get_base(source.knowledge_base_id)
+                if base is None:
+                    raise LookupError("knowledge base not found")
+                actor_user_id = base.owner_user_id or source.created_by
+                if actor_user_id is None:
+                    raise RuntimeError("scheduled data source has no owner or creator principal")
+                base = self._knowledge.get_writable_base(
+                    source.knowledge_base_id, actor_user_id=actor_user_id
+                )
+            except Exception as exc:
+                run = self._runs.start(data_source_id=source.id, trigger=TRIGGER_SCHEDULED)
+                self._record_scan_failure(source, run.id, exc, actor_user_id=actor_user_id)
+                raise
+            return self._sync_folder_locked(
+                source, base, actor_user_id=actor_user_id, trigger=TRIGGER_SCHEDULED
+            )
+        finally:
+            lock.release()
+
     def list_runs(
         self, ds_id: str, *, actor_user_id: int, is_admin: bool = False, limit: int = 20
     ) -> list[SyncRunRow]:
@@ -426,6 +640,9 @@ class DataSourceService:
         self._repo.mark_sync(data_source.id, status=SYNC_RUNNING)
         try:
             process_document(self._services, base.id, document.id)
+            stored = self._knowledge_repo.get_document(document.id)
+            if stored is not None and stored.status == "archive_only":
+                raise RuntimeError(stored.error_message or "document is archive-only")
         except Exception as exc:
             self._repo.mark_sync(data_source.id, status=SYNC_FAILED, error=str(exc))
             raise DataSourceSyncFailed(exc) from exc
@@ -576,6 +793,17 @@ class DataSourceService:
     def _sync_folder(
         self, data_source: DataSourceRow, base: KnowledgeBaseRow, *, actor_user_id: int
     ) -> DataSourceRow:
+        with _source_lock(data_source.id):
+            return self._sync_folder_locked(data_source, base, actor_user_id=actor_user_id)
+
+    def _sync_folder_locked(
+        self,
+        data_source: DataSourceRow,
+        base: KnowledgeBaseRow,
+        *,
+        actor_user_id: int,
+        trigger: str = TRIGGER_MANUAL,
+    ) -> DataSourceRow:
         """Walk a folder source, apply the change set, and record the run.
 
         A walk that fails aborts the scan before anything is decided: without a
@@ -584,11 +812,11 @@ class DataSourceService:
         The previous results — and every document already indexed — stay as they
         were, and the source is marked so an administrator can see why.
         """
-        for row in self._knowledge_repo.list_source_files(data_source.id):
-            self._knowledge.require_document_writable(row, actor_user_id=actor_user_id)
-        run = self._runs.start(data_source_id=data_source.id, trigger=TRIGGER_MANUAL)
+        run = self._runs.start(data_source_id=data_source.id, trigger=trigger)
         self._repo.mark_sync(data_source.id, status=SYNC_RUNNING)
         try:
+            for row in self._knowledge_repo.list_source_files(data_source.id):
+                self._knowledge.require_document_writable(row, actor_user_id=actor_user_id)
             connector = self.connector(data_source)
             # The source's own include/exclude rules, applied here so a setting
             # an administrator typed always does something (design §3.2).
@@ -597,36 +825,50 @@ class DataSourceService:
                 include_globs=data_source.include_globs,
                 exclude_globs=data_source.exclude_globs,
             )
+            now = now_ts()
+            # Folders are kept out of the plan: a directory carries no content, and
+            # the source's own root folder has no listing entry to match, so leaving
+            # it in would make every scan try to remove it and the next one re-create
+            # it. The tree still gets its folder rows from ``create_document``.
+            indexed = [
+                row
+                for row in self._knowledge_repo.list_source_files(data_source.id)
+                if not row.is_dir
+            ]
+            plan = plan_scan(entries, [row.scan_row() for row in indexed], now=now)
+            counts = self._apply_plan(base, data_source, plan, indexed=indexed, now=now)
+            self._repo.mark_sync(data_source.id, status=SYNC_OK, error=None, synced_at=now)
+            self._repo.mark_scan(data_source.id, at=now, ok=True)
+            self._runs.finish(run.id, status=RUN_OK, counts=counts)
+            self._audit(actor_user_id, "knowledge.source.scan", data_source.id, _summary(counts))
+            self._knowledge._refresh_collections(base.id, "")
+            return self._require(data_source.id)
         except SourceError as exc:
             self._fail_scan(data_source, run.id, exc, actor_user_id=actor_user_id)
-        now = now_ts()
-        # Folders are kept out of the plan: a directory carries no content, and
-        # the source's own root folder has no listing entry to match, so leaving
-        # it in would make every scan try to remove it and the next one re-create
-        # it. The tree still gets its folder rows from ``create_document``.
-        indexed = [
-            row for row in self._knowledge_repo.list_source_files(data_source.id) if not row.is_dir
-        ]
-        plan = plan_scan(entries, [row.scan_row() for row in indexed], now=now)
-        counts = self._apply_plan(base, data_source, plan, indexed=indexed, now=now)
-        self._repo.mark_sync(data_source.id, status=SYNC_OK, error=None, synced_at=now)
-        self._repo.mark_scan(data_source.id, at=now, ok=True)
-        self._runs.finish(run.id, status=RUN_OK, counts=counts)
-        self._audit(actor_user_id, "knowledge.source.scan", data_source.id, _summary(counts))
-        self._knowledge._refresh_collections(base.id, "")
-        return self._require(data_source.id)
+        except DataSourceSyncFailed:
+            raise
+        except Exception as exc:
+            self._record_scan_failure(data_source, run.id, exc, actor_user_id=actor_user_id)
+            raise
 
     def _fail_scan(
         self, data_source: DataSourceRow, run_id: str, exc: Exception, *, actor_user_id: int
     ) -> NoReturn:
         """Record an aborted scan and raise it. Never returns."""
+        self._record_scan_failure(data_source, run_id, exc, actor_user_id=actor_user_id)
+        raise DataSourceSyncFailed(exc) from exc
+
+    def _record_scan_failure(
+        self, data_source: DataSourceRow, run_id: str, exc: Exception, *, actor_user_id: int | None
+    ) -> None:
+        """Persist one attempted scan failure without changing its exception."""
         self._repo.mark_sync(data_source.id, status=SYNC_FAILED, error=str(exc))
         # ``ok=False`` on purpose: an aborted scan must not read as the newest
         # consistent view of the source.
         self._repo.mark_scan(data_source.id, at=now_ts(), ok=False)
         self._runs.finish(run_id, status=RUN_FAILED, error=str(exc))
-        self._audit(actor_user_id, "knowledge.source.scan.failed", data_source.id, str(exc))
-        raise DataSourceSyncFailed(exc) from exc
+        if actor_user_id is not None:
+            self._audit(actor_user_id, "knowledge.source.scan.failed", data_source.id, str(exc))
 
     def _apply_plan(
         self,
@@ -688,9 +930,44 @@ class DataSourceService:
                 if row is None:
                     counts["failed"] += 1
                     continue
-            if knowledge_content_type(Path(entry.path).suffix) is None:
+            suffix = Path(entry.path).suffix.lower()
+            cad_available = False
+            if suffix == ".dwg":
+                from octop.infra.knowledge.processors.libredwg import find_dwgread
+
+                cad_available = find_dwgread() is not None
+            if knowledge_content_type(suffix) is None and not cad_available:
+                try:
+                    from octop.infra.knowledge.jobs import _source_path
+                    from octop.infra.knowledge.processors import (
+                        ARCHIVE_CAD_UNAVAILABLE,
+                        ARCHIVE_NO_PROCESSOR,
+                    )
+
+                    with _source_path(
+                        self.connector(data_source), entry.path, row.filename
+                    ) as original:
+                        digest = file_digest(original)
+                except Exception as exc:
+                    self._knowledge_repo.update_document(
+                        row.id,
+                        status="failed",
+                        error_message=str(exc),
+                        byte_size=entry.size,
+                        chunk_count=0,
+                    )
+                    counts["failed"] += 1
+                    continue
+                KnowledgeIndex(base.id).delete_doc(row.id)
                 self._knowledge_repo.update_document(
-                    row.id, status="unsupported", error_message="", byte_size=entry.size
+                    row.id,
+                    status="archive_only",
+                    error_message=(
+                        ARCHIVE_NO_PROCESSOR if suffix != ".dwg" else ARCHIVE_CAD_UNAVAILABLE
+                    ),
+                    byte_size=entry.size,
+                    chunk_count=0,
+                    content_hash=digest,
                 )
                 self._knowledge_repo.mark_source_processed(
                     row.id, size=entry.size, modified_at=entry.modified_at

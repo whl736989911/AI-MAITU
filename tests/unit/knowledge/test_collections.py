@@ -13,6 +13,7 @@ from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.knowledge_collections import KnowledgeCollectionsRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.db.services import RepoBundle
 from octop.infra.knowledge.collections import KnowledgeCollectionService
 from octop.infra.knowledge.service import KnowledgeService
 from octop.infra.utils.paths import PathLayout
@@ -50,6 +51,7 @@ def setup(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     )
     services = SimpleNamespace(
         db=pool,
+        repos=RepoBundle.from_pool(pool),
         user_repo=users,
         knowledge_repo=knowledge,
         knowledge_collections_repo=KnowledgeCollectionsRepo(pool),
@@ -478,7 +480,7 @@ def test_generate_skips_unsupported_formats_without_hiding_originals(
     originals = [
         ("terms.LOG", b"Payment is due in 30 days.\n"),
         ("Thumbs.db", b"thumbnail cache"),
-        ("drawing.DWG", b"opaque drawing"),
+        ("drawing.p1binary", b"opaque drawing"),
         ("README", b"no declared document format"),
     ]
     documents = []

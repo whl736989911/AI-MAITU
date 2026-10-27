@@ -11,17 +11,23 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import asdict
+from functools import partial
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, status
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile, status
 from pydantic import BaseModel, ConfigDict, Field
 
+from octop.api.common.upload_limit import read_upload_capped
 from octop.api.deps import current_user, get_server, require_permission
 
 # A sync failure is a knowledge-domain failure (feature disabled, embedding
 # prerequisites, limits): reuse the knowledge router's mapping instead of
 # describing the same statuses and messages twice.
-from octop.api.routers.knowledge_bases import _map_knowledge_error
+from octop.api.routers.knowledge_bases import (
+    _map_knowledge_error,
+    _max_upload_bytes,
+    _row_payload,
+)
 from octop.infra.db.repos.data_sources import KINDS, DataSourceRow
 from octop.infra.db.repos.knowledge_sync_runs import SyncRunRow
 from octop.infra.errors import ErrorCode, OctopError
@@ -32,6 +38,7 @@ from octop.infra.knowledge.data_sources import (
     FolderSettings,
 )
 from octop.infra.knowledge.jobs import enqueue_index_document
+from octop.infra.knowledge.processors import ArchiveReason
 from octop.infra.knowledge.sources import SourceError
 from octop.infra.knowledge.url_fetch import UrlFetchError
 from octop.infra.server import OctopServer
@@ -114,6 +121,41 @@ class UpdateDataSourceBody(BaseModel):
 
     name: str | None = Field(default=None, min_length=1, max_length=200)
     folder: FolderBody | None = Field(default=None, description="Replacement connection settings.")
+
+
+class SourceUploadTargetResponse(BaseModel):
+    id: str = Field(description="Registered writable data-source identifier.")
+    name: str = Field(description="Data-source display name, not its physical address.")
+    folders: list[str] = Field(
+        description="Authorized indexed folders relative to the source root; empty means root."
+    )
+
+
+class SourceUploadedDocument(BaseModel):
+    id: str
+    document_id: str
+    kb_id: str
+    path: str
+    filename: str
+    is_dir: bool
+    data_source_id: str
+    source_path: str = Field(description="Path within the source, using the scanner's identity.")
+    content_type: str
+    byte_size: int
+    content_hash: str
+    status: str = Field(
+        description="Original and processing state; archive_only means retained without indexing."
+    )
+    error_message: str
+    archive_reason: ArchiveReason | None = Field(
+        default=None,
+        description="Stable archive-only reason code, or null when the original is processable.",
+    )
+    chunk_count: int
+    title: str
+    has_original: bool
+    created_at: int
+    updated_at: int
 
 
 def _service(server: OctopServer) -> DataSourceService:
@@ -214,6 +256,105 @@ async def list_data_sources(
         raise _map_data_source_error(
             exc, locale=resolve_request_locale(request), server=server
         ) from exc
+
+
+@router.get(
+    "/knowledge-bases/{kb_id}/upload-targets",
+    response_model=list[SourceUploadTargetResponse],
+    summary="List authorized source-folder upload destinations",
+    description=(
+        "Requires knowledge-base write access. Returns only writable local or SMB sources "
+        "and authorized indexed folders, without host addresses or credentials. "
+        "An empty folder path denotes the configured source root."
+    ),
+)
+async def upload_targets(
+    kb_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> list[SourceUploadTargetResponse]:
+    try:
+        rows = await asyncio.get_running_loop().run_in_executor(
+            None, partial(_service(server).upload_targets, kb_id, actor_user_id=user.id)
+        )
+        return [SourceUploadTargetResponse(**asdict(row)) for row in rows]
+    except Exception as exc:
+        raise _map_data_source_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/data-sources/{ds_id}/documents",
+    status_code=status.HTTP_201_CREATED,
+    response_model=SourceUploadedDocument,
+    summary="Upload a new original into a writable source folder",
+    description=(
+        "Requires knowledge-base and destination-folder write access. Writes to an existing "
+        "folder under a registered writable source, never overwriting an existing file. "
+        "The source remains the original's only permanent storage; indexing is queued. "
+        "Storage failures never fall back to platform storage."
+    ),
+    responses={
+        403: {"description": "Source is read-only or destination access is denied."},
+        409: {"description": "A file with this name already exists."},
+    },
+)
+async def upload_source_document(
+    kb_id: str,
+    ds_id: str,
+    request: Request,
+    upload: UploadFile = File(..., description="Original document to save in the source folder."),
+    path: str | None = Form(
+        default=None,
+        max_length=1000,
+        description="Source-root-relative directory and filename; defaults to the uploaded filename.",
+    ),
+    access_scope: str | None = Form(
+        default=None,
+        description="Optional initial access scope: company | department | personal | authorized.",
+    ),
+    access_permission: str | None = Form(
+        default=None,
+        description="Required with access_scope: read | write.",
+    ),
+    access_unit_key: str | None = Form(
+        default=None,
+        description="Required for department scope: the offered unit key.",
+    ),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> SourceUploadedDocument:
+    try:
+        content = await read_upload_capped(
+            upload, max_bytes=_max_upload_bytes(server), code=ErrorCode.KNOWLEDGE_DOC_TOO_LARGE
+        )
+        document = await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                _service(server).upload_document,
+                kb_id,
+                ds_id,
+                actor_user_id=user.id,
+                filename=upload.filename or "",
+                path=path,
+                content=content,
+                access_scope=access_scope,
+                access_permission=access_permission,
+                access_unit_key=access_unit_key,
+            ),
+        )
+        assert server.services is not None
+        enqueue_index_document(server.services, kb_id, document.id)
+        return SourceUploadedDocument.model_validate(_row_payload(document, has_original=True))
+    except Exception as exc:
+        mapper = (
+            _map_data_source_error
+            if isinstance(exc, (SourceError, ValueError))
+            else _map_knowledge_error
+        )
+        raise mapper(exc, locale=resolve_request_locale(request), server=server) from exc
 
 
 @router.post(

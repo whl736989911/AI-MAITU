@@ -53,10 +53,13 @@ class FeatureDataRecordRow:
     created_at: int
     updated_at: int
     deleted_at: int | None
+    responsible_user_id: int | None = None
 
     @classmethod
     def from_row(cls, row: Mapping[str, Any]) -> FeatureDataRecordRow:
         deleted_at = row["deleted_at"]
+        keys = set(row.keys())
+        responsible = row["responsible_user_id"] if "responsible_user_id" in keys else None
         return cls(
             id=str(row["id"]),
             agent_id=str(row["agent_id"]),
@@ -69,6 +72,7 @@ class FeatureDataRecordRow:
             created_at=int(row["created_at"]),
             updated_at=int(row["updated_at"]),
             deleted_at=int(deleted_at) if deleted_at else None,
+            responsible_user_id=int(responsible) if responsible else None,
         )
 
 
@@ -204,7 +208,8 @@ class FeatureDataRepo:
             conn.execute(
                 "INSERT INTO feature_data_records("
                 "id, agent_id, object_key, title, values_json, visibility, revision, "
-                "created_by, created_at, updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                "created_by, responsible_user_id, created_at, updated_at) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     record_id,
                     agent_id,
@@ -213,6 +218,7 @@ class FeatureDataRepo:
                     json.dumps(dict(values), ensure_ascii=False),
                     visibility,
                     1,
+                    created_by,
                     created_by,
                     timestamp,
                     timestamp,
@@ -235,11 +241,22 @@ class FeatureDataRepo:
         agent_id: str,
         object_key: str,
         user_id: int,
-        include_private_of: int | None = None,
         query: str = "",
         limit: int = 50,
         offset: int = 0,
+        filter_fragments: Sequence[str] = (),
+        filter_params: Sequence[Any] = (),
+        order_by: str = "updated_at DESC, id DESC",
     ) -> tuple[list[FeatureDataRecordRow], int]:
+        """One visibility-scoped, parameterized page of records.
+
+        ``filter_fragments``/``filter_params`` come from
+        :mod:`octop.infra.agents.feature_data_query`, which validates every
+        condition against the object's schema; this method only ANDs them
+        with the visibility clause and binds parameters — user input never
+        forms SQL text here. ``order_by`` is a compiler product, never raw
+        input: it always ends in the ``id`` tiebreaker.
+        """
         where = [
             "agent_id = ?",
             "object_key = ?",
@@ -247,13 +264,12 @@ class FeatureDataRepo:
             "(visibility = 'feature' OR created_by = ?)",
         ]
         params: list[Any] = [agent_id, object_key, user_id]
-        if include_private_of is not None:
-            where[-1] = "(visibility = 'feature' OR created_by = ? OR created_by = ?)"
-            params.append(include_private_of)
         if query.strip():
             where.append("(title LIKE ? OR values_json LIKE ?)")
             needle = f"%{query.strip()}%"
             params.extend([needle, needle])
+        where.extend(filter_fragments)
+        params.extend(filter_params)
         clause = " AND ".join(where)
         with self._db.connect() as conn:
             total = int(
@@ -263,10 +279,84 @@ class FeatureDataRepo:
             )
             rows = conn.execute(
                 f"SELECT * FROM feature_data_records WHERE {clause} "
-                "ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+                f"ORDER BY {order_by} LIMIT ? OFFSET ?",
                 [*params, max(1, min(limit, 200)), max(0, offset)],
             ).fetchall()
         return [FeatureDataRecordRow.from_row(row) for row in rows], total
+
+    def handover_records(
+        self,
+        *,
+        agent_id: str,
+        from_user_id: int,
+        to_user_id: int,
+        actor_user_id: int,
+        object_key: str | None = None,
+    ) -> list[str]:
+        """Atomically move one account's shared records to a new responsible user.
+
+        Only published (``visibility='feature'``) live records the source
+        account currently owns — ``responsible_user_id`` when set, else the
+        creator fallback for records that predate the column. Private drafts
+        are structurally excluded, ``created_by`` and every earlier change row
+        stay untouched, and each transfer lands one ``handover`` change row
+        credited to ``actor_user_id`` in the same transaction. Returns the
+        transferred ids in stable id order.
+        """
+        where = [
+            "agent_id = ?",
+            "deleted_at IS NULL",
+            "visibility = 'feature'",
+            "(responsible_user_id = ? OR (responsible_user_id IS NULL AND created_by = ?))",
+        ]
+        params: list[Any] = [agent_id, from_user_id, from_user_id]
+        if object_key:
+            where.append("object_key = ?")
+            params.append(object_key)
+        clause = " AND ".join(where)
+        timestamp = now_ts()
+        transferred: list[str] = []
+        with self._db.transaction() as conn:
+            ids = [
+                str(row["id"])
+                for row in conn.execute(
+                    f"SELECT id FROM feature_data_records WHERE {clause} ORDER BY id", params
+                ).fetchall()
+            ]
+            for record_id in ids:
+                cursor = conn.execute(
+                    "UPDATE feature_data_records SET responsible_user_id = ?, "
+                    "revision = revision + 1, updated_at = ? "
+                    "WHERE id = ? AND deleted_at IS NULL AND visibility = 'feature' "
+                    "AND COALESCE(responsible_user_id, created_by) = ?",
+                    (to_user_id, timestamp, record_id, from_user_id),
+                )
+                if cursor.rowcount == 1:
+                    conn.execute(
+                        "INSERT INTO feature_data_record_changes("
+                        "id, record_id, agent_id, user_id, kind, summary, items_json, created_at"
+                        ") VALUES(?,?,?,?,?,?,?,?)",
+                        (
+                            new_ulid(),
+                            record_id,
+                            agent_id,
+                            actor_user_id,
+                            "handover",
+                            f"responsible user changed from {from_user_id} to {to_user_id}",
+                            json.dumps(
+                                [
+                                    {
+                                        "field": "responsible_user_id",
+                                        "before": from_user_id,
+                                        "after": to_user_id,
+                                    }
+                                ]
+                            ),
+                            timestamp,
+                        ),
+                    )
+                    transferred.append(record_id)
+        return transferred
 
     def update_record(
         self,

@@ -33,6 +33,18 @@ export interface KnowledgeCapability {
   limits?: KnowledgeLimits;
 }
 
+export interface KnowledgeProcessorCapability {
+  id: string;
+  available: boolean;
+  extensions: string[];
+  reason?: string | null;
+}
+
+export interface KnowledgeProcessors {
+  archive_only: boolean;
+  processors: KnowledgeProcessorCapability[];
+}
+
 export interface KnowledgeBase {
   id: string;
   knowledge_base_id?: string;
@@ -79,8 +91,15 @@ export interface KnowledgeDocument {
     | "failed"
     | "discovered"
     | "unsupported"
+    | "archive_only"
     | "password_required";
   error_message: string;
+  archive_reason?:
+    | "no_processor"
+    | "cad_unavailable"
+    | "ocr_disabled"
+    | "legacy_office_unavailable"
+    | null;
   chunk_count: number;
   /**
    * What the document calls itself (design §6.2), from the structure the
@@ -89,7 +108,9 @@ export interface KnowledgeDocument {
   title?: string;
   created_at: number;
   updated_at: number;
-  /** True when the uploaded original still exists on disk. */
+  /** Folder-backed source provenance; only source-relative paths are returned. */
+  data_source_id?: string;
+  source_path?: string;
   has_original?: boolean;
 }
 export interface KnowledgeOnnxModel {
@@ -204,10 +225,35 @@ export interface KnowledgeEvidence {
   verified: boolean;
   reason: "stale" | "source_unavailable" | null;
 }
+export interface KnowledgeUploadTarget {
+  id: string;
+  name: string;
+  /** Authorized source-relative indexed directories; "" denotes the root. */
+  folders: string[];
+}
 
+export type KnowledgeUploadAccessScope =
+  | "company"
+  | "department"
+  | "personal"
+  | "authorized";
+
+export interface KnowledgeUploadAccess {
+  scope: KnowledgeUploadAccessScope;
+  permission: "read" | "write";
+  unit_key: string | null;
+  department_name: string | null;
+}
+
+export interface KnowledgeUploadPermissions {
+  options: KnowledgeUploadAccess[];
+  default: KnowledgeUploadAccess;
+}
 export const knowledgeBasesApi = {
   getCapability: () =>
     request<KnowledgeCapability>("/knowledge-bases/capability"),
+  getProcessors: () =>
+    request<KnowledgeProcessors>("/knowledge-bases/processors"),
 
   setFeature: (body: {
     enabled: boolean;
@@ -225,6 +271,16 @@ export const knowledgeBasesApi = {
     }),
 
   list: () => request<KnowledgeBase[]>("/knowledge-bases"),
+  getUploadTargets: (id: string) =>
+    request<KnowledgeUploadTarget[]>(`/knowledge-bases/${id}/upload-targets`),
+  getUploadPermissions: (id: string, folder = "", dataSourceId?: string) => {
+    const params = new URLSearchParams({ folder });
+    if (dataSourceId) params.set("data_source_id", dataSourceId);
+    return request<KnowledgeUploadPermissions>(
+      `/knowledge-bases/${id}/upload-permissions?${params.toString()}`,
+    );
+  },
+
   getEmbeddingOptions: (opts?: { allOnnx?: boolean }) =>
     request<KnowledgeEmbeddingOptions>(
       opts?.allOnnx
@@ -387,13 +443,41 @@ export const knowledgeBasesApi = {
     file: File,
     relativePath?: string,
     onProgress?: (percent: number) => void,
+    access?: KnowledgeUploadAccess,
   ) => {
     const body = new FormData();
-
     body.append("upload", file);
     if (relativePath) body.append("path", relativePath);
+    if (access) {
+      body.append("access_scope", access.scope);
+      body.append("access_permission", access.permission);
+      if (access.unit_key) body.append("access_unit_key", access.unit_key);
+    }
     return requestUpload<KnowledgeDocument>(
       `/knowledge-bases/${id}/documents`,
+      body,
+      { method: "POST" },
+      onProgress,
+    );
+  },
+  uploadSourceDocument: (
+    id: string,
+    sourceId: string,
+    file: File,
+    relativePath: string,
+    onProgress?: (percent: number) => void,
+    access?: KnowledgeUploadAccess,
+  ) => {
+    const body = new FormData();
+    body.append("upload", file);
+    body.append("path", relativePath);
+    if (access) {
+      body.append("access_scope", access.scope);
+      body.append("access_permission", access.permission);
+      if (access.unit_key) body.append("access_unit_key", access.unit_key);
+    }
+    return requestUpload<KnowledgeDocument>(
+      `/knowledge-bases/${id}/data-sources/${sourceId}/documents`,
       body,
       { method: "POST" },
       onProgress,
@@ -443,15 +527,19 @@ export const knowledgeBasesApi = {
   fetchDocumentFile: (
     id: string,
     documentId: string,
+    version?: string,
     disposition: "attachment" | "inline" = "attachment",
     onProgress?: (loaded: number, total: number) => void,
     signal?: AbortSignal,
-  ) =>
-    requestBlob(
-      `/knowledge-bases/${id}/documents/${documentId}/file?disposition=${disposition}`,
+  ) => {
+    const params = new URLSearchParams({ disposition });
+    if (version) params.set("version", version);
+    return requestBlob(
+      `/knowledge-bases/${id}/documents/${documentId}/file?${params.toString()}`,
       { signal },
       onProgress,
-    ),
+    );
+  },
 
   reindex: (id: string) =>
     request<{ enqueued: number }>(`/knowledge-bases/${id}/reindex`, {

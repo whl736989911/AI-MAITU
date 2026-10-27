@@ -236,6 +236,7 @@ class KnowledgeCollectionService:
             document
             for document in self._knowledge.list_documents(collection.kb_id)
             if not document.is_dir
+            and document.status != "archive_only"
             and _within(collection, document.path)
             and self._may(document.id, restricted, readable)
             and KnowledgeSourceService.supports_format(document.filename)

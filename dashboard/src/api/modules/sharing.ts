@@ -38,6 +38,8 @@ export type SharingGranteeType = "user" | "unit" | "role";
 export interface SharingGrant {
   grantee_type: SharingGranteeType;
   grantee_id: string;
+  /** Supported for individual grants only; defaults to false. */
+  can_delegate?: boolean;
 }
 
 /** One resource's access state. */

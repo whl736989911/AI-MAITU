@@ -34,6 +34,7 @@ from octop.infra.db.repos.resource_acl import (
 )
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.knowledge.delegations import KnowledgeDelegationService
 from octop.infra.sharing import (
     RESOURCE_TYPES,
     VISIBILITY_PRIVATE,
@@ -56,6 +57,7 @@ def _acl_state_key(entry: AclEntry) -> tuple[object, ...]:
         entry.unit_key,
         entry.permission,
         tuple(sorted(entry.grants)),
+        tuple(sorted(entry.grant_delegation)),
     )
 
 
@@ -92,6 +94,14 @@ class SharingService:
         self._agents = AgentRepo(db)
         self._units = OrgUnitRepo(db)
         self._knowledge = KnowledgeRepo(db)
+        # Delegation reconciliation runs inside every applied knowledge ACL
+        # change below; lazy so non-knowledge deployments never pay for it.
+        self._delegations: KnowledgeDelegationService | None = None
+
+    def _delegation_cascade(self) -> KnowledgeDelegationService:
+        if self._delegations is None:
+            self._delegations = KnowledgeDelegationService(self._db)
+        return self._delegations
 
     # ------------------------------------------------------------------
     # Change pipeline
@@ -161,6 +171,15 @@ class SharingService:
             self._repo.insert_change(change, conn=conn)
             if status == CHANGE_APPLIED:
                 self._repo.upsert(after, conn=conn)
+                if resource_type in ("knowledge_base", "knowledge_document"):
+                    self._delegation_cascade().cascade_after_acl_change(
+                        conn,
+                        resource_type,
+                        resource_id,
+                        before,
+                        after,
+                        change_id=change.id,
+                    )
         return ChangeResult(
             change_id=change.id,
             status=status,
@@ -219,6 +238,15 @@ class SharingService:
                 expected_status=CHANGE_PENDING,
                 conn=conn,
             )
+            if change.resource_type in ("knowledge_base", "knowledge_document"):
+                self._delegation_cascade().cascade_after_acl_change(
+                    conn,
+                    change.resource_type,
+                    change.resource_id,
+                    current,
+                    after,
+                    change_id=change.id,
+                )
             if change.rollback_of is not None:
                 self._repo.set_change_status(
                     change.rollback_of,
@@ -312,6 +340,15 @@ class SharingService:
                     expected_status=CHANGE_APPLIED,
                     conn=conn,
                 )
+                if change.resource_type in ("knowledge_base", "knowledge_document"):
+                    self._delegation_cascade().cascade_after_acl_change(
+                        conn,
+                        change.resource_type,
+                        change.resource_id,
+                        current,
+                        restored,
+                        change_id=rollback.id,
+                    )
         return rollback.id
 
     # ------------------------------------------------------------------

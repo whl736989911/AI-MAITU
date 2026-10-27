@@ -9,6 +9,7 @@ import {
   Select,
   Space,
   Spin,
+  Switch,
   Tag,
   Typography,
 } from "antd";
@@ -32,6 +33,7 @@ type Props = {
   baseId: string;
   open: boolean;
   metadata: KnowledgePermissionMetadata | null;
+  isDirectory: boolean;
   onClose: () => void;
   onSaved: (metadata: KnowledgePermissionMetadata) => void;
 };
@@ -42,6 +44,7 @@ export default function KnowledgePermissionsDrawer({
   baseId,
   open,
   metadata,
+  isDirectory,
   onClose,
   onSaved,
 }: Props) {
@@ -61,6 +64,21 @@ export default function KnowledgePermissionsDrawer({
   const [principals, setPrincipals] =
     useState<KnowledgePermissionPrincipals | null>(null);
   const [expectedVersion, setExpectedVersion] = useState(0);
+  const [delegations, setDelegations] = useState<{
+    principals: { id: number; username: string; label: string }[];
+    grants: {
+      id: string;
+      grantor_user_id: number;
+      grantee_user_id: number;
+      grantee_label: string;
+      can_delegate: boolean;
+      can_revoke: boolean;
+    }[];
+  } | null>(null);
+  const [delegationRecipient, setDelegationRecipient] = useState<number>();
+  const [delegationCanDelegate, setDelegationCanDelegate] = useState(false);
+  const [delegationLoading, setDelegationLoading] = useState(false);
+  const [delegationSaving, setDelegationSaving] = useState(false);
 
   useEffect(() => {
     if (!open || !metadata) return;
@@ -146,6 +164,37 @@ export default function KnowledgePermissionsDrawer({
       cancelled = true;
     };
   }, [baseId, metadata?.can_manage, open]);
+  useEffect(() => {
+    if (
+      !open ||
+      !metadata ||
+      metadata.resource_type !== "knowledge_document" ||
+      isDirectory ||
+      (!metadata.can_manage && !metadata.can_delegate)
+    ) {
+      setDelegations(null);
+      return;
+    }
+    let cancelled = false;
+    setDelegationLoading(true);
+    knowledgePermissionsApi
+      .delegations(baseId, metadata.resource_id)
+      .then((result) => {
+        if (!cancelled) {
+          setDelegations(result);
+          setDelegationRecipient(undefined);
+        }
+      })
+      .catch((cause) => {
+        if (!cancelled) setError(cause);
+      })
+      .finally(() => {
+        if (!cancelled) setDelegationLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [baseId, isDirectory, metadata, open]);
 
   const unitOptions = (principals?.departments ?? []).map((unit) => ({
     value: unit.key,
@@ -240,9 +289,69 @@ export default function KnowledgePermissionsDrawer({
       return;
     setGrants((current) => [
       ...current,
-      { grantee_type: grantType, grantee_id: value },
+      {
+        grantee_type: grantType,
+        grantee_id: value,
+        ...(grantType === "user" ? { can_delegate: false } : {}),
+      },
     ]);
     setGrantId("");
+  };
+  const issueDelegation = async () => {
+    if (
+      !metadata ||
+      metadata.resource_type !== "knowledge_document" ||
+      isDirectory ||
+      !delegationRecipient ||
+      !delegations?.principals.some(
+        (principal) => principal.id === delegationRecipient,
+      )
+    )
+      return;
+    setDelegationSaving(true);
+    try {
+      const result = await knowledgePermissionsApi.addDelegation(
+        baseId,
+        metadata.resource_id,
+        {
+          grantee_user_id: delegationRecipient,
+          can_delegate: delegationCanDelegate,
+        },
+      );
+      setDelegations(result);
+      setDelegationRecipient(undefined);
+      setDelegationCanDelegate(false);
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setDelegationSaving(false);
+    }
+  };
+
+  const revokeDelegation = async (delegationId: string) => {
+    if (
+      !metadata ||
+      isDirectory ||
+      metadata.resource_type !== "knowledge_document"
+    )
+      return;
+    setDelegationSaving(true);
+    try {
+      await knowledgePermissionsApi.revokeDelegation(
+        baseId,
+        metadata.resource_id,
+        delegationId,
+      );
+      const result = await knowledgePermissionsApi.delegations(
+        baseId,
+        metadata.resource_id,
+      );
+      setDelegations(result);
+    } catch (cause) {
+      setError(cause);
+    } finally {
+      setDelegationSaving(false);
+    }
   };
 
   return (
@@ -427,6 +536,30 @@ export default function KnowledgePermissionsDrawer({
                           )}{" "}
                           · {grantLabel(grant)}
                         </Tag>
+                        {metadata.can_manage &&
+                        grant.grantee_type === "user" ? (
+                          <Space size={4}>
+                            <Typography.Text type="secondary">
+                              {t("knowledgeBases.permissions.allowDelegation")}
+                            </Typography.Text>
+                            <Switch
+                              size="small"
+                              checked={grant.can_delegate === true}
+                              onChange={(checked) =>
+                                setGrants((current) =>
+                                  current.map((item, itemIndex) =>
+                                    itemIndex === index
+                                      ? { ...item, can_delegate: checked }
+                                      : item,
+                                  ),
+                                )
+                              }
+                              aria-label={t(
+                                "knowledgeBases.permissions.allowDelegation",
+                              )}
+                            />
+                          </Space>
+                        ) : null}
                         <Button
                           type="text"
                           danger
@@ -465,6 +598,100 @@ export default function KnowledgePermissionsDrawer({
               </Button>
             </>
           )}
+          {(metadata.resource_type === "knowledge_base" || isDirectory) &&
+          metadata.can_delegate ? (
+            <Alert
+              className={styles.permissionAlert}
+              type="info"
+              showIcon
+              message={t("knowledgeBases.permissions.delegateOnDocument")}
+            />
+          ) : null}
+          {metadata.resource_type === "knowledge_document" &&
+          !isDirectory &&
+          (metadata.can_manage || metadata.can_delegate) ? (
+            <>
+              <Divider />
+              <Typography.Text strong>
+                {t("knowledgeBases.permissions.delegatedSharing")}
+              </Typography.Text>
+              <Alert
+                className={styles.permissionAlert}
+                type="warning"
+                showIcon
+                message={t("knowledgeBases.permissions.cascadeWarning")}
+              />
+              {delegationLoading ? <Spin size="small" /> : null}
+              {(metadata.can_delegate || metadata.can_manage) && delegations ? (
+                <>
+                  <Select
+                    className={styles.permissionField}
+                    showSearch
+                    optionFilterProp="label"
+                    value={delegationRecipient}
+                    onChange={setDelegationRecipient}
+                    options={delegations.principals.map((principal) => ({
+                      value: principal.id,
+                      label: principal.label,
+                    }))}
+                    placeholder={t("knowledgeBases.permissions.selectDelegate")}
+                  />
+                  <Space className={styles.permissionField}>
+                    <Typography.Text>
+                      {t("knowledgeBases.permissions.allowFurtherDelegation")}
+                    </Typography.Text>
+                    <Switch
+                      checked={delegationCanDelegate}
+                      onChange={setDelegationCanDelegate}
+                      aria-label={t(
+                        "knowledgeBases.permissions.allowFurtherDelegation",
+                      )}
+                    />
+                  </Space>
+                  <Button
+                    type="primary"
+                    loading={delegationSaving}
+                    disabled={
+                      !delegationRecipient ||
+                      !delegations.principals.some(
+                        (principal) => principal.id === delegationRecipient,
+                      )
+                    }
+                    onClick={() => void issueDelegation()}
+                  >
+                    {t("knowledgeBases.permissions.grantDelegation")}
+                  </Button>
+                </>
+              ) : null}
+              <Space direction="vertical" className={styles.permissionField}>
+                {delegations?.grants.map((grant) => (
+                  <Space key={grant.id} wrap>
+                    <Tag>{grant.grantee_label}</Tag>
+                    {metadata.can_manage ? (
+                      <Typography.Text type="secondary">
+                        {t("knowledgeBases.permissions.grantedBy", {
+                          id: grant.grantor_user_id,
+                        })}
+                      </Typography.Text>
+                    ) : null}
+                    {grant.can_delegate ? (
+                      <Tag>{t("knowledgeBases.permissions.canDelegate")}</Tag>
+                    ) : null}
+                    {grant.can_revoke ? (
+                      <Button
+                        size="small"
+                        danger
+                        loading={delegationSaving}
+                        onClick={() => void revokeDelegation(grant.id)}
+                      >
+                        {t("knowledgeBases.permissions.revokeDelegation")}
+                      </Button>
+                    ) : null}
+                  </Space>
+                ))}
+              </Space>
+            </>
+          ) : null}
         </Spin>
       )}
     </Drawer>

@@ -65,11 +65,29 @@ class _Repo:
 
 async def test_dispatch_notifies_record_creator_and_owner_once() -> None:
     repo = _Repo()
-    agent = SimpleNamespace(user_id=1)
+    agent = SimpleNamespace(user_id=1, agent_id="feat-x", kind="feature", enterprise_unit_key=None)
+    users = SimpleNamespace(
+        list=lambda: [
+            SimpleNamespace(id=1, role="member", disabled=0),
+            SimpleNamespace(id=2, role="member", disabled=0),
+        ]
+    )
+    users.get = lambda user_id: next((user for user in users.list() if user.id == user_id), None)
+
+    class ACL:
+        def get(self, _kind: str, _resource_id: str) -> Any:
+            return SimpleNamespace(visibility="public", owner_user_id=1, grants=())
+
+        def scope_for_user(self, _user_id: int) -> tuple[str, tuple[str, ...]]:
+            return "member", ()
+
     server = SimpleNamespace(
         services=SimpleNamespace(
             repos=SimpleNamespace(
-                feature_data_repo=repo, agent_repo=SimpleNamespace(get=lambda _id: agent)
+                feature_data_repo=repo,
+                agent_repo=SimpleNamespace(get=lambda _id: agent),
+                user_repo=users,
+                resource_acl_repo=ACL(),
             )
         ),
         app_runtime=SimpleNamespace(

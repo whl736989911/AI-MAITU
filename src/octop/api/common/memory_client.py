@@ -18,14 +18,13 @@ from typing import Any, Literal, cast
 from octop.api.common.agent import (
     AgentCapability,
     assert_agent_capability_write,
-    feature_can_manage,
-    feature_in_enterprise_scope,
     require_agent_owner_row,
     require_agent_row,
 )
 from octop.api.common.workspace import require_agent_workspace
 from octop.api.deps import unit_grants_for
 from octop.i18n import tr
+from octop.infra.agents.feature_access import feature_in_enterprise_scope, is_feature_manager
 from octop.infra.agents.feature_workflow import STATUS_ACTIVE, STATUS_DRAFT, feature_memory_stage
 from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.agents.memory_backend import close_memory, memory_namespace, open_memory_kwargs
@@ -84,9 +83,22 @@ async def resolve_memory_access(
     workspace = await require_agent_workspace(agent_id, user=user, server=server)
     stage = cast('Literal["draft", "active"]', await feature_memory_stage(workspace))
     author = row.enterprise_unit_key is None and (user.is_admin or row.user_id == user.id)
-    manager = feature_can_manage(row, user, server)
+    repos = server.services.repos
+    manager = is_feature_manager(
+        row,
+        user_id=int(user.id),
+        user_repo=repos.user_repo,
+        org_unit_repo=repos.org_unit_repo,
+    )
     if stage == STATUS_DRAFT and not (
-        author or user.is_admin or feature_in_enterprise_scope(row, user, server)
+        author
+        or user.is_admin
+        or feature_in_enterprise_scope(
+            row,
+            user_id=int(user.id),
+            user_repo=repos.user_repo,
+            org_unit_repo=repos.org_unit_repo,
+        )
     ):
         reason = feature_memory_reason("draft_author_only", user=user, server=server)
         raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})

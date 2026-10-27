@@ -4,9 +4,11 @@ import {
   Button,
   Form,
   Input,
+  InputNumber,
   Modal,
   Segmented,
   Spin,
+  Switch,
   Tag,
   Tooltip,
   Typography,
@@ -16,9 +18,11 @@ import {
   FolderOpen,
   Link2,
   Plus,
+  History,
   PlugZap,
   RefreshCw,
   Server,
+  Pencil,
   Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -32,6 +36,7 @@ import {
   type DataSourceFolder,
   type DataSourceKind,
   type DataSourceSyncStatus,
+  type DataSourceRun,
 } from "../../../api/modules/dataSources";
 import {
   connectorsApi,
@@ -54,6 +59,8 @@ interface DataSourcesPanelProps {
    * service-side ``get_writable_base`` check that guards create/sync/delete.
    */
   canWriteBase: boolean;
+  /** Whether the current user may create or change folder-source settings. */
+  canManageBase: boolean;
   /** Called after an ingest changed the base, so the page can reload documents. */
   onDocumentsChanged?: () => void;
 }
@@ -70,14 +77,10 @@ type CreateFormValues = {
   scanIntervalSeconds?: number;
   includeGlobs?: string;
   excludeGlobs?: string;
+  allowUploads?: boolean;
 };
 
-/**
- * The folder settings a create/edit form describes.
- *
- * ``read_only`` is fixed on: the platform never writes to a source, so a switch
- * for it would be a setting nothing honours.
- */
+/** Connection settings; writes remain opt-in and manager-controlled. */
 function folderBody(values: CreateFormValues): DataSourceFolder {
   return {
     root_path: (values.rootPath ?? "").trim(),
@@ -86,7 +89,7 @@ function folderBody(values: CreateFormValues): DataSourceFolder {
     username: (values.username ?? "").trim(),
     // An empty string clears a stored secret; on create it simply means none.
     password: values.password ?? "",
-    read_only: true,
+    read_only: !values.allowUploads,
     include_globs: (values.includeGlobs ?? "").trim(),
     exclude_globs: (values.excludeGlobs ?? "").trim(),
     scan_interval_seconds: values.scanIntervalSeconds ?? 0,
@@ -148,6 +151,7 @@ function sourceDetail(
 export default function DataSourcesPanel({
   baseId,
   canWriteBase,
+  canManageBase,
   onDocumentsChanged,
 }: DataSourcesPanelProps) {
   const { t } = useTranslation();
@@ -164,7 +168,18 @@ export default function DataSourcesPanel({
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [testingId, setTestingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [updatingUploadsId, setUpdatingUploadsId] = useState<string | null>(
+    null,
+  );
   const [file, setFile] = useState<File | null>(null);
+  const [scheduleSource, setScheduleSource] = useState<DataSource | null>(null);
+  const [scheduleInterval, setScheduleInterval] = useState(0);
+  const [scheduleSaving, setScheduleSaving] = useState(false);
+  const [runsSource, setRunsSource] = useState<DataSource | null>(null);
+  const [runs, setRuns] = useState<DataSourceRun[]>([]);
+  const [runsLoading, setRunsLoading] = useState(false);
+  const [runsFailed, setRunsFailed] = useState(false);
+  const runsRequestRef = useRef(0);
   const [connectors, setConnectors] = useState<ConnectorInstance[] | null>(
     null,
   );
@@ -175,6 +190,11 @@ export default function DataSourcesPanel({
   // Both backend gates for a write: the module key (``require_permission``) and
   // write access to the base itself.
   const canWrite = canWriteBase && userCanKey(user, PERM.knowledgeBases);
+  const hasAutomaticScans = sources.some(
+    (source) =>
+      (source.kind === "local" || source.kind === "smb") &&
+      source.scan_interval_seconds > 0,
+  );
   // Connector instances are only read to label a legacy connector row.
   const needsConnectorNames = sources.some(
     (source) => source.kind === "connector",
@@ -207,6 +227,21 @@ export default function DataSourcesPanel({
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    if (!hasAutomaticScans) return;
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") void load({ silent: true });
+    }, 15_000);
+    return () => clearInterval(timer);
+  }, [hasAutomaticScans, load]);
+
+  useEffect(
+    () => () => {
+      runsRequestRef.current += 1;
+    },
+    [baseId],
+  );
 
   const loadConnectors = useCallback(async () => {
     try {
@@ -383,6 +418,84 @@ export default function DataSourcesPanel({
     }
   };
 
+  const setUploadsAllowed = async (source: DataSource, allowed: boolean) => {
+    setUpdatingUploadsId(source.id);
+    try {
+      await dataSourcesApi.update(source.id, {
+        folder: {
+          root_path: source.root_path,
+          server: source.server,
+          share: source.share,
+          username: source.username,
+          read_only: !allowed,
+          include_globs: source.include_globs,
+          exclude_globs: source.exclude_globs,
+          scan_interval_seconds: source.scan_interval_seconds,
+        },
+      });
+      await load({ silent: true });
+    } catch (error) {
+      message.error(
+        apiErrorMessage(error, t("knowledgeBases.dataSources.updateFailed"), t),
+      );
+    } finally {
+      setUpdatingUploadsId(null);
+    }
+  };
+
+  const saveSchedule = async () => {
+    if (!scheduleSource || scheduleSaving) return;
+    setScheduleSaving(true);
+    try {
+      await dataSourcesApi.update(scheduleSource.id, {
+        folder: {
+          root_path: scheduleSource.root_path,
+          server: scheduleSource.server,
+          share: scheduleSource.share,
+          username: scheduleSource.username,
+          read_only: scheduleSource.read_only,
+          include_globs: scheduleSource.include_globs,
+          exclude_globs: scheduleSource.exclude_globs,
+          scan_interval_seconds: scheduleInterval,
+        },
+      });
+      setScheduleSource(null);
+      await load({ silent: true });
+      message.success(t("knowledgeBases.dataSources.scheduleSaved"));
+    } catch (error) {
+      message.error(
+        apiErrorMessage(error, t("knowledgeBases.dataSources.updateFailed"), t),
+      );
+    } finally {
+      setScheduleSaving(false);
+    }
+  };
+
+  const openRuns = async (source: DataSource) => {
+    const requestId = ++runsRequestRef.current;
+    setRunsSource(source);
+    setRuns([]);
+    setRunsFailed(false);
+    setRunsLoading(true);
+    try {
+      const history = await dataSourcesApi.runs(source.id);
+      if (runsRequestRef.current === requestId) setRuns(history);
+    } catch (error) {
+      if (runsRequestRef.current === requestId) {
+        setRunsFailed(true);
+        message.error(
+          apiErrorMessage(
+            error,
+            t("knowledgeBases.dataSources.runsLoadFailed"),
+            t,
+          ),
+        );
+      }
+    } finally {
+      if (runsRequestRef.current === requestId) setRunsLoading(false);
+    }
+  };
+
   const confirmDelete = (source: DataSource) => {
     modal.confirm({
       title: t("knowledgeBases.dataSources.deleteTitle", { name: source.name }),
@@ -466,6 +579,11 @@ export default function DataSourcesPanel({
       <Typography.Text type="secondary" className={styles.hint}>
         {t("knowledgeBases.dataSources.hint")}
       </Typography.Text>
+      {!canManageBase ? (
+        <Typography.Text type="secondary" className={styles.hint}>
+          {t("knowledgeBases.dataSources.folderManagementRestricted")}
+        </Typography.Text>
+      ) : null}
 
       {loadError && !loading ? (
         <EmptyState
@@ -579,6 +697,96 @@ export default function DataSourcesPanel({
                 ),
             },
             {
+              title: t("knowledgeBases.dataSources.automaticScan"),
+              key: "automatic_scan",
+              width: 170,
+              render: (_, source) =>
+                source.kind === "local" || source.kind === "smb" ? (
+                  <span className={styles.rowActions}>
+                    <Tag
+                      color={
+                        source.scan_interval_seconds > 0 ? "blue" : undefined
+                      }
+                    >
+                      {source.scan_interval_seconds > 0
+                        ? t("knowledgeBases.dataSources.scanEvery", {
+                            seconds: source.scan_interval_seconds,
+                          })
+                        : t("knowledgeBases.dataSources.scanManual")}
+                    </Tag>
+                    {canManageBase && canWrite ? (
+                      <Button
+                        type="text"
+                        size="small"
+                        disabled={scheduleSaving}
+                        aria-label={t(
+                          "knowledgeBases.dataSources.editSchedule",
+                        )}
+                        icon={<Pencil size={14} />}
+                        onClick={() => {
+                          setScheduleInterval(source.scan_interval_seconds);
+                          setScheduleSource(source);
+                        }}
+                      />
+                    ) : null}
+                  </span>
+                ) : null,
+            },
+            {
+              title: t("knowledgeBases.dataSources.lastScan"),
+              key: "last_scan",
+              width: 180,
+              render: (_, source) =>
+                source.last_scan_at
+                  ? formatServerDateTime(source.last_scan_at, timeZone)
+                  : t("knowledgeBases.dataSources.never"),
+            },
+            {
+              title: t("knowledgeBases.dataSources.scanHistory"),
+              key: "scan_history",
+              width: 100,
+              render: (_, source) =>
+                source.kind === "local" || source.kind === "smb" ? (
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<History size={14} />}
+                    aria-label={t("knowledgeBases.dataSources.scanHistory")}
+                    onClick={() => void openRuns(source)}
+                  />
+                ) : null,
+            },
+            {
+              title: t("knowledgeBases.dataSources.allowUploads"),
+              key: "allow_uploads",
+              width: 110,
+              render: (_, source) =>
+                source.kind === "local" || source.kind === "smb" ? (
+                  canManageBase && canWrite ? (
+                    <Switch
+                      size="small"
+                      checked={!source.read_only}
+                      loading={updatingUploadsId === source.id}
+                      aria-label={t(
+                        "knowledgeBases.dataSources.allowUploadsFor",
+                        { name: source.name },
+                      )}
+                      onChange={(allowed) =>
+                        void setUploadsAllowed(source, allowed)
+                      }
+                    />
+                  ) : (
+                    <Tag>
+                      {t(
+                        source.read_only
+                          ? "knowledgeBases.dataSources.readOnly"
+                          : "knowledgeBases.dataSources.uploadsAllowed",
+                      )}
+                    </Tag>
+                  )
+                ) : null,
+            },
+            {
               title: t("knowledgeBases.dataSources.columnLastSync"),
               dataIndex: "last_synced_at",
               key: "last_synced_at",
@@ -678,7 +886,7 @@ export default function DataSourcesPanel({
         <Form
           form={form}
           layout="vertical"
-          initialValues={{ kind: DEFAULT_KIND }}
+          initialValues={{ kind: DEFAULT_KIND, allowUploads: false }}
           disabled={submitting}
         >
           <Form.Item
@@ -818,6 +1026,29 @@ export default function DataSourcesPanel({
                   }
                 />
               </Form.Item>
+              {canManageBase ? (
+                <Form.Item
+                  name="allowUploads"
+                  label={t("knowledgeBases.dataSources.allowUploads")}
+                  valuePropName="checked"
+                  extra={t("knowledgeBases.dataSources.allowUploadsHint")}
+                >
+                  <Switch />
+                </Form.Item>
+              ) : null}
+              <Form.Item
+                name="scanIntervalSeconds"
+                label={t("knowledgeBases.dataSources.automaticScan")}
+                extra={t("knowledgeBases.dataSources.scanIntervalHint")}
+                initialValue={0}
+              >
+                <InputNumber
+                  min={0}
+                  max={604800}
+                  precision={0}
+                  style={{ width: "100%" }}
+                />
+              </Form.Item>
               <Form.Item
                 name="username"
                 label={t("knowledgeBases.dataSources.username")}
@@ -871,6 +1102,103 @@ export default function DataSourcesPanel({
             </>
           ) : null}
         </Form>
+      </Modal>
+      <Modal
+        title={t("knowledgeBases.dataSources.editSchedule")}
+        open={scheduleSource !== null}
+        onCancel={() => setScheduleSource(null)}
+        onOk={() => void saveSchedule()}
+        okText={t("common.save")}
+        cancelText={t("common.cancel")}
+        confirmLoading={scheduleSaving}
+        closable={!scheduleSaving}
+        maskClosable={!scheduleSaving}
+        cancelButtonProps={{ disabled: scheduleSaving }}
+        destroyOnHidden
+      >
+        <Typography.Paragraph>{scheduleSource?.name}</Typography.Paragraph>
+        <Typography.Paragraph type="secondary">
+          {t("knowledgeBases.dataSources.scanIntervalHint")}
+        </Typography.Paragraph>
+        <InputNumber
+          aria-label={t("knowledgeBases.dataSources.automaticScan")}
+          value={scheduleInterval}
+          min={0}
+          max={604800}
+          precision={0}
+          disabled={scheduleSaving}
+          onChange={(value) => setScheduleInterval(value ?? 0)}
+          style={{ width: "100%" }}
+        />
+      </Modal>
+      <Modal
+        title={t("knowledgeBases.dataSources.scanHistory")}
+        open={runsSource !== null}
+        footer={null}
+        width={900}
+        onCancel={() => {
+          runsRequestRef.current += 1;
+          setRunsSource(null);
+        }}
+        destroyOnHidden
+      >
+        <Typography.Paragraph>{runsSource?.name}</Typography.Paragraph>
+        {runsFailed ? (
+          <Typography.Paragraph type="danger">
+            {t("knowledgeBases.dataSources.runsLoadFailed")}
+          </Typography.Paragraph>
+        ) : null}
+        <ResizableTable
+          storageKey="kb-source-scan-history"
+          size="small"
+          rowKey="id"
+          loading={runsLoading}
+          dataSource={runs}
+          pagination={false}
+          scroll={{ x: 760 }}
+          locale={{ emptyText: t("knowledgeBases.dataSources.runsEmpty") }}
+          columns={[
+            {
+              title: t("knowledgeBases.dataSources.scanStarted"),
+              dataIndex: "started_at",
+              key: "started_at",
+              render: (value: number) => formatServerDateTime(value, timeZone),
+            },
+            {
+              title: t("knowledgeBases.dataSources.scanTrigger"),
+              dataIndex: "trigger",
+              key: "trigger",
+              render: (value: DataSourceRun["trigger"]) =>
+                t(`knowledgeBases.dataSources.scanTriggers.${value}`),
+            },
+            {
+              title: t("knowledgeBases.dataSources.columnStatus"),
+              key: "status",
+              render: (_, run) => (
+                <Tooltip title={run.error || undefined}>
+                  <Tag color={syncStatusColor(run.status)}>
+                    {t(`knowledgeBases.dataSources.syncStatus.${run.status}`)}
+                  </Tag>
+                </Tooltip>
+              ),
+            },
+            ...(
+              [
+                "scanned",
+                "added",
+                "updated",
+                "removed",
+                "deferred",
+                "failed",
+              ] as const
+            ).map((key) => ({
+              title: t(`knowledgeBases.dataSources.scanCounts.${key}`),
+              dataIndex: key,
+              key,
+              width: 75,
+            })),
+          ]}
+        />
       </Modal>
     </section>
   );

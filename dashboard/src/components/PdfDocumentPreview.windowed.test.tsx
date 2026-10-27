@@ -215,6 +215,57 @@ describe("PdfDocumentPreview windowed rendering", () => {
     });
   });
 
+  it.each([
+    { initialPage: 3, expectedPage: 3 },
+    { initialPage: 99, expectedPage: 4 },
+  ])(
+    "opens citation page $initialPage within the document bounds and accepts a new page",
+    async ({ initialPage, expectedPage }) => {
+      const originalScroll = Element.prototype.scrollIntoView;
+      const scrollIntoView = vi.fn();
+      Element.prototype.scrollIntoView = scrollIntoView;
+      try {
+        const { container, getByRole, rerender } = await renderPdf(
+          <PdfDocumentPreview
+            fileUrl="blob:citation"
+            filename="certificate.pdf"
+            initialPage={initialPage}
+          />,
+        );
+        const pageInput = getByRole("textbox") as HTMLInputElement;
+        expect(pageInput.value).toBe(String(expectedPage));
+        expect(pageInput.disabled).toBe(false);
+        expect(
+          container.querySelector(`[data-testid="pdf-page-${expectedPage}"]`),
+        ).not.toBeNull();
+        expect(
+          scrollIntoView.mock.contexts.some(
+            (element: HTMLElement) =>
+              element.dataset.pdfPage === String(expectedPage),
+          ),
+        ).toBe(true);
+
+        rerender(
+          <PdfDocumentPreview
+            fileUrl="blob:citation"
+            filename="certificate.pdf"
+            initialPage={1}
+          />,
+        );
+        await flushPdfAsync();
+        expect(pageInput.value).toBe("1");
+        expect(
+          container.querySelector('[data-testid="pdf-page-1"]'),
+        ).not.toBeNull();
+        expect(
+          (scrollIntoView.mock.contexts.at(-1) as HTMLElement).dataset.pdfPage,
+        ).toBe("1");
+      } finally {
+        Element.prototype.scrollIntoView = originalScroll;
+      }
+    },
+  );
+
   it("keeps a nearby page mounted after it leaves the viewport", async () => {
     const { container } = await renderPdf(
       <PdfDocumentPreview fileUrl="blob:test" filename="test.pdf" />,

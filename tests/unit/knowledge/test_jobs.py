@@ -58,6 +58,56 @@ def test_enqueue_index_document_limits_concurrency(monkeypatch: pytest.MonkeyPat
     assert peak == 1
 
 
+@pytest.mark.parametrize("cancel_running", [False, True])
+def test_shutdown_joins_sqlite_worker_and_leaves_queued_work_pending(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, cancel_running: bool
+) -> None:
+    pool = SqlitePool(tmp_path / "shutdown.db")
+    run_migrations(pool)
+    settings = SettingsRepo(pool)
+    settings.set("shutdown_probe", "read-before-close")
+    services = SimpleNamespace(db=pool)
+    started = threading.Event()
+    release = threading.Event()
+    reads: list[str | None] = []
+
+    def process(_services: object, _kb: str, doc_id: str) -> bool:
+        assert doc_id == "active"
+        started.set()
+        assert release.wait(timeout=10)
+        reads.append(settings.get("shutdown_probe"))
+        return False
+
+    monkeypatch.setattr(jobs, "_process_current_document", process)
+
+    async def run() -> None:
+        active = jobs.enqueue_index_document(services, "kb", "active")
+        assert await asyncio.to_thread(started.wait, 10)
+        queued = jobs.enqueue_index_document(services, "kb", "queued")
+        if cancel_running:
+            active.cancel()
+        shutdown = asyncio.create_task(jobs.shutdown_index_jobs(services))
+        try:
+            await asyncio.sleep(0)
+            assert not shutdown.done()
+            if cancel_running:
+                active.cancel()
+                await asyncio.sleep(0)
+                assert not active.done()
+        finally:
+            release.set()
+            await shutdown
+        assert queued.cancelled()
+        assert active.cancelled() is cancel_running
+
+    try:
+        asyncio.run(run())
+        assert reads == ["read-before-close"]
+    finally:
+        release.set()
+        pool.close()
+
+
 def test_process_document_marks_empty_extract_as_failed(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -31,6 +31,57 @@
 
 每个文件字段独立维护版本历史；到期提醒在记录创建/更新时生成，站内通知由后台扫描产生。
 
+## 通用计算日期与引用字段
+
+以下字段声明仍由服务端按字段类型与当前权限校验；示例中的字段名不是内置业务对象。计算日期由服务端从来源日期及整数周期生成，客户端不能在创建或更新时直接填写 `renewal_due`：
+
+```json
+{
+  "key": "renewal_due",
+  "type": "date",
+  "computed": {
+    "op": "add_months",
+    "source_field": "issued_on",
+    "amount_field": "cycle_months"
+  }
+}
+```
+
+也可将 `amount_field` 换成整数 `amount`，运算仅允许 `add_days`、`add_months`、`add_years`。按月或按年计算遇到目标月份没有对应日期时，日期夹取到该月最后一天；缺少来源或周期值时不生成派生日期。
+
+```json
+[
+  {
+    "key": "related_record",
+    "type": "record_ref",
+    "target_object": "supplier",
+    "target_agent_id": 42
+  },
+  {
+    "key": "source_document",
+    "type": "knowledge_ref"
+  }
+]
+```
+
+`target_agent_id` 可省略以引用当前功能；记录引用必须是当前调用者可读的目标记录。知识引用值包含 `kb_id`、`document_id`，可选 `version`（原件 SHA-256）、`page` 和 `layout`。省略版本时创建记录固定当时的原件版本；之后只解析当前原件及当前 ACL，不承诺保留历史原始字节。撤销目标权限后，引用详情和历史值会脱敏。
+
+对象还可用 `reminder_recipients` 指定动态收件来源，例如：
+
+```json
+{
+  "reminder_recipients": {
+    "creator": true,
+    "responsible": true,
+    "user_fields": ["reviewer"],
+    "unit_fields": ["review_unit"],
+    "role_keys": ["unit_admin"]
+  }
+}
+```
+
+角色只接受既有 `admin`、`enterprise_admin`、`unit_admin`、`user` 键。单位包括其子单位；发送时仅选择有效且当前可读该功能及记录的用户。未配置时保留默认创建人和功能所有者收件人。
+
 ## 受控文件
 
 ```json

@@ -174,6 +174,7 @@ export default function FeatureDataPanel({
                     agentId={agentId}
                     object={selectedObject}
                     canWrite={canEditRecords}
+                    canManage={canWrite}
                   />
                 ) : null}
               </div>

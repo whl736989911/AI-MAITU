@@ -701,9 +701,9 @@ class OctopServer:
         rt.cron_manager = cron_mgr
         await cron_mgr.boot()
 
-        from octop.infra.backup.auto import install_auto_backup_job
+        from octop.infra.knowledge.auto_sync import install_auto_sync_job
 
-        install_auto_backup_job(cron_mgr, server=self)
+        install_auto_sync_job(cron_mgr, server=self)
 
         from octop.infra.agents.feature_data_reminders import (  # noqa: PLC0415
             FEATURE_REMINDER_INTERVAL_SECONDS,
@@ -786,6 +786,9 @@ class OctopServer:
         rt = self.app_runtime
         assert rt is not None
         try:
+            from octop.infra.knowledge.auto_sync import shutdown_auto_sync
+
+            await shutdown_auto_sync(self)
             if rt.proactive_scheduler is not None:
                 await rt.proactive_scheduler.shutdown()
             if rt.cron_manager is not None:
@@ -795,6 +798,10 @@ class OctopServer:
             if rt.agent_registry is not None:
                 await rt.agent_registry.shutdown()
         finally:
+            from octop.infra.knowledge.jobs import shutdown_index_jobs
+
+            if self.services is not None:
+                await shutdown_index_jobs(self.services)
             rt.proactive_scheduler = None
             rt.cron_manager = None
             rt.gateway = None
@@ -846,6 +853,7 @@ class OctopServer:
             return
         # Freeze license transitions first so no callback restarts business
         # while/after we are tearing the process down.
+        from octop.infra.knowledge.jobs import shutdown_index_jobs
         from octop.infra.setup.tls.renewal import shutdown_auto_renewal_scheduler
 
         shutdown_auto_renewal_scheduler()
@@ -865,6 +873,7 @@ class OctopServer:
                     rt.history_archive.store.close()
         finally:
             if self.services is not None:
+                await shutdown_index_jobs(self.services)
                 self.services.db.close()
             self.services = None
             self.app_runtime = None

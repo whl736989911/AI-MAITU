@@ -2,10 +2,19 @@ import type { KnowledgeCitation } from "./parseKnowledgeCitations";
 import { knowledgePathParent, normalizeKnowledgePath } from "./knowledgePath";
 
 /** Deep-link into Knowledge Bases for a citation. */
-export function knowledgeCitationHref(citation: KnowledgeCitation): string {
+export function knowledgeCitationHref(
+  citation: Partial<KnowledgeCitation> & {
+    version?: string;
+    locator?: Record<string, unknown>;
+  },
+): string {
   const params = new URLSearchParams();
   if (citation.kbId) params.set("kb", citation.kbId);
   if (citation.docId) params.set("doc", citation.docId);
+  if (citation.version) {
+    params.set("v", citation.version);
+    params.set("loc", JSON.stringify(citation.locator ?? {}));
+  }
   const qs = params.toString();
   return qs ? `/knowledge-bases?${qs}` : "/knowledge-bases";
 }

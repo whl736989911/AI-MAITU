@@ -122,12 +122,58 @@ describe("file fields are never text values", () => {
     });
   });
 });
+it("omits computed date values from writes and does not require server-derived values", () => {
+  const computedObject: FeatureDataObject = {
+    key: "policy",
+    fields: [
+      { key: "issued_on", type: "date", required: true },
+      { key: "renewal_months", type: "integer", required: true },
+      {
+        key: "expires_on",
+        type: "date",
+        required: true,
+        computed: {
+          op: "add_months",
+          source_field: "issued_on",
+          amount_field: "renewal_months",
+        },
+      },
+    ],
+  };
+  expect(
+    buildValuesPayload(computedObject, {
+      issued_on: "2026-01-31",
+      renewal_months: 1,
+      expires_on: "forged",
+    }),
+  ).toEqual({ issued_on: "2026-01-31", renewal_months: 1 });
+  expect(
+    missingRequiredFields(computedObject, {
+      issued_on: "2026-01-31",
+      renewal_months: 1,
+    }),
+  ).toEqual([]);
+});
 
 describe("required fields", () => {
   it("reports the required editable fields left blank", () => {
     expect(missingRequiredFields(OBJECT, {})).toEqual(["name"]);
     expect(missingRequiredFields(OBJECT, { name: "   " })).toEqual(["name"]);
     expect(missingRequiredFields(OBJECT, { name: "ACME" })).toEqual([]);
+  });
+  it("requires a complete knowledge reference when the field is required", () => {
+    const object: FeatureDataObject = {
+      key: "document",
+      fields: [{ key: "source", type: "knowledge_ref", required: true }],
+    };
+    expect(
+      missingRequiredFields(object, { source: { kb_id: "kb-1" } }),
+    ).toEqual(["source"]);
+    expect(
+      missingRequiredFields(object, {
+        source: { kb_id: "kb-1", document_id: "doc-1" },
+      }),
+    ).toEqual([]);
   });
 
   it("does not require a file field to have text", () => {

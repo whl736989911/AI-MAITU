@@ -3,7 +3,10 @@
 The schema is a workspace document; records and their audit/attachments/reminders
 are database rows.  The router deliberately stays thin: every record-shaped rule
 (validation, reminder calculation, attachment path, optimistic revision) lives in
-:mod:`octop.infra.agents.feature_data`.
+:mod:`octop.infra.agents.feature_data`, every access decision in
+:mod:`octop.infra.agents.feature_access` — the same policy the agent tools run
+under — and structured filtering/sorting in
+:mod:`octop.infra.agents.feature_data_query`.
 """
 
 from __future__ import annotations
@@ -13,15 +16,21 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
 
-from octop.api.common.agent import (
-    AgentCapability,
-    feature_can_manage,
-    require_agent_row,
-)
+from octop.api.common.agent import AgentCapability, require_agent_row
+from octop.api.common.content_disposition import content_disposition
 from octop.api.common.workspace import require_agent_workspace
 from octop.api.deps import current_user, get_server
 from octop.infra.agents import feature_data as fd
+from octop.infra.agents import feature_data_query as fdq
 from octop.infra.agents import feature_workflow as wf
+from octop.infra.agents.feature_access import (
+    can_read_record,
+    can_use_feature,
+    can_write_record,
+    is_feature_manager,
+)
+from octop.infra.agents.feature_data_refs import FeatureReferenceService
+from octop.infra.agents.feature_data_responsibility import handover_feature_records
 from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.db.services import SharedServices
 from octop.infra.errors import ErrorCode, OctopError
@@ -35,6 +44,15 @@ def _services(server: OctopServer) -> SharedServices:
     if services is None:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "server services are not initialized")
     return services
+
+
+def _registry(server: OctopServer) -> Any:
+    assert server.app_runtime is not None
+    return server.app_runtime.agent_registry
+
+
+def _timezone(server: OctopServer) -> str:
+    return str(_services(server).config.default_timezone or "UTC")
 
 
 class SchemaBody(BaseModel):
@@ -72,6 +90,17 @@ class NotificationResponse(BaseModel):
     notifications: list[dict[str, Any]]
 
 
+class PrincipalListResponse(BaseModel):
+    principals: list[dict[str, Any]]
+    total: int
+
+
+class HandoverBody(BaseModel):
+    from_user_id: int = Field(..., ge=1)
+    to_user_id: int = Field(..., ge=1)
+    object_key: str | None = None
+
+
 def _feature_row(agent_id: str, user: Any, server: OctopServer) -> Any:
     row = require_agent_row(agent_id, user=user, as_user=None, server=server)
     if not is_feature_agent(str(getattr(row, "kind", ""))):
@@ -80,19 +109,29 @@ def _feature_row(agent_id: str, user: Any, server: OctopServer) -> Any:
 
 
 def _can_manage(row: Any, user: Any, server: OctopServer) -> bool:
-    return bool(feature_can_manage(row, user, server))
+    repos = _services(server).repos
+    return is_feature_manager(
+        row,
+        user_id=int(user.id),
+        user_repo=repos.user_repo,
+        org_unit_repo=repos.org_unit_repo,
+    )
 
 
 def _record_write(record: Any, row: Any, user: Any, server: OctopServer) -> None:
-    if record.created_by == user.id:
-        return
-    if record.visibility == "feature" and _can_manage(row, user, server):
-        return
-    raise OctopError(ErrorCode.FORBIDDEN, "feature data record is not writable by this user")
+    repos = _services(server).repos
+    if not can_write_record(
+        record,
+        row,
+        user_id=int(user.id),
+        user_repo=repos.user_repo,
+        org_unit_repo=repos.org_unit_repo,
+    ):
+        raise OctopError(ErrorCode.FORBIDDEN, "feature data record is not writable by this user")
 
 
 def _record_read(record: Any, user: Any) -> None:
-    if record.visibility == "private" and record.created_by != user.id:
+    if not can_read_record(record, user_id=int(user.id)):
         raise OctopError(ErrorCode.FORBIDDEN, "private feature data record is not visible")
     if record.deleted_at is not None:
         raise OctopError(ErrorCode.NOT_FOUND, "feature data record not found")
@@ -119,6 +158,38 @@ def _record(repo: Any, agent_id: str, record_id: str) -> Any:
     if record is None or record.agent_id != agent_id or record.deleted_at is not None:
         raise OctopError(ErrorCode.NOT_FOUND, "feature data record not found")
     return record
+
+
+async def _described_payload(
+    record: Any,
+    *,
+    row: Any,
+    server: OctopServer,
+    workspace: Any,
+    user: Any,
+) -> dict[str, Any]:
+    """Record payload with the caller's current view of its references."""
+    repos = _services(server).repos
+    payload = fd.record_payload(await fd.record_view(repos.feature_data_repo, workspace, record))
+    payload["can_write"] = can_write_record(
+        record,
+        row,
+        user_id=int(user.id),
+        user_repo=repos.user_repo,
+        org_unit_repo=repos.org_unit_repo,
+    )
+    loaded = await fd.load_schema(workspace)
+    if loaded.schema is not None:
+        obj = fd.object_definition(loaded.schema, record.object_key)
+        references = FeatureReferenceService(
+            registry=_registry(server), repos=repos, user_id=int(user.id)
+        )
+        described, values = await references.describe_with_values(
+            agent_id=str(record.agent_id), obj=obj, record=record
+        )
+        payload["references"] = described
+        payload["values"] = values
+    return payload
 
 
 @router.get(
@@ -155,7 +226,9 @@ async def put_schema(
     try:
         schema = await fd.save_schema(workspace, body.schema_data)
     except ValueError as exc:
-        raise OctopError(ErrorCode.WORKFLOW_INVALID, str(exc)) from exc
+        raise OctopError(
+            ErrorCode.WORKFLOW_INVALID, str(exc), details={"reason": str(exc)}
+        ) from exc
     return SchemaResponse.model_validate({"schema": schema})
 
 
@@ -225,9 +298,149 @@ async def complete_reminder(
     if reminder is None or reminder.agent_id != agent_id:
         raise OctopError(ErrorCode.NOT_FOUND, "reminder not found")
     record = _record(repo, agent_id, reminder.record_id)
+    _record_read(record, user)
     _record_write(record, row, user, server)
     repo.complete_reminder(reminder_id)
     return {"status": "done"}
+
+
+@router.get(
+    "/{agent_id}/feature-data/principals",
+    response_model=PrincipalListResponse,
+    summary="List active accounts that can reach this feature",
+)
+async def list_principals(
+    agent_id: str,
+    q: str = Query(""),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    server: OctopServer = Depends(get_server),
+    user: Any = Depends(current_user),
+) -> PrincipalListResponse:
+    """Lightweight picker source for user fields and handover targets.
+
+    Every returned account is active and can currently read the feature — the
+    same set the server accepts as a handover target — so forms never need the
+    user-management endpoints.
+    """
+    row = _feature_row(agent_id, user, server)
+    repos = _services(server).repos
+    acl_repo = repos.resource_acl_repo
+    needle = q.strip().lower()
+    principals: list[dict[str, Any]] = []
+    for account in repos.user_repo.list(include_disabled=False):
+        if not can_use_feature(
+            row,
+            user_id=int(account.id),
+            acl_repo=acl_repo,
+            user_repo=repos.user_repo,
+            org_unit_repo=repos.org_unit_repo,
+        ):
+            continue
+        if needle and needle not in str(account.username).lower():
+            display = str(account.display_name or "").lower()
+            if needle not in display:
+                continue
+        unit_label = None
+        unit_key = getattr(account, "org_unit", None)
+        if unit_key:
+            unit = repos.org_unit_repo.get(str(unit_key))
+            if unit is not None:
+                unit_label = {"zh": unit.label_zh, "en": unit.label_en}
+        principals.append(
+            {
+                "id": int(account.id),
+                "username": str(account.username),
+                "display_name": account.display_name,
+                "org_unit": unit_key,
+                "org_unit_label": unit_label,
+                "role": str(account.role),
+            }
+        )
+    principals.sort(key=lambda item: str(item["username"]))
+    total = len(principals)
+    window = principals[offset : offset + limit]
+    return PrincipalListResponse(principals=window, total=total)
+
+
+@router.post(
+    "/{agent_id}/feature-data/handover",
+    summary="Hand a feature's shared records to a new responsible user",
+)
+async def handover_records(
+    agent_id: str,
+    body: HandoverBody,
+    server: OctopServer = Depends(get_server),
+    user: Any = Depends(current_user),
+) -> dict[str, Any]:
+    """Move one account's shared records to a new responsible user.
+
+    Feature-manager only, target must be active and able to reach the
+    feature, and only shared records move: private drafts stay with their
+    creator, `created_by` and the audit trail are preserved, revisions advance
+    and future notifications follow the new responsible user.
+    """
+    row = _feature_row(agent_id, user, server)
+    repos = _services(server).repos
+    try:
+        return handover_feature_records(
+            repo=repos.feature_data_repo,
+            feature_row=row,
+            agent_id=agent_id,
+            from_user_id=body.from_user_id,
+            to_user_id=body.to_user_id,
+            actor_user_id=int(user.id),
+            user_repo=repos.user_repo,
+            org_unit_repo=repos.org_unit_repo,
+            acl_repo=repos.resource_acl_repo,
+            object_key=body.object_key,
+        )
+    except PermissionError as exc:
+        raise OctopError(ErrorCode.FORBIDDEN, str(exc)) from exc
+    except ValueError as exc:
+        raise OctopError(
+            ErrorCode.WORKFLOW_INVALID, str(exc), details={"reason": str(exc)}
+        ) from exc
+
+
+@router.get(
+    "/{agent_id}/feature-data/references/records",
+    summary="List authorized record options for reference fields",
+)
+async def list_reference_targets(
+    agent_id: str,
+    target_agent_id: str | None = Query(None),
+    object_key: str = Query(...),
+    q: str = Query(""),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    server: OctopServer = Depends(get_server),
+    user: Any = Depends(current_user),
+) -> RecordListResponse:
+    """Records of the target object the current caller may reference.
+
+    Without ``target_agent_id`` the feature's own records are listed. Every
+    option already passes the target feature's ACL and that feature's record
+    visibility for this caller.
+    """
+    _feature_row(agent_id, user, server)
+    references = FeatureReferenceService(
+        registry=_registry(server), repos=_services(server).repos, user_id=int(user.id)
+    )
+    try:
+        options, total = await references.selector_records(
+            agent_id=agent_id,
+            target_agent_id=target_agent_id,
+            object_key=object_key,
+            query=q,
+            limit=limit,
+            offset=offset,
+        )
+    except PermissionError as exc:
+        raise OctopError(ErrorCode.FORBIDDEN, str(exc)) from exc
+    except ValueError as exc:
+        raise OctopError(ErrorCode.NOT_FOUND, str(exc)) from exc
+    return RecordListResponse(records=options, total=total)
 
 
 @router.get(
@@ -241,34 +454,58 @@ async def list_records(
     q: str = Query(""),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    filters: str = Query("", description="JSON array of AND filter conditions"),
+    sort_by: str | None = Query(None),
+    sort_order: str | None = Query(None),
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
 ) -> RecordListResponse:
-    _feature_row(agent_id, user, server)
+    row = _feature_row(agent_id, user, server)
     workspace = await _workspace(agent_id, user, server, write=False)
     schema = await fd.load_schema(workspace)
     if schema.schema is None:
         raise OctopError(
             ErrorCode.WORKFLOW_INVALID, schema.error or "feature data schema is not configured"
         )
-    fd.object_definition(schema.schema, object_key)
-    records, total = _services(server).repos.feature_data_repo.list_records(
+    obj = fd.object_definition(schema.schema, object_key)
+    try:
+        fragments, params, order_by = fdq.filters_from_request(
+            filters, sort_by, sort_order, obj, dialect=_services(server).repos.db.dialect
+        )
+    except fdq.FilterError as exc:
+        raise fdq.filters_error(exc) from exc
+    repos = _services(server).repos
+    records, total = repos.feature_data_repo.list_records(
         agent_id=agent_id,
         object_key=object_key,
         user_id=user.id,
         query=q,
         limit=limit,
         offset=offset,
+        filter_fragments=fragments,
+        filter_params=params,
+        order_by=order_by,
     )
-    return RecordListResponse(
-        records=[
-            fd.record_payload(
-                await fd.record_view(_services(server).repos.feature_data_repo, workspace, record)
-            )
-            for record in records
-        ],
-        total=total,
+    references = FeatureReferenceService(
+        registry=_registry(server), repos=repos, user_id=int(user.id)
     )
+    payloads = []
+    for record in records:
+        payload = fd.record_payload(
+            await fd.record_view(repos.feature_data_repo, workspace, record)
+        )
+        payload["can_write"] = can_write_record(
+            record,
+            row,
+            user_id=int(user.id),
+            user_repo=repos.user_repo,
+            org_unit_repo=repos.org_unit_repo,
+        )
+        payload["references"], payload["values"] = await references.describe_with_values(
+            agent_id=agent_id, obj=obj, record=record
+        )
+        payloads.append(payload)
+    return RecordListResponse(records=payloads, total=total)
 
 
 @router.post(
@@ -282,23 +519,25 @@ async def create_record(
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
-    _feature_row(agent_id, user, server)
+    row = _feature_row(agent_id, user, server)
     workspace = await _workspace(agent_id, user, server, write=False)
     try:
         record = await fd.create_record(
-            _services(server).repos.feature_data_repo,
+            _services(server).repos,
             workspace,
             agent_id=agent_id,
             object_key=object_key,
             values=body.values,
             user_id=user.id,
             feature_active=await _active(workspace),
+            registry=_registry(server),
+            timezone_name=_timezone(server),
         )
     except ValueError as exc:
-        raise OctopError(ErrorCode.WORKFLOW_INVALID, str(exc)) from exc
-    return fd.record_payload(
-        await fd.record_view(_services(server).repos.feature_data_repo, workspace, record)
-    )
+        raise OctopError(
+            ErrorCode.WORKFLOW_INVALID, str(exc), details={"reason": str(exc)}
+        ) from exc
+    return await _described_payload(record, row=row, server=server, workspace=workspace, user=user)
 
 
 async def _get_record_or_404(agent_id: str, record_id: str, user: Any, server: OctopServer) -> Any:
@@ -318,11 +557,10 @@ async def get_record(
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
 ) -> dict[str, Any]:
+    row = _feature_row(agent_id, user, server)
     record = await _get_record_or_404(agent_id, record_id, user, server)
     workspace = await _workspace(agent_id, user, server, write=False)
-    return fd.record_payload(
-        await fd.record_view(_services(server).repos.feature_data_repo, workspace, record)
-    )
+    return await _described_payload(record, row=row, server=server, workspace=workspace, user=user)
 
 
 @router.patch(
@@ -343,19 +581,21 @@ async def patch_record(
     workspace = await _workspace(agent_id, user, server, write=False)
     try:
         updated = await fd.update_record(
-            _services(server).repos.feature_data_repo,
+            _services(server).repos,
             workspace,
             agent_id=agent_id,
             record_id=record_id,
             values=body.values,
             expected_revision=body.expected_revision,
             user_id=user.id,
+            registry=_registry(server),
+            timezone_name=_timezone(server),
         )
     except ValueError as exc:
-        raise OctopError(ErrorCode.WORKFLOW_INVALID, str(exc)) from exc
-    return fd.record_payload(
-        await fd.record_view(_services(server).repos.feature_data_repo, workspace, updated)
-    )
+        raise OctopError(
+            ErrorCode.WORKFLOW_INVALID, str(exc), details={"reason": str(exc)}
+        ) from exc
+    return await _described_payload(updated, row=row, server=server, workspace=workspace, user=user)
 
 
 @router.post(
@@ -377,7 +617,7 @@ async def publish_record(
     if not await _active(workspace):
         raise OctopError(ErrorCode.FORBIDDEN, "a draft feature cannot publish records")
     updated = fd.publish_record(repo, agent_id=agent_id, record_id=record_id, user_id=user.id)
-    return fd.record_payload(await fd.record_view(repo, workspace, updated))
+    return await _described_payload(updated, row=row, server=server, workspace=workspace, user=user)
 
 
 @router.delete(
@@ -411,21 +651,31 @@ async def get_history(
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
 ) -> ChangeListResponse:
-    await _get_record_or_404(agent_id, record_id, user, server)
-    changes = _services(server).repos.feature_data_repo.list_changes(record_id, limit=limit)
-    return ChangeListResponse(
-        changes=[
+    record = await _get_record_or_404(agent_id, record_id, user, server)
+    repos = _services(server).repos
+    workspace = await _workspace(agent_id, user, server, write=False)
+    changes = repos.feature_data_repo.list_changes(record_id, limit=limit)
+    serialized: list[dict[str, Any]] = []
+    loaded = await fd.load_schema(workspace)
+    references = FeatureReferenceService(
+        registry=_registry(server), repos=repos, user_id=int(user.id)
+    )
+    for change in changes:
+        items: list[dict[str, Any]] = list(change.items)
+        if loaded.schema is not None:
+            obj = fd.object_definition(loaded.schema, record.object_key)
+            items = await references.redact_history(agent_id=agent_id, obj=obj, items=items)
+        serialized.append(
             {
                 "id": change.id,
                 "kind": change.kind,
                 "summary": change.summary,
-                "items": change.items,
+                "items": items,
                 "user_id": change.user_id,
                 "created_at": change.created_at,
             }
-            for change in changes
-        ]
-    )
+        )
+    return ChangeListResponse(changes=serialized)
 
 
 @router.get(
@@ -477,7 +727,9 @@ async def upload_file(
             user_id=user.id,
         )
     except ValueError as exc:
-        raise OctopError(ErrorCode.WORKFLOW_INVALID, str(exc)) from exc
+        raise OctopError(
+            ErrorCode.WORKFLOW_INVALID, str(exc), details={"reason": str(exc)}
+        ) from exc
     return fd.file_payload(saved)
 
 
@@ -505,7 +757,7 @@ async def download_file(
         content=data,
         media_type=file_row.content_type,
         headers={
-            "Content-Disposition": f'attachment; filename="{file_row.filename}"',
+            "Content-Disposition": content_disposition(file_row.filename),
             "X-Content-SHA256": file_row.sha256,
         },
     )

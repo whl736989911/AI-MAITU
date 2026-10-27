@@ -14,37 +14,28 @@ from enum import StrEnum
 from typing import Any, Literal
 
 from octop.i18n import tr
+from octop.infra.agents.feature_access import can_use_feature
+from octop.infra.agents.feature_access import is_feature_manager as _is_feature_manager
 from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.sharing import AclEntry, can_access
-from octop.infra.users.identity import Role, resolved_role
-from octop.infra.users.scope import scope_for
 from octop.infra.utils.locale import resolve_user_locale
 
 
-def feature_in_enterprise_scope(row: Any, user: Any, server: Any) -> bool:
-    """An enterprise administrator reaches this feature's owning enterprise."""
-    if not is_feature_agent(row.kind) or resolved_role(user) != Role.ENTERPRISE_ADMIN.value:
-        return False
-    unit_key = row.enterprise_unit_key
-    if unit_key is None:
-        owner = server.services.user_repo.get(row.user_id) if row.user_id is not None else None
-        if owner is None:
-            return False
-        unit_key = owner.org_unit
-    return scope_for(user, server.services.org_unit_repo).covers_unit(unit_key)
+def _feature_manager(row: Any, user: Any, server: Any) -> bool:
+    """The central feature-manager policy, resolved for an HTTP caller.
 
-
-def feature_can_manage(row: Any, user: Any, server: Any) -> bool:
-    """Published features belong to the enterprise role, not their author."""
-    if not is_feature_agent(row.kind):
-        return user.is_admin or user_owns_agent(row, user)
-    if user.is_admin:
-        return True
-    if row.enterprise_unit_key is not None:
-        return feature_in_enterprise_scope(row, user, server)
-    return user_owns_agent(row, user)
+    :mod:`octop.infra.agents.feature_access` owns the rule; this adapter only
+    supplies the caller identity and the repos the rule reads.
+    """
+    repos = server.services.repos
+    return _is_feature_manager(
+        row,
+        user_id=int(user.id),
+        user_repo=repos.user_repo,
+        org_unit_repo=repos.org_unit_repo,
+    )
 
 
 def user_owns_agent(row: Any, user: Any) -> bool:
@@ -54,7 +45,7 @@ def user_owns_agent(row: Any, user: Any) -> bool:
 def assert_agent_owner(row: Any, user: Any, *, server: Any | None = None) -> None:
     """Raise if the caller cannot manage this agent row."""
     if is_feature_agent(row.kind) and server is not None:
-        if feature_can_manage(row, user, server):
+        if _feature_manager(row, user, server):
             return
     elif user.is_admin or user_owns_agent(row, user):
         return
@@ -138,7 +129,7 @@ def agent_capability_refusal(
                 return None
             return _feature_write_refusal(row, user, capability, server)
         return _FEATURE_MEMORY_REFUSAL
-    if server is not None and feature_can_manage(row, user, server):
+    if server is not None and _feature_manager(row, user, server):
         return None
     if (
         server is None
@@ -234,12 +225,18 @@ def _user_may_access(row: Any, user: Any, *, acl: ResourceAclRepo) -> bool:
 def assert_agent_access_row(
     row: Any, user: Any, *, acl: ResourceAclRepo, server: Any | None = None
 ) -> None:
-    if server is not None and (
-        (user.is_admin and is_feature_agent(row.kind))
-        or feature_in_enterprise_scope(row, user, server)
-    ):
-        return
-    if not _user_may_access(row, user, acl=acl):
+    if server is not None and is_feature_agent(row.kind):
+        repos = server.services.repos
+        allowed = can_use_feature(
+            row,
+            user_id=int(user.id),
+            acl_repo=acl,
+            user_repo=repos.user_repo,
+            org_unit_repo=repos.org_unit_repo,
+        )
+    else:
+        allowed = _user_may_access(row, user, acl=acl)
+    if not allowed:
         raise OctopError(ErrorCode.FORBIDDEN, "agent not accessible to user")
 
 

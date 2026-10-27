@@ -68,6 +68,7 @@ type FitMode = "width" | "page" | "manual";
 interface PdfDocumentPreviewProps {
   fileUrl: string;
   filename: string;
+  initialPage?: number;
 }
 
 /** PDF.js outline (bookmark) tree node. */
@@ -229,9 +230,19 @@ export function PdfViewerSkeleton({ percent }: { percent?: number | null }) {
 export default function PdfDocumentPreview({
   fileUrl,
   filename,
+  initialPage,
 }: PdfDocumentPreviewProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
+  const requestedPage =
+    initialPage !== undefined &&
+    Number.isSafeInteger(initialPage) &&
+    initialPage > 0
+      ? initialPage
+      : undefined;
+  const requestedPageRef = useRef(requestedPage);
+  requestedPageRef.current = requestedPage;
+  const openingPageRef = useRef(1);
   const rootRef = useRef<HTMLDivElement | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const hoveredRef = useRef(false);
@@ -437,14 +448,16 @@ export default function PdfDocumentPreview({
     setOutlineOpen(false);
     destPageCacheRef.current = new Map();
     setOutlineDestVersion(0);
-    // Mount page 1 immediately so the first canvas can paint under the
+    // Mount the requested page immediately so its canvas can paint under the
     // boot overlay (windowed IO otherwise leaves every slot empty).
     if (pdf.numPages > 0) {
-      intersectingRef.current = new Set([1]);
-      mountedRef.current = new Set([1]);
-      setVisiblePages(new Set([1]));
-      setCurrentPage(1);
-      setPageInput("1");
+      const pageNo = Math.min(pdf.numPages, requestedPageRef.current ?? 1);
+      openingPageRef.current = pageNo;
+      intersectingRef.current = new Set([pageNo]);
+      mountedRef.current = new Set([pageNo]);
+      setVisiblePages(new Set([pageNo]));
+      setCurrentPage(pageNo);
+      setPageInput(String(pageNo));
     } else {
       setFirstPageReady(true);
     }
@@ -608,6 +621,11 @@ export default function PdfDocumentPreview({
     },
     [numPages],
   );
+
+  useEffect(() => {
+    if (requestedPage === undefined || numPages === 0) return;
+    scrollToPage(Math.min(requestedPage, numPages));
+  }, [requestedPage, numPages, scrollToPage]);
 
   const commitPageInput = useCallback(() => {
     const parsed = Number.parseInt(pageInput.trim(), 10);
@@ -971,10 +989,14 @@ export default function PdfDocumentPreview({
                         renderAnnotationLayer
                         loading={<PdfPageSkeletonBlock />}
                         onRenderSuccess={() => {
-                          if (pageNo === 1) setFirstPageReady(true);
+                          if (pageNo === openingPageRef.current) {
+                            setFirstPageReady(true);
+                          }
                         }}
                         onRenderError={() => {
-                          if (pageNo === 1) setFirstPageReady(true);
+                          if (pageNo === openingPageRef.current) {
+                            setFirstPageReady(true);
+                          }
                         }}
                       />
                     ) : (
