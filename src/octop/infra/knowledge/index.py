@@ -12,6 +12,7 @@ from collections.abc import Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 from octop.infra.knowledge.parse import ParsedBlock
 from octop.infra.utils.paths import PathLayout

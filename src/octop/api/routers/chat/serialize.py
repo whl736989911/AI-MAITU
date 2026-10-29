@@ -9,7 +9,7 @@ import re
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from langchain_core.messages import messages_from_dict
 from langchain_core.runnables import RunnableConfig
@@ -17,6 +17,7 @@ from langchain_core.runnables import RunnableConfig
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.i18n.domains.attachment import attachment_empty_image
 from octop.infra.agents.context_breakdown import usage_dict_from_message
+from octop.infra.gateway.process.agent_resolve import harness_workspace_for_agent
 from octop.infra.gateway.process.message_keys import (
     CHECKPOINT_TS_KEY,
     COMPOSER_CTX_KEY,
@@ -27,6 +28,9 @@ from octop.infra.gateway.process.message_keys import (
 )
 from octop.infra.utils.llm_text import strip_thinking as _strip_thinking
 from octop.infra.utils.locale import normalize_locale
+
+if TYPE_CHECKING:
+    from harness_agent.backends.workspace import BackendWorkspace
 
 logger = logging.getLogger(__name__)
 
@@ -376,8 +380,14 @@ async def _load_thread_messages(
         logger.exception("failed to load history for agent=%s thread=%s", agent_id, thread_id)
 
     if out:
-        # Sync URL rewrite only — no workspace file import (that belongs on live stream).
-        return _enrich_history_tool_media(out, agent_id=agent_id), has_more
+        return (
+            await _enrich_history_tool_media(
+                out,
+                agent_id=agent_id,
+                workspace=harness_workspace_for_agent(registry, agent_id),
+            ),
+            has_more,
+        )
 
     return await _load_thread_messages_from_sessions(
         server,
@@ -441,7 +451,7 @@ def _isolated_sqlite_checkpoint_messages(
         conn.close()
 
 
-def _load_projected_thread_messages(
+async def _load_projected_thread_messages(
     server: Any,
     agent_id: str,
     thread_id: str,
@@ -476,7 +486,14 @@ def _load_projected_thread_messages(
         )
         if entry is not None:
             out.append(entry)
-    return _enrich_history_tool_media(out, agent_id=agent_id), has_more
+    return (
+        await _enrich_history_tool_media(
+            out,
+            agent_id=agent_id,
+            workspace=harness_workspace_for_agent(server.app_runtime.agent_registry, agent_id),
+        ),
+        has_more,
+    )
 
 
 async def _backfill_thread_projection(
@@ -542,13 +559,14 @@ async def _backfill_thread_projection(
             release(agent_id)
 
 
-def _enrich_history_tool_media(
+async def _enrich_history_tool_media(
     messages: list[dict[str, Any]],
     *,
     agent_id: str,
+    workspace: BackendWorkspace | None = None,
 ) -> list[dict[str, Any]]:
-    """Attach preview URLs for tool media without disk I/O."""
-    from octop.infra.gateway.media.tool_media import enrich_tool_output_string_sync  # noqa: PLC0415
+    """Restore tool files through the same workspace resolver as the live stream."""
+    from octop.infra.gateway.media.tool_media import enrich_tool_output_string  # noqa: PLC0415
 
     enriched: list[dict[str, Any]] = []
     for entry in messages:
@@ -566,7 +584,9 @@ def _enrich_history_tool_media(
             if not isinstance(output, str) or not output.strip():
                 blocks.append(block)
                 continue
-            new_output = enrich_tool_output_string_sync(output, agent_id=agent_id)
+            new_output = await enrich_tool_output_string(
+                output, agent_id=agent_id, workspace=workspace
+            )
             if new_output != output:
                 blocks.append({**block, "output": new_output})
                 changed = True

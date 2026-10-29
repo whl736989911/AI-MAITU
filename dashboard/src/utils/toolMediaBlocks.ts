@@ -51,25 +51,39 @@ export function agentMediaPreviewUrl(
   )}/media/preview?${params.toString()}`;
 }
 
-/** Extract ``inbound/…`` or ``outbound/…`` from a filesystem / API path. */
+/** Extract a virtual workspace root only when it is the path's actual root. */
 export function extractWorkspaceRel(path: string): string | null {
   let raw = path.trim();
   if (!raw) return null;
-  if (raw.toLowerCase().startsWith("file://")) {
+  const fileUrl = raw.toLowerCase().startsWith("file://");
+  if (fileUrl) {
     raw = raw.slice("file://".length);
   }
   const normalized = raw.replace(/\\/g, "/");
-  const stripped = normalized.replace(/^\/+/, "");
-  if (stripped.startsWith("outbound/") || stripped.startsWith("inbound/")) {
-    return stripped;
-  }
-  for (const marker of ["/outbound/", "/inbound/"] as const) {
-    const idx = normalized.indexOf(marker);
-    if (idx >= 0) {
-      return normalized.slice(idx + 1);
+  const virtualRoot = stripVirtualWorkspaceRoot(normalized);
+  const candidates = fileUrl
+    ? []
+    : virtualRoot === normalized
+    ? [normalized]
+    : [virtualRoot, normalized];
+  for (const candidate of candidates) {
+    const stripped = candidate.replace(/^\/+/, "");
+    if (
+      stripped === "outbound" ||
+      stripped === "inbound" ||
+      stripped.startsWith("outbound/") ||
+      stripped.startsWith("inbound/")
+    ) {
+      return stripped;
     }
   }
-  return null;
+
+  // Older agent workspaces sometimes reported host paths beneath the
+  // explicitly identified agent root. Do not infer from arbitrary host paths.
+  const legacyAgentPath = normalized.match(
+    /(?:^|\/)\.octop\/agents\/[^/]+\/((?:outbound|inbound)(?:\/.*|$))/i,
+  );
+  return legacyAgentPath?.[1] ?? null;
 }
 
 /**
@@ -85,16 +99,9 @@ export function toMediaPreviewSource(
 ): string {
   const trimmed = path.trim();
   if (!trimmed) return trimmed;
+  if (trimmed.toLowerCase().startsWith("file://")) return trimmed;
 
   let posix = trimmed.replace(/\\/g, "/");
-  if (posix.toLowerCase().startsWith("file://")) {
-    let host = posix.slice("file://".length);
-    if (host.startsWith("//")) host = host.slice(1);
-    if (!host.startsWith("/") && !/^[A-Za-z]:/.test(host)) {
-      host = `/${host}`;
-    }
-    posix = host;
-  }
 
   if (/^[A-Za-z]:[^/]/.test(posix)) {
     posix = `${posix.slice(0, 2)}/${posix.slice(2)}`;
@@ -187,9 +194,9 @@ export function agentIdFromWorkspacePath(path: string): string | null {
 /**
  * Build a workspace download URL.
  *
- * Absolute / ``file://`` paths are passed through (API default treats leading
- * ``/`` as host-absolute). Legacy ``/outbound|inbound/…`` keys are rewritten to
- * relative workspace paths. Other relative keys omit the leading slash.
+ * Explicit virtual ``/workspace/…`` and legacy ``/outbound|inbound/…`` keys are
+ * rewritten to workspace-relative paths. Other absolute paths and ``file://``
+ * URIs are passed through so host-path checks remain authoritative.
  */
 export function workspaceDownloadUrl(
   agentId: string,
@@ -200,9 +207,17 @@ export function workspaceDownloadUrl(
   if (raw.toLowerCase().startsWith("file://")) {
     pathParam = raw;
   } else {
-    const mediaRel = extractWorkspaceRel(raw);
-    if (mediaRel) {
-      pathParam = mediaRel;
+    const normalized = raw.replace(/\\/g, "/");
+    const virtualRel = stripVirtualWorkspaceRoot(normalized);
+    if (virtualRel !== normalized) {
+      pathParam = virtualRel;
+    } else if (
+      normalized === "/outbound" ||
+      normalized === "/inbound" ||
+      normalized.startsWith("/outbound/") ||
+      normalized.startsWith("/inbound/")
+    ) {
+      pathParam = normalized.replace(/^\/+/, "");
     } else if (
       raw.startsWith("/") ||
       /^[A-Za-z]:[\\/]/.test(raw) ||

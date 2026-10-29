@@ -5,16 +5,24 @@ import {
   canonicalizeMediaApiUrl,
   isHostAbsoluteMediaPath,
   needsAuthBlobFetch,
+  normalizeStoredMediaUrl,
   parseStructuredToolOutput,
   parseToolExecutionFeedback,
   toMediaPreviewSource,
   workspaceDownloadUrl,
+  workspacePathFromAccessUrl,
 } from "./toolMediaBlocks";
 
 describe("workspaceDownloadUrl", () => {
   it("keeps host-absolute paths as-is", () => {
     const url = workspaceDownloadUrl("main", "/Users/me/Desktop/a.pptx");
     expect(url).toContain("path=%2FUsers%2Fme%2FDesktop%2Fa.pptx");
+  });
+
+  it("rewrites explicit virtual /workspace artifacts to workspace keys", () => {
+    const url = workspaceDownloadUrl("main", "/workspace/report.docx");
+    expect(url).toContain("path=report.docx");
+    expect(url).not.toContain("path=%2Fworkspace");
   });
 
   it("rewrites legacy /outbound/… to relative workspace keys", () => {
@@ -27,15 +35,87 @@ describe("workspaceDownloadUrl", () => {
     const url = workspaceDownloadUrl("main", "outbound/chart.png");
     expect(url).toContain("path=outbound%2Fchart.png");
   });
+
+  it("does not collapse nested or traversing outbound segments", () => {
+    const nested = new URL(
+      workspaceDownloadUrl("main", "reports/outbound/report.docx"),
+      "http://localhost",
+    );
+    expect(nested.searchParams.get("path")).toBe(
+      "reports/outbound/report.docx",
+    );
+    const traversal = new URL(
+      workspaceDownloadUrl("main", "../outbound/report.docx"),
+      "http://localhost",
+    );
+    expect(traversal.searchParams.get("path")).toBe("../outbound/report.docx");
+  });
+
+  it("keeps host paths with a workspace segment and file URIs intact", () => {
+    const host = workspaceDownloadUrl(
+      "main",
+      "/Users/me/workspace/report.docx",
+    );
+    expect(host).toContain("path=%2FUsers%2Fme%2Fworkspace%2Freport.docx");
+    const file = workspaceDownloadUrl("main", "file:///tmp/report.docx");
+    expect(file).toContain("path=file%3A%2F%2F%2Ftmp%2Freport.docx");
+    expect(
+      workspaceDownloadUrl("main", "C:\\Users\\me\\workspace\\report.docx"),
+    ).toContain("path=C%3A%5CUsers%5Cme%5Cworkspace%5Creport.docx");
+    expect(
+      workspaceDownloadUrl("main", "/home/me/.octop/agents/other/report.docx"),
+    ).toContain("path=%2Fhome%2Fme%2F.octop%2Fagents%2Fother%2Freport.docx");
+    expect(
+      workspaceDownloadUrl(
+        "main",
+        "/.maitu/workspaces/agt_current/report.docx",
+      ),
+    ).toContain("path=%2F.maitu%2Fworkspaces%2Fagt_current%2Freport.docx");
+    expect(
+      workspaceDownloadUrl("main", "/Users/me/workspace/outbound/report.docx"),
+    ).toContain("path=%2FUsers%2Fme%2Fworkspace%2Foutbound%2Freport.docx");
+    expect(workspaceDownloadUrl("main", "../report.docx")).toContain(
+      "path=..%2Freport.docx",
+    );
+  });
 });
 
 describe("canonicalizeMediaApiUrl", () => {
-  it("rewrites stored download links with /outbound/ path", () => {
+  it("preserves complete nested workspace paths containing outbound", () => {
     const raw =
-      "/api/agents/main/workspace/download?path=%2Foutbound%2Fchart.png";
-    const next = canonicalizeMediaApiUrl(raw);
-    expect(next).toContain("path=outbound%2Fchart.png");
-    expect(next).not.toContain("path=%2Foutbound");
+      "/api/agents/main/workspace/download?path=reports%2Foutbound%2Fchart.png";
+    expect(canonicalizeMediaApiUrl(raw)).toBe(raw);
+  });
+
+  it("rewrites virtual outbound roots without truncating their path", () => {
+    const raw =
+      "/api/agents/main/workspace/download?path=%2Foutbound%2Freports%2Fchart.png";
+    expect(canonicalizeMediaApiUrl(raw)).toContain(
+      "path=outbound%2Freports%2Fchart.png",
+    );
+  });
+
+  it("preserves host absolute paths that merely contain outbound", () => {
+    const raw =
+      "/api/agents/main/workspace/download?path=%2Ftmp%2Fx%2Foutbound%2Fchart.png";
+    expect(canonicalizeMediaApiUrl(raw)).toBe(raw);
+  });
+
+  it("does not reinterpret an explicit file URL as a virtual media root", () => {
+    const raw =
+      "/api/agents/main/workspace/download?path=file%3A%2F%2F%2Foutbound%2Fprivate.pdf";
+    expect(canonicalizeMediaApiUrl(raw)).toBe(raw);
+    expect(toMediaPreviewSource("file:///outbound/private.png")).toBe(
+      "file:///outbound/private.png",
+    );
+  });
+
+  it("retains explicit legacy agent workspace path ownership", () => {
+    const next = canonicalizeMediaApiUrl(
+      "/api/agents/main/workspace/download?path=%2Fhome%2Fuser%2F.octop%2Fagents%2Fother%2Foutbound%2F%E6%8A%A5%E5%91%8A.png",
+    );
+    expect(next).toContain("/api/agents/other/workspace/download?");
+    expect(next).toContain("path=outbound%2F%E6%8A%A5%E5%91%8A.png");
   });
 });
 
@@ -69,13 +149,20 @@ describe("toMediaPreviewSource", () => {
       toMediaPreviewSource("file:///tmp/x/outbound/chart.png", {
         agentId: "main",
       }),
-    ).toBe("outbound/chart.png");
+    ).toBe("file:///tmp/x/outbound/chart.png");
   });
 
   it("keeps real host temps as file:// when not inside agent home", () => {
     expect(toMediaPreviewSource("/Users/me/Desktop/a.png")).toBe(
       "file:///Users/me/Desktop/a.png",
     );
+  });
+  it("preserves nested relative path components for live attachments", () => {
+    expect(
+      toMediaPreviewSource("reports/outbound/报告/chart.png", {
+        agentId: "main",
+      }),
+    ).toBe("reports/outbound/报告/chart.png");
   });
 
   it("feeds agentMediaPreviewUrl file:// for agent-home pngs from chat", () => {
@@ -122,6 +209,36 @@ describe("parseStructuredToolOutput", () => {
     expect(parsed.images).toHaveLength(1);
     expect(parsed.images[0].url).toContain("/api/agents/agent-1/media/preview");
     expect(parsed.images[0].url).toContain("generated%2Fimages%2Fa.png");
+  });
+  it("keeps complete nested paths in parsed tool-result media URLs", () => {
+    const parsed = parseStructuredToolOutput(
+      JSON.stringify({
+        type: "image_gen_tool_result",
+        images: [
+          { path: "reports/outbound/报告/chart.png" },
+          { path: "reports/inbound/报告/chart.png" },
+        ],
+      }),
+      "agent-1",
+    );
+
+    expect(parsed.images).toHaveLength(2);
+    expect(parsed.images[0].url).toContain(
+      "source=reports%2Foutbound%2F%E6%8A%A5%E5%91%8A%2Fchart.png",
+    );
+    expect(parsed.images[1].url).toContain(
+      "source=reports%2Finbound%2F%E6%8A%A5%E5%91%8A%2Fchart.png",
+    );
+    expect(parsed.images[0].url).not.toBe(parsed.images[1].url);
+  });
+
+  it("restores stored download URLs without collapsing nested paths", () => {
+    const url =
+      "/api/agents/main/workspace/download?path=reports%2Finbound%2F%E6%8A%A5%E5%91%8A%2Fchart.png";
+    expect(normalizeStoredMediaUrl("main", url)).toBe(url);
+    expect(workspacePathFromAccessUrl(url)).toBe(
+      "reports/inbound/报告/chart.png",
+    );
   });
 
   it("keeps actionable feedback when a generation envelope has no media", () => {

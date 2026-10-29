@@ -1212,6 +1212,12 @@ class GlobalProcessor:
                 self._agent_manager.stream(agent_id, request), thread_id
             ):
                 usage_tracker.observe(chunk)
+                if chunk.get("type") == "tool_result" and harness_workspace is not None:
+                    chunk = await enrich_tool_result_with_backend(
+                        chunk,
+                        agent_id=agent_id,
+                        workspace=harness_workspace,
+                    )
                 history_tracker.observe(chunk)
                 from octop.infra.history.recorder import flush_tracker  # noqa: PLC0415
 
@@ -1240,11 +1246,6 @@ class GlobalProcessor:
                         request_payload["pending_id"] = record.pending_id
                 if chunk.get("type") == "tool_result":
                     if harness_workspace is not None:
-                        chunk = await enrich_tool_result_with_backend(
-                            chunk,
-                            agent_id=agent_id,
-                            workspace=harness_workspace,
-                        )
                         async for att in attachment_frames_from_tool_result(
                             chunk,
                             agent_id=agent_id,

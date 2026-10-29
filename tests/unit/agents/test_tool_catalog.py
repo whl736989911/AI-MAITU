@@ -66,6 +66,41 @@ def test_plugin_tools_ignored_when_plugin_globally_disabled() -> None:
     )
 
 
+def test_execute_availability_tracks_backend_not_enabled_setting() -> None:
+    filesystem = {"type": "filesystem", "virtual_mode": True}
+    shell = {"type": "local_shell", "virtual_mode": True}
+    assert builtin_tool_available("execute", agent_cfg={}, backend_spec=filesystem) is False
+    assert builtin_tool_available("execute", agent_cfg={}, backend_spec=shell) is True
+    # Enabled is a separate setting: backend capability does not change it.
+    assert "execute" in tools_disabled_set({"tools_disabled": ["execute"]})
+    assert builtin_tool_available(
+        "execute",
+        agent_cfg={"tools_disabled": ["execute"]},
+        backend_spec=shell,
+    )
+
+
+def test_execute_availability_uses_composite_default_backend() -> None:
+    assert not builtin_tool_available(
+        "execute",
+        agent_cfg={},
+        backend_spec={
+            "type": "composite",
+            "default": {"type": "filesystem"},
+            "routes": {"/shell": {"type": "local_shell"}},
+        },
+    )
+    assert builtin_tool_available(
+        "execute",
+        agent_cfg={},
+        backend_spec={
+            "type": "composite",
+            "default": {"type": "docker"},
+            "routes": {"/files": {"type": "filesystem"}},
+        },
+    )
+
+
 def test_builtin_tool_available_gates() -> None:
     assert builtin_tool_available("web_fetch", agent_cfg={}) is True
     assert builtin_tool_available("mobile_tap", agent_cfg={}, mobile_enabled=False) is False

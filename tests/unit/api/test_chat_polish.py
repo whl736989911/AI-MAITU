@@ -275,7 +275,8 @@ def test_serialize_history_message_prefers_checkpoint_ts_over_created_at() -> No
     assert user["timestamp"] == 1_700_000_000_000
 
 
-def test_load_projected_falls_back_to_created_at() -> None:
+@pytest.mark.asyncio
+async def test_load_projected_falls_back_to_created_at() -> None:
     import json
 
     from langchain_core.messages import message_to_dict
@@ -288,11 +289,18 @@ def test_load_projected_falls_back_to_created_at() -> None:
         created_at=1_700_000_000,
     )
     server = SimpleNamespace(
+        app_runtime=SimpleNamespace(
+            agent_registry=SimpleNamespace(
+                get_agent=lambda _agent_id: SimpleNamespace(workspace=None)
+            )
+        ),
         services=SimpleNamespace(
             thread_message_repo=SimpleNamespace(page=lambda *_a, **_k: ([row], False))
-        )
+        ),
     )
-    messages, has_more = _load_projected_thread_messages(server, "agent", "thread", 25, user=None)
+    messages, has_more = await _load_projected_thread_messages(
+        server, "agent", "thread", 25, user=None
+    )
     assert has_more is False
     assert messages[0]["timestamp"] == 1_700_000_000_000
 

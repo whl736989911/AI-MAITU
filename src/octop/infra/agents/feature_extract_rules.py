@@ -130,7 +130,11 @@ def _validate_fields(
                 if type(limit) is not int or limit < 1 or limit > 50:
                     raise ValueError(f"field {field_key!r}.limit must be 1..50")
                 entry["limit"] = limit
-        if not entry.get("labels") and not entry.get("pattern") and entry.get("from") != "dimensions":
+        if (
+            not entry.get("labels")
+            and not entry.get("pattern")
+            and entry.get("from") != "dimensions"
+        ):
             raise ValueError(f"field {field_key!r} needs labels, a pattern, or from=dimensions")
         normalized[field_key] = entry
     return normalized

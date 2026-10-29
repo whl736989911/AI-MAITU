@@ -367,7 +367,7 @@ class UserRepo:
                     (user_id, unit_key),
                 )
 
-    def units_for_user(self, user_id: int, *, conn: Any | None = None) -> list[str]:
+    def units_for_user(self, user_id: int, *, conn: Any | None = None) -> builtins.list[str]:
         """Every department the account belongs to, primary included."""
         sql = (
             "SELECT unit_key FROM user_org_units WHERE user_id = ? "
@@ -380,7 +380,7 @@ class UserRepo:
             rows = conn.execute(sql, (user_id, user_id)).fetchall()
         return sorted({str(row[0]) for row in rows if row and row[0]})
 
-    def set_units(self, user_id: int, unit_keys: list[str]) -> None:
+    def set_units(self, user_id: int, unit_keys: builtins.list[str]) -> None:
         """Replace the account's department memberships.
 
         The first key becomes the primary department (``users.org_unit``) so the

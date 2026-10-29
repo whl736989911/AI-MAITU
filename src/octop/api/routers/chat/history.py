@@ -30,6 +30,7 @@ from octop.infra.gateway.hitl.coordinator import (
     pending_hitl_payload,
 )
 from octop.infra.gateway.hitl.format import normalize_hitl_request
+from octop.infra.gateway.process.agent_resolve import harness_workspace_for_agent
 from octop.infra.gateway.threads import ThreadRegistry, thread_row_has_messages
 from octop.infra.history.service import HistoryArchive
 from octop.infra.trajectory.service import TrajectoryService
@@ -408,7 +409,11 @@ async def get_thread_history(
             if item is None:
                 raise ValueError("An archived history message could not be rendered")
             messages.append(item)
-        messages = _enrich_history_tool_media(messages, agent_id=agent_id)
+        messages = await _enrich_history_tool_media(
+            messages,
+            agent_id=agent_id,
+            workspace=harness_workspace_for_agent(server.app_runtime.agent_registry, agent_id),
+        )
         history_loading = False
         projection_status = "ready"
     else:
@@ -442,7 +447,7 @@ async def get_thread_history(
                 else "pending"
             )
         else:
-            messages, has_more = _load_projected_thread_messages(
+            messages, has_more = await _load_projected_thread_messages(
                 server,
                 agent_id,
                 thread_id,

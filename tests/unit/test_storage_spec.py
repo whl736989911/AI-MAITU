@@ -87,11 +87,19 @@ def test_backend_spec_supports_execution() -> None:
     assert backend_spec_supports_execution("opensandbox")
     assert not backend_spec_supports_execution({"type": "filesystem", "virtual_mode": True})
     assert not backend_spec_supports_execution({"type": "state"})
-    assert backend_spec_supports_execution(
+    assert not backend_spec_supports_execution(None)
+    assert not backend_spec_supports_execution(
         {
             "type": "composite",
             "default": {"type": "filesystem", "virtual_mode": True},
             "routes": {"/shell": {"type": "local_shell", "virtual_mode": True}},
+        }
+    )
+    assert backend_spec_supports_execution(
+        {
+            "type": "composite",
+            "default": {"type": "local_shell", "virtual_mode": True},
+            "routes": {"/files": {"type": "filesystem", "virtual_mode": True}},
         }
     )
 

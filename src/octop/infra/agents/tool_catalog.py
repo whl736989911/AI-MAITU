@@ -6,6 +6,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from octop.infra.backend.resolver import backend_spec_supports_execution
+
 # Tools that must remain available; ignored if present in ``tools_disabled``.
 CRITICAL_TOOLS: frozenset[str] = frozenset(
     {
@@ -197,8 +199,15 @@ def builtin_tool_available(
     *,
     agent_cfg: Mapping[str, Any],
     mobile_enabled: bool = False,
+    backend_spec: Any = None,
 ) -> bool:
-    """Whether a catalog builtin is expected to be mounted for this agent."""
+    """Whether a catalog builtin is available from configured capabilities.
+
+    This is independent of the user's enabled/disabled setting and of transient
+    runtime conditions such as sandbox availability or workflow mode.
+    """
+    if name == "execute":
+        return backend_spec_supports_execution(backend_spec)
     if name in _MOBILE_TOOLS:
         return mobile_enabled
     if name in _MEMORY_TOOLS:

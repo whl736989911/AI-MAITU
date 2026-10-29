@@ -55,7 +55,10 @@ from octop.infra.knowledge.sources import (
     SourceUnsupported,
 )
 from octop.infra.knowledge.tools import build_knowledge_tools
-
+from octop.infra.knowledge.url_fetch import FetchedDocument
+from octop.infra.sharing import AclEntry
+from octop.infra.utils.paths import PathLayout
+from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
 
 _CITATIONS_MARKER = "<!--octop-kb-citations:"
 
@@ -65,11 +68,6 @@ def _tool_json(raw: str) -> dict:
     head, sep, _ = raw.rpartition(_CITATIONS_MARKER)
     return json.loads(head if sep else raw)
 
-
-from octop.infra.knowledge.url_fetch import FetchedDocument
-from octop.infra.sharing import AclEntry
-from octop.infra.utils.paths import PathLayout
-from octop.infra.utils.ssrf_guard import OutboundFetchError, UnsafeOutboundUrl
 
 _DOC_TEXT = "# Handbook\n\nRefunds are processed within five business days.\n"
 

@@ -76,9 +76,7 @@ def test_folder_move_carries_descendants(tree: dict) -> None:
     knowledge, base_id, owner = tree["knowledge"], tree["base"].id, tree["owner"]
     folder = knowledge._repo.get_document_by_path(base_id, "图纸")
 
-    moved = knowledge.move_document(
-        base_id, folder.id, target_folder="台账", actor_user_id=owner
-    )
+    moved = knowledge.move_document(base_id, folder.id, target_folder="台账", actor_user_id=owner)
 
     assert moved.path == "台账/图纸"
     descendants = [

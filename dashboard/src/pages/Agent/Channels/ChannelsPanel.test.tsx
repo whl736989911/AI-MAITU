@@ -5,8 +5,9 @@
  * preservation of Discord access policy IDs at the API boundary.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -41,6 +42,7 @@ vi.mock("../../../api/request", () => ({
 import { request } from "../../../api/request";
 import { CurrentUserProvider } from "../../../hooks/useCurrentUser";
 import type { OctopUser } from "../../../api/modules/auth";
+import { message } from "../../../utils/antdMessage";
 import ChannelsPanel from "./ChannelsPanel";
 
 const api = vi.mocked(request, true);
@@ -69,6 +71,13 @@ beforeEach(() => {
       return { id: "c1", kind: "telegram", name: "telegram", enabled: true };
     }
     return [];
+  });
+});
+
+// Static fallback messages own timers outside RTL's component roots.
+afterEach(async () => {
+  await act(async () => {
+    message.destroy();
   });
 });
 

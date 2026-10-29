@@ -738,7 +738,7 @@ class UserManager:
             payload=unit_key or "",
         )
 
-    async def set_units(self, username: str, unit_keys: list[str]) -> None:
+    async def set_units(self, username: str, unit_keys: builtins.list[str]) -> None:
         """Replace every department the account belongs to.
 
         ``users.org_unit`` keeps the first key as the primary department for the

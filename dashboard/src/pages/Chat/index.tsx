@@ -1665,9 +1665,13 @@ function ChatPageInner() {
                 hasPendingHitlPause
               }
               isStreaming={isStreaming}
-              onRun={(text, attachments, payload) =>
-                wrappedHandleSend(text, attachments, { featureRun: payload })
-              }
+              onRun={(text, attachments, payload) => {
+                setConversationMode("craft");
+                return wrappedHandleSend(text, attachments, {
+                  featureRun: payload,
+                  conversationMode: "craft",
+                });
+              }}
             />
             {conversationMode === "plan" &&
               composerSession?.pendingPlanPath &&

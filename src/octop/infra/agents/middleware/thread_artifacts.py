@@ -25,7 +25,6 @@ from octop.infra.agents.conversation_mode import (
     plan_relpath_from_artifact,
 )
 from octop.infra.gateway.media.backend_files import (
-    extract_workspace_rel,
     file_url_to_abs_path,
     is_host_absolute_path,
 )
@@ -132,25 +131,38 @@ def _path(value: object, workspace_dir: Path) -> str:
     if not isinstance(value, str) or not value.strip():
         return ""
     raw = value.strip().replace("\\", "/")
-    if raw.startswith("file://"):
-        raw = file_url_to_abs_path(raw).replace("\\", "/")
+    # ``/outbound`` and ``/inbound`` are virtual workspace roots emitted by
+    # media tools, not host filesystem paths. Match only these root prefixes.
+    if raw.startswith(("/outbound/", "/inbound/")):
+        raw = raw[1:]
+    elif raw.startswith("file://"):
+        try:
+            raw = file_url_to_abs_path(raw).replace("\\", "/")
+        except ValueError:
+            return ""
     if is_host_absolute_path(raw):
         try:
-            if os.path.commonpath((str(workspace_dir.resolve()), str(Path(raw).resolve()))) != str(
-                workspace_dir.resolve()
-            ):
-                return ""
+            resolved = Path(raw).resolve()
+            resolved.relative_to(workspace_dir.resolve())
         except (OSError, ValueError):
             return ""
-        if not _artifact_path_allowed(raw):
+        if not _artifact_path_allowed(str(resolved)):
             return ""
-        return raw
-    rel = extract_workspace_rel(raw) or raw.lstrip("/")
+        return resolved.as_posix()
+    rel = raw.removeprefix("/")
     if rel.startswith("workspace/"):
         rel = rel.removeprefix("workspace/")
-    if not rel or ".." in Path(rel).parts or not _artifact_path_allowed(rel):
+    rel_path = Path(rel)
+    if not rel or ".." in rel_path.parts or not _artifact_path_allowed(rel):
         return ""
-    return str((workspace_dir / rel).as_posix())
+    try:
+        resolved = (workspace_dir / rel_path).resolve()
+        resolved.relative_to(workspace_dir.resolve())
+    except (OSError, ValueError):
+        return ""
+    if not _artifact_path_allowed(str(resolved)):
+        return ""
+    return resolved.as_posix()
 
 
 def current_thread_id() -> str:

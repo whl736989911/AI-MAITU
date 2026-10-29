@@ -445,6 +445,7 @@ def test_visible_ids_match_can_access(
 
     assert got == expected
 
+
 # ----------------------------------------------------------------------
 # version counters vs governed state
 # ----------------------------------------------------------------------
@@ -528,9 +529,7 @@ def test_approve_still_refuses_when_the_state_moved(world: World) -> None:
         new_entry=entry(world, visibility="public"),
         actor=world.owner,
     )
-    world.acl.set_visibility(
-        "agent", "a1", "private", owner_user_id=world.owner, unit_key="sales"
-    )
+    world.acl.set_visibility("agent", "a1", "private", owner_user_id=world.owner, unit_key="sales")
 
     with pytest.raises(ValueError, match="is stale"):
         world.service.approve(parked.change_id, world.admin)

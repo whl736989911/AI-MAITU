@@ -22,7 +22,8 @@ from octop.infra.knowledge.default_open import stamp_turn_knowledge_config
 from octop.infra.knowledge.files import document_digest, write_document
 from octop.infra.knowledge.source_access import KnowledgeSourceService
 from octop.infra.knowledge.tools import build_knowledge_tools
-
+from octop.infra.sharing import AclEntry
+from octop.infra.utils.paths import PathLayout
 
 _CITATIONS_MARKER = "<!--octop-kb-citations:"
 
@@ -31,10 +32,6 @@ def _tool_json(raw: str) -> dict:
     """Parse a knowledge tool payload, ignoring its citation trailer."""
     head, sep, _ = raw.rpartition(_CITATIONS_MARKER)
     return json.loads(head if sep else raw)
-
-
-from octop.infra.sharing import AclEntry
-from octop.infra.utils.paths import PathLayout
 
 
 @pytest.fixture

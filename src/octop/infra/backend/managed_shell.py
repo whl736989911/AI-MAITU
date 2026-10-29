@@ -149,11 +149,14 @@ class _PlatformPythonShellBackend(BubbledLocalShellBackend):
             binds = [*binds, *runtime.binds]
         return binds
 
-    def _refresh_execute_env(self) -> None:
-        super()._refresh_execute_env()
+    def _apply_platform_python_env(self) -> None:
         runtime = _platform_python_runtime()
         if runtime is not None:
             self._env = _python_runtime_env(dict(self._env), runtime)
+
+    def _refresh_execute_env(self) -> None:
+        super()._refresh_execute_env()
+        self._apply_platform_python_env()
 
     def execute(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         runtime = _platform_python_runtime()
@@ -201,8 +204,11 @@ class ManagedShellBackend(_PlatformPythonShellBackend):
     """Preserve harness filesystem behavior; disallow its host-shell fallback."""
 
     def _refresh_execute_env(self) -> None:
-        super()._refresh_execute_env()
+        # Validate the environment produced by Harness (host + constructor +
+        # workspace dotenv) before adding trusted platform-runtime paths.
+        BubbledLocalShellBackend._refresh_execute_env(self)
         validate_managed_environment(self._env)
+        self._apply_platform_python_env()
 
     def _execute_on_host(self, command: str, *, timeout: int | None = None) -> ExecuteResponse:
         raise OctopError(

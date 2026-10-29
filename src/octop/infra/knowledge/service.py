@@ -1049,8 +1049,7 @@ class KnowledgeService:
                 raise ValueError("target folder not found")
             self.require_document_writable(folder, actor_user_id=actor_user_id)
         if document.is_dir and (
-            normalized_target == document.path
-            or normalized_target.startswith(document.path + "/")
+            normalized_target == document.path or normalized_target.startswith(document.path + "/")
         ):
             raise ValueError("cannot move a folder into itself")
         filename = path_basename(document.filename or document.path)
