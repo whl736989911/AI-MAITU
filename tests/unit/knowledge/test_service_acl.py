@@ -14,6 +14,7 @@ from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.db.services import RepoBundle
 from octop.infra.errors import OctopError
 from octop.infra.knowledge import service as service_module
 from octop.infra.knowledge.service import MAX_DOCS_PER_KB, KnowledgeService
@@ -29,6 +30,7 @@ def service(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> KnowledgeService
     run_migrations(pool)
     services = SimpleNamespace(
         db=pool,
+        repos=RepoBundle.from_pool(pool),
         knowledge_repo=KnowledgeRepo(pool),
         settings_repo=SettingsRepo(pool),
         user_repo=UserRepo(pool),

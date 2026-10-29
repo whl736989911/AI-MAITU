@@ -26,6 +26,7 @@ import { featureDataApi } from "../../../api/modules/featureData";
 import { apiErrorMessage } from "../../../utils/apiError";
 import FeatureDataNotifications from "./FeatureDataNotifications";
 import FeatureDataRecords from "./FeatureDataRecords";
+import FeatureExtractRulesEditor from "./FeatureExtractRulesEditor";
 import FeatureDataSchemaEditor from "./FeatureDataSchemaEditor";
 import { objectLabel, schemaObjects } from "../utils/featureData";
 import styles from "./FeatureDataPanel.module.less";
@@ -39,7 +40,7 @@ export interface FeatureDataPanelProps {
   canEditRecords?: boolean;
 }
 
-type DataTab = "records" | "notifications" | "schema";
+type DataTab = "records" | "notifications" | "schema" | "extractRules";
 
 export default function FeatureDataPanel({
   agentId,
@@ -174,6 +175,7 @@ export default function FeatureDataPanel({
                     agentId={agentId}
                     object={selectedObject}
                     canWrite={canEditRecords}
+                    canManage={canWrite}
                   />
                 ) : null}
               </div>
@@ -209,6 +211,13 @@ export default function FeatureDataPanel({
             );
           }}
         />
+      ),
+    });
+    tabItems.push({
+      key: "extractRules",
+      label: t("features.data.tabExtractRules"),
+      children: (
+        <FeatureExtractRulesEditor agentId={agentId} schema={schema} />
       ),
     });
   }

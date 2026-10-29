@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -12,7 +13,9 @@ from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.db.services import RepoBundle
 from octop.infra.knowledge.files import document_path
+from octop.infra.knowledge.jobs import process_document
 from octop.infra.knowledge.service import KnowledgeService
 from octop.infra.utils.paths import PathLayout
 
@@ -32,6 +35,8 @@ def services(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace
         "knowledge_embedding_model": "tiny",
     }.get(key, default)
     return SimpleNamespace(
+        db=db,
+        repos=RepoBundle.from_pool(db),
         knowledge_repo=KnowledgeRepo(db),
         settings_repo=settings,
         user_repo=UserRepo(db),
@@ -135,7 +140,7 @@ def test_upload_spreadsheet_documents(
     assert xlsm.content_type == "application/vnd.ms-excel.sheet.macroEnabled.12"
 
 
-def test_image_upload_requires_ocr(
+def test_disabled_ocr_preserves_image_original_without_indexed_text(
     services: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
@@ -144,27 +149,24 @@ def test_image_upload_requires_ocr(
     )
     svc = KnowledgeService(services)
     base = services.knowledge_repo.create_base(owner_user_id=services.owner_id, name="Images")
-
-    with pytest.raises(ValueError, match="OCR must be enabled"):
-        svc.upload_document(
-            base.id,
-            actor_user_id=services.owner_id,
-            filename="scan.png",
-            content_type="image/png",
-            content=b"image",
-        )
-
-    services.settings_repo.get.side_effect = lambda key, default=None: {
-        "knowledge_feature_enabled": "1",
-        "knowledge_embedding_backend": "onnx",
-        "knowledge_embedding_model": "tiny",
-        "knowledge_ocr_enabled": "true",
-    }.get(key, default)
+    original = base64.b64decode(
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/"
+        "x8AAwMCAO+/mWQAAAAASUVORK5CYII="
+    )
     created = svc.upload_document(
         base.id,
         actor_user_id=services.owner_id,
         filename="scan.png",
         content_type="application/octet-stream",
-        content=b"image",
+        content=original,
     )
-    assert created.content_type == "image/png"
+
+    process_document(services, base.id, created.id)
+
+    archived = services.knowledge_repo.get_document(created.id)
+    assert archived is not None
+    assert archived.status == "archive_only"
+    assert archived.error_message == "ocr_disabled"
+    assert archived.chunk_count == 0
+    assert archived.content_type == "image/png"
+    assert document_path(base.id, created.id, created.filename).read_bytes() == original

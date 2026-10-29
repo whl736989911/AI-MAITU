@@ -57,6 +57,7 @@ __all__ = [
     "allowed_resource_ids",
     "can_access",
     "can_write",
+    "grant_delegates",
     "impact_scope",
     "requires_approval",
 ]
@@ -87,6 +88,17 @@ class AclEntry:
     version: int
     grants: tuple[tuple[str, str], ...] = ()  # ((grantee_type, grantee_id), ...)
     permission: str = PERMISSION_READ  # read | write
+    #: The subset of *individual user* grants that also carry delegation
+    #: authority: the grantee may pass their entry-derived access on to other
+    #: individual users through the knowledge delegation graph. It never
+    #: widens direct access — :func:`can_access` / :func:`can_write` ignore it —
+    #: and only ``("user", ...)`` grants may appear here.
+    grant_delegation: tuple[tuple[str, str], ...] = ()
+
+
+def grant_delegates(entry: AclEntry) -> frozenset[tuple[str, str]]:
+    """The delegation-carrying grants of *entry*, tolerating JSON row mappers."""
+    return frozenset((str(kind), str(grantee)) for kind, grantee in entry.grant_delegation)
 
 
 def _grants(entry: AclEntry) -> set[tuple[str, str]]:

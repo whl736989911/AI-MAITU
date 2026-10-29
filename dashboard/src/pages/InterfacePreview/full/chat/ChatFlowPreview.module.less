@@ -1,0 +1,279 @@
+:global(.chatFlowPreview) {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: #fff;
+  color: #20242b;
+}
+
+:global(.chatFlowMain) {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+:global(.chatFlowToolbar),
+:global(.chatFlowSessionPicker) {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  border-bottom: 1px solid #edf0f4;
+}
+
+:global(.chatFlowToolbar) {
+  justify-content: space-between;
+  color: #697386;
+  font-size: 12px;
+}
+
+:global(.chatFlowSessionPicker) {
+  gap: 6px;
+  max-height: 68px;
+  overflow: auto;
+}
+
+:global(.chatFlowStream) {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+:global(.chatFlowDock) {
+  display: flex;
+  gap: 10px;
+  padding: 8px 20px;
+  flex-shrink: 0;
+  max-height: 35%;
+  overflow: auto;
+}
+
+:global(.chatPendingAsk),
+:global(.chatQueue) {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  border: 1px solid #e6eaf0;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+:global(.chatPendingAsk p) {
+  flex-basis: 100%;
+  margin: 0;
+  color: #687386;
+}
+:global(.chatQueue span) {
+  flex: 1;
+  color: #687386;
+}
+:global(.chatFlowNotice) {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 20px;
+  color: #47627c;
+  font-size: 12px;
+}
+::global(.chatWorkflowCards) {
+  max-height: 260px;
+  overflow: auto;
+  padding: 4px 18px;
+  min-height: 0;
+  flex-shrink: 1;
+  border-top: 1px solid #edf0f4;
+}
+::global(.chatWorkflowCards summary) {
+  cursor: pointer;
+  color: #526174;
+  font-size: 12px;
+}
+::global(.chatLocalFileContent) {
+  max-height: 60vh;
+  overflow: auto;
+  padding: 14px;
+  white-space: pre-wrap;
+  border: 1px solid #e5e9ef;
+  border-radius: 8px;
+  background: #fafbfd;
+}
+::global(.chatLocalFileEditor) {
+  width: 100%;
+  min-height: 300px;
+  padding: 12px;
+  font-family: monospace;
+}
+::global(.chatLocalFiles p) {
+  margin: 2px 0;
+}
+::global(.chatLocalFileContent + img) {
+  max-width: 100%;
+}
+::global(.chatLocalScreenshot),
+:global(.chatLocalFileContent + video),
+:global(.chatLocalFileContent + audio) {
+  max-width: 100%;
+}
+::global(.chatLocalScreenshot) {
+  border: 1px solid #e5e9ef;
+  border-radius: 8px;
+}
+:global(.chatOriginalViewer) {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  height: calc(100dvh - 180px);
+}
+:global(.chatOriginalViewerActions) {
+  display: flex;
+  justify-content: flex-end;
+  flex-shrink: 0;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+
+.plugin {
+  margin: 6px 0;
+  padding: 12px;
+  border: 1px solid #dbe4f0;
+  border-radius: 8px;
+  background: #f8fbff;
+
+  pre {
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+  }
+  small {
+    color: #667085;
+  }
+}
+
+.pluginHeader {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 12px;
+}
+.pluginStatus {
+  margin-left: auto;
+  color: #66825b;
+  font-size: 11px;
+}
+.pluginDetails {
+  margin-top: 5px;
+  font-size: 11px;
+  summary {
+    cursor: pointer;
+    color: #7f8d74;
+  }
+}
+
+:global(.chatFlowRefined) {
+  color: #242423;
+  :global(.chatFlowToolbar),
+  :global(.chatFlowSessionPicker) {
+    gap: 4px;
+    padding: 4px 12px;
+    color: #73736f;
+    background: #fafaf9;
+    border-color: #e5e5e3;
+  }
+  :global(.chatFlowSessionPicker) {
+    > :global(.octop-btn) {
+      height: 23px;
+      padding-inline: 6px;
+      border-color: #e1e6dc;
+      border-radius: 4px;
+      font-size: 11px;
+      box-shadow: none;
+    }
+  }
+  :global(.chatFlowToolbar .octop-tag) {
+    margin: 0;
+    border-color: #e1e6dc;
+    background: #f1f5ec;
+    color: #728067;
+  }
+  :global(.chatFlowNotice),
+  :global(.chatWorkflowCards summary) {
+    color: #73736f;
+  }
+  :global(.chatPendingAsk),
+  :global(.chatQueue),
+  :global(.chatWorkflowCards) {
+    border-color: #e5e5e3;
+  }
+  :global(.chatFlowDock) {
+    padding-block: 4px;
+    &:empty {
+      display: none;
+    }
+  }
+  :global(.chatPendingAsk) {
+    padding: 0;
+    border: 0;
+    > strong,
+    > p {
+      display: none;
+    }
+  }
+  &:has(:global(.chatPendingAsk[data-pending="true"])) :global(.chatFlowDock) {
+    max-height: 45%;
+  }
+  .plugin {
+    margin-block: 4px;
+    padding: 8px 10px;
+    background: #fafcf7;
+    border-color: #e5e5e3;
+    border-radius: 6px;
+    p {
+      margin: 5px 0;
+      font-size: 12px;
+      color: #76846b;
+    }
+    small {
+      font-size: 10px;
+    }
+  }
+  @media (max-width: 760px) {
+    :global(.chatFlowSessionPicker) > :global(.octop-btn) {
+      height: 32px;
+    }
+  }
+}
+
+@media (max-width: 760px) {
+  :global(.chatFlowPreview) {
+    min-height: 0;
+  }
+  :global(.chatFlowDock) {
+    flex-direction: column;
+    padding: 6px 10px;
+  }
+  :global(.chatFlowToolbar) {
+    align-items: flex-start;
+    > span:not([class]) {
+      display: none;
+    }
+  }
+  :global(.chatFlowSessionPicker) {
+    flex-wrap: nowrap;
+    max-height: none;
+    flex-shrink: 0;
+    > button {
+      flex-shrink: 0;
+    }
+  }
+}

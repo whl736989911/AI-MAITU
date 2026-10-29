@@ -24,6 +24,7 @@ import {
   Radio,
   Segmented,
   Select,
+  Space,
   Spin,
   Switch,
   Tag,
@@ -43,6 +44,7 @@ import {
   FileUp,
   Folder,
   FolderPlus,
+  FolderInput,
   LayoutGrid,
   List as ListIcon,
   ListTree,
@@ -70,9 +72,11 @@ import {
   DEFAULT_KNOWLEDGE_LIMITS,
   knowledgeBasesApi,
   type KnowledgeBase,
-  type KnowledgeCapability,
   type KnowledgeDocument,
+  type KnowledgeCapability,
   type KnowledgeOnnxModel,
+  type KnowledgeUploadAccess,
+  type KnowledgeUploadTarget,
   type KnowledgeCoverage,
   type KnowledgeEvidence,
   type KnowledgeSearchHit,
@@ -96,7 +100,11 @@ import { useServerTimezone } from "../../hooks/useServerTimezone";
 import PageShell from "../../layouts/PageShell";
 import { apiErrorMessage, isNotFoundApiError } from "../../utils/apiError";
 import { createDetailRequestGate } from "../../utils/detailRequestGate";
-import { getDocKind, type DocKind } from "../../utils/docKind";
+import {
+  getDocKind,
+  isCadDrawingPath,
+  type DocKind,
+} from "../../utils/docKind";
 import { formatBytes, formatSizeGb } from "../../utils/embeddingDownload";
 import { fileTreeIconSpec } from "../../utils/fileTreeIcon";
 import { formatServerDateTime } from "../../utils/formatMessageTime";
@@ -114,6 +122,7 @@ import {
   joinKnowledgePath,
   knowledgeBasename,
   knowledgeBreadcrumb,
+  knowledgePathParent,
   shouldOpenKnowledgeFolder,
 } from "./knowledgeFolder";
 import { effectiveDocumentLimit } from "./documentLimit";
@@ -129,8 +138,10 @@ import TextDocumentEditorModal, {
   type TextDocumentFormat,
 } from "./TextDocumentEditorModal";
 import DataSourcesPanel from "./components/DataSourcesPanel";
+import KnowledgeProcessorNotice from "./components/KnowledgeProcessorNotice";
 import KnowledgeCollections from "./components/KnowledgeCollections";
 import KnowledgePermissionsDrawer from "./components/KnowledgePermissionsDrawer";
+import KnowledgeAccessNotifications from "../../components/KnowledgeAccessNotifications";
 import styles from "./index.module.less";
 import { isImeComposing } from "../Chat/utils/ime";
 
@@ -142,10 +153,6 @@ type BaseFormValues = {
 
 type DocsViewMode = "card" | "table";
 const DOCS_VIEW_STORAGE_KEY = "octop:knowledge-bases-docs-view";
-
-const BASE_DOCUMENT_TYPES =
-  ".md,.markdown,.txt,.rst,.html,.htm,.json,.jsonl,.xml,.yaml,.yml,.csv,.tsv,.pdf,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.xlsm";
-const OCR_DOCUMENT_TYPES = ".png,.jpg,.jpeg,.webp";
 
 function loadDocsViewMode(): DocsViewMode {
   const stored = localStorage.getItem(DOCS_VIEW_STORAGE_KEY);
@@ -190,19 +197,6 @@ function fileExtensionLabel(filename: string): string {
     ? filename.slice(filename.lastIndexOf(".") + 1)
     : "";
   return ext.trim().toUpperCase().slice(0, 5);
-}
-
-/** Match ``<input accept>`` extension tokens (e.g. ``.pdf,.docx``). */
-function fileMatchesAccept(file: File, acceptCsv: string): boolean {
-  const tokens = acceptCsv
-    .split(",")
-    .map((token) => token.trim().toLowerCase())
-    .filter(Boolean);
-  if (tokens.length === 0) return true;
-  const name = file.name.toLowerCase();
-  return tokens.some((token) =>
-    token.startsWith(".") ? name.endsWith(token) : false,
-  );
 }
 
 function canManageKnowledgeBase(
@@ -346,6 +340,8 @@ export default function KnowledgeBasesPage() {
     null,
   );
   const [renameName, setRenameName] = useState("");
+  const [moveTarget, setMoveTarget] = useState<KnowledgeDocument | null>(null);
+  const [moveFolder, setMoveFolder] = useState("");
   const [capability, setCapability] = useState<KnowledgeCapability | null>(
     null,
   );
@@ -739,6 +735,27 @@ export default function KnowledgeBasesPage() {
     total: number;
     percent: number;
   } | null>(null);
+  const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
+  const [uploadMode, setUploadMode] = useState<"platform" | "source">(
+    "platform",
+  );
+  const [uploadTargets, setUploadTargets] = useState<KnowledgeUploadTarget[]>(
+    [],
+  );
+  const [uploadTargetsLoading, setUploadTargetsLoading] = useState(false);
+  const [uploadTargetsError, setUploadTargetsError] = useState(false);
+  const uploadTargetsRequestRef = useRef(0);
+  const [uploadSourceId, setUploadSourceId] = useState<string>();
+  const [uploadSourceFolder, setUploadSourceFolder] = useState<string>();
+  const [queuedUploadFiles, setQueuedUploadFiles] = useState<File[]>([]);
+  const [uploadAccessOptions, setUploadAccessOptions] = useState<
+    KnowledgeUploadAccess[]
+  >([]);
+  const [uploadAccess, setUploadAccess] =
+    useState<KnowledgeUploadAccess | null>(null);
+  const [uploadAccessLoading, setUploadAccessLoading] = useState(false);
+  const [uploadAccessError, setUploadAccessError] = useState(false);
+  const uploadAccessRequestRef = useRef(0);
   const uploadRef = useRef<HTMLInputElement>(null);
   const dragDepthRef = useRef(0);
   const [dragActive, setDragActive] = useState(false);
@@ -773,9 +790,6 @@ export default function KnowledgeBasesPage() {
     [permissionsOverview],
   );
   const usable = Boolean(capability?.usable);
-  const supportedDocumentTypes = capability?.ocr?.usable
-    ? `${BASE_DOCUMENT_TYPES},${OCR_DOCUMENT_TYPES}`
-    : BASE_DOCUMENT_TYPES;
   const limits = capability?.limits ?? DEFAULT_KNOWLEDGE_LIMITS;
   const enterpriseBase = bases.find((base) => base.owner_user_id === null);
   const fileCount = documents.filter((document) => !document.is_dir).length;
@@ -786,6 +800,11 @@ export default function KnowledgeBasesPage() {
   const isAtDocumentLimit =
     documentLimit !== null && fileCount >= documentLimit;
   const folderEntries = documents
+    .filter((document) => {
+      const metadata = permissionsByDocument.get(document.id);
+      if (!metadata) return true;
+      return Boolean(metadata.effective.read || metadata.effective.write);
+    })
     .filter((document) =>
       isDirectKnowledgeChild(document.path || document.filename, currentFolder),
     )
@@ -799,6 +818,14 @@ export default function KnowledgeBasesPage() {
   const folderCrumbs = knowledgeBreadcrumb(
     currentFolder,
     t("knowledgeBases.documents"),
+  );
+  const currentFolderIsSourceTree = Boolean(
+    currentFolder &&
+      documents.some((document) => {
+        if (!document.data_source_id) return false;
+        const path = document.path || document.filename;
+        return path === currentFolder || path.startsWith(`${currentFolder}/`);
+      }),
   );
 
   const loadBases = useCallback(async () => {
@@ -1038,13 +1065,88 @@ export default function KnowledgeBasesPage() {
   }, []);
 
   useEffect(() => {
+    uploadTargetsRequestRef.current += 1;
+    setUploadDialogOpen(false);
+    setQueuedUploadFiles([]);
+    setUploadTargetsLoading(false);
+    setUploadTargetsError(false);
+    uploadAccessRequestRef.current += 1;
+    setUploadAccessLoading(false);
+    setUploadAccessError(false);
+    setUploadAccessOptions([]);
+    setUploadAccess(null);
     setCurrentFolder("");
+    setUploadSourceId(undefined);
+    setUploadSourceFolder(undefined);
+    setUploadTargets([]);
     searchRequestRef.current += 1;
     setSearchQuery("");
     setSearchHits([]);
     setSearchLoading(false);
     setSearchSubmitted(false);
   }, [selected?.id]);
+  useEffect(() => {
+    const requestId = ++uploadAccessRequestRef.current;
+    setUploadAccessOptions([]);
+    setUploadAccess(null);
+    setUploadAccessError(false);
+    if (!uploadDialogOpen || !selected?.id) {
+      setUploadAccessLoading(false);
+      return;
+    }
+    const folder =
+      uploadMode === "source"
+        ? uploadSourceFolder
+        : currentFolderIsSourceTree
+        ? ""
+        : currentFolder;
+    if (folder === undefined || (uploadMode === "source" && !uploadSourceId)) {
+      setUploadAccessLoading(false);
+      return;
+    }
+    setUploadAccessLoading(true);
+    knowledgeBasesApi
+      .getUploadPermissions(
+        selected.id,
+        folder,
+        uploadMode === "source" ? uploadSourceId : undefined,
+      )
+      .then((result) => {
+        if (uploadAccessRequestRef.current !== requestId) return;
+        setUploadAccessOptions(result.options);
+        setUploadAccess(result.default);
+      })
+      .catch((cause) => {
+        if (uploadAccessRequestRef.current !== requestId) return;
+        setUploadAccessError(true);
+        setUploadAccessOptions([]);
+        setUploadAccess(null);
+        message.error(
+          apiErrorMessage(
+            cause,
+            t("knowledgeBases.uploadPermissionsFailed"),
+            t,
+          ),
+        );
+      })
+      .finally(() => {
+        if (uploadAccessRequestRef.current === requestId)
+          setUploadAccessLoading(false);
+      });
+    return () => {
+      if (uploadAccessRequestRef.current === requestId)
+        uploadAccessRequestRef.current += 1;
+    };
+  }, [
+    currentFolder,
+    currentFolderIsSourceTree,
+    selected?.id,
+    t,
+    uploadDialogOpen,
+    uploadMode,
+    uploadSourceFolder,
+    uploadSourceId,
+  ]);
 
   useEffect(() => {
     void Promise.all([loadBases(), loadCapability()]).finally(() =>
@@ -1444,35 +1546,64 @@ export default function KnowledgeBasesPage() {
     message.info(t("models.localDownloadBackground"));
   };
 
-  const uploadDocuments = async (files: FileList | File[] | null) => {
-    if (!selected || !files || !usable || isAtDocumentLimit) return;
+  const openUploadDialog = async (files?: FileList | File[] | null) => {
+    if (!selected || !usable || isAtDocumentLimit) return;
+    const requestId = ++uploadTargetsRequestRef.current;
+    setUploadTargets([]);
+    setUploadTargetsError(false);
+    setQueuedUploadFiles(files ? Array.from(files) : []);
+    setUploadMode("platform");
+    setUploadSourceId(undefined);
+    setUploadSourceFolder(undefined);
+    setUploadDialogOpen(true);
+    setUploadTargetsLoading(true);
+    try {
+      const targets = await knowledgeBasesApi.getUploadTargets(selected.id);
+      if (uploadTargetsRequestRef.current !== requestId) return;
+      setUploadTargets(targets);
+      setUploadSourceId(targets[0]?.id);
+    } catch (error) {
+      if (uploadTargetsRequestRef.current !== requestId) return;
+      setUploadTargets([]);
+      setUploadTargetsError(true);
+      message.error(
+        apiErrorMessage(error, t("knowledgeBases.uploadTargetsFailed"), t),
+      );
+    } finally {
+      if (uploadTargetsRequestRef.current === requestId)
+        setUploadTargetsLoading(false);
+    }
+  };
+
+  const uploadDocuments = async (
+    files: FileList | File[] | null,
+    destination: {
+      mode: "platform" | "source";
+      kbId: string;
+      sourceId?: string;
+      sourceName?: string;
+      folder: string;
+      access: KnowledgeUploadAccess;
+    },
+  ) => {
+    if (!files || !usable || isAtDocumentLimit) return;
+    if (destination.mode === "source" && !destination.sourceId) {
+      message.error(t("knowledgeBases.uploadSourceRequired"));
+      return;
+    }
     const remaining =
       documentLimit === null
         ? Number.POSITIVE_INFINITY
         : Math.max(0, documentLimit - fileCount);
     const incoming = Array.from(files);
-    const matched = incoming.filter((file) =>
-      fileMatchesAccept(file, supportedDocumentTypes),
-    );
-    const skippedType = incoming.length - matched.length;
-    if (skippedType > 0) {
+    const chosen = incoming.slice(0, remaining);
+    if (!chosen.length) return;
+    if (incoming.length > remaining && documentLimit !== null) {
       message.warning(
-        t("knowledgeBases.dropUploadUnsupported", { count: skippedType }),
+        t("knowledgeBases.documentLimitReached", { count: documentLimit }),
       );
     }
-    const chosen = matched.slice(0, remaining);
-    if (chosen.length === 0) return;
-    if (matched.length > remaining && documentLimit !== null) {
-      message.warning(
-        t("knowledgeBases.documentLimitReached", {
-          count: documentLimit,
-        }),
-      );
-    }
-    const oversized = chosen.filter(
-      (file) => file.size > limits.max_document_bytes,
-    );
-    if (oversized.length > 0) {
+    if (chosen.some((file) => file.size > limits.max_document_bytes)) {
       message.error(
         t("knowledgeBases.documentTooLarge", {
           sizeMb: Math.round(limits.max_document_bytes / (1024 * 1024)),
@@ -1481,41 +1612,114 @@ export default function KnowledgeBasesPage() {
       if (uploadRef.current) uploadRef.current.value = "";
       return;
     }
-    try {
-      for (const [index, file] of chosen.entries()) {
-        setUploadState({
-          filename: file.name,
-          index: index + 1,
-          total: chosen.length,
-          percent: 0,
-        });
-        await knowledgeBasesApi.uploadDocument(
-          selected.id,
-          file,
-          joinKnowledgePath(currentFolder, file.name),
-          (percent) =>
-            setUploadState((current) =>
-              current && current.filename === file.name
-                ? { ...current, percent }
-                : current,
-            ),
-        );
-        // Show each finished file while the remaining ones still upload.
-        if (index < chosen.length - 1) {
-          void loadDetail(selected.id, { silent: true });
+    let succeeded = 0;
+    let firstError: unknown;
+    for (const [index, file] of chosen.entries()) {
+      setUploadState({
+        filename: file.name,
+        index: index + 1,
+        total: chosen.length,
+        percent: 0,
+      });
+      try {
+        const path = joinKnowledgePath(destination.folder, file.name);
+        const progress = (percent: number) =>
+          setUploadState((current) =>
+            current && current.filename === file.name
+              ? { ...current, percent }
+              : current,
+          );
+        if (destination.mode === "source") {
+          await knowledgeBasesApi.uploadSourceDocument(
+            destination.kbId,
+            destination.sourceId!,
+            file,
+            path,
+            progress,
+            destination.access,
+          );
+        } else {
+          await knowledgeBasesApi.uploadDocument(
+            destination.kbId,
+            file,
+            path,
+            progress,
+            destination.access,
+          );
         }
+        succeeded += 1;
+      } catch (error) {
+        firstError ??= error;
       }
-      await loadDetail(selected.id);
-      await loadBases();
-      message.success(t("knowledgeBases.uploaded"));
-    } catch (error) {
-      message.error(
-        apiErrorMessage(error, t("knowledgeBases.uploadFailed"), t),
-      );
-    } finally {
-      setUploadState(null);
-      if (uploadRef.current) uploadRef.current.value = "";
     }
+    setUploadState(null);
+    if (uploadRef.current) uploadRef.current.value = "";
+    if (succeeded > 0) {
+      await loadDetail(destination.kbId);
+      await loadPermissions(destination.kbId);
+      await loadBases();
+    }
+    if (firstError) {
+      if (succeeded > 0)
+        message.warning(
+          t("knowledgeBases.uploadPartialFailure", { count: succeeded }),
+        );
+      message.error(
+        apiErrorMessage(firstError, t("knowledgeBases.uploadFailed"), t),
+      );
+    } else if (destination.mode === "source") {
+      message.success(
+        t("knowledgeBases.sourceUploadSaved", {
+          name: destination.sourceName ?? "",
+        }),
+      );
+    } else {
+      message.success(t("knowledgeBases.uploaded"));
+    }
+  };
+
+  const confirmUpload = () => {
+    if (!selected || !queuedUploadFiles.length) return;
+    const sourceTarget = uploadTargets.find(
+      (target) => target.id === uploadSourceId,
+    );
+    if (
+      uploadMode === "source" &&
+      (!sourceTarget ||
+        uploadSourceFolder === undefined ||
+        !sourceTarget.folders.includes(uploadSourceFolder))
+    )
+      return;
+    if (
+      !uploadAccess ||
+      !uploadAccessOptions.some(
+        (option) =>
+          option.scope === uploadAccess.scope &&
+          option.permission === uploadAccess.permission &&
+          option.unit_key === uploadAccess.unit_key,
+      )
+    )
+      return;
+    const destination = {
+      mode: uploadMode,
+      kbId: selected.id,
+      sourceId: uploadMode === "source" ? uploadSourceId : undefined,
+      sourceName:
+        uploadMode === "source"
+          ? uploadTargets.find((target) => target.id === uploadSourceId)?.name
+          : undefined,
+      folder:
+        uploadMode === "source"
+          ? uploadSourceFolder ?? ""
+          : currentFolderIsSourceTree
+          ? ""
+          : currentFolder,
+      access: { ...uploadAccess },
+    } as const;
+    const files = queuedUploadFiles;
+    setUploadDialogOpen(false);
+    setQueuedUploadFiles([]);
+    void uploadDocuments(files, destination);
   };
 
   const canDropUpload =
@@ -1556,7 +1760,7 @@ export default function KnowledgeBasesPage() {
     event.stopPropagation();
     resetDragActive();
     if (!canDropUpload) return;
-    void uploadDocuments(event.dataTransfer.files);
+    void openUploadDialog(event.dataTransfer.files);
   };
 
   const createFolder = async () => {
@@ -1625,6 +1829,29 @@ export default function KnowledgeBasesPage() {
     }
   };
 
+  const openMoveTarget = (document: KnowledgeDocument) => {
+    setMoveTarget(document);
+    setMoveFolder(knowledgePathParent(document.path || document.filename));
+  };
+
+  const moveDocument = async () => {
+    if (!selected || !moveTarget) return;
+    try {
+      await knowledgeBasesApi.moveDocument(
+        selected.id,
+        moveTarget.id,
+        moveFolder,
+      );
+      setMoveTarget(null);
+      await loadDetail(selected.id);
+      message.success(t("knowledgeBases.moveDocumentSuccess"));
+    } catch (error) {
+      message.error(
+        apiErrorMessage(error, t("knowledgeBases.moveDocumentFailed"), t),
+      );
+    }
+  };
+
   const rebuildDocument = async (documentId: string) => {
     if (!selected) return;
     try {
@@ -1643,7 +1870,11 @@ export default function KnowledgeBasesPage() {
       if (!selected || document.is_dir) return;
       if (!canPreviewKnowledgeDocument(document)) return;
       const rich = canRichPreviewKnowledgeDocument(document);
-      const kind = rich ? getDocKind(document.filename) : null;
+      const kind: DocKind | null = isCadDrawingPath(document.filename)
+        ? "dwg"
+        : rich
+        ? getDocKind(document.filename)
+        : null;
       const asMarkdown = isKnowledgeMarkdownDocument(document);
       previewTextAbortRef.current?.abort();
       evidenceRequestRef.current += 1;
@@ -1812,12 +2043,14 @@ export default function KnowledgeBasesPage() {
   const downloadDocumentOriginal = async (
     documentId: string,
     filename: string,
+    version?: string,
   ) => {
     if (!selected) return;
     try {
       const blob = await knowledgeBasesApi.fetchDocumentFile(
         selected.id,
         documentId,
+        version,
         "attachment",
       );
       const url = URL.createObjectURL(blob);
@@ -1841,15 +2074,23 @@ export default function KnowledgeBasesPage() {
       if (!selected || !previewDocId) {
         throw new Error("missing knowledge document preview target");
       }
+      if (previewKind === "dwg") {
+        return knowledgeBasesApi.renderDocument(
+          selected.id,
+          previewDocId,
+          signal,
+        );
+      }
       return knowledgeBasesApi.fetchDocumentFile(
         selected.id,
         previewDocId,
+        previewCitation?.version,
         "inline",
         onProgress,
         signal,
       );
     },
-    [selected, previewDocId],
+    [selected, previewDocId, previewCitation?.version, previewKind],
   );
 
   useEffect(() => {
@@ -2069,7 +2310,7 @@ export default function KnowledgeBasesPage() {
             ) : null}
           </>
         )}
-        {permissionMetadata?.can_manage ? (
+        {permissionMetadata?.can_manage || permissionMetadata?.can_delegate ? (
           <Tooltip title={t("knowledgeBases.permissions.title")}>
             <Button
               type="text"
@@ -2122,6 +2363,18 @@ export default function KnowledgeBasesPage() {
                 />
               </Tooltip>
             ) : null}
+            <Tooltip title={t("knowledgeBases.moveDocument")}>
+              <Button
+                type="text"
+                size="small"
+                icon={<FolderInput size={14} />}
+                aria-label={t("knowledgeBases.moveDocument")}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openMoveTarget(document);
+                }}
+              />
+            </Tooltip>
             <Popconfirm
               title={
                 document.is_dir
@@ -2166,11 +2419,14 @@ export default function KnowledgeBasesPage() {
       subtitle={t("knowledgeBases.subtitle")}
       fill
       actions={
-        canConfigureKb ? (
-          <Button icon={<Settings size={15} />} onClick={openSettings}>
-            {t("knowledgeBases.settingsTitle")}
-          </Button>
-        ) : undefined
+        <>
+          <KnowledgeAccessNotifications />
+          {canConfigureKb ? (
+            <Button icon={<Settings size={15} />} onClick={openSettings}>
+              {t("knowledgeBases.settingsTitle")}
+            </Button>
+          ) : null}
+        </>
       }
     >
       {loading ? (
@@ -2444,7 +2700,8 @@ export default function KnowledgeBasesPage() {
                           {t("common.edit")}
                         </Button>
                       ) : null}
-                      {permissionsOverview?.knowledge_base.can_manage ? (
+                      {permissionsOverview?.knowledge_base.can_manage ||
+                      permissionsOverview?.knowledge_base.can_delegate ? (
                         <Button
                           size="small"
                           icon={<Settings size={14} />}
@@ -2491,18 +2748,13 @@ export default function KnowledgeBasesPage() {
                               )}
                         </Tag>
                         <Typography.Text type="secondary">
-                          {t("knowledgeBases.permissions.read")}:{" "}
-                          {t(
-                            permissionsOverview.knowledge_base.effective.read
-                              ? "knowledgeBases.permissions.allowed"
-                              : "knowledgeBases.permissions.denied",
-                          )}
-                          {" · "}
-                          {t("knowledgeBases.permissions.write")}:{" "}
                           {t(
                             permissionsOverview.knowledge_base.effective.write
-                              ? "knowledgeBases.permissions.allowed"
-                              : "knowledgeBases.permissions.denied",
+                              ? "knowledgeBases.permissions.writeShort"
+                              : "knowledgeBases.permissions.readShort",
+                            permissionsOverview.knowledge_base.effective.write
+                              ? "写"
+                              : "读",
                           )}
                         </Typography.Text>
                       </div>
@@ -2617,10 +2869,12 @@ export default function KnowledgeBasesPage() {
                           className={styles.fileInput}
                           type="file"
                           multiple
-                          accept={supportedDocumentTypes}
-                          onChange={(event) =>
-                            void uploadDocuments(event.target.files)
-                          }
+                          onChange={(event) => {
+                            setQueuedUploadFiles(
+                              Array.from(event.target.files ?? []),
+                            );
+                            event.target.value = "";
+                          }}
                         />
                         {canWriteSelected ? (
                           <Button
@@ -2648,7 +2902,7 @@ export default function KnowledgeBasesPage() {
                             icon={<FileUp size={14} />}
                             loading={Boolean(uploadState)}
                             disabled={isAtDocumentLimit || Boolean(uploadState)}
-                            onClick={() => uploadRef.current?.click()}
+                            onClick={() => void openUploadDialog()}
                           >
                             {t("knowledgeBases.upload")}
                           </Button>
@@ -2719,16 +2973,11 @@ export default function KnowledgeBasesPage() {
                           type="secondary"
                           className={styles.uploadHint}
                         >
-                          {t(
-                            capability?.ocr?.usable
-                              ? "knowledgeBases.uploadHintOcr"
-                              : "knowledgeBases.uploadHint",
-                            {
-                              sizeMb: Math.round(
-                                limits.max_document_bytes / (1024 * 1024),
-                              ),
-                            },
-                          )}
+                          {t("knowledgeBases.uploadHint", {
+                            sizeMb: Math.round(
+                              limits.max_document_bytes / (1024 * 1024),
+                            ),
+                          })}
                         </Typography.Text>
                       ) : null}
                     </div>
@@ -2919,71 +3168,75 @@ export default function KnowledgeBasesPage() {
                                 );
                               }}
                             >
-                              {permissionMetadata && scopeLabel ? (
-                                <div className={styles.docScopeLabel}>
-                                  <span>{scopeLabel}</span>
-                                  <span>
-                                    {t("knowledgeBases.permissions.read")}:{" "}
-                                    {t(
-                                      permissionMetadata.effective.read
-                                        ? "knowledgeBases.permissions.allowed"
-                                        : "knowledgeBases.permissions.denied",
-                                    )}
-                                    {" · "}
-                                    {t(
-                                      "knowledgeBases.permissions.write",
-                                    )}:{" "}
-                                    {t(
-                                      permissionMetadata.effective.write
-                                        ? "knowledgeBases.permissions.allowed"
-                                        : "knowledgeBases.permissions.denied",
-                                    )}
-                                  </span>
-                                </div>
-                              ) : null}
+                              <div
+                                className={styles.docCardName}
+                                title={hideAbsolutePath(document.path || name)}
+                              >
+                                {name}
+                              </div>
                               <div className={styles.docCardHeader}>
                                 <DocumentFormatIcon
                                   filename={name}
                                   size={14}
                                   isDir={document.is_dir}
                                 />
-                                <div className={styles.docCardTitleBlock}>
-                                  <div className={styles.docCardTitleRow}>
-                                    <div
-                                      className={styles.docCardName}
-                                      title={document.path || name}
+                                <div className={styles.docCardTitleRow}>
+                                  {permissionMetadata && scopeLabel ? (
+                                    <span
+                                      className={styles.docAccessChip}
+                                      title={t(
+                                        "knowledgeBases.permissions.title",
+                                      )}
                                     >
-                                      {name}
-                                    </div>
-                                    {!document.is_dir &&
-                                    fileExtensionLabel(name) ? (
-                                      <span className={styles.docExtBadge}>
-                                        {fileExtensionLabel(name)}
-                                      </span>
-                                    ) : null}
-                                  </div>
-                                  <div className={styles.docCardMeta}>
-                                    {document.is_dir
-                                      ? t("knowledgeBases.folder")
-                                      : `${formatBytes(
-                                          document.byte_size,
-                                        )} · ${t("knowledgeBases.chunkCount", {
-                                          count: document.chunk_count,
-                                        })}`}
-                                  </div>
+                                      {scopeLabel} ·{" "}
+                                      {permissionMetadata.effective.write
+                                        ? t(
+                                            "knowledgeBases.permissions.writeShort",
+                                            "写",
+                                          )
+                                        : t(
+                                            "knowledgeBases.permissions.readShort",
+                                            "读",
+                                          )}
+                                    </span>
+                                  ) : null}
+                                  {!document.is_dir &&
+                                  fileExtensionLabel(name) ? (
+                                    <span className={styles.docExtBadge}>
+                                      {fileExtensionLabel(name)}
+                                    </span>
+                                  ) : null}
+                                  {!document.is_dir ? (
+                                    <Tag>
+                                      {document.data_source_id
+                                        ? t("knowledgeBases.sourceDestination")
+                                        : t("knowledgeBases.platformLabel")}
+                                    </Tag>
+                                  ) : null}
+                                  {document.is_dir
+                                    ? renderDocumentActions(document)
+                                    : null}
                                 </div>
-                                <span
-                                  data-kb-doc-actions=""
-                                  onClick={(event) => event.stopPropagation()}
-                                >
-                                  {renderDocumentActions(document)}
-                                </span>
+                              </div>
+                              <div className={styles.docCardMeta}>
+                                {document.is_dir
+                                  ? t("knowledgeBases.folder")
+                                  : `${formatBytes(document.byte_size)} · ${t(
+                                      "knowledgeBases.chunkCount",
+                                      {
+                                        count: document.chunk_count,
+                                      },
+                                    )}`}
                               </div>
                               {document.is_dir ? null : (
                                 <div className={styles.docCardFooter}>
                                   <Tooltip
                                     title={
-                                      document.error_message ||
+                                      (document.archive_reason
+                                        ? t(
+                                            `knowledgeBases.archiveReasons.${document.archive_reason}`,
+                                          )
+                                        : document.error_message) ||
                                       t(
                                         `knowledgeBases.statuses.${document.status}`,
                                       )
@@ -3012,6 +3265,7 @@ export default function KnowledgeBasesPage() {
                                       timeZone,
                                     )}
                                   </span>
+                                  {renderDocumentActions(document)}
                                 </div>
                               )}
                             </div>
@@ -3084,9 +3338,20 @@ export default function KnowledgeBasesPage() {
                                     className={styles.docTableIcon}
                                     isDir={document.is_dir}
                                   />
-                                  <span title={document.path || name}>
+                                  <span
+                                    title={hideAbsolutePath(
+                                      document.path || name,
+                                    )}
+                                  >
                                     {name}
                                   </span>
+                                  {!document.is_dir ? (
+                                    <Tag>
+                                      {document.data_source_id
+                                        ? t("knowledgeBases.sourceDestination")
+                                        : t("knowledgeBases.platformLabel")}
+                                    </Tag>
+                                  ) : null}
                                   {permissionMetadata && scopeLabel ? (
                                     <Tag
                                       color={
@@ -3136,7 +3401,13 @@ export default function KnowledgeBasesPage() {
                                 "—"
                               ) : (
                                 <Tooltip
-                                  title={document.error_message || undefined}
+                                  title={
+                                    document.archive_reason
+                                      ? t(
+                                          `knowledgeBases.archiveReasons.${document.archive_reason}`,
+                                        )
+                                      : document.error_message || undefined
+                                  }
                                 >
                                   <Tag
                                     color={documentStatusColor(document.status)}
@@ -3185,6 +3456,7 @@ export default function KnowledgeBasesPage() {
                       key={selected.id}
                       baseId={selected.id}
                       canWriteBase={canWriteSelected}
+                      canManageBase={canManageSelected}
                       onDocumentsChanged={() => {
                         void loadDetail(selected.id, { silent: true });
                         void loadCoverage(selected.id, true);
@@ -3210,6 +3482,14 @@ export default function KnowledgeBasesPage() {
                 previewFilename ||
                 t("knowledgeBases.previewDocument")}
             </span>
+            {previewDocId ? (
+              <Tag>
+                {documents.find((document) => document.id === previewDocId)
+                  ?.data_source_id
+                  ? t("knowledgeBases.sourceDestination")
+                  : t("knowledgeBases.platformLabel")}
+              </Tag>
+            ) : null}
             {previewNavIndex >= 0 ? (
               <span className={styles.previewModalNav}>
                 <Tooltip title={t("knowledgeBases.previewPrev")}>
@@ -3289,7 +3569,11 @@ export default function KnowledgeBasesPage() {
             <Button
               icon={<Download size={14} />}
               onClick={() =>
-                void downloadDocumentOriginal(previewDocId, previewFilename)
+                void downloadDocumentOriginal(
+                  previewDocId,
+                  previewFilename,
+                  previewCitation?.version,
+                )
               }
             >
               {t("knowledgeBases.downloadOriginal")}
@@ -3414,6 +3698,11 @@ export default function KnowledgeBasesPage() {
               key={previewDocId}
               kind={previewKind}
               filename={previewFilename}
+              initialPage={
+                typeof previewCitation?.locator.page === "number"
+                  ? previewCitation.locator.page
+                  : undefined
+              }
               fetchBlob={fetchPreviewBlob}
               onDownload={
                 previewHasOriginal
@@ -3421,6 +3710,7 @@ export default function KnowledgeBasesPage() {
                       void downloadDocumentOriginal(
                         previewDocId,
                         previewFilename,
+                        previewCitation?.version,
                       )
                   : undefined
               }
@@ -3606,6 +3896,187 @@ export default function KnowledgeBasesPage() {
       </Modal>
 
       <Modal
+        title={t("knowledgeBases.uploadDestinationTitle")}
+        open={uploadDialogOpen}
+        onCancel={() => {
+          uploadTargetsRequestRef.current += 1;
+          uploadAccessRequestRef.current += 1;
+          setUploadTargetsLoading(false);
+          setUploadAccessLoading(false);
+          setUploadDialogOpen(false);
+          setQueuedUploadFiles([]);
+          if (uploadRef.current) uploadRef.current.value = "";
+        }}
+        onOk={confirmUpload}
+        okText={
+          uploadMode === "source"
+            ? t("knowledgeBases.uploadSource")
+            : t("knowledgeBases.uploadPlatform")
+        }
+        cancelText={t("common.cancel")}
+        okButtonProps={{
+          disabled:
+            !queuedUploadFiles.length ||
+            uploadAccessLoading ||
+            uploadAccessError ||
+            !uploadAccess ||
+            uploadAccessOptions.length === 0 ||
+            (uploadMode === "source" &&
+              (!uploadSourceId || uploadSourceFolder === undefined)) ||
+            (uploadMode === "source" && uploadTargets.length === 0),
+        }}
+        confirmLoading={Boolean(uploadState)}
+        destroyOnHidden
+      >
+        <Radio.Group
+          value={uploadMode}
+          onChange={(event) => {
+            setUploadMode(event.target.value);
+            setUploadAccessOptions([]);
+            setUploadAccess(null);
+            setUploadAccessError(false);
+            setUploadAccessLoading(true);
+          }}
+          optionType="button"
+          options={[
+            {
+              label: t("knowledgeBases.platformDestination"),
+              value: "platform",
+            },
+            {
+              label: t("knowledgeBases.sourceDestination"),
+              value: "source",
+              disabled: uploadTargets.length === 0 || uploadTargetsLoading,
+            },
+          ]}
+        />
+        {uploadTargets.length === 0 && !uploadTargetsLoading ? (
+          <Alert
+            type={uploadTargetsError ? "warning" : "info"}
+            showIcon
+            message={t(
+              uploadTargetsError
+                ? "knowledgeBases.uploadTargetsFailed"
+                : "knowledgeBases.uploadTargetsEmpty",
+            )}
+            style={{ marginTop: 16 }}
+          />
+        ) : null}
+        {uploadMode === "source" ? (
+          uploadTargets.length === 0 && !uploadTargetsLoading ? (
+            <Alert
+              type="info"
+              showIcon
+              message={t("knowledgeBases.uploadTargetsEmpty")}
+              style={{ marginTop: 16 }}
+            />
+          ) : (
+            <div style={{ display: "grid", gap: 12, marginTop: 16 }}>
+              <Select
+                value={uploadSourceId}
+                loading={uploadTargetsLoading}
+                placeholder={t("knowledgeBases.sourceDestination")}
+                options={uploadTargets.map((target) => ({
+                  value: target.id,
+                  label: target.name,
+                }))}
+                onChange={(id) => {
+                  setUploadSourceId(id);
+                  setUploadSourceFolder(undefined);
+                  setUploadAccessOptions([]);
+                  setUploadAccess(null);
+                  setUploadAccessError(false);
+                  setUploadAccessLoading(false);
+                }}
+              />
+              <Select
+                value={uploadSourceFolder}
+                placeholder={t("knowledgeBases.sourceFolder")}
+                disabled={!uploadSourceId}
+                options={(
+                  uploadTargets.find((target) => target.id === uploadSourceId)
+                    ?.folders ?? []
+                ).map((folder) => ({
+                  value: folder,
+                  label: folder || t("knowledgeBases.sourceFolderRoot"),
+                }))}
+                onChange={(folder) => {
+                  setUploadSourceFolder(folder);
+                  setUploadAccessOptions([]);
+                  setUploadAccess(null);
+                  setUploadAccessError(false);
+                  setUploadAccessLoading(true);
+                }}
+              />
+            </div>
+          )
+        ) : (
+          <Typography.Paragraph type="secondary" style={{ marginTop: 12 }}>
+            {currentFolderIsSourceTree
+              ? t("knowledgeBases.platformSourceTreeHint")
+              : `${t("knowledgeBases.pathBreadcrumb")}: ${
+                  currentFolder || t("knowledgeBases.sourceFolderRoot")
+                }`}
+          </Typography.Paragraph>
+        )}
+        <div style={{ display: "grid", gap: 8, marginTop: 16 }}>
+          <Typography.Text strong>
+            {t("knowledgeBases.uploadAccessLabel")}
+          </Typography.Text>
+          {uploadAccessLoading ? <Spin size="small" /> : null}
+          {uploadAccessError ? (
+            <Alert
+              type="error"
+              showIcon
+              message={t("knowledgeBases.uploadPermissionsFailed")}
+            />
+          ) : null}
+          {!uploadAccessLoading && !uploadAccessError ? (
+            <Select
+              value={
+                uploadAccess
+                  ? uploadAccessOptions.findIndex(
+                      (option) =>
+                        option.scope === uploadAccess.scope &&
+                        option.permission === uploadAccess.permission &&
+                        option.unit_key === uploadAccess.unit_key,
+                    )
+                  : undefined
+              }
+              placeholder={t("knowledgeBases.uploadAccessLabel")}
+              options={uploadAccessOptions.map((option, index) => ({
+                value: index,
+                label: [
+                  t(`knowledgeBases.uploadAccessScope.${option.scope}`),
+                  option.department_name ?? option.unit_key ?? "",
+                  t(`knowledgeBases.permissions.${option.permission}`),
+                ]
+                  .filter(Boolean)
+                  .join(" · "),
+              }))}
+              onChange={(index: number) => {
+                const selectedOption = uploadAccessOptions[index];
+                if (selectedOption) setUploadAccess(selectedOption);
+              }}
+            />
+          ) : null}
+          <Typography.Text type="secondary">
+            {t("knowledgeBases.uploadAccessHint")}
+          </Typography.Text>
+        </div>
+        {uploadDialogOpen ? (
+          <KnowledgeProcessorNotice files={queuedUploadFiles} />
+        ) : null}
+        <div style={{ marginTop: 16 }}>
+          <Button onClick={() => uploadRef.current?.click()}>
+            {queuedUploadFiles.length
+              ? queuedUploadFiles.map((file) => file.name).join(", ")
+              : t("knowledgeBases.dataSources.pickFile")}
+          </Button>
+        </div>
+      </Modal>
+
+      <Modal
         title={t("knowledgeBases.createFolder")}
         open={folderModalOpen}
         onCancel={() => setFolderModalOpen(false)}
@@ -3622,6 +4093,48 @@ export default function KnowledgeBasesPage() {
             if (!isImeComposing(event)) void createFolder();
           }}
         />
+      </Modal>
+
+      <Modal
+        title={t("knowledgeBases.moveDocument")}
+        open={moveTarget !== null}
+        onCancel={() => setMoveTarget(null)}
+        onOk={() => void moveDocument()}
+        okText={t("knowledgeBases.moveHere")}
+        cancelText={t("common.cancel")}
+        destroyOnHidden
+      >
+        <Space direction="vertical" style={{ width: "100%" }} size={8}>
+          <span className="muted">
+            {t("knowledgeBases.moveDocumentTarget", {
+              name: moveTarget
+                ? knowledgeBasename(moveTarget.path || moveTarget.filename)
+                : "",
+            })}
+          </span>
+          <Select
+            style={{ width: "100%" }}
+            value={moveFolder}
+            onChange={setMoveFolder}
+            options={[
+              { value: "", label: t("knowledgeBases.rootFolder") },
+              ...documents
+                .filter(
+                  (row) =>
+                    row.is_dir &&
+                    row.id !== moveTarget?.id &&
+                    !(
+                      moveTarget?.is_dir &&
+                      (row.path ?? "").startsWith((moveTarget.path || "") + "/")
+                    ),
+                )
+                .map((row) => ({
+                  value: row.path ?? "",
+                  label: row.path ?? "",
+                })),
+            ]}
+          />
+        </Space>
       </Modal>
 
       <Modal
@@ -4138,6 +4651,10 @@ export default function KnowledgeBasesPage() {
         baseId={selected?.id ?? ""}
         open={permissionsTarget !== null}
         metadata={permissionsTarget}
+        isDirectory={documents.some(
+          (document) =>
+            document.id === permissionsTarget?.resource_id && document.is_dir,
+        )}
         onClose={() => setPermissionsTarget(null)}
         onSaved={(updated) => {
           setPermissionsTarget(updated);

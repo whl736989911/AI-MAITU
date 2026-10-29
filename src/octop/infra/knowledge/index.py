@@ -19,6 +19,10 @@ from octop.infra.utils.paths import PathLayout
 _CJK_RUN = "\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uac00-\ud7af"
 _SEARCH_WORDS = re.compile(rf"(?P<cjk>[{_CJK_RUN}]+)|[^\W{_CJK_RUN}]+")
 
+# A preview reports at most this many located segments; the character budget
+# usually binds first, this only stops pathological one-character segments.
+_MAX_PREVIEW_BLOCKS = 2000
+
 
 def search_tokens(text: str) -> Iterator[tuple[str, bool]]:
     """Yield normalized Unicode words and flag CJK runs."""
@@ -244,19 +248,33 @@ class KnowledgeIndex:
 
     def document_preview(self, doc_id: str, *, max_chars: int) -> str | None:
         """Return a bounded ordinal-ordered preview, or None when no segments exist."""
+        preview = self.document_preview_blocks(doc_id, max_chars=max_chars)
+        return None if preview is None else preview[0]
+
+    def document_preview_blocks(
+        self, doc_id: str, *, max_chars: int
+    ) -> tuple[str, list[dict[str, Any]]] | None:
+        """Return the bounded preview plus each segment's source locator.
+
+        The joined text keeps the existing preview contract; the per-segment
+        locators let a reader tie every paragraph back to its line, page, slide
+        or table row in the original file.
+        """
         with self._connect() as conn:
             if max_chars <= 0:
                 exists = conn.execute(
                     "SELECT 1 FROM segments WHERE doc_id = ? LIMIT 1", (doc_id,)
                 ).fetchone()
-                return "" if exists else None
+                return ("", []) if exists else None
             cursor = conn.execute(
-                "SELECT substr(text, 1, ?) FROM segments WHERE doc_id = ? ORDER BY ordinal LIMIT ?",
+                "SELECT ordinal, substr(text, 1, ?), meta_json FROM segments "
+                "WHERE doc_id = ? ORDER BY ordinal LIMIT ?",
                 (max_chars, doc_id, max_chars),
             )
             pieces: list[str] = []
+            blocks: list[dict[str, Any]] = []
             remaining = max_chars
-            for (text,) in cursor:
+            for ordinal, text, meta_json in cursor:
                 if pieces:
                     if remaining < 2:
                         break
@@ -265,9 +283,27 @@ class KnowledgeIndex:
                 piece = str(text)[:remaining]
                 pieces.append(piece)
                 remaining -= len(piece)
-                if remaining == 0:
+                try:
+                    meta = json.loads(meta_json or "{}")
+                except ValueError:
+                    meta = {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                locator = meta.get("locator")
+                blocks.append(
+                    {
+                        "ordinal": int(ordinal),
+                        "text": piece,
+                        "kind": str(meta.get("kind") or ""),
+                        "heading": str(meta.get("heading") or ""),
+                        "locator": locator if isinstance(locator, dict) else {},
+                    }
+                )
+                if remaining == 0 or len(blocks) >= _MAX_PREVIEW_BLOCKS:
                     break
-        return "".join(pieces) if pieces else None
+        if not pieces:
+            return None
+        return "".join(pieces), blocks
 
     def get_segment(self, doc_id: str, segment_id: str) -> Hit | None:
         with self._connect() as conn:

@@ -9,7 +9,7 @@
  * is the identity a reader checks before trusting the paper.
  */
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Alert, Button, Popconfirm, Space, Tag } from "antd";
 import { ArrowLeftOutlined } from "@ant-design/icons";
 import { useTranslation } from "react-i18next";
@@ -18,10 +18,13 @@ import { message } from "@/utils/antdMessage";
 
 import type {
   FeatureDataObject,
+  FeatureDataPrincipal,
   FeatureDataRecord,
 } from "../../../api/modules/featureData";
 import { featureDataApi } from "../../../api/modules/featureData";
+import { knowledgeBasesApi } from "../../../api/modules/knowledgeBases";
 import { apiErrorMessage, parseApiError } from "../../../utils/apiError";
+import { knowledgeCitationHref } from "../../../utils/knowledgeCitationDisplay";
 import {
   buildValuesPayload,
   displayFieldValue,
@@ -57,7 +60,17 @@ export default function FeatureDataRecordDetail({
 }: FeatureDataRecordDetailProps) {
   const { t, i18n } = useTranslation();
   const language = i18n.language ?? "en";
+  const [directoryUsers, setDirectoryUsers] = useState<FeatureDataPrincipal[]>(
+    [],
+  );
+  useEffect(() => {
+    void featureDataApi
+      .listPrincipals(agentId, { limit: 200 })
+      .then((answer) => setDirectoryUsers(answer.principals ?? []))
+      .catch(() => setDirectoryUsers([]));
+  }, [agentId]);
   const [current, setCurrent] = useState(record);
+  const canEdit = canWrite && current.can_write === true;
   const [values, setValues] = useState<Record<string, unknown>>({
     ...record.values,
   });
@@ -66,6 +79,9 @@ export default function FeatureDataRecordDetail({
   const [publishing, setPublishing] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [historyKey, setHistoryKey] = useState(0);
+  const [downloadingReference, setDownloadingReference] = useState<
+    string | null
+  >(null);
 
   const fields = objectFields(object);
   const editableFields = valueFields(object);
@@ -132,9 +148,59 @@ export default function FeatureDataRecordDetail({
     }
   };
 
+  const downloadReference = async (
+    key: string,
+    reference: NonNullable<FeatureDataRecord["references"]>[string],
+  ) => {
+    const expectedVersion = reference.stale
+      ? reference.current_version
+      : reference.version;
+    if (!reference.kb_id || !reference.document_id || !expectedVersion) return;
+    setDownloadingReference(key);
+    try {
+      const blob = await knowledgeBasesApi.fetchDocumentFile(
+        reference.kb_id,
+        reference.document_id,
+        expectedVersion,
+      );
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      const filename = reference.path || reference.title || "download";
+      link.download = filename.slice(
+        Math.max(filename.lastIndexOf("/"), filename.lastIndexOf("\\")) + 1,
+      );
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      message.error(
+        apiErrorMessage(error, t("knowledgeBases.downloadOriginalFailed"), t),
+      );
+    } finally {
+      setDownloadingReference(null);
+    }
+  };
+
   const handleSave = async () => {
     const payload = buildValuesPayload(object, values);
-    const blank = missingRequiredFields(object, payload);
+    // Preserve hidden references unless the user explicitly chooses a new target.
+    const unchangedReferences = new Set<string>();
+    for (const [key, reference] of Object.entries(current.references ?? {})) {
+      const value = values[key];
+      if (
+        !reference.available &&
+        value !== null &&
+        typeof value === "object" &&
+        "redacted" in value &&
+        value.redacted === true
+      ) {
+        delete payload[key];
+        unchangedReferences.add(key);
+      }
+    }
+    const blank = missingRequiredFields(object, payload).filter(
+      (key) => !unchangedReferences.has(key),
+    );
     setMissing(blank);
     if (blank.length > 0) return;
     setSaving(true);
@@ -152,7 +218,7 @@ export default function FeatureDataRecordDetail({
       message.success(t("features.data.recordSaved"));
     } catch (error) {
       const parsed = parseApiError(error);
-      if (parsed?.code === "FEATURE_DATA_REVISION_CONFLICT") {
+      if (parsed?.code === "WORKFLOW_CHANGE_CONFLICT") {
         message.error(t("features.data.revisionConflict"));
       } else {
         message.error(
@@ -222,6 +288,18 @@ export default function FeatureDataRecordDetail({
             ))
           : null}
       </div>
+      <Tag bordered={false}>
+        {t("features.data.responsibleUser")}:{" "}
+        {directoryUsers.find(
+          (user) =>
+            user.id === (current.responsible_user_id ?? current.created_by),
+        )?.display_name ||
+          directoryUsers.find(
+            (user) =>
+              user.id === (current.responsible_user_id ?? current.created_by),
+          )?.username ||
+          `#${current.responsible_user_id ?? current.created_by}`}
+      </Tag>
 
       {controlled &&
       typeof revisionReasonValue === "string" &&
@@ -234,10 +312,144 @@ export default function FeatureDataRecordDetail({
           description={revisionReasonValue}
         />
       ) : null}
+      {Object.entries(current.references ?? {}).length ? (
+        <Alert
+          type="info"
+          showIcon
+          className={styles.notice}
+          message={t("features.data.referenceStatus")}
+          description={
+            <div>
+              {Object.entries(current.references ?? {}).map(
+                ([key, reference]) => {
+                  const stale =
+                    reference.kind === "knowledge_ref" &&
+                    reference.stale === true;
+                  const previewHref =
+                    reference.kind === "knowledge_ref" &&
+                    reference.kb_id &&
+                    reference.document_id
+                      ? knowledgeCitationHref({
+                          kbId: reference.kb_id,
+                          docId: reference.document_id,
+                          version: stale
+                            ? reference.current_version
+                            : reference.version,
+                          locator: {
+                            page: reference.page,
+                            layout: reference.layout,
+                          },
+                        })
+                      : undefined;
+                  return (
+                    <div key={key}>
+                      <strong>
+                        {fieldLabel(
+                          fields.find((field) => field.key === key) ?? {
+                            key,
+                            type: "text",
+                          },
+                          language,
+                        )}
+                        :
+                      </strong>{" "}
+                      {reference.available ? (
+                        <>
+                          {reference.title}{" "}
+                          {reference.path ? ` · ${reference.path}` : null}{" "}
+                          {stale ? (
+                            <Tag color="warning">
+                              {t("features.data.referenceChanged")}
+                            </Tag>
+                          ) : null}{" "}
+                          {reference.kind === "knowledge_ref" && reference.page
+                            ? ` · ${t("features.data.page")} ${reference.page}`
+                            : null}{" "}
+                          {reference.kind === "knowledge_ref" &&
+                          reference.layout
+                            ? ` · ${reference.layout}`
+                            : null}{" "}
+                          {previewHref &&
+                          (stale
+                            ? reference.current_preview_url
+                            : reference.preview_url) ? (
+                            <a
+                              href={previewHref}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {t(
+                                stale
+                                  ? "features.data.previewCurrent"
+                                  : "features.data.previewOriginal",
+                              )}
+                            </a>
+                          ) : null}{" "}
+                          {reference.kind === "knowledge_ref" &&
+                          reference.kb_id &&
+                          reference.document_id &&
+                          (stale
+                            ? reference.current_original_url
+                            : reference.original_url) &&
+                          typeof (stale
+                            ? reference.current_version
+                            : reference.version) === "string" ? (
+                            <Button
+                              type="link"
+                              size="small"
+                              loading={downloadingReference === key}
+                              disabled={downloadingReference !== null}
+                              onClick={() =>
+                                void downloadReference(key, reference)
+                              }
+                            >
+                              {t(
+                                stale
+                                  ? "features.data.openCurrentOriginal"
+                                  : "features.data.openOriginal",
+                              )}
+                            </Button>
+                          ) : null}
+                        </>
+                      ) : (
+                        t("features.data.referenceUnavailable")
+                      )}
+                    </div>
+                  );
+                },
+              )}
+            </div>
+          }
+        />
+      ) : null}
+      {Object.entries(current.references ?? {}).some(
+        ([, reference]) =>
+          reference.kind === "knowledge_ref" && reference.available,
+      ) ? (
+        <div className={styles.notice}>
+          {Object.entries(current.references ?? {}).map(([key, reference]) =>
+            reference.kind === "knowledge_ref" && reference.available ? (
+              <div key={key}>
+                {fieldLabel(
+                  fields.find((field) => field.key === key) ?? {
+                    key,
+                    type: "text",
+                  },
+                  language,
+                )}{" "}
+                · {t("features.data.pinnedVersion")}: {reference.version} ·{" "}
+                {t("features.data.currentVersion")}:{" "}
+                {reference.current_version ?? "—"}
+              </div>
+            ) : null,
+          )}
+        </div>
+      ) : null}
 
-      {canWrite ? (
+      {canEdit ? (
         <>
           <FeatureDataRecordFields
+            agentId={agentId}
             object={object}
             values={values}
             missing={missing}
@@ -296,7 +508,7 @@ export default function FeatureDataRecordDetail({
         agentId={agentId}
         object={object}
         record={current}
-        canWrite={canWrite}
+        canWrite={canEdit}
         onChanged={() => void reloadRecord()}
       />
 

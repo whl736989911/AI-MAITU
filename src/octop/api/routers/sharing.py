@@ -20,7 +20,6 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from octop.api.common.agent import feature_can_manage
 from octop.api.deps import (
     current_user,
     get_server,
@@ -28,6 +27,7 @@ from octop.api.deps import (
     require_permission,
     unit_grants_for,
 )
+from octop.infra.agents.feature_access import is_feature_manager
 from octop.infra.agents.kinds import feature_agent_id_for, is_feature_agent
 from octop.infra.db.repos.resource_acl import (
     CHANGE_APPLIED,
@@ -39,7 +39,12 @@ from octop.infra.db.repos.resource_acl import (
     decode_acl_state,
 )
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.sharing import RESOURCE_TYPES, VISIBILITY_UNIT, AclEntry
+from octop.infra.sharing import (
+    RESOURCE_TYPES,
+    VISIBILITY_UNIT,
+    AclEntry,
+    grant_delegates,
+)
 from octop.infra.sharing.service import ChangeResult, SharingService
 from octop.infra.users.permissions import user_has_permission
 
@@ -61,6 +66,13 @@ class GrantBody(BaseModel):
     grantee_type: GranteeType = Field(description="Who the grant is for.")
     grantee_id: str = Field(
         min_length=1, max_length=128, description="User id, unit key, or role name."
+    )
+    can_delegate: bool = Field(
+        default=False,
+        description=(
+            "Individual-user grants only: the grantee may pass their entry-derived "
+            "access on through the knowledge delegation graph."
+        ),
     )
 
 
@@ -115,6 +127,7 @@ def _maybe_entry_payload(entry: AclEntry | None) -> dict[str, Any] | None:
 
 
 def _entry_payload(entry: AclEntry) -> dict[str, Any]:
+    delegated = grant_delegates(entry)
     return {
         "resource_type": entry.resource_type,
         "resource_id": entry.resource_id,
@@ -123,7 +136,14 @@ def _entry_payload(entry: AclEntry) -> dict[str, Any]:
         "unit_key": entry.unit_key,
         "permission": entry.permission,
         "version": entry.version,
-        "grants": [{"grantee_type": kind, "grantee_id": grantee} for kind, grantee in entry.grants],
+        "grants": [
+            {
+                "grantee_type": kind,
+                "grantee_id": grantee,
+                "can_delegate": (kind, grantee) in delegated,
+            }
+            for kind, grantee in entry.grants
+        ],
     }
 
 
@@ -257,11 +277,17 @@ def _may_manage_acl(user: Any, server: Any, resource_type: str, resource_id: str
         return False
     agent_id = feature_agent_id_for(resource_id) if resource_type == "feature" else resource_id
     row = server.services.agent_repo.get(agent_id)
+    repos = server.services.repos
     return (
         row is not None
         and is_feature_agent(row.kind)
         and row.enterprise_unit_key is not None
-        and feature_can_manage(row, user, server)
+        and is_feature_manager(
+            row,
+            user_id=int(user.id),
+            user_repo=repos.user_repo,
+            org_unit_repo=repos.org_unit_repo,
+        )
     )
 
 
@@ -340,6 +366,13 @@ async def change_resource_acl(
         version=0,
         permission=body.permission,
         grants=tuple((grant.grantee_type, grant.grantee_id) for grant in body.grants),
+        grant_delegation=tuple(
+            sorted(
+                (grant.grantee_type, grant.grantee_id)
+                for grant in body.grants
+                if grant.can_delegate
+            )
+        ),
     )
     result: ChangeResult = _sharing(server).apply_change(
         user.id, resource_type, resource_id, entry, reason=body.reason

@@ -22,6 +22,17 @@ from octop.infra.knowledge.default_open import stamp_turn_knowledge_config
 from octop.infra.knowledge.files import document_digest, write_document
 from octop.infra.knowledge.source_access import KnowledgeSourceService
 from octop.infra.knowledge.tools import build_knowledge_tools
+
+
+_CITATIONS_MARKER = "<!--octop-kb-citations:"
+
+
+def _tool_json(raw: str) -> dict:
+    """Parse a knowledge tool payload, ignoring its citation trailer."""
+    head, sep, _ = raw.rpartition(_CITATIONS_MARKER)
+    return json.loads(head if sep else raw)
+
+
 from octop.infra.sharing import AclEntry
 from octop.infra.utils.paths import PathLayout
 
@@ -278,7 +289,7 @@ async def test_tool_reads_collection_before_original_and_resets_receipts_next_tu
         token = var_child_runnable_config.set(request)
         try:
             original_args = {"kb_id": env.base.id, "document_id": document.id}
-            blocked = json.loads(await tools["read_knowledge_document"].ainvoke(original_args))
+            blocked = _tool_json(await tools["read_knowledge_document"].ainvoke(original_args))
             assert blocked == {
                 "status": "collection_context_required",
                 "collection_ids": [collection["id"]],
@@ -289,7 +300,7 @@ async def test_tool_reads_collection_before_original_and_resets_receipts_next_tu
                 )
             )
             assert "Summarize refund deadlines" in overview["topic_document"]
-            verified = json.loads(await tools["read_knowledge_document"].ainvoke(original_args))
+            verified = _tool_json(await tools["read_knowledge_document"].ainvoke(original_args))
             assert verified["text"] == "Refunds take five business days."
             assert verified["verified"] is True
         finally:

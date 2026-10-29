@@ -11,7 +11,7 @@ import {
   type TableHTMLAttributes,
   type ImgHTMLAttributes,
 } from "react";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { useTranslation } from "react-i18next";
 import {
@@ -24,6 +24,8 @@ import { loadMermaid } from "./mermaidLoader";
 import { HighlightedCode } from "./syntaxHighlight";
 import { useMathPlugins } from "./mathPlugins";
 import { stabilizeStreamingMarkdown } from "./stabilizeStreamingMarkdown";
+import { FileText } from "lucide-react";
+import { KNOWLEDGE_LINK_PREFIX } from "../../utils/linkifyKnowledgeCitations";
 import styles from "./index.module.less";
 
 /* ---- Mermaid block component ---- */
@@ -264,6 +266,11 @@ export interface MarkdownProps {
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;
   shellCommandLabel?: string;
+  /**
+   * Render `octop-kb://<kb>/<doc>` links as knowledge-file buttons. Answers use
+   * this to link the file names they mention back to the knowledge base.
+   */
+  onKnowledgeLink?: (kbId: string, docId: string) => void;
 }
 
 const Markdown = memo(function Markdown({
@@ -275,6 +282,7 @@ const Markdown = memo(function Markdown({
   shellCommandDisabled,
   shellCommandDisabledTitle,
   shellCommandLabel,
+  onKnowledgeLink,
 }: MarkdownProps) {
   const isDark = useIsDark();
   const { t } = useTranslation();
@@ -298,6 +306,11 @@ const Markdown = memo(function Markdown({
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
+        // react-markdown strips protocols it does not know, which would blank
+        // our `octop-kb://` knowledge links before the anchor renderer sees them.
+        urlTransform={(url) =>
+          url.startsWith(KNOWLEDGE_LINK_PREFIX) ? url : defaultUrlTransform(url)
+        }
         components={{
           code(
             codeProps: React.ComponentPropsWithoutRef<"code"> & {
@@ -419,6 +432,24 @@ const Markdown = memo(function Markdown({
                   {children}
                 </AuthFileDownloadLink>
               );
+            }
+            if (href?.startsWith(KNOWLEDGE_LINK_PREFIX) && onKnowledgeLink) {
+              const [kbId, docId] = href
+                .slice(KNOWLEDGE_LINK_PREFIX.length)
+                .split("/")
+                .map((part) => decodeURIComponent(part || ""));
+              if (kbId && docId) {
+                return (
+                  <button
+                    type="button"
+                    className={styles.knowledgeFileLink}
+                    onClick={() => onKnowledgeLink(kbId, docId)}
+                  >
+                    <FileText size={13} strokeWidth={2} aria-hidden />
+                    {children}
+                  </button>
+                );
+              }
             }
             return (
               <a href={href} target="_blank" rel="noreferrer" {...props}>

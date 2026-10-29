@@ -1,0 +1,165 @@
+.composer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0 24px 20px;
+  padding: 12px;
+  border: 1px solid #d9d9d9;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px #0000000a;
+}
+.composerActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.detailHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 8px 0 18px;
+}
+.detailHeader h4 {
+  margin: 4px 0;
+}
+.workflowGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  padding-top: 14px;
+}
+.wideCard {
+  grid-column: 1 / -1;
+}
+.teamAssist {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 0;
+  color: #595959;
+}
+.runDetail {
+  margin-top: 16px;
+}
+@media (max-width: 760px) {
+  .workflowGrid {
+    grid-template-columns: 1fr;
+  }
+  .wideCard {
+    grid-column: auto;
+  }
+  .composerActions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .detailHeader {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}
+.teamListToolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 12px 0 18px;
+}
+.teamGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: 14px;
+}
+.teamConversation {
+  display: grid;
+  grid-template-rows: auto minmax(240px, 1fr) auto;
+  gap: 14px;
+}
+.teamMessages {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-height: 250px;
+  padding: 16px;
+  overflow: auto;
+  border: 1px solid #f0f0f0;
+  border-radius: 10px;
+  background: #fafafa;
+}
+.teamMessage {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  max-width: 88%;
+}
+.teamUserMessage {
+  align-self: flex-end;
+  flex-direction: row-reverse;
+}
+.sampleMessageTag {
+  margin-top: 8px;
+}
+.dataGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+.recordFilters {
+  display: flex;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.recordFilters > :first-child {
+  flex: 1;
+}
+.recordFilters > :last-child {
+  min-width: 200px;
+}
+.ledgerCard {
+  margin-bottom: 16px;
+}
+.featureConversation {
+  margin-top: 18px;
+}
+.featureQuestion,
+.featureSampleAnswer {
+  width: 100%;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f7f8fa;
+}
+.featureQuestion {
+  background: #eef5ff;
+}
+.featureComposer {
+  display: grid;
+  gap: 10px;
+}
+.featureComposerActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+@media (max-width: 760px) {
+  .teamListToolbar,
+  .recordFilters,
+  .featureComposerActions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .dataGrid {
+    grid-template-columns: 1fr;
+  }
+  .teamMessage {
+    max-width: 100%;
+  }
+}
+.localFilePicker {
+  display: inline-flex;
+  cursor: pointer;
+}
+.localFilePicker input {
+  display: none;
+}

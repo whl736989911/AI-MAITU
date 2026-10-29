@@ -56,6 +56,9 @@ export interface SsoIdentity {
 export type OctopRole = "admin" | "enterprise_admin" | "unit_admin" | "user";
 
 export interface OctopUser {
+  /** Explicit grants only; drives capability surfaces. */
+  granted_permissions?: string[];
+
   id: number;
   username: string;
   role: OctopRole;

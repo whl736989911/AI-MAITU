@@ -517,23 +517,85 @@ workspace. Suppliers and controlled documents are configurations, not code paths
 Records created while a feature is `draft` are private to their creator. After
 activation new records follow the feature ACL; a draft record stays private until
 its creator publishes it. Record edits use an `expected_revision` optimistic lock
-(409 `WORKFLOW_CHANGE_CONFLICT` when stale). File fields never enter `values`: each
-upload creates a new version and the previous current version is retained.
+(409 on a stale revision). Shared records can be assigned to a responsible user;
+handover preserves `created_by` and private records remain creator-only. File fields
+never enter `values`: each upload creates a new version and the previous current
+version is retained.
+Published-feature enterprise managers use the same caller-based record policy
+through HTTP and Agent tools; manager status does not grant access to another
+user's private draft.
+
+List queries accept `q`, `limit`, `offset`, and optional structured filters:
+
+```json
+{"filters":[{"field":"weight","op":"gte","value":100},
+            {"field":"made_on","op":"lte","value":"2026-10-23"}],
+ "sort_by":"made_on","sort_order":"desc","limit":50,"offset":0}
+```
+
+Filters use AND semantics, support up to 20 conditions, and validate each field
+and operator against the declared type. Operators are `eq`, `ne`, `contains`,
+`gt`, `gte`, `lt`, `lte`, `in`, and `is_empty`; sorting accepts a declared field
+or `created_at`, `updated_at`, or `title`, with `asc` or `desc`. Results retain
+the filtered total and stable ordering. Agent `feature_data_list` supports the
+same filter/sort contract through `filters_json`, `sort_by`, and `sort_order`.
+
+`record_ref` fields store a public record ID and may target an object in the same
+feature or a selected agent. Targets must exist, match the declared object, be
+undeleted, and be currently readable. `knowledge_ref` fields store
+`{kb_id, document_id, version?, page?, layout?}`; an omitted version is pinned
+at creation. Reads resolve references using current ACLs. Reference metadata is
+returned only while authorized; inaccessible targets are redacted from record
+values and history. A stale reference means the current original bytes no longer
+match the pinned SHA-256; it does not imply that historic bytes are retained.
+Reference resolution is shared by HTTP and Agent tools.
+Versioned original links include `version=<SHA-256>`. Downloads verify the actual
+bytes and serve a request-lifetime temporary snapshot; an external source change
+returns HTTP 409 / `KNOWLEDGE_SOURCE_VERSION_CHANGED` even before the next scan.
+Unversioned downloads still serve the current authorized original.
+
+
+Record responses add a `references` map keyed by field. Each entry reports
+`available`, `stale`, and `kind`; authorized entries may also include title/path,
+record or file IDs, and page/layout locator details. With no current access,
+protected metadata and the raw reference value are omitted.
+
+Date fields may declare a safe `computed` operation (`add_days`, `add_months`,
+or `add_years`) with a date `source_field` and either an integer `amount` or an
+integer `amount_field`. Dependencies are validated; cycles and invalid dates are
+rejected, calendar month/year ends clamp to the last valid day, and missing
+inputs produce no derived date. Clients cannot submit computed values; updates
+recompute them.
+
+Optional object `reminder_recipients` selects `creator`, `owner`, `responsible`,
+`user_fields`, `unit_fields`, and existing `role_keys` (`admin`,
+`enterprise_admin`, `unit_admin`, `user`). Without it, the existing creator and
+owner behavior is retained. Unit resolution includes child units and is shared
+with job recipient resolution. Delivery includes only active users who can
+currently read both the feature and record. Scheduling uses the server timezone.
+Feature managers can hand over shared records with
+`POST /agents/{aid}/feature-data/handover` body
+`{from_user_id,to_user_id,object_key?}`; only active authorized recipients and
+shared records are eligible. Creator identity and private drafts are preserved;
+handover moves shared-record editing to the new responsible user.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET` | `/agents/{aid}/feature-data/schema` | agent access | `{schema, error}`; `schema` is the manager-authored object document |
-| `PUT` | `/agents/{aid}/feature-data/schema` | feature manager (`configuration`) | body `{schema}`; validates object/field keys, types, controlled-document file field, and writes atomically |
-| `GET` | `/agents/{aid}/feature-data/{object}/records` | agent access | `{records, total}`; private records are visible only to their creator |
-| `POST` | `/agents/{aid}/feature-data/{object}/records` | agent access | body `{values}`; draft feature → private, active → feature visibility |
-| `GET/PATCH/DELETE` | `/agents/{aid}/feature-data/records/{rid}` | record read; update/delete creator or feature manager | `PATCH` body `{values, expected_revision}`; delete is a soft delete |
+| `PUT` | `/agents/{aid}/feature-data/schema` | feature manager (`configuration`) | body `{schema}`; validates object/field keys, types, computed dependencies and references, then writes atomically |
+| `GET` | `/agents/{aid}/feature-data/{object}/records` | agent access | `{records, total}`; accepts `q`, `limit`, `offset`, `filters`, `sort_by`, `sort_order`; private records are visible only to their creator |
+| `GET` | `/agents/{aid}/feature-data/references/records` | agent access | query `target_agent_id`, `object_key`, `q`; authorized choices only |
+| `POST` | `/agents/{aid}/feature-data/{object}/records` | agent access | body `{values}`; draft feature → private, active → feature visibility; rejects caller-supplied computed values |
+| `GET/PATCH/DELETE` | `/agents/{aid}/feature-data/records/{rid}` | record read; update/delete current responsible user or feature manager, private drafts creator-only | `PATCH` body `{values, expected_revision}`; delete is a soft delete; responses include authorized reference resolution |
 | `POST` | `/agents/{aid}/feature-data/records/{rid}/publish` | creator or manager; active feature | private → feature visibility |
-| `GET` | `/agents/{aid}/feature-data/records/{rid}/history` | record read | field/file/action audit, newest first |
+| `POST` | `/agents/{aid}/feature-data/handover` | feature manager | body `{from_user_id,to_user_id,object_key?}` → `{transferred_count,record_ids}`; shared records only |
+| `GET` | `/agents/{aid}/feature-data/records/{rid}/history` | record read | field/file/action audit, newest first; reference values are redacted when targets are inaccessible |
 | `GET/POST` | `/agents/{aid}/feature-data/records/{rid}/files[/{field}]` | record read / write | list versions or upload a new version (`file`, `note`) |
 | `GET` | `/agents/{aid}/feature-data/records/{rid}/files/{fid}/download` | record read | version bytes |
 | `GET` | `/agents/{aid}/feature-data/notifications` | agent access | current caller's in-app reminders; `unread_only` |
 | `POST` | `/agents/{aid}/feature-data/notifications/{id}/read` | caller | mark read |
 | `POST` | `/agents/{aid}/feature-data/reminders/{id}/complete` | record creator or feature manager | stop further reminder delivery |
+
 
 ## Workspace, skills, subagents, memory, files
 
@@ -645,12 +707,13 @@ Zed setup example.
 | `GET` | `/knowledge-bases/{kb}/documents` | reader | only documents in the caller's effective folder/file ACL scope |
 | `GET` | `/knowledge-bases/{kb}/coverage` | reader | counts only readable files, not hidden folders or siblings |
 | `GET` | `/knowledge-bases/{kb}/search?q=…` | reader | lexical/optional vector search filtered by the same effective ACL |
-| `GET` | `/knowledge-bases/{kb}/documents/{doc}/preview` | reader | up to 200,000 characters from the completed index; verifies the original hash, never repeats OCR |
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/preview` | reader | up to 200,000 characters from the completed index plus per-segment `blocks` with their source locators; verifies the original hash, never repeats OCR |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/segments/{segment}` | reader | revalidates the file and its permission before returning verified evidence |
 | `GET`/`PUT` | `/knowledge-bases/{kb}/permissions` | reader / ACL manager | effective scope metadata for the base and accessible documents; changes use existing approval/audit |
 | `GET`/`PUT` | `/knowledge-bases/{kb}/documents/{doc}/permissions` | reader / ACL manager | effective document scope, inheritance and read/write; only managers see grant details |
 | `GET` | `/knowledge-bases/{kb}/permission-principals` | ACL manager | safe user, department and role choices without requiring the users module |
-| `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; does not require a completed index |
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; optional `version` requires matching actual SHA-256 and returns 409 if changed; does not require a completed index |
+| `GET` | `/knowledge-bases/processors` | user | available built-in processors and optional CAD CLI capability; unavailable formats remain archive-only |
 
 Folder ACLs intersect with ancestor restrictions by default. Only a matching
 explicit user, department, or role grant on a single file can bypass ancestor
@@ -660,11 +723,128 @@ library-level write access does not override a read-only file. An explicitly
 granted file retains its actual path; denied folder rows, siblings and their
 counts remain hidden.
 
+`blocks` reports each indexed segment in reading order with the position it came
+from (`{line}`, `{paragraph}`, `{page}` + `image_ocr`, `{slide}`, `{sheet, row}`,
+`{table, row}`, or a CAD `{entity, handle}`). A format that cannot map extracted
+text to a smaller location reports a document-level locator instead of inventing
+one, so a reader can always tell how precisely a block is located.
+
 For previews, unindexed local Markdown/plain-text documents can be read within
 the character limit. Other documents whose index is unfinished, unavailable or
 stale return HTTP 409 with `KNOWLEDGE_INDEX_NOT_READY`. Indexing scans all PDF
 pages sequentially with bounded OCR rendering and one heavy ingestion task per
 process. DOCX parsing does not load unrelated embedded images or OCR them.
+
+### Upload destinations
+
+The dashboard upload button and file drop both ask where to save the original.
+Platform storage remains the default. Uploading from a source's virtual tree to
+platform storage uses the platform root, not the source's reserved namespace.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `POST` | `/knowledge-bases/{kb}/documents` | writer | existing platform upload; multipart `upload` and optional knowledge-base-relative `path` |
+| `GET` | `/knowledge-bases/{kb}/upload-targets` | writer | writable local/SMB sources as `{id, name, folders: string[]}`; only authorized indexed folders, no physical addresses or credentials |
+| `POST` | `/knowledge-bases/{kb}/data-sources/{source}/documents` | writer | multipart `upload`, optional source-root-relative `path` including filename; `201` means the source original is saved and indexing is queued |
+| `GET` | `/knowledge-bases/{kb}/upload-permissions` | reader with knowledge module | query `folder` and optional `data_source_id`; returns safe `options` and the exact maximum `default` for that destination |
+
+These routes require the `knowledge_bases` module permission and knowledge-base
+write access. Source uploads additionally check every existing destination
+ancestor's write ACL, the source's `read_only` flag, file type/size and
+include/exclude rules. Folder choices are relative to the configured source root;
+`""` means root. Sync a source to discover newly added subfolders. Uploads only
+write into existing physical folders; they never create parent directories.
+
+Source uploads return the document's `data_source_id`, `source_path`,
+`has_original` and indexing `status`. The source is the original's only permanent
+storage; parser staging is temporary. New documents use the same
+source-ID/path identity as scans, so later syncs update the document rather than
+create a second copy. Parsing failures retain the saved original and expose the
+failure on the document; they do not undo a successful upload.
+
+Sources default to read-only. Only the knowledge-base owner or system
+administrator may create a writable folder source, enable uploads, or change
+connection settings on an existing writable source. The dashboard exposes an
+administrator-controlled **Allow uploads** switch. Ordinary writers can upload
+to an authorized source without receiving permission to reconfigure its physical
+address. The connecting OS/SMB account must also have storage write access.
+
+Uploads publish staged bytes without overwriting an existing name, including a
+collision created during the upload. Temporary `.octop-upload-` files are
+excluded from scans. Source failures never silently fall back to platform
+storage. `DATA_SOURCE_READ_ONLY` is HTTP 403, `DATA_SOURCE_UPLOAD_CONFLICT`
+is 409, and unsafe/excluded destinations use `DATA_SOURCE_UPLOAD_INVALID` (400).
+Direct SMB still requires the optional `smbprotocol` dependency. Filesystems
+must support a safe no-replace publication primitive; unsupported storage fails
+closed rather than replacing a file.
+
+### Data-source configuration and scan runs
+
+`PATCH /api/data-sources/{ds_id}` updates a registered source, including
+`folder.scan_interval_seconds` in the replacement `folder` settings: `0` disables
+scheduled scans; a positive value sets the minimum interval between attempts.
+Local and SMB sources are eligible. Due sources are checked every 15 seconds;
+new or changed files must pass the existing 30-second stability window before
+entering the background index queue. Scans create ordinary run records with a
+scheduled trigger and their actual result, including failures. Inspect them with
+`GET /api/data-sources/{ds_id}/runs`. Shutdown waits for scans and active indexing
+workers before closing the database; queued documents resume at startup.
+
+Sources are `read_only` by default. To upload to a source, an administrator
+must explicitly configure it as writable (`read_only: false`) and enable source
+uploads; otherwise upload is refused. Source upload permission does not make the
+source writable by default.
+
+Both upload endpoints accept optional multipart `access_scope`, `access_permission`
+and `access_unit_key`. Scopes are `company`, `department`, `personal` and
+`authorized`; permissions are `read` or `write`. Scope and permission must be
+supplied together, and only a department choice accepts its offered unit key.
+If all fields are omitted, the server recomputes the maximum default and stores
+it with the new document. The initial ACL and document row commit together.
+
+Choices intersect the knowledge-base and destination-folder boundaries using the
+uploader's actual company, department or role authorization. An individual grant
+alone offers only personal access, even when other individuals were also granted
+the folder. `authorized` represents a custom group boundary, not unrestricted
+access; its current audience is snapshotted at upload time. A later parent
+widening does not widen a file's selected initial scope. The upload rechecks the
+choice against current permissions before writing an original: stale or forged
+widening returns HTTP 403 `KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN`, without saving
+the file or a document row.
+
+### Individual delegation and revocation notifications
+
+Individual `user` ACL grants accept `can_delegate`, default `false`. Department
+and role grants cannot enable this flag. Content-write permission does not grant
+ACL-management permission: only the knowledge-base owner or system administrator
+may edit root grants. A recipient cannot enable its own root flag.
+
+| Method | Path | Auth | Notes |
+|--------|------|------|-------|
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/delegations` | manager / delegator | own outgoing edges, or the complete document graph for a manager; eligible active knowledge-base readers only |
+| `POST` | `/knowledge-bases/{kb}/documents/{doc}/delegations` | delegator | `{grantee_user_id, can_delegate?: false}`; creates or updates only the caller's own edge; `201` listing |
+| `DELETE` | `/knowledge-bases/{kb}/documents/{doc}/delegations/{id}` | issuer / manager | `204`; revokes the edge and unsupported downstream edges |
+| `GET` | `/knowledge-access-notifications` | user | own persistent inbox; `unread_only=false`, `limit=50` (1–100), response `{items, unread_count}` |
+| `POST` | `/knowledge-access-notifications/{id}/read` | user | `204`; idempotent for the caller's own notice, missing or foreign IDs return 404 |
+
+Every delegation hop is limited by its grantor's current read/write and delegation
+rights. Knowledge-base access remains mandatory; self-grants, cycles and attempts
+to delegate without authority return `KNOWLEDGE_DELEGATION_FORBIDDEN` (403).
+Delegations apply to one document, never sibling files; a cross-document edge ID
+returns 404. Derived edges are not serialized as independent root ACL grants.
+
+Revoking a root grant or disabling its delegation flag deletes unsupported
+downstream edges in the same transaction. Independent valid authorization remains;
+re-enabling a root does not resurrect deleted edges. Removal of an original
+non-delegable individual grant also produces a notification. No-op or rejected
+requests, and database transactions that fail or roll back, leave no notices.
+
+Notices identify the previously authorized logical resource and whether valid
+read access remains (`access_retained`). They survive logout and loss of the
+knowledge module or resource access. The inbox requires authentication and the
+instance license gate, not continued knowledge-base access; it never restores
+access. Revocation cannot recall copies already downloaded outside the platform.
+
 
 ### Source-authorized two-document collections
 

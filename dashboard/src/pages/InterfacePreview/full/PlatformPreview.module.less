@@ -1,0 +1,43 @@
+.main {
+  display: flex;
+  flex-direction: column;
+}
+.page {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+.profileButton {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  height: auto;
+  padding: 10px 0;
+  overflow: hidden;
+  text-align: left;
+  > span:last-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+}
+.footerTools {
+  width: 100%;
+}
+:global([data-collapsed="true"]) .footerTools {
+  flex-direction: column;
+  gap: 2px !important;
+}
+@media (max-width: 767px) {
+  :global([data-original-preview]) > aside[aria-hidden="true"] {
+    visibility: hidden;
+  }
+  :global([data-original-preview]) > aside[aria-hidden="false"] {
+    visibility: visible;
+  }
+  :global([data-collapsed="true"]) .footerTools {
+    flex-direction: row;
+  }
+}

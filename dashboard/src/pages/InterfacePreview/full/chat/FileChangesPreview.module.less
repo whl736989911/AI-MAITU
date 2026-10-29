@@ -1,0 +1,189 @@
+.card {
+  overflow: hidden;
+  min-width: 0;
+  border: 1px solid #dfe4df;
+  border-radius: 8px;
+  background: #fff;
+  color: #303630;
+  font-size: 12px;
+}
+.header,
+.fileRow {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  list-style: none;
+  cursor: pointer;
+  &::-webkit-details-marker {
+    display: none;
+  }
+  &:focus-visible {
+    outline: 2px solid var(--fn-color-brand);
+    outline-offset: -2px;
+  }
+}
+.header {
+  min-height: 34px;
+  padding: 6px 32px 6px 10px;
+  background: #f6f8f5;
+  strong {
+    font-size: 12px;
+    font-weight: 600;
+  }
+  > .chevron {
+    margin-left: auto;
+  }
+}
+.complete {
+  color: #37835b;
+}
+.sample {
+  margin-left: auto;
+  color: #8b938b;
+  font-size: 10px;
+}
+.stats {
+  display: inline-flex;
+  gap: 6px;
+  flex-shrink: 0;
+  font:
+    11px/1.5 "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    "Microsoft YaHei",
+    "Noto Sans SC";
+  font-variant-numeric: tabular-nums;
+  > :first-child {
+    color: #318052;
+  }
+  > :last-child {
+    color: #b55e60;
+  }
+}
+.chevron {
+  flex-shrink: 0;
+  color: #8b938b;
+  transition: transform 120ms ease;
+}
+.card[open] > .header > .chevron,
+.file[open] > .fileRow > .chevron {
+  transform: rotate(90deg);
+}
+.files {
+  border-top: 1px solid #e8ece7;
+}
+.file + .file {
+  border-top: 1px solid #eef0ec;
+}
+.fileRow {
+  min-height: 30px;
+  padding: 5px 10px;
+  color: #7c877c;
+  &:hover {
+    background: #f8faf7;
+  }
+}
+.path {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font:
+    11px/1.5 "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    "Microsoft YaHei",
+    "Noto Sans SC";
+  strong {
+    color: #394139;
+    font-weight: 500;
+  }
+}
+.status {
+  flex-shrink: 0;
+  border-radius: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  line-height: 16px;
+  &[data-status="A"] {
+    color: #318052;
+    background: #edf7ef;
+  }
+  &[data-status="M"] {
+    color: #596f9c;
+    background: #eef2fb;
+  }
+  &[data-status="D"] {
+    color: #b55e60;
+    background: #fff0f0;
+  }
+}
+.diff {
+  max-height: 260px;
+  overflow: auto;
+  border-top: 1px solid #e8ece7;
+  padding: 4px 0;
+  background: #fcfdfb;
+  &:focus-visible {
+    outline: 2px solid var(--fn-color-brand);
+    outline-offset: -2px;
+  }
+}
+.line {
+  display: grid;
+  grid-template-columns: 28px 28px 18px minmax(360px, 1fr);
+  width: max-content;
+  min-width: 100%;
+  padding-right: 12px;
+  font:
+    11px/21px "SFMono-Regular",
+    Consolas,
+    "Liberation Mono",
+    "Microsoft YaHei",
+    "Noto Sans SC";
+  &[data-kind="add"] {
+    background: #edf7ef;
+  }
+  &[data-kind="remove"] {
+    background: #fff0f0;
+  }
+  code {
+    white-space: pre;
+    font: inherit;
+  }
+}
+.lineNumber {
+  padding-right: 5px;
+  color: #8a968a;
+  text-align: right;
+  user-select: none;
+}
+.sign {
+  text-align: center;
+  color: #6d7c6d;
+}
+@media (max-width: 767px) {
+  .sample {
+    display: none;
+  }
+  .header > .stats {
+    margin-left: auto;
+  }
+  .header > .chevron {
+    margin-left: 0;
+  }
+  .path > span {
+    display: none;
+  }
+  .header,
+  .fileRow {
+    min-height: 36px;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chevron {
+    transition: none;
+  }
+}

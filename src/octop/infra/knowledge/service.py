@@ -15,6 +15,7 @@ from typing import Any, cast
 from octop.config import DEFAULT_MAX_UPLOAD_MB, upload_mb_to_bytes
 from octop.infra.db.repos.knowledge import KnowledgeBaseRow, KnowledgeDocumentRow
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.knowledge.delegations import KnowledgeDelegationService
 from octop.infra.knowledge.embed import embed_knowledge_texts
 from octop.infra.knowledge.files import (
     delete_document_file,
@@ -26,7 +27,7 @@ from octop.infra.knowledge.files import (
 )
 from octop.infra.knowledge.gate import assert_knowledge_usable, get_capability
 from octop.infra.knowledge.index import KnowledgeIndex
-from octop.infra.knowledge.ocr import OCR_IMAGE_SUFFIXES, load_ocr_config
+from octop.infra.knowledge.permissions import KnowledgePermissionService
 from octop.infra.knowledge.relpath import (
     ancestor_dirs,
     normalize_kb_path,
@@ -105,8 +106,9 @@ _EXT_TO_CONTENT_TYPE = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
     ".webp": "image/webp",
+    ".dxf": "application/dxf",
 }
-_ALLOWED_CONTENT_TYPES = set(_EXT_TO_CONTENT_TYPE.values())
+_ALLOWED_CONTENT_TYPES = set(_EXT_TO_CONTENT_TYPE.values()) | {"application/octet-stream"}
 _TEXT_CONTENT_TYPES = {"text/plain", "text/markdown"}
 _TEXT_FORMAT_TO_EXT = {"md": ".md", "txt": ".txt"}
 _TEXT_FORMAT_TO_CONTENT_TYPE = {"md": "text/markdown", "txt": "text/plain"}
@@ -117,12 +119,8 @@ def _resolve_content_type(filename: str, content_type: str) -> str:
     mapped = _EXT_TO_CONTENT_TYPE.get(suffix)
     if mapped is not None:
         return mapped
-    ct = (content_type or "").strip().lower()
-    if ct in _ALLOWED_CONTENT_TYPES:
-        return ct
-    if ct in {"", "application/octet-stream"}:
-        return ct
-    return ct
+    # Unknown suffixes remain opaque regardless of the client's MIME claim.
+    return "application/octet-stream"
 
 
 def knowledge_content_type(suffix: str) -> str | None:
@@ -132,6 +130,11 @@ def knowledge_content_type(suffix: str) -> str | None:
     accept a type an upload would reject (or the other way round).
     """
     return _EXT_TO_CONTENT_TYPE.get(suffix.strip().lower())
+
+
+def knowledge_supported_extensions() -> tuple[str, ...]:
+    """Current parser-known extensions, including formats with optional processors."""
+    return tuple(sorted(_EXT_TO_CONTENT_TYPE))
 
 
 def knowledge_suffix_for_content_type(content_type: str) -> str | None:
@@ -281,16 +284,20 @@ class KnowledgeService:
                 digest = file_digest(document_path(kb_id, doc_id, document.filename))
             if not document.content_hash or digest != document.content_hash:
                 raise OctopError.localized(ErrorCode.KNOWLEDGE_INDEX_NOT_READY)
-            text = KnowledgeIndex(kb_id).document_preview(doc_id, max_chars=_MAX_PREVIEW_CHARS)
+            preview = KnowledgeIndex(kb_id).document_preview_blocks(
+                doc_id, max_chars=_MAX_PREVIEW_CHARS
+            )
             current = self._repo.get_document(doc_id)
             if (
-                text is None
+                preview is None
                 or current is None
                 or current.status != "ready"
                 or current.content_hash != document.content_hash
             ):
                 raise OctopError.localized(ErrorCode.KNOWLEDGE_INDEX_NOT_READY)
+            text, blocks = preview
         elif document.content_type in _TEXT_CONTENT_TYPES and not document.data_source_id:
+            blocks = []
             path = document_path(kb_id, doc_id, document.filename)
             try:
                 with path.open(encoding="utf-8-sig") as handle:
@@ -308,6 +315,7 @@ class KnowledgeService:
             "pages": derived.get("pages"),
             "sections": derived.get("sections", []),
             "text": text,
+            "blocks": blocks,
         }
 
     def coverage(self, kb_id: str, *, actor_user_id: int, is_admin: bool = False) -> dict[str, int]:
@@ -329,7 +337,7 @@ class KnowledgeService:
             ),
             "indexing": sum(doc.status in {"pending", "processing"} for doc in documents),
             "failed": sum(doc.status in {"failed", "password_required"} for doc in documents),
-            "unsupported": sum(doc.status == "unsupported" for doc in documents),
+            "unsupported": sum(doc.status in {"unsupported", "archive_only"} for doc in documents),
         }
 
     def read_segment(
@@ -592,6 +600,9 @@ class KnowledgeService:
         content: str = "",
         is_admin: bool = False,
         path: str | None = None,
+        access_scope: str | None = None,
+        access_permission: str | None = None,
+        access_unit_key: str | None = None,
     ) -> KnowledgeDocumentRow:
         """Create a markdown or plain-text document with optional draft content."""
         fmt = (format or "").strip().lower().lstrip(".")
@@ -617,6 +628,9 @@ class KnowledgeService:
             content=encoded,
             is_admin=is_admin,
             path=relative,
+            access_scope=access_scope,
+            access_permission=access_permission,
+            access_unit_key=access_unit_key,
         )
 
     def update_text_document(
@@ -628,11 +642,16 @@ class KnowledgeService:
         content: str,
         is_admin: bool = False,
     ) -> KnowledgeDocumentRow:
-        """Overwrite md/txt content and mark the document pending for reindex."""
+        """Overwrite md/txt content and mark the document pending for reindex.
+
+        Content maintenance follows the document's resolved graph (direct chain
+        write or a delegated write edge) — not the base-level upload gate, which
+        stays reserved for creating documents.
+        """
         assert_knowledge_usable(
             self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
         )
-        self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
@@ -662,15 +681,28 @@ class KnowledgeService:
         return cast(KnowledgeDocumentRow, refreshed)
 
     def document_access_scope(self, actor_user_id: int) -> tuple[set[str], set[str], set[str]]:
-        """Resolve effective document ACLs using the actor's actual role."""
+        """Resolve effective document ACLs using the actor's actual role.
+
+        Delegation-derived rights merge into the same answer: an edge on one
+        document makes exactly that document readable (writable at the grantor's
+        current level) even when the surrounding folder stays restricted.
+        """
         role, unit_keys = self._repo.scope_for_user(actor_user_id)
         restricted: set[str] = set()
         readable: set[str] = set()
         writable: set[str] = set()
         entries = self._repo.document_acl_entries()
+        delegations = KnowledgeDelegationService(self._services.db)
         for base in self._repo.list_all():
+            documents = self._repo.list_documents(base.id)
+            base_entry = self._repo.acl_entry(base.id)
+            if not may_read_knowledge_base(
+                base_entry, user_id=actor_user_id, role=role, unit_keys=unit_keys
+            ):
+                restricted.update(document.id for document in documents)
+                continue
             scoped = document_access_ids(
-                self._repo.list_documents(base.id),
+                documents,
                 entries,
                 user_id=actor_user_id,
                 role=role,
@@ -678,7 +710,17 @@ class KnowledgeService:
             )
             restricted.update(scoped[0])
             readable.update(scoped[1])
-            writable.update(scoped[2])
+            if base_entry is not None and can_write(
+                base_entry, user_id=actor_user_id, role=role, unit_keys=unit_keys
+            ):
+                writable.update(scoped[2])
+            for doc_id, right in delegations.derived_rights(
+                base.id, actor_user_id=actor_user_id
+            ).items():
+                if right.read:
+                    readable.add(doc_id)
+                    if right.write:
+                        writable.add(doc_id)
         return restricted, readable, writable
 
     def document_read_scope(
@@ -768,6 +810,9 @@ class KnowledgeService:
         content: bytes,
         is_admin: bool = False,
         path: str | None = None,
+        access_scope: str | None = None,
+        access_permission: str | None = None,
+        access_unit_key: str | None = None,
     ) -> KnowledgeDocumentRow:
         assert_knowledge_usable(
             self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
@@ -784,14 +829,21 @@ class KnowledgeService:
         name = path_basename(rel)
         if not name:
             raise ValueError("invalid knowledge document filename")
-        if (
-            Path(name).suffix.lower() in OCR_IMAGE_SUFFIXES
-            and not load_ocr_config(self._services.settings_repo.get).enabled
-        ):
-            raise ValueError("knowledge OCR must be enabled for image documents")
         resolved_type = _resolve_content_type(name, content_type)
         if resolved_type not in _ALLOWED_CONTENT_TYPES:
             raise ValueError(f"unsupported knowledge document content type: {content_type}")
+        # Recompute the ceiling from the current ACL before any side effect: a
+        # stale or forged selection is rejected here, never after the file or
+        # the document row exist.
+        initial_acl = KnowledgePermissionService(self._services).validate_upload_access(
+            kb_id,
+            folder=path_parent(rel),
+            data_source_id=None,
+            actor_user_id=actor_user_id,
+            scope=access_scope,
+            permission=access_permission,
+            unit_key=access_unit_key,
+        )
         # The per-base limit lives on the KB row (schema v10). 0 = unlimited.
         document = self._repo.create_document(
             kb_id=kb_id,
@@ -801,6 +853,7 @@ class KnowledgeService:
             byte_size=len(content),
             content_hash=document_digest(content),
             max_documents=base.max_documents,
+            initial_acl=initial_acl,
         )
         try:
             write_document(kb_id, document.id, name, content)
@@ -843,11 +896,6 @@ class KnowledgeService:
         name = path_basename(rel)
         if not name:
             raise ValueError("invalid knowledge document filename")
-        if (
-            Path(name).suffix.lower() in OCR_IMAGE_SUFFIXES
-            and not load_ocr_config(self._services.settings_repo.get).enabled
-        ):
-            raise ValueError("knowledge OCR must be enabled for image documents")
         resolved_type = _resolve_content_type(name, content_type)
         if resolved_type not in _ALLOWED_CONTENT_TYPES:
             raise ValueError(f"unsupported knowledge document content type: {content_type}")
@@ -875,11 +923,6 @@ class KnowledgeService:
         name = path_basename(rel)
         if not name:
             raise ValueError("invalid knowledge document filename")
-        if (
-            Path(name).suffix.lower() in OCR_IMAGE_SUFFIXES
-            and not load_ocr_config(self._services.settings_repo.get).enabled
-        ):
-            raise ValueError("knowledge OCR must be enabled for image documents")
         resolved_type = _resolve_content_type(name, content_type)
         if resolved_type not in _ALLOWED_CONTENT_TYPES:
             raise ValueError(f"unsupported knowledge document content type: {content_type}")
@@ -976,6 +1019,57 @@ class KnowledgeService:
         if result is None:
             raise LookupError("knowledge document not found")
         self._refresh_collections(kb_id, doc_id)
+        return cast(KnowledgeDocumentRow, result)
+
+    def move_document(
+        self,
+        kb_id: str,
+        doc_id: str,
+        *,
+        target_folder: str,
+        actor_user_id: int,
+        is_admin: bool = False,
+    ) -> KnowledgeDocumentRow:
+        """Move a file or folder into ``target_folder`` (``""`` = root).
+
+        Refused when the destination does not exist, is not a folder, already
+        holds a document with this name, is not writable by the actor, or — for
+        a folder — lies inside the folder being moved (which would detach the
+        subtree from the tree).
+        """
+        self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        document = self._repo.get_document(doc_id)
+        if document is None or document.kb_id != kb_id:
+            raise LookupError("knowledge document not found")
+        self.require_document_writable(document, actor_user_id=actor_user_id)
+        normalized_target = normalize_kb_path(target_folder or "")
+        if normalized_target:
+            folder = self._repo.get_document_by_path(kb_id, normalized_target)
+            if folder is None or not folder.is_dir:
+                raise ValueError("target folder not found")
+            self.require_document_writable(folder, actor_user_id=actor_user_id)
+        if document.is_dir and (
+            normalized_target == document.path
+            or normalized_target.startswith(document.path + "/")
+        ):
+            raise ValueError("cannot move a folder into itself")
+        filename = path_basename(document.filename or document.path)
+        new_path = normalize_kb_path(
+            f"{normalized_target}/{filename}" if normalized_target else filename
+        )
+        if new_path == document.path:
+            return cast(KnowledgeDocumentRow, document)
+        if self._repo.get_document_by_path(kb_id, new_path) is not None:
+            raise ValueError("a knowledge document with this name already exists")
+        result = self._repo.move_document(kb_id, doc_id, normalized_target)
+        if result is None:
+            raise LookupError("knowledge document not found")
+        if document.is_dir:
+            for row in self._repo.list_documents(kb_id):
+                if row.path.startswith(new_path + "/") and not row.is_dir:
+                    self._refresh_collections(kb_id, row.id)
+        else:
+            self._refresh_collections(kb_id, doc_id)
         return cast(KnowledgeDocumentRow, result)
 
     def delete_base(self, kb_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:

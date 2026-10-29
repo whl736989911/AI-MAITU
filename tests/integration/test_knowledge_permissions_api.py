@@ -218,6 +218,7 @@ async def test_permission_labels_follow_effective_restrictions_below_company_bas
     }
     for resource_type, resource_id, visibility, unit_key in (
         ("knowledge_base", kb.id, "public", None),
+        ("knowledge_document", files["company.md"].id, "public", None),
         ("knowledge_document", folder.id, "unit", "knowledge-label-team"),
         ("knowledge_document", files["department/inherited.md"].id, "public", None),
         ("knowledge_document", files["department/personal.md"].id, "private", None),

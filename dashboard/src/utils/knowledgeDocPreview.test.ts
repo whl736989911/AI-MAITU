@@ -30,6 +30,36 @@ describe("canPreviewKnowledgeDocument", () => {
       false,
     );
   });
+
+  it("offers extracted CAD text but not an unavailable processor preview", () => {
+    expect(
+      canPreviewKnowledgeDocument({ filename: "图纸.dwg", status: "ready" }),
+    ).toBe(true);
+    expect(
+      canPreviewKnowledgeDocument({ filename: "图纸.dxf", status: "ready" }),
+    ).toBe(true);
+    expect(canRichPreviewKnowledgeDocument({ filename: "图纸.dwg" })).toBe(
+      false,
+    );
+    expect(
+      canPreviewKnowledgeDocument({
+        filename: "图纸.dwg",
+        status: "archive_only",
+      }),
+    ).toBe(false);
+    expect(
+      canPreviewKnowledgeDocument({
+        filename: "图纸.doc",
+        status: "archive_only",
+      }),
+    ).toBe(false);
+    expect(
+      canDownloadKnowledgeOriginal({
+        filename: "图纸.dwg",
+        has_original: true,
+      }),
+    ).toBe(true);
+  });
 });
 
 describe("canDownloadKnowledgeOriginal", () => {

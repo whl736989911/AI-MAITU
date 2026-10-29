@@ -35,6 +35,7 @@ SYNC_RUNNING = "running"
 SYNC_OK = "ok"
 SYNC_FAILED = "failed"
 
+
 CONNECTION_UNKNOWN = "unknown"
 CONNECTION_OK = "ok"
 CONNECTION_FAILED = "failed"
@@ -282,6 +283,12 @@ class DataSourceRepo:
         with self._db.connect() as conn:
             r = conn.execute("SELECT * FROM data_sources WHERE id = ?", (ds_id,)).fetchone()
         return DataSourceRow.from_row(r) if r else None
+
+    def list_all(self) -> list[DataSourceRow]:
+        """Return source configuration rows for trusted system scheduling."""
+        with self._db.connect() as conn:
+            rows = conn.execute("SELECT * FROM data_sources ORDER BY id").fetchall()
+        return map_rows(rows, DataSourceRow)
 
     def list_for_base(self, kb_id: str) -> list[DataSourceRow]:
         with self._db.connect() as conn:

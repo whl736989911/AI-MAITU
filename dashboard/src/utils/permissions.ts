@@ -4,6 +4,8 @@ export type PermissionHolder = {
   /** ``admin`` bypasses every gate; ``unit_admin`` does not (its scope is the unit). */
   role: "admin" | "unit_admin" | "user" | string;
   permissions?: string[] | null;
+  /** Explicitly granted keys only (no role/admin expansion). */
+  granted_permissions?: string[] | null;
 };
 
 /** Wildcard key: an explicit grant of every module key. */
@@ -152,6 +154,8 @@ export function isSystemAdmin(
  */
 const HOST_CAPABILITY_KEYS: Record<string, true> = {
   terminal: true,
+  workspace: true,
+  trajectory: true,
   browser: true,
   desktop: true,
   mobile: true,
@@ -162,7 +166,9 @@ const HOST_CAPABILITY_KEYS: Record<string, true> = {
 };
 
 function explicitlyHasPermission(user: PermissionHolder, key: string): boolean {
-  const held = user.permissions ?? [];
+  // Host capabilities are handed out per user: an administrator's implicit
+  // access must not switch them on, so read the explicit grants only.
+  const held = user.granted_permissions ?? user.permissions ?? [];
   return held.includes(key) || held.includes(ALL_PERMISSIONS_KEY);
 }
 

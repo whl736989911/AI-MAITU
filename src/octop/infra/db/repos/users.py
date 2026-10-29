@@ -354,9 +354,51 @@ class UserRepo:
             )
 
     def set_org_unit(self, user_id: int, unit_key: str | None) -> None:
-        """Bind the user to an org unit (``None`` clears the binding)."""
+        """Bind the user to an org unit (``None`` clears the binding).
+
+        This is the *primary* department shown in the user list; every unit the
+        account belongs to lives in ``user_org_units`` — see :meth:`set_units`.
+        """
         with self._db.transaction() as conn:
             conn.execute("UPDATE users SET org_unit = ? WHERE id = ?", (unit_key, user_id))
+            if unit_key:
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_org_units(user_id, unit_key) VALUES (?, ?)",
+                    (user_id, unit_key),
+                )
+
+    def units_for_user(self, user_id: int, *, conn: Any | None = None) -> list[str]:
+        """Every department the account belongs to, primary included."""
+        sql = (
+            "SELECT unit_key FROM user_org_units WHERE user_id = ? "
+            "UNION SELECT org_unit FROM users WHERE id = ? AND org_unit IS NOT NULL AND org_unit <> ''"
+        )
+        if conn is None:
+            with self._db.connect() as owned:
+                rows = owned.execute(sql, (user_id, user_id)).fetchall()
+        else:
+            rows = conn.execute(sql, (user_id, user_id)).fetchall()
+        return sorted({str(row[0]) for row in rows if row and row[0]})
+
+    def set_units(self, user_id: int, unit_keys: list[str]) -> None:
+        """Replace the account's department memberships.
+
+        The first key becomes the primary department (``users.org_unit``) so the
+        user list keeps showing one department; an empty list clears everything.
+        """
+        cleaned = [str(key).strip() for key in unit_keys if str(key).strip()]
+        cleaned = list(dict.fromkeys(cleaned))
+        with self._db.transaction() as conn:
+            conn.execute("DELETE FROM user_org_units WHERE user_id = ?", (user_id,))
+            for key in cleaned:
+                conn.execute(
+                    "INSERT OR IGNORE INTO user_org_units(user_id, unit_key) VALUES (?, ?)",
+                    (user_id, key),
+                )
+            conn.execute(
+                "UPDATE users SET org_unit = ? WHERE id = ?",
+                (cleaned[0] if cleaned else None, user_id),
+            )
 
     def set_denied_permissions(self, user_id: int, permissions: builtins.list[str]) -> None:
         payload = json.dumps(permissions, ensure_ascii=False)

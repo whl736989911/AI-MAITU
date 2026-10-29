@@ -3,6 +3,9 @@ import { Image, Tooltip } from "antd";
 import { message as antMessage } from "@/utils/antdMessage";
 import { isImeComposing } from "../utils/ime";
 
+import { linkifyKnowledgeCitations } from "../../../utils/linkifyKnowledgeCitations";
+import { useChatKnowledgeCitations } from "../ChatKnowledgeCitationsContext";
+import type { KnowledgeCitation } from "../../../utils/parseKnowledgeCitations";
 import Markdown from "../../../components/Markdown/LazyMarkdown";
 import {
   Copy,
@@ -92,6 +95,9 @@ interface MessageBubbleProps {
   onRunShellCommand?: (code: string) => void;
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;
+  /** Documents this turn cited; their names in the answer become links. */
+  knowledgeCitations?: KnowledgeCitation[];
+  onKnowledgeLink?: (kbId: string, docId: string) => void;
 }
 
 function formatTokenUsage(
@@ -540,9 +546,12 @@ function MessageBubble({
   onRunShellCommand,
   shellCommandDisabled,
   shellCommandDisabledTitle,
+  knowledgeCitations,
+  onKnowledgeLink,
 }: MessageBubbleProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const turnCitations = useChatKnowledgeCitations(knowledgeCitations);
   const serverTimezone = useServerTimezone();
   const user = useCurrentUser();
   const { agents, activeAgent } = useAgent();
@@ -942,11 +951,15 @@ function MessageBubble({
                 )}
                 {textContent && (
                   <Markdown
-                    content={textContent}
+                    content={linkifyKnowledgeCitations(
+                      textContent,
+                      turnCitations,
+                    )}
                     isStreaming={isStreaming}
                     onRunShellCommand={onRunShellCommand}
                     shellCommandDisabled={shellCommandDisabled}
                     shellCommandDisabledTitle={shellCommandDisabledTitle}
+                    onKnowledgeLink={onKnowledgeLink}
                   />
                 )}
               </div>

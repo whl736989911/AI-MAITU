@@ -21,6 +21,10 @@ from octop.infra.db.repos.feature_workflow_changes import FeatureChangeRepo
 from octop.infra.db.repos.invites import InviteRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.knowledge_collections import KnowledgeCollectionsRepo
+from octop.infra.db.repos.knowledge_delegations import (
+    KnowledgeAccessNotificationRepo,
+    KnowledgeDelegationRepo,
+)
 from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.proactive_care_config import ProactiveCareConfigRepo
@@ -68,6 +72,8 @@ class RepoBundle:
     published_expert_repo: PublishedExpertRepo
     knowledge_collections_repo: KnowledgeCollectionsRepo
     knowledge_repo: KnowledgeRepo
+    knowledge_delegation_repo: KnowledgeDelegationRepo
+    knowledge_notification_repo: KnowledgeAccessNotificationRepo
     voice_provider_repo: VoiceProviderRepo
     care_push_repo: CarePushRepo
     proactive_care_config_repo: ProactiveCareConfigRepo
@@ -106,6 +112,8 @@ class RepoBundle:
             published_expert_repo=PublishedExpertRepo(db),
             knowledge_collections_repo=KnowledgeCollectionsRepo(db),
             knowledge_repo=KnowledgeRepo(db),
+            knowledge_delegation_repo=KnowledgeDelegationRepo(db),
+            knowledge_notification_repo=KnowledgeAccessNotificationRepo(db),
             voice_provider_repo=VoiceProviderRepo(db),
             care_push_repo=CarePushRepo(db),
             proactive_care_config_repo=ProactiveCareConfigRepo(db),
@@ -217,6 +225,14 @@ class SharedServices:
     @property
     def knowledge_collections_repo(self) -> KnowledgeCollectionsRepo:
         return self.repos.knowledge_collections_repo
+
+    @property
+    def knowledge_delegation_repo(self) -> KnowledgeDelegationRepo:
+        return self.repos.knowledge_delegation_repo
+
+    @property
+    def knowledge_notification_repo(self) -> KnowledgeAccessNotificationRepo:
+        return self.repos.knowledge_notification_repo
 
     @property
     def voice_provider_repo(self) -> VoiceProviderRepo:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import pytest
@@ -444,3 +444,93 @@ def test_visible_ids_match_can_access(
     )
 
     assert got == expected
+
+# ----------------------------------------------------------------------
+# version counters vs governed state
+# ----------------------------------------------------------------------
+
+
+def test_saving_the_current_state_is_a_noop(world: World) -> None:
+    """A repeated save must not advance the version that pending approvals rest on."""
+    seed_private(world)
+
+    result = world.service.apply_change(
+        resource_type="agent",
+        resource_id="a1",
+        new_entry=entry(world),
+        actor=world.owner,
+    )
+
+    assert result.change_id == ""
+    assert result.status == CHANGE_APPLIED
+    current = world.acl.get("agent", "a1")
+    assert current is not None
+    assert current.version == 1
+    assert world.acl.list_changes("agent", "a1") == []
+
+
+def test_a_repeated_widening_reuses_the_pending_change(world: World) -> None:
+    """Double-submitting the same widening parks one change, not two."""
+    seed_private(world)
+
+    first = world.service.apply_change(
+        resource_type="agent",
+        resource_id="a1",
+        new_entry=entry(world, visibility="public"),
+        actor=world.owner,
+    )
+    second = world.service.apply_change(
+        resource_type="agent",
+        resource_id="a1",
+        new_entry=entry(world, visibility="public"),
+        actor=world.owner,
+    )
+
+    assert first.status == CHANGE_PENDING
+    assert second.change_id == first.change_id
+    assert second.status == CHANGE_PENDING
+    pending = [
+        change
+        for change in world.acl.list_changes("agent", "a1")
+        if change.status == CHANGE_PENDING
+    ]
+    assert len(pending) == 1
+
+
+def test_approve_ignores_a_version_bump_that_kept_the_state(world: World) -> None:
+    """The base state, not the counter, decides whether approval is still valid."""
+    seed_private(world)
+    parked = world.service.apply_change(
+        resource_type="agent",
+        resource_id="a1",
+        new_entry=entry(world, visibility="public"),
+        actor=world.owner,
+    )
+    assert parked.status == CHANGE_PENDING
+
+    current = world.acl.get("agent", "a1")
+    assert current is not None
+    world.acl.upsert(replace(current, version=current.version + 1))
+
+    world.service.approve(parked.change_id, world.admin)
+
+    applied = world.acl.get("agent", "a1")
+    assert applied is not None
+    assert applied.visibility == "public"
+    assert applied.version == 3
+
+
+def test_approve_still_refuses_when_the_state_moved(world: World) -> None:
+    seed_private(world)
+    parked = world.service.apply_change(
+        resource_type="agent",
+        resource_id="a1",
+        new_entry=entry(world, visibility="public"),
+        actor=world.owner,
+    )
+    world.acl.set_visibility(
+        "agent", "a1", "private", owner_user_id=world.owner, unit_key="sales"
+    )
+
+    with pytest.raises(ValueError, match="is stale"):
+        world.service.approve(parked.change_id, world.admin)

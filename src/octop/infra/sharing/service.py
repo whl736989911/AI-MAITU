@@ -34,7 +34,9 @@ from octop.infra.db.repos.resource_acl import (
 )
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.knowledge.delegations import KnowledgeDelegationService
 from octop.infra.sharing import (
+    IMPACT_SELF,
     RESOURCE_TYPES,
     VISIBILITY_PRIVATE,
     AclEntry,
@@ -56,6 +58,7 @@ def _acl_state_key(entry: AclEntry) -> tuple[object, ...]:
         entry.unit_key,
         entry.permission,
         tuple(sorted(entry.grants)),
+        tuple(sorted(entry.grant_delegation)),
     )
 
 
@@ -92,6 +95,14 @@ class SharingService:
         self._agents = AgentRepo(db)
         self._units = OrgUnitRepo(db)
         self._knowledge = KnowledgeRepo(db)
+        # Delegation reconciliation runs inside every applied knowledge ACL
+        # change below; lazy so non-knowledge deployments never pay for it.
+        self._delegations: KnowledgeDelegationService | None = None
+
+    def _delegation_cascade(self) -> KnowledgeDelegationService:
+        if self._delegations is None:
+            self._delegations = KnowledgeDelegationService(self._db)
+        return self._delegations
 
     # ------------------------------------------------------------------
     # Change pipeline
@@ -141,6 +152,28 @@ class SharingService:
             owner_user_id=before.owner_user_id,
             version=before.version + 1,
         )
+        if _acl_state_key(after) == _acl_state_key(before):
+            # Re-saving the current state is not a change. Writing it would bump the
+            # version and silently invalidate every pending approval on this resource.
+            return ChangeResult(
+                change_id="",
+                status=CHANGE_APPLIED,
+                impact_scope=IMPACT_SELF,
+                entry=before,
+            )
+        for parked in self._repo.list_changes(resource_type, resource_id, limit=20):
+            if parked.status != CHANGE_PENDING:
+                continue
+            if _logged_acl_state_key(parked, parked.after_json) == _acl_state_key(after):
+                # The same widening is already waiting for approval: returning it
+                # keeps a double submit from parking two changes on one base.
+                return ChangeResult(
+                    change_id=parked.id,
+                    status=CHANGE_PENDING,
+                    impact_scope=parked.impact_scope,
+                    entry=before,
+                )
+            break
         impact = impact_scope(before, after)
         status = CHANGE_PENDING if requires_approval(before, after) else CHANGE_APPLIED
         change = AclChangeRow(
@@ -161,6 +194,15 @@ class SharingService:
             self._repo.insert_change(change, conn=conn)
             if status == CHANGE_APPLIED:
                 self._repo.upsert(after, conn=conn)
+                if resource_type in ("knowledge_base", "knowledge_document"):
+                    self._delegation_cascade().cascade_after_acl_change(
+                        conn,
+                        resource_type,
+                        resource_id,
+                        before,
+                        after,
+                        change_id=change.id,
+                    )
         return ChangeResult(
             change_id=change.id,
             status=status,
@@ -200,8 +242,13 @@ class SharingService:
                     and _acl_state_key(baseline)
                     == _logged_acl_state_key(change, change.before_json)
                 )
-            if current_version != change.from_version or not state_matches:
+            if not state_matches:
                 raise ValueError(f"change {change_id!r} is stale; its base ACL has changed")
+            # The recorded base version may have advanced through writes that left
+            # the governed state unchanged — a repeated save, for instance. The
+            # state comparison above is the safety condition; the version is only
+            # the counter this row is written under, so a stale counter must not
+            # block an approval the base state still permits.
             version = current_version + 1
             after = decode_acl_state(
                 change.after_json,
@@ -219,6 +266,15 @@ class SharingService:
                 expected_status=CHANGE_PENDING,
                 conn=conn,
             )
+            if change.resource_type in ("knowledge_base", "knowledge_document"):
+                self._delegation_cascade().cascade_after_acl_change(
+                    conn,
+                    change.resource_type,
+                    change.resource_id,
+                    current,
+                    after,
+                    change_id=change.id,
+                )
             if change.rollback_of is not None:
                 self._repo.set_change_status(
                     change.rollback_of,
@@ -312,6 +368,15 @@ class SharingService:
                     expected_status=CHANGE_APPLIED,
                     conn=conn,
                 )
+                if change.resource_type in ("knowledge_base", "knowledge_document"):
+                    self._delegation_cascade().cascade_after_acl_change(
+                        conn,
+                        change.resource_type,
+                        change.resource_id,
+                        current,
+                        restored,
+                        change_id=rollback.id,
+                    )
         return rollback.id
 
     # ------------------------------------------------------------------

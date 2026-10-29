@@ -30,8 +30,6 @@ from pydantic import BaseModel, Field
 
 from octop.api.common.agent import (
     AgentCapability,
-    feature_can_manage,
-    feature_in_enterprise_scope,
     require_agent_row,
 )
 from octop.api.common.workspace import require_agent_workspace
@@ -39,6 +37,7 @@ from octop.api.deps import current_user, get_server
 from octop.infra.agents import feature_workflow as wf
 from octop.infra.agents import feature_workflow_changes as wfc
 from octop.infra.agents import feature_workflow_service as workflow_service
+from octop.infra.agents.feature_access import feature_in_enterprise_scope, is_feature_manager
 from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
 from octop.infra.db.repos.feature_workflow_changes import TARGET_DEFINITION, TARGET_OVERLAY
 from octop.infra.errors import ErrorCode, OctopError
@@ -92,6 +91,17 @@ def _require_feature_row(agent_id: str, *, user: Any, server: OctopServer) -> An
     return row
 
 
+def _enterprise_scope(row: Any, user: Any, server: OctopServer) -> bool:
+    """The central enterprise-reach policy, resolved for this HTTP caller."""
+    repos = _services(server).repos
+    return feature_in_enterprise_scope(
+        row,
+        user_id=int(user.id),
+        user_repo=repos.user_repo,
+        org_unit_repo=repos.org_unit_repo,
+    )
+
+
 @router.get(
     "/{agent_id}/workflow",
     summary="Read a feature's workflow definition",
@@ -116,7 +126,7 @@ async def get_workflow(
         and wf.workflow_status(loaded.definition) != wf.STATUS_ACTIVE
         and row.user_id != user.id
         and not user.is_admin
-        and not feature_in_enterprise_scope(row, user, server)
+        and not _enterprise_scope(row, user, server)
     ):
         return WorkflowResponse()
     return WorkflowResponse(workflow=loaded.definition, error=loaded.error)
@@ -324,7 +334,7 @@ async def list_workflow_changes(
     feature_id = feature_id_of_agent(agent_id)
     assert feature_id is not None
     repo = _services(server).feature_change_repo
-    if user.is_admin or feature_in_enterprise_scope(row, user, server):
+    if user.is_admin or _enterprise_scope(row, user, server):
         rows = [
             *repo.list_definition_for_feature(feature_id=feature_id, limit=limit),
             *repo.list_for_feature(
@@ -363,8 +373,15 @@ async def revert_workflow_change(
     # A reverted diff still contains its original content. Only the original
     # caller sees a personal overlay; enterprise managers may undo definition edits.
     feature_row = _require_feature_row(agent_id, user=user, server=server)
+    repos = services.repos
     if row.user_id != user.id and not (
-        row.target == TARGET_DEFINITION and feature_can_manage(feature_row, user, server)
+        row.target == TARGET_DEFINITION
+        and is_feature_manager(
+            feature_row,
+            user_id=int(user.id),
+            user_repo=repos.user_repo,
+            org_unit_repo=repos.org_unit_repo,
+        )
     ):
         reason = "a change belongs to its own author"
         raise OctopError(ErrorCode.FORBIDDEN, reason, details={"reason": reason})

@@ -35,6 +35,8 @@ import {
 } from "./loadOlderGate";
 import * as chatStore from "../hooks/chatStore";
 import { shouldBlockHistoryRefresh } from "../hooks/wsResumeGate";
+import { collectTurnKnowledgeCitations } from "../../../utils/collectTurnKnowledgeCitations";
+import type { KnowledgeCitation } from "../../../utils/parseKnowledgeCitations";
 import styles from "../index.module.less";
 
 /** Virtualize long threads; short chats keep the simpler DOM path. */
@@ -141,6 +143,7 @@ interface GroupRenderContext {
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;
   compactProcess?: boolean;
+  threadKnowledgeCitations?: KnowledgeCitation[];
   registerBubbleRef: (messageId: string, el: HTMLDivElement | null) => void;
 }
 
@@ -192,6 +195,7 @@ function renderMessageGroup(
             shellCommandDisabled={ctx.shellCommandDisabled}
             shellCommandDisabledTitle={ctx.shellCommandDisabledTitle}
             compactProcess={ctx.compactProcess}
+            threadKnowledgeCitations={ctx.threadKnowledgeCitations}
           />
         </div>
       );
@@ -283,6 +287,20 @@ export default function MessageList(props: MessageListProps) {
     compactProcess,
     onTurnRailVisibilityChange,
   } = props;
+
+  // Replayed history keeps tool messages in their own groups, so a single
+  // assistant turn cannot see the tool output that cites a file. Collect the
+  // thread's citations once and let each turn link the names it mentions.
+  const threadKnowledgeCitations = useMemo(
+    () =>
+      collectTurnKnowledgeCitations({
+        tools: messages,
+        thinkings: [],
+        processSteps: [],
+        answerMessage: null,
+      }),
+    [messages],
+  );
 
   const { t } = useTranslation();
   const virtuosoRef = useRef<VirtuosoHandle | null>(null);
@@ -717,6 +735,7 @@ export default function MessageList(props: MessageListProps) {
       shellCommandDisabled,
       shellCommandDisabledTitle,
       compactProcess,
+      threadKnowledgeCitations,
       registerBubbleRef,
     }),
     [
@@ -741,6 +760,7 @@ export default function MessageList(props: MessageListProps) {
       shellCommandDisabled,
       shellCommandDisabledTitle,
       compactProcess,
+      threadKnowledgeCitations,
       registerBubbleRef,
     ],
   );

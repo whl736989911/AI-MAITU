@@ -1,0 +1,113 @@
+html,
+body,
+#interface-preview-root {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100%;
+}
+body {
+  background: #fafaf9;
+  color: #242423;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+    "Noto Sans SC", sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+#interface-preview-root,
+#interface-preview-root *,
+#interface-preview-root *::before,
+#interface-preview-root *::after {
+  box-sizing: border-box;
+}
+#interface-preview-root button,
+#interface-preview-root input,
+#interface-preview-root select,
+#interface-preview-root textarea {
+  font: inherit;
+}
+#interface-preview-root button {
+  cursor: pointer;
+}
+#interface-preview-root button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+#interface-preview-root button:focus-visible,
+#interface-preview-root a:focus-visible,
+#interface-preview-root input:focus-visible,
+#interface-preview-root select:focus-visible,
+#interface-preview-root textarea:focus-visible {
+  outline: 2px solid #ba4c5d;
+  outline-offset: 3px;
+}
+#interface-preview-root a {
+  color: inherit;
+}
+#interface-preview-root svg {
+  flex-shrink: 0;
+}
+#interface-preview-root button,
+#interface-preview-root a,
+#interface-preview-root input,
+#interface-preview-root textarea,
+#interface-preview-root select {
+  -webkit-tap-highlight-color: transparent;
+}
+[data-full-preview] {
+  --fn-bg-layout: #fafaf9;
+  --fn-bg-primary: #fff;
+  --fn-bg-secondary: #fafaf9;
+  --fn-bg-elevated: #fff;
+  --fn-bg-hover: #f4f4f2;
+  --fn-text-primary: #242423;
+  --fn-text-secondary: #73736f;
+  --fn-text-tertiary: #85857f;
+  --fn-border-primary: #e5e5e3;
+  --fn-border-secondary: #eeedeb;
+  --fn-sidebar-bg: #fafaf9;
+  --fn-sidebar-border: #e5e5e3;
+}
+body:has(#interface-preview-root) .octop-btn,
+body:has(#interface-preview-root) .octop-tag,
+body:has(#interface-preview-root) .octop-input,
+body:has(#interface-preview-root) .octop-select-selector {
+  box-shadow: none;
+}
+body:has(#interface-preview-root) .octop-btn-primary {
+  font-weight: 500;
+}
+body:has(#interface-preview-root) .octop-table-thead > tr > th {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.01em;
+}
+body:has(#interface-preview-root) .octop-modal-content,
+body:has(#interface-preview-root) .octop-dropdown-menu,
+body:has(#interface-preview-root) .octop-popover-inner {
+  border: 1px solid #e5e5e3;
+}
+body:has(#interface-preview-root) .octop-modal-header {
+  padding-bottom: 16px;
+  border-bottom: 1px solid #eeedeb;
+}
+body:has(#interface-preview-root) .octop-modal-footer {
+  padding-top: 16px;
+  border-top: 1px solid #eeedeb;
+}
+body:has(#interface-preview-root) .octop-drawer-header,
+body:has(#interface-preview-root) .octop-drawer-footer {
+  border-color: #eeedeb;
+}
+body:has(#interface-preview-root) .octop-empty-description {
+  color: #85857f;
+  font-size: 13px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  #interface-preview-root *,
+  #interface-preview-root *::before,
+  #interface-preview-root *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

@@ -28,6 +28,10 @@ const api = vi.hoisted(() => ({
   getSchema: vi.fn(),
   putSchema: vi.fn(),
   listRecords: vi.fn(),
+  listPrincipals: vi.fn(),
+  listRecordReferenceOptions: vi.fn(),
+  listFeatureAgents: vi.fn(),
+  handover: vi.fn(),
   createRecord: vi.fn(),
   getRecord: vi.fn(),
   updateRecord: vi.fn(),
@@ -40,6 +44,15 @@ const api = vi.hoisted(() => ({
   notifications: vi.fn(),
   readNotification: vi.fn(),
   completeReminder: vi.fn(),
+}));
+
+const knowledgeApi = vi.hoisted(() => ({
+  list: vi.fn(),
+  listDocuments: vi.fn(),
+  fetchDocumentFile: vi.fn(),
+}));
+vi.mock("../../../api/modules/knowledgeBases", () => ({
+  knowledgeBasesApi: knowledgeApi,
 }));
 
 vi.mock("../../../api/modules/featureData", async (importOriginal) => {
@@ -116,6 +129,7 @@ const RECORD: FeatureDataRecord = {
   visibility: "private",
   revision: 1,
   created_by: 1,
+  can_write: true,
   created_at: 100,
   updated_at: 100,
   files: [],
@@ -147,8 +161,16 @@ async function findRecordDialog() {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  knowledgeApi.list.mockResolvedValue([]);
+  knowledgeApi.listDocuments.mockResolvedValue([]);
+  knowledgeApi.fetchDocumentFile.mockRejectedValue(
+    new Error("version changed"),
+  );
   api.getSchema.mockResolvedValue({ schema: SCHEMA, error: null });
   api.listRecords.mockResolvedValue({ records: [RECORD], total: 1 });
+  api.listPrincipals.mockResolvedValue({ principals: [], total: 0 });
+  api.listRecordReferenceOptions.mockResolvedValue({ records: [], total: 0 });
+  api.listFeatureAgents.mockResolvedValue([]);
   api.getRecord.mockResolvedValue({ ...RECORD, files: [FILE] });
   api.updateRecord.mockResolvedValue({
     ...RECORD,
@@ -163,15 +185,54 @@ beforeEach(() => {
 });
 
 describe("<FeatureDataPanel /> reading", () => {
-  it("renders the defined objects and the first object's records", async () => {
-    await renderPanel();
-
-    expect(await screen.findByText("ACME")).toBeInTheDocument();
-    expect(api.listRecords).toHaveBeenCalledWith("agent-1", "supplier", {
-      q: "",
-      limit: 10,
-      offset: 0,
+  it("renders the selected bilingual department after its directory loads", async () => {
+    api.getSchema.mockResolvedValue({
+      schema: {
+        ...SCHEMA,
+        objects: [
+          {
+            ...OBJECT,
+            fields: [
+              ...OBJECT.fields!,
+              {
+                key: "department",
+                type: "org_unit",
+                label: { zh: "所属部门", en: "Department" },
+              },
+            ],
+          },
+        ],
+      },
+      error: null,
     });
+    api.getRecord.mockResolvedValue({
+      ...RECORD,
+      values: { ...RECORD.values, department: "quality" },
+    });
+    api.listPrincipals.mockResolvedValue({
+      principals: [
+        {
+          id: 1,
+          username: "qa",
+          display_name: "QA officer",
+          org_unit: "quality",
+          org_unit_label: { zh: "质量部", en: "Quality" },
+          role: "user",
+        },
+      ],
+      total: 1,
+    });
+
+    const panel = await renderPanel();
+    const user = userEvent.setup(userOptions);
+    const recordRow = (await panel.findByText("ACME")).closest("tr")!;
+    await waitFor(() =>
+      expect(getComputedStyle(recordRow).pointerEvents).not.toBe("none"),
+    );
+    await user.click(recordRow);
+
+    expect(await panel.findByText("质量部")).toBeVisible();
+    expect(panel.getByRole("textbox", { name: "名称" })).toHaveValue("ACME");
   });
 
   it("hides schema editing but lets a feature caller create records", async () => {
@@ -185,12 +246,268 @@ describe("<FeatureDataPanel /> reading", () => {
       .closest("button")!;
     expect(newRecordButton).toBeVisible();
     expect(newRecordButton).toHaveAccessibleName(/features\.data\.newRecord/);
+    expect(panel.queryByText("features.data.handover")).not.toBeInTheDocument();
     // Reading still works.
     expect(await panel.findByText("ACME")).toBeInTheDocument();
+  });
+
+  it("keeps another user's shared record read-only even when the caller can create records", async () => {
+    api.getRecord.mockResolvedValue({
+      ...RECORD,
+      visibility: "feature",
+      created_by: 2,
+      can_write: false,
+      files: [FILE],
+    });
+    const panel = await renderPanel(false, true);
+    const user = userEvent.setup(userOptions);
+    await user.click(await panel.findByText("ACME"));
+    await waitFor(() =>
+      expect(
+        panel.queryByText("features.data.newRecord"),
+      ).not.toBeInTheDocument(),
+    );
+    expect(
+      panel.queryByRole("button", { name: "common.save" }),
+    ).not.toBeInTheDocument();
+    expect(panel.queryByText("features.data.delete")).not.toBeInTheDocument();
+  });
+  it("keeps the newest record filter result when older requests finish later", async () => {
+    const panel = await renderPanel();
+    const pending: Array<{
+      value: string;
+      resolve: (answer: {
+        records: FeatureDataRecord[];
+        total: number;
+      }) => void;
+    }> = [];
+    const rows = [
+      {
+        ...RECORD,
+        id: "matching-record",
+        title: "锻件X-100",
+        values: { name: "锻件X-100" },
+      },
+    ];
+    api.listRecords.mockImplementation(
+      (
+        _agentId: string,
+        _objectKey: string,
+        params: { filters?: Array<{ value?: unknown }> },
+      ) => {
+        const value = params.filters?.[0]?.value;
+        if (typeof value !== "string" || !value) {
+          return Promise.resolve({ records: [RECORD], total: 1 });
+        }
+        return new Promise((resolve) => {
+          pending.push({
+            value,
+            resolve: resolve as (answer: {
+              records: FeatureDataRecord[];
+              total: number;
+            }) => void,
+          });
+        });
+      },
+    );
+    const user = userEvent.setup(userOptions);
+    await user.click(
+      panel.getByRole("button", { name: "features.data.addFilter" }),
+    );
+    const filterInput = panel.getByLabelText("features.data.filterValue");
+    await user.type(filterInput, "锻件X-100");
+
+    await waitFor(() => expect(pending.at(-1)?.value).toBe("锻件X-100"));
+    const newest = pending.at(-1)!;
+    newest.resolve({
+      records: rows.filter((record) => record.values.name === newest.value),
+      total: rows.filter((record) => record.values.name === newest.value)
+        .length,
+    });
+    expect(await panel.findByText("锻件X-100")).toBeVisible();
+
+    for (const request of pending.slice(0, -1).reverse()) {
+      const matches = rows.filter(
+        (record) => record.values.name === request.value,
+      );
+      request.resolve({ records: matches, total: matches.length });
+    }
+    await waitFor(() => expect(panel.getByText("锻件X-100")).toBeVisible());
+    expect(panel.queryByText("锻件X-10")).not.toBeInTheDocument();
+  });
+
+  it("does not submit an empty value from a newly added filter", async () => {
+    const panel = await renderPanel();
+    const user = userEvent.setup(userOptions);
+    await user.click(
+      panel.getByRole("button", { name: "features.data.addFilter" }),
+    );
+
+    await waitFor(() => expect(api.listRecords).toHaveBeenCalled());
+    expect(
+      api.listRecords.mock.calls.some(([, , params]) =>
+        (params.filters ?? []).some(
+          (filter: { value?: unknown }) => filter.value === "",
+        ),
+      ),
+    ).toBe(false);
+    expect(
+      panel.queryByText("features.data.recordsLoadFailed"),
+    ).not.toBeInTheDocument();
+    expect(await panel.findByText("ACME")).toBeVisible();
+  });
+  it.each([
+    {
+      label: "pinned",
+      stale: false,
+      version: "sha256:pinned",
+      currentVersion: "sha256:current",
+      button: "features.data.openOriginal",
+    },
+    {
+      label: "current",
+      stale: true,
+      version: "sha256:pinned",
+      currentVersion: "sha256:current",
+      button: "features.data.openCurrentOriginal",
+    },
+  ])(
+    "requests the $label knowledge original at its stated version",
+    async ({ stale, version, currentVersion, button }) => {
+      api.getSchema.mockResolvedValue({
+        schema: {
+          ...SCHEMA,
+          objects: [
+            {
+              ...OBJECT,
+              fields: [
+                ...OBJECT.fields!,
+                { key: "source", type: "knowledge_ref", label: "Source" },
+              ],
+            },
+          ],
+        },
+        error: null,
+      });
+      api.getRecord.mockResolvedValue({
+        ...RECORD,
+        values: {
+          name: "ACME",
+          source: { kb_id: "kb-1", document_id: "doc-1" },
+        },
+        references: {
+          source: {
+            kind: "knowledge_ref",
+            available: true,
+            stale,
+            kb_id: "kb-1",
+            document_id: "doc-1",
+            version,
+            current_version: currentVersion,
+            title: "source.pdf",
+            original_url: "/original",
+            current_original_url: "/current",
+          },
+        },
+      });
+      const panel = await renderPanel();
+      const user = userEvent.setup(userOptions);
+      await user.click(await panel.findByText("ACME"));
+      await user.click(await panel.findByRole("button", { name: button }));
+
+      await waitFor(() =>
+        expect(knowledgeApi.fetchDocumentFile).toHaveBeenCalledWith(
+          "kb-1",
+          "doc-1",
+          stale ? currentVersion : version,
+        ),
+      );
+    },
+  );
+
+  it("saves ordinary fields when a required reference has been redacted", async () => {
+    api.getSchema.mockResolvedValue({
+      schema: {
+        ...SCHEMA,
+        objects: [
+          {
+            ...OBJECT,
+            fields: [
+              ...OBJECT.fields!,
+              {
+                key: "source",
+                type: "knowledge_ref",
+                label: { zh: "原件", en: "Original" },
+                required: true,
+              },
+            ],
+          },
+        ],
+      },
+      error: null,
+    });
+    const redactedRecord = {
+      ...RECORD,
+      values: { name: "ACME", source: { redacted: true } },
+      references: { source: { kind: "knowledge_ref", available: false } },
+    };
+    api.getRecord.mockResolvedValue(redactedRecord);
+    api.updateRecord.mockResolvedValue({
+      ...redactedRecord,
+      title: "已更新的记录",
+      values: { ...redactedRecord.values, name: "ACME 2" },
+      revision: 2,
+    });
+    const panel = await renderPanel(false, true);
+    const user = userEvent.setup(userOptions);
+    await user.click(await panel.findByText("ACME"));
+    const name = await panel.findByLabelText("名称");
+    await user.clear(name);
+    await user.paste("ACME 2");
+    await user.click(panel.getByRole("button", { name: "common.save" }));
+    expect(await panel.findByText("已更新的记录")).toBeVisible();
   });
 });
 
 describe("<FeatureDataPanel /> schema editing", () => {
+  it("keeps a stored fixed calendar offset visible and editable", async () => {
+    api.getSchema.mockResolvedValue({
+      schema: {
+        ...SCHEMA,
+        objects: [
+          {
+            ...OBJECT,
+            fields: [
+              ...OBJECT.fields!,
+              { key: "issued", type: "date" },
+              {
+                key: "due",
+                type: "date",
+                computed: {
+                  op: "add_months",
+                  source_field: "issued",
+                  amount: 12,
+                },
+              },
+            ],
+          },
+        ],
+      },
+      error: null,
+    });
+    const panel = await renderPanel();
+    const user = userEvent.setup(userOptions);
+    await user.click(panel.getByText("features.data.tabSchema"));
+
+    const amount = panel.getByRole("spinbutton", {
+      name: "features.data.computedAmount",
+    });
+    expect(amount).toHaveValue(12);
+    await user.clear(amount);
+    await user.type(amount, "6");
+    expect(amount).toHaveValue(6);
+  });
+
   it("edits objects and fields without showing JSON", async () => {
     const panel = await renderPanel();
     const user = userEvent.setup(userOptions);

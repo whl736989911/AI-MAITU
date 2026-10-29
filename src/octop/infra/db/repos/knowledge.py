@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 from octop.infra.db.pool import DatabasePool
@@ -34,13 +34,13 @@ from octop.infra.utils.ulid import new_short_id, new_ulid
 
 _DIR_CONTENT_TYPE = "application/x-directory"
 
-_PROCESSED_STATUSES = frozenset({"ready", "unsupported"})
+_PROCESSED_STATUSES = frozenset({"ready", "archive_only", "unsupported"})
 """Statuses that mean "this file's content has already been dealt with".
 
-``unsupported`` counts: design §6's matrix ends at saving metadata and marking
-the type unsupported, and re-trying such a file on every scan would never
-succeed. ``failed`` is deliberately absent, so a file whose indexing failed is
-retried.
+Archive-only and legacy unsupported files count: their originals and source
+identity have been recorded even though no text could be extracted. Installing
+a processor can be followed by explicit reindexing; an unchanged original must
+not be parsed on every scan. ``failed`` remains absent so indexing failures retry.
 
 A file whose deletion is pending keeps the status its content earned — that
 state lives in ``delete_pending_since`` — so it is covered here as whatever it
@@ -290,7 +290,7 @@ class KnowledgeRepo:
         return row
 
     def list_visible(self, user_id: int) -> list[KnowledgeBaseRow]:
-        """Knowledge bases this user may use, per ``resource_acl``."""
+        """Visible bases are governed by the base ACL, never a document edge."""
         visible = self._acl.list_visible_resource_ids_for_user("knowledge_base", user_id)
         if not visible:
             return []
@@ -339,12 +339,13 @@ class KnowledgeRepo:
             ).fetchone()
         return int(row["c"]) if row else 0
 
-    def get_base(self, kb_id: str) -> KnowledgeBaseRow | None:
-        with self._db.connect() as conn:
-            r = conn.execute(
-                "SELECT * FROM knowledge_bases WHERE knowledge_base_id = ?",
-                (kb_id,),
-            ).fetchone()
+    def get_base(self, kb_id: str, *, conn: Any | None = None) -> KnowledgeBaseRow | None:
+        sql = "SELECT * FROM knowledge_bases WHERE knowledge_base_id = ?"
+        if conn is not None:
+            r = conn.execute(sql, (kb_id,)).fetchone()
+        else:
+            with self._db.connect() as owned:
+                r = owned.execute(sql, (kb_id,)).fetchone()
         return KnowledgeBaseRow.from_row(r) if r else None
 
     def get_enterprise_space(self) -> KnowledgeBaseRow | None:
@@ -482,6 +483,7 @@ class KnowledgeRepo:
         source_path: str = "",
         source_size: int = 0,
         source_modified_at: int | None = None,
+        initial_acl: AclEntry | None = None,
     ) -> KnowledgeDocumentRow:
         rel = normalize_kb_path(path or filename)
         if not rel:
@@ -527,6 +529,11 @@ class KnowledgeRepo:
                     source_modified_at,
                 ),
             )
+            if initial_acl is not None:
+                # The uploader's bounded initial ACL commits with the document
+                # row: there is no window in which the file's future home is
+                # visible under the inherited broad ACL without its narrowing.
+                self._acl.upsert(replace(initial_acl, resource_id=doc_id), conn=conn)
             if not enforce_limit:
                 conn.execute(
                     "UPDATE knowledge_bases SET doc_count = doc_count + 1, updated_at = ? "
@@ -538,9 +545,15 @@ class KnowledgeRepo:
             raise RuntimeError(f"knowledge document insert failed: {doc_id}")
         return row
 
-    def list_documents(self, kb_id: str) -> list[KnowledgeDocumentRow]:
-        with self._db.connect() as conn:
+    def list_documents(self, kb_id: str, *, conn: Any | None = None) -> list[KnowledgeDocumentRow]:
+        if conn is not None:
             rows = conn.execute(
+                "SELECT * FROM knowledge_documents WHERE kb_id = ? ORDER BY is_dir DESC, path",
+                (kb_id,),
+            ).fetchall()
+            return map_rows(rows, KnowledgeDocumentRow)
+        with self._db.connect() as owned:
+            rows = owned.execute(
                 "SELECT * FROM knowledge_documents WHERE kb_id = ? ORDER BY is_dir DESC, path",
                 (kb_id,),
             ).fetchall()
@@ -550,12 +563,13 @@ class KnowledgeRepo:
         parent = normalize_kb_path(prefix)
         return [row for row in self.list_documents(kb_id) if path_is_direct_child(row.path, parent)]
 
-    def get_document(self, doc_id: str) -> KnowledgeDocumentRow | None:
-        with self._db.connect() as conn:
-            r = conn.execute(
-                "SELECT * FROM knowledge_documents WHERE document_id = ?",
-                (doc_id,),
-            ).fetchone()
+    def get_document(self, doc_id: str, *, conn: Any | None = None) -> KnowledgeDocumentRow | None:
+        sql = "SELECT * FROM knowledge_documents WHERE document_id = ?"
+        if conn is not None:
+            r = conn.execute(sql, (doc_id,)).fetchone()
+        else:
+            with self._db.connect() as owned:
+                r = owned.execute(sql, (doc_id,)).fetchone()
         return KnowledgeDocumentRow.from_row(r) if r else None
 
     def get_document_by_path(self, kb_id: str, path: str) -> KnowledgeDocumentRow | None:
@@ -631,6 +645,11 @@ class KnowledgeRepo:
                     f"DELETE FROM knowledge_documents WHERE document_id IN ({placeholders})",
                     ids,
                 )
+                # Delegation edges cascade through the FK; the ACL entry (and
+                # its grants) must not outlive the file either — a stale row
+                # would reappear if the id were ever reused.
+                for row_id in ids:
+                    self._acl.delete("knowledge_document", row_id, conn=conn)
             if file_count:
                 conn.execute(
                     "UPDATE knowledge_bases SET doc_count = CASE "
@@ -759,6 +778,35 @@ class KnowledgeRepo:
                 "ORDER BY kb_id, document_id"
             ).fetchall()
         return map_rows(rows, KnowledgeDocumentRow)
+
+    def move_document(
+        self, kb_id: str, doc_id: str, target_folder: str
+    ) -> KnowledgeDocumentRow | None:
+        """Move a file or folder under ``target_folder`` (``""`` is the root).
+
+        A folder carries its descendants: the prefix is rewritten in one
+        statement, the same shape :meth:`rename_document` uses.
+        """
+        document = self.get_document(doc_id)
+        if document is None or document.kb_id != kb_id:
+            return None
+        filename = path_basename(document.filename or document.path)
+        new_path = normalize_kb_path(f"{target_folder}/{filename}" if target_folder else filename)
+        ts = now_ts()
+        with self._db.transaction() as conn:
+            if document.is_dir:
+                prefix = f"{document.path}/"
+                conn.execute(
+                    "UPDATE knowledge_documents SET "
+                    "path = ? || substr(path, ?), updated_at = ? "
+                    "WHERE kb_id = ? AND substr(path, 1, ?) = ?",
+                    (new_path, len(document.path) + 1, ts, kb_id, len(prefix), prefix),
+                )
+            conn.execute(
+                "UPDATE knowledge_documents SET path = ?, updated_at = ? WHERE document_id = ?",
+                (new_path, ts, doc_id),
+            )
+        return self.get_document(doc_id)
 
     def rename_document(
         self, kb_id: str, doc_id: str, new_name: str

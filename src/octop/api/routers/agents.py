@@ -12,8 +12,6 @@ from fastapi.responses import Response
 from octop.api.common.agent import (
     assert_agent_access_row,
     assert_agent_owner,
-    feature_can_manage,
-    feature_in_enterprise_scope,
 )
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
 from octop.api.common.validators import assert_user_backend_root_dirs
@@ -27,6 +25,7 @@ from octop.infra.agents.avatar import (
     write_workspace_avatar,
 )
 from octop.infra.agents.conversation_mode import default_conversation_mode_from_config
+from octop.infra.agents.feature_access import feature_in_enterprise_scope, is_feature_manager
 from octop.infra.agents.kinds import is_feature_agent
 from octop.infra.agents.profile import (
     id_list_from_row,
@@ -45,6 +44,17 @@ from octop.infra.users.permissions import user_has_permission
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _feature_can_manage(row: Any, user: Any, server: Any) -> bool:
+    """The central feature-manager policy, resolved for this HTTP caller."""
+    repos = server.services.repos
+    return is_feature_manager(
+        row,
+        user_id=int(user.id),
+        user_repo=repos.user_repo,
+        org_unit_repo=repos.org_unit_repo,
+    )
 
 
 class AgentCreateBody(AgentRuntimeFields):
@@ -250,7 +260,7 @@ async def list_agents(
                 owner_username=username_by_id.get(r.user_id) if r.user_id is not None else None,
                 bootstrap_pending=_bootstrap_pending_for(server, r.agent_id),
                 is_shared=r.agent_id in public_ids,
-                can_manage=feature_can_manage(r, user, server)
+                can_manage=_feature_can_manage(r, user, server)
                 if is_feature_agent(r.kind)
                 else None,
             )
@@ -272,7 +282,15 @@ async def list_agents(
                 row.agent_id: row
                 for row in registry.list_rows()
                 if is_feature_agent(row.kind)
-                and (user.is_admin or feature_in_enterprise_scope(row, user, server))
+                and (
+                    user.is_admin
+                    or feature_in_enterprise_scope(
+                        row,
+                        user_id=user.id,
+                        user_repo=server.services.user_repo,
+                        org_unit_repo=server.services.org_unit_repo,
+                    )
+                )
             }
         )
     rows = list(rows_by_id.values())
@@ -295,7 +313,7 @@ async def list_agents(
                 ),
                 bootstrap_pending=_bootstrap_pending_for(server, r.agent_id),
                 is_shared=r.agent_id in public_ids,
-                can_manage=feature_can_manage(r, user, server)
+                can_manage=_feature_can_manage(r, user, server)
                 if is_feature_agent(r.kind)
                 else None,
             )
@@ -420,7 +438,7 @@ async def get_agent(
         owner_username=_owner_username(server, row),
         bootstrap_pending=_bootstrap_pending_for(server, agent_id),
         is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
-        can_manage=feature_can_manage(row, user, server) if is_feature_agent(row.kind) else None,
+        can_manage=_feature_can_manage(row, user, server) if is_feature_agent(row.kind) else None,
     )
 
 
@@ -501,7 +519,7 @@ async def patch_agent(
         owner_username=_owner_username(server, row),
         bootstrap_pending=_bootstrap_pending_for(server, agent_id),
         is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
-        can_manage=feature_can_manage(row, user, server) if is_feature_agent(row.kind) else None,
+        can_manage=_feature_can_manage(row, user, server) if is_feature_agent(row.kind) else None,
     )
 
 

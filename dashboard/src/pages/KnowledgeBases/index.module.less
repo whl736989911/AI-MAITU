@@ -801,7 +801,7 @@
 
 .docCardGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
   row-gap: 14px;
   column-gap: 12px;
 }
@@ -809,7 +809,7 @@
 .docCard {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 8px;
   min-width: 0;
   min-height: 0;
   padding: 14px;
@@ -832,8 +832,8 @@
 
 .docCardHeader {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: center;
+  gap: 8px;
   min-width: 0;
 }
 
@@ -858,26 +858,25 @@
   border-radius: 6px;
 }
 
-.docCardTitleBlock {
-  flex: 1;
-  min-width: 0;
-}
-
 .docCardTitleRow {
   display: flex;
+  flex: 1;
+  flex-wrap: wrap;
   align-items: center;
   gap: 6px;
   min-width: 0;
 }
 
 .docCardName {
+  display: -webkit-box;
   overflow: hidden;
   color: var(--fn-text-primary);
   font-weight: 600;
-  font-size: 13px;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  font-size: 14px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .docExtBadge {
@@ -893,9 +892,8 @@
 }
 
 .docCardMeta {
-  margin-top: 3px;
   color: var(--fn-text-tertiary);
-  font-size: 12px;
+  font-size: 11px;
   line-height: 1.35;
 }
 
@@ -904,6 +902,7 @@
   flex-shrink: 0;
   align-items: center;
   gap: 0;
+  margin-left: auto;
 }
 
 .docCardFooter {
@@ -922,7 +921,7 @@
 }
 
 .docUpdatedAt {
-  flex: 1;
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--fn-text-tertiary);
@@ -1678,14 +1677,19 @@
   border-left: 4px solid #9333ea !important;
 }
 
-.docScopeLabel {
-  display: flex;
+.docAccessChip {
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px 0;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: 4px;
+  background: var(--fn-bg-secondary);
   color: var(--fn-text-secondary);
   font-size: 11px;
   font-weight: 600;
+  line-height: 18px;
+  white-space: nowrap;
 }
 
 .permissionAlert {

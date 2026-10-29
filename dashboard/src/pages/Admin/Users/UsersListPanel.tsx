@@ -153,6 +153,7 @@ interface UserRow {
   denied_permissions?: string[];
   /** Org unit key — non-admin accounts can carry the unit scope. */
   org_unit?: string | null;
+  org_units?: string[];
   workspace_root_dir?: string | null;
   token_quota?: number | null;
 }
@@ -211,7 +212,7 @@ interface CreateValues extends PolicyFormValues {
   password: string;
   confirm: string;
   role: OctopRole;
-  org_unit?: string;
+  org_units?: string[];
   permissions?: string[];
 }
 
@@ -219,7 +220,7 @@ interface EditValues extends PolicyFormValues {
   display_name?: string;
   email?: string;
   role: OctopRole;
-  org_unit?: string;
+  org_units?: string[];
   permissions?: string[];
   /** Deny list; only sent once the picker was touched (see ``denyTouched``). */
   denied_permissions?: string[];
@@ -463,7 +464,7 @@ function OrgUnitField({
           {t("adminUsers.orgUnit")}
         </span>
       }
-      name="org_unit"
+      name="org_units"
       rules={
         required
           ? [{ required: true, message: t("orgUnits.required") }]
@@ -472,6 +473,7 @@ function OrgUnitField({
       extra={t("adminUsers.orgUnitHint")}
     >
       <Select
+        mode="multiple"
         allowClear
         showSearch
         optionFilterProp="label"
@@ -835,10 +837,12 @@ function UserCardGrid({
                 >
                   {t(ROLE_LABEL_KEYS[row.role])}
                 </span>
-                {row.org_unit && (
-                  <span className={styles.userCardPill}>
-                    {orgUnitLabelByKey.get(row.org_unit) ?? row.org_unit}
-                  </span>
+                {(row.org_units?.length ? row.org_units : row.org_unit ? [row.org_unit] : []).map(
+                  (unitKey) => (
+                    <span key={unitKey} className={styles.userCardPill}>
+                      {orgUnitLabelByKey.get(unitKey) ?? unitKey}
+                    </span>
+                  ),
                 )}
                 <span
                   className={styles.userCardPill}
@@ -1424,10 +1428,10 @@ export default function UsersListPanel() {
           role: values.role,
           // Administrators have no department; enterprise administrators have
           // enterprise-wide scope. Unit administrators remain department-bound.
-          org_unit:
+          org_units:
             values.role === "admin" || values.role === "enterprise_admin"
-              ? null
-              : values.org_unit ?? null,
+              ? []
+              : values.org_units ?? [],
           permissions: values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
         }),
@@ -1456,7 +1460,7 @@ export default function UsersListPanel() {
       email: undefined,
       password: undefined,
       confirm: undefined,
-      org_unit: undefined,
+      org_units: [],
       limit_workspace_root: false,
       workspace_root_dir: undefined,
       limit_token_quota: false,
@@ -1494,12 +1498,12 @@ export default function UsersListPanel() {
   const openEdit = (row: UserRow) => {
     setEditTarget(row);
     setDenyTouched(false);
-    loadUnitGrants(row.org_unit);
+    loadUnitGrants(row.org_units?.[0] ?? row.org_unit);
     editForm.setFieldsValue({
       display_name: row.display_name ?? "",
       email: row.email ?? "",
       role: row.role,
-      org_unit: row.org_unit ?? undefined,
+      org_units: row.org_units?.length ? [...row.org_units] : row.org_unit ? [row.org_unit] : [],
       permissions: [...(row.permissions ?? [])],
       denied_permissions: [...(row.denied_permissions ?? [])],
       limit_workspace_root: workspaceRootAllowed
@@ -1563,10 +1567,10 @@ export default function UsersListPanel() {
       body.role = values.role;
       // Enterprise administrators are unbound; legacy bindings are cleared on
       // edit. Unit administrators remain attached to their managed department.
-      body.org_unit =
+      body.org_units =
         values.role === "admin" || values.role === "enterprise_admin"
-          ? null
-          : values.org_unit ?? null;
+          ? []
+          : values.org_units ?? [];
       body.permissions =
         values.role === "admin" ? [] : values.permissions ?? [];
       // Deny is admin-only on the backend, and a PATCH carries it as

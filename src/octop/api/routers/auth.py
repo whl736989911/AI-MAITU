@@ -31,6 +31,16 @@ def _user_json(
 ) -> dict[str, Any]:
     loc = normalize_locale(locale)
     grants = unit_grants_for(server, user) if unit_grants is None else unit_grants
+    # Explicit grants only: role expansion and the admin bypass stay out of this
+    # list, so UI surfaces that must be handed out deliberately (terminal,
+    # workspace, browser, trajectory) can tell "granted" from "allowed".
+    explicit = set(getattr(user, "permissions", []) or []) | set(grants)
+    try:
+        units = server.services.repos.user_repo.units_for_user(user.id)
+    except Exception:  # pragma: no cover - schema without the membership table
+        units = []
+    if not units and getattr(user, "org_unit", None):
+        units = [str(user.org_unit)]
     return {
         "id": user.id,
         "username": user.username,
@@ -38,6 +48,9 @@ def _user_json(
         "display_name": user.display_name,
         "locale": loc,
         "permissions": effective_permissions(user, unit_grants=grants),
+        "granted_permissions": sorted(explicit),
+        "org_unit": getattr(user, "org_unit", None),
+        "org_units": units,
     }
 
 

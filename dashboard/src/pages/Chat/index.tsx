@@ -138,6 +138,9 @@ function ChatPageInner() {
   const { layoutMode } = useLayoutMode();
   const isMinimalLayout = layoutMode === "minimal";
   const canTerminal = userCan(user, "terminal");
+  const canWorkspace = userCan(user, "workspace");
+  const canTrajectory = userCan(user, "trajectory");
+  const canBrowser = userCan(user, "browser");
   const chatHistoryRail = useChatHistoryRail();
   const [browserRecording, setBrowserRecording] = useState(false);
   const [browserRecordingId, setBrowserRecordingId] = useState<string | null>(
@@ -1457,7 +1460,7 @@ function ChatPageInner() {
                 <div className={styles.chatFloatActions}>
                   {/* PWA install first when available — same column as browser / experts. */}
                   <PwaInstallPrompt appearance="chatFloat" />
-                  {resolvedAgentId && !sharedExpertViewer && (
+                  {resolvedAgentId && !sharedExpertViewer && canWorkspace && (
                     <>
                       <Tooltip
                         title={t("chat.agentProfile.open")}
@@ -1498,37 +1501,39 @@ function ChatPageInner() {
                       </Tooltip>
                     </>
                   )}
-                  {!sharedExpertViewer && panelFilePaths.length > 0 && (
-                    <Tooltip
-                      title={t("chat.modifiedFiles", {
-                        count: panelFilePaths.length,
-                        defaultValue: "已修改文件（{{count}}）",
-                      })}
-                      mouseEnterDelay={0.35}
-                      placement="left"
-                    >
-                      <span className={styles.chatFloatBtnWrap}>
-                        <button
-                          type="button"
-                          className={styles.chatFloatBtn}
-                          onClick={() => openFileList()}
-                          aria-label={t("chat.modifiedFiles", {
-                            count: panelFilePaths.length,
-                            defaultValue: "已修改文件（{{count}}）",
-                          })}
-                        >
-                          <FilePen size={20} strokeWidth={2.1} />
-                        </button>
-                        {panelFilePaths.length > 1 && (
-                          <span className={styles.chatFloatBadge}>
-                            {panelFilePaths.length > 99
-                              ? "99+"
-                              : panelFilePaths.length}
-                          </span>
-                        )}
-                      </span>
-                    </Tooltip>
-                  )}
+                  {canWorkspace &&
+                    !sharedExpertViewer &&
+                    panelFilePaths.length > 0 && (
+                      <Tooltip
+                        title={t("chat.modifiedFiles", {
+                          count: panelFilePaths.length,
+                          defaultValue: "已修改文件（{{count}}）",
+                        })}
+                        mouseEnterDelay={0.35}
+                        placement="left"
+                      >
+                        <span className={styles.chatFloatBtnWrap}>
+                          <button
+                            type="button"
+                            className={styles.chatFloatBtn}
+                            onClick={() => openFileList()}
+                            aria-label={t("chat.modifiedFiles", {
+                              count: panelFilePaths.length,
+                              defaultValue: "已修改文件（{{count}}）",
+                            })}
+                          >
+                            <FilePen size={20} strokeWidth={2.1} />
+                          </button>
+                          {panelFilePaths.length > 1 && (
+                            <span className={styles.chatFloatBadge}>
+                              {panelFilePaths.length > 99
+                                ? "99+"
+                                : panelFilePaths.length}
+                            </span>
+                          )}
+                        </span>
+                      </Tooltip>
+                    )}
                   {canTerminal && (
                     <Tooltip
                       title={t("chat.openTerminal", "打开终端")}
@@ -1547,7 +1552,7 @@ function ChatPageInner() {
                       </span>
                     </Tooltip>
                   )}
-                  {trajectoryEnabled && (
+                  {canTrajectory && trajectoryEnabled && (
                     <Tooltip
                       title={
                         !agentChatReady
@@ -1575,51 +1580,53 @@ function ChatPageInner() {
                       </span>
                     </Tooltip>
                   )}
-                  <Tooltip
-                    title={
-                      browserSessionId
-                        ? t("browserWorkspace.browserStatusActive", {
-                            owner:
-                              browserControlOwner === "agent"
-                                ? t("browserWorkspace.agentControl")
-                                : t("browserWorkspace.userTakeover"),
-                          })
-                        : t("browserWorkspace.browserStatusIdle")
-                    }
-                    mouseEnterDelay={0.35}
-                    placement="left"
-                  >
-                    <span className={styles.chatFloatBtnWrap}>
-                      <button
-                        type="button"
-                        className={[
-                          styles.browserStatusBtn,
-                          browserSessionId ? styles.browserStatusActive : "",
-                          browserSessionId &&
-                          (browserSessionState === "awaiting_user_auth" ||
-                            browserSessionState === "authenticating")
-                            ? styles.browserStatusAuth
-                            : "",
-                          browserSessionId && browserControlOwner === "user"
-                            ? styles.browserStatusTakeover
-                            : "",
-                        ]
-                          .filter(Boolean)
-                          .join(" ")}
-                        onClick={() => void handleToggleBrowserPanel()}
-                        aria-label={t("chat.openBrowser")}
-                      >
-                        <Globe size={20} strokeWidth={2.1} />
-                        {browserSessionId && (
-                          <span
-                            className={`${styles.browserStatusDot} ${
-                              styles[`browserStatus_${browserControlOwner}`]
-                            }`}
-                          />
-                        )}
-                      </button>
-                    </span>
-                  </Tooltip>
+                  {canBrowser && (
+                    <Tooltip
+                      title={
+                        browserSessionId
+                          ? t("browserWorkspace.browserStatusActive", {
+                              owner:
+                                browserControlOwner === "agent"
+                                  ? t("browserWorkspace.agentControl")
+                                  : t("browserWorkspace.userTakeover"),
+                            })
+                          : t("browserWorkspace.browserStatusIdle")
+                      }
+                      mouseEnterDelay={0.35}
+                      placement="left"
+                    >
+                      <span className={styles.chatFloatBtnWrap}>
+                        <button
+                          type="button"
+                          className={[
+                            styles.browserStatusBtn,
+                            browserSessionId ? styles.browserStatusActive : "",
+                            browserSessionId &&
+                            (browserSessionState === "awaiting_user_auth" ||
+                              browserSessionState === "authenticating")
+                              ? styles.browserStatusAuth
+                              : "",
+                            browserSessionId && browserControlOwner === "user"
+                              ? styles.browserStatusTakeover
+                              : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" ")}
+                          onClick={() => void handleToggleBrowserPanel()}
+                          aria-label={t("chat.openBrowser")}
+                        >
+                          <Globe size={20} strokeWidth={2.1} />
+                          {browserSessionId && (
+                            <span
+                              className={`${styles.browserStatusDot} ${
+                                styles[`browserStatus_${browserControlOwner}`]
+                              }`}
+                            />
+                          )}
+                        </button>
+                      </span>
+                    </Tooltip>
+                  )}
                 </div>
               )}
 

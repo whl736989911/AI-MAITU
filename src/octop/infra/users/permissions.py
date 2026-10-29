@@ -144,6 +144,8 @@ PERMISSIONS: dict[str, PermissionDef] = {
     "agent_plugins": _p("agent_plugins", "settings", "智能体插件", "Agent plugins"),
     "memory": _p("memory", "settings", "记忆", "Memory"),
     "terminal": _p("terminal", "control", "工作台/终端", "Workbench / Terminal"),
+    "workspace": _p("workspace", "control", "工作台/工作区", "Workbench / Workspace"),
+    "trajectory": _p("trajectory", "control", "运行轨迹", "Run trajectory"),
     "browser": _p("browser", "control", "工作台/浏览器", "Workbench / Browser"),
     "desktop": _p("desktop", "control", "远程桌面", "Remote Desktop"),
     "mobile": _p("mobile", "control", "远程手机", "Remote Phone"),

@@ -19,6 +19,7 @@ import DocumentPreviewCore from "../../../components/DocumentPreviewCore";
 import DocumentPreviewLoading from "../../../components/DocumentPreviewLoading";
 import Markdown from "../../../components/Markdown";
 import { apiErrorMessage, isNotFoundApiError } from "../../../utils/apiError";
+import { knowledgeLocatorLabel } from "../../../utils/knowledgeLocatorLabel";
 import { getDocKind, type DocKind } from "../../../utils/docKind";
 import { knowledgeCitationHref } from "../../../utils/knowledgeCitationDisplay";
 import {
@@ -54,6 +55,14 @@ async function resolveCitationDocument(
   return docs.find((row) => row.id === docId && !row.is_dir) ?? null;
 }
 
+type PreviewBlock = {
+  ordinal: number;
+  text: string;
+  kind: string;
+  heading: string;
+  locator: Record<string, unknown>;
+};
+
 interface KnowledgeCitationPanelContentProps {
   citation: KnowledgeCitation;
   /** Lift toolbar actions into the shared dock shell (active tab only). */
@@ -76,6 +85,7 @@ export default function KnowledgeCitationPanelContent({
   const [mode, setMode] = useState<PreviewMode>("text");
   const [kind, setKind] = useState<DocKind | null>(null);
   const [text, setText] = useState("");
+  const [blocks, setBlocks] = useState<PreviewBlock[]>([]);
   const [loading, setLoading] = useState(false);
   const [filename, setFilename] = useState(citation.filename);
   const [resolvedPath, setResolvedPath] = useState<string | undefined>(
@@ -101,6 +111,7 @@ export default function KnowledgeCitationPanelContent({
             c.docId,
           );
           setFilename(payload.filename || c.filename);
+          setBlocks([]);
           setText(
             payload.text.trim()
               ? payload.text
@@ -114,6 +125,7 @@ export default function KnowledgeCitationPanelContent({
           c.docId,
         );
         setFilename(preview.filename || c.filename);
+        setBlocks(preview.blocks ?? []);
         setText(
           preview.text.trim() ? preview.text : t("knowledgeBases.previewEmpty"),
         );
@@ -135,6 +147,7 @@ export default function KnowledgeCitationPanelContent({
     let cancelled = false;
     setLoadFailed(false);
     setText("");
+    setBlocks([]);
     setFilename(citation.filename);
     setResolvedPath(citation.path);
     setRichMissing(false);
@@ -213,6 +226,7 @@ export default function KnowledgeCitationPanelContent({
         const blob = await knowledgeBasesApi.fetchDocumentFile(
           citation.kbId,
           citation.docId,
+          undefined,
           "inline",
           onProgress,
           signal,
@@ -236,6 +250,7 @@ export default function KnowledgeCitationPanelContent({
       const blob = await knowledgeBasesApi.fetchDocumentFile(
         citation.kbId,
         citation.docId,
+        undefined,
         "attachment",
       );
       const url = URL.createObjectURL(blob);
@@ -358,6 +373,34 @@ export default function KnowledgeCitationPanelContent({
           </div>
           <div ref={textBodyRef} className={styles.textBody}>
             <Markdown content={stripFrontmatter(text)} />
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  if (blocks.length > 0) {
+    const labelled = blocks.map((block) =>
+      knowledgeLocatorLabel(block.locator, t),
+    );
+    const showLocators = labelled.some(Boolean);
+    return (
+      <div className={styles.panel}>
+        <div ref={textBodyRef} className={styles.textBody}>
+          <div className={styles.citationBlocks}>
+            {blocks.map((block, index) => (
+              <div
+                key={`${block.ordinal}-${block.text.length}`}
+                className={styles.citationBlock}
+              >
+                {showLocators ? (
+                  <span className={styles.citationLocator}>
+                    {labelled[index]}
+                  </span>
+                ) : null}
+                <pre className={styles.citationBlockText}>{block.text}</pre>
+              </div>
+            ))}
           </div>
         </div>
       </div>

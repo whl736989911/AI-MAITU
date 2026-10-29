@@ -18,6 +18,7 @@ from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.db.services import RepoBundle
 from octop.infra.knowledge import jobs as jobs_module
 from octop.infra.knowledge import service as service_module
 from octop.infra.knowledge.index import KnowledgeIndex
@@ -41,6 +42,7 @@ def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     run_migrations(pool)
     services = SimpleNamespace(
         db=pool,
+        repos=RepoBundle.from_pool(pool),
         config=SimpleNamespace(max_upload_bytes=1_000_000, max_upload_mb=1),
         knowledge_repo=KnowledgeRepo(pool),
         settings_repo=SettingsRepo(pool),

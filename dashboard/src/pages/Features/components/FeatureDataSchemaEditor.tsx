@@ -71,6 +71,12 @@ function emptyObject(index: number): FeatureDataObject {
   };
 }
 
+const FEATURE_ROLE_KEYS = [
+  "admin",
+  "enterprise_admin",
+  "unit_admin",
+  "user",
+] as const;
 function parseCsv(value: string): string[] {
   return value
     .split(/[,，]/)
@@ -92,6 +98,12 @@ export default function FeatureDataSchemaEditor({
   );
   const [saving, setSaving] = useState(false);
   const [serverProblems, setServerProblems] = useState<readonly string[]>([]);
+  const [featureAgents, setFeatureAgents] = useState<
+    { agent_id: string; kind?: string | null; name: string }[]
+  >([]);
+  const [referencedObjects, setReferencedObjects] = useState<
+    Record<string, FeatureDataObject[]>
+  >({});
 
   useEffect(() => {
     setObjects(
@@ -101,6 +113,14 @@ export default function FeatureDataSchemaEditor({
     );
     setServerProblems([]);
   }, [schema]);
+  useEffect(() => {
+    void featureDataApi
+      .listFeatureAgents()
+      .then((rows) =>
+        setFeatureAgents(rows.filter((row) => row.kind === "feature")),
+      )
+      .catch(() => setFeatureAgents([]));
+  }, []);
 
   const patchObject = (index: number, patch: Partial<FeatureDataObject>) => {
     setObjects((current) =>
@@ -128,7 +148,8 @@ export default function FeatureDataSchemaEditor({
 
   const save = async () => {
     const document: FeatureDataSchema = {
-      version: 1,
+      ...schema,
+      version: schema?.version ?? 1,
       objects: objects.map((item) => ({
         ...item,
         title_field: item.title_field || item.fields?.[0]?.key || "",
@@ -305,6 +326,104 @@ export default function FeatureDataSchemaEditor({
                   style={{ width: 180 }}
                 />
               </Space>
+              <Space wrap size="small" style={{ marginTop: 8 }}>
+                <Checkbox
+                  checked={object.reminder_recipients?.creator}
+                  onChange={(event) =>
+                    patchObject(objectIndex, {
+                      reminder_recipients: {
+                        ...object.reminder_recipients,
+                        creator: event.target.checked,
+                      },
+                    })
+                  }
+                >
+                  {t("features.data.recipientCreator")}
+                </Checkbox>
+                <Checkbox
+                  checked={object.reminder_recipients?.owner}
+                  onChange={(event) =>
+                    patchObject(objectIndex, {
+                      reminder_recipients: {
+                        ...object.reminder_recipients,
+                        owner: event.target.checked,
+                      },
+                    })
+                  }
+                >
+                  {t("features.data.recipientOwner")}
+                </Checkbox>
+                <Checkbox
+                  checked={object.reminder_recipients?.responsible}
+                  onChange={(event) =>
+                    patchObject(objectIndex, {
+                      reminder_recipients: {
+                        ...object.reminder_recipients,
+                        responsible: event.target.checked,
+                      },
+                    })
+                  }
+                >
+                  {t("features.data.recipientResponsible")}
+                </Checkbox>
+                <Input
+                  aria-label={t("features.data.recipientUserFields")}
+                  placeholder={t("features.data.recipientUserFields")}
+                  value={(object.reminder_recipients?.user_fields ?? []).join(
+                    ", ",
+                  )}
+                  onChange={(event) =>
+                    patchObject(objectIndex, {
+                      reminder_recipients: {
+                        ...object.reminder_recipients,
+                        user_fields: parseCsv(event.target.value),
+                      },
+                    })
+                  }
+                />
+                <Input
+                  aria-label={t("features.data.recipientUnitFields")}
+                  placeholder={t("features.data.recipientUnitFields")}
+                  value={(object.reminder_recipients?.unit_fields ?? []).join(
+                    ", ",
+                  )}
+                  onChange={(event) =>
+                    patchObject(objectIndex, {
+                      reminder_recipients: {
+                        ...object.reminder_recipients,
+                        unit_fields: parseCsv(event.target.value),
+                      },
+                    })
+                  }
+                />
+                <Select
+                  mode="multiple"
+                  aria-label={t("features.data.recipientRoles")}
+                  placeholder={t("features.data.recipientRoles")}
+                  value={object.reminder_recipients?.role_keys ?? []}
+                  options={FEATURE_ROLE_KEYS.map((role) => ({
+                    value: role,
+                    label: t(
+                      role === "enterprise_admin"
+                        ? "roles.enterpriseAdmin"
+                        : role === "admin"
+                        ? "account.roleAdmin"
+                        : role === "unit_admin"
+                        ? "account.roleUnitAdmin"
+                        : "account.roleUser",
+                    ),
+                  }))}
+                  onChange={(role_keys) =>
+                    patchObject(objectIndex, {
+                      reminder_recipients: {
+                        ...object.reminder_recipients,
+                        role_keys,
+                      },
+                    })
+                  }
+                  style={{ minWidth: 260 }}
+                />
+              </Space>
 
               <div style={{ marginTop: 12 }}>
                 <Space
@@ -315,6 +434,11 @@ export default function FeatureDataSchemaEditor({
                   {fields.map((field, fieldIndex) => {
                     const fieldLabel = nameOf(field.label);
                     const fieldType = field.type ?? "text";
+                    const targetAgentId = field.target_agent_id || agentId;
+                    const targetObjectOptions =
+                      targetAgentId === agentId
+                        ? objects
+                        : referencedObjects[targetAgentId] ?? [];
                     return (
                       <Card key={`field-${fieldIndex}`} size="small">
                         <Space wrap size="small">
@@ -429,6 +553,213 @@ export default function FeatureDataSchemaEditor({
                               });
                             }}
                           />
+                        ) : null}
+                        {fieldType === "record_ref" ? (
+                          <Space wrap style={{ width: "100%", marginTop: 8 }}>
+                            <Select
+                              aria-label={t("features.data.targetFeature")}
+                              placeholder={t("features.data.targetFeature")}
+                              value={targetAgentId}
+                              options={[
+                                {
+                                  value: agentId,
+                                  label: t("features.data.thisFeature"),
+                                },
+                                ...featureAgents
+                                  .filter(
+                                    (candidate) =>
+                                      candidate.agent_id !== agentId,
+                                  )
+                                  .map((candidate) => ({
+                                    value: candidate.agent_id,
+                                    label: candidate.name,
+                                  })),
+                              ]}
+                              onChange={(nextAgentId) => {
+                                const target_agent_id =
+                                  nextAgentId === agentId
+                                    ? undefined
+                                    : nextAgentId;
+                                patchField(objectIndex, fieldIndex, {
+                                  target_agent_id,
+                                  target_object: undefined,
+                                });
+                                if (target_agent_id)
+                                  void featureDataApi
+                                    .getSchema(target_agent_id)
+                                    .then((answer) =>
+                                      setReferencedObjects((current) => ({
+                                        ...current,
+                                        [target_agent_id]:
+                                          answer.schema?.objects ?? [],
+                                      })),
+                                    )
+                                    .catch(() =>
+                                      setReferencedObjects((current) => ({
+                                        ...current,
+                                        [target_agent_id]: [],
+                                      })),
+                                    );
+                              }}
+                            />
+                            <Select
+                              aria-label={t("features.data.targetObject")}
+                              placeholder={t("features.data.targetObject")}
+                              value={field.target_object || undefined}
+                              options={targetObjectOptions.map((candidate) => ({
+                                value: candidate.key,
+                                label:
+                                  nameOf(candidate.name).zh || candidate.key,
+                              }))}
+                              onFocus={() => {
+                                if (
+                                  targetAgentId !== agentId &&
+                                  !referencedObjects[targetAgentId]
+                                )
+                                  void featureDataApi
+                                    .getSchema(targetAgentId)
+                                    .then((answer) =>
+                                      setReferencedObjects((current) => ({
+                                        ...current,
+                                        [targetAgentId]:
+                                          answer.schema?.objects ?? [],
+                                      })),
+                                    )
+                                    .catch(() =>
+                                      setReferencedObjects((current) => ({
+                                        ...current,
+                                        [targetAgentId]: [],
+                                      })),
+                                    );
+                              }}
+                              onChange={(target_object) =>
+                                patchField(objectIndex, fieldIndex, {
+                                  target_object,
+                                })
+                              }
+                            />
+                          </Space>
+                        ) : null}
+                        {fieldType === "date" || fieldType === "datetime" ? (
+                          <Space wrap style={{ width: "100%", marginTop: 8 }}>
+                            <Select
+                              aria-label={t("features.data.computedOperation")}
+                              allowClear
+                              placeholder={t("features.data.computedOperation")}
+                              value={field.computed?.op}
+                              options={[
+                                "add_months",
+                                "add_years",
+                                "add_days",
+                              ].map((op) => ({
+                                value: op,
+                                label: t(`features.data.computedOps.${op}`),
+                              }))}
+                              onChange={(op) =>
+                                patchField(objectIndex, fieldIndex, {
+                                  computed: op
+                                    ? {
+                                        ...(field.computed ?? {
+                                          source_field: "",
+                                          amount: 0,
+                                        }),
+                                        op: op as
+                                          | "add_months"
+                                          | "add_years"
+                                          | "add_days",
+                                      }
+                                    : undefined,
+                                })
+                              }
+                            />
+                            {field.computed ? (
+                              <>
+                                <Select
+                                  aria-label={t("features.data.computedSource")}
+                                  placeholder={t(
+                                    "features.data.computedSource",
+                                  )}
+                                  value={
+                                    field.computed.source_field || undefined
+                                  }
+                                  options={fields
+                                    .filter(
+                                      (candidate) =>
+                                        candidate.key !== field.key &&
+                                        ["date", "datetime"].includes(
+                                          candidate.type,
+                                        ),
+                                    )
+                                    .map((candidate) => ({
+                                      value: candidate.key,
+                                      label: candidate.key,
+                                    }))}
+                                  onChange={(source_field) =>
+                                    patchField(objectIndex, fieldIndex, {
+                                      computed: {
+                                        ...field.computed!,
+                                        source_field,
+                                      },
+                                    })
+                                  }
+                                />
+                                <Select
+                                  aria-label={t(
+                                    "features.data.computedAmountField",
+                                  )}
+                                  allowClear
+                                  placeholder={t(
+                                    "features.data.computedAmountField",
+                                  )}
+                                  value={field.computed.amount_field}
+                                  options={fields
+                                    .filter(
+                                      (candidate) =>
+                                        candidate.key !== field.key &&
+                                        candidate.type === "integer",
+                                    )
+                                    .map((candidate) => ({
+                                      value: candidate.key,
+                                      label: candidate.key,
+                                    }))}
+                                  onChange={(amount_field) =>
+                                    patchField(objectIndex, fieldIndex, {
+                                      computed: {
+                                        ...field.computed!,
+                                        amount_field,
+                                        amount: amount_field
+                                          ? undefined
+                                          : field.computed!.amount ?? 0,
+                                      },
+                                    })
+                                  }
+                                />
+                                {!field.computed.amount_field ? (
+                                  <Input
+                                    type="number"
+                                    aria-label={t(
+                                      "features.data.computedAmount",
+                                    )}
+                                    placeholder={t(
+                                      "features.data.computedAmount",
+                                    )}
+                                    value={field.computed.amount ?? ""}
+                                    onChange={(event) =>
+                                      patchField(objectIndex, fieldIndex, {
+                                        computed: {
+                                          ...field.computed!,
+                                          amount:
+                                            event.target.value === ""
+                                              ? undefined
+                                              : Number(event.target.value),
+                                        },
+                                      })
+                                    }
+                                  />
+                                ) : null}
+                              </>
+                            ) : null}
+                          </Space>
                         ) : null}
                       </Card>
                     );

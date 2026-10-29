@@ -8,13 +8,14 @@ from collections.abc import Collection
 from contextlib import suppress
 from dataclasses import asdict
 from functools import partial
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import (
     APIRouter,
     Depends,
     File,
     Form,
+    HTTPException,
     Query,
     Request,
     UploadFile,
@@ -61,12 +62,14 @@ from octop.infra.knowledge.legacy_office import (
     LegacyConversionUnavailable,
 )
 from octop.infra.knowledge.ocr import (
+    OCR_IMAGE_SUFFIXES,
     ensure_ocr_deps_async,
     get_ocr_capability,
     set_ocr_settings,
     validate_ocr_settings,
 )
 from octop.infra.knowledge.parse import PasswordRequiredError
+from octop.infra.knowledge.processors import ARCHIVE_REASONS, ArchiveReason
 from octop.infra.knowledge.search import DEFAULT_SEARCH_K, SearchHit
 from octop.infra.knowledge.service import (
     ACCESS_WRITE,
@@ -74,6 +77,7 @@ from octop.infra.knowledge.service import (
     MAX_DOCUMENT_BYTES,
     KnowledgeAccessDenied,
     KnowledgeService,
+    knowledge_supported_extensions,
 )
 from octop.infra.server import OctopServer
 from octop.infra.users.identity import User
@@ -103,7 +107,7 @@ class KnowledgeCoverage(BaseModel):
     pending: int = Field(description="Readable files waiting for or undergoing indexing.")
     indexing: int = Field(description="Subset of pending files actively queued or processing.")
     failed: int = Field(description="Readable files whose extraction failed or needs a password.")
-    unsupported: int = Field(description="Readable files whose format cannot be extracted.")
+    unsupported: int = Field(description="Readable files archived without searchable extraction.")
 
 
 class KnowledgeSegmentEvidence(BaseModel):
@@ -119,6 +123,16 @@ class KnowledgeSegmentEvidence(BaseModel):
     reason: str | None = Field(description="stale or source_unavailable when verification failed.")
 
 
+class KnowledgePreviewBlock(BaseModel):
+    ordinal: int = Field(description="Zero-based position inside the document index.")
+    text: str = Field(description="Segment text exactly as indexed.")
+    kind: str = Field(description="Parser block kind, such as line, row, or page.")
+    heading: str = Field(description="Enclosing heading when the parser recorded one.")
+    locator: dict[str, Any] = Field(
+        description="Source position, such as {line}, {page}, {slide} or {sheet, row}."
+    )
+
+
 class KnowledgeDocumentPreview(BaseModel):
     id: str = Field(description="Public document identifier.")
     filename: str
@@ -126,6 +140,13 @@ class KnowledgeDocumentPreview(BaseModel):
     pages: int | None = Field(description="Page count when provided by the document format.")
     sections: list[str] = Field(description="Headings extracted during indexing.")
     text: str = Field(description="Extracted text, limited to 200,000 characters.")
+    blocks: list[KnowledgePreviewBlock] = Field(
+        default_factory=list,
+        description=(
+            "Indexed segments in reading order, each with the source position it came "
+            "from. Empty for previews read directly from an unindexed text file."
+        ),
+    )
 
 
 class FeatureBody(BaseModel):
@@ -164,10 +185,30 @@ class CreateTextDocumentBody(BaseModel):
         max_length=500,
         description="Optional parent folder path (without filename).",
     )
+    access_scope: Literal["company", "department", "personal", "authorized"] | None = Field(
+        default=None, description="Optional initial access scope; omitted selects the maximum."
+    )
+    access_permission: Literal["read", "write"] | None = Field(
+        default=None, description="Required with access_scope."
+    )
+    access_unit_key: str | None = Field(
+        default=None, max_length=64, description="Required for department scope."
+    )
 
 
 class UpdateTextDocumentBody(BaseModel):
     content: str = Field(max_length=_TEXT_DOC_MAX_LENGTH)
+
+
+class MoveDocumentBody(BaseModel):
+    target_folder: str = Field(
+        default="",
+        max_length=1024,
+        description=(
+            "Destination folder path relative to the knowledge base; "
+            "empty string moves the document to the root."
+        ),
+    )
 
 
 class RenameDocumentBody(BaseModel):
@@ -208,6 +249,12 @@ def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any
         else:
             has_original = document_path(row.kb_id, row.id, row.filename).is_file()
     payload["has_original"] = bool(has_original)
+    archive_reason = getattr(row, "error_message", None)
+    payload["archive_reason"] = (
+        archive_reason
+        if getattr(row, "status", None) == "archive_only" and archive_reason in ARCHIVE_REASONS
+        else None
+    )
     return payload
 
 
@@ -404,6 +451,70 @@ def _capability_payload(server: OctopServer) -> dict[str, Any]:
         "max_document_bytes": _max_upload_bytes(server),
     }
     return payload
+
+
+class ProcessorCapability(BaseModel):
+    id: str
+    available: bool
+    extensions: list[str]
+    reason: ArchiveReason | None = None
+
+
+class ProcessorCapabilities(BaseModel):
+    archive_only: bool
+    processors: list[ProcessorCapability]
+
+
+@router.get(
+    "/processors",
+    response_model=ProcessorCapabilities,
+    summary="List file processor capabilities",
+)
+async def processor_capabilities(
+    server: OctopServer = Depends(get_server),
+    _user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> dict[str, Any]:
+    assert server.services is not None
+    from octop.infra.knowledge.legacy_office import find_libreoffice
+    from octop.infra.knowledge.processors.libredwg import capability
+
+    supported = set(knowledge_supported_extensions())
+    legacy_extensions = {".doc", ".ppt"}
+    image_extensions = set(OCR_IMAGE_SUFFIXES)
+    legacy_available = find_libreoffice() is not None
+    ocr_available = get_ocr_capability(
+        server.services.settings_repo.get, server.services.provider_repo
+    )["usable"]
+    cad = capability()
+    return {
+        "archive_only": True,
+        "processors": [
+            {
+                "id": "built_in",
+                "available": True,
+                "extensions": sorted(supported - legacy_extensions - image_extensions),
+                "reason": None,
+            },
+            {
+                "id": "libreoffice",
+                "available": legacy_available,
+                "extensions": sorted(legacy_extensions),
+                "reason": None if legacy_available else "legacy_office_unavailable",
+            },
+            {
+                "id": "ocr",
+                "available": bool(ocr_available),
+                "extensions": sorted(image_extensions),
+                "reason": None if ocr_available else "ocr_disabled",
+            },
+            {
+                "id": cad["id"],
+                "available": cad["available"],
+                "extensions": [".dwg"],
+                "reason": None if cad["available"] else "cad_unavailable",
+            },
+        ],
+    }
 
 
 @router.get("/capability", summary="Get knowledge-base feature capability")
@@ -803,6 +914,9 @@ async def create_text_document(
             content=body.content,
             is_admin=_is_admin(user),
             path=body.path,
+            access_scope=body.access_scope,
+            access_permission=body.access_permission,
+            access_unit_key=body.access_unit_key,
         )
         assert server.services is not None
         enqueue_index_document(server.services, kb_id, document.id)
@@ -820,14 +934,27 @@ async def upload_document(
     upload: UploadFile = File(
         ...,
         description=(
-            "A document this build can read: text and markup (TXT, MD, RST, HTML, JSON, "
-            "XML, YAML, CSV, TSV), Office (DOC, DOCX, PPT, PPTX, XLS, XLSX), PDF, or an "
-            "image when OCR is enabled. Legacy DOC/PPT are converted by LibreOffice."
+            "Original file of any format, including archive-only formats. Available processors "
+            "extract searchable content; files without an enabled processor remain archive-only "
+            "and downloadable under their ACL. DOC/PPT use optional LibreOffice, DWG uses "
+            "optional LibreDWG, and images require enabled OCR for indexing. See /processors."
         ),
     ),
     path: str | None = Form(
         default=None,
         description="Optional relative path including filename (for nested folders).",
+    ),
+    access_scope: str | None = Form(
+        default=None,
+        description="Optional initial access scope: company | department | personal | authorized.",
+    ),
+    access_permission: str | None = Form(
+        default=None,
+        description="Required with access_scope: read | write.",
+    ),
+    access_unit_key: str | None = Form(
+        default=None,
+        description="Required for department scope: the offered unit key.",
     ),
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_permission("knowledge_bases")),
@@ -848,6 +975,9 @@ async def upload_document(
             content=content,
             is_admin=_is_admin(user),
             path=path or upload.filename or "",
+            access_scope=access_scope,
+            access_permission=access_permission,
+            access_unit_key=access_unit_key,
         )
         assert server.services is not None
         enqueue_index_document(server.services, kb_id, document.id)
@@ -1011,6 +1141,15 @@ async def download_document_file(
         pattern="^(attachment|inline)$",
         description="Content-Disposition type: attachment (download) or inline (preview).",
     ),
+    version: str | None = Query(
+        None,
+        min_length=64,
+        max_length=64,
+        description=(
+            "Optional SHA-256 of the required original bytes. The actual file is "
+            "verified and snapshotted; a changed version returns HTTP 409."
+        ),
+    ),
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> FileResponse:
@@ -1018,7 +1157,17 @@ async def download_document_file(
 
     assert server.services is not None
     source = KnowledgeSourceService(server.services)
-    original = source.open_original(kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user))
+    original = (
+        source.open_original_version(
+            kb_id,
+            doc_id,
+            expected_version=version,
+            actor_user_id=user.id,
+            is_admin=_is_admin(user),
+        )
+        if version is not None
+        else source.open_original(kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user))
+    )
     try:
         metadata = source.describe_document(
             kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
@@ -1037,6 +1186,73 @@ async def download_document_file(
             )
         },
         background=BackgroundTask(original.__exit__, None, None, None),
+    )
+
+
+@router.get(
+    "/{kb_id}/documents/{doc_id}/render",
+    summary="Render a CAD drawing to an inline PNG preview",
+    response_class=FileResponse,
+    description=(
+        "Converts a DWG/DXF original with the configured external converter and returns a "
+        "PNG for inline display. The image is cached per document content version, so an "
+        "updated original renders again. A host without the converter answers 415 and a "
+        "failed conversion answers 502; the original download and the text preview keep "
+        "working in both cases."
+    ),
+)
+async def render_document_preview(
+    kb_id: str,
+    doc_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> FileResponse:
+    from octop.infra.knowledge import cad_preview
+    from octop.infra.knowledge.source_access import KnowledgeSourceService
+
+    assert server.services is not None
+    source = KnowledgeSourceService(server.services)
+    original = source.open_original(kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user))
+    loop = asyncio.get_running_loop()
+    try:
+        metadata = source.describe_document(
+            kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
+        )
+        if not cad_preview.supports(str(metadata.get("filename") or "")):
+            raise HTTPException(status_code=415, detail="this document has no CAD preview")
+        row = server.services.knowledge_repo.get_document(doc_id)
+        path = await loop.run_in_executor(None, original.__enter__)
+        png = await loop.run_in_executor(
+            None,
+            partial(
+                cad_preview.render_preview,
+                kb_id=kb_id,
+                doc_id=doc_id,
+                original=path,
+                content_hash=(row.content_hash if row is not None else ""),
+                filename=str(metadata.get("filename") or ""),
+            ),
+        )
+    except cad_preview.CadPreviewUnavailable as exc:
+        raise HTTPException(status_code=415, detail=str(exc)) from exc
+    except cad_preview.CadPreviewFailed as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+    finally:
+        original.__exit__(None, None, None)
+    return FileResponse(
+        path=png,
+        media_type="image/png",
+        headers={
+            "Content-Disposition": content_disposition(
+                f"{metadata.get('filename') or 'drawing'}.png", disposition="inline"
+            ),
+            "Cache-Control": "private, max-age=300",
+        },
     )
 
 
@@ -1108,6 +1324,39 @@ async def rename_document(
             doc_id,
             actor_user_id=user.id,
             new_name=body.new_name.strip(),
+            is_admin=_is_admin(user),
+        )
+        return _row_payload(document)
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.post(
+    "/{kb_id}/documents/{doc_id}/move",
+    summary="Move a document or folder into another folder",
+    description=(
+        "Moves a file, or a folder with its whole subtree, under the given folder "
+        "(empty string = root). Refused when the target folder is missing, not "
+        "writable, already contains a document with this name, or lies inside the "
+        "folder being moved."
+    ),
+)
+async def move_document(
+    kb_id: str,
+    doc_id: str,
+    body: MoveDocumentBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    try:
+        document = _knowledge_service(server).move_document(
+            kb_id,
+            doc_id,
+            target_folder=body.target_folder,
+            actor_user_id=user.id,
             is_admin=_is_admin(user),
         )
         return _row_payload(document)

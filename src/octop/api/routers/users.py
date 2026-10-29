@@ -105,6 +105,15 @@ class UserPatchBody(BaseModel):
     disabled: bool | None = None
     permissions: list[str] | None = None
     org_unit: str | None = Field(default=None, max_length=64)
+    org_units: list[str] | None = Field(
+        default=None,
+        max_length=20,
+        description=(
+            "Every department the account belongs to. The first entry becomes its "
+            "primary department (``org_unit``); an empty list clears all of them. "
+            "Access checks union the grants of all listed departments."
+        ),
+    )
     denied_permissions: list[str] | None = None
     workspace_root_dir: str | None = None
     token_quota: int | None = Field(default=None, ge=0)
@@ -114,7 +123,9 @@ class ResetPasswordBody(BaseModel):
     new_password: str = Field(min_length=1, max_length=200)
 
 
-def _row_to_dict(r: Any, policy: Any | None = None) -> dict[str, Any]:
+def _row_to_dict(
+    r: Any, policy: Any | None = None, org_units: list[str] | None = None
+) -> dict[str, Any]:
     now = int(time.time())
     locked_until = int(getattr(r, "login_locked_until", 0) or 0)
     locked = locked_until > now and not bool(r.disabled)
@@ -137,6 +148,13 @@ def _row_to_dict(r: Any, policy: Any | None = None) -> dict[str, Any]:
         # The editor round-trips this field, so a missing key would read as
         # "no unit" and re-open as "不指定（仅基础权限）".
         "org_unit": getattr(r, "org_unit", None),
+        # Membership comes from ``user_org_units``; ``users.org_unit`` is only
+        # the primary department kept for display and older readers.
+        "org_units": (
+            list(org_units)
+            if org_units is not None
+            else ([r.org_unit] if getattr(r, "org_unit", None) else [])
+        ),
         # Same reason: a missing key would read as "no denies" and the next save
         # would silently hand back every key the operator had taken away.
         "denied_permissions": list(getattr(r, "denied_permissions", None) or []),
@@ -167,6 +185,7 @@ def _writes_access(body: UserPatchBody) -> bool:
         or body.role is not None
         or "denied_permissions" in body.model_fields_set
         or "org_unit" in body.model_fields_set
+        or "org_units" in body.model_fields_set
     )
 
 
@@ -351,7 +370,14 @@ async def list_users(
         )
     ]
     policy_map = server.services.user_policy_repo.list_by_user_ids([r.id for r in rows])
-    return [_row_to_dict(r, policy_map.get(r.id)) for r in rows]
+    return [
+        _row_to_dict(
+            r,
+            policy_map.get(r.id),
+            server.services.repos.user_repo.units_for_user(r.id),
+        )
+        for r in rows
+    ]
 
 
 @router.post("", status_code=201)
@@ -418,7 +444,11 @@ async def create_user(
         await server.user_manager.set_resource_policy(user.username, **policy_kwargs)
     row = server.user_manager.get_row(user.id)
     assert row is not None
-    return _row_to_dict(row, server.services.user_policy_repo.list_for_user(row.id))
+    return _row_to_dict(
+        row,
+        server.services.user_policy_repo.list_for_user(row.id),
+        server.services.repos.user_repo.units_for_user(row.id),
+    )
 
 
 @router.get("/{user_id}")
@@ -431,7 +461,11 @@ async def get_user(
     if row is None:
         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
     assert_may_manage_account(_scope(server, actor), row, action="read this account")
-    return _row_to_dict(row, server.services.user_policy_repo.list_for_user(row.id))
+    return _row_to_dict(
+        row,
+        server.services.user_policy_repo.list_for_user(row.id),
+        server.services.repos.user_repo.units_for_user(row.id),
+    )
 
 
 @router.patch(
@@ -501,9 +535,24 @@ async def patch_user(
         _assert_target_unit(
             server, scope, body.org_unit, action="change the department of an account"
         )
+    org_units: list[str] | None = None
+    if "org_units" in body.model_fields_set:
+        org_units = list(
+            dict.fromkeys(str(key).strip() for key in (body.org_units or []) if str(key).strip())
+        )
+        for unit_key in org_units:
+            _assert_target_unit(
+                server, scope, unit_key, action="change the department of an account"
+            )
     if "denied_permissions" in body.model_fields_set:
         _assert_admin(actor, "deny permissions for an account")
-    await server.user_manager.update_account(row.username, body.model_dump(exclude_unset=True))
+    patch = body.model_dump(exclude_unset=True)
+    # ``org_units`` is applied through its own writer: it owns the membership
+    # table and keeps ``users.org_unit`` pointing at the primary department.
+    patch.pop("org_units", None)
+    await server.user_manager.update_account(row.username, patch)
+    if org_units is not None:
+        await server.user_manager.set_units(row.username, org_units)
     if _writes_access(body):
         # The account's effective ``channel_<kind>`` may have just changed, and
         # a channel that lost its type key stops now rather than at its next
@@ -514,6 +563,7 @@ async def patch_user(
     return _row_to_dict(
         updated,
         server.services.user_policy_repo.list_for_user(updated.id),
+        server.services.repos.user_repo.units_for_user(updated.id),
     )
 
 

@@ -5,10 +5,21 @@
  * (image/video/audio), so viewers render them through DocumentPreviewCore.
  */
 
-export type DocKind = "pdf" | "word" | "excel" | "pptx" | "ppt";
+export type DocKind = "pdf" | "word" | "excel" | "pptx" | "ppt" | "dwg";
 
 const WORD_EXT = new Set(["docx", "doc"]);
 const EXCEL_EXT = new Set(["xlsx", "xls", "xlsm"]);
+const CAD_EXT: Record<string, true> = { dwg: true, dxf: true };
+
+/**
+ * CAD drawings are rendered by the server (LibreDWG + ezdxf) rather than parsed
+ * in the browser, so they are their own kind and never reach ``getDocKind``,
+ * whose callers expect a browser-side viewer.
+ */
+export function isCadDrawingPath(path: string): boolean {
+  const ext = path.split(".").pop()?.toLowerCase() ?? "";
+  return Object.hasOwn(CAD_EXT, ext);
+}
 
 export function getDocKind(path: string): DocKind | null {
   const ext = path.split(".").pop()?.toLowerCase() ?? "";

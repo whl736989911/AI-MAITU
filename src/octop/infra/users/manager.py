@@ -738,6 +738,30 @@ class UserManager:
             payload=unit_key or "",
         )
 
+    async def set_units(self, username: str, unit_keys: list[str]) -> None:
+        """Replace every department the account belongs to.
+
+        ``users.org_unit`` keeps the first key as the primary department for the
+        user list; the full membership lives in ``user_org_units`` and is what
+        access checks union over. The cached ``User`` is refreshed on the same
+        step so the next permission check sees the new scope.
+        """
+        row = self._services.user_repo.get_by_username(username)
+        if row is None:
+            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+        self._services.user_repo.set_units(row.id, unit_keys)
+        primary = unit_keys[0] if unit_keys else None
+        async with self._lock:
+            current = self._users.get(username)
+            if current is not None:
+                current.org_unit = primary
+        self._services.audit_repo.write(
+            actor=ACTOR_ADMIN,
+            action="user.set_units",
+            target=username,
+            payload=",".join(unit_keys),
+        )
+
     async def set_display_name(self, username: str, display_name: str | None) -> None:
         row = self._services.user_repo.get_by_username(username)
         if row is None:

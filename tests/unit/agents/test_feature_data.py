@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -13,7 +14,38 @@ from octop.infra.agents import feature_data as fd
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.feature_data import FeatureDataRepo
+from octop.infra.db.repos.org_units import OrgUnitRepo
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
+from octop.infra.db.repos.users import UserRepo
 from octop.infra.errors import OctopError
+
+
+class _Repos:
+    """The repo surface fd.create_record/update_record read, over one pool."""
+
+    def __init__(self, db: SqlitePool) -> None:
+        self.db = db
+        self.feature_data_repo = FeatureDataRepo(db)
+        self.user_repo = UserRepo(db)
+        self.org_unit_repo = OrgUnitRepo(db)
+        self.resource_acl_repo = ResourceAclRepo(db)
+
+
+class _Registry:
+    """Minimal agent registry: one feature row and one workspace."""
+
+    def __init__(self, workspace: BackendWorkspace) -> None:
+        self._workspace = workspace
+        self.row = SimpleNamespace(
+            agent_id="feat-supplier", kind="feature", user_id=1, enterprise_unit_key=None
+        )
+        self.octop_config = SimpleNamespace(default_timezone="UTC")
+
+    def get_row(self, agent_id: str) -> Any:
+        return self.row
+
+    def workspace_for_agent(self, agent_id: str) -> Any:
+        return self._workspace
 
 
 @pytest.fixture
@@ -112,20 +144,25 @@ async def test_schema_validation_and_controlled_document_rule() -> None:
 async def test_record_lifecycle_history_visibility_and_reminders(
     db: SqlitePool, workspace: BackendWorkspace
 ) -> None:
-    repo = FeatureDataRepo(db)
+    repos = _Repos(db)
+    registry = _Registry(workspace)
+    repo = repos.feature_data_repo
     schema = await fd.save_schema(workspace, _schema())
     assert schema["version"] == 1
     record = await fd.create_record(
-        repo,
+        repos,
         workspace,
         agent_id="feat-supplier",
         object_key="supplier",
         values={"name": "Acme", "expires_at": "2030-01-01", "status": "approved"},
         user_id=1,
         feature_active=False,
+        registry=registry,
+        timezone_name="UTC",
     )
     assert record.visibility == "private"
     assert record.title == "Acme"
+    assert record.responsible_user_id == 1
     assert (
         repo.list_records(agent_id="feat-supplier", object_key="supplier", user_id=1)[0][0].id
         == record.id
@@ -133,25 +170,29 @@ async def test_record_lifecycle_history_visibility_and_reminders(
     assert repo.list_records(agent_id="feat-supplier", object_key="supplier", user_id=2)[0] == []
     assert repo.list_reminders(record.id)
     updated = await fd.update_record(
-        repo,
+        repos,
         workspace,
         agent_id="feat-supplier",
         record_id=record.id,
         values={"name": "Acme Ltd", "status": "suspended"},
         expected_revision=1,
         user_id=1,
+        registry=registry,
+        timezone_name="UTC",
     )
     assert updated.revision == 2
     assert updated.title == "Acme Ltd"
     with pytest.raises(OctopError):
         await fd.update_record(
-            repo,
+            repos,
             workspace,
             agent_id="feat-supplier",
             record_id=record.id,
             values={"name": "stale"},
             expected_revision=1,
             user_id=1,
+            registry=registry,
+            timezone_name="UTC",
         )
     history = repo.list_changes(record.id)
     assert [change.kind for change in history] == ["update", "create"]
@@ -164,16 +205,19 @@ async def test_record_lifecycle_history_visibility_and_reminders(
 async def test_attachment_versions_are_stored_in_workspace(
     db: SqlitePool, workspace: BackendWorkspace
 ) -> None:
-    repo = FeatureDataRepo(db)
+    repos = _Repos(db)
+    repo = repos.feature_data_repo
     await fd.save_schema(workspace, _schema())
     record = await fd.create_record(
-        repo,
+        repos,
         workspace,
         agent_id="feat-supplier",
         object_key="supplier",
         values={"name": "Acme"},
         user_id=1,
         feature_active=True,
+        registry=_Registry(workspace),
+        timezone_name="UTC",
     )
     first = await fd.add_file(
         repo,
@@ -209,16 +253,19 @@ async def test_attachment_versions_are_stored_in_workspace(
 async def test_invalid_values_and_unconfigured_schema_are_refused(
     db: SqlitePool, workspace: BackendWorkspace
 ) -> None:
-    repo = FeatureDataRepo(db)
+    repos = _Repos(db)
+    registry = _Registry(workspace)
     with pytest.raises(OctopError):
         await fd.create_record(
-            repo,
+            repos,
             workspace,
             agent_id="feat-supplier",
             object_key="supplier",
             values={"name": "Acme"},
             user_id=1,
             feature_active=False,
+            registry=registry,
+            timezone_name="UTC",
         )
     await fd.save_schema(workspace, _schema())
     with pytest.raises(ValueError, match="required"):

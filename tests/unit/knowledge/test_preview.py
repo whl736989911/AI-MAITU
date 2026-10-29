@@ -50,6 +50,31 @@ def test_indexed_preview_preserves_boundaries_and_refuses_changed_source(preview
     assert refused.value.code == ErrorCode.KNOWLEDGE_INDEX_NOT_READY
 
 
+def test_preview_blocks_carry_source_locators(preview_services):
+    """Every previewed paragraph points back to its own source line."""
+    services = preview_services
+    owner = services.user_repo.create(username="owner", password_hash="h", role="user")
+    base = services.knowledge_repo.create_base(owner_user_id=owner, name="Located")
+    knowledge = KnowledgeService(services)
+    document = knowledge.upload_document(
+        base.id,
+        actor_user_id=owner,
+        filename="ledger.txt",
+        content_type="text/plain",
+        content=b"line one\n\nline three\nline four",
+    )
+    process_document(services, base.id, document.id)
+
+    preview = knowledge.preview_document(base.id, document.id, actor_user_id=owner)
+
+    assert preview["text"] == "line one\nline three\nline four"
+    assert [(block["text"], block["locator"]) for block in preview["blocks"]] == [
+        ("line one", {"line": 1}),
+        ("line three", {"line": 3}),
+        ("line four", {"line": 4}),
+    ]
+
+
 def test_unindexed_pdf_preview_waits_for_index_without_parsing(preview_services):
     services = preview_services
     owner = services.user_repo.create(username="owner", password_hash="h", role="user")

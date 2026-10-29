@@ -1,16 +1,18 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const { request, requestUpload } = vi.hoisted(() => ({
+const { request, requestBlob, requestUpload } = vi.hoisted(() => ({
   request: vi.fn(),
+  requestBlob: vi.fn(),
   requestUpload: vi.fn(),
 }));
 
-vi.mock("../request", () => ({ request, requestUpload }));
+vi.mock("../request", () => ({ request, requestBlob, requestUpload }));
 
 import { knowledgeBasesApi } from "./knowledgeBases";
 
 beforeEach(() => {
   request.mockClear();
+  requestBlob.mockClear();
   requestUpload.mockClear();
 });
 

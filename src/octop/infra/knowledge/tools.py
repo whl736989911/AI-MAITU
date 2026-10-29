@@ -103,6 +103,53 @@ def _collection_summaries(
     return summaries
 
 
+_CITATION_LIMIT = 8
+
+
+def _kb_display_name(services: Any, kb_id: str) -> str:
+    try:
+        base = services.knowledge_repo.get_base(kb_id)
+    except Exception:
+        return ""
+    return str(getattr(base, "name", "") or "")
+
+
+def _with_citations(
+    payload: str,
+    *,
+    kb_id: str,
+    kb_name: str,
+    documents: list[dict[str, Any]],
+) -> str:
+    """Append the citation marker the dashboard parses into source chips.
+
+    The chat UI shows "from the knowledge base" links for every document an
+    answer was built on, so each tool that surfaces documents reports them
+    here. The marker is a machine-readable trailer: display text stays intact.
+    """
+    rows: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for document in documents:
+        doc_id = str(document.get("document_id") or "").strip()
+        if not doc_id or document.get("is_dir") or doc_id in seen:
+            continue
+        seen.add(doc_id)
+        rows.append(
+            {
+                "kb_id": kb_id,
+                "kb_name": kb_name,
+                "doc_id": doc_id,
+                "filename": str(document.get("filename") or ""),
+                "path": str(document.get("path") or ""),
+            }
+        )
+        if len(rows) >= _CITATION_LIMIT:
+            break
+    if not rows:
+        return payload
+    return f"{payload}\n<!--octop-kb-citations:{json.dumps(rows, ensure_ascii=False)}-->"
+
+
 def build_knowledge_tools(services: Any, *, workspace: Any) -> list[StructuredTool]:
     """Build source tools using shared services, actor-scoped runtime config, and workspace."""
     source_service = KnowledgeSourceService(services)
@@ -130,7 +177,12 @@ def build_knowledge_tools(services: Any, *, workspace: Any) -> list[StructuredTo
             )
             paths = [path, *(str(item.get("path") or "") for item in result["documents"])]
             result["related_collections"] = _collection_summaries(collections, paths)
-            return _as_json(result)
+            return _with_citations(
+                _as_json(result),
+                kb_id=kb_id,
+                kb_name=_kb_display_name(services, kb_id),
+                documents=list(result.get("documents") or []),
+            )
         except Exception:
             logger.warning("knowledge source browse failed", exc_info=True)
             return _as_json({"status": "unavailable", "documents": []})
@@ -168,12 +220,17 @@ def build_knowledge_tools(services: Any, *, workspace: Any) -> list[StructuredTo
             related = _collection_summaries(
                 collections, [str(item.get("path") or "") for item in matches]
             )
-            return _as_json(
-                {
-                    "status": "found" if matches else "no_match",
-                    "documents": matches,
-                    "related_collections": related,
-                }
+            return _with_citations(
+                _as_json(
+                    {
+                        "status": "found" if matches else "no_match",
+                        "documents": matches,
+                        "related_collections": related,
+                    }
+                ),
+                kb_id=kb_id,
+                kb_name=_kb_display_name(services, kb_id),
+                documents=matches,
             )
         except Exception:
             logger.warning("knowledge path search failed", exc_info=True)
@@ -312,7 +369,12 @@ def build_knowledge_tools(services: Any, *, workspace: Any) -> list[StructuredTo
                         }
                     )
                 return blocks
-            return _as_json(result)
+            return _with_citations(
+                _as_json(result),
+                kb_id=kb_id,
+                kb_name=_kb_display_name(services, kb_id),
+                documents=[document],
+            )
         except Exception:
             logger.warning("knowledge source read failed", exc_info=True)
             return _as_json({"status": "unavailable"})

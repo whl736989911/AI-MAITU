@@ -1,0 +1,51 @@
+.boundary {
+  margin-bottom: 16px;
+}
+.collection {
+  min-width: 0;
+}
+.tools {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 12px 0 16px;
+  > :global(.octop-input-affix-wrapper) {
+    max-width: 360px;
+    flex: 1 1 220px;
+  }
+  > :global(.octop-space) {
+    margin-left: auto;
+  }
+}
+.notice {
+  color: var(--fn-color-success);
+  font-size: 13px;
+}
+.note {
+  margin: 16px 0 0;
+}
+.settings {
+  max-width: 820px;
+  margin-bottom: 24px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid var(--fn-border-secondary);
+}
+.settings :global(.octop-form-item) {
+  max-width: 680px;
+}
+.collection :global(.octop-table-cell) {
+  overflow-wrap: anywhere;
+}
+@media (max-width: 767px) {
+  .tools {
+    gap: 10px;
+    > :global(.octop-space) {
+      margin-left: 0;
+      width: 100%;
+    }
+  }
+  .settings {
+    max-width: 100%;
+  }
+}

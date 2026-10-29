@@ -26,7 +26,7 @@ from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.knowledge import service as service_module
-from octop.infra.knowledge.files import document_path
+from octop.infra.knowledge.files import document_digest, document_path, write_document
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.service import KnowledgeService
 from octop.infra.sharing import AclEntry
@@ -93,13 +93,18 @@ def _legacy_base(
 def _uploaded(
     env: SimpleNamespace, kb_id: str, *, owner: int, filename: str, body: str = "# Notes"
 ) -> str:
-    return env.knowledge.upload_document(
-        kb_id,
-        actor_user_id=owner,
+    # Model historical files with inherited ACLs, not today's pinned upload default.
+    env.knowledge.get_writable_base(kb_id, actor_user_id=owner)
+    content = body.encode("utf-8")
+    document = env.services.knowledge_repo.create_document(
+        kb_id=kb_id,
         filename=filename,
         content_type="text/markdown",
-        content=body.encode("utf-8"),
-    ).id
+        byte_size=len(content),
+        content_hash=document_digest(content),
+    )
+    write_document(kb_id, document.id, filename, content)
+    return document.id
 
 
 def test_a_legacy_base_and_its_files_move_into_the_space(env: SimpleNamespace) -> None:

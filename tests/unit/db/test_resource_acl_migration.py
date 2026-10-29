@@ -126,6 +126,7 @@ def test_run_migrations_creates_acl_tables(tmp_path: Path) -> None:
         "resource_id",
         "grantee_type",
         "grantee_id",
+        "can_delegate",
     }
     assert _columns(pool, "resource_acl_changes") == {
         "id",
@@ -241,9 +242,9 @@ def test_v42_database_without_rollback_link_is_repaired_idempotently(
 def test_v44_watermark_without_rollback_link_still_converges(tmp_path: Path) -> None:
     """A database stamped 44 by an intermediate build gets the link in place.
 
-    The numbered migrations are all recorded, so nothing re-runs; the guarded
-    post-migration ensure must still deliver the column the intermediate build
-    predated, without disturbing the ACL history it keeps.
+    The v44 watermark skips the earlier DDL that introduced this link. Upgrading
+    and running the guarded ensures must restore it without disturbing the
+    existing ACL history.
     """
     pool = SqlitePool(tmp_path / "octop.db")
     run_migrations(pool)
@@ -254,7 +255,6 @@ def test_v44_watermark_without_rollback_link_still_converges(tmp_path: Path) -> 
     run_migrations(pool)
     run_migrations(pool)
 
-    assert _version(pool) == 44
     assert "rollback_of" in _columns(pool, "resource_acl_changes")
     reversal_id = sharing.rollback(change_id, admin)
     reversal = acl.get_change(reversal_id)

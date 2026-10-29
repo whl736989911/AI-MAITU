@@ -33,6 +33,10 @@ export const FEATURE_DATA_FIELD_TYPES = [
   "datetime",
   "enum",
   "file",
+  "user",
+  "org_unit",
+  "record_ref",
+  "knowledge_ref",
 ] as const;
 export type FeatureDataFieldType = (typeof FEATURE_DATA_FIELD_TYPES)[number];
 
@@ -52,27 +56,39 @@ export interface FeatureDataLocalizedText {
 /** One field of an object. ``key`` is what ``values`` is keyed by. */
 export interface FeatureDataField {
   key: string;
-  /** Bilingual label; a plain string is accepted for hand-written schemas. */
   label?: FeatureDataLocalizedText | string;
   type: FeatureDataFieldType;
   required?: boolean;
-  /** ``enum`` only — the choices, in the order they are offered. */
   options?: string[];
-  /** ``date`` / ``datetime`` only — how many days before the date to remind. */
   reminder_days?: number[];
+  target_object?: string;
+  target_agent_id?: string;
+  computed?: {
+    op: "add_months" | "add_years" | "add_days";
+    source_field: string;
+    amount_field?: string;
+    amount?: number;
+  };
+  [key: string]: unknown;
 }
 
 /** One business object: a ledger or a controlled document. */
 export interface FeatureDataObject {
-  /** ``^[a-z][a-z0-9_]{0,63}$``; the path segment records are addressed under. */
   key: string;
   name?: FeatureDataLocalizedText | string;
   kind?: FeatureDataObjectKind;
-  /** The field whose value becomes the record's title. */
   title_field?: string;
-  /** ``true`` when the versions of this document are controlled. */
   controlled?: boolean;
   fields?: FeatureDataField[];
+  reminder_recipients?: {
+    creator?: boolean;
+    owner?: boolean;
+    responsible?: boolean;
+    user_fields?: string[];
+    unit_fields?: string[];
+    role_keys?: string[];
+  };
+  [key: string]: unknown;
 }
 
 /** The whole schema document. */
@@ -84,7 +100,34 @@ export interface FeatureDataSchema {
 /** What both schema reads and writes answer. */
 export interface FeatureDataSchemaResponse {
   schema: FeatureDataSchema | null;
-  error: string | null;
+  error?: string | null;
+}
+
+/** One field mapping inside an extraction profile. */
+export interface FeatureExtractRule {
+  labels?: string[];
+  pattern?: string;
+  unit?: "kg";
+  from?: "dimensions";
+  pick?: "max_outer" | "min_inner" | "text";
+  limit?: number;
+}
+
+/** A drawing layout: when it applies, and how its text fills the ledger fields. */
+export interface FeatureExtractProfile {
+  name: string | FeatureDataLocalizedText;
+  when?: { labels_any?: string[]; filename_pattern?: string };
+  fields: Record<string, FeatureExtractRule>;
+}
+
+export interface FeatureExtractRules {
+  version: 2;
+  profiles: FeatureExtractProfile[];
+}
+
+export interface FeatureExtractRulesResponse {
+  rules: FeatureExtractRules | null;
+  error?: string | null;
 }
 
 /** One versioned file attached to a record, under one ``file`` field. */
@@ -107,19 +150,48 @@ export interface FeatureDataFile {
 /** One business record, with the files attached to its ``file`` fields. */
 export interface FeatureDataRecord {
   id: string;
-  /** The feature's public id, when the server carries it on the row. */
   feature_id?: string | null;
   object_key: string;
   title: string;
-  /** Field values keyed by field key. ``file`` fields never appear here. */
   values: Record<string, unknown>;
   visibility: FeatureDataVisibility;
-  /** Optimistic lock: a write must send the revision it saw. */
   revision: number;
   created_by: number;
+  responsible_user_id?: number | null;
+  can_write?: boolean;
   created_at: number;
   updated_at: number;
   files?: FeatureDataFile[];
+  references?: Record<string, FeatureDataReferenceInfo>;
+}
+
+export interface FeatureDataReferenceInfo {
+  kind: "record_ref" | "knowledge_ref";
+  available: boolean;
+  stale?: boolean;
+  record_id?: string | null;
+  agent_id?: string;
+  object_key?: string;
+  kb_id?: string;
+  document_id?: string;
+  version?: string;
+  current_version?: string;
+  page?: number | null;
+  layout?: string | null;
+  title?: string | null;
+  path?: string | null;
+  original_url?: string;
+  preview_url?: string;
+  current_original_url?: string;
+  current_preview_url?: string;
+}
+export interface FeatureDataPrincipal {
+  id: number;
+  username: string;
+  display_name: string | null;
+  org_unit: string | null;
+  org_unit_label: FeatureDataLocalizedText | string | null;
+  role: string;
 }
 
 /** One page of records, newest first. */
@@ -161,10 +233,27 @@ export interface FeatureDataNotification {
 }
 
 /** A page of records to read. */
+export interface FeatureDataFilter {
+  field: string;
+  op:
+    | "eq"
+    | "ne"
+    | "contains"
+    | "gt"
+    | "gte"
+    | "lt"
+    | "lte"
+    | "in"
+    | "is_empty";
+  value?: unknown;
+}
 export interface FeatureDataRecordsQuery {
   q?: string;
   limit?: number;
   offset?: number;
+  filters?: FeatureDataFilter[];
+  sort_by?: string;
+  sort_order?: "asc" | "desc";
 }
 
 function agentBase(agentId: string): string {
@@ -196,12 +285,9 @@ function listFrom<T>(answer: unknown, key: string): T[] {
 }
 
 export const featureDataApi = {
-  /** Read the schema. Readable by anyone who may reach the feature. */
   getSchema(agentId: string): Promise<FeatureDataSchemaResponse> {
     return request<FeatureDataSchemaResponse>(`${agentBase(agentId)}/schema`);
   },
-
-  /** Store the schema (feature managers only). A refusal writes nothing. */
   putSchema(
     agentId: string,
     schema: FeatureDataSchema,
@@ -211,8 +297,22 @@ export const featureDataApi = {
       body: JSON.stringify({ schema }),
     });
   },
-
-  /** Visible records of one object, newest first. */
+  getExtractRules(
+    agentId: string,
+  ): Promise<FeatureExtractRulesResponse> {
+    return request<FeatureExtractRulesResponse>(
+      `${agentBase(agentId)}/extract-rules`,
+    );
+  },
+  putExtractRules(
+    agentId: string,
+    rules: FeatureExtractRules,
+  ): Promise<FeatureExtractRulesResponse> {
+    return request<FeatureExtractRulesResponse>(
+      `${agentBase(agentId)}/extract-rules`,
+      { method: "PUT", body: JSON.stringify({ rules }) },
+    );
+  },
   listRecords(
     agentId: string,
     objectKey: string,
@@ -223,96 +323,126 @@ export const featureDataApi = {
     if (q) params.set("q", q);
     if (query.limit !== undefined) params.set("limit", String(query.limit));
     if (query.offset !== undefined) params.set("offset", String(query.offset));
+    if (query.filters?.length)
+      params.set("filters", JSON.stringify(query.filters));
+    if (query.sort_by) params.set("sort_by", query.sort_by);
+    if (query.sort_order) params.set("sort_order", query.sort_order);
     const suffix = params.toString();
     return request<FeatureDataRecordsResponse>(
       `${recordsBase(agentId, objectKey)}${suffix ? `?${suffix}` : ""}`,
     );
   },
-
-  /** Create a record. File fields are uploaded separately, after it exists. */
+  listRecordReferenceOptions(
+    agentId: string,
+    query: {
+      target_agent_id?: string;
+      object_key?: string;
+      q?: string;
+      limit?: number;
+      offset?: number;
+    },
+  ) {
+    const params = new URLSearchParams();
+    Object.entries(query).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") params.set(key, String(value));
+    });
+    const suffix = params.toString();
+    return request<{
+      records: {
+        id: string;
+        title: string;
+        object_key: string;
+        agent_id: string;
+      }[];
+      total: number;
+    }>(`${agentBase(agentId)}/references/records${suffix ? `?${suffix}` : ""}`);
+  },
+  listPrincipals(
+    agentId: string,
+    query: { q?: string; limit?: number; offset?: number } = {},
+  ) {
+    const params = new URLSearchParams();
+    if (query.q) params.set("q", query.q);
+    if (query.limit !== undefined) params.set("limit", String(query.limit));
+    if (query.offset !== undefined) params.set("offset", String(query.offset));
+    const suffix = params.toString();
+    return request<{ principals: FeatureDataPrincipal[]; total: number }>(
+      `${agentBase(agentId)}/principals${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+  listFeatureAgents() {
+    return request<
+      {
+        agent_id: string;
+        kind?: string | null;
+        name: string;
+        can_manage?: boolean;
+      }[]
+    >("/agents");
+  },
+  handover(
+    agentId: string,
+    body: { from_user_id: number; to_user_id: number; object_key?: string },
+  ) {
+    return request<{ transferred_count: number; record_ids: string[] }>(
+      `${agentBase(agentId)}/handover`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+  },
   createRecord(
     agentId: string,
     objectKey: string,
     values: Record<string, unknown>,
-  ): Promise<FeatureDataRecord> {
+  ) {
     return request<FeatureDataRecord>(recordsBase(agentId, objectKey), {
       method: "POST",
       body: JSON.stringify({ values }),
     });
   },
-
-  /** One record and its attachments. */
-  getRecord(agentId: string, recordId: string): Promise<FeatureDataRecord> {
+  getRecord(agentId: string, recordId: string) {
     return request<FeatureDataRecord>(recordBase(agentId, recordId));
   },
-
-  /**
-   * Update field values. ``expected_revision`` is the revision the editor read:
-   * a mismatch is a real refusal (409), never a silent overwrite.
-   */
   updateRecord(
     agentId: string,
     recordId: string,
     values: Record<string, unknown>,
     expectedRevision: number,
-  ): Promise<FeatureDataRecord> {
+  ) {
     return request<FeatureDataRecord>(recordBase(agentId, recordId), {
       method: "PATCH",
-      body: JSON.stringify({
-        values,
-        expected_revision: expectedRevision,
-      }),
+      body: JSON.stringify({ values, expected_revision: expectedRevision }),
     });
   },
-
-  /** Publish a private record to everybody who can use the feature. */
-  publishRecord(agentId: string, recordId: string): Promise<FeatureDataRecord> {
+  publishRecord(agentId: string, recordId: string) {
     return request<FeatureDataRecord>(
       `${recordBase(agentId, recordId)}/publish`,
-      {
-        method: "POST",
-      },
+      { method: "POST" },
     );
   },
-
-  /** Soft-delete a record (its files stay for audit). */
-  deleteRecord(agentId: string, recordId: string): Promise<void> {
+  deleteRecord(agentId: string, recordId: string) {
     return request<void>(recordBase(agentId, recordId), { method: "DELETE" });
   },
-
-  /** The record's audit trail, newest first. */
-  async history(
-    agentId: string,
-    recordId: string,
-    limit = 20,
-  ): Promise<FeatureDataChange[]> {
-    const answer = await request<unknown>(
-      `${recordBase(agentId, recordId)}/history?limit=${limit}`,
+  async history(agentId: string, recordId: string, limit = 20) {
+    return listFrom<FeatureDataChange>(
+      await request<unknown>(
+        `${recordBase(agentId, recordId)}/history?limit=${limit}`,
+      ),
+      "changes",
     );
-    return listFrom<FeatureDataChange>(answer, "changes");
   },
-
-  /** Attachments and their versions, newest version first per field. */
-  async files(agentId: string, recordId: string): Promise<FeatureDataFile[]> {
-    const answer = await request<unknown>(
-      `${recordBase(agentId, recordId)}/files`,
+  async files(agentId: string, recordId: string) {
+    return listFrom<FeatureDataFile>(
+      await request<unknown>(`${recordBase(agentId, recordId)}/files`),
+      "files",
     );
-    return listFrom<FeatureDataFile>(answer, "files");
   },
-
-  /**
-   * Upload a new version for one ``file`` field.
-   *
-   * Multipart, not JSON: the browser owns the boundary, and ``note`` is optional so
-   * an upload that only replaces bytes does not need a reason.
-   */
   uploadFile(
     agentId: string,
     recordId: string,
     fieldKey: string,
     file: File,
     note?: string,
-  ): Promise<FeatureDataFile> {
+  ) {
     const form = new FormData();
     form.append("file", file);
     const reason = (note ?? "").trim();
@@ -322,13 +452,7 @@ export const featureDataApi = {
       form,
     );
   },
-
-  /** Download one file version as a blob (caller decides what to do with it). */
-  downloadFile(
-    agentId: string,
-    recordId: string,
-    fileId: string,
-  ): Promise<Blob> {
+  downloadFile(agentId: string, recordId: string, fileId: string) {
     return requestBlob(
       `${recordBase(agentId, recordId)}/files/${encodeURIComponent(
         fileId,
@@ -336,21 +460,17 @@ export const featureDataApi = {
       { cache: "no-store" },
     );
   },
-
-  /** The caller's own in-app notifications; unread only when asked. */
-  async notifications(
-    agentId: string,
-    unreadOnly = false,
-  ): Promise<FeatureDataNotification[]> {
-    const suffix = unreadOnly ? "?unread_only=true" : "";
-    const answer = await request<unknown>(
-      `${agentBase(agentId)}/notifications${suffix}`,
+  async notifications(agentId: string, unreadOnly = false) {
+    return listFrom<FeatureDataNotification>(
+      await request<unknown>(
+        `${agentBase(agentId)}/notifications${
+          unreadOnly ? "?unread_only=true" : ""
+        }`,
+      ),
+      "notifications",
     );
-    return listFrom<FeatureDataNotification>(answer, "notifications");
   },
-
-  /** Mark one notification as read. */
-  readNotification(agentId: string, notificationId: string): Promise<void> {
+  readNotification(agentId: string, notificationId: string) {
     return request<void>(
       `${agentBase(agentId)}/notifications/${encodeURIComponent(
         notificationId,
@@ -358,9 +478,7 @@ export const featureDataApi = {
       { method: "POST" },
     );
   },
-
-  /** Complete (dismiss) the reminder a notification came from. */
-  completeReminder(agentId: string, reminderId: string): Promise<void> {
+  completeReminder(agentId: string, reminderId: string) {
     return request<void>(
       `${agentBase(agentId)}/reminders/${encodeURIComponent(
         reminderId,

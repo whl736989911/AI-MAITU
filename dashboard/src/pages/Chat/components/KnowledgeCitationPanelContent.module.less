@@ -63,7 +63,40 @@
   line-height: 1.5;
 }
 
-.chipHit {
-  display: inline-flex;
-  max-width: 100%;
+.citationBlocks {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 4px 12px;
+}
+
+.citationBlock {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.citationLocator {
+  flex: 0 0 auto;
+  min-width: 4.75rem;
+  padding-top: 1px;
+  color: var(--fn-text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  text-align: right;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.citationBlockText {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--fn-text-primary);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
 }

@@ -147,6 +147,7 @@ export function buildValuesPayload(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const field of valueFields(object)) {
+    if (field.computed) continue;
     const value = values[field.key];
     if (value === undefined) continue;
     out[field.key] = value;
@@ -157,6 +158,16 @@ export function buildValuesPayload(
 /** Whether a required editable field has no answer yet. */
 function missingRequired(field: FeatureDataField, value: unknown): boolean {
   if (!field.required) return false;
+  if (field.type === "knowledge_ref") {
+    if (value === null || typeof value !== "object") return true;
+    const reference = value as Record<string, unknown>;
+    return (
+      typeof reference.kb_id !== "string" ||
+      !reference.kb_id ||
+      typeof reference.document_id !== "string" ||
+      !reference.document_id
+    );
+  }
   if (typeof value === "boolean") return false;
   if (typeof value === "number") return Number.isNaN(value);
   if (Array.isArray(value)) return value.length === 0;
@@ -175,6 +186,7 @@ export function missingRequiredFields(
 ): string[] {
   const missing: string[] = [];
   for (const field of valueFields(object)) {
+    if (field.computed) continue;
     if (missingRequired(field, values[field.key])) missing.push(field.key);
   }
   return missing;

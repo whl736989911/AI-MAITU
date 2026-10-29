@@ -16,13 +16,25 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
+from octop.infra.agents.feature_data_refs import (
+    FeatureReferenceService,
+    ref_fields,
+    validate_reference_shape,
+)
+from octop.infra.agents.feature_data_rules import (
+    apply_computed_fields,
+    validate_rule_schema,
+    validate_rule_value,
+)
 from octop.infra.agents.workspace_dir import SYSTEM_FILES_DIRNAME, system_dir_relpaths
 from octop.infra.db.repos.feature_data import (
     FeatureDataChangeRow,
@@ -44,7 +56,21 @@ MAX_FIELDS = 40
 MAX_FILE_BYTES = 50 * 1024 * 1024
 MAX_TEXT_CHARS = 20_000
 FIELD_TYPES = frozenset(
-    {"text", "textarea", "number", "integer", "boolean", "date", "datetime", "enum", "file"}
+    {
+        "text",
+        "textarea",
+        "number",
+        "integer",
+        "boolean",
+        "date",
+        "datetime",
+        "enum",
+        "file",
+        "record_ref",
+        "knowledge_ref",
+        "user",
+        "org_unit",
+    }
 )
 OBJECT_KINDS = frozenset({"ledger", "document"})
 _KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,63}$")
@@ -129,6 +155,15 @@ def validate_schema(raw: Any) -> dict[str, Any]:
                 raise ValueError(f"{key}.{field_key} has unsupported type {field_type!r}")
             if field_type == "file":
                 has_file = True
+            if field_type == "record_ref":
+                target_object = field.get("target_object")
+                if not isinstance(target_object, str) or not target_object.strip():
+                    raise ValueError(f"{key}.{field_key} must declare target_object")
+                target_agent = field.get("target_agent_id")
+                if target_agent is not None and (
+                    not isinstance(target_agent, str) or not target_agent.strip()
+                ):
+                    raise ValueError(f"{key}.{field_key}.target_agent_id must be a feature id")
             options = field.get("options")
             if field_type == "enum":
                 if not isinstance(options, list) or not options:
@@ -179,7 +214,7 @@ def validate_schema(raw: Any) -> dict[str, Any]:
                 "fields": normalized_fields,
             }
         )
-    return {"version": SCHEMA_VERSION, "objects": normalized}
+    return validate_rule_schema({"version": SCHEMA_VERSION, "objects": normalized})
 
 
 def _first_text_field(fields: list[dict[str, Any]]) -> str:
@@ -246,6 +281,8 @@ def _validate_value(field: Mapping[str, Any], value: Any) -> Any:
     if field_type == "number":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise ValueError(f"{field['key']} must be a number")
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError(f"{field['key']} must be a finite number")
         return value
     if field_type == "integer":
         if type(value) is not int:
@@ -272,11 +309,28 @@ def _validate_value(field: Mapping[str, Any], value: Any) -> Any:
         return value if value else parsed.isoformat()
     if field_type == "file":
         return None
+    if field_type == "record_ref":
+        return validate_reference_shape(field, value)
+    if field_type == "knowledge_ref":
+        return validate_reference_shape(field, value)
+    if field_type == "user":
+        if type(value) is not int or value <= 0:
+            raise ValueError(f"{field['key']} must be a positive user id")
+        return value
+    if field_type == "org_unit":
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f"{field['key']} must be a non-empty organization unit key")
+        return value.strip()
     raise ValueError(f"unsupported field type {field_type!r}")
 
 
 def validate_values(
-    obj: Mapping[str, Any], raw: Any, *, existing: Mapping[str, Any] | None = None
+    obj: Mapping[str, Any],
+    raw: Any,
+    *,
+    existing: Mapping[str, Any] | None = None,
+    user_repo: Any | None = None,
+    unit_repo: Any | None = None,
 ) -> dict[str, Any]:
     values = dict(raw) if isinstance(raw, Mapping) else {}
     fields = {str(field["key"]): field for field in obj.get("fields", [])}
@@ -295,7 +349,29 @@ def validate_values(
             merged[key] = _validate_value(field, values[key])
         elif key not in values and key in merged and not empty:
             merged[key] = _validate_value(field, merged[key])
+        if field.get("type") in {"user", "org_unit"} and not empty:
+            merged[key] = validate_rule_value(
+                field, merged[key], user_repo=user_repo, unit_repo=unit_repo
+            )
     return {key: value for key, value in merged.items() if key in fields}
+
+
+def apply_computed_values(
+    schema: Mapping[str, Any], obj: Mapping[str, Any], merged: Mapping[str, Any]
+) -> dict[str, Any]:
+    """Recompute derived date fields from the non-derived merged values.
+
+    Computed keys are stripped first, so previous derived values never feed
+    the next computation and a missing source/amount simply leaves the key
+    unset. The output carries only the object's declared fields.
+    """
+    computed_keys = {str(field["key"]) for field in obj.get("fields", []) if field.get("computed")}
+    base = {key: value for key, value in merged.items() if key not in computed_keys}
+    computed = apply_computed_fields(
+        schema, base, object_key=str(obj["key"]), reject_supplied=False
+    )
+    field_keys = {str(field["key"]) for field in obj.get("fields", [])}
+    return {key: value for key, value in computed.items() if key in field_keys}
 
 
 def record_title(obj: Mapping[str, Any], values: Mapping[str, Any]) -> str:
@@ -321,10 +397,19 @@ def _change_items(before: Mapping[str, Any], after: Mapping[str, Any]) -> list[d
     return items
 
 
-def _reminder_time(value: str, days: int) -> int:
+def _reminder_time(value: str, days: int, timezone_name: str) -> int:
+    """Local-midnight timestamp *days* before *value*'s date.
+
+    The server's configured timezone decides what "a day" means for reminder
+    scheduling — business midnight, never a fixed UTC instant, so a Shanghai
+    deployment and a Berlin one notify on their own calendars. Offsets are
+    computed on the calendar (``date - timedelta``), which keeps the target a
+    true local midnight across DST changes.
+    """
     parsed = date.fromisoformat(value[:10])
-    due = datetime(parsed.year, parsed.month, parsed.day, tzinfo=UTC)
-    return int((due - timedelta(days=days)).timestamp())
+    target = parsed - timedelta(days=days)
+    tz = ZoneInfo(timezone_name)
+    return int(datetime(target.year, target.month, target.day, tzinfo=tz).timestamp())
 
 
 async def sync_reminders(
@@ -334,6 +419,7 @@ async def sync_reminders(
     object_key: str,
     record: FeatureDataRecordRow,
     obj: Mapping[str, Any],
+    timezone_name: str,
 ) -> None:
     now = int(datetime.now(UTC).timestamp())
     for field in obj.get("fields", []):
@@ -352,7 +438,9 @@ async def sync_reminders(
         repo.dismiss_reminders_for_field(record.id, field_key, keep_due_at=due)
         if due is None:
             continue
-        next_notify = _reminder_time(due, max(int(day) for day in field["reminder_days"]))
+        next_notify = _reminder_time(
+            due, max(int(day) for day in field["reminder_days"]), timezone_name
+        )
         repo.upsert_reminder(
             agent_id=agent_id,
             record_id=record.id,
@@ -366,7 +454,7 @@ async def sync_reminders(
 
 
 async def create_record(
-    repo: FeatureDataRepo,
+    repos: Any,
     workspace: BackendWorkspace,
     *,
     agent_id: str,
@@ -374,17 +462,36 @@ async def create_record(
     values: Any,
     user_id: int,
     feature_active: bool,
+    registry: Any,
+    timezone_name: str,
 ) -> FeatureDataRecordRow:
+    """Create one record through every write-path gate in order.
+
+    ``repos`` is the shared repo bundle and ``registry`` the agent registry;
+    both arrive from the HTTP router and the agent tools alike, so reference
+    targets, user/org-unit fields and computed dates are validated the same
+    way no matter which surface sent the values.
+    """
     schema = (await load_schema(workspace)).schema
     if schema is None:
         raise OctopError(ErrorCode.WORKFLOW_INVALID, "feature data schema is not configured")
     obj = object_definition(schema, object_key)
-    normalized = validate_values(obj, values)
+    repo: FeatureDataRepo = repos.feature_data_repo
+    patch = await _validated_patch(
+        repos=repos,
+        registry=registry,
+        agent_id=agent_id,
+        obj=obj,
+        schema=schema,
+        patch=values,
+        existing=None,
+        user_id=user_id,
+    )
     row = repo.create_record(
         agent_id=agent_id,
         object_key=object_key,
-        title=record_title(obj, normalized),
-        values=normalized,
+        title=record_title(obj, patch),
+        values=patch,
         visibility="feature" if feature_active else "private",
         created_by=user_id,
     )
@@ -394,14 +501,115 @@ async def create_record(
         user_id=user_id,
         kind="create",
         summary="created",
-        items=[{"field": key, "before": None, "after": value} for key, value in normalized.items()],
+        items=[{"field": key, "before": None, "after": value} for key, value in patch.items()],
     )
-    await sync_reminders(repo, agent_id=agent_id, object_key=object_key, record=row, obj=obj)
+    await sync_reminders(
+        repo,
+        agent_id=agent_id,
+        object_key=object_key,
+        record=row,
+        obj=obj,
+        timezone_name=timezone_name,
+    )
     return row
 
 
+def _split_reference_patch(
+    obj: Mapping[str, Any], patch: Mapping[str, Any], existing: Mapping[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Split a patch into (merge values, refs needing access validation).
+
+    Pure local-PATCH semantics for reference fields: only a reference the
+    caller *actually changes* is re-validated against current access and
+    re-pinned.
+
+    * A value equal to the stored one merges as a no-op — a stale-but-
+      unmodified pinned SHA never blocks an unrelated rename and is never
+      silently repinned.
+    * The redaction marker a client round-trips from a read
+      (``{"redacted": true}``) means "no change", so saving a form that was
+      served an inaccessible reference cannot wipe or corrupt it.
+    * A knowledge_ref pointing at the *same document* keeps its stored pin and
+      only updates the page/layout locator it explicitly carries — the target
+      did not change, so no re-authorization or re-pin applies.
+    """
+    merge_patch = dict(patch)
+    ref_patch: dict[str, Any] = {}
+    for key, field in ref_fields(obj).items():
+        if key not in merge_patch:
+            continue
+        value = merge_patch[key]
+        if isinstance(value, Mapping) and value.get("redacted") is True:
+            del merge_patch[key]
+            continue
+        previous = existing.get(key)
+        if str(field.get("type")) == "record_ref":
+            if value == previous:
+                del merge_patch[key]
+            else:
+                ref_patch[key] = value
+            continue
+        if not isinstance(value, Mapping) or not isinstance(previous, Mapping):
+            ref_patch[key] = value
+            continue
+        if value.get("kb_id") != previous.get("kb_id") or value.get("document_id") != previous.get(
+            "document_id"
+        ):
+            ref_patch[key] = value
+            continue
+        merged = dict(previous)
+        for locator in ("page", "layout"):
+            if locator in value:
+                merged[locator] = value[locator]
+        merge_patch[key] = merged
+    return merge_patch, ref_patch
+
+
+async def _validated_patch(
+    *,
+    repos: Any,
+    registry: Any,
+    agent_id: str,
+    obj: Mapping[str, Any],
+    schema: Mapping[str, Any],
+    patch: Any,
+    existing: Mapping[str, Any] | None,
+    user_id: int,
+) -> dict[str, Any]:
+    """Reference pinning, value validation and computed recomputation.
+
+    Shared by create and update so no write path can skip a gate. Reference
+    values the client actually sends are resolved against the caller's current
+    access (missing knowledge versions are pinned to the document's current
+    content hash); computed keys in the patch are rejected as forged and every
+    derived value is recomputed from the non-derived merged values.
+    """
+    if not isinstance(patch, Mapping):
+        patch = {}
+    merge_patch, ref_patch = _split_reference_patch(obj, patch, existing or {})
+    references = FeatureReferenceService(registry=registry, repos=repos, user_id=user_id)
+    checked = await references.pin_and_validate_patch(agent_id=agent_id, obj=obj, patch=ref_patch)
+    merged = validate_values(
+        obj,
+        {**merge_patch, **checked},
+        existing=existing,
+        user_repo=repos.user_repo,
+        unit_repo=repos.org_unit_repo,
+    )
+    supplied_computed = {
+        str(field["key"])
+        for field in obj.get("fields", [])
+        if field.get("computed") and str(field["key"]) in merge_patch
+    }
+    if supplied_computed:
+        raise ValueError(
+            f"computed field(s) {', '.join(sorted(supplied_computed))} cannot be supplied"
+        )
+    return apply_computed_values(schema, obj, merged)
+
+
 async def update_record(
-    repo: FeatureDataRepo,
+    repos: Any,
     workspace: BackendWorkspace,
     *,
     agent_id: str,
@@ -409,7 +617,10 @@ async def update_record(
     values: Any,
     expected_revision: int,
     user_id: int,
+    registry: Any,
+    timezone_name: str,
 ) -> FeatureDataRecordRow:
+    repo: FeatureDataRepo = repos.feature_data_repo
     record = repo.get_record(record_id)
     if record is None or record.agent_id != agent_id or record.deleted_at is not None:
         raise OctopError(ErrorCode.NOT_FOUND, f"feature data record {record_id!r} not found")
@@ -417,7 +628,16 @@ async def update_record(
     if schema is None:
         raise OctopError(ErrorCode.WORKFLOW_INVALID, "feature data schema is not configured")
     obj = object_definition(schema, record.object_key)
-    normalized = validate_values(obj, values, existing=record.values)
+    normalized = await _validated_patch(
+        repos=repos,
+        registry=registry,
+        agent_id=agent_id,
+        obj=obj,
+        schema=schema,
+        patch=values,
+        existing=record.values,
+        user_id=user_id,
+    )
     updated = repo.update_record(
         record_id=record.id,
         values=normalized,
@@ -437,7 +657,12 @@ async def update_record(
         items=_change_items(record.values, normalized),
     )
     await sync_reminders(
-        repo, agent_id=agent_id, object_key=record.object_key, record=updated, obj=obj
+        repo,
+        agent_id=agent_id,
+        object_key=record.object_key,
+        record=updated,
+        obj=obj,
+        timezone_name=timezone_name,
     )
     return updated
 
@@ -555,6 +780,7 @@ def record_payload(view: RecordView) -> dict[str, Any]:
         "visibility": row.visibility,
         "revision": row.revision,
         "created_by": row.created_by,
+        "responsible_user_id": row.responsible_user_id,
         "created_at": row.created_at,
         "updated_at": row.updated_at,
         "files": [file_payload(file) for file in view.files],

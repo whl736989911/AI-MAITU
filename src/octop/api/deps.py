@@ -215,18 +215,23 @@ _UNIT_GRANTS_ATTR = "octop_unit_grants"
 
 
 def unit_grants_for(server: OctopServer, user: User) -> set[str]:
-    """Module keys granted to ``user.org_unit`` — its own grants and its parents'.
+    """Module keys granted to any department the account belongs to.
 
-    A department includes its sub-departments (design §2.1), so the grants of
-    every unit above the user's own reach it too; :func:`unit_permissions` owns
-    that rule and this is only its call site. A user with no org unit gets the
-    empty set and costs no query.
+    A user may hold several departments (``user_org_units``); the effective set
+    is the union of each department's grants, each already including its parents
+    (design §2.1). An account with no department gets the empty set and costs no
+    per-unit query beyond the membership read.
     """
-    unit = getattr(user, "org_unit", None)
-    if not unit:
-        return set()
     assert server.services is not None
-    return unit_permissions(unit, server.services.repos.org_unit_repo)
+    repo = server.services.repos.org_unit_repo
+    units = server.services.repos.user_repo.units_for_user(user.id)
+    primary = getattr(user, "org_unit", None)
+    if primary and primary not in units:
+        units.append(str(primary))
+    grants: set[str] = set()
+    for unit in dict.fromkeys(units):
+        grants |= unit_permissions(unit, repo)
+    return grants
 
 
 def request_unit_grants(request: Request, server: OctopServer, user: User) -> set[str]:

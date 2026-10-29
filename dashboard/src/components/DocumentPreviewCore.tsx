@@ -22,6 +22,8 @@ import PdfDocumentPreview, { PdfViewerSkeleton } from "./PdfDocumentPreview";
 export interface DocumentPreviewCoreProps {
   kind: DocKind;
   filename: string;
+  /** 1-based PDF citation page; omitted for ordinary file previews. */
+  initialPage?: number;
   fetchBlob: (
     onProgress?: (loaded: number, total: number) => void,
     signal?: AbortSignal,
@@ -341,6 +343,7 @@ export default function DocumentPreviewCore({
   filename,
   fetchBlob,
   onDownload,
+  initialPage,
 }: DocumentPreviewCoreProps) {
   const { t } = useTranslation();
   const [src, setSrc] = useState("");
@@ -411,6 +414,16 @@ export default function DocumentPreviewCore({
         if (cancelled) return;
         setLoadPhase("parse");
         setDownloadPercent(null);
+
+        if (kind === "dwg") {
+          const pngBlob =
+            blob.type === "image/png" ? blob : new Blob([blob], { type: "image/png" });
+          const objUrl = URL.createObjectURL(pngBlob);
+          objectUrlRef.current = objUrl;
+          setSrc(objUrl);
+          setLoading(false);
+          return;
+        }
 
         if (kind === "pdf") {
           const pdfBlob =
@@ -588,6 +601,31 @@ export default function DocumentPreviewCore({
     );
   }
 
+  if (kind === "dwg") {
+    if (!src) {
+      return (
+        <div className={styles.documentPreview}>
+          <PdfViewerSkeleton percent={downloadPercent} />
+        </div>
+      );
+    }
+    return (
+      <div className={styles.documentPreview}>
+        <img
+          src={src}
+          alt={filename}
+          style={{
+            display: "block",
+            maxWidth: "100%",
+            height: "auto",
+            margin: "0 auto",
+            background: "#fff",
+          }}
+        />
+      </div>
+    );
+  }
+
   if (kind === "pdf") {
     if (!src) {
       // Progress-bar skeleton while the blob downloads (large files take seconds).
@@ -599,7 +637,11 @@ export default function DocumentPreviewCore({
     }
     return (
       <div className={styles.documentPreview}>
-        <PdfDocumentPreview fileUrl={src} filename={filename} />
+        <PdfDocumentPreview
+          fileUrl={src}
+          filename={filename}
+          initialPage={initialPage}
+        />
       </div>
     );
   }
