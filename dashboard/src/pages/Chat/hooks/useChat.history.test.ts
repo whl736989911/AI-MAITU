@@ -72,6 +72,47 @@ describe("history failures", () => {
     expect(history).toHaveBeenCalled();
     expect(chatStore.getSnapshot(thread).messages[0].content).toBe("task done");
   });
+  it("uses completed server history to replace a disconnected local assistant", async () => {
+    const user = {
+      id: "stable-user-id",
+      role: "user" as const,
+      content: "question",
+      timestamp: 1,
+    };
+    chatStore.setHistoryPage(thread, [user], {
+      hasMore: false,
+      nextOffset: 1,
+    });
+    chatStore.appendUserMessage(thread, {
+      id: "local-stream",
+      role: "assistant",
+      content: "partial answer",
+      status: "streaming",
+      timestamp: 2,
+    });
+    vi.spyOn(octopThreadsApi, "history").mockResolvedValue({
+      thread_id: thread,
+      messages: [
+        user,
+        {
+          id: "server-answer",
+          role: "assistant",
+          content: "final answer",
+        },
+      ],
+      has_more: false,
+      turn_active: false,
+    });
+    const { result } = renderHook(() => useChat(thread, "agent"));
+
+    await act(async () => {
+      await result.current.refreshHistory();
+    });
+
+    expect(
+      chatStore.getSnapshot(thread).messages.map((message) => message.id),
+    ).toEqual(["stable-user-id", "server-answer"]);
+  });
 
   it("passes the pinned cursor when loading older messages", async () => {
     chatStore.setHistoryPage(

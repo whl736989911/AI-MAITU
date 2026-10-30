@@ -210,6 +210,24 @@ async def test_delete_rejects_unit_assigned_to_users(world: SimpleNamespace) -> 
     assert world.units.get("ops") is not None
 
 
+@pytest.mark.parametrize("disabled", [False, True])
+async def test_delete_rejects_secondary_department_members(
+    world: SimpleNamespace, disabled: bool
+) -> None:
+    await _create(world, "primary")
+    await _create(world, "secondary")
+    user_id = world.users.create(username="dual", password_hash="h", role="user")
+    world.users.set_units(user_id, ["primary", "secondary"])
+    world.users.set_disabled(user_id, disabled)
+
+    with pytest.raises(OctopError) as exc:
+        await delete_org_unit("secondary", actor=world.admin, server=world.server)
+
+    assert exc.value.code is ErrorCode.ORG_UNIT_IN_USE
+    assert exc.value.details["users"] == ["dual"]
+    assert world.units.get("secondary") is not None
+
+
 async def test_patch_and_delete_reject_unknown_unit(world: SimpleNamespace) -> None:
     with pytest.raises(OctopError) as exc:
         await patch_org_unit(

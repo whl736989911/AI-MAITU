@@ -37,7 +37,9 @@ def _seed_agent(services, tmp_path: Path) -> tuple[str, int]:
 @pytest.mark.asyncio
 async def test_gateway_boot_and_shutdown(tmp_path: Path) -> None:
     services = _make_services(tmp_path)
-    with patch("octop.infra.agents.manager.HarnessAgentManager") as mock_hm_cls:
+    with patch(
+        "octop.infra.agents.providers.harness_factory.OctopHarnessAgentManager"
+    ) as mock_hm_cls:
         mock_hm_cls.return_value = MagicMock()
 
         registry = AgentManager(

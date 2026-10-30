@@ -4,9 +4,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from octop.infra.agents.feature_data_responsibility import resolve_reminder_recipients
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.org_units import OrgUnitRepo
@@ -108,3 +110,23 @@ def test_leaving_a_department_drops_its_scope(env: dict) -> None:
 
     assert unit_keys == ("tech",)
     assert visible == set()
+
+
+def test_department_reminders_include_secondary_members(env: dict) -> None:
+    users, units = env["users"], env["units"]
+    user_id = users.create(username="dual", password_hash="x", role="user")
+    users.set_units(user_id, ["tech", "equip"])
+    recipients = resolve_reminder_recipients(
+        record=SimpleNamespace(
+            created_by=user_id,
+            responsible_user_id=None,
+            visibility="feature",
+            values={"department": "equip"},
+        ),
+        obj={"reminder_recipients": {"unit_fields": ["department"]}},
+        agent=SimpleNamespace(user_id=user_id, agent_id="feature", kind="feature"),
+        user_repo=users,
+        unit_repo=units,
+        acl_repo=None,
+    )
+    assert recipients == {user_id}

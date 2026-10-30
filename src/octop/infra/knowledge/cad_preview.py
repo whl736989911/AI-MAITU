@@ -21,6 +21,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 from octop.infra.knowledge.files import knowledge_base_dir
@@ -81,23 +82,25 @@ def render_preview(
             f"no CAD preview converter; set {_ENV_SCRIPT} to a dwg_preview.py path"
         )
     python, script = found
-    workdir = previews_dir(kb_id) / f"work-{doc_id}"
-    workdir.mkdir(parents=True, exist_ok=True)
-    try:
-        result = subprocess.run(
-            [python, script, str(original), str(workdir)],
-            capture_output=True,
-            text=True,
-            timeout=_TIMEOUT_SECONDS,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise CadPreviewFailed(f"converter could not run: {exc}") from exc
-    produced = next(iter(sorted(workdir.glob("*.png"))), None)
-    if produced is None or produced.stat().st_size == 0:
-        detail = (result.stderr or result.stdout).strip()[-600:]
-        raise CadPreviewFailed(f"converter produced no image: {detail}")
-    target.write_bytes(produced.read_bytes())
+    with tempfile.TemporaryDirectory(
+        prefix=f"work-{doc_id}-", dir=previews_dir(kb_id)
+    ) as directory:
+        workdir = Path(directory)
+        try:
+            result = subprocess.run(
+                [python, script, str(original), str(workdir)],
+                capture_output=True,
+                text=True,
+                timeout=_TIMEOUT_SECONDS,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            raise CadPreviewFailed(f"converter could not run: {exc}") from exc
+        produced = next(iter(sorted(workdir.glob("*.png"))), None)
+        if produced is None or produced.stat().st_size == 0:
+            detail = (result.stderr or result.stdout).strip()[-600:]
+            raise CadPreviewFailed(f"converter produced no image: {detail}")
+        target.write_bytes(produced.read_bytes())
     return target
 
 

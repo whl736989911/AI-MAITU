@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import patch
 
 import pytest
 
@@ -14,7 +13,6 @@ from octop.infra.agents.providers.opencode_session import (
     ensure_opencode_session_header,
     is_opencode_go_base_url,
 )
-from octop.infra.agents.providers.probe import build_probe_chat_model
 from octop.infra.agents.providers.store import ProviderStore
 
 GO_OPENAI_URL = "https://opencode.ai/zen/go/v1"
@@ -56,49 +54,6 @@ def test_ensure_leaves_other_urls_untouched() -> None:
     headers = ensure_opencode_session_header(ZEN_URL, {"Authorization": "Bearer x"})
     assert headers == {"Authorization": "Bearer x"}
     assert OPENCODE_SESSION_HEADER not in headers
-
-
-def _probe_row(**overrides: Any) -> SimpleNamespace:
-    data: dict[str, Any] = {
-        "name": "OpenCode Go",
-        "kind": "openai",
-        "base_url": GO_OPENAI_URL,
-        "api_key": "sk-test",
-        "extra_json": None,
-        "get_models": lambda: [{"id": "glm-5.2", "name": "GLM-5.2"}],
-    }
-    data.update(overrides)
-    return SimpleNamespace(**data)
-
-
-def test_probe_chat_model_injects_throwaway_session_header() -> None:
-    with patch("harness_agent.llm.factory.build_chat_model") as mock_build:
-        mock_build.return_value = object()
-        build_probe_chat_model(_probe_row(), model_id="glm-5.2")
-
-    provider = mock_build.call_args[0][0]
-    assert OPENCODE_SESSION_HEADER in provider.headers
-    assert len(provider.headers[OPENCODE_SESSION_HEADER]) == 32
-
-
-def test_probe_chat_model_keeps_user_session_header() -> None:
-    row = _probe_row(extra_json=json.dumps({"headers": {OPENCODE_SESSION_HEADER: "mine"}}))
-    with patch("harness_agent.llm.factory.build_chat_model") as mock_build:
-        mock_build.return_value = object()
-        build_probe_chat_model(row, model_id="glm-5.2")
-
-    provider = mock_build.call_args[0][0]
-    assert provider.headers[OPENCODE_SESSION_HEADER] == "mine"
-
-
-def test_probe_chat_model_skips_non_go_providers() -> None:
-    row = _probe_row(base_url="https://api.example.com/v1")
-    with patch("harness_agent.llm.factory.build_chat_model") as mock_build:
-        mock_build.return_value = object()
-        build_probe_chat_model(row, model_id="glm-5.2")
-
-    provider = mock_build.call_args[0][0]
-    assert OPENCODE_SESSION_HEADER not in provider.headers
 
 
 class _FakeRepo:

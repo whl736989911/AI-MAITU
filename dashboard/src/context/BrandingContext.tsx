@@ -9,6 +9,7 @@ import { BRAND } from "../brand.generated";
 import { request, requestUpload } from "../api/request";
 import { DEFAULT_PALETTE } from "../styles/themePalettes";
 import { useTheme } from "./ThemeContext";
+import { appPathname, publicUrl } from "../utils/publicUrl";
 
 export interface Branding {
   name: { zh: string; en: string };
@@ -52,6 +53,23 @@ const FALLBACK: Branding = {
 };
 
 const BrandingContext = createContext<Branding>(FALLBACK);
+
+function publicBrandingUrls(brand: Branding): Branding {
+  const logos = { ...brand.logos };
+  for (const slot of Object.keys(logos) as (keyof Branding["logos"])[]) {
+    logos[slot] = publicUrl(logos[slot]);
+  }
+  return { ...brand, logos };
+}
+
+function apiBrandingUrls(brand: Partial<Branding>): Partial<Branding> {
+  if (!brand.logos) return brand;
+  const logos = { ...brand.logos };
+  for (const slot of Object.keys(logos) as (keyof Branding["logos"])[]) {
+    logos[slot] = appPathname(logos[slot]);
+  }
+  return { ...brand, logos };
+}
 
 function applyBranding(brand: Branding, applyAccent: boolean) {
   document.title =
@@ -101,7 +119,8 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     let live = true;
     const load = () => {
-      void request<Branding>("/branding", { cache: "no-store" })
+      void brandingApi
+        .get()
         .then((value) => {
           if (live) setBrand(value);
         })
@@ -129,16 +148,26 @@ export function useBranding(): Branding {
 }
 
 export const brandingApi = {
-  get: () => request<Branding>("/branding", { cache: "no-store" }),
+  get: () =>
+    request<Branding>("/branding", { cache: "no-store" }).then(
+      publicBrandingUrls,
+    ),
   put: (body: Partial<Branding>) =>
     request<Branding>("/branding", {
       method: "PUT",
-      body: JSON.stringify(body),
-    }),
-  reset: () => request<Branding>("/branding", { method: "DELETE" }),
+      body: JSON.stringify(apiBrandingUrls(body)),
+    }).then(publicBrandingUrls),
+  reset: () =>
+    request<Branding>("/branding", { method: "DELETE" }).then(
+      publicBrandingUrls,
+    ),
   uploadLogo: async (slot: keyof Branding["logos"], file: File) => {
     const body = new FormData();
     body.append("file", file);
-    return requestUpload<{ url: string }>(`/branding/logo/${slot}`, body);
+    const result = await requestUpload<{ url: string }>(
+      `/branding/logo/${slot}`,
+      body,
+    );
+    return { url: publicUrl(result.url) };
   },
 };

@@ -3,8 +3,48 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
+from octop.infra.knowledge import cad_preview
 from octop.infra.knowledge.processors.libredwg import _parsed_json
+
+
+def test_cad_preview_does_not_reuse_previous_content_output(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "home"))
+    script = tmp_path / "dwg_preview.py"
+    script.write_text("# fake converter", encoding="utf-8")
+    monkeypatch.setenv("OCTOP_DWG_PREVIEW_SCRIPT", str(script))
+    first_drawing = tmp_path / "first.dwg"
+    second_drawing = tmp_path / "second.dwg"
+    first_drawing.write_bytes(b"revision one")
+    second_drawing.write_bytes(b"revision two")
+
+    def run_converter(args, **_kwargs):
+        original, output_dir = Path(args[2]), Path(args[3])
+        output_name = "a-old.png" if original == first_drawing else "z-new.png"
+        (output_dir / output_name).write_bytes(
+            b"old preview" if original == first_drawing else b"new preview"
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(cad_preview.subprocess, "run", run_converter)
+    first = cad_preview.render_preview(
+        kb_id="kb",
+        doc_id="drawing",
+        original=first_drawing,
+        content_hash="1" * 64,
+        filename="drawing.dwg",
+    )
+    second = cad_preview.render_preview(
+        kb_id="kb",
+        doc_id="drawing",
+        original=second_drawing,
+        content_hash="2" * 64,
+        filename="drawing.dwg",
+    )
+
+    assert first.read_bytes() == b"old preview"
+    assert second.read_bytes() == b"new preview"
 
 
 def test_libredwg_json_extracts_text_and_resolves_real_handle_references() -> None:
@@ -18,7 +58,7 @@ def test_libredwg_json_extracts_text_and_resolves_real_handle_references() -> No
                     "layer": [5, 1, 16, 16],
                     "entmode": 2,
                     "ins_pt": [974.3, 2831.8],
-                    "text_value": "锻造工艺卡",
+                    "text_value": "示例标注",
                 },
                 {
                     "entity": "MTEXT",
@@ -44,7 +84,7 @@ def test_libredwg_json_extracts_text_and_resolves_real_handle_references() -> No
         "engineering/plan.dwg",
     )
 
-    assert parsed.text == "锻造工艺卡\nØ705±5\n(Ø673)"
+    assert parsed.text == "示例标注\nØ705±5\n(Ø673)"
     assert parsed.filename == "plan.dwg"
     assert parsed.source_path == "engineering/plan.dwg"
     assert parsed.sections == ("Model",)
@@ -97,10 +137,10 @@ def test_dxf_mtext_joins_leading_chunks_before_final_chunk(tmp_path: Path) -> No
     path = tmp_path / "notes.dxf"
     path.write_text(
         "0\nSECTION\n2\nENTITIES\n0\nMTEXT\n8\nNOTES\n"
-        "3\n锻造工序：\n3\n预热\\P\n1\n终检\\U+00B1公差\n0\nENDSEC\n0\nEOF\n",
+        "3\n说明：\n3\n段落一\\P\n1\n段落二\\U+00B1公差\n0\nENDSEC\n0\nEOF\n",
         encoding="utf-8",
     )
     parsed = parse_dxf(path, source_path="notes.dxf")
 
-    assert parsed.text == "锻造工序：预热\n终检±公差"
+    assert parsed.text == "说明：段落一\n段落二±公差"
     assert parsed.blocks[0].locator["layer"] == "NOTES"

@@ -416,7 +416,28 @@ function getOrCreate(sessionId: string): SessionStreamState {
   return state;
 }
 
-function notify(state: SessionStreamState) {
+const _pendingPaints = new WeakMap<
+  SessionStreamState,
+  ReturnType<typeof setTimeout>
+>();
+
+function notify(state: SessionStreamState, deferPaint = false) {
+  if (deferPaint) {
+    if (_pendingPaints.has(state)) return;
+    _pendingPaints.set(
+      state,
+      setTimeout(() => {
+        _pendingPaints.delete(state);
+        notify(state);
+      }, 50),
+    );
+    return;
+  }
+  const pendingPaint = _pendingPaints.get(state);
+  if (pendingPaint !== undefined) {
+    clearTimeout(pendingPaint);
+    _pendingPaints.delete(state);
+  }
   // Rebuild the snapshot reference so useSyncExternalStore sees the change.
   state._snapshot = buildSnapshot(state);
   for (const fn of state.listeners) {
@@ -651,6 +672,16 @@ export function setMessages(sessionId: string, messages: ChatMessage[]) {
 
 /** Replace an initial history page without discarding messages received in flight. */
 
+function turnIdsByMessage(messages: ChatMessage[]): Map<ChatMessage, string> {
+  const turnIds = new Map<ChatMessage, string>();
+  let currentUserTurnId: string | null = null;
+  for (const message of messages) {
+    if (message.role === "user") currentUserTurnId = message.id;
+    if (currentUserTurnId) turnIds.set(message, currentUserTurnId);
+  }
+  return turnIds;
+}
+
 export function captureHistoryBaseline(
   sessionId: string,
 ): ReadonlyMap<string, string> {
@@ -669,6 +700,7 @@ export function setHistoryPage(
     nextOffset: number;
     nextCursor?: string | null;
     baseline?: ReadonlyMap<string, string>;
+    turnActive?: boolean;
   },
 ) {
   const state = getOrCreate(sessionId);
@@ -681,9 +713,25 @@ export function setHistoryPage(
       baselineValue === undefined || baselineValue !== JSON.stringify(message)
     );
   };
-  const liveTail = state.messages.filter(
-    (message) => !loadedIds.has(message.id) && changedSinceBaseline(message),
+  const stateTurnIds = turnIdsByMessage(state.messages);
+  const historyAssistantTurns = new Set(
+    [...turnIdsByMessage(messages)].flatMap(([message, turnId]) =>
+      message.role === "assistant" ? [turnId] : [],
+    ),
   );
+  const liveTail = state.messages.filter((message) => {
+    if (loadedIds.has(message.id) || !changedSinceBaseline(message))
+      return false;
+    const turnId = stateTurnIds.get(message);
+    // Replace a completed local turn with the persisted version by stable
+    // user-message identity, never by equal text (which can recur).
+    return !(
+      (!state.isStreaming || opts.turnActive === false) &&
+      (message.status !== "streaming" || opts.turnActive === false) &&
+      turnId &&
+      historyAssistantTurns.has(turnId)
+    );
+  });
   const liveUpdates = new Map(
     state.messages
       .filter(
@@ -1247,7 +1295,7 @@ function handleHarnessChunk(
       };
     }
   }
-  notify(state);
+  notify(state, chunk.type === "token" || chunk.type === "reasoning");
 }
 
 /** Seal all streaming assistants before opening a new bubble (avoids multi-caret). */
@@ -2071,6 +2119,7 @@ async function sendTurnWebSocket(
   reasoningEffort?: string | null,
   featureRun?: FeatureRunPayload,
   conversationMode?: "ask" | "plan" | "craft",
+  userMessageId?: string,
 ): Promise<boolean> {
   const state = getOrCreate(sessionId);
   const resolvedThreadId = (threadId || sessionId).trim();
@@ -2128,8 +2177,10 @@ async function sendTurnWebSocket(
           {
             role: "user",
             content: messageContent,
+            id: userMessageId,
           },
         ],
+        user_message_id: userMessageId,
       };
       if (threadId) payload.thread_id = threadId;
       if (modelRef) payload.model = modelRef;
@@ -2280,6 +2331,7 @@ export async function sendTurn(
   reasoningEffort?: string | null,
   featureRun?: FeatureRunPayload,
   conversationMode?: "ask" | "plan" | "craft",
+  userMessageId?: string,
 ): Promise<void> {
   const state = getOrCreate(sessionId);
 
@@ -2353,6 +2405,7 @@ export async function sendTurn(
     reasoningEffort,
     featureRun,
     conversationMode,
+    userMessageId,
   );
   if (!wsOk) {
     state.messages = [

@@ -8,7 +8,7 @@ from typing import Any
 
 from octop.infra.backend.resolver import backend_spec_supports_execution
 
-# Tools that must remain available; ignored if present in ``tools_disabled``.
+# Ignored by the Agent denylist; caller capability permissions still apply.
 CRITICAL_TOOLS: frozenset[str] = frozenset(
     {
         "ls",
@@ -25,8 +25,10 @@ _WEB_SEARCH_TOOLS: frozenset[str] = frozenset(
     {
         "tavily_search",
         "brave_search",
+        "deepseek_search",
         "google_search",
         "kimi_search",
+        "yuanbao_search",
         "searchfree_search",
     }
 )
@@ -57,6 +59,7 @@ BUILTIN_TOOL_CATALOG: tuple[BuiltinToolEntry, ...] = (
     BuiltinToolEntry("read_file", "filesystem"),
     BuiltinToolEntry("write_file", "filesystem"),
     BuiltinToolEntry("edit_file", "filesystem"),
+    BuiltinToolEntry("delete", "filesystem"),
     BuiltinToolEntry("glob", "filesystem"),
     BuiltinToolEntry("grep", "filesystem"),
     BuiltinToolEntry("execute", "filesystem"),
@@ -73,8 +76,10 @@ BUILTIN_TOOL_CATALOG: tuple[BuiltinToolEntry, ...] = (
     BuiltinToolEntry("ask_user_question", "interaction"),
     BuiltinToolEntry("tavily_search", "web"),
     BuiltinToolEntry("brave_search", "web"),
+    BuiltinToolEntry("deepseek_search", "web"),
     BuiltinToolEntry("google_search", "web"),
     BuiltinToolEntry("kimi_search", "web"),
+    BuiltinToolEntry("yuanbao_search", "web"),
     BuiltinToolEntry("searchfree_search", "web"),
     BuiltinToolEntry("generate_image", "media"),
     BuiltinToolEntry("generate_video", "media"),
@@ -230,6 +235,57 @@ def builtin_tool_available(
     return True
 
 
+def required_permission_for_tool(name: str) -> str | None:
+    """Return the capability module for a registered built-in tool."""
+    if name in _MOBILE_TOOLS:
+        return "mobile"
+    if name in _WEB_SEARCH_TOOLS:
+        return "browser"
+    if name in {
+        "ls",
+        "read_file",
+        "write_file",
+        "edit_file",
+        "delete",
+        "glob",
+        "grep",
+        "send_file_to_user",
+        "read_env_file",
+        "write_env_file",
+    }:
+        return "workspace"
+    return {
+        "execute": "terminal",
+        "bash": "terminal",
+        "browser_use": "browser",
+        "web_fetch": "browser",
+        "desktop_screenshot": "desktop",
+        "acp_runner": "acp",
+        "archive_extract": "workspace",
+        "browse_knowledge": "knowledge_bases",
+        "read_knowledge_collection": "knowledge_bases",
+        "read_knowledge_document": "knowledge_bases",
+        "export_knowledge_original": "knowledge_bases",
+        "search_knowledge_paths": "knowledge_bases",
+        "record_knowledge_observation": "knowledge_bases",
+        "install_market_skill": "skills",
+        "feature_create": "features",
+        "feature_workflow_get": "features",
+        "feature_workflow_save": "features",
+        "feature_workflow_change": "features",
+        "feature_workflow_revert": "features",
+        "feature_workflow_runs": "features",
+        "feature_data_schema": "features",
+        "feature_data_list": "features",
+        "feature_data_get": "features",
+        "feature_data_create": "features",
+        "feature_data_update": "features",
+        "feature_data_history": "features",
+        "extract_rules_get": "features",
+        "extract_rules_set": "features",
+    }.get(name)
+
+
 __all__ = [
     "BUILTIN_TOOL_CATALOG",
     "BuiltinToolEntry",
@@ -240,5 +296,6 @@ __all__ = [
     "normalize_tools_disabled",
     "plugin_tool_explicitly_disabled",
     "plugin_tools_disabled_names",
+    "required_permission_for_tool",
     "tools_disabled_set",
 ]

@@ -504,6 +504,7 @@ export function ChannelDrawer({
   const [configMode, setConfigMode] = useState<"quick" | "manual">("quick");
   const [qrState, setQrState] = useState<QrPhase>({ phase: "idle" });
   const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const qrSessionRef = useRef(0);
   const autoSaveTriggeredRef = useRef(false);
   const [autoSaveFailed, setAutoSaveFailed] = useState(false);
 
@@ -518,11 +519,15 @@ export function ChannelDrawer({
   const restoringDraftRef = useRef(false);
 
   const stopPolling = useCallback(() => {
+    // Invalidate pending generation and poll requests as well as the timer.
+    qrSessionRef.current += 1;
     if (pollTimerRef.current) {
       clearInterval(pollTimerRef.current);
       pollTimerRef.current = null;
     }
   }, []);
+
+  useEffect(() => stopPolling, [stopPolling]);
 
   const resetQr = useCallback(() => {
     stopPolling();
@@ -563,23 +568,26 @@ export function ChannelDrawer({
     resetQr();
   }, [open, selectedKind, resetQr]);
 
-  // Restore session draft after server/default values are applied.
+  // Restore only a draft owned by the current kind, after initial values settle.
   useEffect(() => {
     if (!open || loadingConfig || !draftScope) return;
+    if (form.getFieldValue("kind") !== selectedKind) return;
     const draft = loadFormDraft<ChannelFormValues>(draftScope);
-    if (!draft) return;
+    if (!draft || (draft.kind && draft.kind !== selectedKind)) return;
     restoringDraftRef.current = true;
     form.setFieldsValue(draft);
     if (draft.kind) setSelectedKind(draft.kind);
     restoringDraftRef.current = false;
-  }, [open, loadingConfig, draftScope, form]);
+  }, [open, loadingConfig, draftScope, form, selectedKind]);
 
   // ── QQ Bot Flow ────────────────────────────────────────────────────────
   const startQqQr = async () => {
     stopPolling();
+    const session = qrSessionRef.current;
     setQrState({ phase: "loading" });
     try {
       const res = await channelApi.qqQrcodeGenerate(agentId);
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "qq_ready",
         qrcodeUrl: res.qrcode_url,
@@ -588,6 +596,7 @@ export function ChannelDrawer({
       const timer = setInterval(async () => {
         try {
           const poll = await channelApi.qqQrcodePoll(agentId, res.qrcode_token);
+          if (session !== qrSessionRef.current) return;
           if (poll.status === "success" && poll.app_id && poll.secret) {
             stopPolling();
             setQrState({
@@ -608,6 +617,7 @@ export function ChannelDrawer({
       }, 2000);
       pollTimerRef.current = timer;
     } catch (e: unknown) {
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "error",
         reason: e instanceof Error ? e.message : String(e),
@@ -618,9 +628,11 @@ export function ChannelDrawer({
   // ── WeCom Flow ─────────────────────────────────────────────────────────
   const startWecomQr = async () => {
     stopPolling();
+    const session = qrSessionRef.current;
     setQrState({ phase: "loading" });
     try {
       const res = await channelApi.wecomQrcodeGenerate(agentId);
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "wecom_ready",
         authUrl: res.auth_url,
@@ -629,6 +641,7 @@ export function ChannelDrawer({
       const timer = setInterval(async () => {
         try {
           const poll = await channelApi.wecomQrcodePoll(agentId, res.scode);
+          if (session !== qrSessionRef.current) return;
           if (poll.status === "success" && poll.bot_id && poll.secret) {
             stopPolling();
             setQrState({
@@ -649,6 +662,7 @@ export function ChannelDrawer({
       }, 2000);
       pollTimerRef.current = timer;
     } catch (e: unknown) {
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "error",
         reason: e instanceof Error ? e.message : String(e),
@@ -659,9 +673,11 @@ export function ChannelDrawer({
   // ── WeChat Flow ─────────────────────────────────────────────────────────
   const startWeixinQr = async () => {
     stopPolling();
+    const session = qrSessionRef.current;
     setQrState({ phase: "loading" });
     try {
       const res = await channelApi.weixinQrcodeGenerate(agentId);
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "weixin_ready",
         qrcodeUrl: res.qrcode_url,
@@ -673,6 +689,7 @@ export function ChannelDrawer({
             agentId,
             res.qrcode_token,
           );
+          if (session !== qrSessionRef.current) return;
           if (poll.status === "success" && poll.token) {
             stopPolling();
             setQrState({
@@ -694,6 +711,7 @@ export function ChannelDrawer({
       }, 3000);
       pollTimerRef.current = timer;
     } catch (e: unknown) {
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "error",
         reason: e instanceof Error ? e.message : String(e),
@@ -704,9 +722,11 @@ export function ChannelDrawer({
   // ── DingTalk Flow ───────────────────────────────────────────────────────
   const startDingtalkQr = async () => {
     stopPolling();
+    const session = qrSessionRef.current;
     setQrState({ phase: "loading" });
     try {
       const res = await channelApi.dingtalkQrcodeGenerate(agentId);
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "dingtalk_ready",
         qrcodeUrl: res.qrcode_url,
@@ -722,6 +742,7 @@ export function ChannelDrawer({
               agentId,
               res.registration_id,
             );
+            if (session !== qrSessionRef.current) return;
             if (poll.status === "success" && poll.channel_id) {
               stopPolling();
               setQrState({
@@ -750,6 +771,7 @@ export function ChannelDrawer({
       );
       pollTimerRef.current = timer;
     } catch (e: unknown) {
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "error",
         reason: e instanceof Error ? e.message : String(e),
@@ -760,13 +782,16 @@ export function ChannelDrawer({
   // ── Feishu Flow ─────────────────────────────────────────────────────────
   const startFeishuCreator = async (platform: "feishu" | "lark" = "feishu") => {
     stopPolling();
+    const session = qrSessionRef.current;
     setQrState({
       phase: "feishu_creating",
       message: t("channels.feishuCreating"),
     });
     try {
       await channelApi.feishuBotCreatorStart(agentId, { platform });
+      if (session !== qrSessionRef.current) return;
     } catch (e: unknown) {
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "error",
         reason: e instanceof Error ? e.message : String(e),
@@ -776,6 +801,7 @@ export function ChannelDrawer({
     const timer = setInterval(async () => {
       try {
         const poll = await channelApi.feishuBotCreatorPoll(agentId);
+        if (session !== qrSessionRef.current) return;
         if (poll.qr_url) {
           setQrState((prev) =>
             prev.phase === "feishu_progress" || prev.phase === "feishu_done"
@@ -816,13 +842,16 @@ export function ChannelDrawer({
   // ── YuanBao Flow ────────────────────────────────────────────────────────
   const startYuanbaoCreator = async () => {
     stopPolling();
+    const session = qrSessionRef.current;
     setQrState({
       phase: "yuanbao_creating",
       message: t("channels.yuanbaoStarting"),
     });
     try {
       await channelApi.yuanbaoBotCreatorStart(agentId, {});
+      if (session !== qrSessionRef.current) return;
     } catch (e: unknown) {
+      if (session !== qrSessionRef.current) return;
       setQrState({
         phase: "error",
         reason: e instanceof Error ? e.message : String(e),
@@ -832,6 +861,7 @@ export function ChannelDrawer({
     const timer = setInterval(async () => {
       try {
         const poll = await channelApi.yuanbaoBotCreatorPoll(agentId);
+        if (session !== qrSessionRef.current) return;
         if (poll.scan_code) {
           setQrState({
             phase: "yuanbao_scan",
@@ -876,8 +906,8 @@ export function ChannelDrawer({
     if (!open || isEdit || loadingConfig) return;
     if (configMode !== "quick" && selectedKind !== "weixin") return;
     if (qrState.phase !== "idle") return;
-    // Wait until local kind matches the card that opened the drawer.
-    if (initialValues?.kind && selectedKind !== initialValues.kind) return;
+    // Wait for open-time kind sync, while allowing later manual switches.
+    if (selectedKind !== form.getFieldValue("kind")) return;
 
     switch (selectedKind) {
       case "qq":
@@ -911,6 +941,7 @@ export function ChannelDrawer({
     selectedKind,
     qrState.phase,
     initialValues?.kind,
+    form,
   ]);
 
   // ── Form ────────────────────────────────────────────────────────────────
@@ -978,7 +1009,7 @@ export function ChannelDrawer({
 
   // Auto-save when QR quick-config completes — channel is usable immediately.
   useEffect(() => {
-    if (isEdit || saving || autoSaveTriggeredRef.current) return;
+    if (!open || isEdit || saving || autoSaveTriggeredRef.current) return;
 
     const s = qrState;
     let payload: {
@@ -1068,6 +1099,7 @@ export function ChannelDrawer({
       },
     );
   }, [
+    open,
     qrState,
     isEdit,
     saving,
@@ -1123,7 +1155,7 @@ export function ChannelDrawer({
   };
 
   const handleClose = () => {
-    stopPolling();
+    resetQr();
     if (selectedKind === "feishu")
       void channelApi.feishuBotCreatorStop(agentId).catch(() => {});
     if (selectedKind === "yuanbao")
@@ -1785,7 +1817,14 @@ export function ChannelDrawer({
           initialValues={initialValues}
           onFinish={handleFinish}
           onValuesChange={(changed, all) => {
-            if (changed.kind) setSelectedKind(changed.kind as ChannelKey);
+            if (changed.kind) {
+              const nextKind = changed.kind as ChannelKey;
+              resetQr();
+              form.resetFields();
+              form.setFieldValue("kind", nextKind);
+              setSelectedKind(nextKind);
+              return;
+            }
             if (!restoringDraftRef.current && draftScope) {
               const draft = { ...(all as Record<string, unknown>) };
               delete draft.__discord_existing_bot_token;
@@ -1799,7 +1838,10 @@ export function ChannelDrawer({
               className={styles.configModeSwitch}
               block
               value={configMode}
-              onChange={(v) => setConfigMode(v as "quick" | "manual")}
+              onChange={(v) => {
+                resetQr();
+                setConfigMode(v as "quick" | "manual");
+              }}
               options={[
                 { label: t("channels.quickConfig"), value: "quick" },
                 { label: t("channels.manualConfig"), value: "manual" },

@@ -417,7 +417,9 @@ export default function DocumentPreviewCore({
 
         if (kind === "dwg") {
           const pngBlob =
-            blob.type === "image/png" ? blob : new Blob([blob], { type: "image/png" });
+            blob.type === "image/png"
+              ? blob
+              : new Blob([blob], { type: "image/png" });
           const objUrl = URL.createObjectURL(pngBlob);
           objectUrlRef.current = objUrl;
           setSrc(objUrl);

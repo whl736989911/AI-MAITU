@@ -6,12 +6,14 @@ decrypted credential it was built with. An agent somebody else is allowed to use
 therefore cannot serve the tools its owner loaded — that was the leak this test
 locks down: the peer's turn ran with the owner's account.
 
-The probe HTTP MCP tool reports the credential in its request headers, so the
-answer to ``probe_whoami`` identifies the account the call used.
+The controlled HTTP MCP transport exposes a private report selected by the
+credential; a turn must not read the other account's report.
 """
 
 from __future__ import annotations
 
+import asyncio
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -47,7 +49,7 @@ def _text(result: Any) -> str:
 
 
 async def _call(tool: Any) -> str:
-    """Invoke a no-argument MCP tool and read back the credential it reports."""
+    """Read the private report available to the loaded MCP account."""
     return _text(await tool.ainvoke({}))
 
 
@@ -56,11 +58,6 @@ def _tool_named(tools: list[Any], name: str) -> Any:
         if getattr(tool, "name", "") == name:
             return tool
     raise AssertionError(f"no {name!r} tool in {[getattr(t, 'name', t) for t in tools]}")
-
-
-def _agent_tools(srv: Any, agent_id: str) -> list[Any]:
-    """The tools the agent itself holds (what its owner's turns run with)."""
-    return list(getattr(srv.app_runtime.agent_registry.get_agent(agent_id), "_mcp_tools", []))
 
 
 async def _save_probe(client: httpx.AsyncClient, auth: dict[str, str], token: str) -> None:
@@ -72,27 +69,34 @@ async def _save_probe(client: httpx.AsyncClient, auth: dict[str, str], token: st
     assert response.status_code == 200, response.text
 
 
-async def test_shared_agent_serves_the_callers_own_mcp_connector(env, monkeypatch) -> None:
+async def test_shared_agent_serves_the_callers_own_mcp_connector(
+    env, monkeypatch, tmp_path: Path
+) -> None:
     """The peer's turn resolves the peer's connector — never the owner's."""
     from langchain_core.tools import StructuredTool
 
+    owner_report = tmp_path / "owner-private.txt"
+    peer_report = tmp_path / "peer-private.txt"
+    await asyncio.to_thread(owner_report.write_text, "Owner-only report", encoding="utf-8")
+    await asyncio.to_thread(peer_report.write_text, "Peer-only report", encoding="utf-8")
+    reports = {OWNER_TOKEN: owner_report, PEER_TOKEN: peer_report}
+
+    def _private_tool(server_name: str, report: Path) -> StructuredTool:
+        def read_report() -> str:
+            """Read the private report available to this connector account."""
+            return report.read_text(encoding="utf-8")
+
+        return StructuredTool.from_function(
+            read_report,
+            name=f"{server_name}_read_report",
+            description="Read this connector account's private report.",
+        )
+
     async def _load_http_tools(configs: dict[str, dict[str, Any]]) -> list[Any]:
-        tools = []
-        for server_name, spec in configs.items():
-            assert spec["transport"] == "streamable_http"
-            token = spec["headers"]["X-Probe-Token"]
-
-            async def _whoami(token: str = token) -> str:
-                return f"token={token}"
-
-            tools.append(
-                StructuredTool.from_function(
-                    coroutine=_whoami,
-                    name=f"{server_name}_whoami",
-                    description="Return the credential associated with this HTTP MCP server.",
-                )
-            )
-        return tools
+        return [
+            _private_tool(server_name, reports[spec["headers"]["X-Probe-Token"]])
+            for server_name, spec in configs.items()
+        ]
 
     monkeypatch.setattr("harness_agent.mcp.aload_mcp_tools", _load_http_tools)
     client, srv, admin_auth = env
@@ -112,7 +116,7 @@ async def test_shared_agent_serves_the_callers_own_mcp_connector(env, monkeypatc
     )
     assert shared.status_code == 200, shared.text
 
-    # The owner's own turn: her credential is on the agent, as it always was.
+    # The owner's turn uses only the report available to the owner's credential.
     frames = await ws_chat_turn(
         client,
         agent_id,
@@ -121,12 +125,9 @@ async def test_shared_agent_serves_the_callers_own_mcp_connector(env, monkeypatc
         text="owner turn",
     )
     assert all(frame.get("type") != "error" for frame in frames), frames
-    assert await _call(_tool_named(_agent_tools(srv, agent_id), "probe_whoami")) == (
-        f"token={OWNER_TOKEN}"
-    )
-    # The owner's own turns are unchanged: her tools sit on the agent, and the
-    # turn-scoped registry is only ever involved when somebody else runs it.
-    assert srv.app_runtime.agent_registry.turn_mcp_tools(agent_id, owner_id, ["probe"]) == {}
+    registry = srv.app_runtime.agent_registry
+    owner_tools = registry.turn_mcp_tools(agent_id, owner_id, ["probe"])["probe"]
+    assert await _call(_tool_named(owner_tools, "probe_read_report")) == "Owner-only report"
 
     # The peer's turn on that same agent: the tools it resolves are its own.
     frames = await ws_chat_turn(
@@ -138,14 +139,9 @@ async def test_shared_agent_serves_the_callers_own_mcp_connector(env, monkeypatc
     )
     assert all(frame.get("type") != "error" for frame in frames), frames
 
-    registry = srv.app_runtime.agent_registry
     peer_tools = registry.turn_mcp_tools(agent_id, peer_id, ["probe"])["probe"]
-    assert await _call(_tool_named(peer_tools, "probe_whoami")) == f"token={PEER_TOKEN}"
+    assert await _call(_tool_named(peer_tools, "probe_read_report")) == "Peer-only report"
 
-    # ... and every tool the agent holds still belongs to its owner, because
-    # nothing of the peer's may be loaded onto an agent others also run.
-    owner_tools = _agent_tools(srv, agent_id)
-    assert owner_tools, "the owner's turn left no tools on her own agent"
-    assert [await _call(tool) for tool in owner_tools] == [f"token={OWNER_TOKEN}"] * len(
-        owner_tools
-    )
+    # Preparing a peer's turn must not replace the owner's account binding.
+    owner_after_peer = registry.turn_mcp_tools(agent_id, owner_id, ["probe"])["probe"]
+    assert await _call(_tool_named(owner_after_peer, "probe_read_report")) == "Owner-only report"

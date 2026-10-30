@@ -14,6 +14,7 @@ under test is which of those two calls the gateway makes, and when.
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -26,6 +27,7 @@ from harness_gateway.models import (
     TextContent,
 )
 
+from octop.api.routers.org_units import OrgUnitPermissionsBody, set_org_unit_permissions
 from octop.config import OctopConfig
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
@@ -209,6 +211,54 @@ async def test_a_department_grant_keeps_the_channel_running(tmp_path: Path) -> N
     gw._repos.org_unit_repo.set_grants("root", [])
 
     assert gw.channel_refusal(_row(gw)) is not None
+
+
+@pytest.mark.asyncio
+async def test_secondary_department_grant_starts_channel(tmp_path: Path) -> None:
+    gw, owner_id = _gateway(tmp_path, owner_permissions=["channels"])
+    units = gw._repos.org_unit_repo
+    units.create(key="primary", label_zh="主部门", label_en="Primary")
+    units.create(key="secondary", label_zh="其他部门", label_en="Secondary")
+    gw._repos.user_repo.set_units(owner_id, ["primary", "secondary"])
+    units.set_grants("secondary", ["channel_feishu"])
+
+    await gw._start_channel(_row(gw))
+
+    assert _CHANNEL in _manager(gw).live
+    assert gw.channel_refusal(_row(gw)) is None
+
+
+@pytest.mark.asyncio
+async def test_secondary_department_grant_changes_update_live_channels(tmp_path: Path) -> None:
+    gw, owner_id = _gateway(tmp_path, owner_permissions=["channels", "channel_feishu"])
+    units = gw._repos.org_unit_repo
+    units.create(key="primary", label_zh="主部门", label_en="Primary")
+    units.create(key="secondary", label_zh="其他部门", label_en="Secondary")
+    units.create(key="child", label_zh="子部门", label_en="Child", parent_key="secondary")
+    gw._repos.user_repo.set_units(owner_id, ["primary", "child"])
+    units.set_grants("secondary", ["channel_feishu"])
+    await gw._start_channel(_row(gw))
+    assert _CHANNEL in _manager(gw).live
+    gw._repos.user_repo.set_permissions(owner_id, ["channels"])
+    server = SimpleNamespace(
+        services=SimpleNamespace(repos=gw._repos),
+        app_runtime=SimpleNamespace(gateway=gw),
+    )
+    admin = SimpleNamespace(id=999, is_admin=True)
+
+    await set_org_unit_permissions(
+        "secondary", OrgUnitPermissionsBody(permissions=[]), actor=admin, server=server
+    )
+    assert _CHANNEL not in _manager(gw).live
+    assert gw.get_runtime_status(_CHANNEL).reason == "permission"
+
+    await set_org_unit_permissions(
+        "secondary",
+        OrgUnitPermissionsBody(permissions=["channel_feishu"]),
+        actor=admin,
+        server=server,
+    )
+    assert _CHANNEL in _manager(gw).live
 
 
 @pytest.mark.asyncio

@@ -3,16 +3,24 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterator
+from pathlib import Path
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.tools import BaseTool, StructuredTool
 
+from octop.config import OctopConfig
+from octop.infra.agents.manager import AgentManager
 from octop.infra.connectors.mcp_tool_cache import (
     fingerprint_mcp_spec,
     wrap_tools_for_shared_use,
 )
+from octop.infra.db.migrate import run_migrations
+from octop.infra.db.pool import SqlitePool
+from octop.infra.db.services import build_shared_services
+from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.utils.paths import PathLayout
 
 
 def test_fingerprint_stable_and_ignores_enabled() -> None:
@@ -74,194 +82,154 @@ async def test_wrap_tools_serialize_ainvoke() -> None:
     assert order == ["start", "end", "start", "end"]
 
 
-@pytest.mark.asyncio
-async def test_get_or_load_caches_and_reuses() -> None:
-    from octop.infra.agents.manager import AgentManager
-
-    mgr = object.__new__(AgentManager)
-    mgr._mcp_tool_cache = {}
-    mgr._mcp_tool_cache_locks = {}
-    mgr._mcp_tool_cache_guard = asyncio.Lock()
-    mgr._paths = MagicMock(root=MagicMock())
-
-    fake = MagicMock()
-    fake.name = "s_tool1"
-    fake.description = "t"
-    fake.args_schema = None
-    fake.metadata = None
-    fake.ainvoke = AsyncMock(return_value="ok")
-    aload = AsyncMock(return_value=[fake])
-
-    spec = {"transport": "streamable_http", "url": "https://mcp.example.com/mcp"}
-    with patch("harness_agent.mcp.aload_mcp_tools", aload):
-        first = await mgr._get_or_load_mcp_tools(1, "s", spec)
-        second = await mgr._get_or_load_mcp_tools(1, "s", spec)
-
-    assert aload.await_count == 1
-    assert first is second
-    assert isinstance(first[0], StructuredTool)
-    assert first[0].name == "s_tool1"
+@pytest.fixture
+def mcp_manager(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[AgentManager]:
+    paths = PathLayout(tmp_path / ".octop")
+    paths.ensure_root()
+    monkeypatch.setenv("OCTOP_HOME", str(paths.root))
+    monkeypatch.setattr("octop.infra.users.permissions.license_managed_install", lambda: False)
+    pool = SqlitePool(paths.db)
+    run_migrations(pool)
+    services = build_shared_services(db=pool, paths=paths, config=OctopConfig())
+    try:
+        yield AgentManager(repos=services.repos, paths=paths)
+    finally:
+        pool.close()
 
 
-@pytest.mark.asyncio
-async def test_get_or_load_misses_on_fingerprint_change() -> None:
-    from octop.infra.agents.manager import AgentManager
+def _spec(token: str) -> dict[str, Any]:
+    return {
+        "transport": "streamable_http",
+        "url": "https://mcp.example.com/mcp",
+        "headers": {"Authorization": token},
+    }
 
-    mgr = object.__new__(AgentManager)
-    mgr._mcp_tool_cache = {}
-    mgr._mcp_tool_cache_locks = {}
-    mgr._mcp_tool_cache_guard = asyncio.Lock()
-    mgr._paths = MagicMock(root=MagicMock())
 
-    def _tool(name: str) -> MagicMock:
-        t = MagicMock()
-        t.name = name
-        t.description = "t"
-        t.args_schema = None
-        t.metadata = None
-        t.ainvoke = AsyncMock(return_value="ok")
-        return t
+def _install_document_transport(
+    monkeypatch: pytest.MonkeyPatch, documents: dict[str, Path]
+) -> None:
+    async def load(configs: dict[str, Any]) -> list[StructuredTool]:
+        spec = next(iter(configs.values()))
+        document = documents[spec["headers"]["Authorization"]]
 
-    aload = AsyncMock(side_effect=[[_tool("s_a")], [_tool("s_b")]])
+        def read_document() -> str:
+            """Read the private document accessible to this credential."""
+            return document.read_text(encoding="utf-8")
 
-    with patch("harness_agent.mcp.aload_mcp_tools", aload):
-        a = await mgr._get_or_load_mcp_tools(
-            1, "s", {"transport": "streamable_http", "url": "https://mcp.example.com/a"}
-        )
-        b = await mgr._get_or_load_mcp_tools(
-            1, "s", {"transport": "streamable_http", "url": "https://mcp.example.com/b"}
-        )
+        return [StructuredTool.from_function(read_document, name="shared_read_document")]
 
-    assert aload.await_count == 2
-    assert a[0].name == "s_a"
-    assert b[0].name == "s_b"
-    assert len(mgr._mcp_tool_cache) == 1
+    monkeypatch.setattr("harness_agent.mcp.aload_mcp_tools", load)
 
 
 @pytest.mark.asyncio
-async def test_prepare_chat_mcp_injects_custom_from_cache() -> None:
-    from octop.infra.agents.manager import AgentManager
+async def test_cached_mcp_access_is_rechecked_after_permission_revocation(
+    mcp_manager: AgentManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id = mcp_manager._repos.user_repo.create(
+        username="revoked", role="user", permissions=["connectors"]
+    )
+    document = tmp_path / "private.txt"
+    document.write_text("private document", encoding="utf-8")
+    _install_document_transport(monkeypatch, {"credential": document})
+    tools = await mcp_manager._get_or_load_mcp_tools(user_id, "shared", _spec("credential"))
+    assert await tools[0].ainvoke({}) == "private document"
+    mcp_manager._repos.user_repo.set_permissions(user_id, [])
 
-    mgr = object.__new__(AgentManager)
-    mgr._mcp_tool_cache = {}
-    mgr._mcp_tool_cache_locks = {}
-    mgr._mcp_tool_cache_guard = asyncio.Lock()
-    mgr._paths = MagicMock(root=MagicMock())
+    with pytest.raises(OctopError) as error:
+        await mcp_manager._get_or_load_mcp_tools(user_id, "shared", _spec("credential"))
 
-    tool = MagicMock()
-    tool.name = "deepwiki_ask"
-    tool.description = "ask"
-    tool.args_schema = None
-    tool.metadata = None
-    tool.ainvoke = AsyncMock(return_value="ok")
-    aload = AsyncMock(return_value=[tool])
+    assert error.value.code == ErrorCode.FORBIDDEN
 
-    agent = MagicMock()
-    agent._mcp_tool_name_set = frozenset()
-    agent.config.mcp_server_configs = {"deepwiki": {}}
-    agent.append_mcp_tools = MagicMock(
-        side_effect=lambda tools: setattr(
-            agent,
-            "_mcp_tool_name_set",
-            frozenset(getattr(t, "name", "") for t in tools) | frozenset(agent._mcp_tool_name_set),
-        )
+
+@pytest.mark.asyncio
+async def test_same_server_cache_isolates_users_and_rotated_credentials(
+    mcp_manager: AgentManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    users = [
+        mcp_manager._repos.user_repo.create(username=name, role="user", permissions=["connectors"])
+        for name in ("first", "second")
+    ]
+    documents: dict[str, Path] = {}
+    for token in ("first", "second", "rotated"):
+        documents[token] = tmp_path / f"{token}.txt"
+        documents[token].write_text(f"{token} private document", encoding="utf-8")
+    _install_document_transport(monkeypatch, documents)
+    first = await mcp_manager._get_or_load_mcp_tools(users[0], "shared", _spec("first"))
+    second = await mcp_manager._get_or_load_mcp_tools(users[1], "shared", _spec("second"))
+    assert await first[0].ainvoke({}) == "first private document"
+    assert await second[0].ainvoke({}) == "second private document"
+
+    rotated = await mcp_manager._get_or_load_mcp_tools(users[0], "shared", _spec("rotated"))
+    second = await mcp_manager._get_or_load_mcp_tools(users[1], "shared", _spec("second"))
+
+    assert await rotated[0].ainvoke({}) == "rotated private document"
+    assert await second[0].ainvoke({}) == "second private document"
+
+
+@pytest.mark.asyncio
+async def test_owner_and_guest_turns_use_only_their_own_credentials(
+    mcp_manager: AgentManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    users = [
+        mcp_manager._repos.user_repo.create(username=name, role="user", permissions=["connectors"])
+        for name in ("owner", "guest")
+    ]
+    mcp_manager._repos.agent_repo.create(agent_id="shared-agent", user_id=users[0], name="shared")
+    documents: dict[str, Path] = {}
+    for token in ("owner", "guest"):
+        documents[token] = tmp_path / f"{token}.txt"
+        documents[token].write_text(f"{token} private document", encoding="utf-8")
+    _install_document_transport(monkeypatch, documents)
+    monkeypatch.setattr(
+        mcp_manager._connector_svc,
+        "custom_harness_configs",
+        lambda user_id: {"shared": _spec("owner" if user_id == users[0] else "guest")},
     )
 
-    row = MagicMock()
-    row.user_id = 7
-    mgr.get_agent = MagicMock(return_value=agent)
-    mgr.get_row = MagicMock(return_value=row)
-    mgr._turn_mcp_tools = {}
-    mgr._connector_uid_for = MagicMock(return_value=7)
-    mgr._connector_svc = MagicMock()
-    mgr._connector_svc.custom_harness_configs.return_value = {
-        "deepwiki": {
-            "transport": "streamable_http",
-            "url": "https://mcp.deepwiki.com/mcp",
-            "headers": {"Accept": "application/json, text/event-stream"},
-        }
-    }
-    mgr.reload_connectors = AsyncMock()
+    for user_id in users:
+        assert (
+            await mcp_manager.prepare_chat_mcp(
+                "shared-agent", ["shared"], connector_user_id=user_id
+            )
+            == []
+        )
+    with pytest.raises(OctopError):
+        await mcp_manager.prepare_chat_mcp("shared-agent", ["shared"])
 
-    with patch("harness_agent.mcp.aload_mcp_tools", aload):
-        failed = await mgr.prepare_chat_mcp("A1", ["deepwiki"], connector_user_id=7)
-        failed2 = await mgr.prepare_chat_mcp("A1", ["deepwiki"], connector_user_id=7)
-
-    assert failed == []
-    assert failed2 == []
-    assert aload.await_count == 1
-    assert agent.append_mcp_tools.call_count == 1
-    mgr.reload_connectors.assert_not_awaited()
-    assert agent.config.mcp_server_configs["deepwiki"]["transport"] == "streamable_http"
-    injected = agent.append_mcp_tools.call_args.args[0]
-    assert isinstance(injected[0], StructuredTool)
+    owner_tools = mcp_manager.turn_mcp_tools("shared-agent", users[0], ["shared"])
+    guest_tools = mcp_manager.turn_mcp_tools("shared-agent", users[1], ["shared"])
+    assert await owner_tools["shared"][0].ainvoke({}) == "owner private document"
+    assert await guest_tools["shared"][0].ainvoke({}) == "guest private document"
 
 
 @pytest.mark.asyncio
-async def test_prepare_chat_mcp_attaches_gateway_tools_without_reload() -> None:
-    """Gateway connectors inject in-process; rebuilding would drop the runtime.
+async def test_cached_mcp_cannot_keep_grants_from_replaced_control_plane(
+    mcp_manager: AgentManager, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    user_id = mcp_manager._repos.user_repo.create(
+        username="original", role="user", permissions=["connectors"]
+    )
+    document = tmp_path / "private.txt"
+    document.write_text("original private document", encoding="utf-8")
+    _install_document_transport(monkeypatch, {"credential": document})
+    tools = await mcp_manager._get_or_load_mcp_tools(user_id, "shared", _spec("credential"))
+    assert await tools[0].ainvoke({}) == "original private document"
 
-    A rebuild ends in the very same injection, but first closes the harness
-    agent (and the checkpointer pool an in-flight turn still writes to) and
-    holds ``AgentManager._lock`` across workspace I/O.
-    """
-    from octop.infra.agents.manager import AgentManager
-    from octop.infra.connectors.builder import mcp_server_name
+    restored = SqlitePool(tmp_path / "restored.db")
+    try:
+        run_migrations(restored)
+        services = build_shared_services(
+            db=restored, paths=mcp_manager._paths, config=OctopConfig()
+        )
+        restored_id = services.repos.user_repo.create(
+            username="restored", role="user", permissions=[]
+        )
+        assert restored_id == user_id
+        mcp_manager.replace_persistence(services.repos, OctopConfig())
 
-    instance_id = "01TESTGATEWAYINSTANCE0001"
-    server = mcp_server_name("qq-mail", instance_id)
+        with pytest.raises(OctopError) as error:
+            await mcp_manager._get_or_load_mcp_tools(user_id, "shared", _spec("credential"))
 
-    inst = MagicMock()
-    inst.instance_id = instance_id
-    inst.kind = "qq-mail"
-    inst.status = "active"
-    inst.mcp_server_name = server
-
-    agent = MagicMock()
-    agent._mcp_tools = []
-    agent._mcp_tool_name_set = frozenset()
-    agent.config.mcp_server_configs = {}
-
-    def _inject(tools: list[Any]) -> None:
-        agent._mcp_tools = [*tools, *agent._mcp_tools]
-        agent._mcp_tool_name_set = frozenset(str(getattr(t, "name", "")) for t in agent._mcp_tools)
-
-    agent.inject_mcp_tools = MagicMock(side_effect=_inject)
-
-    mgr = object.__new__(AgentManager)
-    mgr._repos = MagicMock()
-    mgr._repos.connector_repo.list_visible.return_value = [inst]
-    mgr._connector_svc = MagicMock()
-    mgr._connector_svc.custom_harness_configs.return_value = {}
-    mgr._connector_svc.decrypt.return_value = {"email": "a@qq.com", "password": "code"}
-    mgr._connector_svc.ensure_fresh_credentials = AsyncMock(return_value={})
-    owner_row = MagicMock()
-    owner_row.user_id = 7
-    mgr.get_agent = MagicMock(return_value=agent)
-    mgr.get_row = MagicMock(return_value=owner_row)
-    mgr._turn_mcp_tools = {}
-    mgr._connector_uid_for = MagicMock(return_value=7)
-    mgr.reload_connectors = AsyncMock()
-
-    failed = await mgr.prepare_chat_mcp("A1", [server], connector_user_id=7)
-
-    # Asserted before the tool checks so a reintroduced rebuild reports itself
-    # rather than surfacing as "tools missing".
-    mgr.reload_connectors.assert_not_awaited()
-    assert failed == []
-    assert agent.inject_mcp_tools.call_count == 1
-    assert all(name.startswith(f"{server}_") for name in agent._mcp_tool_name_set)
-    assert server in agent.config.mcp_server_configs
-    mgr._connector_svc.ensure_fresh_credentials.assert_awaited_once_with(instance_id, "qq-mail")
-
-
-def test_wrap_tools_for_shared_use() -> None:
-    lock = asyncio.Lock()
-    inner = MagicMock()
-    inner.name = "x"
-    inner.description = "d"
-    inner.args_schema = None
-    inner.metadata = None
-    wrapped = wrap_tools_for_shared_use([inner], lock)
-    assert len(wrapped) == 1
-    assert isinstance(wrapped[0], StructuredTool)
+        assert error.value.code == ErrorCode.FORBIDDEN
+    finally:
+        restored.close()

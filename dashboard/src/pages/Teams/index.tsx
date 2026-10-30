@@ -20,6 +20,7 @@ import {
   type TeamWriteBody,
 } from "../../api/modules/teams";
 import { useAgent, type OctopAgent } from "../../context/AgentContext";
+import { TextAssistBar } from "../../components/TextAssistBar";
 import TeamMemberPicker from "./TeamMemberPicker";
 import styles from "./index.module.less";
 
@@ -299,6 +300,17 @@ export default function TeamsPage() {
           <Form.Item
             name="description"
             label={t("teams.teamDescription", "Description")}
+            extra={
+              <TextAssistBar
+                kind="team.description"
+                scopeKey={`${drawerOpen}:${editing?.team_id ?? "new"}`}
+                getText={() => form.getFieldValue("description") ?? ""}
+                getName={() => form.getFieldValue("name") ?? ""}
+                getDefaultModel={() => form.getFieldValue("default_model")}
+                onApply={(text) => form.setFieldValue("description", text)}
+                disabled={saving}
+              />
+            }
           >
             <Input.TextArea rows={2} maxLength={500} />
           </Form.Item>
@@ -311,6 +323,17 @@ export default function TeamsPage() {
           <Form.Item
             name="welcome_message"
             label={t("teams.welcome", "Welcome message")}
+            extra={
+              <TextAssistBar
+                kind="team.welcome_message"
+                scopeKey={`${drawerOpen}:${editing?.team_id ?? "new"}`}
+                getText={() => form.getFieldValue("welcome_message") ?? ""}
+                getName={() => form.getFieldValue("name") ?? ""}
+                getDefaultModel={() => form.getFieldValue("default_model")}
+                onApply={(text) => form.setFieldValue("welcome_message", text)}
+                disabled={saving}
+              />
+            }
           >
             <Input.TextArea rows={2} />
           </Form.Item>

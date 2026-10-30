@@ -13,7 +13,7 @@ import { App } from "antd";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { useSlashCommands } from "../../../hooks/useSlashCommands";
 import SlashCommandMenu from "./SlashCommandMenu";
-import { agentChatApi } from "../../../api/modules/agentChat";
+import { textAssistApi } from "../../../api/modules/textAssist";
 import type { ChatAttachment } from "../hooks/useChat";
 import type { ResolvedModel } from "../../../api/types";
 import type { KnowledgeBase } from "../../../api/modules/knowledgeBases";
@@ -695,7 +695,13 @@ const ChatInput = forwardRef<ChatInputHandle, ChatInputProps>(
       if (!draft || !agentId || polishing || isStreaming || disabled) return;
       setPolishing(true);
       try {
-        const result = await agentChatApi.polish(agentId, draft, selectedModel);
+        const result = await textAssistApi.assist({
+          kind: "chat.prompt",
+          text: draft,
+          default_model: selectedModel,
+          agent_id: agentId,
+          locale: i18n.language?.startsWith("zh") ? "zh" : "en",
+        });
         const polished = stripThinkingTags(result.text?.trim() ?? "");
         if (!polished) {
           antMessage.error(t("chat.polish.emptyResult"));

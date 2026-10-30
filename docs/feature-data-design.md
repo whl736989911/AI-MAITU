@@ -85,7 +85,9 @@
 
 - `GET /schema` → `{schema, error}`
 - `PUT /schema` body `{schema}`（管理者）
+- `GET /extract-rules` / `PUT /extract-rules`：读取或保存该功能工作区内的字段抽取规则（写入要求功能管理权限）。新工作区没有默认业务规则；规则由使用者配置。编辑已有多语言版式名称时保留其他语言的翻译；尺寸规则选择文本模式后，即使未填写条数，保存和重新打开仍保持文本模式。
 - `GET /{object_key}/records?q=&limit=&offset=&filters=&sort_by=&sort_order=` → 可见记录及过滤后总数。`filters` 是 JSON 数组，AND 条件，支持 `eq`、`ne`、`contains`、`gt`、`gte`、`lt`、`lte`、`in`、`is_empty`；每次最多 20 项并按字段类型校验。排序字段为 schema 字段或 `created_at`/`updated_at`/`title`，方向 `asc|desc`，稳定分页。
+- `datetime` 字段的筛选和排序按实际时间点比较，而不是 ISO 字符串的字典序；例如 `10:00+02:00` 早于 `09:00Z`。缺失或空的字段仍使用 `is_empty` 查询。
 - Agent 工具 `feature_data_list` 通过 `filters_json`、`sort_by`、`sort_order` 接受相同列表条件，并沿用 HTTP 的字段校验、过滤、排序和 ACL；旧查询及分页参数仍可用。
 - `GET /references/records?target_agent_id=&object_key=&q=` → 仅当前用户可读的目标记录选项；知识库引用选择沿用已有授权知识库/文档接口。
 - `POST /{object_key}/records` body `{values}` → 创建（`title` 自动取 `title_field`）；拒绝客户端传入计算字段

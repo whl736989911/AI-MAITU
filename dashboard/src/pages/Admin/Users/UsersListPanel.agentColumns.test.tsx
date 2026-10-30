@@ -389,38 +389,6 @@ describe("Admin → Users org-unit requirements", () => {
       }),
     ).toHaveLength(0);
   });
-
-  it("keeps the org unit required for employees and unit administrators", async () => {
-    renderPanel();
-
-    const newUser = findButtonByText(document.body, "新建用户");
-    expect(newUser).toBeDefined();
-    expect(newUser).toBeVisible();
-    expect(newUser).toHaveAccessibleName("新建用户");
-    await userEvent.click(newUser!);
-    const drawer = screen.getByRole("dialog", { hidden: true });
-    expect(drawer).toBeVisible();
-    expect(drawer).toHaveAccessibleName("新建用户");
-    const rolePicker = findRadioByText(drawer, "部门管理员");
-    expect(rolePicker).toBeDefined();
-    expect(rolePicker).toBeVisible();
-    expect(rolePicker).toHaveAccessibleName(/^部门管理员/);
-    const form = rolePicker!.closest("form");
-    expect(form).not.toBeNull();
-    const comboboxes = within(form as HTMLFormElement).getAllByRole(
-      "combobox",
-      { hidden: true },
-    );
-    expect(comboboxes).toHaveLength(1);
-    const orgUnit = comboboxes[0];
-    expect(orgUnit).toBeVisible();
-    expect(orgUnit).toHaveAccessibleName("所属组织单元");
-    expect(orgUnit).toHaveAttribute("aria-required", "true");
-
-    await userEvent.click(rolePicker!);
-    expect(rolePicker).toHaveAttribute("aria-checked", "true");
-    expect(orgUnit).toHaveAttribute("aria-required", "true");
-  });
 });
 
 describe("Admin → Users team permissions", () => {

@@ -11,7 +11,6 @@ from octop.config import OctopConfig
 from octop.infra.connectors.builder import (
     build_http_mcp_spec,
     build_mcp_server_configs_for_user,
-    gateway_mcp_server_names,
     validate_create_credentials,
 )
 from octop.infra.connectors.catalog import (
@@ -88,4 +87,3 @@ def test_qcc_harness_config_uses_http_not_inprocess_gateway(tmp_path: Path) -> N
     spec = configs["qcc__qcc1"]
     assert spec.get("transport") == "http"
     assert "/api/internal/mcp/qcc/qcc1?token=tok" in spec["url"]
-    assert "qcc__qcc1" not in gateway_mcp_server_names(connector_repo=repo, user_id=1)

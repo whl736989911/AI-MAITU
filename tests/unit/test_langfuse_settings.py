@@ -10,6 +10,7 @@ from unittest import mock
 import pytest
 
 from octop.infra.agents.langfuse import LangfuseSettingsStore, verify_langfuse_credentials
+from octop.infra.crypto.fernet import PURPOSE_SETTINGS, open_secret_bytes
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.secrets import SecretRepo
@@ -35,6 +36,10 @@ def test_langfuse_settings_roundtrip(store: LangfuseSettingsStore) -> None:
     assert cfg.public_key == "pk-test"
     assert cfg.host == "http://langfuse.example"
     assert cfg.secret_key_set is True
+    stored = store._secrets.get("langfuse_secret_key")
+    assert stored is not None
+    assert stored != b"sk-test"
+    assert open_secret_bytes(store._secrets, PURPOSE_SETTINGS, stored) == b"sk-test"
 
     loaded = store.load()
     assert loaded.enabled is True
@@ -45,6 +50,32 @@ def test_langfuse_settings_roundtrip(store: LangfuseSettingsStore) -> None:
 def test_langfuse_requires_secret_when_enabling(store: LangfuseSettingsStore) -> None:
     with pytest.raises(OctopError):
         store.save(enabled=True, public_key="pk", host="http://x")
+
+
+def test_langfuse_reads_legacy_plaintext_secret(store: LangfuseSettingsStore) -> None:
+    store._secrets.get_or_create("langfuse_secret_key", lambda: b"legacy-secret")
+    cfg = store.save(
+        enabled=True,
+        public_key="pk-legacy",
+        host="http://langfuse.example",
+    )
+    assert cfg.configured is True
+    from harness_agent.observability.langfuse import LangfuseConfig
+
+    harness_config = store.harness_config()
+    assert isinstance(harness_config, LangfuseConfig)
+    assert harness_config.secret_key == "legacy-secret"
+
+    store.save(
+        enabled=True,
+        public_key="pk-legacy",
+        host="http://langfuse.example",
+        secret_key="replacement-secret",
+    )
+    stored = store._secrets.get("langfuse_secret_key")
+    assert stored is not None
+    assert stored != b"replacement-secret"
+    assert open_secret_bytes(store._secrets, PURPOSE_SETTINGS, stored) == b"replacement-secret"
 
 
 def test_langfuse_harness_config(store: LangfuseSettingsStore) -> None:

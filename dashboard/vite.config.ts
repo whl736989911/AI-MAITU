@@ -52,10 +52,20 @@ function suppressViteDisconnectReload(): Plugin {
   };
 }
 
+function normalizeViteBase(raw: string | undefined): string {
+  const value = (raw || "/").trim() || "/";
+  if (value === "/") return "/";
+  const withLeading = value.startsWith("/") ? value : `/${value}`;
+  return withLeading.endsWith("/") ? withLeading : `${withLeading}/`;
+}
+
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   // Empty = same-origin; frontend and backend served together, no hardcoded host.
   const apiBaseUrl = env.BASE_URL ?? "";
+  const viteBase = normalizeViteBase(
+    process.env.VITE_BASE_PATH ?? env.VITE_BASE_PATH,
+  );
   // Allow overriding the backend port via VITE_API_PORT env variable (default: 8088)
   const apiPort = process.env.VITE_API_PORT ?? env.VITE_API_PORT ?? "8088";
 
@@ -88,6 +98,7 @@ export default defineConfig(({ mode }) => {
   }
 
   return {
+    base: viteBase,
     build: {
       outDir: path.resolve(__dirname, "../src/octop/dashboard"),
       emptyOutDir: true,
@@ -312,7 +323,7 @@ export default defineConfig(({ mode }) => {
         usePolling: false,
       },
       proxy: {
-        "/api": {
+        [`${viteBase}api`]: {
           target: `http://127.0.0.1:${apiPort}`,
           changeOrigin: true,
           // Preserve the browser-facing origin so OAuth callbacks do not point
@@ -320,6 +331,12 @@ export default defineConfig(({ mode }) => {
           xfwd: true,
           // Only proxy API websockets — do not steal Vite's HMR upgrade on `/`.
           ws: true,
+          ...(viteBase !== "/"
+            ? {
+                rewrite: (url: string) => url.slice(viteBase.length - 1),
+                headers: { "X-Forwarded-Prefix": viteBase.slice(0, -1) },
+              }
+            : {}),
         },
       },
     },

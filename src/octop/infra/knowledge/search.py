@@ -26,12 +26,11 @@ what find the part of it a document actually contains).
 
 from __future__ import annotations
 
-import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Literal
 
-from octop.infra.knowledge.index import Hit, KnowledgeIndex, search_tokens
+from octop.infra.knowledge.index import Hit, KnowledgeIndex, normalize_query, search_tokens
 
 MAX_TERMS = 12
 """Bound on the terms one query contributes; more stops being a search."""
@@ -74,11 +73,6 @@ def query_terms(query: str) -> tuple[str, ...]:
     return tuple(dict.fromkeys(terms))[:MAX_TERMS]
 
 
-def normalize_query(query: str) -> str:
-    """The query as one compared string, for the whole-query test."""
-    return " ".join(unicodedata.normalize("NFKC", query or "").split()).casefold()
-
-
 def score_chunk(text: str, terms: Sequence[str], phrase: str = "") -> float:
     """How well a chunk answers a query; larger is better.
 
@@ -97,7 +91,7 @@ def score_chunk(text: str, terms: Sequence[str], phrase: str = "") -> float:
     """
     if not terms and not phrase:
         return 0.0
-    haystack = " ".join(unicodedata.normalize("NFKC", text).casefold().split())
+    haystack = normalize_query(text)
     found = sum(1 for term in terms if term in haystack)
     coverage = found / len(terms) if terms else 0.0
     occurrences = sum(haystack.count(term) for term in terms)

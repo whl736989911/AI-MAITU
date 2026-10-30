@@ -18,6 +18,7 @@ const maxWorkers = Math.max(1, Math.min(2, Math.floor(os.cpus().length / 2)));
 
 export default defineConfig({
   plugins: [react()],
+  define: { BASE_URL: JSON.stringify("") },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),

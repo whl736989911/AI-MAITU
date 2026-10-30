@@ -118,6 +118,42 @@ The connection bundle carries only the center URL, public signing keys and optio
 
 See the [deployment guide](docs/license-center-deployment.md#0-推荐入口两台主机各运行一次部署向导) and [license operations](docs/instance-license-operations.md) for prerequisites, adoption, renewal, recovery and unlocking.
 
+### Reverse-proxy subpath (optional)
+
+The default build serves the platform at `/`. To serve it at `/maitu/`, build
+the dashboard with a matching public base:
+
+```bash
+VITE_BASE_PATH=/maitu npm --prefix dashboard run build
+```
+
+In PowerShell, set `$env:VITE_BASE_PATH="/maitu"` before running the build.
+This is separate from `BASE_URL`, which selects an optional external API origin.
+Install the resulting dashboard with the matching backend source.
+
+Configure the existing trusted reverse proxy to **strip** `/maitu/` before
+forwarding, and pass the external prefix, scheme and host (including any port).
+For example, inside an existing Nginx server:
+
+```nginx
+location /maitu/ {
+    proxy_pass http://127.0.0.1:8088/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $http_host;
+    proxy_set_header X-Forwarded-Host $http_host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Prefix /maitu;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection "upgrade";
+}
+```
+
+Alternatively, configure the ASGI `root_path` for that mount. Do not preserve
+the prefix in the upstream route path as well. Do not trust forwarding headers
+from an untrusted direct client. Register external OAuth/OIDC callbacks with
+the same `/maitu/api/auth/.../callback` prefix. Root deployments need no prefix
+header and continue to use the ordinary build.
+
 ### Development
 
 ```bash

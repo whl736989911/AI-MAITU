@@ -216,9 +216,7 @@ export default function FeatureDataPanel({
     tabItems.push({
       key: "extractRules",
       label: t("features.data.tabExtractRules"),
-      children: (
-        <FeatureExtractRulesEditor agentId={agentId} schema={schema} />
-      ),
+      children: <FeatureExtractRulesEditor agentId={agentId} schema={schema} />,
     });
   }
 

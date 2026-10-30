@@ -1493,6 +1493,11 @@ class GlobalProcessor:
             content=content,
             model=model_ref,
             message_kwargs=message_kwargs or None,
+            message_id=(
+                str(meta["user_message_id"])
+                if isinstance(meta.get("user_message_id"), str)
+                else None
+            ),
             reasoning_overrides=reasoning_overrides,
         )
         self._stamp_turn_model_routing(

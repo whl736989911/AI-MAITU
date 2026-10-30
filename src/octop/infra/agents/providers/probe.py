@@ -41,8 +41,10 @@ def _is_codex_base_url(base_url: str | None) -> bool:
 
 def build_probe_chat_model(row: Any, *, model_id: str | None = None) -> Any:
     """Construct a chat model from a provider row for probing."""
-    from harness_agent.config import ModelConfig, ProviderConfig
-    from harness_agent.llm.factory import build_chat_model
+    from harness_agent.config import ProviderConfig
+
+    from octop.infra.agents.providers.harness_factory import build_configured_chat_model
+    from octop.infra.agents.providers.model_config import ProviderModelConfig
 
     protocol = KIND_TO_PROTOCOL.get(row.kind, row.kind)
     base_url = row.base_url or "https://api.openai.com/v1"
@@ -51,22 +53,21 @@ def build_probe_chat_model(row: Any, *, model_id: str | None = None) -> Any:
     mid = model_id or (models[0]["id"] if models else "gpt-4o-mini")
     entry = next((m for m in models if m.get("id") == mid), None)
     display_name = (entry or {}).get("name") or mid
-    # Let the API validate image requests instead of harness silently stripping them.
-    model = ModelConfig(id=mid, name=display_name, input=["text", "image"])
-
-    if _is_codex_base_url(base_url):
-        from langchain_openai import ChatOpenAI
-
-        kwargs: dict[str, Any] = {
-            "model": model.id,
-            "base_url": base_url,
-            "api_key": row.api_key or "",
-            "use_responses_api": True,
+    api_mode = (entry or {}).get(
+        "api_mode",
+        "responses"
+        if _is_codex_base_url(base_url) or (entry or {}).get("native_tool_search")
+        else "chat_completions",
+    )
+    model = ProviderModelConfig.from_dict(
+        {
+            **(entry or {}),
+            "id": mid,
+            "name": display_name,
+            "input": ["text", "image"],
+            "api_mode": api_mode,
         }
-        if headers:
-            kwargs["default_headers"] = dict(headers)
-        return ChatOpenAI(**kwargs)
-
+    )
     provider = ProviderConfig(
         id=row.name,
         name=row.name,
@@ -75,7 +76,7 @@ def build_probe_chat_model(row: Any, *, model_id: str | None = None) -> Any:
         api_key=row.api_key or "",
         headers=headers,
     )
-    return build_chat_model(provider, model)
+    return build_configured_chat_model(provider, model)
 
 
 def make_probe_provider_row(
@@ -87,9 +88,16 @@ def make_probe_provider_row(
     model_id: str,
     extra_json: str | None = None,
     embedding: bool = False,
+    api_mode: str = "chat_completions",
+    api_fallback: str = "none",
 ) -> Any:
     """Build a ProviderRow-like object for connectivity probes."""
-    model: dict[str, Any] = {"id": model_id, "name": model_id}
+    model: dict[str, Any] = {
+        "id": model_id,
+        "name": model_id,
+        "api_mode": api_mode,
+        "api_fallback": api_fallback,
+    }
     if embedding:
         model["embedding"] = True
         model["task"] = "embedding"
@@ -253,8 +261,16 @@ async def probe_provider_row(
         )
         return {"ok": False, "error": _friendly_probe_error(exc, locale=locale)}
     latency_ms = int((time.perf_counter() - started) * 1000)
+    entry = _probe_model_entry(row, mid)
+    result_metadata = getattr(result, "response_metadata", {})
     _ = getattr(result, "content", None)
-    return {"ok": True, "latency_ms": latency_ms}
+    return {
+        "ok": True,
+        "latency_ms": latency_ms,
+        "api_mode": entry.get("api_mode")
+        or ("responses" if _is_codex_base_url(row.base_url) else "chat_completions"),
+        "fallback_used": result_metadata.get("octop_api_fallback") == "chat_completions",
+    }
 
 
 def _models_list_url(base_url: str | None) -> str:

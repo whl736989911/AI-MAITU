@@ -49,6 +49,8 @@ import feishuIcon from "../assets/channels/feishu.svg";
 import dingtalkIcon from "../assets/channels/dingtalk.svg";
 import wecomIcon from "../assets/channels/wecom.svg";
 import styles from "./AvatarDropdown.module.less";
+import { publicUrl } from "../utils/publicUrl";
+
 import { BRAND } from "../brand.generated";
 
 const APP_OAUTH_KINDS = new Set(["feishu", "dingtalk", "wecom"]);
@@ -369,7 +371,7 @@ export default function AvatarDropdown({
         className={styles.menuItem}
         // ``help`` is generated from brand.config.json; older generated files
         // have no key yet, so fall back to the in-app API docs.
-        href={(BRAND.links as { help?: string }).help || "/api/docs"}
+        href={(BRAND.links as { help?: string }).help || publicUrl("/api/docs")}
         target="_blank"
         rel="noopener noreferrer"
         onClick={() => setMenuOpen(false)}

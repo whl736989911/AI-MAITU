@@ -30,6 +30,7 @@ def _schema() -> dict[str, Any]:
                     {"key": "weight", "type": "integer"},
                     {"key": "score", "type": "number"},
                     {"key": "made_on", "type": "date"},
+                    {"key": "occurred_at", "type": "datetime"},
                     {"key": "active", "type": "boolean"},
                     {"key": "stage", "type": "enum", "options": ["draft", "won"]},
                     {"key": "owner", "type": "user"},
@@ -166,6 +167,7 @@ async def _seed(repo: FeatureDataRepo, workspace: BackendWorkspace, db: SqlitePo
         values={
             "name": "Alpha",
             "weight": 150,
+            "occurred_at": "2026-10-29T10:00:00+02:00",
             "made_on": "2026-01-05",
             "active": True,
             "stage": "won",
@@ -184,6 +186,7 @@ async def _seed(repo: FeatureDataRepo, workspace: BackendWorkspace, db: SqlitePo
         values={
             "name": "Beta",
             "weight": 90,
+            "occurred_at": "2026-10-29T09:00:00Z",
             "made_on": "2026-03-01",
             "active": False,
             "stage": "draft",
@@ -279,6 +282,48 @@ async def test_list_records_applies_filters_sort_and_total(db: SqlitePool, tmp_p
     )
     assert [record.values.get("weight") for record in records] == [90, 150, None]
 
+    # Datetime values with different offsets sort by instant, not their text.
+    _fragments, _params, order_by = fdq.filters_from_request(
+        "", "occurred_at", "asc", obj, dialect="sqlite"
+    )
+    records, _total = repo.list_records(
+        agent_id="feat-q", object_key="deal", user_id=1, order_by=order_by
+    )
+    assert [record.values["name"] for record in records[:2]] == ["Alpha", "Beta"]
+    # Missing datetimes remain empty without comparing a cast value to ''.
+    fragments, params, _order_by = fdq.filters_from_request(
+        json.dumps([{"field": "occurred_at", "op": "is_empty"}]),
+        None,
+        None,
+        obj,
+        dialect="sqlite",
+    )
+    records, total = repo.list_records(
+        agent_id="feat-q",
+        object_key="deal",
+        user_id=1,
+        filter_fragments=fragments,
+        filter_params=params,
+    )
+    assert total == 1
+    assert records[0].values["name"] == "Gamma"
+    # Comparisons use the same instant semantics as ordering.
+    fragments, params, _order_by = fdq.filters_from_request(
+        json.dumps([{"field": "occurred_at", "op": "gt", "value": "2026-10-29T08:30:00Z"}]),
+        None,
+        None,
+        obj,
+        dialect="sqlite",
+    )
+    records, total = repo.list_records(
+        agent_id="feat-q",
+        object_key="deal",
+        user_id=1,
+        filter_fragments=fragments,
+        filter_params=params,
+    )
+    assert total == 1
+    assert records[0].values["name"] == "Beta"
     # Text contains with LIKE metacharacters matches literally.
     await fd.create_record(
         _simple_repos(db),

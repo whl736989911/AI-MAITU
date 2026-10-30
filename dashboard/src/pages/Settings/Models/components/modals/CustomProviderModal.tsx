@@ -74,7 +74,10 @@ export function CustomProviderModal({
     }
   }, [open, form]);
 
-  const testDraftModel = async (modelId: string) => {
+  const testDraftModel = async (
+    modelId: string,
+    settings?: Pick<ProviderModel, "api_mode" | "api_fallback">,
+  ) => {
     const values = await form.validateFields([
       "name",
       "kind",
@@ -92,6 +95,7 @@ export function CustomProviderModal({
       base_url: values.base_url?.trim() || null,
       model_id: modelId,
       embedding: isEmbeddingModel(models.find((m) => m.id === modelId)),
+      ...settings,
     });
   };
 
@@ -352,7 +356,9 @@ export function CustomProviderModal({
         onModelsChange={setModels}
         apiPrefix={apiPrefix}
         canTest={canTest}
-        onTestModel={(modelId) => testDraftModel(modelId)}
+        onTestModel={(modelId, _name, settings) =>
+          testDraftModel(modelId, settings)
+        }
       />
     </Modal>
   );

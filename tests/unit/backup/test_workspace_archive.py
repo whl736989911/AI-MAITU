@@ -66,6 +66,29 @@ async def test_export_and_merge_import_includes_hidden_workspace_files(tmp_path:
 
 
 @pytest.mark.asyncio
+async def test_export_and_import_preserves_whitespace_in_workspace_names(
+    tmp_path: Path,
+) -> None:
+    filename = "  report .md"
+    (tmp_path / filename).write_bytes(b"report")
+    source = BackendWorkspace(
+        LocalShellBackend(root_dir=str(tmp_path), virtual_mode=False), tmp_path
+    )
+    blob = await export_workspace_zip(source)
+
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    target = BackendWorkspace(
+        LocalShellBackend(root_dir=str(destination), virtual_mode=False),
+        destination,
+    )
+    result = await import_workspace_zip(target, blob, mode="merge", local_workspace_dir=None)
+
+    assert result["imported"] == 1
+    assert (destination / filename).read_bytes() == b"report"
+
+
+@pytest.mark.asyncio
 async def test_replace_clears_local_dir(tmp_path: Path) -> None:
     ws = tmp_path / "ws"
     ws.mkdir()
@@ -187,6 +210,11 @@ class _MountlessBackend:
             SimpleNamespace(path=name, content=self._files.get(name), error=None) for name in paths
         ]
 
+    def upload_files(self, files: list[tuple[str, bytes]]) -> list[Any]:
+        for path, content in files:
+            self._files[path] = content
+        return [SimpleNamespace(path=path, error=None) for path, _ in files]
+
 
 @pytest.mark.asyncio
 async def test_export_reads_remote_backend_over_stale_local_copy(tmp_path: Path) -> None:
@@ -197,6 +225,35 @@ async def test_export_reads_remote_backend_over_stale_local_copy(tmp_path: Path)
     blob = await export_workspace_zip(workspace)
     with zipfile.ZipFile(io.BytesIO(blob), "r") as zf:
         assert zf.read("AGENTS.md") == b"remote AGENTS.md"
+
+
+@pytest.mark.asyncio
+async def test_export_preserves_leading_space_remote_workspace_filename(tmp_path: Path) -> None:
+    workspace = BackendWorkspace(
+        _MountlessBackend({"/  report.md": b"remote report"}),
+        tmp_path,
+        system_files_path=".octop",
+    )
+
+    blob = await export_workspace_zip(workspace)
+    with zipfile.ZipFile(io.BytesIO(blob), "r") as zf:
+        assert zf.namelist() == ["  report.md"]
+        assert zf.read("  report.md") == b"remote report"
+
+    destination = tmp_path / "imported"
+    destination.mkdir()
+    target = BackendWorkspace(
+        LocalShellBackend(root_dir=str(destination), virtual_mode=False),
+        destination,
+    )
+    await import_workspace_zip(target, blob, mode="merge", local_workspace_dir=None)
+    assert (destination / "  report.md").read_bytes() == b"remote report"
+    remote_target_backend = _MountlessBackend({})
+    remote_target = BackendWorkspace(
+        remote_target_backend, tmp_path / "remote-imported", system_files_path=".octop"
+    )
+    await import_workspace_zip(remote_target, blob, mode="merge", local_workspace_dir=None)
+    assert remote_target_backend._files == {"/  report.md": b"remote report"}
 
 
 @pytest.mark.asyncio

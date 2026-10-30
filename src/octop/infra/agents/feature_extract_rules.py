@@ -6,9 +6,8 @@ value comes from*. They live next to the schema in the feature's workspace
 own title-block labels without touching code, and an agent can rewrite them
 after the user agrees.
 
-Version 2 adds **profiles**: one feature may hold several drawing layouts
-(forging process cards, mould drawings, assembly drawings), each with its own
-field mapping. A profile is selected per drawing by ``when`` — the labels found
+Version 2 adds **profiles**: one feature may hold several document layouts, each
+with its own field mapping. A profile is selected per document by ``when`` — the labels found
 in the drawing's text and/or its file name — and the first match wins. A rules
 document without profiles is read as version 1 and treated as one default
 profile, so an existing file keeps working.
@@ -19,11 +18,11 @@ Shape::
       "version": 2,
       "profiles": [
         {
-          "name": {"zh": "锻造工艺卡", "en": "Forging card"},
-          "when": {"labels_any": ["锻造工艺卡", "下料重量"], "filename_pattern": "工艺卡"},
+          "name": {"zh": "示例版式", "en": "Example layout"},
+          "when": {"labels_any": ["文档编号"], "filename_pattern": "example"},
           "fields": {
-            "drawing_no": {"labels": ["图号", "产品图号"]},
-            "max_od_mm":  {"from": "dimensions", "pick": "max_outer"}
+            "document_no": {"labels": ["文档编号", "编号"]},
+            "dimension_mm": {"from": "dimensions", "pick": "max_outer"}
           }
         }
       ]

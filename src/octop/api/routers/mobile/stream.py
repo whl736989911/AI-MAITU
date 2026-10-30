@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from octop.api.common.capabilities import WebSocketCapabilityGuard
 from octop.api.deps import resolve_user_from_token, unit_grants_for
 from octop.infra.mobile.adb import (
     KEYCODE_APP_SWITCH,
@@ -509,6 +510,7 @@ async def mobile_stream_ws(
 
     await websocket.accept()
     stream_task: asyncio.Task[None] | None = None
+    capability_guard: WebSocketCapabilityGuard | None = None
     frame_dims = [0, 0]
     bound_device: str | None = None
 
@@ -537,6 +539,10 @@ async def mobile_stream_ws(
         if not user_has_permission(user, "mobile", unit_grants=unit_grants_for(server, user)):
             await websocket.close(code=4003, reason="permission required")
             return
+        capability_guard = WebSocketCapabilityGuard(websocket, user_id=user.id, permission="mobile")
+        if not await capability_guard.check():
+            return
+        capability_guard.start()
 
         device = str(start_msg.get("device") or status.selected_device or "")
         if not device:
@@ -620,6 +626,8 @@ async def mobile_stream_ws(
             msg = json.loads(msg_raw)
             if msg.get("type") == "stop":
                 break
+            if not await capability_guard.check():
+                break
             try:
                 await _handle_input(
                     websocket,
@@ -639,6 +647,8 @@ async def mobile_stream_ws(
     except Exception:
         logger.exception("mobile stream failed")
     finally:
+        if capability_guard is not None:
+            await capability_guard.stop()
         if bound_device is not None:
             clear_mobile_agent_control_if_device(bound_device)
         if stream_task is not None and not stream_task.done():

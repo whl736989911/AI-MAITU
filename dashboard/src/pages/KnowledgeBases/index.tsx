@@ -33,6 +33,7 @@ import {
 } from "antd";
 import type { MenuProps } from "antd";
 import type { InputRef } from "antd/es/input";
+import { TextAssistBar } from "../../components/TextAssistBar";
 import { ResizableTable } from "@/components/ResizableTable";
 import {
   Check,
@@ -4206,7 +4207,19 @@ export default function KnowledgeBasesPage() {
           >
             <Input autoFocus maxLength={200} />
           </Form.Item>
-          <Form.Item name="description" label={t("knowledgeBases.description")}>
+          <Form.Item
+            name="description"
+            label={t("knowledgeBases.description")}
+            extra={
+              <TextAssistBar
+                kind="knowledge_base.description"
+                scopeKey={`${baseDrawerOpen}:${editingBaseId ?? "new"}`}
+                getText={() => baseForm.getFieldValue("description") ?? ""}
+                getName={() => baseForm.getFieldValue("name") ?? ""}
+                onApply={(text) => baseForm.setFieldValue("description", text)}
+              />
+            }
+          >
             <Input.TextArea
               autoSize={{ minRows: 2, maxRows: 5 }}
               maxLength={2000}

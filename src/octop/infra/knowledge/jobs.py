@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 _running_jobs: dict[tuple[int, str, str], asyncio.Task[None]] = {}
 _active_jobs: set[tuple[int, str, str]] = set()
+_rerun_jobs: set[tuple[int, str, str]] = set()
 _stopping_owners: set[int] = set()
 
 
@@ -60,6 +61,20 @@ def _get_index_semaphore() -> asyncio.Semaphore:
         _index_semaphore = asyncio.Semaphore(INDEX_CONCURRENCY)
         _index_loop = loop
     return _index_semaphore
+
+
+async def _await_worker[T](work: asyncio.Future[T]) -> T:
+    """Wait for a thread worker to finish even when its asyncio task is cancelled."""
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        while not work.done():
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                continue
+        work.result()
+        raise
 
 
 @contextmanager
@@ -302,6 +317,16 @@ def _process_current_document(services: Any, kb_id: str, doc_id: str) -> bool:
     return False
 
 
+def _leave_document_pending(services: Any, kb_id: str, doc_id: str) -> None:
+    """Persist interrupted rerun work for startup recovery."""
+    repo = services.knowledge_repo
+    document = repo.get_document(doc_id)
+    if document is None or document.kb_id != kb_id or document.is_dir:
+        return
+    repo.update_document(doc_id, status="pending", error_message="", chunk_count=0)
+    repo.set_derived(doc_id, None)
+
+
 def enqueue_index_document(services: Any, kb_id: str, doc_id: str) -> asyncio.Task[None]:
     """Schedule a durable pending document once, bounded by the shared semaphore."""
     # Direct-entry license gate: index processing is business execution.
@@ -314,6 +339,8 @@ def enqueue_index_document(services: Any, kb_id: str, doc_id: str) -> asyncio.Ta
     key = (owner, kb_id, doc_id)
     previous = _running_jobs.get(key)
     if previous is not None and not previous.done():
+        if key in _active_jobs:
+            _rerun_jobs.add(key)
         return previous
     loop = asyncio.get_running_loop()
     sem = _get_index_semaphore()
@@ -327,21 +354,44 @@ def enqueue_index_document(services: Any, kb_id: str, doc_id: str) -> asyncio.Ta
                         None, _process_current_document, services, kb_id, doc_id
                     )
                     try:
-                        again = await asyncio.shield(work)
+                        again = await _await_worker(work)
                     except asyncio.CancelledError:
-                        # Cancelling the asyncio task cannot stop its SQLite worker.
-                        # Keep the task alive until that worker releases its resources.
-                        while not work.done():
-                            try:
-                                await asyncio.shield(work)
-                            except asyncio.CancelledError:
-                                continue
-                        work.result()
+                        if key in _rerun_jobs:
+                            _rerun_jobs.discard(key)
+                            pending = loop.run_in_executor(
+                                None, _leave_document_pending, services, kb_id, doc_id
+                            )
+                            await _await_worker(pending)
                         raise
-                    if not again:
+                    except Exception:
+                        if key not in _rerun_jobs:
+                            raise
+                        _rerun_jobs.discard(key)
+                        current = asyncio.current_task()
+                        cancelled = current is not None and current.cancelling() > 0
+                        if owner in _stopping_owners or cancelled:
+                            pending = loop.run_in_executor(
+                                None, _leave_document_pending, services, kb_id, doc_id
+                            )
+                            await _await_worker(pending)
+                            if cancelled:
+                                raise
+                            break
+                        continue
+                    rerun = key in _rerun_jobs
+                    _rerun_jobs.discard(key)
+                    if owner in _stopping_owners:
+                        if again or rerun:
+                            pending = loop.run_in_executor(
+                                None, _leave_document_pending, services, kb_id, doc_id
+                            )
+                            await _await_worker(pending)
+                        break
+                    if not again and not rerun:
                         break
             finally:
                 _active_jobs.discard(key)
+                _rerun_jobs.discard(key)
 
     task = asyncio.create_task(_run())
     _running_jobs[key] = task

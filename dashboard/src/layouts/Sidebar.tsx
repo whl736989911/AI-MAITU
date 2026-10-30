@@ -558,7 +558,7 @@ export default function Sidebar({
     // When navigating to /chat, preserve the current chatId in the URL so the
     // Chat component is not remounted (key stays the same) and the user stays
     // on their most recent conversation instead of seeing a blank welcome screen.
-    if (path === "/chat" && window.location.pathname.startsWith("/chat/")) {
+    if (path === "/chat" && location.pathname.startsWith("/chat/")) {
       if (isMobile) onToggle();
       return;
     }
@@ -573,7 +573,7 @@ export default function Sidebar({
     }
     window.dispatchEvent(new Event(EXPAND_CHAT_RAIL_EVENT));
     setChatSidebarOpen(true);
-    if (!window.location.pathname.startsWith("/chat")) {
+    if (!location.pathname.startsWith("/chat")) {
       navigate("/chat");
     }
     if (isMobile) onToggle();
@@ -581,6 +581,7 @@ export default function Sidebar({
     isMinimal,
     isMobile,
     navigate,
+    location.pathname,
     onToggle,
     selectMinimalPane,
     setChatSidebarOpen,

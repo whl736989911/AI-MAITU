@@ -11,12 +11,13 @@ import {
 const listMock = vi.fn();
 const patchMock = vi.fn();
 const renameMock = vi.fn();
+const deleteMock = vi.fn();
 
 vi.mock("../../../api/modules/octopThreads", () => ({
   octopThreadsApi: {
     list: (...args: unknown[]) => listMock(...args),
     create: vi.fn(),
-    delete: vi.fn(),
+    delete: (...args: unknown[]) => deleteMock(...args),
     patch: (...args: unknown[]) => patchMock(...args),
     rename: (...args: unknown[]) => renameMock(...args),
     rebind: vi.fn(),
@@ -183,6 +184,7 @@ describe("useSessions rename / pin persistence", () => {
     listMock.mockReset();
     patchMock.mockReset();
     renameMock.mockReset();
+    deleteMock.mockReset();
     listMock.mockResolvedValue([threadRow("thr_keep", { title: "Keep me" })]);
   });
 
@@ -197,6 +199,25 @@ describe("useSessions rename / pin persistence", () => {
     });
     return result;
   }
+
+  it("keeps the session and local chat cache when delete is rejected", async () => {
+    deleteMock.mockRejectedValue(
+      new Error(
+        'Request failed: 409 Conflict - {"error":{"code":"AGENT_BUSY","message":"thread is active"}}',
+      ),
+    );
+    const result = await mountWithThread();
+
+    let deleted: boolean | undefined;
+    await act(async () => {
+      deleted = await result.current.deleteSession("thr_keep");
+    });
+
+    expect(deleted).toBe(false);
+    expect(result.current.sessions.map((session) => session.id)).toEqual([
+      "thr_keep",
+    ]);
+  });
 
   it("reports a rejected rename as not stored", async () => {
     renameMock.mockRejectedValue(threadNotFoundError());

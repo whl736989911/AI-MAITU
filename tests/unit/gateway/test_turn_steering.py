@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from octop.infra.gateway.steering import SteeringConflict, TurnSteeringRegistry
@@ -78,6 +80,19 @@ async def test_stale_turn_duplicate_submit_withdraw_and_hitl_park_are_rejected()
         )
     assert await registry.take_at_boundary(thread, active) is None
     assert await registry.set_parked(thread, active, False)
+
+
+@pytest.mark.asyncio
+async def test_idle_guard_excludes_turn_admission_until_critical_section_finishes() -> None:
+    registry = TurnSteeringRegistry()
+    admission: asyncio.Task[str] | None = None
+    async with registry.idle_guard("thread-delete") as idle:
+        assert idle
+        admission = asyncio.create_task(registry.begin_turn("thread-delete", "new-turn"))
+        await asyncio.sleep(0)
+        assert not admission.done()
+    assert admission is not None
+    assert await admission
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from octop.api.common.capabilities import WebSocketCapabilityGuard
 from octop.api.deps import resolve_user_from_token, unit_grants_for
 from octop.infra.desktop.input import canvas_to_screen, run_desktop_action
 from octop.infra.desktop.session import (
@@ -248,6 +249,7 @@ async def desktop_stream_ws(
     user: User | None = None
     session: DesktopSession | None = None
     stream_task: asyncio.Task[None] | None = None
+    capability_guard: WebSocketCapabilityGuard | None = None
     frame_dims = [0, 0]
     user_id = ""
     replaced = False
@@ -288,6 +290,12 @@ async def desktop_stream_ws(
         if not user_has_permission(user, "desktop", unit_grants=unit_grants_for(server, user)):
             await websocket.close(code=4003, reason="permission required")
             return
+        capability_guard = WebSocketCapabilityGuard(
+            websocket, user_id=user.id, permission="desktop"
+        )
+        if not await capability_guard.check():
+            return
+        capability_guard.start()
 
         user_id = str(user.id)
         monitor = int(start_msg.get("monitor") or 0)
@@ -345,6 +353,8 @@ async def desktop_stream_ws(
                 continue
             if msg.get("type") == "stop":
                 break
+            if not await capability_guard.check():
+                break
             if session is not None:
                 try:
                     await _handle_input(
@@ -366,6 +376,8 @@ async def desktop_stream_ws(
             await _send_json(websocket, {"type": "error", "message": str(exc)})
             await _send_json(websocket, {"type": "status", "status": "error"})
     finally:
+        if capability_guard is not None:
+            await capability_guard.stop()
         if user_id:
             await clear_user_stream(user_id, _force_disconnect)
         if stream_task is not None and not stream_task.done():

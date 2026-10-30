@@ -69,6 +69,7 @@ def _tool_ctx() -> tuple[str, int, str]:
 
 
 def _user_owns_agent(mgr: CronManager, agent_id: str, user_id: int) -> bool:
+    mgr._capability_policy.require_permissions(user_id, ())
     row = mgr._repos.agent_repo.get(agent_id)
     return row is not None and row.user_id == user_id
 

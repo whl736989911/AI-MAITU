@@ -533,3 +533,20 @@ def test_approve_still_refuses_when_the_state_moved(world: World) -> None:
 
     with pytest.raises(ValueError, match="is stale"):
         world.service.approve(parked.change_id, world.admin)
+
+
+def test_initial_private_acl_invalidates_a_pending_inherited_baseline(world: World) -> None:
+    pending = world.service.apply_change(
+        world.owner, "agent", "a1", entry(world, visibility="public")
+    )
+    assert pending.status == CHANGE_PENDING
+
+    world.service.apply_change(world.owner, "agent", "a1", entry(world))
+
+    with pytest.raises(ValueError, match="is stale"):
+        world.service.approve(pending.change_id, world.admin)
+    current = world.acl.get("agent", "a1")
+    assert current is not None
+    assert current.visibility == "private"
+    assert visible_to(world, world.other) == set()
+    assert world.acl.get_change(pending.change_id).status == CHANGE_PENDING

@@ -16,6 +16,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from octop.api.common.capabilities import WebSocketCapabilityGuard
 from octop.api.deps import resolve_user_from_token, unit_grants_for
 from octop.infra.mobile.adb import find_adb, list_devices
 from octop.infra.users.identity import User
@@ -86,6 +87,9 @@ async def adb_shell_ws(
         await _send_json(websocket, {"type": "error", "message": "device unavailable"})
         await websocket.close(code=4003, reason="device unavailable")
         return
+    capability_guard = WebSocketCapabilityGuard(websocket, user_id=user.id, permission="mobile")
+    if not await capability_guard.check():
+        return
 
     master_fd, slave_fd = posix_compat.openpty()
     _set_winsize(master_fd, cols, rows)
@@ -128,6 +132,7 @@ async def adb_shell_ws(
             await _send_json(websocket, {"type": "output", "data": text})
 
     pump_task = asyncio.create_task(pump_output())
+    capability_guard.start()
 
     try:
         while True:
@@ -138,6 +143,8 @@ async def adb_shell_ws(
                 continue
             if not isinstance(msg, dict):
                 continue
+            if not await capability_guard.check():
+                break
             t = msg.get("type")
             if t == "input":
                 data = msg.get("data")
@@ -155,6 +162,7 @@ async def adb_shell_ws(
     except WebSocketDisconnect:
         pass
     finally:
+        await capability_guard.stop()
         closed.set()
         pump_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

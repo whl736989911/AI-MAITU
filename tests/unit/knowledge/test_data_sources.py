@@ -1052,6 +1052,32 @@ def test_scan_keeps_everything_when_the_walk_fails(
     assert env.services.knowledge_repo.list_source_files(source.id) == before
 
 
+def test_scan_aborts_when_os_walk_skips_an_inaccessible_subtree(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _local_root(tmp_path)
+    _source_file(root, "policy.md", _DOC_BODY)
+    _base_row, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
+    before = env.services.knowledge_repo.list_source_files(source.id)
+
+    def _walk_with_inaccessible_subtree(path: Path, *, onerror=None, **_kwargs: object):
+        if onerror is not None:
+            onerror(PermissionError(13, "Permission denied", str(path / "private")))
+        return iter(())
+
+    monkeypatch.setattr(os, "walk", _walk_with_inaccessible_subtree)
+
+    with pytest.raises(DataSourceSyncFailed, match="Permission denied"):
+        env.sources.sync(source.id, actor_user_id=people.owner)
+
+    assert env.services.data_sources_repo.get(source.id).sync_status == "failed"
+    assert env.services.knowledge_repo.list_source_files(source.id) == before
+
+
 def test_an_aborted_first_scan_is_not_a_successful_view_of_the_source(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

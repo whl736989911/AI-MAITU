@@ -1,3 +1,5 @@
+import { appPathname, publicUrl } from "../utils/publicUrl";
+
 import { getApiUrl } from "./config";
 import i18n from "../i18n";
 import { markNavigatingAway } from "../utils/reloadOnStaleChunk";
@@ -107,7 +109,7 @@ function handleSetupRequired(): void {
   if (_redirectingToSetup) return;
   // Already on a public bootstrap route — a 503 from a background prefetch
   // must not reload the page or we loop forever.
-  const path = window.location.pathname;
+  const path = appPathname(window.location.pathname);
   if (
     path.startsWith("/setup") ||
     path.startsWith("/login") ||
@@ -117,7 +119,7 @@ function handleSetupRequired(): void {
   }
   _redirectingToSetup = true;
   // Full reload drops any in-flight React state.
-  window.location.replace("/setup");
+  window.location.replace(publicUrl("/setup"));
 }
 
 /** Wizard endpoints stay reachable while lockdown is active. */
@@ -276,7 +278,7 @@ let _redirectingToLogin = false;
  */
 function handleUnauthorized(): void {
   if (_redirectingToLogin) return;
-  const path = window.location.pathname;
+  const path = appPathname(window.location.pathname);
   if (
     path.startsWith("/setup") ||
     path.startsWith("/login") ||
@@ -291,7 +293,7 @@ function handleUnauthorized(): void {
   if (takenOver) return;
 
   markNavigatingAway();
-  window.location.replace("/login");
+  window.location.replace(publicUrl("/login"));
 }
 
 /**

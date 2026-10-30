@@ -64,7 +64,10 @@ class LocalFolderConnector:
         try:
             # ``followlinks`` stays off (the default): a symlink loop would
             # otherwise make a scan unbounded.
-            for current, dirnames, filenames in os.walk(self._root):
+            def raise_walk_error(exc: OSError) -> None:
+                raise exc
+
+            for current, dirnames, filenames in os.walk(self._root, onerror=raise_walk_error):
                 base = Path(current)
                 entries.extend(self._entry(base / name, is_dir=True) for name in dirnames)
                 # A staging file is a half-written upload: invisible to scans

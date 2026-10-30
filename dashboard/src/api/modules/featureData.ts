@@ -297,9 +297,7 @@ export const featureDataApi = {
       body: JSON.stringify({ schema }),
     });
   },
-  getExtractRules(
-    agentId: string,
-  ): Promise<FeatureExtractRulesResponse> {
+  getExtractRules(agentId: string): Promise<FeatureExtractRulesResponse> {
     return request<FeatureExtractRulesResponse>(
       `${agentBase(agentId)}/extract-rules`,
     );

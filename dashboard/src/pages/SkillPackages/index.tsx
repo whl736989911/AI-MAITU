@@ -48,6 +48,7 @@ import type {
   SkillPackageSkillDetail,
 } from "../../api/types/skillPackage";
 import { CardSkeleton } from "../../components/Skeleton";
+import { TextAssistBar } from "../../components/TextAssistBar";
 import { CopyableResourceId } from "../../components/CopyableResourceId";
 import { EmptyState, EmptyStateIcon } from "../../components/EmptyState";
 import StreamSetupGuide from "../../components/StreamSetupGuide/StreamSetupGuide";
@@ -1001,6 +1002,17 @@ export default function SkillPackagesPage() {
           <Form.Item
             name="description"
             label={t("skillPackages.packageDescription")}
+            extra={
+              <TextAssistBar
+                kind="skill_package.description"
+                scopeKey={`${packageDrawerOpen}:${editingPackageId ?? "new"}`}
+                getText={() => packageForm.getFieldValue("description") ?? ""}
+                getName={() => packageForm.getFieldValue("name") ?? ""}
+                onApply={(text) =>
+                  packageForm.setFieldValue("description", text)
+                }
+              />
+            }
           >
             <Input.TextArea
               autoSize={{ minRows: 2, maxRows: 5 }}

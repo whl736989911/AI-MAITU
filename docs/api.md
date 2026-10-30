@@ -146,12 +146,28 @@ updates the same provider instead of creating duplicates.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET`    | `/users` | admin | `[{id, username, role, display_name, email, enabled, ...}]` |
-| `POST`   | `/users` | admin | body `{username, password, role, display_name?, email?, permissions?, workspace_root_dir?, token_quota?}` → `201` |
+| `POST`   | `/users` | scoped user manager (`users`) | body `{username, password, role, display_name?, email?, permissions?, org_units?, org_unit?, workspace_root_dir?, token_quota?}` → `201`; employees and department administrators require a department |
 | `GET`    | `/users/{id}` | admin | full user row |
-| `PATCH`  | `/users/{id}` | scoped user manager (`users`) | body subset of `{role, display_name, email, disabled, permissions, org_unit, denied_permissions, workspace_root_dir, token_quota}`; all account, policy and audit writes commit together after the whole patch is validated |
+| `PATCH`  | `/users/{id}` | scoped user manager (`users`) | body subset of `{role, display_name, email, disabled, permissions, org_units, org_unit, denied_permissions, workspace_root_dir, token_quota}`; account fields, department memberships, policy and audit writes commit together after the whole patch is validated |
 | `POST`   | `/users/{id}/reset-password` | admin | body `{new_password}` → `204` |
 | `POST`   | `/users/{id}/unlock-login` | admin | `204` (clears the lockout) |
 | `DELETE` | `/users/{id}` | admin | `204` |
+
+`org_units` replaces the account's department memberships. Its first entry becomes
+`org_unit`, the primary department, and responses list that department first so an
+editor save does not silently change it. When supplied, `org_units` takes precedence
+over `org_unit`; the single-department `org_unit` field replaces memberships with
+that one department (or clears them when null). Omitted department fields leave
+memberships unchanged on PATCH. An empty or null `org_units` clears memberships,
+but employees and department administrators must retain at least one department.
+Role and department changes are validated against their combined resulting state.
+
+Primary and secondary memberships both count for department deletion guards,
+department reminder recipients, and channel-type permissions. A department
+cannot be deleted while any account, including a disabled account, belongs to
+it. Changes to department channel grants reconcile channels belonging to
+members of that department and its descendants, including secondary members.
+
 
 Agent personalization has separate `skills`, `subagents`, `tools`,
 `agent_plugins` and `memory` module grants. Existing accounts retain their
@@ -223,7 +239,7 @@ credential/system files from workspace exports.
 |------|------|-------|
 | `WS /agents/{id}/chat/ws?token=<jwt>` | owner | Primary dashboard turn endpoint. Send `{"type":"user_turn", ...}` frames; server replies with harness stream chunks ending in `{"type":"done"}` or `{"type":"error","message":"..."}`. `{"type":"ping"}` → `{"type":"pong"}`. `{"type":"subscribe","thread_id"}` → `{"type":"turn_status","thread_id","active"}` (attach to an in-flight turn without cancelling on disconnect). `{"type":"cancel","thread_id"}` stops the active turn (explicit stop; disconnect alone does **not** cancel). |
 | `GET /agents/{id}/chat/welcome` | agent access | `{welcome_message, quick_prompts, task_examples}`; `task_examples` is `null` when the workspace field is absent |
-| `POST /agents/{id}/chat/polish` | owner | body `{text, default_model?}` → `{text}` (one-shot prompt refinement) |
+| `POST /text/assist` | agent access for chat; corresponding form permission otherwise | body `{kind, text?, context?, locale?, default_model?, agent_id?}` → `{text}`; `chat.prompt` requires `agent_id` and non-empty text; form kinds require `context.name`; suggestions are not persisted |
 | `POST /agents/{id}/chat/hitl/resume` | thread owner | body `{thread_id, pending_id, decisions: [...]}` → SSE; the exact current approval identity is required; stale/missing identities return `409 HITL_APPROVAL_STALE` |
 | `PATCH /agents/{id}/threads/{thread_id}` | thread owner | persist `conversation_mode: "ask" \| "plan" \| "craft"` and/or `hitl_policy: {mode: "ask" \| "allow_all" \| "allow_tools", tools?: string[]}` on the thread |
 
@@ -241,6 +257,20 @@ has not drained. HITL parks the same logical turn and resume retains its verifie
 user, feature workflow/private-memory scope and steering context. A restored
 checkpoint requires a newly reconstructed approval card; an old card cannot
 authorize a different restored action.
+
+Dashboard user messages can carry a stable `user_message_id` (or the user
+message's `id`) so refreshed history identifies the same turn without matching
+text. A new connection subscribes before steering admission. Deleting a thread
+while a turn is active returns `409 AGENT_BUSY`; no checkpoint or thread data is
+removed. History refresh retains a live reply and replaces completed local
+turns with persisted history using message identity.
+
+Text-assist form kinds include `expert.description`, `expert.welcome_message`,
+`team.description`, `team.welcome_message`, `feature.description`,
+`knowledge_base.description`, `skill_package.description` and the `skill.*`
+description, label, summary and body kinds. Their module permission is checked
+before model invocation; a supplied agent must also be accessible. Results are
+previewed and applied only after the caller confirms.
 
 ### Feature runs over the chat socket
 
@@ -344,7 +374,15 @@ the server derives one from `prompt`.
 
 Date jobs are one-shot: an atomic persisted claim prevents scheduled/manual
 races and restart replay. Success and failure both disable the job while
-retaining the outcome. Missed date windows are not replayed at startup.
+retaining the outcome. An unclaimed date job missed while the service was stopped
+is scheduled once on restart; a previously claimed job is not replayed. Changing
+to a different `date:` trigger clears the previous run outcome atomically with
+the new schedule. A disabled task must also be enabled to schedule the new run.
+
+Changing only metadata (name, prompt, model, session or connector selection)
+keeps an interval job's pending deadline while replacing the execution snapshot.
+A real trigger/enabled-state change rebuilds the schedule; an enabled job missing
+from the scheduler is attached again.
 
 A supplied `session_key` must belong to the task's user and agent, both when
 creating and updating the task. Execution checks that ownership before a
@@ -365,6 +403,32 @@ creating and updating the task. Execution checks that ownership before a
 
 Provider updates distinguish an omitted `api_key` (keep the stored credential),
 JSON `null` (clear it), and a replacement string (replace it).
+
+For OpenAI-compatible models, each model entry accepts
+`api_mode: "chat_completions" | "responses"` and
+`api_fallback: "none" | "chat_completions"`. Legacy entries default to Chat
+Completions, except existing Codex/native-tool-search configurations that
+already require Responses. Responses requests set `store: false`. Fallback
+requires Responses mode and explicit opt-in; only protocol compatibility
+rejections before output can retry with Chat Completions. Authentication,
+quota/balance, missing-model and ordinary server errors are not protocol
+fallbacks. Existing provider-SDK transport retry policies are unchanged. Probe
+responses report `fallback_used` / `api_mode_used`.
+Connectivity probes can use an unsaved model draft without registering it in
+the provider pool.
+
+New or replaced provider/voice/storage/Langfuse credentials are sealed by
+purpose before persistence. Legacy plaintext remains readable and is not
+automatically rewritten. Restore the `secrets` table together with ciphertext;
+the encryption keys are in the same database, so this does not protect against
+an attacker possessing the complete database.
+
+`POST /search/{provider_id}/test` accepts provider-specific `env_vars` without
+saving them. Providers are `tavily`, `brave`, `deepseek`, `google`, `kimi` and
+`yuanbao`; DeepSeek uses `DEEPSEEK_API_KEY`, Yuanbao uses
+`TENCENTCLOUD_WSA_APIKEY`. Saving search credentials uses the existing environment
+API and reloads running agents. The first fully configured provider in the
+listed order is selected; disabling its tool does not silently grant another.
 
 ## Models
 
@@ -508,13 +572,17 @@ document and compensates the ownership and ACL changes made by that attempt.
 |--------|------|------|-------|
 | `POST` | `/sharing/acl/{type}/{id}` | ACL manager | Request an access change; response `status` distinguishes `pending` from `applied` |
 | `GET` | `/sharing/changes` | scoped user | Change history or approval queue; includes before/after ACL snapshots and `rollback_of` for reversals |
-| `POST` | `/sharing/changes/{change_id}/approve` | admin | Apply a pending request only when its baseline ACL version and effective state still match; stale requests return 409 |
+| `POST` | `/sharing/changes/{change_id}/approve` | admin | Apply a pending request only when its recorded ACL baseline is still current; stale requests return 409 |
 | `POST` | `/sharing/changes/{change_id}/rollback` | ACL manager | Create a new reversal request and return its outcome, not the original change |
 
 A reversal follows the same widening/approval rules as a normal access change.
 Pending reversals do not alter the live ACL or mark the original change rolled
 back. That happens only when the reversal is applied; duplicate pending reversals
 are rejected. Approval checks and ACL writes share one database transaction.
+
+Re-saving an existing, identical ACL is idempotent and does not bump its version.
+The first explicit private ACL is not a no-op: it replaces an inherited or default
+policy with an explicit boundary and invalidates approvals captured before it existed.
 
 ## Feature business data
 

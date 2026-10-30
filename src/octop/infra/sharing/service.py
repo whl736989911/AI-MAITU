@@ -124,7 +124,8 @@ class SharingService:
         """
         self._require_resource_type(resource_type)
         actor_role = self._role_of(actor)
-        before = self._repo.get(resource_type, resource_id)
+        persisted_before = self._repo.get(resource_type, resource_id)
+        before = persisted_before
         if before is None:
             before = AclEntry(
                 resource_type=resource_type,
@@ -152,7 +153,9 @@ class SharingService:
             owner_user_id=before.owner_user_id,
             version=before.version + 1,
         )
-        if _acl_state_key(after) == _acl_state_key(before):
+        # A first explicit private ACL stops inheritance even if its fields match
+        # the synthetic default. Only an already-persisted policy can be a no-op.
+        if persisted_before is not None and _acl_state_key(after) == _acl_state_key(before):
             # Re-saving the current state is not a change. Writing it would bump the
             # version and silently invalidate every pending approval on this resource.
             return ChangeResult(
@@ -199,7 +202,7 @@ class SharingService:
                         conn,
                         resource_type,
                         resource_id,
-                        before,
+                        persisted_before,
                         after,
                         change_id=change.id,
                     )
@@ -223,7 +226,10 @@ class SharingService:
                 )
             current = self._repo.get(change.resource_type, change.resource_id, conn=conn)
             current_version = current.version if current is not None else 0
-            if current is not None:
+            if change.from_version == 0 and current_version > 0:
+                # Materializing the first ACL changes an inherited baseline.
+                state_matches = False
+            elif current is not None:
                 state_matches = _acl_state_key(current) == _logged_acl_state_key(
                     change, change.before_json
                 )

@@ -15,6 +15,7 @@ from octop.infra.cron.trigger import build_trigger
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.threads import ThreadRegistry
+from octop.infra.users.capabilities import UserCapabilityPolicy
 
 if TYPE_CHECKING:
     from octop.infra.db.repos.cron import CronJobRow
@@ -61,6 +62,7 @@ class CronManager:
         self._gateway = gateway
         self._delivery_service = delivery_service
         self._repos = repos
+        self._capability_policy = UserCapabilityPolicy(repos)
         self._timezone = timezone
         self._scheduler: AsyncIOScheduler = AsyncIOScheduler(timezone=timezone)
         self._lock = asyncio.Lock()
@@ -70,6 +72,7 @@ class CronManager:
     def replace_repos(self, repos: RepoBundle) -> None:
         """Point cron persistence at a rebound control-plane pool."""
         self._repos = repos
+        self._capability_policy.replace_repos(repos)
         self._delivery_service.replace_repos(repos)
 
     async def boot(self) -> None:
@@ -210,13 +213,25 @@ class CronManager:
                 repo_kwargs["mcp_servers"] = (
                     list(mcp_servers) if isinstance(mcp_servers, list) else []
                 )
+            repo_kwargs["reset_run_state"] = (
+                trigger is not None and trigger != existing.trigger and trigger.startswith("date:")
+            )
             self._repos.cron_repo.update(cron_id, **repo_kwargs)
             row = self._repos.cron_repo.get(cron_id)
             if row is None:
                 raise OctopError(ErrorCode.NOT_FOUND, f"cron job {cron_id!r} not found")
-            self._unschedule(cron_id)
-            if row.enabled:
+            schedule_changed = row.trigger != existing.trigger or bool(row.enabled) != bool(
+                existing.enabled
+            )
+            scheduled = self._scheduler.get_job(cron_id)
+            if not row.enabled:
+                self._unschedule(cron_id)
+            elif schedule_changed or scheduled is None:
+                self._unschedule(cron_id)
                 self._schedule(row)
+            else:
+                # Replace the callable's row snapshot, not the pending trigger/deadline.
+                self._scheduler.modify_job(cron_id, func=self._make_job(row).run)
             logger.info("CronJob %s updated", cron_id)
             return row
 
@@ -247,6 +262,7 @@ class CronManager:
             delivery_service=self._delivery_service,
             cron_repo=self._repos.cron_repo,
             audit_repo=self._repos.audit_repo,
+            user_policy=self._capability_policy,
         )
 
     def _schedule(self, row: Any) -> None:

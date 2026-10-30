@@ -1042,6 +1042,10 @@ class KnowledgeService:
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
         self.require_document_writable(document, actor_user_id=actor_user_id)
+        if document.is_dir:
+            for descendant in self._repo.list_documents(kb_id):
+                if descendant.path.startswith(document.path + "/"):
+                    self.require_document_writable(descendant, actor_user_id=actor_user_id)
         normalized_target = normalize_kb_path(target_folder or "")
         if normalized_target:
             folder = self._repo.get_document_by_path(kb_id, normalized_target)

@@ -14,6 +14,8 @@ import {
 import { message } from "@/utils/antdMessage";
 
 import { request } from "../../../api/request";
+import { publicUrl } from "../../../utils/publicUrl";
+
 import { octopAgentsApi } from "../../../api/modules/octopAgents";
 import {
   expertMarketApi,
@@ -27,6 +29,7 @@ import { skillPackagesApi } from "../../../api/modules/skillPackages";
 import type { SkillPackage } from "../../../api/types/skillPackage";
 import { AgentAdvancedConfigFields } from "../../../components/AgentAdvancedConfigFields";
 import ExpertColorPicker from "../../../components/ExpertColorPicker";
+import { TextAssistBar } from "../../../components/TextAssistBar";
 import AgentTrajectoryField from "./AgentTrajectoryField";
 import {
   apiErrorMessage,
@@ -602,7 +605,10 @@ export default function CreateFromExpertDrawer({
           showIcon
           message={t("experts.noModelsWarning")}
           action={
-            <a href="/admin/models" style={{ whiteSpace: "nowrap" }}>
+            <a
+              href={publicUrl("/admin/models")}
+              style={{ whiteSpace: "nowrap" }}
+            >
               {t("experts.goToAdmin")}
             </a>
           }
@@ -650,14 +656,41 @@ export default function CreateFromExpertDrawer({
           <Input placeholder={t("experts.customIdPlaceholder")} allowClear />
         </Form.Item>
 
-        <Form.Item name="description" label={t("experts.agentDescription")}>
+        <Form.Item
+          name="description"
+          label={t("experts.agentDescription")}
+          extra={
+            <TextAssistBar
+              kind="expert.description"
+              scopeKey={`${open}:${sourceKey}`}
+              getText={() => form.getFieldValue("description") ?? ""}
+              getName={() => form.getFieldValue("name") ?? ""}
+              getDefaultModel={() => form.getFieldValue("default_model")}
+              onApply={(text) => form.setFieldValue("description", text)}
+              disabled={submitting}
+            />
+          }
+        >
           <Input.TextArea rows={2} />
         </Form.Item>
 
         <Form.Item
           name="welcome_message"
           label={t("experts.welcomeMessageTitle")}
-          extra={t("experts.createWelcomeHint")}
+          extra={
+            <>
+              {t("experts.createWelcomeHint")}
+              <TextAssistBar
+                kind="expert.welcome_message"
+                scopeKey={`${open}:${sourceKey}`}
+                getText={() => form.getFieldValue("welcome_message") ?? ""}
+                getName={() => form.getFieldValue("name") ?? ""}
+                getDefaultModel={() => form.getFieldValue("default_model")}
+                onApply={(text) => form.setFieldValue("welcome_message", text)}
+                disabled={submitting}
+              />
+            </>
+          }
         >
           <Input.TextArea
             rows={2}

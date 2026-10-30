@@ -90,3 +90,51 @@ async def test_brave_ok(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     assert result["success"] is True
     assert result["result_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_deepseek_probe_uses_request_key_only(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.deepseek.com"
+        assert request.headers.get("Authorization") == "Bearer deepseek-key"
+        assert request.read()
+        return httpx.Response(200, json={"results": [{"title": "result"}]})
+
+    _patch_client(monkeypatch, httpx.MockTransport(handler))
+    result = await search_probe.probe_search_provider(
+        "deepseek", {"DEEPSEEK_API_KEY": " deepseek-key ", "TAVILY_API_KEY": "unrelated"}
+    )
+    assert result["success"] is True
+    assert result["provider_id"] == "deepseek"
+    assert result["result_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_yuanbao_probe_parses_provider_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.host == "api.wsa.cloud.tencent.com"
+        assert request.headers.get("Authorization") == "Bearer tencent-key"
+        return httpx.Response(
+            200,
+            json={"Response": {"Error": {"Code": "RequestLimitExceeded", "Message": "slow down"}}},
+        )
+
+    _patch_client(monkeypatch, httpx.MockTransport(handler))
+    result = await search_probe.probe_search_provider(
+        "yuanbao", {"TENCENTCLOUD_WSA_APIKEY": "tencent-key"}
+    )
+    assert result["success"] is False
+    assert result["error_type"] == "rate_limit"
+
+
+@pytest.mark.asyncio
+async def test_http_rate_limit_has_distinct_error_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, text="too many requests")
+
+    _patch_client(monkeypatch, httpx.MockTransport(handler))
+    result = await search_probe.probe_search_provider(
+        "deepseek", {"DEEPSEEK_API_KEY": "deepseek-key"}
+    )
+    assert result["success"] is False
+    assert result["error_type"] == "rate_limit"

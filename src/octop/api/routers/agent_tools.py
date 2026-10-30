@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from octop.api.common.agent import AgentCapability, assert_agent_capability_write, require_agent_row
-from octop.api.deps import current_user, get_server, require_permission
+from octop.api.deps import current_user, get_server, require_permission, unit_grants_for
 from octop.i18n.domains.tools import tool_display_name
 from octop.infra.agents.plugin_tool_defaults import merge_plugins_tool_settings
 from octop.infra.agents.tool_catalog import (
@@ -22,6 +22,19 @@ from octop.infra.server import OctopServer
 from octop.infra.utils.locale import resolve_request_locale
 
 router = APIRouter(prefix="/agents", tags=["agents"])
+
+
+def _require_tool_config_permission(
+    user: Any, server: OctopServer, before: dict[str, Any], after: dict[str, Any]
+) -> None:
+    from octop.infra.agents.config_permissions import require_config_permissions
+    from octop.infra.users.permissions import effective_permissions
+
+    require_config_permissions(
+        before,
+        after,
+        effective_permissions(user, unit_grants=unit_grants_for(server, user)),
+    )
 
 
 class ToolSettingsItem(BaseModel):
@@ -131,12 +144,24 @@ async def put_tool_settings(
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     assert_agent_capability_write(row, user, AgentCapability.CONFIGURATION, server=server)
-    await registry.persist_tools_disabled(agent_id, set(body.disabled_builtin))
-
+    cfg = registry.get_config(agent_id)
+    next_disabled = normalize_tools_disabled(body.disabled_builtin)
+    next_config = dict(cfg)
+    next_config["tools_disabled"] = next_disabled
+    _require_tool_config_permission(user, server, cfg, next_config)
+    merged_plugins: dict[str, Any] | None = None
     if body.plugins is not None:
-        cfg = registry.get_config(agent_id)
-        merged = merge_plugins_tool_settings(cfg.get("plugins"), body.plugins)
-        await registry.persist_plugin_tools_config(agent_id, merged)
+        previous_plugins = cfg.get("plugins")
+        merged_plugins = merge_plugins_tool_settings(previous_plugins, body.plugins)
+        _require_tool_config_permission(
+            user,
+            server,
+            {"plugins": previous_plugins} if previous_plugins is not None else {},
+            {"plugins": merged_plugins},
+        )
+    await registry.persist_tools_disabled(agent_id, set(next_disabled))
+    if merged_plugins is not None:
+        await registry.persist_plugin_tools_config(agent_id, merged_plugins)
 
     return await get_tool_settings(agent_id, request, server, user)
 
@@ -178,6 +203,9 @@ async def patch_tool_setting(
             disabled.discard(name)
         else:
             disabled.add(name)
+        updated_config = dict(cfg)
+        updated_config["tools_disabled"] = sorted(disabled)
+        _require_tool_config_permission(user, server, cfg, updated_config)
         await registry.persist_tools_disabled(agent_id, disabled)
     else:
         plugin_id = (body.plugin_id or "").strip()
@@ -190,6 +218,12 @@ async def patch_tool_setting(
         merged = merge_plugins_tool_settings(
             cfg.get("plugins"),
             {plugin_id: {"tools": {name: {"enabled": body.enabled}}}},
+        )
+        _require_tool_config_permission(
+            user,
+            server,
+            {"plugins": cfg.get("plugins")} if cfg.get("plugins") is not None else {},
+            {"plugins": merged},
         )
         await registry.persist_plugin_tools_config(agent_id, merged)
 

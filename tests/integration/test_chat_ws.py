@@ -120,6 +120,51 @@ async def test_ws_rebind_after_disconnect_receives_later_chunks(env: Any) -> Non
     assert frames[-1].get("type") == "done"
 
 
+async def test_new_steering_socket_subscribes_before_admission_and_receives_stream(
+    env: Any,
+) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    created = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    thread_id = created.json()["thread_id"]
+    agent = srv.app_runtime.agent_registry.get_agent(aid)
+    gate = asyncio.Event()
+
+    async def slow_stream(request: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
+        yield {"type": "token", "node": "agent", "content": "first"}
+        await gate.wait()
+        yield {"type": "token", "node": "agent", "content": "second"}
+
+    agent.stream = slow_stream
+    async with _chat_ws(c, aid, alice_auth) as original:
+        await original.send_json({"type": "user_turn", "text": "start", "thread_id": thread_id})
+        started = await original.receive_json()
+        assert started["type"] == "turn.started"
+        first = await original.receive_json()
+        assert first.get("content") == "first"
+
+        async with _chat_ws(c, aid, alice_auth) as steering:
+            await steering.send_json(
+                {
+                    "type": "user_turn",
+                    "text": "steer while active",
+                    "thread_id": thread_id,
+                    "delivery": "steer",
+                    "expected_turn_id": started["turn_id"],
+                    "client_pending_id": "steering-turn",
+                }
+            )
+            queued_frames = [await steering.receive_json(), await steering.receive_json()]
+            assert any(frame.get("type") == "steer.ack" for frame in queued_frames)
+            assert any(frame.get("type") == "steer.queued" for frame in queued_frames)
+            gate.set()
+            received = await steering.drain_turn()
+
+    assert any(
+        frame.get("type") == "token" and frame.get("content") == "second" for frame in received
+    )
+    assert any(frame.get("type") == "done" for frame in received)
+
+
 async def _turn_with_second_subscriber(
     c: httpx.AsyncClient,
     aid: str,
@@ -453,9 +498,9 @@ async def test_ws_accepts_skills_and_model(env: Any) -> None:
 async def test_polish_rejects_empty_text(env: Any) -> None:
     c, _srv, _fake, alice_auth, _bob_auth, aid = env
     r = await c.post(
-        f"/api/agents/{aid}/chat/polish",
+        "/api/text/assist",
         headers=alice_auth,
-        json={"text": "   "},
+        json={"kind": "chat.prompt", "agent_id": aid, "text": "   "},
     )
     assert r.status_code == 400
 
@@ -482,6 +527,35 @@ async def test_thread_history_after_stream(env: Any) -> None:
     hist = await c.get(f"/api/agents/{aid}/threads/{tid}/history", headers=alice_auth)
     assert hist.status_code == 200
     assert "messages" in hist.json()
+
+
+async def test_ws_user_message_ids_preserve_repeated_text_turns(env: Any) -> None:
+    c, _srv, _fake, alice_auth, _bob_auth, aid = env
+    created = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    thread_id = created.json()["thread_id"]
+
+    for message_id in ("send-one", "send-two"):
+        await _consume_ws_turn(
+            c,
+            aid,
+            alice_auth,
+            text="same question",
+            thread_id=thread_id,
+            extra={
+                "user_message_id": message_id,
+                "messages": [{"id": message_id, "role": "user", "content": "same question"}],
+            },
+        )
+
+    await asyncio.sleep(0.05)
+    history = await c.get(
+        f"/api/agents/{aid}/threads/{thread_id}/history",
+        headers=alice_auth,
+    )
+    assert history.status_code == 200, history.text
+    users = [m for m in history.json()["messages"] if m["role"] == "user"]
+    assert [m["id"] for m in users] == ["send-one", "send-two"]
+    assert len(users) == 2
 
 
 async def test_thread_history_reports_active_turn(env: Any) -> None:
@@ -751,3 +825,27 @@ async def test_fork_thread_before_user_turn_refuses_with_pending_hitl(env: Any) 
         json={"user_turns_from_end": 1},
     )
     assert paused.status_code == 409, paused.text
+
+
+async def test_delete_thread_refuses_while_steering_turn_is_active(env: Any) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    created = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    assert created.status_code == 201, created.text
+    thread_id = created.json()["thread_id"]
+    steer = srv.app_runtime.gateway.steer
+    turn_id = await steer.begin_turn(thread_id, "client-turn")
+
+    rejected = await c.delete(
+        f"/api/agents/{aid}/threads/{thread_id}",
+        headers=alice_auth,
+    )
+    assert rejected.status_code == 409, rejected.text
+    assert srv.app_runtime.gateway.thread_registry.get_thread(thread_id) is not None
+
+    await srv.app_runtime.gateway.complete_steering_turn(thread_id, turn_id)
+    deleted = await c.delete(
+        f"/api/agents/{aid}/threads/{thread_id}",
+        headers=alice_auth,
+    )
+    assert deleted.status_code == 204, deleted.text
+    assert srv.app_runtime.gateway.thread_registry.get_thread(thread_id) is None

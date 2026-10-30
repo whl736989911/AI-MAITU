@@ -1,4 +1,13 @@
 {
+  "textAssist": {
+    "hint": "AI 建议会先供你预览，只有确认后才会写入字段。",
+    "action": "AI 辅助",
+    "nameRequired": "请先填写名称，再生成建议。",
+    "emptyResult": "模型未返回建议内容。",
+    "failed": "AI 文本辅助失败，请重试。",
+    "apply": "应用建议",
+    "discard": "放弃"
+  },
   "interfacePreview": {
     "chatFlow": {
       "genericReceipt": "本地演示回执。没有访问聊天、工作区、知识库、浏览器或终端 API。",
@@ -2553,6 +2562,12 @@
       "configured": "已配置",
       "unconfigured": "未配置",
       "providers": {
+        "deepseek": {
+          "desc": "配置 DeepSeek API 密钥后，可使用 DeepSeek 实时联网搜索。"
+        },
+        "yuanbao": {
+          "desc": "配置腾讯云 WSA API 密钥后，可使用腾讯元宝联网搜索。"
+        },
         "tavily": {
           "desc": "AI 驱动的网络搜索，提供智能摘要答案"
         },
@@ -3168,11 +3183,11 @@
         "hint": "每个版式按图纸文字或文件名匹配；命中的版式决定字段从标题栏哪里取值。",
         "empty": "尚未配置抽取规则",
         "noFields": "每个版式至少需要一个字段映射",
-        "profileName": "版式名称（如：锻造工艺卡）",
+        "profileName": "版式名称",
         "whenLabels": "包含文字",
         "whenLabelsPlaceholder": "任意一个出现即匹配，逗号分隔",
         "whenFilename": "文件名匹配",
-        "whenFilenamePlaceholder": "正则，如 模具",
+        "whenFilenamePlaceholder": "正则表达式",
         "field": "字段",
         "sourceLabel": "标题栏文字",
         "sourceDimensions": "尺寸标注",
@@ -4109,10 +4124,13 @@
     "after": "改为"
   },
   "tools": {
+    "deepseek_search": "DeepSeek 联网搜索",
+    "yuanbao_search": "元宝联网搜索",
     "unknown": "未知工具",
     "read_file": "读取文件",
     "write_file": "写入文件",
     "edit_file": "编辑文件",
+    "delete": "删除文件",
     "bash": "Shell 命令 (bash)",
     "execute": "执行指令",
     "current_time": "当前时间",
@@ -5447,6 +5465,15 @@
     "stepActive": "生效"
   },
   "models": {
+    "apiMode": "API 协议",
+    "apiModeHint": "为此模型选择请求协议。已有模型默认使用 Chat Completions。",
+    "apiModeChatCompletions": "Chat Completions",
+    "apiModeResponses": "Responses API",
+    "apiFallback": "Responses 兼容性回退",
+    "apiFallbackHint": "仅当服务端明确拒绝 Responses 协议时回退到 Chat Completions；认证、额度、模型缺失和一般服务器错误不触发协议回退。SDK 自身的重试策略不变。",
+    "apiFallbackNone": "不回退",
+    "apiFallbackChatCompletions": "协议不兼容时改用 Chat Completions",
+    "apiFallbackUsed": "Responses API 被拒绝；探测已通过 Chat Completions 成功。",
     "llmConfiguration": "大语言模型配置",
     "providersTitle": "模型提供商",
     "providersDescription": "为每个模型提供商配置 API 密钥和接入端点。",

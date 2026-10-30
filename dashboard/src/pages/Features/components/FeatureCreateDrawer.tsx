@@ -24,6 +24,7 @@ import {
   featuresApi,
   type FeatureTemplate,
 } from "../../../api/modules/features";
+import { TextAssistBar } from "../../../components/TextAssistBar";
 import { apiErrorMessage } from "../../../utils/apiError";
 import {
   MODEL_AUTO_VALUE,
@@ -31,6 +32,8 @@ import {
   defaultModelFromForm,
 } from "../../../utils/modelOptions";
 import { useAgentFormResources } from "../../../hooks/useAgentFormResources";
+import { publicUrl } from "../../../utils/publicUrl";
+
 import styles from "../../Experts/index.module.less";
 
 interface FeatureFormValues {
@@ -129,7 +132,10 @@ export default function FeatureCreateDrawer({
           showIcon
           message={t("experts.noModelsWarning")}
           action={
-            <a href="/admin/models" style={{ whiteSpace: "nowrap" }}>
+            <a
+              href={publicUrl("/admin/models")}
+              style={{ whiteSpace: "nowrap" }}
+            >
               {t("experts.goToAdmin")}
             </a>
           }
@@ -163,7 +169,21 @@ export default function FeatureCreateDrawer({
           <Input autoComplete="off" />
         </Form.Item>
 
-        <Form.Item name="description" label={t("features.description")}>
+        <Form.Item
+          name="description"
+          label={t("features.description")}
+          extra={
+            <TextAssistBar
+              kind="feature.description"
+              scopeKey={open ? "open" : "closed"}
+              getText={() => form.getFieldValue("description") ?? ""}
+              getName={() => form.getFieldValue("name") ?? ""}
+              getDefaultModel={() => form.getFieldValue("default_model")}
+              onApply={(text) => form.setFieldValue("description", text)}
+              disabled={submitting}
+            />
+          }
+        >
           <Input.TextArea rows={3} />
         </Form.Item>
 

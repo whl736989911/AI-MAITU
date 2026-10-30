@@ -84,6 +84,18 @@ def test_search_env_changed_detects_tavily() -> None:
     assert search_env_changed({"FOO": "1"}, {"FOO": "2"}) is False
 
 
+def test_search_env_changed_detects_deepseek_and_yuanbao() -> None:
+    assert search_env_changed({}, {"DEEPSEEK_API_KEY": "x"}) is True
+    assert search_env_changed({}, {"TENCENTCLOUD_WSA_APIKEY": "x"}) is True
+    assert (
+        search_env_changed(
+            {"DEEPSEEK_API_KEY": "old"},
+            {"DEEPSEEK_API_KEY": "new"},
+        )
+        is True
+    )
+
+
 def test_escaped_values_roundtrip() -> None:
     values = {
         "WINDOWS_PATH": r"C:\Users\me\AppData",

@@ -8,12 +8,16 @@ export interface TestProviderDraftParams {
   model_id: string;
   extra_json?: string | null;
   embedding?: boolean;
+  api_mode?: "chat_completions" | "responses";
+  api_fallback?: "none" | "chat_completions";
 }
 
 export interface TestProviderResult {
   ok: boolean;
   latency_ms?: number;
   error?: string;
+  api_mode?: "chat_completions" | "responses";
+  fallback_used?: boolean;
 }
 
 export async function testProviderDraft(
@@ -29,6 +33,8 @@ export async function testProviderDraft(
       model_id: params.model_id,
       extra_json: params.extra_json ?? null,
       embedding: params.embedding === true,
+      api_mode: params.api_mode ?? "chat_completions",
+      api_fallback: params.api_fallback ?? "none",
     }),
   });
 }

@@ -8,6 +8,7 @@ from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response
+from pydantic import Field
 
 from octop.api.common.agent import (
     assert_agent_access_row,
@@ -39,11 +40,33 @@ from octop.infra.agents.runtime_limits import (
     agent_runtime_values,
 )
 from octop.infra.errors import ErrorCode, OctopError
-from octop.infra.users.permissions import user_has_permission
+from octop.infra.users.permissions import effective_permissions, user_has_permission
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _effective_module_permissions(user: Any, server: Any) -> set[str]:
+    return set(effective_permissions(user, unit_grants=unit_grants_for(server, user)))
+
+
+def _require_agent_config_permissions(
+    before: dict[str, Any],
+    after: dict[str, Any],
+    user: Any,
+    server: Any,
+    *,
+    top_level_changes: dict[str, str] | None = None,
+) -> None:
+    from octop.infra.agents.config_permissions import require_config_permissions
+
+    require_config_permissions(
+        before,
+        after,
+        _effective_module_permissions(user, server),
+        top_level_changes=top_level_changes,
+    )
 
 
 def _feature_can_manage(row: Any, user: Any, server: Any) -> bool:
@@ -64,7 +87,14 @@ class AgentCreateBody(AgentRuntimeFields):
     default_model: str | None = None
     system_prompt: str | None = None
     conversation_mode: Literal["ask", "plan", "craft"] | None = None
-    config: dict[str, Any] = {}
+    config: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "Per-agent runtime configuration. Explicit tool, skill, plugin, memory, "
+            "connector and execution settings require their matching module permissions. "
+            "Deployment-managed workspace paths cannot be overridden."
+        ),
+    )
     icon: str | None = None
     template_name: str | None = None
     is_shared: bool = False
@@ -84,7 +114,14 @@ class AgentPatchBody(AgentRuntimeFields):
     default_model: str | None = None
     system_prompt: str | None = None
     conversation_mode: Literal["ask", "plan", "craft"] | None = None
-    config: dict[str, Any] | None = None
+    config: dict[str, Any] | None = Field(
+        default=None,
+        description=(
+            "Replacement runtime configuration, not a merge. Changing or removing protected "
+            "settings requires the matching module permissions; unchanged settings may be "
+            "returned without additional grants. Execution still checks the current caller."
+        ),
+    )
     icon: str | None = None
     template_name: str | None = None
     is_shared: bool | None = None
@@ -358,6 +395,22 @@ async def create_agent(
     config = dict(body.config)
     if body.conversation_mode is not None:
         config["conversation_mode"] = body.conversation_mode
+    top_level_changes = {
+        field: permission
+        for field, permission in (
+            ("skill_package_ids", "skills"),
+            ("knowledge_base_ids", "knowledge_bases"),
+            ("mcp_servers", "connectors"),
+            ("persona_mbti", "mbti"),
+        )
+        if getattr(body, field) is not None
+        and (
+            bool(getattr(body, field))
+            if field != "persona_mbti"
+            else bool(str(getattr(body, field)).strip())
+        )
+    }
+    _require_agent_config_permissions({}, config, user, server, top_level_changes=top_level_changes)
     assert_user_backend_root_dirs(
         user,
         config.get("backend"),
@@ -458,6 +511,32 @@ async def patch_agent(
     if row is None:
         raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
     _assert_agent_owner(row, user, server=server)
+    before_config = parse_config_json(row.config_json)
+    proposed_config = dict(body.config) if body.config is not None else dict(before_config)
+    if "conversation_mode" in body.model_fields_set:
+        if body.conversation_mode is None:
+            proposed_config.pop("conversation_mode", None)
+        else:
+            proposed_config["conversation_mode"] = body.conversation_mode
+    top_level_changes: dict[str, str] = {}
+    for field, permission, old_value in (
+        ("skill_package_ids", "skills", id_list_from_row(row, "skill_package_ids")),
+        ("knowledge_base_ids", "knowledge_bases", id_list_from_row(row, "knowledge_base_ids")),
+        ("mcp_servers", "connectors", id_list_from_row(row, "mcp_servers")),
+    ):
+        new_value = getattr(body, field)
+        if new_value is not None and list(new_value) != old_value:
+            top_level_changes[field] = permission
+    if (
+        "persona_mbti" in body.model_fields_set
+        and str(body.persona_mbti or "").strip().upper()
+        != str(row.persona_mbti or "").strip().upper()
+    ):
+        top_level_changes["persona_mbti"] = "mbti"
+    if body.config is not None or "conversation_mode" in body.model_fields_set or top_level_changes:
+        _require_agent_config_permissions(
+            before_config, proposed_config, user, server, top_level_changes=top_level_changes
+        )
     if body.config is not None and isinstance(body.config, dict):
         assert_user_backend_root_dirs(
             user,

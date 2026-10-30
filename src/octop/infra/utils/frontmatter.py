@@ -33,7 +33,7 @@ def _find_frontmatter(text: str) -> tuple[int, int] | None:
             # Skip HTML comment blocks: <!-- ... -->
             if line.startswith("<!--"):
                 # Find the closing -->
-                close = text.find("-->", nxt)
+                close = text.find("-->", idx)
                 if close == -1:
                     return None
                 idx = close + 3
@@ -65,8 +65,9 @@ def parse_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     no-frontmatter (the file is its own body).
 
     The frontmatter block may be preceded by HTML comments or empty lines;
-    the first ``---`` ... ``---`` fence anywhere in the file is used.
+    a leading UTF-8 BOM is ignored before looking for the first fence.
     """
+    text = text.removeprefix("\ufeff")
     positions = _find_frontmatter(text)
     if positions is None:
         return {}, text
@@ -89,4 +90,4 @@ def is_agent_file(text: str) -> bool:
     Leading HTML comments and empty lines are tolerated; the first
     ``---\\n`` fence in the file is recognized as the frontmatter start.
     """
-    return _find_frontmatter(text) is not None
+    return _find_frontmatter(text.removeprefix("\ufeff")) is not None

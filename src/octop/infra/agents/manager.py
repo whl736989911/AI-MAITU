@@ -88,8 +88,6 @@ from octop.infra.backend.resolver import (
 )
 from octop.infra.connectors.builder import (
     build_mcp_server_configs_for_user,
-    gateway_mcp_server_names,
-    inject_missing_gateway_tools,
 )
 from octop.infra.connectors.service import ConnectorService
 from octop.infra.db.repos.audit import ACTOR_SYSTEM
@@ -376,9 +374,13 @@ class AgentManager:
         expert_catalog: ExpertCatalog | None = None,
         plugin_manager: PluginManager | None = None,
     ) -> None:
+        from octop.config import OctopConfig as _OctopConfig
+
         self._repos = repos
+        from octop.infra.users.capabilities import UserCapabilityPolicy
+
+        self._capability_policy = UserCapabilityPolicy(repos)
         self._paths = paths
-        from octop.config import OctopConfig as _OctopConfig  # noqa: PLC0415
 
         self._config = config or _OctopConfig()
         self._expert_catalog = expert_catalog
@@ -455,6 +457,7 @@ class AgentManager:
     def replace_persistence(self, repos: RepoBundle, config: OctopConfig) -> None:
         """Retarget repos/config and rebuild settings stores after control-plane rebind."""
         self._repos = repos
+        self._capability_policy.replace_repos(repos)
         self._config = config
         self._langfuse = LangfuseSettingsStore(
             settings_repo=repos.settings_repo,
@@ -532,12 +535,13 @@ class AgentManager:
 
     async def boot(self) -> None:
         # Direct-entry license gate: registry boot is business execution.
+        from octop.infra.agents.providers.harness_factory import OctopHarnessAgentManager
         from octop.infra.licensing import current_license
 
         current_license().require_business_access()
         self._tool_guard_rules.ensure_seeded()
         providers = self._providers.build_harness_configs()
-        self._harness_manager = HarnessAgentManager(
+        self._harness_manager = OctopHarnessAgentManager(
             providers=providers,
             langfuse=self._langfuse.harness_config(),
             team_processor=self._team_processor,
@@ -1895,6 +1899,7 @@ class AgentManager:
         spec: dict[str, Any],
     ) -> list[Any]:
         """Load custom MCP tools once per user/server/fingerprint; share across agents."""
+        self._capability_policy.require_permissions(user_id, {"connectors"})
         from harness_agent.mcp import aload_mcp_tools
 
         from octop.infra.connectors.mcp_tool_cache import (
@@ -1987,187 +1992,20 @@ class AgentManager:
         *,
         connector_user_id: int | None = None,
     ) -> list[str]:
-        """Ensure requested MCP servers are configured and tools are loaded before chat.
+        """Load exact caller-owned MCP tools into the current turn registry.
 
-        Custom MCP tools are loaded on demand and shared via a user-level cache.
-        Built-in connectors still use reload_connectors when missing.
-
-        On somebody else's agent (a shared expert) the caller's tools are kept
-        off the agent entirely: they carry the caller's credentials, and the
-        agent is used by more than one user. They go to the per-turn registry
-        :class:`~octop.infra.agents.middleware.turn_mcp.TurnMcpToolsMiddleware`
-        serves from instead.
-
-        Returns server names that still have no loaded tools after reload/retry.
+        MCP objects never enter the shared agent's persistent tool list; the
+        turn middleware replaces model tool calls with the exact selected caller
+        objects before execution.
         """
         row = self.get_row(agent_id)
         if not names or row is None or is_team_agent(row):
             return []
-        agent = self.get_agent(agent_id)
-        uid = self._connector_uid_for(row, connector_user_id=connector_user_id) if row else None
-        if uid is None and connector_user_id is not None:
-            uid = connector_user_id
-        if row is not None and uid is not None and row.user_id != uid:
-            logger.info(
-                "prepare_chat_mcp agent=%s owner=%s caller=%s requested=%s: turn-scoped tools",
-                agent_id,
-                row.user_id,
-                uid,
-                names,
-            )
-            return await self._prepare_turn_mcp_tools(agent_id, uid, names)
-
-        tool_set: frozenset[str] = getattr(agent, "_mcp_tool_name_set", frozenset())
-        missing_tools = [n for n in names if not any(t.startswith(f"{n}_") for t in tool_set)]
-        logger.info(
-            "prepare_chat_mcp agent=%s connector_user_id=%s requested=%s tool_count=%d missing=%s",
-            agent_id,
-            connector_user_id,
-            names,
-            len(tool_set),
-            missing_tools,
-        )
-        if not missing_tools:
-            matched = sorted(t for t in tool_set if any(t.startswith(f"{n}_") for n in names))
-            logger.info(
-                "prepare_chat_mcp agent=%s: MCP already ready, matching_tools=%s",
-                agent_id,
-                matched,
-            )
-            return []
-
-        custom_configs: dict[str, Any] = {}
-        if uid is not None:
-            custom_configs = self._connector_svc.custom_harness_configs(uid)
-
-        custom_missing = [n for n in missing_tools if n in custom_configs]
-        builtin_missing = [n for n in missing_tools if n not in custom_configs]
-
-        if custom_missing and uid is not None:
-            for name in custom_missing:
-                spec = custom_configs[name]
-                if not isinstance(spec, dict) or not spec.get("transport"):
-                    continue
-                try:
-                    tools = await self._get_or_load_mcp_tools(uid, name, spec)
-                except Exception:
-                    logger.exception(
-                        "prepare_chat_mcp agent=%s: failed loading custom MCP %s",
-                        agent_id,
-                        name,
-                    )
-                    continue
-                if tools:
-                    try:
-                        agent.append_mcp_tools(tools)
-                    except Exception:
-                        logger.exception(
-                            "prepare_chat_mcp agent=%s: append_mcp_tools failed for %s",
-                            agent_id,
-                            name,
-                        )
-                        continue
-                agent.config.mcp_server_configs[name] = dict(spec)
-
-        gateway_missing: list[str] = []
-        if builtin_missing and uid is not None:
-            gateway_names = gateway_mcp_server_names(
-                connector_repo=self._repos.connector_repo,
-                user_id=uid,
-            )
-            gateway_missing = [n for n in builtin_missing if n in gateway_names]
-            builtin_missing = [n for n in builtin_missing if n not in gateway_names]
-
-        if gateway_missing and uid is not None:
-            await self._attach_gateway_tools(
-                agent,
-                agent_id=agent_id,
-                user_id=uid,
-                server_names=gateway_missing,
-            )
-
-        if builtin_missing:
-            logger.info(
-                "Reloading agent %s MCP tools (builtin_missing=%s)",
-                agent_id,
-                builtin_missing,
-            )
-            await self.reload_connectors(agent_id, connector_user_id=connector_user_id)
-            agent = self.get_agent(agent_id)
-            tool_set = getattr(agent, "_mcp_tool_name_set", frozenset())
-            still_builtin = [
-                n
-                for n in builtin_missing
-                if n in agent.config.mcp_server_configs
-                and not any(t.startswith(f"{n}_") for t in tool_set)
-            ]
-            still_builtin.extend(
-                n for n in builtin_missing if n not in agent.config.mcp_server_configs
-            )
-            still_builtin = sorted(set(still_builtin))
-            if still_builtin:
-                from harness_agent.mcp import aload_mcp_tools
-
-                from octop.infra.utils.env_file import (
-                    env_file_path,
-                    load_env_file,
-                    overlay_stdio_mcp_configs,
-                )
-
-                subset = {
-                    n: agent.config.mcp_server_configs[n]
-                    for n in still_builtin
-                    if isinstance(agent.config.mcp_server_configs.get(n), dict)
-                    and agent.config.mcp_server_configs[n].get("transport")
-                }
-                if subset:
-                    logger.info(
-                        "prepare_chat_mcp agent=%s: targeted MCP reload for %s",
-                        agent_id,
-                        sorted(subset),
-                    )
-                    global_env = load_env_file(env_file_path(self._paths.root))
-                    extra = await aload_mcp_tools(overlay_stdio_mcp_configs(subset, global_env))
-                    if extra:
-                        sanitize_plugin_tool_names(extra)
-                        agent.append_mcp_tools(extra)
-
-            # Full reload drops previously appended custom tools — re-inject from cache.
-            if custom_configs and uid is not None:
-                agent = self.get_agent(agent_id)
-                tool_set = getattr(agent, "_mcp_tool_name_set", frozenset())
-                for name in names:
-                    if name not in custom_configs:
-                        continue
-                    if any(t.startswith(f"{name}_") for t in tool_set):
-                        continue
-                    spec = custom_configs[name]
-                    if not isinstance(spec, dict) or not spec.get("transport"):
-                        continue
-                    try:
-                        tools = await self._get_or_load_mcp_tools(uid, name, spec)
-                    except Exception:
-                        logger.exception(
-                            "prepare_chat_mcp agent=%s: re-inject custom MCP %s failed",
-                            agent_id,
-                            name,
-                        )
-                        continue
-                    if tools:
-                        agent.append_mcp_tools(tools)
-                        agent.config.mcp_server_configs[name] = dict(spec)
-                    tool_set = getattr(agent, "_mcp_tool_name_set", frozenset())
-
-        agent = self.get_agent(agent_id)
-        tool_set = getattr(agent, "_mcp_tool_name_set", frozenset())
-        still_missing = sorted(n for n in names if not any(t.startswith(f"{n}_") for t in tool_set))
-        if still_missing:
-            logger.warning(
-                "prepare_chat_mcp agent=%s: tools still missing for %s",
-                agent_id,
-                still_missing,
-            )
-        return still_missing
+        uid = connector_user_id
+        if uid is None:
+            self._capability_policy.require_permissions(None, {"connectors"})
+        assert uid is not None
+        return await self._prepare_turn_mcp_tools(agent_id, uid, names)
 
     async def _prepare_turn_mcp_tools(
         self,
@@ -2175,15 +2013,18 @@ class AgentManager:
         user_id: int,
         names: Sequence[str],
     ) -> list[str]:
-        """Resolve *user_id*'s own MCP tools for one turn on somebody else's agent.
+        """Resolve the current caller's own MCP tools for an agent turn.
 
-        The tools stay in :attr:`_turn_mcp_tools` and are never written to the
-        agent: they hold the caller's credentials, and the agent belongs to (and
-        is used by) somebody else. Returns the servers this user has no connector
-        for — the caller reports that as unavailable rather than reaching for the
-        owner's tools.
+        Owner and shared-agent turns use the same registry; credential-bearing
+        tools are never persisted on the agent. Missing caller connectors are
+        reported as unavailable rather than falling back to the owner's tools.
         """
         tools = await self._turn_tools_for_user(user_id, names)
+        from octop.infra.agents.middleware.capabilities import mark_mcp_tool_source
+
+        for server, server_tools in tools.items():
+            for tool in server_tools:
+                mark_mcp_tool_source(tool, server=server, user_id=user_id)
         key = (agent_id, user_id)
         if tools:
             self._turn_mcp_tools[key] = tools
@@ -2204,12 +2045,10 @@ class AgentManager:
         user_id: int,
         names: Sequence[str],
     ) -> dict[str, list[Any]]:
-        """One user's own tools for *names*, loaded without touching an agent.
+        """Load a caller's custom, in-process gateway and HTTP MCP tools.
 
-        Three sources, exactly as the agent-bound path has them: custom MCP
-        servers through the per-user tool cache, gateway connectors built from
-        the user's decrypted credentials, and HTTP MCP connectors loaded from the
-        user's own spec.
+        Every transport is resolved from that user's own configuration or
+        visible connector credentials without mutating the shared agent.
         """
         custom_configs = self._connector_svc.custom_harness_configs(user_id)
         tools: dict[str, list[Any]] = {}
@@ -2225,6 +2064,7 @@ class AgentManager:
 
     async def _load_connector_tools_for_user(self, user_id: int, server_name: str) -> list[Any]:
         """Tools of one built-in connector instance *user_id* may use, or ``[]``."""
+        self._capability_policy.require_permissions(user_id, {"connectors"})
         from harness_agent.mcp import aload_mcp_tools
 
         from octop.infra.connectors.builder import build_http_mcp_spec
@@ -2282,6 +2122,7 @@ class AgentManager:
             loaded = await aload_mcp_tools(
                 overlay_stdio_mcp_configs({server_name: spec}, global_env)
             )
+            sanitize_plugin_tool_names(loaded)
             tools.extend(loaded)
         return tools
 
@@ -2297,6 +2138,37 @@ class AgentManager:
             return {}
         return {name: entry[name] for name in servers if name in entry}
 
+    def _mcp_tool_status(
+        self, agent_id: str, user_id: int | None, servers: list[str], tool: object | None
+    ) -> str | None:
+        """Classify an MCP tool by registered object identity and exact server."""
+        if tool is None:
+            return None
+        selected = set(servers)
+        turn_tools = self._turn_mcp_tools.get((agent_id, user_id), {}) if user_id else {}
+        for server, tools in turn_tools.items():
+            if any(tool is registered for registered in tools):
+                return "active" if server in selected else "mcp"
+        if getattr(tool, "__octop_mcp_source__", None) is not None:
+            return "mcp"
+        for (
+            registered_agent_id,
+            _registered_user_id,
+        ), server_tools in self._turn_mcp_tools.items():
+            if registered_agent_id != agent_id:
+                continue
+            if any(tool is registered for tools in server_tools.values() for registered in tools):
+                return "mcp"
+        try:
+            agent = self.get_agent(agent_id)
+        except OctopError:
+            agent = None
+        if agent is not None and any(
+            tool is registered for registered in (getattr(agent, "_mcp_tools", ()) or ())
+        ):
+            return "mcp"
+        return None
+
     def forget_turn_mcp_tools(self, agent_id: str, user_id: int | None = None) -> None:
         """Drop turn-scoped MCP tools for one agent, or one user of it."""
         if user_id is None:
@@ -2304,43 +2176,6 @@ class AgentManager:
                 del self._turn_mcp_tools[key]
             return
         self._turn_mcp_tools.pop((agent_id, user_id), None)
-
-    async def _attach_gateway_tools(
-        self,
-        agent: HarnessAgent,
-        *,
-        agent_id: str,
-        user_id: int,
-        server_names: list[str],
-    ) -> None:
-        """Add gateway connector tools to the running agent without rebuilding it.
-
-        A rebuild would drop the harness instance (and with it the checkpointer
-        pool an in-flight turn still writes to) only to run the very same
-        in-process injection at the end of ``_post_start_agent``.
-        """
-        repo = self._repos.connector_repo
-        for inst in repo.list_visible(user_id):
-            if inst.status != "active" or inst.mcp_server_name not in server_names:
-                continue
-            try:
-                await self._connector_svc.ensure_fresh_credentials(inst.instance_id, inst.kind)
-            except Exception:
-                logger.exception(
-                    "prepare_chat_mcp agent=%s: credential refresh failed for %s",
-                    agent_id,
-                    inst.mcp_server_name,
-                )
-        inject_missing_gateway_tools(
-            agent,
-            svc=self._connector_svc,
-            connector_repo=repo,
-            user_id=user_id,
-            agent_id=agent_id,
-            mcp_server_configs=agent.config.mcp_server_configs,
-        )
-        for name in server_names:
-            agent.config.mcp_server_configs.setdefault(name, {})
 
     # ------------------------------------------------------------------
     # Settings persistence — push global policy into harness runtime
@@ -2979,7 +2814,39 @@ class AgentManager:
             registered_plugin_tools=registered,
             global_plugins=global_plugins,
         )
-        if is_team_agent(self.get_row(agent_id)):
+        disabled.update(
+            {
+                "acp_runner",
+                "browser_use",
+                "desktop_screenshot",
+                "read_env_file",
+                "write_env_file",
+                "mobile_screenshot",
+                "mobile_tap",
+                "mobile_swipe",
+                "mobile_launch_app",
+                "mobile_ui_dump",
+                "mobile_handoff_to_user",
+            }
+        )
+        team_host = is_team_agent(self.get_row(agent_id))
+        from octop.infra.agents.search_tools import (
+            SEARCH_PROVIDER_TOOL_NAMES,
+            configured_search_provider,
+        )
+
+        if team_host or cfg.get("web_search_tools") is False:
+            disabled.update(SEARCH_PROVIDER_TOOL_NAMES)
+        else:
+            from octop.infra.utils.env_file import env_file_path, load_env_file
+
+            provider = configured_search_provider(load_env_file(env_file_path(self._paths.root)))
+            disabled.update(
+                SEARCH_PROVIDER_TOOL_NAMES
+                - ({f"{provider}_search"} if provider is not None else set())
+            )
+        if team_host:
+            disabled.add("execute")
             disabled = set(host_tools_disabled(disabled))
         self.sync_tools_disabled(agent_id, disabled)
 
@@ -3256,16 +3123,6 @@ class AgentManager:
             feature_middleware=self._feature_memory_routings.get(row.agent_id),
         )
         team_host = is_team_agent(row)
-        uid = self._connector_uid_for(row)
-        if uid is not None and not team_host:
-            inject_missing_gateway_tools(
-                agent,
-                svc=self._connector_svc,
-                connector_repo=self._repos.connector_repo,
-                user_id=uid,
-                agent_id=row.agent_id,
-                mcp_server_configs=cfg.mcp_server_configs,
-            )
         if not team_host:
             tools = list(agent._mcp_tools)
             original_names = [tool.name for tool in tools]
@@ -4351,15 +4208,14 @@ class AgentManager:
             if provider is None:
                 raise ValueError(f"Provider configuration not found for model reference {ref!r}")
 
-            from harness_agent.llm.factory import build_chat_model
-
+            from octop.infra.agents.providers.harness_factory import build_configured_chat_model
             from octop.infra.agents.providers.protocol import alternate_protocol_config
 
             alternate_provider = alternate_protocol_config(provider)
             alternate_model = alternate_provider.get_model(model_id)
             if alternate_model is None:
                 raise ValueError(f"Model configuration not found for model reference {ref!r}")
-            result = build_chat_model(alternate_provider, alternate_model)
+            result = build_configured_chat_model(alternate_provider, alternate_model)
             alternate_image_models[ref] = result
             return track_current_failover_model(result)
 
@@ -4493,18 +4349,77 @@ class AgentManager:
                 row.agent_id,
             )
 
+        from octop.infra.agents.search_tools import (
+            SEARCH_PROVIDER_TOOL_NAMES,
+            build_search_provider_tools,
+            configured_search_provider,
+        )
         from octop.infra.utils.env_file import (  # noqa: PLC0415
             env_file_path,
             load_env_file,
             overlay_stdio_mcp_configs,
         )
 
+        search_provider: str | None = None
+        search_enabled = not team_host and cfg.get("web_search_tools") is not False
         if not team_host:
-            mcp_server_configs = overlay_stdio_mcp_configs(
-                mcp_server_configs,
-                load_env_file(env_file_path(self._paths.root)),
-            )
+            global_env = load_env_file(env_file_path(self._paths.root))
+            mcp_server_configs = overlay_stdio_mcp_configs(mcp_server_configs, global_env)
+            # Transports and credentials are resolved only for an authorized caller's turn.
+            mcp_server_configs = {name: {} for name in mcp_server_configs}
+            if search_enabled:
+                search_provider = configured_search_provider(global_env)
+                merged_tools.extend(build_search_provider_tools(global_env))
+        from octop.infra.agents.middleware.capabilities import CapabilityMiddleware
 
+        forced_tool_floor = {
+            "acp_runner",
+            "browser_use",
+            "desktop_screenshot",
+            "read_env_file",
+            "write_env_file",
+            "mobile_screenshot",
+            "mobile_tap",
+            "mobile_swipe",
+            "mobile_launch_app",
+            "mobile_ui_dump",
+            "mobile_handoff_to_user",
+        }
+        if not search_enabled:
+            from octop.infra.agents.search_tools import SEARCH_PROVIDER_TOOL_NAMES
+
+            forced_tool_floor.update(SEARCH_PROVIDER_TOOL_NAMES)
+        elif search_provider is not None:
+            from octop.infra.agents.search_tools import SEARCH_PROVIDER_TOOL_NAMES
+
+            forced_tool_floor.update(SEARCH_PROVIDER_TOOL_NAMES - {f"{search_provider}_search"})
+        if team_host:
+            forced_tool_floor.add("execute")
+            forced_tool_floor.update(host_tools_disabled(set()))
+        from octop.infra.agents.plugin_tool_names import extract_original_plugin_label
+
+        plugin_tool_plugins: dict[str, tuple[str, str]] = {}
+        registered_plugin_ids = {reg.name: reg.plugin_id for reg in PluginRegistry().all_tools()}
+        for tool in plugin_tools:
+            exposed_name = str(getattr(tool, "name", "") or "")
+            original_name = extract_original_plugin_label(
+                str(getattr(tool, "description", "") or "")
+            )
+            config_name = original_name or exposed_name
+            plugin_id = registered_plugin_ids.get(config_name)
+            if plugin_id is not None and exposed_name:
+                plugin_tool_plugins[exposed_name] = (plugin_id, config_name)
+        capability_middleware = CapabilityMiddleware(
+            policy=self._capability_policy,
+            config_for_agent=lambda: self.get_config(row.agent_id),
+            plugin_tool_names={str(getattr(tool, "name", "")) for tool in plugin_tools},
+            plugin_tool_plugins=plugin_tool_plugins,
+            mcp_tool_status=lambda user_id, servers, tool: self._mcp_tool_status(
+                row.agent_id, user_id, servers, tool
+            ),
+            floor_disabled_tools=forced_tool_floor,
+        )
+        agent_middleware.append(capability_middleware)
         if team_host:
             skill_dirs: list[str] = []
         else:
@@ -4618,6 +4533,10 @@ class AgentManager:
                     global_plugins=global_plugins,
                 )
             )
+            if not search_enabled:
+                disabled.update(SEARCH_PROVIDER_TOOL_NAMES)
+            elif search_provider is not None:
+                disabled.update(SEARCH_PROVIDER_TOOL_NAMES - {f"{search_provider}_search"})
             disabled.update(
                 {
                     "acp_runner",

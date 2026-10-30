@@ -143,18 +143,33 @@ class OrgUnitRepo:
         return [str(r["key"]) for r in rows]
 
     def list_users_in_unit(self, unit_key: str) -> list[str]:
-        """Usernames scoped to ``unit_key`` — the unit-deletion reference guard.
+        """Usernames belonging to ``unit_key``, including secondary memberships.
 
-        Disabled accounts are included on purpose: ``users.org_unit`` carries no
-        foreign key, so skipping them would leave a dangling unit reference that
-        no later read can resolve.
+        Disabled accounts are included: neither primary nor secondary department
+        references may be left dangling when a department is deleted.
         """
         with self._db.connect() as conn:
             rows = conn.execute(
-                "SELECT username FROM users WHERE org_unit = ? ORDER BY username ASC",
-                (unit_key,),
+                "SELECT username FROM users WHERE org_unit = ? OR id IN "
+                "(SELECT user_id FROM user_org_units WHERE unit_key = ?) ORDER BY username ASC",
+                (unit_key, unit_key),
             ).fetchall()
         return [str(r["username"]) for r in rows]
+
+    def list_user_ids_in_units(self, unit_keys: Iterable[str]) -> list[int]:
+        """Accounts with any primary or secondary membership in the given units."""
+        keys = _dedupe(unit_keys)
+        if not keys:
+            return []
+        placeholders = sql_in_placeholders(len(keys))
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM users WHERE org_unit IN ({placeholders}) OR id IN "
+                f"(SELECT user_id FROM user_org_units WHERE unit_key IN ({placeholders})) "
+                "ORDER BY id",
+                (*keys, *keys),
+            ).fetchall()
+        return [int(row["id"]) for row in rows]
 
     def delete(self, key: str) -> None:
         """Delete a unit and its grants (``org_units.parent_key`` is SET NULL)."""

@@ -258,7 +258,7 @@ async def test_boot_continues_after_agent_timeout(
     harness_manager = MagicMock()
     harness_manager.get_agent.side_effect = None if registered_before_timeout else KeyError("hung")
     monkeypatch.setattr(
-        "octop.infra.agents.manager.HarnessAgentManager",
+        "octop.infra.agents.providers.harness_factory.OctopHarnessAgentManager",
         lambda **kwargs: harness_manager,
     )
     monkeypatch.setattr("octop.infra.agents.manager._AGENT_BOOT_START_TIMEOUT", 0.02)
@@ -1249,10 +1249,10 @@ async def test_persist_skills_disabled_does_not_schedule_reload(
 
 
 @pytest.mark.asyncio
-async def test_persist_tools_disabled_strips_critical_and_hot_syncs(
+async def test_persist_tools_disabled_strips_critical_without_reloading(
     manager: AgentManager, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """tools_disabled is hot-synced; critical names are dropped."""
+    """Critical names are not persisted and active turns are not reloaded."""
     from octop.infra.agents.manager import AgentCreateSpec
 
     fake_agent = MagicMock()
@@ -1270,7 +1270,6 @@ async def test_persist_tools_disabled_strips_critical_and_hot_syncs(
 
     cfg = manager.get_config(row.agent_id)
     assert cfg.get("tools_disabled") == ["execute", "web_fetch"]
-    fake_agent.set_tools_disabled.assert_called_once_with({"execute", "web_fetch"})
     assert scheduled == []
 
 

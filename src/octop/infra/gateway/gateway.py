@@ -788,7 +788,9 @@ class Gateway:
         """
         if owner is None:
             return False
-        grants = unit_permissions(getattr(owner, "org_unit", None), self._repos.org_unit_repo)
+        grants: set[str] = set()
+        for unit in self._repos.user_repo.units_for_user(owner.id):
+            grants.update(unit_permissions(unit, self._repos.org_unit_repo))
         return user_has_permission(owner, channel_permission_key(kind), unit_grants=grants)
 
     def channel_refusal(self, row: ChannelRow) -> str | None:

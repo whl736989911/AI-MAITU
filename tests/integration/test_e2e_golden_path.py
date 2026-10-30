@@ -47,6 +47,7 @@ async def test_full_golden_path(env: Any) -> None:
             "password": "TestPass12",
             "role": "user",
             "org_unit": "test-unit",
+            "permissions": sorted(BASELINE_PERMISSIONS),
             "display_name": "Alice",
         },
     )
@@ -104,10 +105,9 @@ async def test_full_golden_path(env: Any) -> None:
     assert threads
     assert threads[0]["title"] == "Hello"
 
-    # 9) admin metrics counter incremented
+    # 9) admin can read metrics
     r = await c.get("/api/admin/metrics", headers=auth)
     assert r.status_code == 200
-    assert r.json()["messages_total"] >= 0  # may be 0 if SSE path doesn't bump this counter
 
 
 async def test_expert_to_chat_golden_path(env: Any) -> None:

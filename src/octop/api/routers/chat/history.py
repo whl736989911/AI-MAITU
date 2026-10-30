@@ -746,14 +746,20 @@ async def delete_thread(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> None:
-    """Delete checkpoint data before the user-visible thread metadata."""
+    runtime = server.app_runtime
+    gateway = runtime.gateway
     _require_thread(server, agent_id, thread_id, user, as_user)
-    await server.app_runtime.agent_registry.delete_thread_checkpoint(agent_id, thread_id)
-    server.app_runtime.gateway.thread_registry.delete_thread(thread_id)
-    runtime = getattr(server, "app_runtime", None)
-    trajectory = getattr(runtime, "trajectory_service", None) if runtime is not None else None
-    if isinstance(trajectory, TrajectoryService):
-        try:
-            trajectory.delete_for_thread(thread_id)
-        except Exception:
-            logger.exception("trajectory cascade delete failed thread=%s", thread_id)
+    async with gateway.steer.idle_guard(thread_id) as turn_idle:
+        if not turn_idle or gateway.ws_hub.is_turn_active(thread_id):
+            raise OctopError(
+                ErrorCode.AGENT_BUSY,
+                "cannot delete a thread while a turn is in progress",
+            )
+        await runtime.agent_registry.delete_thread_checkpoint(agent_id, thread_id)
+        gateway.thread_registry.delete_thread(thread_id)
+        trajectory = getattr(runtime, "trajectory_service", None)
+        if isinstance(trajectory, TrajectoryService):
+            try:
+                trajectory.delete_for_thread(thread_id)
+            except Exception:
+                logger.exception("trajectory cascade delete failed thread=%s", thread_id)

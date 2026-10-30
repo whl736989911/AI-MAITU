@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, Any
 
 from harness_agent.config import ModelConfig, ProviderConfig
 
+from octop.infra.agents.providers.model_config import ProviderModelConfig
 from octop.infra.agents.providers.model_flags import is_chat_eligible_model, is_vision_model
 from octop.infra.agents.providers.opencode_session import (
     OPENCODE_SESSION_HEADER,
@@ -140,8 +141,13 @@ class ProviderStore:
         for row in self.iter_usable_rows():
             protocol = KIND_TO_PROTOCOL.get(row.kind, "openai")
             raw_models = json.loads(row.models_json) if getattr(row, "models_json", None) else []
-            models = [
-                self._model_config_from_row(m)
+            legacy_api_mode = (
+                "responses"
+                if row.base_url and "chatgpt.com/backend-api/codex" in row.base_url
+                else "chat_completions"
+            )
+            models: list[ModelConfig] = [
+                self._model_config_from_row(m, default_api_mode=legacy_api_mode)
                 for m in raw_models
                 if is_chat_eligible_model(m, provider_name=row.name, provider_api_key=row.api_key)
             ]
@@ -172,7 +178,9 @@ class ProviderStore:
         return out
 
     @staticmethod
-    def _model_config_from_row(raw: dict[str, object]) -> ModelConfig:
+    def _model_config_from_row(
+        raw: dict[str, object], *, default_api_mode: str = "chat_completions"
+    ) -> ProviderModelConfig:
         data = dict(raw)
         model_id = str(data.get("id") or "")
         explicit = data.get("input")
@@ -183,9 +191,13 @@ class ProviderStore:
         if "image" not in modalities:
             modalities.append("image")
         data["input"] = modalities
+        data.setdefault(
+            "api_mode",
+            "responses" if data.get("native_tool_search") else default_api_mode,
+        )
         # ModelConfig keeps total context, prompt cap, and output cap distinct,
         # while still accepting legacy rows that only contain one context key.
-        return ModelConfig.from_dict(data)
+        return ProviderModelConfig.from_dict(data)
 
     def is_model_ref_multimodal(self, ref: str) -> bool:
         """Return the configured image-capability hint, not a verified API capability."""

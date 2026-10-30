@@ -49,3 +49,47 @@ async def test_search_test_tavily_ok(env: Any) -> None:
     assert body["provider_id"] == "tavily"
     assert body["result_count"] == 1
     assert isinstance(body["response_time_ms"], int)
+
+
+async def test_search_test_deepseek_ok(env: Any) -> None:
+    c, _srv, auth = env
+    with patch(
+        "octop.infra.utils.search_probe._deepseek",
+        new=AsyncMock(
+            return_value={
+                "success": True,
+                "result_count": 1,
+                "message": "ok",
+            }
+        ),
+    ):
+        r = await c.post(
+            "/api/search/deepseek/test",
+            headers=auth,
+            json={"env_vars": {"DEEPSEEK_API_KEY": "deepseek-test"}},
+        )
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    assert r.json()["provider_id"] == "deepseek"
+
+
+async def test_search_test_yuanbao_ok(env: Any) -> None:
+    c, _srv, auth = env
+    with patch(
+        "octop.infra.utils.search_probe._yuanbao",
+        new=AsyncMock(
+            return_value={
+                "success": True,
+                "result_count": 1,
+                "message": "ok",
+            }
+        ),
+    ):
+        r = await c.post(
+            "/api/search/yuanbao/test",
+            headers=auth,
+            json={"env_vars": {"TENCENTCLOUD_WSA_APIKEY": "tencent-test"}},
+        )
+    assert r.status_code == 200
+    assert r.json()["success"] is True
+    assert r.json()["provider_id"] == "yuanbao"

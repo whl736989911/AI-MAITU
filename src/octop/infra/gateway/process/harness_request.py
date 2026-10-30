@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, cast
 
 from harness_gateway.media import MediaBackend
 from harness_gateway.models import ContentPart, ImageContent, InboundMessage, TextContent
@@ -265,6 +265,7 @@ def build_harness_request(
     messages: list[Any] | None = None,
     model: str | None = None,
     message_kwargs: dict[str, Any] | None = None,
+    message_id: str | None = None,
     reasoning_overrides: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if messages is not None:
@@ -293,12 +294,24 @@ def build_harness_request(
         from langchain_core.messages import HumanMessage  # noqa: PLC0415
 
         kwargs = dict(message_kwargs or {})
-        msg_list: list[Any] = [HumanMessage(content=payload, additional_kwargs=kwargs)]  # type: ignore[arg-type]
+        msg_list: list[Any] = [
+            HumanMessage(
+                content=cast(list[str | dict[Any, Any]], payload),
+                additional_kwargs=kwargs,
+                id=message_id,
+            )
+        ]
     else:
-        if message_kwargs:
+        if message_kwargs or message_id:
             from langchain_core.messages import HumanMessage  # noqa: PLC0415
 
-            msg_list = [HumanMessage(content=payload, additional_kwargs=dict(message_kwargs))]
+            msg_list = [
+                HumanMessage(
+                    content=payload,
+                    additional_kwargs=dict(message_kwargs or {}),
+                    id=message_id,
+                )
+            ]
         else:
             msg_list = [{"role": "user", "content": payload}]
 

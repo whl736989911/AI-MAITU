@@ -42,9 +42,9 @@ interface UseChatSendParams {
     composerContext?: UserComposerContext,
     reasoningMode?: "auto" | "enabled" | "disabled",
     reasoningEffort?: string | null,
-    /** A workflow run this turn carries, as the frame's own ``feature_run`` field. */
     featureRun?: FeatureRunPayload,
     conversationMode?: "ask" | "plan" | "craft",
+    userMessageId?: string,
   ) => void;
   createSession: () => { session: Session; resolvedId: Promise<string> };
   renameSession: (id: string, name: string) => void;
@@ -150,6 +150,7 @@ export function useChatSend({
         overrides?.modelRef !== undefined
           ? overrides.modelRef
           : resolveTurnModelRef(modelSelection, defaultModel);
+      const userMsg = buildUserMessage(trimmed, attachments, composerContext);
       const runSend = (tid: string, hadMessages: boolean) => {
         maybeRenameNewThread(tid, hadMessages);
         sendMessage(
@@ -167,6 +168,7 @@ export function useChatSend({
           composerContext?.reasoningEffort ?? reasoningEffort,
           overrides?.featureRun,
           mode,
+          userMsg.id,
         );
       };
 
@@ -186,7 +188,6 @@ export function useChatSend({
         return true;
       }
 
-      const userMsg = buildUserMessage(trimmed, attachments, composerContext);
       chatStore.appendUserMessage(EMPTY_CHAT_SESSION_KEY, userMsg);
 
       const { resolvedId } = createSession();
@@ -228,6 +229,7 @@ export function useChatSend({
           composerContext?.reasoningEffort ?? reasoningEffort,
           overrides?.featureRun,
           mode,
+          userMsg.id,
         );
         navigate(`/chat/${agent}/${tid}`, { replace: true });
       });

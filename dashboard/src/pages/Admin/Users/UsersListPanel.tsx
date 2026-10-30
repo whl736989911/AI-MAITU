@@ -837,13 +837,16 @@ function UserCardGrid({
                 >
                   {t(ROLE_LABEL_KEYS[row.role])}
                 </span>
-                {(row.org_units?.length ? row.org_units : row.org_unit ? [row.org_unit] : []).map(
-                  (unitKey) => (
-                    <span key={unitKey} className={styles.userCardPill}>
-                      {orgUnitLabelByKey.get(unitKey) ?? unitKey}
-                    </span>
-                  ),
-                )}
+                {(row.org_units?.length
+                  ? row.org_units
+                  : row.org_unit
+                  ? [row.org_unit]
+                  : []
+                ).map((unitKey) => (
+                  <span key={unitKey} className={styles.userCardPill}>
+                    {orgUnitLabelByKey.get(unitKey) ?? unitKey}
+                  </span>
+                ))}
                 <span
                   className={styles.userCardPill}
                   style={{ color: statusColor, background: statusBg }}
@@ -1503,7 +1506,11 @@ export default function UsersListPanel() {
       display_name: row.display_name ?? "",
       email: row.email ?? "",
       role: row.role,
-      org_units: row.org_units?.length ? [...row.org_units] : row.org_unit ? [row.org_unit] : [],
+      org_units: row.org_units?.length
+        ? [...row.org_units]
+        : row.org_unit
+        ? [row.org_unit]
+        : [],
       permissions: [...(row.permissions ?? [])],
       denied_permissions: [...(row.denied_permissions ?? [])],
       limit_workspace_root: workspaceRootAllowed

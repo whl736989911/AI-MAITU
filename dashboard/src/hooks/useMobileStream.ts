@@ -1,4 +1,5 @@
 import { useCallback, useRef, useState } from "react";
+import { getWsUrl } from "../api/config";
 import { getAuthToken } from "../api/request";
 import { H264CanvasDecoder, parseVideoInit } from "../utils/h264CanvasDecoder";
 
@@ -17,11 +18,6 @@ export interface MobileStreamOptions {
   maxSide?: number;
   /** Prefer H.264 when the host encoder is known to be fast. Default JPEG. */
   codec?: "jpeg" | "h264";
-}
-
-function buildWsUrl(): string {
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  return `${protocol}://${window.location.host}/api/mobile-stream/ws`;
 }
 
 export function useMobileStream() {
@@ -63,7 +59,7 @@ export function useMobileStream() {
       disconnect();
       setStatus("connecting");
       decoderRef.current.attach(callbacks.canvas);
-      const ws = new WebSocket(buildWsUrl());
+      const ws = new WebSocket(getWsUrl("/mobile-stream/ws"));
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
       ws.onopen = () => {

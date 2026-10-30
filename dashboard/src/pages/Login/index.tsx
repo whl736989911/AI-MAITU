@@ -7,6 +7,8 @@ import { KeyRound, Lock, User } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { clearAuthToken, setAuthToken } from "../../api";
 import { authApi, type OauthProviderStatus } from "../../api/modules/auth";
+import { publicUrl } from "../../utils/publicUrl";
+
 import { apiErrorMessage } from "../../utils/apiError";
 import { refreshServerLabels } from "../../i18n";
 import { applyUserLocale, applyGuestLocale } from "../../utils/locale";
@@ -154,7 +156,7 @@ export default function LoginPage() {
         }
         return;
       }
-      window.location.replace(event.data.redirect || "/chat");
+      window.location.replace(publicUrl(event.data.redirect || "/chat"));
     };
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);

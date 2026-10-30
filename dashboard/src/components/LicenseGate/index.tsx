@@ -1,3 +1,5 @@
+import { appPathname, publicUrl } from "../../utils/publicUrl";
+
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Button, Card, Input, Space, Spin, Typography } from "antd";
 import { useTranslation } from "react-i18next";
@@ -222,7 +224,7 @@ export default function LicenseGate({
   // (for example after an invalid CA or keyring was saved). AuthGuard and the
   // license-settings API still enforce the administrator role.
   if (
-    window.location.pathname === "/admin/advanced" &&
+    appPathname(window.location.pathname) === "/admin/advanced" &&
     new URLSearchParams(window.location.search).get("tab") === "license"
   ) {
     return <>{children}</>;
@@ -463,7 +465,9 @@ export default function LicenseGate({
               </Button>
               <Button
                 onClick={() => {
-                  window.location.assign("/admin/advanced?tab=license");
+                  window.location.assign(
+                    publicUrl("/admin/advanced?tab=license"),
+                  );
                 }}
               >
                 {t("license.settingsOpen")}

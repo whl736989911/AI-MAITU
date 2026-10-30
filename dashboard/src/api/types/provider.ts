@@ -15,6 +15,8 @@ export interface ModelInfo {
   reasoning?: boolean;
   reasoning_config?: ReasoningCapability | null;
   input?: string[];
+  api_mode?: "chat_completions" | "responses";
+  api_fallback?: "none" | "chat_completions";
   cost?: ModelCost;
 }
 
@@ -166,6 +168,15 @@ export interface OllamaDownloadTaskResponse {
 
 /* ---- Test search connectivity ---- */
 
+export type SearchProbeErrorType =
+  | "auth_error"
+  | "insufficient_balance"
+  | "rate_limit"
+  | "timeout"
+  | "network_error"
+  | "invalid_config"
+  | "unknown";
+
 export interface TestSearchResponse {
   success: boolean;
   provider_id: string;
@@ -173,5 +184,5 @@ export interface TestSearchResponse {
   result_count?: number;
   message?: string;
   error?: string;
-  error_type?: string; // "auth_error" | "timeout" | "network_error" | "invalid_config" | "unknown"
+  error_type?: SearchProbeErrorType;
 }

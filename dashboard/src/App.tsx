@@ -5,6 +5,7 @@ import enUS from "antd/locale/en_US";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
 import { useEffect } from "react";
+import { routerBasename } from "./utils/publicUrl";
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import MainLayout from "./layouts/MainLayout";
@@ -161,7 +162,7 @@ function App() {
     // `useTransitions` off: with router transitions on, React keeps the old
     // page mounted while a lazy route chunk downloads and never renders the
     // Suspense fallback, so a nav click looks like it did nothing.
-    <BrowserRouter useTransitions={false}>
+    <BrowserRouter basename={routerBasename()} useTransitions={false}>
       <GlobalErrorBoundary>
         <GlobalStyle />
         <ThemeProvider>

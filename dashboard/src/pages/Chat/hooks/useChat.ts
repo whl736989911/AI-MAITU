@@ -868,11 +868,12 @@ export function useChat(
       reasoningEffort?: string | null,
       featureRun?: FeatureRunPayload,
       conversationMode?: "ask" | "plan" | "craft",
+      userMessageId?: string,
     ) => {
       const key = storeKey || stableSessionId;
 
       const userMsg: ChatMessage = {
-        id: generateId(),
+        id: userMessageId || generateId(),
         role: "user",
         content: text,
         attachments:
@@ -902,6 +903,7 @@ export function useChat(
         reasoningEffort,
         featureRun,
         conversationMode,
+        userMessageId,
       );
     },
     [stableSessionId],
@@ -966,6 +968,7 @@ export function useChat(
           nextOffset: loaded.nextOffset,
           nextCursor: loaded.nextCursor,
           baseline: historyBaseline,
+          turnActive: loaded.turnActive,
         });
         setHistoryError(false);
         if (
@@ -1074,6 +1077,7 @@ export function useChat(
           hasMore,
           nextOffset,
           nextCursor,
+          turnActive,
         } = await loadThreadHistory(agentId, key, { offset: 0 });
         // Stale after a concurrent loadHistory / newer refresh — drop apply only.
         if (loadGenRef.current !== gen) return;
@@ -1093,6 +1097,7 @@ export function useChat(
           nextCursor:
             olderPrefix.length > 0 ? snap.historyNextCursor : nextCursor,
           baseline: historyBaseline,
+          turnActive,
         });
         setHistoryError(false);
       } catch {

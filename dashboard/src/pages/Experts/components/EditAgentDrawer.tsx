@@ -19,6 +19,7 @@ import {
 import { MoreHorizontal } from "lucide-react";
 import { request } from "../../../api/request";
 import { AgentAdvancedConfigFields } from "../../../components/AgentAdvancedConfigFields";
+import { TextAssistBar } from "../../../components/TextAssistBar";
 import ExpertColorPicker from "../../../components/ExpertColorPicker";
 import AgentTrajectoryField from "./AgentTrajectoryField";
 import { workspaceApi } from "../../../api/modules/workspace";
@@ -748,13 +749,43 @@ function EditAgentDrawerBody({
               <Form.Item
                 name="description"
                 label={t("experts.agentDescription")}
+                extra={
+                  <TextAssistBar
+                    kind="expert.description"
+                    agentId={agent.agent_id}
+                    getText={() => form.getFieldValue("description") ?? ""}
+                    getName={() => form.getFieldValue("name") ?? ""}
+                    getDefaultModel={() => form.getFieldValue("default_model")}
+                    onApply={(text) => form.setFieldValue("description", text)}
+                    disabled={saving}
+                  />
+                }
               >
                 <Input.TextArea rows={2} />
               </Form.Item>
               <Form.Item
                 name="welcome_message"
                 label={t("experts.welcomeMessageTitle")}
-                extra={t("experts.editWelcomeHint")}
+                extra={
+                  <>
+                    {t("experts.editWelcomeHint")}
+                    <TextAssistBar
+                      kind="expert.welcome_message"
+                      agentId={agent.agent_id}
+                      getText={() =>
+                        form.getFieldValue("welcome_message") ?? ""
+                      }
+                      getName={() => form.getFieldValue("name") ?? ""}
+                      getDefaultModel={() =>
+                        form.getFieldValue("default_model")
+                      }
+                      onApply={(text) =>
+                        form.setFieldValue("welcome_message", text)
+                      }
+                      disabled={saving}
+                    />
+                  </>
+                }
               >
                 <Input.TextArea
                   rows={2}

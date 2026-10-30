@@ -343,7 +343,7 @@ def validate_values(
             merged.pop(key, None)
             continue
         empty = merged.get(key) in (None, "", [])
-        if field.get("required") and empty:
+        if field.get("required") and not field.get("computed") and empty:
             raise ValueError(f"{key} is required")
         if key in values and not empty:
             merged[key] = _validate_value(field, values[key])
@@ -371,7 +371,13 @@ def apply_computed_values(
         schema, base, object_key=str(obj["key"]), reject_supplied=False
     )
     field_keys = {str(field["key"]) for field in obj.get("fields", [])}
-    return {key: value for key, value in computed.items() if key in field_keys}
+    result = {key: value for key, value in computed.items() if key in field_keys}
+    for field in obj.get("fields", []):
+        key = str(field["key"])
+        missing = result.get(key) in (None, "", [])
+        if field.get("computed") and field.get("required") and missing:
+            raise ValueError(f"{key} is required")
+    return result
 
 
 def record_title(obj: Mapping[str, Any], values: Mapping[str, Any]) -> str:

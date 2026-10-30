@@ -11,6 +11,8 @@ from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.services import RepoBundle, SharedServices
 from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.sharing import AclEntry
+from octop.infra.sharing.service import SharingService
 from octop.infra.utils.paths import PathLayout
 
 
@@ -111,3 +113,44 @@ def test_move_refuses_missing_folder(tree: dict) -> None:
         tree["knowledge"].move_document(
             tree["base"].id, tree["file_id"], target_folder="不存在", actor_user_id=tree["owner"]
         )
+
+
+def test_folder_move_requires_write_access_to_every_descendant(tree: dict) -> None:
+    knowledge, services = tree["knowledge"], tree["services"]
+    base_id, owner = tree["base"].id, tree["owner"]
+    writer = services.user_repo.create(username="writer", password_hash="h", role="user")
+    SharingService(services.db).apply_change(
+        owner,
+        "knowledge_base",
+        base_id,
+        AclEntry(
+            "knowledge_base",
+            base_id,
+            owner,
+            "private",
+            None,
+            0,
+            grants=(("user", str(writer)),),
+            permission="write",
+        ),
+    )
+    file_id = tree["file_id"]
+    services.repos.resource_acl_repo.upsert(
+        AclEntry(
+            "knowledge_document",
+            file_id,
+            owner,
+            "private",
+            None,
+            1,
+            grants=(("user", str(writer)),),
+            permission="read",
+        )
+    )
+    folder = knowledge._repo.get_document_by_path(base_id, "图纸")
+
+    with pytest.raises(PermissionError, match="document write"):
+        knowledge.move_document(base_id, folder.id, target_folder="台账", actor_user_id=writer)
+
+    assert knowledge._repo.get_document_by_path(base_id, "图纸/a.txt") is not None
+    assert knowledge._repo.get_document_by_path(base_id, "台账/图纸") is None

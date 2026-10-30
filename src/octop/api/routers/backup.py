@@ -23,7 +23,9 @@ from octop.infra.backup.auto import (
     hold_backup_lock,
     raise_if_backup_busy,
     run_auto_backup,
+    start_backup_worker,
     update_server_backup_config,
+    wait_backup_worker,
 )
 from octop.infra.backup.store import (
     BackupFileInfo,
@@ -210,6 +212,22 @@ async def _rehydrate_runtime_after_restore(server: Any) -> None:
             logger.exception("post-restore cron rehydrate failed")
 
 
+async def _finish_stored_restore(
+    server: Any, user: Any, filename: str, result: dict[str, Any]
+) -> None:
+    """Complete runtime rehydration and audit even if the requesting task is cancelled."""
+    await _rehydrate_runtime_after_restore(server)
+    await wait_backup_worker(
+        start_backup_worker(
+            server.services.audit_repo.write,
+            actor=getattr(user, "username", None) or ACTOR_ADMIN,
+            action="backup.restore",
+            target=filename,
+            payload=str(result),
+        )
+    )
+
+
 @router.get("/backup/list", summary="List stored backup archives")
 async def list_backups(
     _: Any = Depends(require_permission("backup")),
@@ -277,12 +295,16 @@ async def create_backup(
     _: Any = Depends(require_permission("backup")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Create a selected-content backup and persist it under ``backups_dir``."""
+    """Create a selected-content backup and persist it under ``backups_dir``.
+
+    Cancelling the request waits for in-flight disk work; backup status stays
+    busy until that work has finished.
+    """
     assert server.services is not None
     options = body or CreateBackupBody()
     _raise_if_backup_busy()
     async with hold_backup_lock("create"):
-        entry = await asyncio.to_thread(
+        worker = start_backup_worker(
             _create_and_store_manual_backup,
             paths=server.paths,
             agent_rows=_agent_rows(server),
@@ -290,6 +312,7 @@ async def create_backup(
             db_config=server.services.config.database,
             options=options,
         )
+        entry = await wait_backup_worker(worker)
     return {"ok": True, "item": entry.to_dict()}
 
 
@@ -334,12 +357,14 @@ async def restore_backup_file(
     responsive; concurrent create/restore/auto backup is rejected via
     ``BACKUP_LOCK``. SQLite restore still holds the shared DB lock for the
     merge window, so DB-backed APIs may briefly queue during that phase.
+    Cancelling the request waits for disk work and, after a successful restore,
+    runtime rehydration before releasing the operation lock.
     """
     assert server.services is not None
     _raise_if_backup_busy()
     safe = normalize_backup_filename(filename)
     async with hold_backup_lock("restore"):
-        result = await asyncio.to_thread(
+        worker = start_backup_worker(
             _restore_stored_backup,
             paths=server.paths,
             filename=safe,
@@ -348,13 +373,13 @@ async def restore_backup_file(
             restore_config=restore_config,
             owner_user_id=int(user.id),
         )
-        await _rehydrate_runtime_after_restore(server)
-    server.services.audit_repo.write(
-        actor=getattr(user, "username", None) or ACTOR_ADMIN,
-        action="backup.restore",
-        target=safe,
-        payload=str(result),
-    )
+        try:
+            result = await wait_backup_worker(worker)
+        finally:
+            if worker.exception() is None:
+                await wait_backup_worker(
+                    asyncio.create_task(_finish_stored_restore(server, user, safe, worker.result()))
+                )
     return {"ok": True, "name": safe, **result}
 
 
@@ -385,11 +410,15 @@ async def export_backup(
     _: Any = Depends(require_permission("backup")),
     server: Any = Depends(get_server),
 ) -> FileResponse:
-    """Create and stream a backup without persisting to ``backups_dir``."""
+    """Create and stream a backup without persisting to ``backups_dir``.
+
+    Cancelling archive preparation waits for disk work and removes its temporary
+    archive. The operation lock remains held until that cleanup completes.
+    """
     assert server.services is not None
     _raise_if_backup_busy()
     async with hold_backup_lock("export"):
-        tmp_path, filename = await asyncio.to_thread(
+        worker = start_backup_worker(
             _create_ephemeral_backup,
             paths=server.paths,
             agent_rows=_agent_rows(server),
@@ -404,6 +433,12 @@ async def export_backup(
                 include_chats=include_chats,
             ),
         )
+        try:
+            tmp_path, filename = await wait_backup_worker(worker)
+        except asyncio.CancelledError:
+            tmp_path, _filename = worker.result()
+            await wait_backup_worker(start_backup_worker(_unlink_quiet, tmp_path))
+            raise
     background_tasks.add_task(_unlink_quiet, tmp_path)
     return FileResponse(
         tmp_path,

@@ -186,7 +186,7 @@ def patch_harness(fake_agent: Any | None = None):
         )
 
     with patch(
-        "octop.infra.agents.manager.HarnessAgentManager",
+        "octop.infra.agents.providers.harness_factory.OctopHarnessAgentManager",
         side_effect=_constructor,
     ):
         yield agent

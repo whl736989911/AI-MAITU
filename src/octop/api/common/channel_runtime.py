@@ -11,9 +11,12 @@ and these two helpers only name the accounts a write can have reached.
 from __future__ import annotations
 
 from collections.abc import Iterable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from octop.infra.users.scope import subtree_keys
+
+if TYPE_CHECKING:
+    from octop.infra.db.services import RepoBundle
 
 
 async def sync_channel_runtime(server: Any, *, user_ids: Iterable[int]) -> None:
@@ -38,12 +41,8 @@ def unit_member_ids(server: Any, unit_key: str) -> list[int]:
     same subtree :func:`octop.infra.users.permissions.unit_permissions` walks when
     it resolves them.
     """
-    repos = server.services.repos
+    repos: RepoBundle = server.services.repos
     units = subtree_keys(repos.org_unit_repo, unit_key)
     if not units:
         return []
-    return [
-        int(row.id)
-        for row in repos.user_repo.list(include_disabled=True)
-        if getattr(row, "org_unit", None) in units
-    ]
+    return repos.org_unit_repo.list_user_ids_in_units(units)

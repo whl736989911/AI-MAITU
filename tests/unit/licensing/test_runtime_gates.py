@@ -10,6 +10,7 @@ from octop.infra.agents.plugins.manager import PluginManager
 from octop.infra.cron.job import CronJob
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.licensing import service as licensing_service
+from octop.infra.users.capabilities import UserCapabilityPolicy
 from tests.support.licensing import provision_license
 
 
@@ -42,6 +43,7 @@ async def test_cron_execution_is_denied_when_instance_license_is_revoked(
         delivery_service=delivery,
         cron_repo=cron_repo,
         audit_repo=audit_repo,
+        user_policy=UserCapabilityPolicy(MagicMock()),
         date_trigger=False,
     )
 

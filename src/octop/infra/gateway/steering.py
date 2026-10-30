@@ -11,6 +11,8 @@ import asyncio
 import time
 import uuid
 from collections import deque
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
@@ -100,6 +102,17 @@ class TurnSteeringRegistry:
 
     def _lock(self, thread_id: str) -> asyncio.Lock:
         return self._locks.setdefault(thread_id, asyncio.Lock())
+
+    @asynccontextmanager
+    async def idle_guard(self, thread_id: str) -> AsyncIterator[bool]:
+        """Hold turn admission for a thread while an idle-only operation runs."""
+        tid = thread_id.strip()
+        lock = self._lock(tid)
+        await lock.acquire()
+        try:
+            yield tid not in self._active
+        finally:
+            lock.release()
 
     async def begin_turn(self, thread_id: str, client_turn_id: str) -> str:
         """Register a turn and return its server-generated identity."""

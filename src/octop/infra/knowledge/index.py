@@ -32,6 +32,11 @@ def search_tokens(text: str) -> Iterator[tuple[str, bool]]:
         yield match.group(), match.lastgroup == "cjk"
 
 
+def normalize_query(query: str) -> str:
+    """The query or indexed text as one string for whole-query comparisons."""
+    return " ".join(unicodedata.normalize("NFKC", query or "").split()).casefold()
+
+
 def _index_terms(text: str) -> Iterator[str]:
     """Yield normalized words and short CJK substrings without a term buffer."""
     for word, cjk in search_tokens(text):
@@ -69,6 +74,9 @@ class KnowledgeIndex:
     def _connect(self) -> Iterator[sqlite3.Connection]:
         connection = sqlite3.connect(self._path)
         try:
+            connection.create_function(
+                "normalize_search_text", 1, normalize_query, deterministic=True
+            )
             with connection:
                 yield connection
         finally:
@@ -345,9 +353,9 @@ class KnowledgeIndex:
                 "JOIN permitted AS a ON a.doc_id = p.doc_id "
                 f"WHERE p.term IN ({placeholders}) GROUP BY p.segment_id "
                 ") AS candidates ON candidates.segment_id = s.segment_id "
-                "ORDER BY candidates.matches DESC, instr(lower(s.text), ?) DESC, "
+                "ORDER BY candidates.matches DESC, instr(normalize_search_text(s.text), ?) DESC, "
                 "candidates.segment_id LIMIT ?",
-                (*cleaned, phrase, limit),
+                (*cleaned, normalize_query(phrase), limit),
             ).fetchall()
         return [Hit(row[0], row[1], row[2], row[3], 0.0, json.loads(row[4])) for row in rows]
 
@@ -375,7 +383,7 @@ class KnowledgeIndex:
         bounded result set. Legacy chunks are read only for documents not yet
         converted to located segments.
         """
-        cleaned = tuple(term for term in terms if term)
+        cleaned = tuple(unicodedata.normalize("NFKC", term).casefold() for term in terms if term)
         if not cleaned:
             return []
         if allowed_doc_ids is None:
@@ -389,7 +397,7 @@ class KnowledgeIndex:
         if not allowed_doc_ids:
             return []
         hits = self.search_segments(cleaned, allowed_doc_ids=allowed_doc_ids, phrase=phrase)
-        clause = " OR ".join("instr(lower(c.text), ?) > 0" for _ in cleaned)
+        clause = " OR ".join("instr(normalize_search_text(c.text), ?) > 0" for _ in cleaned)
         with self._connect() as conn:
             conn.execute("CREATE TEMP TABLE permitted(doc_id TEXT PRIMARY KEY)")
             conn.executemany(

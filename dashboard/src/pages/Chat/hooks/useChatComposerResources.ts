@@ -27,6 +27,8 @@ import {
 import { withDefaultOpenKnowledgeBases } from "../utils/withDefaultOpenKnowledgeBases";
 import { isPendingThread } from "./useSessions";
 
+const EMPTY_MODELS: ResolvedModel[] = [];
+
 export function useChatComposerResources(
   resolvedAgentId: string | null | undefined,
   activeThreadId?: string | null,
@@ -59,7 +61,16 @@ export function useChatComposerResources(
       default_open?: boolean;
     }[]
   >([]);
-  const [availableModels, setAvailableModels] = useState<ResolvedModel[]>([]);
+  const [modelCatalog, setModelCatalog] = useState<{
+    agentId: string | null | undefined;
+    models: ResolvedModel[];
+  } | null>(null);
+  const modelsReady =
+    modelCatalog !== null && modelCatalog.agentId === resolvedAgentId;
+  const availableModels =
+    modelCatalog && modelCatalog.agentId === resolvedAgentId
+      ? modelCatalog.models
+      : EMPTY_MODELS;
   const [activeModelRef, setActiveModelRef] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState<string | null>(null);
   const [preferredModel, setPreferredModel] = useState<string | null>(null);
@@ -93,19 +104,37 @@ export function useChatComposerResources(
   }, [isNewSession]);
 
   // Auto = omit turn model; backend applies the expert default.
+  const remoteBridge = resolvedAgentId?.startsWith("bridge:") ?? false;
+  const expertDefaultModel = expert?.default_model || null;
   useEffect(() => {
     const local = activeThreadId
       ? conversationOverrides[activeThreadId]
       : undefined;
+    const model = local
+      ? local.model
+      : stickyModel ||
+        expertDefaultModel ||
+        (!remoteBridge ? preferredModel : null) ||
+        null;
     setSelectedModel(
-      local ? local.model : stickyModel || preferredModel || null,
+      modelsReady &&
+        model &&
+        !availableModels.some(
+          (item) => `${item.provider_name}/${item.model}` === model,
+        )
+        ? null
+        : model,
     );
   }, [
     resolvedAgentId,
     activeThreadId,
     stickyModel,
+    expertDefaultModel,
+    remoteBridge,
     preferredModel,
     conversationOverrides,
+    modelsReady,
+    availableModels,
   ]);
 
   useEffect(() => {
@@ -302,15 +331,19 @@ export function useChatComposerResources(
 
   useEffect(() => {
     let cancelled = false;
+    let latestRequest = 0;
+    setModelCatalog(null);
     const loadModels = () => {
+      const request = ++latestRequest;
       void providerApi
         .listResolvedModels()
         .then((data) => {
-          if (!cancelled) setAvailableModels(data);
+          if (!cancelled && request === latestRequest) {
+            setModelCatalog({ agentId: resolvedAgentId, models: data });
+          }
         })
-        .catch(() => {
-          if (!cancelled) setAvailableModels([]);
-        });
+        // A failed catalog request is not proof that a model was disabled.
+        .catch(() => undefined);
     };
     loadModels();
     const onFocus = () => loadModels();
@@ -319,7 +352,7 @@ export function useChatComposerResources(
       cancelled = true;
       window.removeEventListener("focus", onFocus);
     };
-  }, []);
+  }, [resolvedAgentId]);
 
   useEffect(() => {
     let cancelled = false;
@@ -408,6 +441,39 @@ export function useChatComposerResources(
     [activeThreadId, availableModels, modelReasoning, resolvedAgentId],
   );
 
+  // A successful expert catalog is the only authority to invalidate a choice.
+  // Persist Auto so reopening the thread cannot restore the disabled model.
+  useEffect(() => {
+    if (!modelsReady) return;
+    const local = activeThreadId
+      ? conversationOverrides[activeThreadId]
+      : undefined;
+    const model = local
+      ? local.model
+      : stickyModel ||
+        expertDefaultModel ||
+        (!remoteBridge ? preferredModel : null) ||
+        null;
+    if (
+      model &&
+      !availableModels.some(
+        (item) => `${item.provider_name}/${item.model}` === model,
+      )
+    ) {
+      handleModelChange(null);
+    }
+  }, [
+    activeThreadId,
+    stickyModel,
+    expertDefaultModel,
+    remoteBridge,
+    preferredModel,
+    conversationOverrides,
+    availableModels,
+    modelsReady,
+    handleModelChange,
+  ]);
+
   const handleReasoningChange = useCallback(
     (mode: "auto" | "enabled" | "disabled", effort: string | null) => {
       setReasoningMode(mode);
@@ -447,6 +513,7 @@ export function useChatComposerResources(
     chatConnectors: canUseConnectors ? chatConnectors : undefined,
     chatKnowledgeBases,
     availableModels,
+    modelsReady,
     activeModelRef,
     handleConnectorsChange: canUseConnectors
       ? handleConnectorsChange

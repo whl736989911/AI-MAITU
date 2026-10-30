@@ -25,6 +25,8 @@ SEARCH_ENV_KEYS = frozenset(
     {
         "TAVILY_API_KEY",
         "BRAVE_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "TENCENTCLOUD_WSA_APIKEY",
         "GOOGLE_API_KEY",
         "GOOGLE_CSE_ID",
         "MOONSHOT_API_KEY",

@@ -5,7 +5,6 @@ import {
   useImperativeHandle,
   useRef,
   useState,
-  type KeyboardEventHandler,
   type ReactNode,
 } from "react";
 import { Button, Input, Tooltip } from "antd";
@@ -28,6 +27,7 @@ import { paintBase64JpegToCanvas } from "../../utils/browserCanvas";
 import { normalizeUrl } from "../../utils/normalizeUrl";
 import { ChromeTabBar } from "../ChromeTabBar";
 import StreamConnectingIndicator from "../StreamConnectingIndicator";
+import { useBrowserKeyboard } from "../../hooks/useBrowserKeyboard";
 import styles from "./index.module.less";
 
 /** Imperative handle so the parent can paint incoming frames onto the canvas. */
@@ -61,9 +61,6 @@ interface BrowserViewerProps {
 
   /** Optional overlay rendered on top of the canvas (e.g. edge controls). */
   overlay?: ReactNode;
-
-  /** Forwarded to the canvas keydown handler (optional). */
-  onCanvasKeyDown?: KeyboardEventHandler<HTMLCanvasElement>;
 
   /** Called whenever a frame is painted (parent tracks readiness). */
   onFrameReadyChange?: (ready: boolean) => void;
@@ -107,7 +104,6 @@ export const BrowserViewer = forwardRef<
     onToggleBookmark,
     addressBarExtra,
     overlay,
-    onCanvasKeyDown,
     onFrameReadyChange,
     onReconnect,
     connectingHint,
@@ -117,7 +113,10 @@ export const BrowserViewer = forwardRef<
   const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const [frameReady, setFrameReady] = useState(false);
-
+  const { inputRef, focusInput, ...keyboard } = useBrowserKeyboard(
+    interactive,
+    sendEvent,
+  );
   const paintFrame = useCallback((base64Data: string) => {
     paintBase64JpegToCanvas(canvasRef.current, base64Data);
     setFrameReady(true);
@@ -137,11 +136,11 @@ export const BrowserViewer = forwardRef<
         event.type === "dblclick" ||
         event.type === "mousedown"
       ) {
-        canvasRef.current?.focus();
+        focusInput();
       }
       sendEvent(event);
     },
-    [sendEvent],
+    [sendEvent, focusInput],
   );
 
   const {
@@ -287,6 +286,20 @@ export const BrowserViewer = forwardRef<
           interactive ? styles.viewportInteractive : ""
         }`}
       >
+        <textarea
+          ref={inputRef}
+          className={styles.keyboardSink}
+          aria-label={t("browserViewer.interactiveHint")}
+          tabIndex={-1}
+          autoComplete="off"
+          autoCapitalize="off"
+          spellCheck={false}
+          readOnly={!interactive}
+          onInput={keyboard.onInput}
+          onCompositionStart={keyboard.onCompositionStart}
+          onCompositionEnd={keyboard.onCompositionEnd}
+          onKeyDown={keyboard.onKeyDown}
+        />
         {isError ? (
           <div className={styles.placeholder}>
             <AlertTriangle
@@ -316,7 +329,7 @@ export const BrowserViewer = forwardRef<
         ) : (
           <canvas
             ref={canvasRef}
-            tabIndex={0}
+            tabIndex={interactive ? -1 : 0}
             className={`${styles.canvas} ${
               interactive ? styles.canvasInteractive : ""
             } ${!frameReady ? styles.canvasHidden : ""}`}
@@ -324,13 +337,15 @@ export const BrowserViewer = forwardRef<
               cursor: isDragging ? "grabbing" : "default",
               ...pointerStyle,
             }}
-            onPointerDown={handlePanPointerDown}
+            onPointerDown={(event) => {
+              handlePanPointerDown(event);
+              if (interactive) focusInput();
+            }}
             onPointerMove={handlePointerMove}
             onPointerLeave={handlePointerLeave}
             onDoubleClick={handlePanDoubleClick}
             onContextMenu={handleContextMenu}
             onWheel={handleWheel}
-            onKeyDown={onCanvasKeyDown}
           />
         )}
         {overlay}

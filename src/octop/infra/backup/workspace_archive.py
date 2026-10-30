@@ -40,7 +40,7 @@ def _workspace_relative(workspace: BackendWorkspace, path: str) -> str | None:
 
 
 def _safe_zip_name(name: str) -> str | None:
-    raw = name.replace("\\", "/").strip().lstrip("/")
+    raw = name.replace("\\", "/").lstrip("/")
     if not raw or raw.endswith("/"):
         return None
     parts = [p for p in raw.split("/") if p not in ("", ".")]
@@ -161,7 +161,8 @@ def _read_entry_bytes(workspace: BackendWorkspace, rel: str) -> bytes | None:
     Kept synchronous so callers can run it in one thread hop (see
     :func:`export_workspace_zip`) instead of blocking the event loop.
     """
-    if _local_mount(workspace) is not None:
+    local_mount = _local_mount(workspace)
+    if local_mount is not None:
         root = workspace.workspace_dir
         local = (root / rel).resolve()
         try:
@@ -172,6 +173,10 @@ def _read_entry_bytes(workspace: BackendWorkspace, rel: str) -> bytes | None:
             blob = workspace.download_bytes(str(local))
             if blob is not None:
                 return blob
+    if local_mount is None:
+        # Archive entries are literal workspace paths, not logical system names.
+        materialized = workspace.materialize_local(f"./{rel}", map_system_paths=False)
+        return materialized.read_bytes() if materialized is not None else None
     return workspace.download_bytes(rel)
 
 
@@ -206,8 +211,9 @@ async def import_workspace_zip(
             "replace mode cleared only the local harness workspace; remote-only files may remain"
         )
 
+    # BackendWorkspace strips path boundaries; "./" keeps filename-leading spaces internal.
     pairs = [
-        (rel, blob)
+        (f"./{rel}", blob)
         for rel, blob in entries
         if rel != OCTOP_BUILTIN_SKILLS_ROOT and not rel.startswith(f"{OCTOP_BUILTIN_SKILLS_ROOT}/")
     ]

@@ -110,6 +110,53 @@ describe("setHistoryPage live-tail merge", () => {
 
     expect(getSnapshot(SESSION).messages[0].content).toBe("new streamed text");
   });
+
+  it("replaces the local assistant after the same user turn is persisted", () => {
+    const user = makeMessage("send-id");
+    setHistoryPage(SESSION, [user], { hasMore: false, nextOffset: 1 });
+    const baseline = captureHistoryBaseline(SESSION);
+    appendUserMessage(SESSION, {
+      ...makeMessage("local-assistant"),
+      role: "assistant",
+      content: "completed answer",
+      status: "done",
+    });
+
+    setHistoryPage(
+      SESSION,
+      [
+        user,
+        {
+          ...makeMessage("persisted-assistant"),
+          role: "assistant",
+          content: "completed answer",
+          status: "done",
+        },
+      ],
+      { hasMore: false, nextOffset: 2, baseline },
+    );
+
+    expect(getSnapshot(SESSION).messages.map((message) => message.id)).toEqual([
+      "send-id",
+      "persisted-assistant",
+    ]);
+  });
+
+  it("keeps same-text user turns distinct when their message ids differ", () => {
+    setHistoryPage(
+      SESSION,
+      [
+        { ...makeMessage("send-1"), content: "repeat this" },
+        { ...makeMessage("send-2"), content: "repeat this" },
+      ],
+      { hasMore: false, nextOffset: 2 },
+    );
+
+    expect(getSnapshot(SESSION).messages.map((message) => message.id)).toEqual([
+      "send-1",
+      "send-2",
+    ]);
+  });
 });
 
 describe("invalidateHistory", () => {

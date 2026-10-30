@@ -9,6 +9,9 @@ import {
   DesktopInstallGuide,
   IosGuide,
 } from "../../components/PwaInstallPrompt";
+import { getApiUrl } from "../../api/config";
+import { publicUrl, routerBasename } from "../../utils/publicUrl";
+
 import { copyText } from "../../utils/copyText";
 
 interface CheckItem {
@@ -99,7 +102,7 @@ export default function PwaDebugPage() {
     // ── 3. SW registration state ─────────────────────────────────
     if (swSupported) {
       navigator.serviceWorker
-        .getRegistration("/")
+        .getRegistration(routerBasename() ? `${routerBasename()}/` : "/")
         .then((reg) => {
           if (!reg) {
             setChecks((prev) => [
@@ -166,7 +169,7 @@ export default function PwaDebugPage() {
     }
 
     // ── 5. Manifest fetch ────────────────────────────────────────
-    fetch("/manifest.json")
+    fetch(getApiUrl("/branding/manifest.webmanifest"))
       .then(async (res) => {
         const ct = res.headers.get("content-type") ?? "";
         let detail = `HTTP ${res.status}  Content-Type: ${ct}`;
@@ -280,7 +283,7 @@ export default function PwaDebugPage() {
     // ── 6. sw.js fetch ───────────────────────────────────────────
     // Use GET + abort so HEAD 405 (some servers block HEAD) doesn't cause false fail.
     const swAbort = new AbortController();
-    fetch("/sw.js", { signal: swAbort.signal })
+    fetch(publicUrl("sw.js"), { signal: swAbort.signal })
       .then((res) => {
         swAbort.abort();
         const cc = res.headers.get("cache-control") ?? "(none)";

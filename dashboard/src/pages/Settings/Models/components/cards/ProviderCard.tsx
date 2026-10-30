@@ -67,6 +67,8 @@ export function ProviderCard({
         ok: boolean;
         latency_ms?: number;
         error?: string;
+        api_mode?: "chat_completions" | "responses";
+        fallback_used?: boolean;
       }>(`${apiPrefix}/${provider.id}/test`, { method: "POST" });
       if (result.ok) {
         const latency =
@@ -79,6 +81,7 @@ export function ProviderCard({
             latency,
           }),
         );
+        if (result.fallback_used) message.info(t("models.apiFallbackUsed"));
       } else {
         message.error(
           t("models.testConnectionFailed", {

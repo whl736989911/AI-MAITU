@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from octop.infra.knowledge.index import Hit
+from octop.infra.knowledge.index import Hit, normalize_query
 from octop.infra.knowledge.search import (
     MAX_TERMS,
     fuse_rankings,
-    normalize_query,
     query_terms,
     rank_hits,
     score_chunk,

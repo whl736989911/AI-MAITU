@@ -398,6 +398,8 @@ class KnowledgeCollectionService:
             topic = by_doc.get(document.id)
             link = self._source_link(collection, document.id, version)
             status = str(topic["status"]) if topic is not None else "pending"
+            if status == "stale":
+                topic = None
             lines.append(f"## [{document.filename}]({link})")
             lines.append(f"- {self._t('source', locale)}: {document.path}")
             if document.source_path and document.source_path != document.path:
@@ -411,7 +413,7 @@ class KnowledgeCollectionService:
                 lines.append(f"- {self._t('summary', locale)}: {topic['summary']}")
             if topic is not None and topic["content"]:
                 lines += ["", str(topic["content"]), ""]
-            elif status == "pending" or topic is None:
+            elif status == "pending":
                 lines.append(f"- {self._t('topic_empty', locale)}")
             if status == "stale":
                 lines.append(f"- {self._t('stale_notice', locale)}")

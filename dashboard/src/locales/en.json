@@ -1,4 +1,13 @@
 {
+  "textAssist": {
+    "hint": "AI suggestions are shown for review and applied only when you choose.",
+    "action": "Suggest with AI",
+    "nameRequired": "Enter a name first to generate a suggestion.",
+    "emptyResult": "The model returned no suggestion.",
+    "failed": "AI text assistance failed. Please try again.",
+    "apply": "Apply suggestion",
+    "discard": "Discard"
+  },
   "interfacePreview": {
     "chatFlow": {
       "demo": "Component example",
@@ -2553,6 +2562,12 @@
       "configured": "Configured",
       "unconfigured": "Not Configured",
       "providers": {
+        "deepseek": {
+          "desc": "Configure DeepSeek Search with a DeepSeek API key for live web results."
+        },
+        "yuanbao": {
+          "desc": "Configure Tencent Yuanbao Search with a Tencent Cloud WSA API key."
+        },
         "tavily": {
           "desc": "AI-powered web search with intelligent answers"
         },
@@ -3168,11 +3183,11 @@
         "hint": "Each profile matches by drawing text or file name; the matching profile decides where each field comes from.",
         "empty": "No extraction rules yet",
         "noFields": "Every profile needs at least one field mapping",
-        "profileName": "Profile name (e.g. forging card)",
+        "profileName": "Profile name",
         "whenLabels": "Contains text",
         "whenLabelsPlaceholder": "Any of these, comma separated",
         "whenFilename": "File name matches",
-        "whenFilenamePlaceholder": "Regex, e.g. mould",
+        "whenFilenamePlaceholder": "Regular expression",
         "field": "Field",
         "sourceLabel": "Title-block text",
         "sourceDimensions": "Dimension labels",
@@ -4109,10 +4124,13 @@
     "after": "After"
   },
   "tools": {
+    "deepseek_search": "DeepSeek web search",
+    "yuanbao_search": "Yuanbao web search",
     "unknown": "Unknown tool",
     "read_file": "Read file",
     "write_file": "Write file",
     "edit_file": "Edit file",
+    "delete": "Delete file",
     "bash": "Shell (bash)",
     "execute": "Execute",
     "current_time": "Current time",
@@ -5447,6 +5465,15 @@
     "stepActive": "Active"
   },
   "models": {
+    "apiMode": "API protocol",
+    "apiModeHint": "Choose the request protocol for this model. Existing models use Chat Completions by default.",
+    "apiModeChatCompletions": "Chat Completions",
+    "apiModeResponses": "Responses API",
+    "apiFallback": "Responses compatibility fallback",
+    "apiFallbackHint": "Use Chat Completions once only when the server explicitly rejects the Responses protocol. Authentication, quota, missing-model, and ordinary server errors do not trigger protocol fallback; SDK retry policies still apply.",
+    "apiFallbackNone": "Do not fall back",
+    "apiFallbackChatCompletions": "Use Chat Completions on protocol rejection",
+    "apiFallbackUsed": "The Responses API was rejected; the probe succeeded with Chat Completions.",
     "llmConfiguration": "LLM Configuration",
     "providersTitle": "Providers",
     "providersDescription": "Configure API keys and endpoints for each provider.",

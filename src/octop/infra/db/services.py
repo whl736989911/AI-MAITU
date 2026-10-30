@@ -5,6 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from octop.config import OctopConfig
+from octop.infra.crypto.sealed_repos import (
+    SealedBackendRepo,
+    SealedProviderRepo,
+    SealedVoiceProviderRepo,
+)
 from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos.agents import AgentRepo
 from octop.infra.db.repos.audit import AuditRepo
@@ -88,6 +93,7 @@ class RepoBundle:
 
     @classmethod
     def from_pool(cls, db: DatabasePool) -> RepoBundle:
+        secret_repo = SecretRepo(db)
         return cls(
             db=db,
             user_repo=UserRepo(db),
@@ -95,18 +101,18 @@ class RepoBundle:
             user_policy_repo=UserPolicyRepo(db),
             invite_repo=InviteRepo(db),
             agent_repo=AgentRepo(db),
-            provider_repo=ProviderRepo(db),
+            provider_repo=SealedProviderRepo(ProviderRepo(db), secret_repo),
             channel_repo=ChannelRepo(db),
             cron_repo=CronJobRepo(db),
             session_repo=SessionRepo(db),
             thread_repo=ThreadRepo(db),
             thread_message_repo=ThreadMessageRepo(db),
             trajectory_event_repo=TrajectoryEventRepo(db),
-            secret_repo=SecretRepo(db),
+            secret_repo=secret_repo,
             audit_repo=AuditRepo(db),
             usage_repo=UsageRepo(db),
             settings_repo=SettingsRepo(db),
-            storage_backend_repo=BackendRepo(db),
+            storage_backend_repo=SealedBackendRepo(BackendRepo(db), secret_repo),
             connector_repo=ConnectorRepo(db),
             skill_package_repo=SkillPackageRepo(db),
             published_expert_repo=PublishedExpertRepo(db),
@@ -114,7 +120,7 @@ class RepoBundle:
             knowledge_repo=KnowledgeRepo(db),
             knowledge_delegation_repo=KnowledgeDelegationRepo(db),
             knowledge_notification_repo=KnowledgeAccessNotificationRepo(db),
-            voice_provider_repo=VoiceProviderRepo(db),
+            voice_provider_repo=SealedVoiceProviderRepo(VoiceProviderRepo(db), secret_repo),
             care_push_repo=CarePushRepo(db),
             proactive_care_config_repo=ProactiveCareConfigRepo(db),
             sso_repo=SsoRepo(db),

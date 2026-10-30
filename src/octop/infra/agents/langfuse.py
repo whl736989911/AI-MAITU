@@ -11,6 +11,11 @@ import urllib.request
 from dataclasses import dataclass
 from typing import Any
 
+from octop.infra.crypto.fernet import (
+    PURPOSE_SETTINGS,
+    open_secret_bytes,
+    seal_secret_bytes,
+)
 from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.errors import ErrorCode, OctopError
@@ -87,7 +92,8 @@ class LangfuseSettingsStore:
         enabled = (self._settings.get(_KEY_ENABLED) or "").lower() in {"1", "true", "yes"}
         public_key = (self._settings.get(_KEY_PUBLIC) or "").strip()
         host = (self._settings.get(_KEY_HOST) or "").strip().rstrip("/")
-        secret_key_set = self._secrets.get(_SECRET_KEY) is not None
+        stored_secret = self._secrets.get(_SECRET_KEY)
+        secret_key_set = stored_secret is not None
         return LangfuseSettings(
             enabled=enabled,
             public_key=public_key,
@@ -120,9 +126,8 @@ class LangfuseSettingsStore:
         self._settings.set(_KEY_PUBLIC, public_key)
         self._settings.set(_KEY_HOST, host)
         if secret_key:
-            encoded = secret_key.encode("utf-8")
-            existing = self._secrets.get(_SECRET_KEY)
-            if existing is not None:
+            encoded = seal_secret_bytes(self._secrets, PURPOSE_SETTINGS, secret_key.encode("utf-8"))
+            if self._secrets.get(_SECRET_KEY) is not None:
                 self._secrets.rotate(_SECRET_KEY, encoded)
             else:
                 self._secrets.get_or_create(_SECRET_KEY, lambda: encoded)
@@ -141,7 +146,10 @@ class LangfuseSettingsStore:
         sk = secret_key
         if sk is None:
             raw = self._secrets.get(_SECRET_KEY)
-            sk = raw.decode("utf-8") if raw else None
+            opened = (
+                open_secret_bytes(self._secrets, PURPOSE_SETTINGS, raw) if raw is not None else None
+            )
+            sk = opened.decode("utf-8") if opened else None
         if not pk or not h or not sk:
             raise OctopError(ErrorCode.SLASH_BAD_ARGS, "Langfuse credentials are incomplete")
 
@@ -156,11 +164,14 @@ class LangfuseSettingsStore:
         if not view.enabled:
             return LangfuseConfig(enabled=False)
         raw = self._secrets.get(_SECRET_KEY)
-        if not view.configured or raw is None:
+        opened = (
+            open_secret_bytes(self._secrets, PURPOSE_SETTINGS, raw) if raw is not None else None
+        )
+        if not view.configured or opened is None:
             return None
         return LangfuseConfig(
             enabled=True,
             public_key=view.public_key,
             host=view.host,
-            secret_key=raw.decode("utf-8"),
+            secret_key=opened.decode("utf-8"),
         )

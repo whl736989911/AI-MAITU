@@ -303,6 +303,8 @@ class UserRepo:
         if fields:
             params.append(user_id)
             conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", params)
+        if "org_units" in updates:
+            self.set_units(user_id, updates["org_units"], conn=conn)
         return self.get(user_id, conn=conn)
 
     def set_disabled(self, user_id: int, disabled: bool) -> None:
@@ -380,7 +382,9 @@ class UserRepo:
             rows = conn.execute(sql, (user_id, user_id)).fetchall()
         return sorted({str(row[0]) for row in rows if row and row[0]})
 
-    def set_units(self, user_id: int, unit_keys: builtins.list[str]) -> None:
+    def set_units(
+        self, user_id: int, unit_keys: builtins.list[str], *, conn: Any | None = None
+    ) -> None:
         """Replace the account's department memberships.
 
         The first key becomes the primary department (``users.org_unit``) so the
@@ -388,7 +392,7 @@ class UserRepo:
         """
         cleaned = [str(key).strip() for key in unit_keys if str(key).strip()]
         cleaned = list(dict.fromkeys(cleaned))
-        with self._db.transaction() as conn:
+        with nullcontext(conn) if conn is not None else self._db.transaction() as conn:
             conn.execute("DELETE FROM user_org_units WHERE user_id = ?", (user_id,))
             for key in cleaned:
                 conn.execute(

@@ -70,45 +70,46 @@ function stubProfile() {
 }
 
 describe("<ProfileOverview />", () => {
-  it("fans out to profile endpoints and renders the four profile cards", async () => {
+  it("renders returned data in the independent profile sections", async () => {
     stubProfile();
 
     render(<ProfileOverview agentId="ZYWZTD" />);
 
-    await waitFor(() => {
-      expect(screen.getAllByText(/用户画像/).length).toBeGreaterThan(0);
-    });
-
-    expect(screen.getByText(/只喝美式咖啡/)).toBeInTheDocument();
+    expect(await screen.findByText(/只喝美式咖啡/)).toBeInTheDocument();
     expect(screen.getByText(/记忆模块的设计文档/)).toBeInTheDocument();
     expect(screen.getByText(/出生于1995年/)).toBeInTheDocument();
     expect(screen.getByText("Bo5heng项目")).toBeInTheDocument();
-    expect(screen.getByText("关于你")).toBeInTheDocument();
-    expect(screen.getByText("当前重点")).toBeInTheDocument();
-    expect(screen.getByText("你提到的事实")).toBeInTheDocument();
-    expect(screen.getByText("关键人事物")).toBeInTheDocument();
-
-    expect(api.terminalAboutMe).toHaveBeenCalledWith("ZYWZTD", 12);
-    expect(api.terminalCurrentFocus).toHaveBeenCalledWith("ZYWZTD", 12);
-    expect(api.terminalThingsYouToldMe).toHaveBeenCalledWith("ZYWZTD", 12);
-    expect(api.terminalEntities).toHaveBeenCalledWith("ZYWZTD", 12);
-    expect(api.statsCounts).toHaveBeenCalledWith("ZYWZTD");
   });
 
-  it("survives partial endpoint failures", async () => {
+  it("keeps successful sections when another endpoint fails", async () => {
     api.terminalAboutMe.mockRejectedValue(new Error("about me boom"));
-    api.terminalCurrentFocus.mockResolvedValue(terminalAtomResp([]));
+    api.terminalCurrentFocus.mockResolvedValue(
+      terminalAtomResp([
+        makeAtom({
+          id: "focus-success",
+          kind: "Task",
+          assertion: "Review the synthetic release.",
+        }),
+      ]),
+    );
     api.terminalThingsYouToldMe.mockResolvedValue(terminalAtomResp([]));
-    api.terminalEntities.mockResolvedValue(terminalEntityResp([]));
+    api.terminalEntities.mockResolvedValue(
+      terminalEntityResp([
+        makeEntity({
+          id: "project-success",
+          canonical_name: "Synthetic project",
+        }),
+      ]),
+    );
     api.statsCounts.mockResolvedValue(statsCountsFixture());
     api.listAtoms.mockResolvedValue(listAtomsResp([]));
 
     render(<ProfileOverview agentId="ZYWZTD" />);
 
-    await waitFor(() => {
-      expect(screen.getAllByText(/用户画像/).length).toBeGreaterThan(0);
-    });
-    expect(screen.getByText(/还在了解你/)).toBeInTheDocument();
+    expect(
+      await screen.findByText("Review the synthetic release."),
+    ).toBeInTheDocument();
+    expect(screen.getByText("Synthetic project")).toBeInTheDocument();
   });
 
   it("caps a section at 6 rows and shows 查看全部 that calls onViewAll", async () => {
@@ -143,21 +144,28 @@ describe("<ProfileOverview />", () => {
     expect(api.statsCounts).not.toHaveBeenCalled();
   });
 
-  it("refresh button triggers another profile fan-out", async () => {
+  it("replaces displayed profile data after refresh", async () => {
     stubProfile();
+    api.terminalCurrentFocus
+      .mockResolvedValueOnce(
+        terminalAtomResp([
+          makeAtom({ id: "focus-old", assertion: "Before refresh." }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        terminalAtomResp([
+          makeAtom({ id: "focus-new", assertion: "After refresh." }),
+        ]),
+      );
 
     render(<ProfileOverview agentId="ZYWZTD" />);
 
-    await waitFor(() => {
-      expect(api.statsCounts).toHaveBeenCalledTimes(1);
-    });
+    expect(await screen.findByText("Before refresh.")).toBeInTheDocument();
 
     const refreshBtn = screen.getByRole("button");
     fireEvent.click(refreshBtn);
 
-    await waitFor(() => {
-      expect(api.statsCounts).toHaveBeenCalledTimes(2);
-      expect(api.terminalAboutMe).toHaveBeenCalledTimes(2);
-    });
+    expect(await screen.findByText("After refresh.")).toBeInTheDocument();
+    expect(screen.queryByText("Before refresh.")).not.toBeInTheDocument();
   });
 });

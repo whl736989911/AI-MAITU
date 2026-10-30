@@ -203,6 +203,8 @@ def _value_expr(field_key: str, field_type: str, dialect: str) -> str:
                 f"(CASE WHEN jsonb_typeof(values_json::jsonb->'{field_key}') = 'number' "
                 f"THEN ({extracted})::numeric END)"
             )
+        if field_type == "datetime":
+            return f"({extracted})::timestamptz"
         return extracted
     extracted = f"json_extract(values_json, '$.{field_key}')"
     if field_type in {"number", "integer"}:
@@ -210,6 +212,8 @@ def _value_expr(field_key: str, field_type: str, dialect: str) -> str:
             f"(CASE WHEN json_type(values_json, '$.{field_key}') IN ('integer', 'real') "
             f"THEN {extracted} END)"
         )
+    if field_type == "datetime":
+        return f"julianday({extracted})"
     return extracted
 
 
@@ -234,7 +238,16 @@ def compile_filters(
         field_type = condition["type"]
         expr = key if key in SYSTEM_SORT_KEYS else _value_expr(key, field_type, dialect)
         if op == "is_empty":
-            fragments.append(f"({expr} IS NULL OR {expr} = '')")
+            raw_expr = (
+                key
+                if key in SYSTEM_SORT_KEYS
+                else (
+                    f"(values_json::jsonb->>'{key}')"
+                    if dialect == "postgresql"
+                    else f"json_extract(values_json, '$.{key}')"
+                )
+            )
+            fragments.append(f"({raw_expr} IS NULL OR {raw_expr} = '')")
             continue
         if op == "in":
             marks = ", ".join("?" for _ in value)
@@ -247,7 +260,10 @@ def compile_filters(
             params.append(f"%{needle}%")
             continue
         operator = {"eq": "=", "ne": "!=", "gt": ">", "gte": ">=", "lt": "<", "lte": "<="}[op]
-        fragments.append(f"{expr} {operator} ?")
+        placeholder = (
+            "julianday(?)" if field_type == "datetime" and dialect != "postgresql" else "?"
+        )
+        fragments.append(f"{expr} {operator} {placeholder}")
         params.append(_param(field_type, value, dialect))
     return fragments, params
 

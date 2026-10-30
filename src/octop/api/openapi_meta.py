@@ -88,6 +88,10 @@ OPENAPI_TAGS: list[dict[str, str]] = [
         "description": "Dashboard chat: WebSocket streaming, threads, conversation history, trajectory ledger, and text-push toasts.",
     },
     {
+        "name": "text-assist",
+        "description": "One-shot AI suggestions for permitted forms and agent chat drafts; results are not saved automatically.",
+    },
+    {
         "name": "slash",
         "description": "Slash command metadata for composer menus and inline help.",
     },
@@ -124,7 +128,7 @@ OPENAPI_TAGS: list[dict[str, str]] = [
     },
     {
         "name": "search",
-        "description": "Web-search provider API key probes (Tavily, Brave, Google, Kimi).",
+        "description": "Web-search provider API key probes (Tavily, Brave, DeepSeek, Google, Kimi, Yuanbao).",
     },
     {"name": "providers", "description": "LLM provider configuration and active model selection."},
     {"name": "voice", "description": "Speech-to-text and text-to-speech provider configuration."},

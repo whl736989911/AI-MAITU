@@ -16,6 +16,7 @@ from octop.api.common.agent import (
     assert_agent_capability_write,
 )
 from octop.api.common.agent import assert_agent_owner as _assert_agent_owner
+from octop.api.common.upload_limit import read_upload_capped
 from octop.api.deps import get_server, require_permission
 from octop.infra.agents.plugin_tool_defaults import (
     agent_plugin_enabled,
@@ -179,7 +180,13 @@ async def upload_plugin(
     ``force=True`` overwrites an already-installed plugin with the same id.
     """
     mgr = _plugin_manager(server)
-    raw = await file.read()
+    services = server.services
+    assert services is not None
+    raw = await read_upload_capped(
+        file,
+        max_bytes=services.config.max_upload_bytes,
+        code=ErrorCode.PLUGIN_INVALID_ARCHIVE,
+    )
     if not raw:
         raise OctopError(ErrorCode.PLUGIN_INVALID_ARCHIVE, "empty plugin archive")
     try:

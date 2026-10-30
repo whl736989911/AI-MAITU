@@ -251,6 +251,9 @@ def test_prompt_and_name_changes_need_write_and_mark_topics_stale(setup) -> None
     assert updated["prompt"] == "delivery"
     assert updated["generation"]["state"] == "idle"
     topic = repo.topics(collection["id"])[0]
+    view = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)
+    assert "payment terms" not in view["topic_document"]
+    assert "payment due in 30 days" not in view["topic_document"]
     assert topic["status"] == "stale"
     cleared = state.api.update(state.kb.id, collection["id"], prompt="", actor_user_id=state.owner)
     assert cleared["prompt"] == ""

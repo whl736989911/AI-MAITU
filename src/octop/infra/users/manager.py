@@ -521,6 +521,19 @@ class UserManager:
                 updates[key] = changes[key]
         if changes.get("role") is not None:
             updates["role"] = Role(changes["role"]).value
+        if "org_units" in changes or "org_unit" in changes:
+            values = (
+                changes["org_units"]
+                if "org_units" in changes
+                else [changes["org_unit"]]
+                if changes["org_unit"]
+                else []
+            )
+            units = builtins.list(
+                dict.fromkeys(str(key).strip() for key in (values or []) if str(key).strip())
+            )
+            updates["org_units"] = units
+            updates["org_unit"] = units[0] if units else None
         if "email" in updates:
             updates["email"] = parse_optional_email(updates["email"])
         for key in ("permissions", "denied_permissions"):
@@ -554,7 +567,14 @@ class UserManager:
                     if updated is None:
                         raise OctopError(ErrorCode.NOT_FOUND, "user not found")
                     self._services.user_policy_repo.merge(row.id, policies, conn=conn)
-                    for key in ("role", "email", "org_unit", "permissions", "denied_permissions"):
+                    for key in (
+                        "role",
+                        "email",
+                        "org_unit",
+                        "org_units",
+                        "permissions",
+                        "denied_permissions",
+                    ):
                         if key not in updates:
                             continue
                         value = updates[key]
@@ -713,53 +733,6 @@ class UserManager:
             action="user.set_role",
             target=username,
             payload=role.value,
-        )
-
-    async def set_org_unit(self, username: str, unit_key: str | None) -> None:
-        """Bind the account to an org unit (``None`` clears the binding).
-
-        The cached ``User`` is updated in the same step: unit grants are resolved
-        from ``user.org_unit`` on every permission check, so a stale cache would
-        keep serving the previous unit's grants (or none) for the rest of the
-        process life — the editor's save would look like it did nothing.
-        """
-        row = self._services.user_repo.get_by_username(username)
-        if row is None:
-            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
-        self._services.user_repo.set_org_unit(row.id, unit_key)
-        async with self._lock:
-            current = self._users.get(username)
-            if current is not None:
-                current.org_unit = unit_key
-        self._services.audit_repo.write(
-            actor=ACTOR_ADMIN,
-            action="user.set_org_unit",
-            target=username,
-            payload=unit_key or "",
-        )
-
-    async def set_units(self, username: str, unit_keys: builtins.list[str]) -> None:
-        """Replace every department the account belongs to.
-
-        ``users.org_unit`` keeps the first key as the primary department for the
-        user list; the full membership lives in ``user_org_units`` and is what
-        access checks union over. The cached ``User`` is refreshed on the same
-        step so the next permission check sees the new scope.
-        """
-        row = self._services.user_repo.get_by_username(username)
-        if row is None:
-            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
-        self._services.user_repo.set_units(row.id, unit_keys)
-        primary = unit_keys[0] if unit_keys else None
-        async with self._lock:
-            current = self._users.get(username)
-            if current is not None:
-                current.org_unit = primary
-        self._services.audit_repo.write(
-            actor=ACTOR_ADMIN,
-            action="user.set_units",
-            target=username,
-            payload=",".join(unit_keys),
         )
 
     async def set_display_name(self, username: str, display_name: str | None) -> None:

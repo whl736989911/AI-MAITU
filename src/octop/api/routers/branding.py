@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, Response
 
+from octop.api.common.public_base import prefix_public_path, resolve_public_prefix
 from octop.api.deps import get_server, require_admin
 from octop.branding import BRAND_SETTINGS_KEY, branding_defaults, configure_branding
 
@@ -268,22 +269,26 @@ async def branding_manifest(
         }.get(Path(url.split("?", 1)[0]).suffix, "image/png")
         for slot, url in brand["logos"].items()
     }
+    prefix = resolve_public_prefix(request)
+    root_url = prefix_public_path(prefix, "/")
     manifest = {
+        "id": root_url,
         "name": brand["name"]["zh"],
         "short_name": brand["short_name"]["zh"],
         "description": brand["description"]["zh"],
-        "start_url": "/",
+        "start_url": root_url,
+        "scope": root_url,
         "display": "standalone",
         "theme_color": brand["pwa"]["theme_color"],
         "background_color": brand["pwa"]["background_color"],
         "icons": [
             {
-                "src": brand["logos"]["pwa_192"],
+                "src": prefix_public_path(prefix, brand["logos"]["pwa_192"]),
                 "sizes": "192x192",
                 "type": icon_types["pwa_192"],
             },
             {
-                "src": brand["logos"]["pwa_512"],
+                "src": prefix_public_path(prefix, brand["logos"]["pwa_512"]),
                 "sizes": "512x512",
                 "type": icon_types["pwa_512"],
                 "purpose": "any maskable",

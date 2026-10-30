@@ -243,6 +243,10 @@ async def dashboard_chat_ws(
                 user_is_admin=bool(getattr(user, "is_admin", False)),
             )
             thread_id = prepared.thread_id
+            # Subscribe before the steering admission await below. A newly
+            # connected steering socket must be live before the current turn
+            # can emit another chunk.
+            hub.subscribe(thread_id, connection_id)
             active_turn_id = await gateway.steer.active_turn_id(thread_id)
             delivery = turn.delivery or "auto"
             client_pending_id = turn.client_pending_id or uuid.uuid4().hex

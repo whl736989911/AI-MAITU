@@ -1,8 +1,10 @@
+import { publicUrl } from "./utils/publicUrl";
+
 /**
  * Service Worker registration and lifecycle management.
  *
  * Production (all browsers including Chrome / Safari):
- *   - Register `/sw.js` with workbox `skipWaiting: false` (vite.config).
+ *   - Register the worker and scope under Vite's configured public base.
  *   - Never auto `location.reload()` on `controllerchange` — that pattern
  *     caused full-page refresh loops (especially WebKit). Updates apply only
  *     when the user clicks the banner → `applyUpdate()`.
@@ -64,10 +66,14 @@ export async function applyUpdate(): Promise<void> {
 
 /** Production registration. Exported for unit tests (vitest always sets DEV). */
 export async function registerProductionSW(): Promise<void> {
-  const registration = await navigator.serviceWorker.register("/sw.js", {
-    scope: "/",
-    updateViaCache: "none",
-  });
+  const scope = import.meta.env.BASE_URL || "/";
+  const registration = await navigator.serviceWorker.register(
+    publicUrl("sw.js"),
+    {
+      scope,
+      updateViaCache: "none",
+    },
+  );
 
   // Intentionally no controllerchange → location.reload() listener.
   // Chrome and Safari both pick up new assets via applyUpdate() instead.

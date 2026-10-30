@@ -788,11 +788,15 @@ export function ProviderConfigModal({
               base_url: draftBaseUrl || provider.base_url,
               model_id: modelId,
               embedding,
+              api_mode: draftModels.find((m) => m.id === modelId)?.api_mode,
+              api_fallback: draftModels.find((m) => m.id === modelId)
+                ?.api_fallback,
             })
           : await request<{
               ok: boolean;
               latency_ms?: number;
               error?: string;
+              fallback_used?: boolean;
             }>(`${apiPrefix}/${provider.id}/test`, {
               method: "POST",
               body: JSON.stringify({ model_id: modelId, embedding }),
@@ -809,6 +813,7 @@ export function ProviderConfigModal({
             latency,
           }),
         );
+        if (result.fallback_used) message.info(t("models.apiFallbackUsed"));
       } else {
         message.error(
           t("models.testConnectionFailed", {

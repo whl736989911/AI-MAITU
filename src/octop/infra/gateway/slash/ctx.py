@@ -27,6 +27,7 @@ class SlashCtx:
     channel_type: str
     session_key: str
     thread_registry: ThreadRegistry
+    gateway: Gateway | None = None
     agent_repo: AgentRepo | None = None
     connector_repo: ConnectorRepo | None = None
     usage_repo: UsageRepo | None = None
@@ -154,6 +155,7 @@ def build_slash_ctx(
             metadata=resolved_meta,
         ),
         thread_registry=thread_registry,  # type: ignore[arg-type]
+        gateway=gateway,
         agent_repo=agent_repo,
         connector_repo=connector_repo,
         usage_repo=usage_repo,

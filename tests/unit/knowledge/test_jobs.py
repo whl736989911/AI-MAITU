@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import threading
 from pathlib import Path
 from types import SimpleNamespace
@@ -56,6 +57,106 @@ def test_enqueue_index_document_limits_concurrency(monkeypatch: pytest.MonkeyPat
 
     asyncio.run(run())
     assert peak == 1
+
+
+@pytest.mark.parametrize(
+    "mode",
+    ["rerun", "stale_error", "shutdown", "shutdown_stale_error", "cancel", "cancel_stale_error"],
+)
+@pytest.mark.asyncio
+async def test_update_during_active_indexing_reprocesses_latest_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mode: str
+) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(jobs, "assert_embedding_usable", lambda *_args: None)
+    monkeypatch.setattr(
+        jobs, "embed_knowledge_texts", lambda _services, texts: [[1.0, 0.0] for _ in texts]
+    )
+    monkeypatch.setattr(
+        "octop.infra.knowledge.service.assert_knowledge_usable", lambda *_args, **_kwargs: None
+    )
+    from octop.infra.knowledge.parse import ParsedDocument
+    from octop.infra.knowledge.service import KnowledgeService
+
+    jobs.reset_index_semaphore_for_tests()
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = KnowledgeRepo(pool)
+    owner_id = UserRepo(pool).create(username="owner", password_hash="h", role="user")
+    kb = repo.create_base(owner_user_id=owner_id, name="Docs", embedding_model="model")
+    services = SimpleNamespace(
+        db=pool,
+        knowledge_repo=repo,
+        settings_repo=SettingsRepo(pool),
+        provider_repo=None,
+        knowledge_collections_repo=None,
+    )
+    document = repo.create_document(
+        kb_id=kb.id, filename="notes.md", content_type="text/markdown", byte_size=8
+    )
+    write_document(kb.id, document.id, document.filename, b"old text")
+    entered = threading.Event()
+    release = threading.Event()
+
+    def parse_after_update(path: Path, **_kwargs: object) -> ParsedDocument:
+        text = path.read_text(encoding="utf-8")
+        if text == "old text":
+            entered.set()
+            assert release.wait(timeout=5)
+            if mode.endswith("stale_error"):
+                raise ValueError("stale content could not be parsed")
+        return ParsedDocument(text=text)
+
+    monkeypatch.setattr(jobs, "parse_document", parse_after_update)
+    try:
+        task = jobs.enqueue_index_document(services, kb.id, document.id)
+        assert await asyncio.to_thread(entered.wait, 5)
+        KnowledgeService(services).update_text_document(
+            kb.id, document.id, actor_user_id=owner_id, content="new text"
+        )
+        jobs.enqueue_index_document(services, kb.id, document.id)
+        if mode.startswith("shutdown"):
+            shutdown = asyncio.create_task(jobs.shutdown_index_jobs(services))
+            await asyncio.sleep(0)
+            assert not shutdown.done()
+            release.set()
+            await shutdown
+            pending = repo.get_document(document.id)
+            assert pending is not None
+            assert pending.status == "pending"
+            jobs.resume_pending_index_jobs(services)
+            task = jobs.enqueue_index_document(services, kb.id, document.id)
+            await task
+        elif mode.startswith("cancel"):
+            task.cancel()
+            release.set()
+            if mode == "cancel":
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                await asyncio.gather(task, return_exceptions=True)
+            pending = repo.get_document(document.id)
+            assert pending is not None
+            assert pending.status == "pending"
+            jobs.resume_pending_index_jobs(services)
+            task = jobs.enqueue_index_document(services, kb.id, document.id)
+            await task
+        else:
+            release.set()
+            await task
+        updated = repo.get_document(document.id)
+        assert updated is not None
+        assert updated.status == "ready"
+        assert updated.content_hash == hashlib.sha256(b"new text").hexdigest()
+        hits = KnowledgeIndex(kb.id).search([1.0, 0.0], 10)
+        assert [hit.text for hit in hits] == ["new text"]
+    finally:
+        release.set()
+        try:
+            await jobs.shutdown_index_jobs(services)
+        finally:
+            pool.close()
+            jobs.reset_index_semaphore_for_tests()
 
 
 @pytest.mark.parametrize("cancel_running", [False, True])

@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 from octop.api.common.agent import require_agent_owner_row, user_owns_agent
 from octop.api.common.agent_runtime import AgentRuntimeFields, runtime_field_updates
 from octop.api.common.validators import assert_user_backend_root_dirs
-from octop.api.deps import get_server, require_permission
+from octop.api.deps import get_server, require_permission, unit_grants_for
 from octop.infra.agents.avatar import (
     display_published_expert_icon_url,
     read_snapshot_avatar,
@@ -92,6 +92,37 @@ def _validated_session_defaults(
         registry.validate_mcp_servers(user_id, mcp_servers) if mcp_servers is not None else None
     )
     return kb_ids, servers
+
+
+def _require_expert_creation_permissions(body: Any, user: Any, server: Any) -> None:
+    from octop.infra.agents.config_permissions import require_config_permissions
+    from octop.infra.users.permissions import effective_permissions
+
+    changes: dict[str, str] = {}
+    for field, permission in (
+        ("backend", "terminal"),
+        ("skill_package_ids", "skills"),
+        ("knowledge_base_ids", "knowledge_bases"),
+        ("mcp_servers", "connectors"),
+        ("hub_skills", "skills"),
+        ("copy_skills", "skills"),
+        ("file_overrides", "workspace"),
+        ("omit_files", "workspace"),
+    ):
+        value = getattr(body, field, None)
+        changed = (
+            value is not None
+            if field in {"skill_package_ids", "knowledge_base_ids", "mcp_servers"}
+            else bool(value)
+        )
+        if changed:
+            changes[field] = permission
+    require_config_permissions(
+        {},
+        {},
+        effective_permissions(user, unit_grants=unit_grants_for(server, user)),
+        top_level_changes=changes,
+    )
 
 
 _SAFE_MARKET_REASONS: dict[SkillHubMarketErrorKind, str] = {
@@ -603,6 +634,7 @@ async def install_published_expert(
     """Create a private agent and seed it from the immutable published snapshot."""
     assert server.app_runtime is not None
     assert server.services is not None
+    _require_expert_creation_permissions(body, user, server)
     assert_user_backend_root_dirs(
         user,
         body.backend,
@@ -707,6 +739,7 @@ async def install_expert_hub_item(
 ) -> dict[str, Any]:
     """Create an agent from a SkillHub skillset-backed expert template."""
     assert server.app_runtime is not None
+    _require_expert_creation_permissions(body, user, server)
     assert_user_backend_root_dirs(
         user,
         body.backend,
@@ -804,6 +837,7 @@ async def create_agent_from_expert(
     if expert is None:
         raise OctopError(ErrorCode.NOT_FOUND, f"expert {expert_id!r} not found")
     assert server.app_runtime is not None
+    _require_expert_creation_permissions(body, user, server)
     assert_user_backend_root_dirs(
         user,
         body.backend,

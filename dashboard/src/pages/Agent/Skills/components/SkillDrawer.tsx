@@ -6,6 +6,7 @@ import { MinusCircle, PanelLeftOpen, Plus, Upload } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { FormInstance } from "antd";
 import EmojiPicker from "../../../../components/EmojiPicker";
+import { TextAssistBar } from "../../../../components/TextAssistBar";
 import Markdown from "../../../../components/Markdown/LazyMarkdown";
 import { request } from "../../../../api/request";
 import { splitMarkdownFrontmatter } from "../../../../utils/markdown";
@@ -524,6 +525,18 @@ export function SkillDrawer({
     <Form.Item
       name="description"
       label={t("skills.skillDescription")}
+      extra={
+        fieldsEditable ? (
+          <TextAssistBar
+            kind="skill.description"
+            agentId={agentId}
+            scopeKey={`${open}:${editingSkill?.slug ?? "new"}`}
+            getText={() => form.getFieldValue("description") ?? ""}
+            getName={() => form.getFieldValue("name") ?? ""}
+            onApply={(text) => form.setFieldValue("description", text)}
+          />
+        ) : undefined
+      }
       rules={
         fieldsEditable && editorTab === "form"
           ? [{ required: true, message: t("skills.pleaseInputDescription") }]
@@ -540,26 +553,86 @@ export function SkillDrawer({
 
   const presentationFields = (
     <>
-      <Form.Item name="labelZh" label={t("skills.displayNameZh")}>
+      <Form.Item
+        name="labelZh"
+        label={t("skills.displayNameZh")}
+        extra={
+          fieldsEditable ? (
+            <TextAssistBar
+              kind="skill.label_zh"
+              agentId={agentId}
+              scopeKey={`${open}:${editingSkill?.slug ?? "new"}`}
+              getText={() => form.getFieldValue("labelZh") ?? ""}
+              getName={() => form.getFieldValue("name") ?? ""}
+              onApply={(text) => form.setFieldValue("labelZh", text)}
+            />
+          ) : undefined
+        }
+      >
         <Input
           placeholder={t("skills.displayNameZhPlaceholder")}
           disabled={!fieldsEditable}
         />
       </Form.Item>
-      <Form.Item name="labelEn" label={t("skills.displayNameEn")}>
+      <Form.Item
+        name="labelEn"
+        label={t("skills.displayNameEn")}
+        extra={
+          fieldsEditable ? (
+            <TextAssistBar
+              kind="skill.label_en"
+              agentId={agentId}
+              scopeKey={`${open}:${editingSkill?.slug ?? "new"}`}
+              getText={() => form.getFieldValue("labelEn") ?? ""}
+              getName={() => form.getFieldValue("name") ?? ""}
+              onApply={(text) => form.setFieldValue("labelEn", text)}
+            />
+          ) : undefined
+        }
+      >
         <Input
           placeholder={t("skills.displayNameEnPlaceholder")}
           disabled={!fieldsEditable}
         />
       </Form.Item>
-      <Form.Item name="summaryZh" label={t("skills.displaySummaryZh")}>
+      <Form.Item
+        name="summaryZh"
+        label={t("skills.displaySummaryZh")}
+        extra={
+          fieldsEditable ? (
+            <TextAssistBar
+              kind="skill.summary_zh"
+              agentId={agentId}
+              scopeKey={`${open}:${editingSkill?.slug ?? "new"}`}
+              getText={() => form.getFieldValue("summaryZh") ?? ""}
+              getName={() => form.getFieldValue("name") ?? ""}
+              onApply={(text) => form.setFieldValue("summaryZh", text)}
+            />
+          ) : undefined
+        }
+      >
         <Input.TextArea
           placeholder={t("skills.displaySummaryZhPlaceholder")}
           autoSize={{ minRows: 2, maxRows: 3 }}
           disabled={!fieldsEditable}
         />
       </Form.Item>
-      <Form.Item name="summaryEn" label={t("skills.displaySummaryEn")}>
+      <Form.Item
+        name="summaryEn"
+        label={t("skills.displaySummaryEn")}
+        extra={
+          fieldsEditable ? (
+            <TextAssistBar
+              kind="skill.summary_en"
+              agentId={agentId}
+              scopeKey={`${open}:${editingSkill?.slug ?? "new"}`}
+              getText={() => form.getFieldValue("summaryEn") ?? ""}
+              getName={() => form.getFieldValue("name") ?? ""}
+              onApply={(text) => form.setFieldValue("summaryEn", text)}
+            />
+          ) : undefined
+        }
+      >
         <Input.TextArea
           placeholder={t("skills.displaySummaryEnPlaceholder")}
           autoSize={{ minRows: 2, maxRows: 3 }}

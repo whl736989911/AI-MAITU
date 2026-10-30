@@ -288,3 +288,96 @@ async def test_schema_roundtrip_uses_workspace_document(
     loaded = await fd.load_schema(workspace)
     assert loaded.schema is not None
     assert loaded.schema["objects"][0]["key"] == "supplier"
+
+
+async def test_required_computed_field_is_checked_after_computation(
+    db: SqlitePool, workspace: BackendWorkspace
+) -> None:
+    repos = _Repos(db)
+    registry = _Registry(workspace)
+    schema = {
+        "version": 1,
+        "objects": [
+            {
+                "key": "contract",
+                "kind": "ledger",
+                "fields": [
+                    {"key": "issued_on", "type": "date", "required": True},
+                    {
+                        "key": "renewal_on",
+                        "type": "date",
+                        "required": True,
+                        "computed": {
+                            "op": "add_years",
+                            "source_field": "issued_on",
+                            "amount": 1,
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+    await fd.save_schema(workspace, schema)
+
+    record = await fd.create_record(
+        repos,
+        workspace,
+        agent_id="feat-supplier",
+        object_key="contract",
+        values={"issued_on": "2026-01-01"},
+        user_id=1,
+        feature_active=True,
+        registry=registry,
+        timezone_name="UTC",
+    )
+
+    assert record.values == {"issued_on": "2026-01-01", "renewal_on": "2027-01-01"}
+
+
+async def test_required_computed_field_rejects_missing_source_without_insert(
+    db: SqlitePool, workspace: BackendWorkspace
+) -> None:
+    repos = _Repos(db)
+    registry = _Registry(workspace)
+    schema = {
+        "version": 1,
+        "objects": [
+            {
+                "key": "contract",
+                "kind": "ledger",
+                "fields": [
+                    {"key": "issued_on", "type": "date"},
+                    {
+                        "key": "renewal_on",
+                        "type": "date",
+                        "required": True,
+                        "computed": {
+                            "op": "add_years",
+                            "source_field": "issued_on",
+                            "amount": 1,
+                        },
+                    },
+                ],
+            }
+        ],
+    }
+    await fd.save_schema(workspace, schema)
+
+    with pytest.raises(ValueError):
+        await fd.create_record(
+            repos,
+            workspace,
+            agent_id="feat-supplier",
+            object_key="contract",
+            values={},
+            user_id=1,
+            feature_active=True,
+            registry=registry,
+            timezone_name="UTC",
+        )
+
+    records, total = repos.feature_data_repo.list_records(
+        agent_id="feat-supplier", object_key="contract", user_id=1
+    )
+    assert records == []
+    assert total == 0

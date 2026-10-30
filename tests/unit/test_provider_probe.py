@@ -22,11 +22,13 @@ def test_build_chat_model_includes_provider_id_and_model_name() -> None:
         get_models=lambda: [{"id": "MiniMax-M2.7", "name": "MiniMax-M2.7"}],
     )
 
-    with patch("harness_agent.llm.factory.build_chat_model") as mock_build:
+    with patch(
+        "octop.infra.agents.providers.harness_factory.build_configured_chat_model"
+    ) as mock_build:
         mock_build.return_value = object()
         _build_chat_model(row, model_id="MiniMax-M2.7")
 
-    provider, model = mock_build.call_args[0]
+    provider, model = mock_build.call_args.args
     assert provider.id == "HAI"
     assert provider.name == "HAI"
     assert model.id == "MiniMax-M2.7"

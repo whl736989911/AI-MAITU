@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from octop.infra.cron.delivery import CronDeliveryService
     from octop.infra.db.repos.audit import AuditRepo
     from octop.infra.db.repos.cron import CronJobRepo, CronJobRow
+    from octop.infra.users.capabilities import UserCapabilityPolicy
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ class CronJob:
         date_trigger: bool,
         cron_repo: CronJobRepo,
         audit_repo: AuditRepo,
+        user_policy: UserCapabilityPolicy,
     ) -> None:
         self._cron_id = cron_id
         self._name = name
@@ -51,6 +53,7 @@ class CronJob:
         self._date_trigger = date_trigger
         self._cron_repo = cron_repo
         self._audit_repo = audit_repo
+        self._user_policy = user_policy
 
     @classmethod
     def from_row(
@@ -60,6 +63,7 @@ class CronJob:
         delivery_service: CronDeliveryService,
         cron_repo: CronJobRepo,
         audit_repo: AuditRepo,
+        user_policy: UserCapabilityPolicy,
     ) -> CronJob:
         return cls(
             cron_id=row.cron_id,
@@ -76,6 +80,7 @@ class CronJob:
             delivery_service=delivery_service,
             cron_repo=cron_repo,
             audit_repo=audit_repo,
+            user_policy=user_policy,
         )
 
     async def run(self) -> None:
@@ -84,6 +89,7 @@ class CronJob:
         from octop.infra.licensing import current_license
 
         current_license().require_business_access()
+        self._user_policy.require_permissions(self._user_id, ())
 
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 

@@ -80,6 +80,15 @@ class UserCreateBody(BaseModel):
     org_unit: str | None = Field(
         default=None, max_length=64, description="Org unit key, or null for no unit scope."
     )
+    org_units: list[str] | None = Field(
+        default=None,
+        max_length=20,
+        description=(
+            "Department memberships; the first entry is primary. When supplied, "
+            "this replaces org_unit. Employees and department administrators need "
+            "at least one department."
+        ),
+    )
     denied_permissions: list[str] | None = Field(
         default=None,
         description="Permission keys to deny this account, or null for none.",
@@ -119,6 +128,16 @@ class UserPatchBody(BaseModel):
     token_quota: int | None = Field(default=None, ge=0)
 
 
+def _department_units(body: UserCreateBody | UserPatchBody) -> list[str] | None:
+    if "org_units" in body.model_fields_set:
+        return list(
+            dict.fromkeys(str(key).strip() for key in (body.org_units or []) if str(key).strip())
+        )
+    if "org_unit" in body.model_fields_set:
+        return [body.org_unit] if body.org_unit else []
+    return None
+
+
 class ResetPasswordBody(BaseModel):
     new_password: str = Field(min_length=1, max_length=200)
 
@@ -130,6 +149,10 @@ def _row_to_dict(
     locked_until = int(getattr(r, "login_locked_until", 0) or 0)
     locked = locked_until > now and not bool(r.disabled)
     retry_after = max(0, locked_until - now) if locked else 0
+    primary = getattr(r, "org_unit", None)
+    memberships = list(org_units or [])
+    if primary:
+        memberships = [primary, *(key for key in memberships if key != primary)]
     return {
         "id": r.id,
         "username": r.username,
@@ -150,11 +173,7 @@ def _row_to_dict(
         "org_unit": getattr(r, "org_unit", None),
         # Membership comes from ``user_org_units``; ``users.org_unit`` is only
         # the primary department kept for display and older readers.
-        "org_units": (
-            list(org_units)
-            if org_units is not None
-            else ([r.org_unit] if getattr(r, "org_unit", None) else [])
-        ),
+        "org_units": memberships,
         # Same reason: a missing key would read as "no denies" and the next save
         # would silently hand back every key the operator had taken away.
         "denied_permissions": list(getattr(r, "denied_permissions", None) or []),
@@ -396,22 +415,20 @@ async def create_user(
     _assert_can_assign(request, server, actor, body.permissions)
     scope = _scope(server, actor)
     role = _require_known_role(body.role)
-    if body.org_unit is None:
-        # System admins must bind employees and department admins, but an
-        # enterprise admin is intentionally unbound and receives enterprise-wide
-        # scope. Scoped actors still must create inside their own reach.
-        if role in {Role.USER, Role.UNIT_ADMIN} or not scope.is_system_admin:
-            raise OctopError(
-                ErrorCode.FORBIDDEN,
-                "an account you create must be bound to one of your departments",
-                details={
-                    "scope_units": sorted(scope.units),
-                    "reason": "this role requires a department binding",
-                },
-            )
-    else:
-        # A department carries module grants, so this binds permissions.
-        _assert_target_unit(server, scope, body.org_unit, action="bind an account to a department")
+    units = _department_units(body) or []
+    # Employees and department admins require a binding; enterprise admins
+    # created by a system admin intentionally have enterprise-wide scope.
+    if not units and (role in {Role.USER, Role.UNIT_ADMIN} or not scope.is_system_admin):
+        raise OctopError(
+            ErrorCode.FORBIDDEN,
+            "an account you create must be bound to one of your departments",
+            details={
+                "scope_units": sorted(scope.units),
+                "reason": "this role requires a department binding",
+            },
+        )
+    for unit_key in units:
+        _assert_target_unit(server, scope, unit_key, action="bind an account to a department")
     # A deny outranks role, unit and grant, so writing one moves the
     # authorization boundary — a system administrator's write (design §2.1). An
     # empty list is the stored default and moves nothing, so an operator who
@@ -436,8 +453,8 @@ async def create_user(
         email=body.email,
         permissions=body.permissions,
     )
-    if body.org_unit is not None:
-        await server.user_manager.set_org_unit(user.username, body.org_unit)
+    if units:
+        await server.user_manager.update_account(user.username, {"org_units": units})
     if denied:
         await server.user_manager.set_denied_permissions(user.username, denied)
     if policy_kwargs:
@@ -494,10 +511,13 @@ async def patch_user(
     # refused even when its own value would have been acceptable (design §4.3
     # rule 5/6, and 目标用户是否在创建者可管理范围内).
     assert_may_manage_account(scope, row, action="edit this account")
-    if body.role is not None or "org_unit" in body.model_fields_set:
+    org_units = _department_units(body)
+    if body.role is not None or org_units is not None:
         resulting_role = body.role or row.role
         resulting_unit = (
-            body.org_unit if "org_unit" in body.model_fields_set else getattr(row, "org_unit", None)
+            (org_units[0] if org_units else None)
+            if org_units is not None
+            else getattr(row, "org_unit", None)
         )
         if resulting_role in {Role.USER.value, Role.UNIT_ADMIN.value} and resulting_unit is None:
             raise OctopError(
@@ -531,15 +551,9 @@ async def patch_user(
             # whose consequence the actor cannot undo: it drops the reach it
             # would need to take the role back.
             raise OctopError(ErrorCode.FORBIDDEN, "cannot demote yourself")
-    if "org_unit" in body.model_fields_set:
-        _assert_target_unit(
-            server, scope, body.org_unit, action="change the department of an account"
-        )
-    org_units: list[str] | None = None
-    if "org_units" in body.model_fields_set:
-        org_units = list(
-            dict.fromkeys(str(key).strip() for key in (body.org_units or []) if str(key).strip())
-        )
+    if org_units is not None:
+        if not org_units:
+            _assert_target_unit(server, scope, None, action="change the department of an account")
         for unit_key in org_units:
             _assert_target_unit(
                 server, scope, unit_key, action="change the department of an account"
@@ -547,12 +561,7 @@ async def patch_user(
     if "denied_permissions" in body.model_fields_set:
         _assert_admin(actor, "deny permissions for an account")
     patch = body.model_dump(exclude_unset=True)
-    # ``org_units`` is applied through its own writer: it owns the membership
-    # table and keeps ``users.org_unit`` pointing at the primary department.
-    patch.pop("org_units", None)
     await server.user_manager.update_account(row.username, patch)
-    if org_units is not None:
-        await server.user_manager.set_units(row.username, org_units)
     if _writes_access(body):
         # The account's effective ``channel_<kind>`` may have just changed, and
         # a channel that lost its type key stops now rather than at its next

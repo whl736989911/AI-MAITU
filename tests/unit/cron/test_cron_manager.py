@@ -6,10 +6,12 @@ real async tasks or LLM calls are made.
 
 from __future__ import annotations
 
+import datetime as dt
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from octop.config import OctopConfig
 from octop.infra.cron.delivery import CronDeliveryService
@@ -479,17 +481,53 @@ async def test_list_by_agent_exclude_disabled(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_persists_prompt_change(tmp_path: Path) -> None:
+async def test_metadata_update_preserves_deadline_and_changed_trigger_reschedules(
+    tmp_path: Path,
+) -> None:
     services = _make_services(tmp_path)
     aid, uid = _make_agent(services)
     mgr = _make_manager(services)
+    mgr._scheduler = AsyncIOScheduler(timezone="UTC")
     cid = _cron_id()
-    await mgr.create(cron_id=cid, agent_id=aid, user_id=uid, trigger="interval:10", prompt="p")
+    await mgr.create(
+        cron_id=cid, agent_id=aid, user_id=uid, trigger="interval:3600", prompt="Original"
+    )
+    mgr._scheduler.start(paused=True)
+    try:
+        pending = mgr._scheduler.get_job(cid).next_run_time - dt.timedelta(minutes=30)
+        mgr._scheduler.modify_job(cid, next_run_time=pending)
 
-    updated = await mgr.update(cid, prompt="new prompt")
+        await mgr.update(cid, name="Renamed", prompt="Updated", trigger="interval:3600", enabled=1)
+        assert mgr._scheduler.get_job(cid).next_run_time == pending
+        assert mgr.get(cid).prompt == "Updated"
 
-    assert updated.prompt == "new prompt"
-    assert mgr.get(cid).prompt == "new prompt"
+        await mgr.update(cid, trigger="interval:7200")
+        rebuilt = mgr._scheduler.get_job(cid)
+        assert rebuilt.trigger.interval == dt.timedelta(hours=2)
+        assert rebuilt.next_run_time > pending
+    finally:
+        mgr._scheduler.shutdown(wait=False)
+
+
+@pytest.mark.asyncio
+async def test_metadata_update_restores_a_missing_enabled_schedule(tmp_path: Path) -> None:
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    mgr = _make_manager(services)
+    mgr._scheduler = AsyncIOScheduler(timezone="UTC")
+    cid = _cron_id()
+    await mgr.create(
+        cron_id=cid, agent_id=aid, user_id=uid, trigger="interval:3600", prompt="Original"
+    )
+    mgr._scheduler.start(paused=True)
+    try:
+        mgr._scheduler.remove_job(cid)
+        await mgr.update(cid, prompt="Updated")
+        restored = mgr._scheduler.get_job(cid)
+        assert restored.trigger.interval == dt.timedelta(hours=1)
+        assert restored.next_run_time > dt.datetime.now(dt.UTC)
+    finally:
+        mgr._scheduler.shutdown(wait=False)
 
 
 @pytest.mark.asyncio
@@ -541,21 +579,35 @@ async def test_update_accepts_owned_session(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_reschedules_on_trigger_change(tmp_path: Path) -> None:
-    """update() with a new trigger removes old job and re-adds."""
+@pytest.mark.parametrize("previous_trigger", ["interval:10", "date:2026-01-01T09:00:00"])
+async def test_update_to_new_date_trigger_clears_previous_run_state(
+    tmp_path: Path, previous_trigger: str
+) -> None:
     services = _make_services(tmp_path)
     aid, uid = _make_agent(services)
     mgr = _make_manager(services)
+    mgr._scheduler = AsyncIOScheduler(timezone="UTC")
     cid = _cron_id()
-    await mgr.create(cron_id=cid, agent_id=aid, user_id=uid, trigger="interval:10", prompt="p")
-    mgr._scheduler.get_job = MagicMock(return_value=MagicMock())
-    mgr._scheduler.add_job.reset_mock()
-    mgr._scheduler.remove_job.reset_mock()
+    try:
+        await mgr.create(
+            cron_id=cid, agent_id=aid, user_id=uid, trigger=previous_trigger, prompt="p"
+        )
+        services.repos.cron_repo.set_run_status(cid, ts=1_700_000_000, status="ok", error=None)
+        updated = await mgr.update(cid, trigger="date:2027-01-01T09:00:00", enabled=1)
 
-    await mgr.update(cid, trigger="interval:120")
-
-    mgr._scheduler.remove_job.assert_called_with(cid)
-    mgr._scheduler.add_job.assert_called_once()
+        stored = services.repos.cron_repo.get(cid)
+        assert stored.enabled == 1
+        assert updated.last_run_at is None
+        assert stored.last_run_at is None
+        assert stored.last_status is None
+        assert stored.last_error is None
+        scheduled = mgr._scheduler.get_job(cid)
+        assert scheduled is not None
+        assert scheduled.trigger.get_next_fire_time(
+            None, dt.datetime(2026, 10, 29, tzinfo=dt.UTC)
+        ) == dt.datetime(2027, 1, 1, 9, tzinfo=dt.UTC)
+    finally:
+        services.db.close()
 
 
 @pytest.mark.asyncio

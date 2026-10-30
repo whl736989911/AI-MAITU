@@ -131,13 +131,28 @@ async def cmd_delete(d: SlashDispatcher, cmd: SlashCommand, ctx: SlashCtx, sink:
     if target is None:
         await sink.text(tr("delete.not_found", lang, short=short))
         return
-    if active and target.thread_id == active:
-        await sink.text(tr("delete.active", lang))
-        return
-    if ctx.agent_manager is None:
-        raise RuntimeError("thread checkpoint cleanup is unavailable")
-    await ctx.agent_manager.delete_thread_checkpoint(ctx.agent_id, target.thread_id)
-    ctx.thread_registry.delete_thread(target.thread_id)
+
+    async def delete() -> None:
+        if ctx.agent_manager is None:
+            raise RuntimeError("thread checkpoint cleanup is unavailable")
+        await ctx.agent_manager.delete_thread_checkpoint(ctx.agent_id, target.thread_id)
+        ctx.thread_registry.delete_thread(target.thread_id)
+
+    if ctx.gateway is not None:
+        async with ctx.gateway.steer.idle_guard(target.thread_id) as turn_idle:
+            if (
+                not turn_idle
+                or ctx.gateway.ws_hub.is_turn_active(target.thread_id)
+                or (active and target.thread_id == active)
+            ):
+                await sink.text(tr("delete.active", lang))
+                return
+            await delete()
+    else:
+        if active and target.thread_id == active:
+            await sink.text(tr("delete.active", lang))
+            return
+        await delete()
     await sink.text(tr("delete.done", lang, short=target.thread_id[-6:]))
 
 

@@ -251,3 +251,39 @@ async def test_cronjob_create_blank_name_uses_prompt_prefix(tmp_path: Path) -> N
         )
     data = json.loads(out)
     assert data["name"] == "该喝水了💧"
+
+
+@pytest.mark.asyncio
+async def test_disabled_account_cannot_manage_cron_through_tools(tmp_path: Path) -> None:
+    services = _make_services(tmp_path)
+    user_id = services.repos.user_repo.create(username="restricted", role="user", permissions=[])
+    agent_id = new_ulid()
+    services.repos.agent_repo.create(agent_id=agent_id, user_id=user_id, name="private")
+    manager = _make_manager(services)
+    tools = {tool.name: tool for tool in build_cronjob_tools(manager)}
+    create_args = {
+        "trigger": "interval:120",
+        "prompt": "original",
+        "name": "reminder",
+        "enabled": False,
+    }
+    with _configurable(agent_id=agent_id, user=str(user_id)):
+        created = json.loads(await tools["cronjob_create"].ainvoke(create_args))
+        cron_id = created["id"]
+        services.repos.user_repo.set_disabled(user_id, True)
+
+        for name, args in (
+            ("cronjob_create", create_args),
+            ("cronjob_list", {}),
+            ("cronjob_get", {"cron_id": cron_id}),
+            ("cronjob_update", {"cron_id": cron_id, "prompt": "changed"}),
+            ("cronjob_delete", {"cron_id": cron_id}),
+            ("cronjob_run_now", {"cron_id": cron_id}),
+        ):
+            assert "error" in json.loads(await tools[name].ainvoke(args))
+        assert manager.get(cron_id).prompt == "original"
+        assert len(manager.list_by_agent(agent_id)) == 1
+
+        services.repos.user_repo.set_disabled(user_id, False)
+        restored = json.loads(await tools["cronjob_get"].ainvoke({"cron_id": cron_id}))
+        assert restored["prompt"] == "original"

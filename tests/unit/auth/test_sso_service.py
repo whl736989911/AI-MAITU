@@ -441,3 +441,17 @@ async def test_callback_bind_rejects_identity_owned_by_another_user(
             public_base="https://octop.example",
         )
     assert result.url.endswith("/login?oidc_error=identity_taken")
+
+
+def test_configured_dashboard_origin_keeps_proxy_prefix(service: SsoService) -> None:
+    configure_provider(service, dashboard_origin="https://dashboard.example")
+
+    assert service._frontend_base("https://login.example/maitu") == (
+        "https://dashboard.example/maitu"
+    )
+
+
+def test_sso_frontend_base_uses_proxy_prefix_without_dashboard_override(
+    service: SsoService,
+) -> None:
+    assert service._frontend_base("https://login.example/maitu") == ("https://login.example/maitu")

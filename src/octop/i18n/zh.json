@@ -1,4 +1,101 @@
 {
+  "providers": {
+    "api_mode": {
+      "invalid": "api_mode 必须为 chat_completions 或 responses"
+    },
+    "api_fallback": {
+      "invalid": "api_fallback 必须为 none 或 chat_completions",
+      "mode_required": "仅 api_mode=responses 时支持 api_fallback",
+      "native_tool_search": "启用 native_tool_search 时不能配置 api_fallback"
+    }
+  },
+  "text_assist": {
+    "kinds": {
+      "chat": {
+        "prompt": {
+          "system": "你是草稿提示词编辑器，不回答提示词本身。保留原意和语言，提升清晰度与可执行性，只输出改写后的提示词。",
+          "user": "请改写以下草稿提示词，但不要回答它：\n\n{text}"
+        }
+      },
+      "expert": {
+        "description": {
+          "system": "为 AI 专家资料撰写简洁、准确的文案。只输出目标语言的 1–2 句，不要编造能力。",
+          "user_polish": "专家名称：{name}\n在保留原意的前提下优化这段描述：\n\n{text}",
+          "user_generate": "仅根据专家名称 {name} 的含义，为其撰写简短描述。"
+        },
+        "welcome_message": {
+          "system": "为 AI 专家聊天页撰写简短友好的欢迎语，只输出目标语言的欢迎语。",
+          "user_polish": "专家名称：{name}\n在保留原意的前提下优化这段欢迎语：\n\n{text}",
+          "user_generate": "为名为 {name} 的专家撰写简短欢迎语。"
+        }
+      },
+      "team": {
+        "description": {
+          "system": "为 AI 专家团队撰写简洁、准确的文案。只输出 1–2 句，不要编造能力。",
+          "user_polish": "团队名称：{name}\n在保留原意的前提下优化这段团队描述：\n\n{text}",
+          "user_generate": "仅根据团队名称 {name} 的含义，为其撰写简短描述。"
+        },
+        "welcome_message": {
+          "system": "为 AI 团队聊天页撰写简短友好的欢迎语，只输出目标语言的欢迎语。",
+          "user_polish": "团队名称：{name}\n在保留原意的前提下优化这段欢迎语：\n\n{text}",
+          "user_generate": "为名为 {name} 的团队撰写简短欢迎语。"
+        }
+      },
+      "skill_package": {
+        "description": {
+          "system": "为 AI 技能包撰写简洁产品文案。只输出 1–2 句，不要编造能力。",
+          "user_polish": "技能包名称：{name}\n在保留原意的前提下优化这段描述：\n\n{text}",
+          "user_generate": "为名为 {name} 的技能包撰写简短描述。"
+        }
+      },
+      "skill": {
+        "description": {
+          "system": "撰写简洁的 AI 技能描述，说明何时适合使用该技能。不要编造工具或文件。",
+          "user_polish": "技能名称：{name}\n在保留原意的前提下优化这段技能描述：\n\n{text}",
+          "user_generate": "撰写简洁说明，介绍何时使用名为 {name} 的技能。"
+        },
+        "label_zh": {
+          "system": "为 AI 技能撰写简短中文显示名。只输出中文名称，不要引号或说明。",
+          "user_polish": "技能名称：{name}\n优化此中文显示名，只输出中文：\n\n{text}",
+          "user_generate": "为技能 {name} 撰写简短中文显示名。"
+        },
+        "label_en": {
+          "system": "为 AI 技能撰写简短英文显示名。只输出名称，不要引号或说明。",
+          "user_polish": "技能名称：{name}\n优化此英文显示名：\n\n{text}",
+          "user_generate": "为技能 {name} 撰写简短英文显示名。"
+        },
+        "summary_zh": {
+          "system": "为 AI 技能撰写简洁中文界面摘要，只输出中文。",
+          "user_polish": "技能名称：{name}\n优化此中文技能摘要：\n\n{text}",
+          "user_generate": "为技能 {name} 撰写简短中文界面摘要。"
+        },
+        "summary_en": {
+          "system": "为 AI 技能撰写简洁英文界面摘要，只输出英文。",
+          "user_polish": "技能名称：{name}\n优化此英文技能摘要：\n\n{text}",
+          "user_generate": "为技能 {name} 撰写简短英文界面摘要。"
+        },
+        "body": {
+          "system": "撰写或润色实用的 AI 技能 Markdown 说明。不要包含 YAML frontmatter，也不要编造工具和路径。",
+          "user_polish": "技能名称：{name}\n在保留原意的前提下优化技能正文，不要添加 YAML frontmatter：\n\n{text}",
+          "user_generate": "为技能 {name} 撰写简洁 Markdown 说明，不要包含 YAML frontmatter。"
+        }
+      },
+      "knowledge_base": {
+        "description": {
+          "system": "为文档知识库撰写简洁、准确的文案，只输出 1–2 句。",
+          "user_polish": "知识库名称：{name}\n在保留原意的前提下优化这段描述：\n\n{text}",
+          "user_generate": "为名为 {name} 的知识库撰写简短描述。"
+        }
+      },
+      "feature": {
+        "description": {
+          "system": "为 AI 功能撰写简洁、准确的文案。只输出 1–2 句，不要编造能力。",
+          "user_polish": "功能名称：{name}\n在保留原意的前提下优化这段描述：\n\n{text}",
+          "user_generate": "为名为 {name} 的功能撰写简短描述。"
+        }
+      }
+    }
+  },
   "slash": {
     "error": {
       "unknown_command": "未知指令：/{name}。输入 /help 查看可用指令。"
@@ -626,10 +723,13 @@
     "preflight_failed_summary": "一项或多项预检未通过"
   },
   "tools": {
+    "deepseek_search": "DeepSeek 联网搜索",
+    "yuanbao_search": "元宝联网搜索",
     "unknown": "未知工具",
     "read_file": "读取文件",
     "write_file": "写入文件",
     "edit_file": "编辑文件",
+    "delete": "删除文件",
     "bash": "Shell 命令 (bash)",
     "execute": "执行指令",
     "current_time": "当前时间",

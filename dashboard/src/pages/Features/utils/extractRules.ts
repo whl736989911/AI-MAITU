@@ -7,6 +7,7 @@
  */
 
 import type {
+  FeatureDataLocalizedText,
   FeatureDataSchema,
   FeatureExtractProfile,
   FeatureExtractRule,
@@ -31,6 +32,7 @@ export interface ExtractFieldDraft {
 export interface ExtractProfileDraft {
   id: string;
   name: string;
+  nameTranslations?: FeatureDataLocalizedText;
   labelsAny: string;
   filenamePattern: string;
   fields: ExtractFieldDraft[];
@@ -50,7 +52,10 @@ export function splitList(text: string): string[] {
     .filter(Boolean);
 }
 
-function profileName(name: FeatureExtractProfile["name"], locale: string): string {
+function profileName(
+  name: FeatureExtractProfile["name"],
+  locale: string,
+): string {
   if (typeof name === "string") return name;
   const zh = name.zh ?? "";
   const en = name.en ?? "";
@@ -65,6 +70,8 @@ export function draftsFromRules(
   return rules.profiles.map((profile) => ({
     id: newDraftId("profile"),
     name: profileName(profile.name, locale),
+    nameTranslations:
+      typeof profile.name === "string" ? undefined : { ...profile.name },
     labelsAny: (profile.when?.labels_any ?? []).join(", "),
     filenamePattern: profile.when?.filename_pattern ?? "",
     fields: Object.entries(profile.fields ?? {}).map(([key, rule]) => ({
@@ -87,6 +94,14 @@ export function rulesFromDrafts(
   return {
     version: 2,
     profiles: drafts.map((draft) => {
+      const displayName = draft.name.trim() || locale;
+      let name: FeatureExtractProfile["name"] = displayName;
+      if (draft.nameTranslations) {
+        name = { ...draft.nameTranslations };
+        if (displayName !== profileName(name, locale)) {
+          name[locale.startsWith("en") ? "en" : "zh"] = displayName;
+        }
+      }
       const fields: Record<string, FeatureExtractRule> = {};
       for (const field of draft.fields) {
         if (!field.fieldKey) continue;
@@ -96,6 +111,7 @@ export function rulesFromDrafts(
           if (field.pick === "text") {
             const limit = Number.parseInt(field.limit, 10);
             if (Number.isFinite(limit) && limit > 0) rule.limit = limit;
+            else rule.pick = "text";
           } else {
             rule.pick = field.pick;
           }
@@ -113,7 +129,7 @@ export function rulesFromDrafts(
       if (draft.filenamePattern.trim())
         when.filename_pattern = draft.filenamePattern.trim();
       return {
-        name: draft.name.trim() || locale,
+        name,
         when,
         fields,
       };

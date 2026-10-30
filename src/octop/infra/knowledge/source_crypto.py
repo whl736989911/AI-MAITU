@@ -1,12 +1,7 @@
 """Fernet encryption for a source's connection secret.
 
-Same mechanism the connector credentials already use — a key kept in ``secrets``
-and a JSON payload — under this domain's own key name, so a knowledge source's
-secret and a connector's are rotated and reasoned about separately. The two
-modules are deliberately not shared: ``infra/connectors`` is another domain's
-package, and routing knowledge sources through it would make this domain depend
-on that one for no gain beyond twenty lines.
-
+Uses the shared Fernet primitives with a separate purpose key, so knowledge
+source credentials remain cryptographically isolated from connector credentials.
 A secret never leaves this module as text: callers store the blob and hand back
 a ``has_credentials`` flag, which is what keeps design §4's "API 不返回明文凭据"
 true by construction rather than by remembering it at each route.
@@ -14,23 +9,19 @@ true by construction rather than by remembering it at each route.
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
-from cryptography.fernet import Fernet
-
+from octop.infra.crypto.fernet import (
+    PURPOSE_KNOWLEDGE_SOURCE,
+    decrypt_json,
+    encrypt_json,
+)
 from octop.infra.db.repos.secrets import SecretRepo
-
-_FERNET_KEY = "knowledge_source_fernet"
-
-
-def _get_fernet(repo: SecretRepo) -> Fernet:
-    return Fernet(repo.get_or_create(_FERNET_KEY, Fernet.generate_key))
 
 
 def encrypt_source_secret(repo: SecretRepo, payload: dict[str, Any]) -> bytes:
     """Encrypt one source's connection secret."""
-    return _get_fernet(repo).encrypt(json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    return encrypt_json(repo, PURPOSE_KNOWLEDGE_SOURCE, payload)
 
 
 def decrypt_source_secret(repo: SecretRepo, blob: bytes | None) -> dict[str, Any]:
@@ -44,7 +35,6 @@ def decrypt_source_secret(repo: SecretRepo, blob: bytes | None) -> dict[str, Any
     if not blob:
         return {}
     try:
-        data = json.loads(_get_fernet(repo).decrypt(bytes(blob)).decode("utf-8"))
+        return decrypt_json(repo, PURPOSE_KNOWLEDGE_SOURCE, bytes(blob))
     except Exception:
         return {}
-    return data if isinstance(data, dict) else {}

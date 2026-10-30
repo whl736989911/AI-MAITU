@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, Request
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator, model_validator
 
 from octop.api.deps import current_user, get_server, request_unit_grants, require_permission
 from octop.infra.agents.providers.model_flags import is_local_runtime_provider
@@ -46,6 +46,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _validate_model_api_settings(
+    models: list[dict[str, Any]] | None,
+) -> list[dict[str, Any]] | None:
+    if models is None:
+        return None
+    for model in models:
+        mode = model.get(
+            "api_mode",
+            "responses" if model.get("native_tool_search") else "chat_completions",
+        )
+        fallback = model.get("api_fallback", "none")
+        if mode not in {"chat_completions", "responses"}:
+            raise ValueError("api_mode must be 'chat_completions' or 'responses'")
+        if fallback not in {"none", "chat_completions"}:
+            raise ValueError("api_fallback must be 'none' or 'chat_completions'")
+        if mode != "responses" and fallback != "none":
+            raise ValueError("api_fallback is only supported with api_mode='responses'")
+        if model.get("native_tool_search") and mode != "responses":
+            raise ValueError("native_tool_search requires api_mode='responses'")
+        if model.get("native_tool_search") and fallback != "none":
+            raise ValueError("api_fallback is incompatible with native_tool_search")
+    return models
+
+
 class ProviderCreateBody(BaseModel):
     name: str
     kind: str
@@ -54,6 +78,13 @@ class ProviderCreateBody(BaseModel):
     extra_json: str | None = None
     models: list[dict[str, Any]] | None = None
     note: str | None = None
+
+    @field_validator("models")
+    @classmethod
+    def validate_model_api_settings(
+        cls, models: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
+        return _validate_model_api_settings(models)
 
 
 class ProviderPatchBody(BaseModel):
@@ -64,6 +95,13 @@ class ProviderPatchBody(BaseModel):
     models: list[dict[str, Any]] | None = None
     note: str | None = None
     enabled: bool | None = None
+
+    @field_validator("models")
+    @classmethod
+    def validate_model_api_settings(
+        cls, models: list[dict[str, Any]] | None
+    ) -> list[dict[str, Any]] | None:
+        return _validate_model_api_settings(models)
 
 
 # Fields that affect harness factory / agent runtime when patched.
@@ -90,6 +128,28 @@ class ProviderTestDraftBody(BaseModel):
     model_id: str
     extra_json: str | None = None
     embedding: bool = False
+    api_mode: str = "chat_completions"
+    api_fallback: str = "none"
+
+    @field_validator("api_mode")
+    @classmethod
+    def validate_api_mode(cls, value: str) -> str:
+        if value not in {"chat_completions", "responses"}:
+            raise ValueError("api_mode must be 'chat_completions' or 'responses'")
+        return value
+
+    @field_validator("api_fallback")
+    @classmethod
+    def validate_api_fallback(cls, value: str) -> str:
+        if value not in {"none", "chat_completions"}:
+            raise ValueError("api_fallback must be 'none' or 'chat_completions'")
+        return value
+
+    @model_validator(mode="after")
+    def validate_fallback_mode(self) -> ProviderTestDraftBody:
+        if self.api_fallback != "none" and self.api_mode != "responses":
+            raise ValueError("api_fallback is only supported with api_mode='responses'")
+        return self
 
 
 class ProviderFetchModelsBody(BaseModel):
@@ -332,6 +392,8 @@ async def admin_test_provider_draft(
         model_id=model_id,
         extra_json=body.extra_json,
         embedding=body.embedding,
+        api_mode=body.api_mode,
+        api_fallback=body.api_fallback,
     )
     return await probe_provider_row(
         row,

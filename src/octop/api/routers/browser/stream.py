@@ -3,8 +3,6 @@
 Wire protocol matches the dashboard ``useBrowserStream`` hook (screencast)
 and ``useBrowserSessionState`` (listen-only status):
 
-Client → Server::
-
   {"type": "start", "url": "", "width": 1280, "height": 800,
    "reuse_session": true, "session_id": "<profile>"}
   {"type": "navigate", "url": "https://..."}
@@ -13,6 +11,8 @@ Client → Server::
   {"type": "mousemove", "x": 150, "y": 250, "button": "left", "buttons": 1}
   {"type": "mousemove", "x": 160, "y": 260, "button": "none", "buttons": 0}
   {"type": "mouseup", "x": 150, "y": 250, "button": "left", "buttons": 0}
+  {"type": "insertText", "text": "中文"}
+  {"type": "keydown", "key": "Backspace", "code": "Backspace", "keyCode": 8}
   {"type": "stop"}
 
 Server → Client::
@@ -41,6 +41,7 @@ from typing import Any
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect
 from starlette.websockets import WebSocketState
 
+from octop.api.common.capabilities import WebSocketCapabilityGuard
 from octop.api.deps import resolve_user_from_token, unit_grants_for
 from octop.api.routers.browser.harness import (
     control_owner_for,
@@ -143,8 +144,12 @@ async def _stream_loop(
     await _send_json(ws, {"type": "status", "status": "browser_started"})
     await _send_json(ws, {"type": "status", "status": "streaming"})
 
+    next_snapshot = 0.0
     while ws.application_state == WebSocketState.CONNECTED:
-        await _send_session_snapshot(ws, profile, sess=sess)
+        now = asyncio.get_running_loop().time()
+        if now >= next_snapshot:
+            await _send_session_snapshot(ws, profile, sess=sess)
+            next_snapshot = now + 2.0
 
         if not listen_only:
             frame = await _capture_jpeg(sess)
@@ -216,6 +221,65 @@ def _cdp_click_count(msg: dict[str, Any]) -> int:
         return max(1, int(raw))
     except (TypeError, ValueError):
         return 1
+
+
+_KEY_CODES = {
+    "Backspace": 8,
+    "Tab": 9,
+    "Enter": 13,
+    "Escape": 27,
+    "PageUp": 33,
+    "PageDown": 34,
+    "End": 35,
+    "Home": 36,
+    "ArrowLeft": 37,
+    "ArrowUp": 38,
+    "ArrowRight": 39,
+    "ArrowDown": 40,
+    "Delete": 46,
+}
+
+
+async def _dispatch_key(sess: Any, msg: dict[str, Any]) -> None:
+    key = str(msg.get("key") or "")
+    if not key or key in {"Process", "Dead", "Unidentified"}:
+        return
+
+    modifiers = sum(
+        bit
+        for field, bit in (
+            ("altKey", 1),
+            ("ctrlKey", 2),
+            ("metaKey", 4),
+            ("shiftKey", 8),
+        )
+        if msg.get(field)
+    )
+    key_code = _KEY_CODES.get(key, ord(key.upper()) if len(key) == 1 and key.isascii() else 0)
+    key_code = int(msg.get("keyCode") or key_code)
+    params: dict[str, Any] = {
+        "key": key,
+        "code": str(msg.get("code") or key),
+        "windowsVirtualKeyCode": key_code,
+        "nativeVirtualKeyCode": key_code,
+        "modifiers": modifiers,
+    }
+    key_down: dict[str, Any] = {
+        **params,
+        "type": "rawKeyDown",
+        "autoRepeat": bool(msg.get("repeat")),
+    }
+    if key == "Enter":
+        key_down.update(type="keyDown", text="\r", unmodifiedText="\r")
+    if key.lower() == "a" and modifiers & 6 and not modifiers & 1:
+        key_down["commands"] = ["selectAll"]
+
+    await sess._internal.client.send(  # noqa: SLF001
+        "Input.dispatchKeyEvent", key_down
+    )
+    await sess._internal.client.send(  # noqa: SLF001
+        "Input.dispatchKeyEvent", {**params, "type": "keyUp"}
+    )
 
 
 async def _handle_client_event(sess: Any, msg: dict[str, Any]) -> None:
@@ -292,14 +356,14 @@ async def _handle_client_event(sess: Any, msg: dict[str, Any]) -> None:
             direction = "down" if delta_y > 0 else "up"
             amount = max(int(abs(delta_y)), 50)
             await sess.scroll(direction=direction, amount=amount)
-    elif t == "type":
+    elif t == "insertText":
         text = str(msg.get("text") or "")
         if text:
-            await sess.type(text)
+            await sess._internal.client.send(  # noqa: SLF001
+                "Input.insertText", {"text": text}
+            )
     elif t == "keydown":
-        key = str(msg.get("key") or "")
-        if key in ("Enter",):
-            await sess.type("\n")
+        await _dispatch_key(sess, msg)
     elif t == "tab_switch":
         tab_id = msg.get("tab_id")
         if tab_id is not None:
@@ -352,13 +416,19 @@ async def browser_stream_ws(
     profile = user_browser_profile(user.id)
     stream_task: asyncio.Task[None] | None = None
     listen = bool(listen_only)
+    capability_guard = WebSocketCapabilityGuard(websocket, user_id=user.id, permission="browser")
 
     try:
+        if not await capability_guard.check():
+            return
+        capability_guard.start()
         # Wait for the client's ``start`` message (sent on ws.onopen).
         raw = await asyncio.wait_for(websocket.receive_text(), timeout=15.0)
         start_msg = json.loads(raw)
         if start_msg.get("type") != "start":
             await _send_json(websocket, {"type": "error", "message": "expected start message"})
+            return
+        if not await capability_guard.check():
             return
 
         if listen:
@@ -414,6 +484,8 @@ async def browser_stream_ws(
                 continue
             if msg.get("type") == "stop":
                 break
+            if not await capability_guard.check():
+                break
             if sess is not None:
                 with contextlib.suppress(Exception):
                     await _handle_client_event(sess, msg)
@@ -427,6 +499,7 @@ async def browser_stream_ws(
             await _send_json(websocket, {"type": "error", "message": str(exc)})
             await _send_json(websocket, {"type": "status", "status": "error"})
     finally:
+        await capability_guard.stop()
         if stream_task is not None:
             stream_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

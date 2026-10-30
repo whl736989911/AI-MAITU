@@ -1,8 +1,11 @@
 """Module-level permission catalog and checks.
 
-A permission is a module key (e.g. ``"browser"``, ``"users"``). Possessing a
-key opens that module's management surface, including gated configuration reads.
-Resource ACLs and capability policy still apply; chat use is independent.
+A permission is a module key (e.g. ``"browser"``, ``"users"``). It gates the
+corresponding management surface and mapped runtime capabilities. Configuration
+keys such as ``tools`` do not grant execution by themselves: the current caller
+must also hold the capability required by the actual tool. Resource ACLs,
+per-agent restrictions and the deployment floor narrow access further.
+Plain conversation does not imply permission to execute tools.
 ``admin`` bypasses module grants except for the licensed deployment floor.
 
 Categories mirror dashboard nav groups: ``settings`` / ``control`` / ``admin``.
@@ -136,8 +139,9 @@ PERMISSIONS: dict[str, PermissionDef] = {
     "experts": _p("experts", "settings", "专家", "Experts"),
     "teams": _p("teams", "settings", "团队", "Teams"),
     "features": _p("features", "settings", "功能型智能体", "Feature agents"),
-    # Independent agent-configuration surfaces. These keys govern configuration
-    # APIs, not the underlying capability/ownership policy.
+    # Independent agent-configuration surfaces; these grants do not override
+    # host capability permissions or resource ownership. Plugin execution also
+    # requires agent_plugins at the actual call boundary.
     "skills": _p("skills", "settings", "技能", "Skills"),
     "subagents": _p("subagents", "settings", "子智能体", "Subagents"),
     "tools": _p("tools", "settings", "工具", "Tools"),

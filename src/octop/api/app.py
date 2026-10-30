@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 from scalar_fastapi import get_scalar_api_reference
 
+from octop.api.common.public_base import prefix_public_path, resolve_public_prefix
 from octop.api.middleware.jwt_auth import install as install_jwt_auth
 from octop.api.middleware.license_gate import install as install_license_gate
 from octop.api.middleware.setup_lockdown import install as install_setup_lockdown
@@ -215,6 +216,7 @@ def build_app(server: OctopServer) -> FastAPI:
         subagents,
         teams,
         terminal,
+        text_assist,
         update,
         uploads,
         usage,
@@ -254,6 +256,7 @@ def build_app(server: OctopServer) -> FastAPI:
             _RouterMount(feature_data.router, "/api", ["agents"], gated=True),
             _RouterMount(acp.router, "/api", ["agents"], gated=True),
             _RouterMount(chat.router, "/api", ["chat"], gated=True),
+            _RouterMount(text_assist.router, "/api", ["text-assist"], gated=True),
             _RouterMount(slash.router, "/api", ["slash"], gated=True),
             _RouterMount(connectors.router, "/api", ["connectors"], gated=True),
             _RouterMount(knowledge_bases.router, "/api", ["knowledge"], gated=True),
@@ -332,10 +335,12 @@ def build_app(server: OctopServer) -> FastAPI:
     if enable_api_docs:
 
         @app.get("/api/docs", include_in_schema=False)
-        async def api_docs() -> HTMLResponse:
+        async def api_docs(request: Request) -> HTMLResponse:
+            prefix = resolve_public_prefix(request)
             return get_scalar_api_reference(
-                openapi_url=app.openapi_url,
+                openapi_url=prefix_public_path(prefix, "/api/openapi.json"),
                 title=f"{platform_name('en')} API",
+                servers=[{"url": prefix or "/"}],
             )
 
     if enable_dashboard:

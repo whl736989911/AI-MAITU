@@ -433,6 +433,8 @@
 }
 
 .assistantText {
+  min-width: 0;
+  max-width: 100%;
   background: rgba(15, 23, 42, 0.025);
   padding: 10px 14px;
   border-radius: 14px;
@@ -1107,6 +1109,8 @@
 }
 
 .processThinkingItem {
+  min-width: 0;
+  max-width: 100%;
   padding: 8px 10px;
   border-radius: 8px;
   border-left: 2px solid var(--fn-border-secondary);
@@ -1114,8 +1118,10 @@
   color: var(--fn-text-secondary);
   font-size: 13px;
   line-height: 1.55;
+  word-break: break-word;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
-
 .processToolItem {
   min-width: 0;
 }

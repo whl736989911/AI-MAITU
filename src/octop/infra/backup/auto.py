@@ -6,9 +6,11 @@ import asyncio
 import json
 import logging
 import tempfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
+from contextvars import copy_context
 from dataclasses import replace
+from functools import partial
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -72,6 +74,28 @@ async def hold_backup_lock(operation: BackupOperation) -> AsyncIterator[None]:
             yield
         finally:
             _active_operation = None
+
+
+def start_backup_worker[**P, T](
+    function: Callable[P, T], /, *args: P.args, **kwargs: P.kwargs
+) -> asyncio.Future[T]:
+    """Start thread work without giving request cancellation ownership of its future."""
+    call = partial(copy_context().run, function, *args, **kwargs)
+    return asyncio.get_running_loop().run_in_executor(None, call)
+
+
+async def wait_backup_worker[T](worker: asyncio.Future[T]) -> T:
+    """Join a worker before cancellation can release the backup lock or resources."""
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                continue
+        worker.result()
+        raise
 
 
 def raise_if_backup_busy() -> None:
@@ -213,7 +237,7 @@ async def run_auto_backup(server: OctopServer) -> BackupFileInfo | None:
                 agent_rows = cast(list[Any], agent_registry.list_rows())
             else:
                 agent_rows = cast(list[Any], server.services.agent_repo.list_all())
-            entry, deleted = await asyncio.to_thread(
+            worker = start_backup_worker(
                 create_and_store_auto_backup,
                 paths=server.paths,
                 agent_rows=agent_rows,
@@ -227,6 +251,7 @@ async def run_auto_backup(server: OctopServer) -> BackupFileInfo | None:
                 include_knowledge=config.backup.include_knowledge,
                 include_chats=config.backup.include_chats,
             )
+            entry, deleted = await wait_backup_worker(worker)
         except Exception as exc:
             logger.exception("auto backup failed")
             try:

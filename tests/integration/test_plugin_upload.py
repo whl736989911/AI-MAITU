@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -58,6 +59,27 @@ async def test_upload_plugin_rejects_non_zip(env: Any) -> None:
         headers=auth,
     )
     assert response.status_code == 403, response.text
+
+
+async def test_upload_over_limit_is_rejected_before_installing(env: Any, monkeypatch: Any) -> None:
+    client, srv, auth = env
+    monkeypatch.setattr(
+        srv, "services", replace(srv.services, config=replace(srv.services.config, max_upload_mb=1))
+    )
+    manager = srv.plugin_manager
+    assert manager is not None
+    before = _disk_snapshot(manager.plugins_dir)
+
+    response = await client.post(
+        "/api/plugins/upload",
+        files={"file": ("oversized.zip", b"x" * (1024 * 1024 + 1), "application/zip")},
+        headers=auth,
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "PLUGIN_INVALID_ARCHIVE"
+    assert response.json()["error"]["details"]["max_mb"] == 1
+    assert _disk_snapshot(manager.plugins_dir) == before
 
 
 async def test_upload_plugin_requires_the_plugins_key(env_admin_alice: Any) -> None:

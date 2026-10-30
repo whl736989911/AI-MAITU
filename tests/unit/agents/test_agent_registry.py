@@ -67,7 +67,7 @@ def _patch_harness(monkeypatch) -> MagicMock:
         return fake_hm
 
     monkeypatch.setattr(
-        "octop.infra.agents.manager.HarnessAgentManager",
+        "octop.infra.agents.providers.harness_factory.OctopHarnessAgentManager",
         _constructor,
     )
     return fake_hm

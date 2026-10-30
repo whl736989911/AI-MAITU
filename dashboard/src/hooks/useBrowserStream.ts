@@ -1,4 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from "react";
+import { getWsUrl } from "../api/config";
 import { getAuthToken } from "../api/request";
 import { normalizeUrl } from "../utils/normalizeUrl";
 import {
@@ -35,14 +36,11 @@ interface ConnectOptions {
 
 function buildWsUrl(width: number, height: number): string {
   const token = getAuthToken();
-  const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-  const base = `${protocol}://${window.location.host}/api/browser-stream/ws`;
-  const params = new URLSearchParams({
-    width: String(width),
-    height: String(height),
-  });
-  if (token) params.set("token", token);
-  return `${base}?${params.toString()}`;
+  const url = new URL(getWsUrl("/browser-stream/ws"));
+  url.searchParams.set("width", String(width));
+  url.searchParams.set("height", String(height));
+  if (token) url.searchParams.set("token", token);
+  return url.toString();
 }
 
 /**

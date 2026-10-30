@@ -87,7 +87,7 @@ export default function FeatureExtractRulesEditor({
       setDrafts(
         answer.rules
           ? draftsFromRules(answer.rules, i18n.language)
-          : [] as ExtractProfileDraft[],
+          : ([] as ExtractProfileDraft[]),
       );
       if (answer.error) setError(answer.error);
     } catch (exc) {
@@ -108,7 +108,9 @@ export default function FeatureExtractRulesEditor({
   }, [load]);
 
   const patchProfile = (id: string, patch: Partial<ExtractProfileDraft>) => {
-    setDrafts((rows) => rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+    setDrafts((rows) =>
+      rows.map((row) => (row.id === id ? { ...row, ...patch } : row)),
+    );
   };
 
   const patchField = (
@@ -151,9 +153,7 @@ export default function FeatureExtractRulesEditor({
         rulesFromDrafts(drafts, i18n.language),
       );
       setDrafts(draftsFromRules(answer.rules, i18n.language));
-      message.success(
-        t("features.data.extractRules.saved", "抽取规则已保存"),
-      );
+      message.success(t("features.data.extractRules.saved", "抽取规则已保存"));
     } catch (exc) {
       setError(
         apiErrorMessage(
@@ -203,7 +203,7 @@ export default function FeatureExtractRulesEditor({
               value={profile.name}
               placeholder={t(
                 "features.data.extractRules.profileName",
-                "版式名称（如：锻造工艺卡）",
+                "版式名称",
               )}
               onChange={(event) =>
                 patchProfile(profile.id, { name: event.target.value })
@@ -399,10 +399,7 @@ export default function FeatureExtractRulesEditor({
               icon={<Plus size={14} />}
               onClick={() =>
                 patchProfile(profile.id, {
-                  fields: [
-                    ...profile.fields,
-                    emptyField(fieldKeys[0] ?? ""),
-                  ],
+                  fields: [...profile.fields, emptyField(fieldKeys[0] ?? "")],
                 })
               }
             >

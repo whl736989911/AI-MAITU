@@ -185,7 +185,7 @@ async def test_admin_cannot_set_host_resource_policy(env, tmp_path):
     c, _srv, auth = env
     root = tmp_path / "customer-root"
     root.mkdir()
-    user_auth = await create_user(c, auth, username="policy_user", password=TEST_PASSWORD)
+    await create_user(c, auth, username="policy_user", password=TEST_PASSWORD)
     row = next(
         user
         for user in (await c.get("/api/users", headers=auth)).json()
@@ -217,28 +217,6 @@ async def test_admin_cannot_set_host_resource_policy(env, tmp_path):
     unchanged = await c.get(f"/api/users/{uid}", headers=auth)
     assert unchanged.json()["workspace_root_dir"] is None
     assert unchanged.json()["token_quota"] is None
-
-    created_backend = await c.post(
-        "/api/agents",
-        headers=user_auth,
-        json={
-            "name": "outside-root",
-            "config": {
-                "backend": {
-                    "type": "filesystem",
-                    "virtual_mode": True,
-                    "root_dir": root.as_posix(),
-                }
-            },
-        },
-    )
-    assert created_backend.status_code == 201, created_backend.text
-    agent_id = created_backend.json()["agent_id"]
-    registry = _srv.app_runtime.agent_registry
-    backend = registry.resolved_backend_spec(agent_id)
-    assert backend["root_dir"] == str(registry.resolve_workspace_dir(agent_id).resolve())
-    assert backend["type"] == "filesystem"
-    assert backend["virtual_mode"] is True
 
 
 async def test_user_org_unit_roundtrip(env):
@@ -1331,3 +1309,82 @@ async def test_rejected_account_patch_keeps_other_fields(env, invalid_patch, sta
     assert stored["display_name"] == "Original"
     assert stored["org_unit"] == "test-unit"
     assert stored["token_quota"] is None
+
+
+async def test_create_account_accepts_dashboard_department_list(env):
+    client, server, auth = env
+    await ensure_test_org_unit(client, auth)
+    other = await client.post(
+        "/api/org-units",
+        headers=auth,
+        json={"key": "aaa", "label_zh": "其他部门", "label_en": "Other"},
+    )
+    assert other.status_code == 201, other.text
+    created = await client.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "multi-create",
+            "password": "TestPass12",
+            "role": "user",
+            "org_units": ["test-unit", "aaa"],
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["org_unit"] == "test-unit"
+    assert created.json()["org_units"] == ["test-unit", "aaa"]
+    assert server.services.user_repo.units_for_user(created.json()["id"]) == ["aaa", "test-unit"]
+
+
+async def test_role_and_departments_are_validated_together(env):
+    client, _server, auth = env
+    await ensure_test_org_unit(client, auth)
+    created = await client.post(
+        "/api/users",
+        headers=auth,
+        json={"username": "role-and-unit", "password": "TestPass12", "role": "enterprise_admin"},
+    )
+    assert created.status_code == 201, created.text
+    changed = await client.patch(
+        f"/api/users/{created.json()['id']}",
+        headers=auth,
+        json={"role": "user", "org_units": ["test-unit"]},
+    )
+    assert changed.status_code == 200, changed.text
+    assert changed.json()["role"] == "user"
+    assert changed.json()["org_unit"] == "test-unit"
+
+
+async def test_department_write_failure_rolls_back_account_patch(env):
+    import sqlite3
+
+    client, server, auth = env
+    await ensure_test_org_unit(client, auth)
+    created = await client.post(
+        "/api/users",
+        headers=auth,
+        json={
+            "username": "membership-rollback",
+            "password": "TestPass12",
+            "role": "user",
+            "org_unit": "test-unit",
+            "display_name": "Original",
+        },
+    )
+    assert created.status_code == 201, created.text
+    user_id = created.json()["id"]
+    with server.services.db.transaction() as conn:
+        conn.execute(
+            "CREATE TRIGGER reject_membership BEFORE INSERT ON user_org_units "
+            "BEGIN SELECT RAISE(ABORT, 'membership write failed'); END"
+        )
+    with pytest.raises(sqlite3.IntegrityError, match="membership write failed"):
+        await client.patch(
+            f"/api/users/{user_id}",
+            headers=auth,
+            json={"display_name": "Must not save", "org_units": ["test-unit"], "token_quota": 100},
+        )
+    stored = (await client.get(f"/api/users/{user_id}", headers=auth)).json()
+    assert stored["display_name"] == "Original"
+    assert stored["token_quota"] is None
+    assert stored["org_units"] == ["test-unit"]

@@ -244,6 +244,7 @@ class CronJobRepo:
         task_type: CronTaskType | None = None,
         model: str | None | object = UNSET,
         mcp_servers: list[str] | None | object = UNSET,
+        reset_run_state: bool = False,
     ) -> None:
         fields, params = partial_updates(
             [
@@ -268,6 +269,8 @@ class CronJobRepo:
         if enabled is not None:
             fields.append("enabled = ?")
             params.append(bool_int(enabled))
+        if reset_run_state:
+            fields.extend(["last_run_at = NULL", "last_status = NULL", "last_error = NULL"])
         if not fields:
             return
         fields.append("updated_at = ?")

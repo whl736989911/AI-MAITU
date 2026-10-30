@@ -1,6 +1,10 @@
 .markdownBody {
   line-height: 1.7;
+  min-width: 0;
+  max-width: 100%;
   word-break: break-word;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
   font-size: 15px;
   color: var(--fn-text-primary);
 
@@ -94,8 +98,11 @@
   font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
   font-size: 0.9em;
   color: var(--fn-text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
-
 /* ---- Code block ---- */
 .codeBlockWrapper {
   margin: 0.75em 0;

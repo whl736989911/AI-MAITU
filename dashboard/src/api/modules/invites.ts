@@ -1,3 +1,5 @@
+import { publicUrl } from "../../utils/publicUrl";
+
 import { request } from "../request";
 
 export type InviteStatus = "pending" | "used" | "expired" | "revoked";
@@ -47,7 +49,7 @@ export interface InviteRedeemResponse {
 /** Prefer the browser origin so copied links match how admins reach the UI. */
 export function localInviteUrl(code: string): string {
   const origin = typeof window !== "undefined" ? window.location.origin : "";
-  return `${origin}/invite?code=${encodeURIComponent(code)}`;
+  return `${origin}${publicUrl(`/invite?code=${encodeURIComponent(code)}`)}`;
 }
 
 export const invitesApi = {

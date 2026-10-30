@@ -1,4 +1,101 @@
 {
+  "providers": {
+    "api_mode": {
+      "invalid": "api_mode must be 'chat_completions' or 'responses'"
+    },
+    "api_fallback": {
+      "invalid": "api_fallback must be 'none' or 'chat_completions'",
+      "mode_required": "api_fallback is only supported with api_mode='responses'",
+      "native_tool_search": "api_fallback is incompatible with native_tool_search"
+    }
+  },
+  "text_assist": {
+    "kinds": {
+      "chat": {
+        "prompt": {
+          "system": "You edit draft prompts; never answer them. Preserve intent and language, improve clarity and actionable detail, and output only the rewritten prompt.",
+          "user": "Rewrite this draft prompt without answering it:\n\n{text}"
+        }
+      },
+      "expert": {
+        "description": {
+          "system": "Write concise, factual product copy for an AI expert profile. Output only 1–2 sentences in the target language; do not invent capabilities.",
+          "user_polish": "Expert name: {name}\nImprove this description while preserving its meaning:\n\n{text}",
+          "user_generate": "Write a short description for the expert named {name}, using only what the name implies."
+        },
+        "welcome_message": {
+          "system": "Write a short, friendly welcome line for an AI expert chat. Output only the line in the target language.",
+          "user_polish": "Expert name: {name}\nImprove this welcome line while preserving its intent:\n\n{text}",
+          "user_generate": "Write a short welcome line for the expert named {name}."
+        }
+      },
+      "team": {
+        "description": {
+          "system": "Write concise, factual product copy for an AI expert team. Output only 1–2 sentences; do not invent capabilities.",
+          "user_polish": "Team name: {name}\nImprove this team description while preserving its meaning:\n\n{text}",
+          "user_generate": "Write a short description for the team named {name}, using only what the name implies."
+        },
+        "welcome_message": {
+          "system": "Write a short, friendly welcome line for an AI team chat. Output only the line in the target language.",
+          "user_polish": "Team name: {name}\nImprove this welcome line while preserving its intent:\n\n{text}",
+          "user_generate": "Write a short welcome line for the team named {name}."
+        }
+      },
+      "skill_package": {
+        "description": {
+          "system": "Write concise product copy for a package of AI skills. Output only 1–2 sentences and do not invent capabilities.",
+          "user_polish": "Skill package name: {name}\nImprove this description while preserving its meaning:\n\n{text}",
+          "user_generate": "Write a short description for the skill package named {name}."
+        }
+      },
+      "skill": {
+        "description": {
+          "system": "Write a concise description explaining when an AI skill should be used. Do not invent tools or files.",
+          "user_polish": "Skill name: {name}\nImprove this skill description while preserving its meaning:\n\n{text}",
+          "user_generate": "Write a concise description of when to use the skill named {name}."
+        },
+        "label_zh": {
+          "system": "Write a short Chinese display name for an AI skill. Output Chinese only, without quotes or commentary.",
+          "user_polish": "Skill name: {name}\nImprove this Chinese display name; output Chinese only:\n\n{text}",
+          "user_generate": "Write a short Chinese display name for the skill {name}."
+        },
+        "label_en": {
+          "system": "Write a short English display name for an AI skill. Output only the name, without quotes or commentary.",
+          "user_polish": "Skill name: {name}\nImprove this English display name:\n\n{text}",
+          "user_generate": "Write a short English display name for the skill {name}."
+        },
+        "summary_zh": {
+          "system": "Write a concise Chinese UI summary for an AI skill. Output Chinese only.",
+          "user_polish": "Skill name: {name}\nImprove this Chinese skill summary:\n\n{text}",
+          "user_generate": "Write a short Chinese UI summary for the skill {name}."
+        },
+        "summary_en": {
+          "system": "Write a concise English UI summary for an AI skill. Output English only.",
+          "user_polish": "Skill name: {name}\nImprove this English skill summary:\n\n{text}",
+          "user_generate": "Write a short English UI summary for the skill {name}."
+        },
+        "body": {
+          "system": "Write or polish practical Markdown instructions for an AI skill. Do not include YAML frontmatter or invent tools and paths.",
+          "user_polish": "Skill name: {name}\nImprove this skill body while preserving intent; do not add YAML frontmatter:\n\n{text}",
+          "user_generate": "Write concise Markdown instructions for the skill {name}, without YAML frontmatter."
+        }
+      },
+      "knowledge_base": {
+        "description": {
+          "system": "Write concise, factual product copy for a document knowledge base. Output only 1–2 sentences.",
+          "user_polish": "Knowledge base name: {name}\nImprove this description while preserving its meaning:\n\n{text}",
+          "user_generate": "Write a short description for the knowledge base named {name}."
+        }
+      },
+      "feature": {
+        "description": {
+          "system": "Write concise, factual product copy describing an AI feature. Output only 1–2 sentences and do not invent capabilities.",
+          "user_polish": "Feature name: {name}\nImprove this description while preserving its meaning:\n\n{text}",
+          "user_generate": "Write a short description for the feature named {name}."
+        }
+      }
+    }
+  },
   "slash": {
     "error": {
       "unknown_command": "Unknown command: /{name}. Type /help for available commands."
@@ -626,10 +723,13 @@
     "preflight_failed_summary": "One or more preflight checks failed"
   },
   "tools": {
+    "deepseek_search": "DeepSeek web search",
+    "yuanbao_search": "Yuanbao web search",
     "unknown": "Unknown tool",
     "read_file": "Read file",
     "write_file": "Write file",
     "edit_file": "Edit file",
+    "delete": "Delete file",
     "bash": "Shell (bash)",
     "execute": "Execute",
     "current_time": "Current time",

@@ -151,7 +151,10 @@ export function PresetProviderModal({
     }
   };
 
-  const testDraftModel = async (modelId: string) => {
+  const testDraftModel = async (
+    modelId: string,
+    settings?: Pick<ProviderModel, "api_mode" | "api_fallback">,
+  ) => {
     const values = await form.validateFields(["name", "base_url", "api_key"]);
     const key = values.api_key?.trim();
     if (!key) {
@@ -164,6 +167,7 @@ export function PresetProviderModal({
       base_url: values.base_url?.trim() || preset.base_url,
       model_id: modelId,
       embedding: isEmbeddingModel(draftModels.find((m) => m.id === modelId)),
+      ...settings,
     });
   };
 
@@ -352,7 +356,9 @@ export function PresetProviderModal({
             onModelsChange={setDraftModels}
             apiPrefix="/admin/providers"
             canTest={canTest}
-            onTestModel={(modelId) => testDraftModel(modelId)}
+            onTestModel={(modelId, _name, settings) =>
+              testDraftModel(modelId, settings)
+            }
           />
         </>
       )}

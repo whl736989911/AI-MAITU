@@ -106,6 +106,12 @@ class ChatTurnBody(BaseModel):
         default=None,
         description="Route a busy-thread message to steering, or follow_up only when idle.",
     )
+    user_message_id: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+        description="Client-generated identity for the submitted user message.",
+    )
     client_pending_id: str | None = Field(
         default=None,
         min_length=1,
@@ -168,6 +174,9 @@ class ChatTurnBody(BaseModel):
             client_pending_id=payload.get("client_pending_id")
             if isinstance(payload.get("client_pending_id"), str)
             else None,
+            user_message_id=payload.get("user_message_id")
+            if isinstance(payload.get("user_message_id"), str)
+            else None,
             expected_turn_id=payload.get("expected_turn_id")
             if isinstance(payload.get("expected_turn_id"), str)
             else None,
@@ -205,15 +214,11 @@ class UserTurnWsFrame(BaseModel):
     hitl_policy: HitlSessionPolicyBody | None = None
     delivery: Literal["auto", "steer", "follow_up"] | None = None
     client_pending_id: str | None = None
+    user_message_id: str | None = None
     expected_turn_id: str | None = None
 
     def to_turn_body(self) -> ChatTurnBody:
         return ChatTurnBody.from_ws_payload(self.model_dump(exclude_none=True))
-
-
-class PolishBody(BaseModel):
-    text: str
-    default_model: str | None = None
 
 
 class RebindSessionBody(BaseModel):
