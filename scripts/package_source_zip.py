@@ -137,7 +137,15 @@ def build(source: Path, output: Path) -> Path:
                 json.dumps(manifest, ensure_ascii=False, indent=1) + "\n",
             )
             for relative in files:
-                archive.write(source / relative, relative.as_posix())
+                # Windows cannot report a POSIX mode, so an extracted .sh would
+                # land as 0644 and `./script.sh` would fail. Shell entry points
+                # are recorded executable explicitly.
+                info = zipfile.ZipInfo(relative.as_posix())
+                info.compress_type = zipfile.ZIP_DEFLATED
+                mode = 0o755 if relative.suffix == ".sh" else 0o644
+                info.external_attr = (0o100000 | mode) << 16
+                with (source / relative).open("rb") as payload:
+                    archive.writestr(info, payload.read())
         os.replace(temporary, destination)
     finally:
         temporary.unlink(missing_ok=True)
