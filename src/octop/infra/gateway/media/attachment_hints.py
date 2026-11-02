@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import logging
 import mimetypes
 from collections.abc import Sequence
@@ -396,6 +397,57 @@ def _reencode_image_to_fit(data: bytes) -> tuple[bytes, str] | None:
     return None
 
 
+def offload_image_rel_path(raw: bytes, mime: str) -> str:
+    """Content-addressed ``inbound/`` path for raw image bytes."""
+    ext = mimetypes.guess_extension((mime or "").split(";", 1)[0].strip()) or ".img"
+    return f"inbound/vision-{hashlib.sha256(raw).hexdigest()[:32]}{ext}"
+
+
+def ref_for_inline_image_bytes(
+    raw: bytes,
+    mime: str,
+    *,
+    workspace: BackendWorkspace | None,
+) -> dict[str, Any] | None:
+    """Store inline bytes once and return a path-only ref (synchronous)."""
+    if workspace is None:
+        return None
+    rel = offload_image_rel_path(raw, mime)
+    try:
+        if not workspace.exists(rel):
+            workspace.upload_bytes(rel, raw)
+    except Exception:
+        logger.warning("vision image offload failed for %s", rel, exc_info=True)
+        return None
+    return make_workspace_image_ref(workspace_path=rel, mime_type=mime)
+
+
+async def _ref_for_inline_bytes(
+    raw: bytes,
+    mime: str,
+    *,
+    workspace: BackendWorkspace | None,
+) -> dict[str, Any] | None:
+    """Store received bytes once under ``inbound/`` and return a path-only ref.
+
+    Bytes that exist only in memory (channel uploads, downloaded URLs) used to
+    be inlined as base64 into message content, and every checkpoint step copied
+    that whole history again. A content-addressed file keeps exactly one copy
+    no matter how many steps follow; the model request expands the ref back to
+    bytes (see ``WorkspaceImageMaterializeMiddleware``).
+    """
+    if workspace is None:
+        return None
+    rel = offload_image_rel_path(raw, mime)
+    try:
+        if not await workspace.aexists(rel):
+            await workspace.aupload_bytes(rel, raw)
+    except Exception:
+        logger.warning("vision image offload failed for %s", rel, exc_info=True)
+        return None
+    return make_workspace_image_ref(workspace_path=rel, mime_type=mime)
+
+
 async def materialize_image_part(
     part: ImageContent,
     *,
@@ -405,10 +457,11 @@ async def materialize_image_part(
 ) -> dict[str, Any] | None:
     """Build a checkpoint-safe vision block, or degrade to a path hint.
 
-    Prefer workspace path refs for files already under ``inbound/`` — bytes are
-    inlined only at LLM request time (see ``WorkspaceImageMaterializeMiddleware``).
-    Inline ``part.data`` / remote URL downloads without a rematerializable path
-    still produce ``data:`` URLs here (with size re-encode when needed).
+    Prefer workspace path refs: files already under ``inbound/`` keep their path,
+    and bytes that arrive inline (``part.data``, downloaded URLs) are stored once
+    under ``inbound/`` before a ref is returned. Bytes are inlined only at LLM
+    request time (see ``WorkspaceImageMaterializeMiddleware``), so a checkpoint
+    never carries base64 for a whole conversation history.
     """
     mime = part.mime_type or "image/png"
 
@@ -453,8 +506,14 @@ async def materialize_image_part(
             )
             reencoded = await asyncio.to_thread(_reencode_image_to_fit, raw)
             if reencoded is not None:
+                ref = await _ref_for_inline_bytes(reencoded[0], reencoded[1], workspace=workspace)
+                if ref is not None:
+                    return ref
                 return make_image_url_block(base64.b64encode(reencoded[0]).decode(), reencoded[1])
             return _image_as_path_hint(part, workspace=workspace, locale=locale)
+        ref = await _ref_for_inline_bytes(raw, mime, workspace=workspace)
+        if ref is not None:
+            return ref
         return make_image_url_block(part.data, mime)
 
     if part.url:
@@ -469,11 +528,19 @@ async def materialize_image_part(
                 )
                 reencoded = await asyncio.to_thread(_reencode_image_to_fit, raw_bytes)
                 if reencoded is not None:
+                    ref = await _ref_for_inline_bytes(
+                        reencoded[0], reencoded[1], workspace=workspace
+                    )
+                    if ref is not None:
+                        return ref
                     return make_image_url_block(
                         base64.b64encode(reencoded[0]).decode(), reencoded[1]
                     )
                 return _image_as_path_hint(part, workspace=workspace, locale=locale)
             mime = content_type or part.mime_type or "image/png"
+            ref = await _ref_for_inline_bytes(raw_bytes, mime, workspace=workspace)
+            if ref is not None:
+                return ref
             return make_image_url_block(base64.b64encode(raw_bytes).decode(), mime)
         if part.url.startswith(("http://", "https://")):
             return {"type": "image_url", "image_url": {"url": part.url}}

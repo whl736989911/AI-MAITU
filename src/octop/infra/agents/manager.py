@@ -4153,6 +4153,9 @@ class AgentManager:
         from octop.infra.agents.middleware.token_quota import TokenQuotaMiddleware
         from octop.infra.agents.middleware.turn_mcp import TurnMcpToolsMiddleware
         from octop.infra.agents.middleware.turn_steering import TurnSteeringMiddleware
+        from octop.infra.agents.middleware.vision_offload import (
+            VisionStateOffloadMiddleware,
+        )
         from octop.infra.agents.middleware.workspace_image import (
             WorkspaceImageMaterializeMiddleware,
         )
@@ -4253,6 +4256,10 @@ class AgentManager:
             KnowledgeToolsHintMiddleware(),
             BrowserProfileMiddleware(),
             BinaryReadGuardMiddleware(workspace=ws),
+            # Offload inline image bytes before anything else looks at the
+            # messages: the ref form is what the materializer expands at request
+            # time, and what the checkpointer stores without base64.
+            VisionStateOffloadMiddleware(workspace=ws),
             WorkspaceImageMaterializeMiddleware(workspace=ws, model_for_images=model_for_images),
             ThreadArtifactsMiddleware(
                 thread_repo=self._repos.thread_repo,

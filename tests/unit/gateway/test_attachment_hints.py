@@ -281,6 +281,46 @@ async def test_small_image_is_path_ref_then_byte_identical_on_expand() -> None:
         assert base64.b64decode(url.split(",", 1)[1]) == small
 
 
+@pytest.mark.asyncio
+async def test_inline_bytes_are_stored_once_and_kept_as_a_ref() -> None:
+    """A channel upload with only bytes must not put base64 into message state.
+
+    Every checkpoint step re-serializes the whole ``messages`` channel, so an
+    inlined image is copied again per step. Storing the bytes once and keeping a
+    path ref bounds that cost to a single file.
+    """
+    with tempfile.TemporaryDirectory() as ws_dir:
+        workspace = _workspace(ws_dir)
+        small = _tiny_png()
+        part = ImageContent(data=base64.b64encode(small).decode(), mime_type="image/png")
+
+        block = await materialize_image_part(part, media_backend=None, workspace=workspace)
+
+        assert block is not None
+        assert block["image_url"]["url"].startswith("workspace://")
+        assert "base64" not in block["image_url"]["url"]
+        rel = block["workspace_path"]
+        assert await workspace.aexists(rel)
+        assert await workspace.adownload_bytes(rel) == small
+
+        # The same bytes offload to the same content-addressed path.
+        again = await materialize_image_part(part, media_backend=None, workspace=workspace)
+        assert again is not None
+        assert again["workspace_path"] == rel
+
+
+@pytest.mark.asyncio
+async def test_inline_bytes_without_a_workspace_still_inline() -> None:
+    """No workspace means no rematerializable path, so the old inline form stays."""
+    small = _tiny_png()
+    part = ImageContent(data=base64.b64encode(small).decode(), mime_type="image/png")
+
+    block = await materialize_image_part(part, media_backend=None)
+
+    assert block is not None
+    assert block["image_url"]["url"].startswith("data:image/png;base64,")
+
+
 def test_inbound_attachments_from_parts() -> None:
     parts = [
         TextContent(text="see"),
