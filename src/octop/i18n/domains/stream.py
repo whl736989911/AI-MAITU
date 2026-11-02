@@ -12,6 +12,10 @@ MODEL_RETRY_FAILURE_MARK = "[model_call_failed]"
 
 
 STREAM_STALL = f"{_PREFIX}stream_errors.stream_stall"
+# A full disk is not a model problem: SQLite surfaces it as a model-call
+# failure, and the raw "database or disk is full" text tells the user nothing
+# about the remedy.
+DISK_FULL = f"{_PREFIX}stream_errors.disk_full"
 RATE_LIMIT = f"{_PREFIX}stream_errors.rate_limit"
 AUTH = f"{_PREFIX}stream_errors.auth"
 INSUFFICIENT_BALANCE = f"{_PREFIX}stream_errors.insufficient_balance"
@@ -27,6 +31,7 @@ _TECHNICAL_DETAIL_RE = re.compile(r"(?is)technical detail:\s*(.+)$")
 __all__ = [
     "AUTH",
     "CONTEXT_LENGTH",
+    "DISK_FULL",
     "INSUFFICIENT_BALANCE",
     "MODEL_CALL_FAILED",
     "MODEL_RETRY_FAILURE_MARK",
@@ -74,6 +79,14 @@ def classify_stream_error_message(message: str) -> str | None:
         return None
     lower = msg.lower()
     compact = lower.replace("_", "").replace(" ", "")
+
+    if (
+        "database or disk is full" in lower
+        or "no space left on device" in lower
+        or "errno 28" in lower
+        or "sqlite_full" in compact
+    ):
+        return DISK_FULL
 
     if (
         "streamchunktimeouterror" in compact

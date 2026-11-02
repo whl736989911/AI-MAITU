@@ -1,6 +1,7 @@
 import { Layout } from "antd";
 import { Menu as MenuIcon } from "lucide-react";
 import PwaInstallPrompt from "../components/PwaInstallPrompt";
+import KnowledgeAccessNotifications from "../components/KnowledgeAccessNotifications";
 import CurrentVersionBadge from "../components/CurrentVersionBadge";
 import { useTheme } from "../context/ThemeContext";
 import { useBranding } from "../context/BrandingContext";
@@ -107,6 +108,7 @@ export default function Header({ onToggle, isMobile }: HeaderProps) {
         }}
       >
         <PwaInstallPrompt compact />
+        <KnowledgeAccessNotifications />
       </div>
     </AntHeader>
   );

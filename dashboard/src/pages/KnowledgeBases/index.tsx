@@ -142,7 +142,6 @@ import DataSourcesPanel from "./components/DataSourcesPanel";
 import KnowledgeProcessorNotice from "./components/KnowledgeProcessorNotice";
 import KnowledgeCollections from "./components/KnowledgeCollections";
 import KnowledgePermissionsDrawer from "./components/KnowledgePermissionsDrawer";
-import KnowledgeAccessNotifications from "../../components/KnowledgeAccessNotifications";
 import styles from "./index.module.less";
 import { isImeComposing } from "../Chat/utils/ime";
 
@@ -2421,7 +2420,6 @@ export default function KnowledgeBasesPage() {
       fill
       actions={
         <>
-          <KnowledgeAccessNotifications />
           {canConfigureKb ? (
             <Button icon={<Settings size={15} />} onClick={openSettings}>
               {t("knowledgeBases.settingsTitle")}

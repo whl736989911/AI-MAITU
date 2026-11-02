@@ -13,6 +13,21 @@ from octop.i18n.domains.stream import (
 )
 
 
+def test_classify_disk_full_from_sqlite() -> None:
+    """A SQLite FULL error is an operational state, not a model failure."""
+    msg = "Model call failed after 3 attempts with OperationalError: database or disk is full"
+    assert classify_stream_error_message(msg) == "octop:stream_errors.disk_full"
+    assert classify_stream_error_message("OSError: [Errno 28] No space left on device") == (
+        "octop:stream_errors.disk_full"
+    )
+
+
+def test_format_stream_error_names_the_disk_instead_of_the_model() -> None:
+    text = format_stream_error("database or disk is full", "zh")
+    assert "磁盘" in text
+    assert "模型调用失败" not in text
+
+
 def test_classify_stream_stall_from_minimax_timeout() -> None:
     msg = (
         "Model call failed after 3 attempts with StreamChunkTimeoutError: "

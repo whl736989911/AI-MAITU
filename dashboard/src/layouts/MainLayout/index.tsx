@@ -25,7 +25,6 @@ import RequirePermission from "../../components/RequirePermission";
 import { routeNeedsPermission } from "../../utils/permissions";
 import { useLayoutMode } from "../../context/LayoutModeContext";
 import { useDashboardPushToast } from "../../hooks/useDashboardPushToast";
-import KnowledgeAccessNotifications from "../../components/KnowledgeAccessNotifications";
 
 const Chat = lazy(() => import("../../pages/Chat"));
 const WorkbenchPage = lazy(() => import("../../pages/Control/Workbench"));
@@ -160,7 +159,6 @@ export default function MainLayout() {
             overflow: "hidden",
           }}
         >
-          <KnowledgeAccessNotifications />
           {/* Mobile overlay backdrop */}
           {isMobile && !collapsed && (
             <div

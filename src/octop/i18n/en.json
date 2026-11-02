@@ -897,6 +897,7 @@
     "start_timeout": "This agent took too long to start. Check its storage and connector connectivity, then enable it again. Other agents can still be used."
   },
   "stream_errors": {
+    "disk_full": "The server is out of disk space, so this turn could not be saved (the checkpoint write failed). Free space or ask an administrator, then retry.",
     "stream_stall": "The model stopped sending content while the connection stayed open. Click Retry, or try again later with another model. If this happens often, check the provider status or ask an admin to review stream timeout settings.",
     "rate_limit": "The model provider rate-limited this request. Wait a moment and retry, or switch to another model.",
     "auth": "Model authentication failed. Check that the API key under Settings → Models is correct and still valid.",

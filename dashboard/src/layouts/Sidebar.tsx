@@ -5,6 +5,7 @@ import type { TFunction } from "i18next";
 import { Button, Checkbox, Drawer, message } from "antd";
 import AvatarDropdown from "../components/AvatarDropdown";
 import CurrentVersionBadge from "../components/CurrentVersionBadge";
+import KnowledgeAccessNotifications from "../components/KnowledgeAccessNotifications";
 import {
   ArrowRightLeft,
   X,
@@ -942,6 +943,13 @@ export default function Sidebar({
         }}
       >
         {brandInner}
+        {/* Global knowledge-access bell: it belongs to the always-present
+            chrome, not to the page content, so every route shows it once. */}
+        {isRailCollapsed ? null : (
+          <div style={{ marginLeft: "auto", flexShrink: 0 }}>
+            <KnowledgeAccessNotifications />
+          </div>
+        )}
       </div>
 
       <div

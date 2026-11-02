@@ -29,6 +29,9 @@
 
 ### 修复
 
+- 磁盘写满时不再显示“模型调用失败：database or disk is full”，改为明确的磁盘不足提示与重试方式；SQLite FULL、ENOSPC 与 errno 28 归入同一分类。
+- 知识访问通知原被挂在主布局首行（停留在页面左上角），现移入侧栏品牌行与移动端顶栏；知识库页面不再重复挂载。
+- 前端测试预算提高到 20 秒：同一用例单独运行约 2.9 秒，在双 worker 竞争下会超过 5 秒默认值，导致无关套件随机超时。
 - 修复内联图片导致 checkpoint 体积按步放大的问题：渠道上传与下载的图片字节先按内容寻址存入 `inbound/`，state 只保留路径引用；新增 `VisionStateOffloadMiddleware` 把 Anthropic 形状（`source.base64`）及裸 `base64` 图片块在每次模型调用前改写为引用，模型请求时再展开为字节。同一图片在多步之间只保留一份文件。
 - 原生部署默认包含 `local-embedding` 并补齐 `libgl1`/`libglib2.0-0`；新增 `octop doctor [--require 能力] [--fix]` 依赖自检，按选定的 extras 探测导入与外部命令，`--fix` 自动安装缺失的系统包，安装脚本在同步依赖后自动执行并在仍缺依赖时中止。
 - 缺少本地向量依赖时返回带安装命令的 `KNOWLEDGE_EMBEDDING_DEPS_MISSING`，不再只给通用 409。

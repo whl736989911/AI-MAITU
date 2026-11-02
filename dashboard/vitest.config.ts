@@ -29,6 +29,13 @@ export default defineConfig({
     globals: true,
     setupFiles: ["./src/test/setup.ts"],
     css: false,
+    // jsdom + antd render costs seconds per suite on Windows, and the same test
+    // that takes ~2.9 s alone exceeds the 5 s default while two workers share
+    // the CPU with collect/transform work. A wall-clock race there fails
+    // unrelated suites at random, so the budget is raised for real work while a
+    // genuine hang still fails at 20 s.
+    testTimeout: 20_000,
+    hookTimeout: 20_000,
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
     pool: "threads",
     maxWorkers,
