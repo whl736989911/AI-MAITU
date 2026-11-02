@@ -81,9 +81,7 @@ def create_job(
     except OctopError as exc:
         fail_octop(exc)
     click.echo(_json.dumps(row, indent=2))
-    click.echo(
-        "hint: restart `MAITU Smart Manufacturing run` to load new cron jobs into the running server."
-    )
+    click.echo("hint: restart `maitu run` to load new cron jobs into the running server.")
 
 
 @cron.command("delete")

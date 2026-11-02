@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# 麦途智造本地版 — 启动器
+# 麦途本地版 — 启动器
 # 运行在飞牛主机上，依赖飞牛应用商店提供的 Python 3.12（不内置 Python 运行时）。
-# 包内仅含麦途智造核心 whl + 核心依赖 site-packages；浏览器/专家/技能由用户按需安装。
+# 包内仅含麦途核心 whl + 核心依赖 site-packages；浏览器/专家/技能由用户按需安装。
 # 首次启动用向导配置的 .env 初始化管理员账号，然后启动服务。
 #
 set -euo pipefail
@@ -70,7 +70,7 @@ export MAITU_FPK_SITE_PACKAGES="$SITE_PACKAGES"
 # 兜底：若包内 site-packages 中未检测到 maitu（升级异常 / 损坏等），
 # 用内置核心 whl 就地离线安装，避免用户联网下载。
 if ! "$PY" -c "import octop" >/dev/null 2>&1; then
-    echo "[octop-native] 未检测到已安装的麦途智造，正在用内置核心 whl 离线安装 ..."
+    echo "[octop-native] 未检测到已安装的麦途，正在用内置核心 whl 离线安装 ..."
     "$PY" -m pip install --no-cache --no-index --find-links "$SITE_PACKAGES" "$SITE_PACKAGES/octop.whl" >/dev/null 2>&1 || {
         echo "[octop-native] 离线安装失败，请检查网络或手动执行：$PY -m pip install $SITE_PACKAGES/octop.whl" >&2
         exit 1
@@ -90,7 +90,7 @@ octop_cmd() {
 # 首次初始化管理员账号（仅当数据库尚未建立）。
 # 密码兜底链（修复 issue #502）：
 #   1) .env 未写密码（旧包/异常安装）→ 自动生成随机密码；
-#   2) init 因密码策略被拒（如旧版写死的麦途智造123 在弱密码黑名单内，
+#   2) init 因密码策略被拒（如旧版写死的麦途123 在弱密码黑名单内，
 #      报 "password is too common"）→ 换随机强密码重试一次；
 #   3) 重试后同步回写 .env 与 maitu-login.txt 回落备份，保证凭据一致、用户不丢密码。
 if [ ! -f "$MAITU_HOME/maitu.db" ]; then
@@ -123,5 +123,5 @@ if [ ! -f "$MAITU_HOME/maitu.db" ]; then
     octop_write_login_file "$DATA_DIR" "${MAITU_ADMIN_USERNAME:-admin}" "$INIT_PW" "${MAITU_PORT:-8089}"
 fi
 
-echo "[octop-native] 正在启动麦途智造，$MAITU_BIND_HOST:$MAITU_PORT ..."
+echo "[octop-native] 正在启动麦途，$MAITU_BIND_HOST:$MAITU_PORT ..."
 exec "$PY" -m octop.cli.main run --host "$MAITU_BIND_HOST" --port "$MAITU_PORT" --log-level "${MAITU_LOG_LEVEL}"

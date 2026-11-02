@@ -60,7 +60,7 @@ def install_plugin(source: str, force: bool) -> None:
         raise click.ClickException(exc.message) from exc
     click.echo(f"Installed plugin {loaded.manifest.id} v{loaded.manifest.version}")
     click.echo(
-        "Note: if MAITU Smart Manufacturing run is already running, call POST /api/plugins/reload "
+        "Note: if maitu run is already running, call POST /api/plugins/reload "
         "(Admin → Plugins → Reload) or restart the server so status becomes loaded.",
     )
 
@@ -77,6 +77,4 @@ def uninstall_plugin(plugin_id: str) -> None:
 def reload_plugins() -> None:
     """Reload plugins from disk (offline; restart ``maitu run`` to apply to agents)."""
     loaded = _manager().load_installed(install_deps=False)
-    click.echo(
-        f"Reloaded {len(loaded)} plugin(s). Restart MAITU Smart Manufacturing run if the server is running."
-    )
+    click.echo(f"Reloaded {len(loaded)} plugin(s). Restart maitu run if the server is running.")

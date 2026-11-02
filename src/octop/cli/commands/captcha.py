@@ -31,5 +31,5 @@ def reset() -> None:
         services.settings_repo.delete(SETTINGS_KEY)
     click.echo(
         "captcha settings cleared; login now uses the built-in slider "
-        "(restart `MAITU Smart Manufacturing run` if it is running)"
+        "(restart `maitu run` if it is running)"
     )

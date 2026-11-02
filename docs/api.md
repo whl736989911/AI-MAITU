@@ -61,7 +61,7 @@ process starts. `GET /api/envs` redacts `MAITU_CAPTCHA_SECRET` as
 If you serve the dashboard behind a CSP, allow
 `challenges.cloudflare.com`; `js.hcaptcha.com`, `newassets.hcaptcha.com`,
 `api.hcaptcha.com`; `www.google.com`, `www.gstatic.com`;
-`turing.captcha.qcloud.com`, `captcha.qq.com`, `ssl.captcha.qq.com`. 麦途智造
+`turing.captcha.qcloud.com`, `captcha.qq.com`, `ssl.captcha.qq.com`. 麦途
 does not set these headers itself.
 
 ## Instance licensing
@@ -1039,7 +1039,7 @@ for non-`/` paths.
 | `GET`    | `/connectors/oauth/callback` | public | OAuth redirect target |
 | `GET`    | `/connectors/oauth/pending/{state_id}` | user | poll the OAuth result |
 
-Custom MCP OAuth (streamable HTTP, public HTTPS URL only): 麦途智造 discovers the authorization
+Custom MCP OAuth (streamable HTTP, public HTTPS URL only): 麦途 discovers the authorization
 server from the MCP URL (401 / RFC 9728 protected-resource metadata), requires dynamic client
 registration (DCR), stores encrypted tokens in the custom MCP spec, and injects `Authorization:
 Bearer` when loading tools. Loopback MCP URLs do not use remote OAuth discovery.
@@ -1081,7 +1081,7 @@ endpoint (public, mounted directly in `api/app.py`).
 | `WS`/`POST`/`GET`/… | `/agents/{aid}/terminal` | owner | AI-assisted remote PTY |
 | `GET` | `/agents/{aid}/terminal/context` | owner | recent terminal context for the AI helper |
 | `WS`/`POST`/`GET`/… | `/browser/...` | user | harness-browser sessions, live stream, record/replay |
-| `POST` | `/browser/shutdown` | user | stop the current user's 麦途智造-managed Chrome |
+| `POST` | `/browser/shutdown` | user | stop the current user's 麦途-managed Chrome |
 | `POST` | `/agents/{aid}/upload` | user | multipart upload → `{workspace}/inbound/` |
 | `POST` | `/agents/{aid}/files/access-urls` | user | refresh inbound media URLs (signed) |
 | `GET`  | `/agents/{aid}/files/{path}` | owner | read an inbound file |
@@ -1129,7 +1129,7 @@ Every non-2xx JSON response uses:
 ```
 
 `code` matches the `ErrorCode` enum in `octop.infra.errors`; the
-server-localized `message` is rendered by `麦途智造Error.to_envelope`
+server-localized `message` is rendered by `麦途Error.to_envelope`
 with the locale from `Accept-Language` (falling back to `en`). The
 dashboard mirrors every code under `apiErrors.*` in
 `dashboard/src/locales/{en,zh}.json`.

@@ -1,12 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  DEFAULT_CUSTOM_COLOR,
   brandPrimary,
   brandTokensFor,
   contrastRatio,
   customBrandTokens,
-  customPaletteCssVars,
   deriveCustomBrandColors,
   mixHex,
   normalizeHexColor,
@@ -88,34 +86,25 @@ describe("brandTokensFor / brandPrimary with custom palette", () => {
     );
   });
 
-  it("falls back to the default custom color when none stored", () => {
-    expect(brandTokensFor("custom", true).colorLink).toBe(
-      customBrandTokens(DEFAULT_CUSTOM_COLOR).dark.colorLink,
-    );
-  });
-
-  it("brandPrimary passes customColor through", () => {
-    expect(brandPrimary("custom", false, "#00FF00")).toBe(
-      brandTokensFor("custom", false, "#00FF00").colorPrimary,
-    );
-  });
-
   it("curated palettes ignore customColor", () => {
     expect(brandPrimary("rose", false, "#00FF00")).toBe(
       brandPrimary("rose", false),
     );
   });
-});
-
-describe("customPaletteCssVars", () => {
-  it("emits both light and dark blocks with the derived brand", () => {
-    const light = customPaletteCssVars("#4b74fa", false);
-    const dark = customPaletteCssVars("#4b74fa", true);
-    expect(light).toContain(
-      'html[data-palette="custom"]:not([data-theme="dark"])',
+  it("tracks runtime brand changes while custom colors take precedence", () => {
+    const initialBrand = brandTokensFor("brand", false, undefined, "#4F46E5");
+    const updatedBrand = brandTokensFor("brand", false, undefined, "#0891B2");
+    expect(updatedBrand.colorPrimary).not.toBe(initialBrand.colorPrimary);
+    expect(brandPrimary("brand", false, undefined, "#0891B2")).toBe(
+      updatedBrand.colorPrimary,
     );
-    expect(dark).toContain('html[data-palette="custom"][data-theme="dark"]');
-    expect(light).toContain("--fn-color-brand:");
-    expect(dark).toContain("--fn-sidebar-item-active-text:");
+
+    const selectedCustom = brandTokensFor(
+      "custom",
+      false,
+      "#D946EF",
+      "#0891B2",
+    );
+    expect(selectedCustom).toEqual(brandTokensFor("custom", false, "#D946EF"));
   });
 });

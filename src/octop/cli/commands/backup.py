@@ -116,9 +116,7 @@ def auto_status(home: Path | None) -> None:
     click.echo(f"include_plugins: {backup_cfg.include_plugins}")
     click.echo(f"include_knowledge: {backup_cfg.include_knowledge}")
     click.echo(f"include_chats: {backup_cfg.include_chats}")
-    click.echo(
-        "note: the scheduler only runs inside an active `MAITU Smart Manufacturing run` process"
-    )
+    click.echo("note: the scheduler only runs inside an active `maitu run` process")
 
 
 @auto.command("run")

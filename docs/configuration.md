@@ -1,6 +1,6 @@
 # Configuration
 
-麦途智造 stores all of its state under `~/.maitu/`. The directory is created
+麦途 stores all of its state under `~/.maitu/`. The directory is created
 on first server start (or by `maitu init` / `maitu run`).
 
 ## Filesystem layout
@@ -22,7 +22,7 @@ on first server start (or by `maitu init` / `maitu run`).
 ```
 
 `env` is dotenv format, applied before `config.json` is loaded
-(`麦途智造Server.start` → `apply_env_file`). Dashboard **Advanced → Environment
+(`麦途Server.start` → `apply_env_file`). Dashboard **Advanced → Environment
 variables** writes this file. Saving **replaces** the file and drops removed
 keys from the process environment (host/systemd keys that were never in the
 file are left alone). Every running agent inherits those keys:
@@ -32,8 +32,8 @@ file are left alone). Every running agent inherits those keys:
   cannot be overridden from `.env`). New agents store that file at
   `{workspace}/.maitu/.env`; existing agents keep `{workspace}/.env` when
   their stored internal system-files prefix uses the legacy layout. Remote
-  object-store workspaces are not read from the host path — 麦途智造/harness
-  also reads `.env` through the agent backend on each execute. 麦途智造 also
+  object-store workspaces are not read from the host path — 麦途/harness
+  also reads `.env` through the agent backend on each execute. 麦途 also
   injects `MAITU_AGENT_ID`, `MAITU_AUTH_DIR` (under `{workspace}/.maitu/auth`
   for new agents; legacy agents keep `{workspace}/.maitu-auth`),
   and `MAITU_HOME` into shell/sandbox env.
@@ -101,7 +101,7 @@ environment instead, outside the writable application data directory.
 ## `config.json`
 
 Generated with defaults on first run; merged with environment overrides
-on each start. Schema (`麦途智造Config` in `octop/config.py`):
+on each start. Schema (`麦途Config` in `octop/config.py`):
 
 ```json
 {
@@ -213,7 +213,7 @@ Each variable, when set, takes precedence over the matching key in
 
 Invalid integer values are logged and ignored — the on-disk default
 remains in effect. `database_env_configured()` returns `True` when any
-`MAITU_DATABASE_*` is set, which lets `麦途智造Server.start()` pick the
+`MAITU_DATABASE_*` is set, which lets `麦途Server.start()` pick the
 configured backend at boot.
 
 **Docker Compose:** put `MAITU_DATABASE_*` in `docker/.env` *and* ensure

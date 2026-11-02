@@ -44,21 +44,19 @@ TOKEN_ID = CFG["$tokens"]["id"]  # %BRAND_ID%
 TOKEN_ENV = CFG["$tokens"]["env_prefix"]  # %BRAND_ENV%
 KEEP = tuple(CFG["$exceptions"]["keep_literal"])
 
-# i18n keys are identifiers: every locale shares them, so a key must never carry
-# a per-locale name — that is what tore the bundles apart (`askOctopHint` came
-# out as `askMAITU Smart ManufacturingHint` in en.json and `ask麦途智造Hint` in
-# zh.json, and the English one grew spaces on top). A key token, or any brand
-# string a previous run leaked into a key, resolves to this slug instead.
-# Derived from the English short name so the config keeps one source of truth.
-KEY_SLUG = re.sub(r"[^0-9A-Za-z]+", "", CFG["short_name"]["en"])
-if not KEY_SLUG:
-    raise SystemExit("brand.config.json: short_name.en must yield an ASCII slug")
-# Lowercase identifier used for commands, directories and file names; the
-# display casing lives in name/short_name and must not leak into identifiers.
-ID_SLUG = re.sub(r"[^0-9a-z]+", "", CFG["short_name"]["en"].lower())
-ENV_PREFIX = re.sub(r"[^0-9A-Z_]+", "", CFG["short_name"]["en"].upper())
-if not ID_SLUG or not ENV_PREFIX:
-    raise SystemExit("brand.config.json: short_name.en must yield ASCII id/env names")
+# i18n keys and technical identifiers are stable identity, not display names.
+# Keep them explicit so changing short_name cannot rename translation keys,
+# commands, directories, or environment variables.
+IDENTITY = CFG["identity"]
+KEY_SLUG = IDENTITY["key"]
+ID_SLUG = IDENTITY["id"]
+ENV_PREFIX = IDENTITY["env_prefix"]
+if not re.fullmatch(r"[0-9A-Za-z]+", KEY_SLUG):
+    raise SystemExit("brand.config.json: identity.key must be alphanumeric")
+if not re.fullmatch(r"[0-9a-z]+", ID_SLUG):
+    raise SystemExit("brand.config.json: identity.id must be lowercase alphanumeric")
+if not re.fullmatch(r"[A-Z][A-Z0-9_]*", ENV_PREFIX):
+    raise SystemExit("brand.config.json: identity.env_prefix must be uppercase")
 
 # Remembers what the last run wrote, as token -> value maps per locale.
 MARKER = ROOT / ".brand.applied.json"
@@ -88,8 +86,9 @@ TEXT_FILES = {
     "src/octop/i18n/en.json": "en",
 }
 
-# "Octop" not followed by "Bot" — OctopBot is an external platform name.
-TOKENISE_RE = re.compile(r"Octop(?!Bot)")
+# Brand prose only; package names, protocol headers, paths and repository URLs
+# remain technical identity even when they contain the upstream product name.
+TOKENISE_RE = re.compile(r"(?<![A-Za-z0-9_./-])Octop(?![A-Za-z0-9_/-]|\.[A-Za-z0-9_])")
 
 CJK = r"\u3400-\u9fff\u3000-\u303f\uff00-\uffef"
 
@@ -145,7 +144,11 @@ def detokenise(text: str, previous: dict[str, str]) -> str:
     """
     for token, value in sorted(previous.items(), key=lambda kv: len(kv[1]), reverse=True):
         if value and value != token:
-            text = text.replace(value, token)
+            text = re.sub(
+                rf"(?<![A-Za-z0-9_./-]){re.escape(value)}(?![A-Za-z0-9_/-]|\.[A-Za-z0-9_])",
+                lambda _match: token,
+                text,
+            )
     return text
 
 
@@ -198,53 +201,15 @@ def brand_text(text: str, locale: str, previous: dict[str, str]) -> tuple[str, i
 
 
 # --------------------------------------------------------------------------
-# Technical identifiers that users can still see in prose, scripts and paths
+# Additional brand-carrying documents and packaging text
 # --------------------------------------------------------------------------
-# Capital "Octop" is the display name (handled above). These are the lowercase
-# forms users encounter on disk / in a terminal: home directory, database,
-# logs, login file, backups, auth directory, CLI commands and env vars. The
-# Python package/import name and wire identifiers are intentionally left alone.
-
-TECH_PATH_TOKENS = [
-    ("~/.octop", f"~/.{TOKEN_ID}"),
-    ("$HOME/.octop", f"$HOME/.{TOKEN_ID}"),
-    (".octop-auth", f".{TOKEN_ID}-auth"),
-    ("octop-login.txt", f"{TOKEN_ID}-login.txt"),
-    ("octop-auto-backup", f"{TOKEN_ID}-auto-backup"),
-    ("octop-backup", f"{TOKEN_ID}-backup"),
-    ("octop.db", f"{TOKEN_ID}.db"),
-    ("octop.log", f"{TOKEN_ID}.log"),
-    ("octop_sandbox", f"{TOKEN_ID}_sandbox"),
-    ("octop.example.com", f"{TOKEN_ID}.example.com"),
-    (".octop", f".{TOKEN_ID}"),
-]
-
-# Lines that describe the *Python distribution* keep its real name: a doc that
-# says `pip install maitu` would be wrong while the wheel is still `octop`.
-TECH_PACKAGE_HINTS = (
-    "pip install octop",
-    "pip3 install octop",
-    "uv pip install octop",
-    "import octop",
-    "from octop",
-    "python -m octop",
-    "pypi.org/project/octop",
-    "github.com/TencentCloud/Octop",
-    "octop[",
-    "octop==",
-)
-
-# Standalone command word, not part of `octop.infra`, `/octop/`, `X-Octop-*`.
-OCTOP_COMMAND_RE = re.compile(r"(?<![A-Za-z0-9_./\\-])octop(?![A-Za-z0-9_/.-])")
-OCTOP_ENV_RE = re.compile(r"(?<![A-Za-z0-9_])OCTOP_")
 
 # Files whose text is user/operator visible but which apply_brand previously
 # did not touch. Package/import lines inside them stay untouched.
+# Root READMEs also carry upstream attribution; maintain those explicitly.
 EXTRA_TEXT_FILES = {
     "dashboard/public/offline.html": "zh",
     "dashboard/vite.config.ts": "en",
-    "README.md": "en",
-    "README_CN.md": "zh",
     "SECURITY.md": "en",
     "CONTRIBUTING.md": "en",
     ".env.example": "en",
@@ -266,49 +231,6 @@ EXTRA_TEXT_GLOBS = [
     ("scripts/*.sh", "en"),
 ]
 _SKIP_BRAND_GLOBS = ("docs/superpowers/**", "docs/adr/**", "**/node_modules/**")
-
-
-def tech_tokenise_text(text: str, *, package_sensitive: bool = False) -> tuple[str, int]:
-    """Tokenise lowercase technical brand names in user/operator-visible text."""
-    n = 0
-    for old, new in TECH_PATH_TOKENS:
-        hits = text.count(old)
-        if hits:
-            text = text.replace(old, new)
-            n += hits
-    # A value that names the Python distribution (`octop[browser]`, `pip install
-    # octop`, an import path) keeps the distribution name; only path tokens are
-    # safe there.
-    if package_sensitive and any(hint in text for hint in TECH_PACKAGE_HINTS):
-        return text, n
-    out_lines: list[str] = []
-    for line in text.splitlines(keepends=True):
-        if any(hint in line for hint in TECH_PACKAGE_HINTS):
-            out_lines.append(line)
-            continue
-        line, c1 = OCTOP_COMMAND_RE.subn(TOKEN_ID, line)
-        line, c2 = OCTOP_ENV_RE.subn(f"{TOKEN_ENV}_", line)
-        n += c1 + c2
-        out_lines.append(line)
-    return "".join(out_lines), n
-
-
-def brand_value(text: str, locale: str, prev: dict[str, str]) -> tuple[str, int, int, int]:
-    """Brand one i18n value: display name plus lowercase paths/commands."""
-    text = detokenise(text, _prose_tokens(prev))
-    text, n1 = tokenise(text)
-    text, n2 = tech_tokenise_text(text, package_sensitive=True)
-    text, n3 = apply_locale(text, locale)
-    return text, n1, n2, n3
-
-
-def tokenise_text_file(text: str, locale: str, prev: dict[str, str]) -> tuple[str, int, int, int]:
-    """Brand one non-JSON text file (docs/scripts/offline page)."""
-    text = detokenise(text, _prose_tokens(prev))
-    text, n1 = tokenise(text)
-    text, n2 = tech_tokenise_text(text)
-    text, n3 = apply_locale(text, locale)
-    return text, n1, n2, n3
 
 
 # --------------------------------------------------------------------------
@@ -376,7 +298,7 @@ def brand_strings(prev: dict[str, dict[str, str]]) -> list[str]:
     }
     values.update(_candidate_values(prev))
     values.update(m[TOKEN_KEY] for m in prev.values() if m.get(TOKEN_KEY))
-    values.discard(KEY_SLUG)
+    values.difference_update({KEY_SLUG, "Octop"})
     return sorted(values, key=len, reverse=True)
 
 
@@ -424,9 +346,9 @@ def brand_json(
             new, n = brand_key(current, brand_values)
             keys += n
         else:
-            new, n1, n2, n3 = brand_value(current, locale, previous)
-            tokenised += n1 + n2
-            applied += n3
+            new, n1, n2 = brand_text(current, locale, previous)
+            tokenised += n1
+            applied += n2
         if new != current:
             edits.append((start, end, json.dumps(new, ensure_ascii=False)))
 
@@ -451,7 +373,7 @@ def brand_json(
 # standalone word — not `Octop` followed by a letter, and not behind `X-`.
 
 PY_ROOT = ROOT / "src/octop"
-PY_TOKEN_RE = re.compile(r"(?<!X-)Octop(?![A-Za-z])")
+PY_TOKEN_RE = TOKENISE_RE
 CJK_RE = re.compile(f"[{CJK}]")
 
 _DEF_NODES = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
@@ -537,7 +459,7 @@ def rewrite_python(path: Path, prev_values: list[str]) -> tuple[str, int]:
         for value in prev_values:
             if PY_TOKEN_RE.search(value):
                 continue
-            body = body.replace(value, TOKEN)
+            body = detokenise(body, {TOKEN: value})
         body = PY_TOKEN_RE.sub(TOKEN, body)
         body, _ = apply_locale(body, locale)
         if body == raw:
@@ -572,6 +494,7 @@ def rewrite_python(path: Path, prev_values: list[str]) -> tuple[str, int]:
 
 def main() -> int:
     prev = load_previous()
+    prev_values = _candidate_values(prev)
     total_tokenised = total_applied = 0
     changed: list[str] = []
     key_values = brand_strings(prev)
@@ -614,7 +537,7 @@ def main() -> int:
         if not fp.is_file():
             continue
         before = fp.read_text(encoding="utf-8")
-        text, n1, n2, n3 = tokenise_text_file(before, locale, prev.get(locale, {}))
+        text, n1, n2 = brand_text(before, locale, prev.get(locale, {}))
         if rel == "dashboard/public/offline.html":
             text = re.sub(
                 r'src="(?:/?brand/[^"]+|logo\.svg)"',
@@ -623,9 +546,9 @@ def main() -> int:
             )
         if text != before:
             write(fp, text)
-            changed.append(f"{rel}  (tokenised {n1 + n2}, applied {n3})")
-            total_tokenised += n1 + n2
-            total_applied += n3
+            changed.append(f"{rel}  (tokenised {n1}, applied {n2})")
+            total_tokenised += n1
+            total_applied += n2
 
     # ---- docs / plugin descriptions / FnOS packaging prose ---------------
     processed = set(EXTRA_TEXT_FILES)
@@ -645,14 +568,14 @@ def main() -> int:
                 before = fp.read_text(encoding="utf-8")
             except (UnicodeDecodeError, OSError):
                 continue
-            if not any(marker in before for marker in ("Octop", "octop", f"{TOKEN_ENV}_")):
+            if not any(marker in before for marker in ("Octop", TOKEN, *prev_values)):
                 continue
-            text, n1, n2, n3 = tokenise_text_file(before, locale, prev.get(locale, {}))
+            text, n1, n2 = brand_text(before, locale, prev.get(locale, {}))
             if text != before:
                 write(fp, text)
-                changed.append(f"{rel}  (tokenised {n1 + n2}, applied {n3})")
-                total_tokenised += n1 + n2
-                total_applied += n3
+                changed.append(f"{rel}  (tokenised {n1}, applied {n2})")
+                total_tokenised += n1
+                total_applied += n2
 
     # ---- PWA manifest (fully derived, no history needed) -----------------
     p = ROOT / "dashboard/public/manifest.json"
@@ -706,6 +629,7 @@ def main() -> int:
     sh = CFG["short_name"]
     ds = CFG["description"]
     col = CFG["color"]
+    pwa = CFG["pwa"]
     lnk = CFG["links"]["project_repo"]
     lnk_help = CFG["links"]["help"]
     body = f'''// AUTO-GENERATED by scripts/apply_brand.py — do not edit by hand.
@@ -735,6 +659,10 @@ export const BRAND = {{
   color: {{
     brand: "{col["brand"]}",
     accent: "{col["accent"]}",
+  }},
+  pwa: {{
+    theme_color: "{pwa["theme_color"]}",
+    background_color: "{pwa["background_color"]}",
   }},
   links: {{
     // Empty string hides the "project URL" entry in the account menu.
@@ -778,7 +706,6 @@ export function wordmark(isDark: boolean): string {{
         changed.append("src/octop/branding_defaults.py")
 
     # ---- backend Python string literals ----------------------------------
-    prev_values = _candidate_values(prev)
     py_hits = py_files = 0
     for py in sorted(PY_ROOT.rglob("*.py")):
         if py == py_defaults:

@@ -6,22 +6,19 @@ import {
 } from "./appearanceStorage";
 import {
   DEFAULT_CUSTOM_COLOR,
-  DEFAULT_PALETTE,
   LEGACY_PALETTE_STORAGE_KEY,
   THEME_STORAGE_KEY,
 } from "./themePalettes";
 
+const AUTH_PROBE_KEY = "auth-token-preservation-probe";
+
 afterEach(() => {
   localStorage.removeItem(THEME_STORAGE_KEY);
   localStorage.removeItem(LEGACY_PALETTE_STORAGE_KEY);
+  localStorage.removeItem(AUTH_PROBE_KEY);
 });
 
 describe("appearanceStorage", () => {
-  it("defaults to system preference and rose palette", () => {
-    expect(readStoredAppearance().preference).toBe("system");
-    expect(readStoredAppearance().palette).toBe(DEFAULT_PALETTE);
-  });
-
   it("migrates legacy plain theme string + palette key", () => {
     localStorage.setItem(THEME_STORAGE_KEY, "dark");
     localStorage.setItem(LEGACY_PALETTE_STORAGE_KEY, "tech");
@@ -40,6 +37,56 @@ describe("appearanceStorage", () => {
     const appearance = readStoredAppearance();
     expect(appearance.preference).toBe("light");
     expect(appearance.palette).toBe("indigo");
+  });
+  it("migrates only the unversioned historic red default while preserving mode", () => {
+    localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({
+        preference: "dark",
+        palette: "custom",
+        customColor: "#e5484d",
+      }),
+    );
+    localStorage.setItem(AUTH_PROBE_KEY, "must-remain");
+
+    const appearance = loadAppearanceOnBoot();
+    expect(appearance).toMatchObject({ preference: "dark", palette: "brand" });
+    expect(
+      JSON.parse(localStorage.getItem(THEME_STORAGE_KEY) ?? "{}"),
+    ).toMatchObject({ version: 2, preference: "dark", palette: "brand" });
+    expect(localStorage.getItem(AUTH_PROBE_KEY)).toBe("must-remain");
+  });
+
+  it("preserves unversioned custom colors other than the historic default", () => {
+    localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({
+        preference: "light",
+        palette: "custom",
+        customColor: "#123456",
+      }),
+    );
+    expect(loadAppearanceOnBoot()).toMatchObject({
+      preference: "light",
+      palette: "custom",
+      customColor: "#123456",
+    });
+  });
+
+  it("preserves an explicitly selected red custom color in the current format", () => {
+    localStorage.setItem(
+      THEME_STORAGE_KEY,
+      JSON.stringify({
+        version: 2,
+        preference: "system",
+        palette: "custom",
+        customColor: "#e5484d",
+      }),
+    );
+    expect(loadAppearanceOnBoot()).toMatchObject({
+      palette: "custom",
+      customColor: "#e5484d",
+    });
   });
 
   it("reads the custom palette with its brand hex", () => {
@@ -82,6 +129,7 @@ describe("appearanceStorage", () => {
 
     expect(localStorage.getItem(LEGACY_PALETTE_STORAGE_KEY)).toBeNull();
     expect(JSON.parse(localStorage.getItem(THEME_STORAGE_KEY)!)).toEqual({
+      version: 2,
       preference: "light",
       palette: "custom",
       customColor: "#00aa55",
@@ -97,6 +145,7 @@ describe("appearanceStorage", () => {
     expect(appearance.palette).toBe("amber");
     expect(localStorage.getItem(LEGACY_PALETTE_STORAGE_KEY)).toBeNull();
     expect(JSON.parse(localStorage.getItem(THEME_STORAGE_KEY)!)).toEqual({
+      version: 2,
       preference: "dark",
       palette: "amber",
       customColor: DEFAULT_CUSTOM_COLOR.toLowerCase(),
@@ -106,13 +155,13 @@ describe("appearanceStorage", () => {
   it("falls back safely on invalid JSON or unknown values", () => {
     localStorage.setItem(THEME_STORAGE_KEY, "{not-json");
     expect(readStoredAppearance().preference).toBe("system");
-    expect(readStoredAppearance().palette).toBe(DEFAULT_PALETTE);
+    expect(readStoredAppearance().palette).toBe("brand");
 
     localStorage.setItem(
       THEME_STORAGE_KEY,
       JSON.stringify({ preference: "neon", palette: "pink" }),
     );
     expect(readStoredAppearance().preference).toBe("system");
-    expect(readStoredAppearance().palette).toBe(DEFAULT_PALETTE);
+    expect(readStoredAppearance().palette).toBe("brand");
   });
 });

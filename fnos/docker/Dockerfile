@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # =============================================================================
-# 麦途智造 — FnOS 专用构建（基于仓库源码，安装全部附加组件）
+# 麦途 — FnOS 专用构建（基于仓库源码，安装全部附加组件）
 #
 # 与上游 docker/Dockerfile 一致，但显式安装 desktop extra：
 #   - desktop  （mss / pynput / pillow，桌面控制附加组件）
@@ -38,9 +38,9 @@ RUN NODE_ENV=production NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_
 FROM python:3.12-slim AS runtime
 
 LABEL maintainer="TencentCloud OrcaKit"
-LABEL org.opencontainers.image.title="麦途智造"
-LABEL org.opencontainers.image.description="MAITU Smart Manufacturing — multi-user, multi-agent AI workspace (FnOS build with all addons)."
-LABEL org.opencontainers.image.source="https://github.com/TencentCloud/麦途智造"
+LABEL org.opencontainers.image.title="麦途"
+LABEL org.opencontainers.image.description="AIWAY AI tools platform — multi-user, multi-agent workspace (FnOS build with all addons)."
+LABEL org.opencontainers.image.source="https://github.com/whl736989911/AI-MAITU"
 LABEL org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

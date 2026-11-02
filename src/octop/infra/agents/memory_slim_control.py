@@ -126,7 +126,7 @@ def list_memory_slim_agents(root: Path, *, locale: str = "en") -> list[dict[str,
             raise RuntimeError(status["error"])
         agents: list[dict[str, str]] = status["agents"]
         return agents
-    raise RuntimeError("MAITU Smart Manufacturing returned no agent list")
+    raise RuntimeError("AIWAY returned no agent list")
 
 
 def _request_control(root: Path, request: dict[str, str]) -> Iterator[dict[str, Any]]:
@@ -140,6 +140,4 @@ def _request_control(root: Path, request: dict[str, str]) -> Iterator[dict[str, 
                 yield status
                 if status.get("phase") in {"done", "failed", "agents"}:
                     return
-    raise RuntimeError(
-        "MAITU Smart Manufacturing disconnected; check the dashboard before retrying maintenance"
-    )
+    raise RuntimeError("AIWAY disconnected; check the dashboard before retrying maintenance")

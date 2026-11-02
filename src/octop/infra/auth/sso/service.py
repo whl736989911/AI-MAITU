@@ -186,7 +186,7 @@ class SsoService:
                 body,
                 "display_name",
                 current,
-                default_names.get(kind, "MAITU Smart Manufacturing SSO"),
+                default_names.get(kind, "AIWAY SSO"),
             ),
             issuer=issuer,
             client_id=self._string(body, "client_id", current, ""),

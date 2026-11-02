@@ -1,3 +1,4 @@
+import { BRAND } from "../../../../brand.generated";
 import {
   useCallback,
   useEffect,
@@ -1905,7 +1906,7 @@ export default function ChatFlowPreview(_props: DemoPageProps) {
                       title: "查询知识库",
                       description: "使用本地搜索和引用夹具",
                       prompt: "查询知识库",
-                      color: "#e5484d",
+                      color: BRAND.color.accent,
                     },
                   ]}
                   onPromptClick={(prompt) => {

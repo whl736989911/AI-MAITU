@@ -20,7 +20,7 @@ import { AntdAppProvider } from "./components/AntdAppProvider";
 import GlobalErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider, useTheme } from "./context/ThemeContext";
 import { BrandingProvider, useBranding } from "./context/BrandingContext";
-import { DEFAULT_PALETTE, brandTokensFor } from "./styles/themePalettes";
+import { brandTokensFor } from "./styles/themePalettes";
 import { AgentProvider } from "./context/AgentContext";
 import { LayoutModeProvider } from "./context/LayoutModeContext";
 import { VoiceOutputProvider } from "./context/VoiceOutputContext";
@@ -44,12 +44,12 @@ function ThemedApp() {
   const { i18n } = useTranslation();
   const isMobile = useIsMobile();
   const brand = useBranding();
-  const brandTokens = {
-    ...brandTokensFor(palette, isDark, customColor),
-    ...(palette === DEFAULT_PALETTE
-      ? { colorPrimary: brand.colors.accent }
-      : {}),
-  };
+  const brandTokens = brandTokensFor(
+    palette,
+    isDark,
+    customColor,
+    brand.colors.accent,
+  );
   // Make antd built-ins (Popconfirm OK/Cancel, Modal default footer, Empty,
   // Pagination, DatePicker, Table… ) follow the current UI language.
   // DatePicker month/weekday labels come from dayjs — keep it in sync too.

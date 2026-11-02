@@ -7,7 +7,7 @@ import {
 } from "react";
 import { BRAND } from "../brand.generated";
 import { request, requestUpload } from "../api/request";
-import { DEFAULT_PALETTE } from "../styles/themePalettes";
+import { DEFAULT_PALETTE, customPaletteCssVars } from "../styles/themePalettes";
 import { useTheme } from "./ThemeContext";
 import { appPathname, publicUrl } from "../utils/publicUrl";
 
@@ -38,7 +38,7 @@ const FALLBACK: Branding = {
   short_name: BRAND.shortName,
   description: BRAND.description,
   colors: BRAND.color,
-  pwa: { theme_color: "#ffffff", background_color: "#0f1117" },
+  pwa: BRAND.pwa,
   logos: {
     mark: BRAND.logo.mark,
     wordmark_light: BRAND.logo.wordmarkLight,
@@ -71,7 +71,7 @@ function apiBrandingUrls(brand: Partial<Branding>): Partial<Branding> {
   return { ...brand, logos };
 }
 
-function applyBranding(brand: Branding, applyAccent: boolean) {
+function applyBranding(brand: Branding) {
   document.title =
     brand.name[document.documentElement.lang.startsWith("zh") ? "zh" : "en"];
   const favicon = document.querySelector<HTMLLinkElement>("link[rel='icon']");
@@ -100,17 +100,6 @@ function applyBranding(brand: Branding, applyAccent: boolean) {
   root.style.setProperty("--octop-theme-color", brand.pwa.theme_color);
   root.style.setProperty("--octop-brand-color", brand.colors.brand);
   root.style.setProperty("--octop-accent-color", brand.colors.accent);
-  if (applyAccent) {
-    root.style.setProperty("--fn-color-brand", brand.colors.accent);
-    root.style.setProperty("--fn-text-brand", brand.colors.accent);
-    root.style.setProperty("--fn-logo-color", brand.colors.brand);
-    root.style.setProperty("--octop-accent-hover", brand.colors.accent);
-  } else {
-    root.style.removeProperty("--fn-color-brand");
-    root.style.removeProperty("--fn-text-brand");
-    root.style.removeProperty("--fn-logo-color");
-    root.style.removeProperty("--octop-accent-hover");
-  }
 }
 
 export function BrandingProvider({ children }: { children: ReactNode }) {
@@ -134,7 +123,26 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     };
   }, []);
   useEffect(() => {
-    applyBranding(brand, palette === DEFAULT_PALETTE);
+    applyBranding(brand);
+    const styleId = "octop-brand-palette";
+    if (palette === DEFAULT_PALETTE) {
+      const style =
+        document.getElementById(styleId) ??
+        (() => {
+          const node = document.createElement("style");
+          node.id = styleId;
+          document.head.appendChild(node);
+          return node;
+        })();
+      const selector = 'html[data-palette="brand"]';
+      style.textContent = `${customPaletteCssVars(
+        brand.colors.accent,
+        false,
+        selector,
+      )}\n${customPaletteCssVars(brand.colors.accent, true, selector)}`;
+    } else {
+      document.getElementById(styleId)?.remove();
+    }
   }, [brand, palette]);
   return (
     <BrandingContext.Provider value={brand}>

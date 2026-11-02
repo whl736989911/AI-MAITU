@@ -8,8 +8,8 @@ from pathlib import Path
 import click
 
 _EVAL_TEMPLATE = {
-    "bash": 'eval "$(_MAITU_COMPLETE=bash_source MAITU Smart Manufacturing)"\n',
-    "zsh": 'autoload -U compinit && compinit\neval "$(_MAITU_COMPLETE=zsh_source MAITU Smart Manufacturing)"\n',
+    "bash": 'eval "$(_MAITU_COMPLETE=bash_source maitu)"\n',
+    "zsh": 'autoload -U compinit && compinit\neval "$(_MAITU_COMPLETE=zsh_source maitu)"\n',
 }
 
 _DEFAULT_RC = {
@@ -53,6 +53,6 @@ def install(shell: str | None, rc_file: str | None) -> None:
         click.echo(f"already installed in {rc_path}")
         return
     with rc_path.open("a", encoding="utf-8") as f:
-        f.write("\n# MAITU Smart Manufacturing shell completion\n")
+        f.write("\n# AIWAY shell completion\n")
         f.write(snippet)
     click.echo(f"installed to {rc_path} — restart your shell to activate")

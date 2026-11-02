@@ -813,7 +813,7 @@ class AgentManager:
                 if requested_host_workspace != self._paths.agent_workspace(agent_id).resolve():
                     raise OctopError(
                         ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                        "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
+                        "Agent workspaces must remain inside AIWAY's managed workspace directory.",
                     )
             seed_workspace_dir_on_create(config, paths=self._paths, agent_id=agent_id)
             config.pop("system_files_path", None)
@@ -1265,7 +1265,7 @@ class AgentManager:
             if resolved != self._paths.agent_workspace(agent_id).resolve():
                 raise OctopError(
                     ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                    "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
+                    "Agent workspaces must remain inside AIWAY's managed workspace directory.",
                 )
             self._assert_managed_workspace_ok(agent_id, resolved)
             resolved.mkdir(parents=True, exist_ok=True)
@@ -3149,13 +3149,13 @@ class AgentManager:
 
             synced_skills = await sync_octop_builtin_skills(ws)
             logger.info(
-                "Agent %s: synced MAITU Smart Manufacturing built-in skills=%s",
+                "Agent %s: synced AIWAY built-in skills=%s",
                 row.agent_id,
                 synced_skills,
             )
         except Exception:
             logger.warning(
-                "Agent %s: failed to sync MAITU Smart Manufacturing built-in skills",
+                "Agent %s: failed to sync AIWAY built-in skills",
                 row.agent_id,
                 exc_info=True,
             )
@@ -3288,7 +3288,7 @@ class AgentManager:
         if workspace_dir.resolve() != expected_workspace:
             raise OctopError(
                 ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
+                "Agent workspaces must remain inside AIWAY's managed workspace directory.",
             )
         configured_skill_dirs = self._validate_configured_skill_dirs(cfg, expected_workspace)
         if configured_skill_dirs:
@@ -3950,7 +3950,7 @@ class AgentManager:
             if workspace_dir.resolve() != self._paths.agent_workspace(row.agent_id).resolve():
                 raise OctopError(
                     ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                    "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
+                    "Agent workspaces must remain inside AIWAY's managed workspace directory.",
                 )
             workspace_dir.mkdir(parents=True, exist_ok=True)
         else:

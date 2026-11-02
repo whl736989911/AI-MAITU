@@ -6,7 +6,7 @@ from __future__ import annotations
 COMMANDS: dict[str, tuple[str, str, str]] = {
     "memory": (".commands.memory", "memory", "Live memory maintenance (backup and slim)."),
     "init": (".commands.init", "init", "Bootstrap an application server install."),
-    "run": (".commands.run", "run", "Run the MAITU Smart Manufacturing server in the foreground."),
+    "run": (".commands.run", "run", "Run the AIWAY server in the foreground."),
     "service": (
         ".commands.service",
         "service",
@@ -30,7 +30,7 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
     "version": (
         ".commands.version",
         "version",
-        "Show the installed MAITU Smart Manufacturing version.",
+        "Show the installed AIWAY version.",
     ),
     "completion": (".commands.completion", "completion", "Shell completion utilities."),
     "update": (

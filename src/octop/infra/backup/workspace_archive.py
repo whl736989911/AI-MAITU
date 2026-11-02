@@ -220,7 +220,7 @@ async def import_workspace_zip(
     skipped = len(entries) - len(pairs)
     if skipped:
         warnings.append(
-            f"skipped {skipped} {OCTOP_BUILTIN_SKILLS_ROOT!r} entry/entries (owned by MAITU Smart Manufacturing)"
+            f"skipped {skipped} {OCTOP_BUILTIN_SKILLS_ROOT!r} entry/entries (owned by AIWAY)"
         )
 
     if pairs:

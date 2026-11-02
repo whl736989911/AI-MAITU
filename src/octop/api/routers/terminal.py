@@ -113,7 +113,7 @@ def _detect_shell() -> str:
 
 
 _ZSH_WEB_TERMINAL_RC = """\
-# MAITU Smart Manufacturing web terminal — reduce stray blank / spacer lines in browser PTYs.
+# AIWAY web terminal — reduce stray blank / spacer lines in browser PTYs.
 export PROMPT_EOL_MARK=
 if [[ -f "${HOME}/.zshrc" ]]; then
   source "${HOME}/.zshrc"

@@ -3,6 +3,7 @@
 import { BRAND } from "../brand.generated";
 
 export type ThemePalette =
+  | "brand"
   | "rose"
   | "tech"
   | "indigo"
@@ -13,7 +14,7 @@ export type ThemePalette =
   | "slate"
   | "custom";
 
-export const VALID_PALETTES: ThemePalette[] = [
+export const CURATED_PALETTES: Exclude<ThemePalette, "brand" | "custom">[] = [
   "rose",
   "tech",
   "indigo",
@@ -24,13 +25,13 @@ export const VALID_PALETTES: ThemePalette[] = [
   "slate",
 ];
 
-/** Curated palettes only — "custom" is handled separately via a hex value. */
-export const CURATED_PALETTES: ThemePalette[] = [...VALID_PALETTES];
+/** All selectable fixed palettes, including the configured brand color. */
+export const VALID_PALETTES: ThemePalette[] = ["brand", ...CURATED_PALETTES];
 
-export const DEFAULT_PALETTE: ThemePalette = "custom";
+export const DEFAULT_PALETTE: ThemePalette = "brand";
 export const DEFAULT_CUSTOM_COLOR = BRAND.color.accent;
 
-/** True when the value is one of the curated palette keys (not "custom"/hex). */
+/** True for a fixed palette key, including brand (not "custom"/hex). */
 export function isCuratedPalette(value: string): value is ThemePalette {
   return (VALID_PALETTES as string[]).includes(value);
 }
@@ -46,6 +47,7 @@ export const PALETTE_STORAGE_KEY = LEGACY_PALETTE_STORAGE_KEY;
 
 /** Swatch color shown in the palette picker (light brand). */
 export const PALETTE_SWATCH: Record<ThemePalette, string> = {
+  brand: BRAND.color.accent,
   rose: "#E85D75",
   tech: "#4B74FA",
   indigo: "#6366F1",
@@ -71,11 +73,12 @@ type AntdBrandTokens = {
   colorPrimaryTextActive?: string;
 };
 
-/** Ant Design primary tokens per curated palette × mode ("custom" derives at runtime). */
+/** Ant Design tokens for fixed palettes × mode; custom and runtime brand derive at call time. */
 export const ANTD_BRAND_TOKENS: Record<
   Exclude<ThemePalette, "custom">,
   { light: AntdBrandTokens; dark: AntdBrandTokens }
 > = {
+  brand: customBrandTokens(BRAND.color.accent),
   rose: {
     light: {
       colorPrimary: "#E85D75",
@@ -251,8 +254,9 @@ export function brandPrimary(
   palette: ThemePalette,
   isDark: boolean,
   customColor?: string | null,
+  brandColor?: string | null,
 ): string {
-  const tokens = brandTokensFor(palette, isDark, customColor);
+  const tokens = brandTokensFor(palette, isDark, customColor, brandColor);
   return isDark ? tokens.colorLink : tokens.colorPrimary;
 }
 
@@ -380,14 +384,20 @@ export function customBrandTokens(hex: string): {
   };
 }
 
-/** Resolve Ant tokens for any palette — "custom" derives from the stored hex. */
+/** Resolve Ant tokens for any palette — custom and brand derive from their hex. */
 export function brandTokensFor(
   palette: ThemePalette,
   isDark: boolean,
   customColor?: string | null,
+  brandColor?: string | null,
 ): AntdBrandTokens {
   if (palette === "custom") {
     return customBrandTokens(customColor || DEFAULT_CUSTOM_COLOR)[
+      isDark ? "dark" : "light"
+    ];
+  }
+  if (palette === "brand") {
+    return customBrandTokens(brandColor || BRAND.color.accent)[
       isDark ? "dark" : "light"
     ];
   }
@@ -398,12 +408,16 @@ export function brandTokensFor(
  * CSS custom-property overrides for `html[data-palette="custom"]`.
  * Mirrors the curated palette blocks in theme-vars.css but derived at runtime.
  */
-export function customPaletteCssVars(hex: string, isDark: boolean): string {
+export function customPaletteCssVars(
+  hex: string,
+  isDark: boolean,
+  selector = 'html[data-palette="custom"]',
+): string {
   const { solid, onDark, accent } = deriveCustomBrandColors(hex);
   const rgb = hexToRgb(solid).join(", ");
   const rgbOnDark = hexToRgb(onDark).join(", ");
   if (isDark) {
-    return `html[data-palette="custom"][data-theme="dark"]{
+    return `${selector}[data-theme="dark"]{
 --fn-bg-hover: rgba(${rgb}, 0.1);
 --fn-bg-active: rgba(${rgb}, 0.16);
 --fn-bg-selected: rgba(${rgb}, 0.12);
@@ -433,7 +447,7 @@ export function customPaletteCssVars(hex: string, isDark: boolean): string {
 --fn-sidebar-item-active-text: ${onDark};
 }`;
   }
-  return `html[data-palette="custom"]:not([data-theme="dark"]){
+  return `${selector}:not([data-theme="dark"]){
 --fn-bg-hover: rgba(${rgb}, 0.04);
 --fn-bg-active: rgba(${rgb}, 0.08);
 --fn-bg-selected: rgba(${rgb}, 0.06);

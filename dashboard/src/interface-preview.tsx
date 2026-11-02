@@ -1,4 +1,5 @@
 import React from "react";
+import { BRAND } from "./brand.generated";
 import ReactDOM from "react-dom/client";
 import { ConfigProvider } from "antd";
 import zhCN from "antd/locale/zh_CN";
@@ -31,7 +32,7 @@ async function mountPreview() {
           locale={zhCN}
           theme={{
             token: {
-              colorPrimary: "#e5484d",
+              colorPrimary: BRAND.color.accent,
               borderRadius: 12,
               fontFamily: '"Segoe UI", "Microsoft YaHei", sans-serif',
             },

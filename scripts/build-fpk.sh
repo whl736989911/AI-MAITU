@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 构建麦途智造飞牛 FnOS 安装包 (.fpk)
+# 构建麦途飞牛 FnOS 安装包 (.fpk)
 #
 # 直接使用官方 fnpack CLI 打包（fnpack 在生成 .fpk 前会校验 manifest / cmd /
 # config / wizard / app 等结构，确保产物与飞牛 fnOS 安装校验完全一致）。
@@ -40,7 +40,7 @@ case "$VER" in
     exit 1
     ;;
 esac
-echo "[build-fpk] 麦途智造版本: $VER"
+echo "[build-fpk] 麦途版本: $VER"
 
 # 输出文件名前缀与迭代号（由 CI 传入，实现 MAITU-fnos-docker-0.9.30.fpk 风格）
 PREFIX="${FPK_NAME_PREFIX:-MAITU-fnos}"

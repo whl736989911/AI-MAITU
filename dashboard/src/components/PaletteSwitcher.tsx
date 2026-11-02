@@ -2,17 +2,18 @@ import { ColorPicker, Tooltip } from "antd";
 import { useTranslation } from "react-i18next";
 import type { AggregationColor } from "antd/es/color-picker/color";
 import { useTheme } from "../context/ThemeContext";
+import { useBranding } from "../context/BrandingContext";
 import { PALETTE_SWATCH, VALID_PALETTES } from "../styles/themePalettes";
 import styles from "./PaletteSwitcher.module.less";
 
 /**
- * Curated 8-swatch brand palette picker plus a custom color swatch.
- * The custom swatch opens the Ant Design color picker (palette + hex input);
- * picking a color switches the active brand palette to "custom".
+ * Curated brand palettes plus a custom color swatch. The brand option follows
+ * the configured brand color; custom opens the Ant Design color picker.
  */
 export default function PaletteSwitcher() {
   const { palette, setPalette, customColor, setCustomColor } = useTheme();
   const { t } = useTranslation();
+  const brand = useBranding();
 
   const isCustom = palette === "custom";
 
@@ -36,7 +37,10 @@ export default function PaletteSwitcher() {
             >
               <span
                 className={styles.swatch}
-                style={{ backgroundColor: PALETTE_SWATCH[key] }}
+                style={{
+                  backgroundColor:
+                    key === "brand" ? brand.colors.accent : PALETTE_SWATCH[key],
+                }}
                 aria-hidden
               />
             </button>

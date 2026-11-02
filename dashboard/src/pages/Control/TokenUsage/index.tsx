@@ -48,6 +48,7 @@ import {
 import dayjs, { type Dayjs } from "dayjs";
 import { Download } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { message } from "../../../utils/antdMessage";
 import PageShell from "../../../layouts/PageShell";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import { UsageStats, type UsageStatItem } from "./UsageStats";
@@ -57,8 +58,8 @@ import type { AgentKindPresence } from "../../../utils/agentKindCounts";
 import { request, requestBlob } from "../../../api/request";
 import { useAgent } from "../../../context/AgentContext";
 import { useTheme } from "../../../context/ThemeContext";
+import { useBranding } from "../../../context/BrandingContext";
 import { brandPrimary } from "../../../styles/themePalettes";
-import { message } from "../../../utils/antdMessage";
 import styles from "./index.module.less";
 
 interface UsageUserOption {
@@ -329,7 +330,13 @@ function DailyTrendCharts({
   turnsLabel: string;
 }) {
   const { palette, isDark, customColor } = useTheme();
-  const turnsColor = brandPrimary(palette, isDark, customColor);
+  const branding = useBranding();
+  const turnsColor = brandPrimary(
+    palette,
+    isDark,
+    customColor,
+    branding.colors.accent,
+  );
   const empty = data.length === 0;
 
   return (

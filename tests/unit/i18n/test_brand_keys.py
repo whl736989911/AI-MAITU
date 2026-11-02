@@ -44,7 +44,8 @@ ZH_NAME = CONFIG["name"]["zh"]
 EN_NAME = CONFIG["name"]["en"]
 ZH_FULL = CONFIG["full_name"]["zh"]
 EN_FULL = CONFIG["full_name"]["en"]
-SLUG = apply_brand.KEY_SLUG
+IDENTITY = CONFIG["identity"]
+SLUG = IDENTITY["key"]
 
 # The bundles as they sit in the repo before a run: keys carry the upstream name
 # (identity), the key token, and — from the bug — value tokens that leaked into
@@ -175,13 +176,37 @@ def test_a_key_branded_by_an_earlier_run_is_repaired_to_the_slug() -> None:
     assert not [key for key in repaired["en"] if " " in key]
 
 
-def test_rebranding_moves_keys_to_the_new_slug(tmp_path: Path) -> None:
-    """Keys follow the slug: the marker remembers the one the last run wrote."""
+def test_display_rebranding_preserves_explicit_identity(tmp_path: Path) -> None:
+    """Display names may change without moving keys or technical identifiers."""
     tree = _checkout(tmp_path)
-    _run(tree)
+    env_example = tree / ".env.example"
+    env_example.write_text(
+        "OCTOP_DATABASE_URL=sqlite:///.octop/octop.db\n"
+        "COMMAND=octop\n"
+        "PACKAGE=python -m octop\n"
+        "HEADER=X-Octop-Agent-Id\n"
+        "CLASS=OctopServer\n"
+        "UPSTREAM=https://github.com/TencentCloud/Octop\n",
+        encoding="utf-8",
+    )
+    python_identity = tree / "src" / "octop" / "identity_fixture.py"
+    python_identity.write_text(
+        'LABEL = "Octop service"\n'
+        'UPSTREAM = "https://github.com/TencentCloud/Octop"\n'
+        'HEADER = "X-Octop-Agent-Id"\n'
+        'CLASS = "OctopServer"\n',
+        encoding="utf-8",
+    )
 
     config = tree / "brand.config.json"
     settings = json.loads(config.read_text(encoding="utf-8"))
+    for field in ("name", "full_name", "short_name"):
+        settings[field] = {"zh": "Octop", "en": "Octop"}
+    config.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    _run(tree)
+    initial_keys = keys_of(_bundle(tree, "dashboard/src/locales/en.json"))
+
     for field in ("name", "full_name", "short_name"):
         settings[field] = {"zh": "新品牌", "en": "NewBrand"}
     config.write_text(json.dumps(settings, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -190,8 +215,24 @@ def test_rebranding_moves_keys_to_the_new_slug(tmp_path: Path) -> None:
     zh = _bundle(tree, "dashboard/src/locales/zh.json")
     en = _bundle(tree, "dashboard/src/locales/en.json")
     assert keys_of(zh) == keys_of(en)
-    assert {"common.labelNewBrand", "common.sectionNewBrand"} <= keys_of(en)
+    assert keys_of(en) == initial_keys
+    assert {"common.labelMAITU", "common.sectionMAITU"} <= keys_of(en)
     assert "common.askOctopHint" in keys_of(en)
     assert not [key for key in keys_of(en) if " " in key]
-    assert en["common"]["labelNewBrand"] == "NewBrand"
-    assert zh["common"]["labelNewBrand"] == "新品牌"
+    assert en["common"]["labelMAITU"] == "NewBrand"
+    assert zh["common"]["labelMAITU"] == "新品牌"
+
+    assert env_example.read_text(encoding="utf-8") == (
+        "OCTOP_DATABASE_URL=sqlite:///.octop/octop.db\n"
+        "COMMAND=octop\n"
+        "PACKAGE=python -m octop\n"
+        "HEADER=X-Octop-Agent-Id\n"
+        "CLASS=OctopServer\n"
+        "UPSTREAM=https://github.com/TencentCloud/Octop\n"
+    )
+    namespace: dict[str, object] = {}
+    exec(python_identity.read_text(encoding="utf-8"), namespace)
+    assert namespace["LABEL"] == "NewBrand service"
+    assert namespace["UPSTREAM"] == "https://github.com/TencentCloud/Octop"
+    assert namespace["HEADER"] == "X-Octop-Agent-Id"
+    assert namespace["CLASS"] == "OctopServer"

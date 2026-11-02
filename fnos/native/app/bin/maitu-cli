@@ -77,7 +77,7 @@ export MAITU_FPK_SITE_PACKAGES="$SITE_PACKAGES"
 
 # 兜底：若包内 maitu 未就绪，用内置核心 whl 离线安装（避免联网）
 if ! "$PY" -c "import octop" >/dev/null 2>&1; then
-    echo "[maitu] 未检测到已安装的麦途智造，正在用内置核心 whl 离线安装 ..."
+    echo "[maitu] 未检测到已安装的麦途，正在用内置核心 whl 离线安装 ..."
     "$PY" -m pip install --no-cache --no-index --find-links "$SITE_PACKAGES" "$SITE_PACKAGES/octop.whl" >/dev/null 2>&1 || {
         echo "[maitu] 离线安装失败，请检查网络或手动执行：$PY -m pip install $SITE_PACKAGES/octop.whl" >&2
         exit 1

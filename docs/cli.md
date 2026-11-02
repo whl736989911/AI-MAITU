@@ -8,7 +8,7 @@ lazily from `src/octop/cli/registry.py`.
 $ maitu --help
 Usage: maitu [OPTIONS] COMMAND [ARGS]...
 
-  麦途智造 command-line interface.
+  麦途 command-line interface.
 
 Options:
   -v, --version           Show the installed maitu version.
@@ -19,10 +19,10 @@ Options:
   -h, --help              Show this message and exit.
 
 Commands:
-  acp        Run 麦途智造 agent as ACP server (stdio).
+  acp        Run 麦途 agent as ACP server (stdio).
   admin      Admin commands.
   agent      Agent lifecycle commands.
-  backup     Export and restore 麦途智造 backups.
+  backup     Export and restore 麦途 backups.
   chat       [deprecated] Alias for `maitu chats`.
   chats      Chat REPL and session management.
   channel    Channel management commands.
@@ -30,14 +30,14 @@ Commands:
   completion Shell completion utilities.
   config     CLI state (base URL, defaults).
   cron       Cron job management commands.
-  init       Bootstrap an 麦途智造 server install.
+  init       Bootstrap an 麦途 server install.
   models     Model catalog and active-model settings.
   plugin     Install and manage plugins.
   provider   Provider management (admin write).
   run        Run octop-server in the foreground.
   service    System service lifecycle (start/stop/restart/status).
   skills     Per-agent skill enable/disable.
-  update     Check for and install a newer 麦途智造 release.
+  update     Check for and install a newer 麦途 release.
   user       User management commands.
   version    Show the installed maitu version.
 ```
@@ -56,13 +56,13 @@ Commands:
 
 ## Transport layers
 
-麦途智造 commands pick one of three transports:
+麦途 commands pick one of three transports:
 
 | Layer | When | Login? | Examples |
 |-------|------|--------|----------|
 | **Offline** (local DB only) | Need to read/write `~/.maitu` without a running server | No | `init`, `backup`, `plugin`, `agent list`, `chats list/get/create/update/delete`, `cron list`, `user *`, `admin overview/audit`, `models presets/list/active` |
 | **Attach** (HTTP / WS) | Need a live `maitu run` process (IM, streams, model pulls) | Yes (`maitu user login`) | `chats send/repl`, `channel test/probe`, `models ollama-*`, `skills enable/disable`, `provider test` |
-| **Embedded** (in-process) | CLI boots `麦途智造Server` for a single command | No | `maitu acp`, `maitu chats repl`, `maitu chats send` (defaults to embedded), `maitu agent create/from-expert/start/stop/reload` |
+| **Embedded** (in-process) | CLI boots `麦途Server` for a single command | No | `maitu acp`, `maitu chats repl`, `maitu chats send` (defaults to embedded), `maitu agent create/from-expert/start/stop/reload` |
 
 The dashboards and HTTP callers manage their own JWTs and do **not**
 share `~/.maitu/cli_state.json`.
@@ -75,7 +75,7 @@ Idempotent on the DB; pass `--force` to wipe `~/.maitu` first.
 ```
 Usage: maitu init [OPTIONS]
 
-  Bootstrap an 麦途智造 server (~/.maitu dir, DB migrations, JWT secret, first admin).
+  Bootstrap an 麦途 server (~/.maitu dir, DB migrations, JWT secret, first admin).
 
 Options:
   --admin-username TEXT       [env: MAITU_ADMIN_USERNAME]
@@ -94,7 +94,7 @@ Start the FastAPI app in the foreground (delegates to
 ```
 Usage: maitu run [OPTIONS]
 
-  Start the 麦途智造 server (foreground; uvicorn).
+  Start the 麦途 server (foreground; uvicorn).
 
 Options:
   --host TEXT                 Override MAITU_BIND_HOST.
@@ -109,7 +109,7 @@ Options:
 
 ## `maitu service`
 
-Install and manage the 麦途智造 system service. The backend is detected
+Install and manage the 麦途 system service. The backend is detected
 automatically (systemd on Linux, launchd on macOS); the scope
 (`user` vs `system`) can be forced via `--scope` or
 `MAITU_SERVICE_SCOPE`.
@@ -117,7 +117,7 @@ automatically (systemd on Linux, launchd on macOS); the scope
 ```
 Usage: maitu service [OPTIONS] COMMAND [ARGS]...
 
-  Manage the 麦途智造 system service (systemd on Linux, launchd on macOS).
+  Manage the 麦途 system service (systemd on Linux, launchd on macOS).
 
 Commands:
   start     Install (if missing) and start the service.
@@ -161,7 +161,7 @@ Commands:
 ## `maitu agent`
 
 Lifecycle and templates. Most commands boot an embedded
-`麦途智造Server` to operate on the local DB without a remote round-trip.
+`麦途Server` to operate on the local DB without a remote round-trip.
 
 ```
 Usage: maitu agent [OPTIONS] COMMAND [ARGS]...
@@ -327,7 +327,7 @@ Commands:
 
 ## `maitu backup`
 
-Export and restore 麦途智造 backups. Works fully offline.
+Export and restore 麦途 backups. Works fully offline.
 
 ```
 Usage: maitu backup [OPTIONS] COMMAND [ARGS]...
@@ -363,13 +363,13 @@ retention only deletes those files and never touches manual
 
 ## `maitu update`
 
-Check for and install a newer 麦途智造 release from the configured
+Check for and install a newer 麦途 release from the configured
 channel (PyPI by default).
 
 ```
 Usage: maitu update [OPTIONS]
 
-  Check for and install a newer 麦途智造 release.
+  Check for and install a newer 麦途 release.
 
 Options:
   --check / --no-check     Only check; do not install.
@@ -382,7 +382,7 @@ Options:
 Install and manage third-party plugins (drop into `~/.maitu/plugins/`).
 The same plugin manager powers the dashboard's "Plugins" page.
 
-麦途智造 also **seeds bundled plugins** into `~/.maitu/plugins/` during
+麦途 also **seeds bundled plugins** into `~/.maitu/plugins/` during
 `maitu init` and every `maitu run` start. They are listed in Admin →
 Plugins but stay **globally disabled** until you turn them on. An id
 already recorded in `config.json` → `bundled_plugins_seeded` is not
@@ -402,14 +402,14 @@ Commands:
 
 ## `maitu acp`
 
-Expose an 麦途智造 agent as a stdio JSON-RPC ACP server. Boots a
-standalone `麦途智造Server` (reads `~/.maitu`); does **not** require
+Expose an 麦途 agent as a stdio JSON-RPC ACP server. Boots a
+standalone `麦途Server` (reads `~/.maitu`); does **not** require
 `maitu run` to be running.
 
 ```
 Usage: maitu acp [OPTIONS]
 
-  Run 麦途智造 agent as ACP server (stdio).
+  Run 麦途 agent as ACP server (stdio).
 
 Options:
   --agent TEXT   Agent to expose (default: MAITU_AGENT or first agent).

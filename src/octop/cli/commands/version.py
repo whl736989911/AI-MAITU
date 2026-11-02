@@ -16,4 +16,4 @@ def version() -> None:
         v = "unknown"
     from octop.branding import platform_name
 
-    click.echo(f"{platform_name()} CLI (MAITU Smart Manufacturing v{v})")
+    click.echo(f"{platform_name()} CLI (AIWAY v{v})")

@@ -828,7 +828,7 @@ class OctopServer:
             banner = (
                 "\n\033[33m"
                 "╔══════════════════════════════════════════════════════════╗\n"
-                "║  MAITU Smart Manufacturing first-run wizard password (one-time use):          ║\n"
+                "║  AIWAY first-run wizard password (one-time use):          ║\n"
                 f"║  {new_pw:<54}  ║\n"
                 "║  Open the dashboard and paste it into the setup wizard.  ║\n"
                 f"║  File: ~/{WIZARD_FILE_NAME}                                   ║\n"

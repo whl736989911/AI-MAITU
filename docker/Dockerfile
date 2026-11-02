@@ -64,8 +64,8 @@ RUN NODE_ENV=production NODE_OPTIONS="--max-old-space-size=${NODE_MAX_OLD_SPACE_
 FROM python:3.12-slim AS runtime
 
 LABEL maintainer="Suzhou Maitou"
-LABEL org.opencontainers.image.title="MAITU Smart Manufacturing"
-LABEL org.opencontainers.image.description="AI workspace for manufacturers."
+LABEL org.opencontainers.image.title="AIWAY"
+LABEL org.opencontainers.image.description="AIWAY AI tools platform."
 LABEL org.opencontainers.image.licenses="MIT"
 
 ENV PYTHONDONTWRITEBYTECODE=1 \

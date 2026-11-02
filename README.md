@@ -1,9 +1,9 @@
-# AI-MAITU · 麦途智造
+# 麦途 · AIWAY
 
 A self-hosted enterprise AI workspace for manufacturing teams.
-Built on [麦途智造](https://github.com/TencentCloud/麦途智造) — a multi-user, multi-agent AI assistant — and extended into a governed business-capability platform.
+Built on [Octop](https://github.com/TencentCloud/Octop) — a multi-user, multi-agent AI assistant — and extended into a governed business-capability platform.
 
-> **This is a fork.** We rebranded the product and added the enterprise modules described below. The upstream project, its design, and its engineering are the work of the 麦途智造 authors; see [License & attribution](#license--attribution).
+> **This is a fork.** We rebranded the product and added the enterprise modules described below. The upstream project, its design, and its engineering are the work of the Octop authors; see [License & attribution](#license--attribution).
 
 ---
 
@@ -18,7 +18,7 @@ Employees open a workspace of **business capabilities** — "draft a quotation",
 
 Built for manufacturers: the capabilities are process-heavy (multi-step, human-gated, document-producing), and the output feeds engineers, workshops, and machines.
 
-## What we added on top of 麦途智造
+## Extensions over the upstream project
 
 | Module | What it does |
 |---|---|
@@ -177,6 +177,21 @@ The brand is configured in `brand.config.json` and applied with:
 uv run python scripts/apply_brand.py
 ```
 
+The display names are **麦途 / AIWAY**. The platform domain is
+<https://ai.xiaocar.cn>; **Help & Feedback** opens <https://ai.xiaocar.cn/help>.
+The explicit `identity` fields preserve existing `maitu` commands, data directories
+and `MAITU` identifiers when display names change.
+Web, PWA and FnOS icons use the delivered AIWAY artwork; no Tauri desktop shell
+is present in this repository. Existing per-instance custom branding remains an
+explicit override of these source defaults.
+
+The default palette follows the instance brand accent (`#4F46E5` for AIWAY).
+Buttons, links, focus rings and selected states share its light/dark color scales;
+semantic error and delete colors stay red. Upgrades migrate the unversioned legacy
+red default while preserving other selected palettes and explicitly selected red
+in the new format. Choose **Brand default** in the palette menu to follow the
+instance brand again, or select a separate custom palette.
+
 Public login password-recovery guidance uses the current `/api/branding` display
 name and directs users to their administrator. Host-side recovery commands stay
 in the operational documentation rather than exposing a fixed vendor name on
@@ -188,12 +203,12 @@ the public login page.
 
 ### Upstream
 
-This is a fork of **[TencentCloud/麦途智造](https://github.com/TencentCloud/麦途智造)**, also MIT licensed.
+This is a fork of **[TencentCloud/Octop](https://github.com/TencentCloud/Octop)**, also MIT licensed.
 
 The MIT License requires that the original copyright notice and permission notice be included in all copies or substantial portions of the software. **The upstream notice is preserved verbatim in [`LICENSE`](LICENSE)**:
 
 ```
-Copyright (c) 2026 麦途智造
+Copyright (c) 2026 Octop
 ```
 
 Our own modifications are recorded beneath it:
@@ -213,10 +228,10 @@ A non-exhaustive summary, so upstream and downstream are easy to tell apart:
 - added the feature catalog, permission model, sharing/governance, self-improvement loop and data-source modules
 - added database migrations `016`–`022`
 
-Everything else is upstream 麦途智造. To pull in upstream changes, add it as a remote:
+Everything else is upstream Octop. To pull in upstream changes, add it as a remote:
 
 ```bash
-git remote add upstream https://github.com/TencentCloud/麦途智造.git
+git remote add upstream https://github.com/TencentCloud/Octop.git
 git fetch upstream
 ```
 
@@ -228,4 +243,4 @@ This project bundles and depends on third-party software (Python and Node packag
 
 ## Acknowledgements
 
-The foundation of this project — the agent runtime, the tool and skill system, the gateway, the multi-channel architecture and the dashboard — is the work of the [麦途智造](https://github.com/TencentCloud/麦途智造) authors and contributors. Thank you.
+The foundation of this project — the agent runtime, the tool and skill system, the gateway, the multi-channel architecture and the dashboard — is the work of the [Octop](https://github.com/TencentCloud/Octop) authors and contributors. Thank you.

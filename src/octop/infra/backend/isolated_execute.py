@@ -27,7 +27,7 @@ _DEFAULT_TIMEOUT = 120
 _MAX_TIMEOUT = 300
 _OUTPUT_LIMIT = 64 * 1024
 _DOCKER_TIMEOUT = 5
-_IMAGE_NATIVE = "MAITU Smart Manufacturing:latest"
+_IMAGE_NATIVE = "AIWAY:latest"
 
 
 def isolated_execute_enabled() -> bool:

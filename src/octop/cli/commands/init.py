@@ -128,6 +128,4 @@ def init(
 
     click.echo(f"\u2705 {platform_name()} bootstrapped at {home}")
     click.echo(f"   admin user: {username}")
-    click.echo(
-        "   next: `MAITU Smart Manufacturing run` (optional: `MAITU Smart Manufacturing agent use <id>` to pin default agent)"
-    )
+    click.echo("   next: `maitu run` (optional: `maitu agent use <id>` to pin default agent)")

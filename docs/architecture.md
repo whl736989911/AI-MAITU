@@ -1,6 +1,6 @@
 # Architecture
 
-麦途智造 is a self-hosted AI assistant platform for multiple users and agents,
+麦途 is a self-hosted AI assistant platform for multiple users and agents,
 delivered as a single Python process.
 It glues three reusable libraries — `harness-agent` (LangGraph-based
 chat runtime), `harness-gateway` (IM channel pipeline), and a React
@@ -35,13 +35,13 @@ provider the user configures.
 
 ## 2. Process model
 
-`麦途智造Server.start()` wires the runtime tree in dependency order. The
+`麦途Server.start()` wires the runtime tree in dependency order. The
 composition root lives in `src/octop/infra/server.py`; FastAPI/uvicorn
 is attached from `src/octop/launch.py` (the only module that may import
 both `infra/server` and `api/app`).
 
 ```
-麦途智造Server.start()
+麦途Server.start()
  ├─ PathLayout.from_env()            (root + DB + secrets dirs)
  ├─ load_config(config.json)        (env overrides on top)
  ├─ open_database()                  (SQLite WAL or PostgreSQL via PostgresPool)
@@ -74,7 +74,7 @@ a separate per-user `AgentManager`. The single global registry
 dispatches to whichever harness runtime matches the row, which keeps
 admin tooling (`/api/admin/*`) and cross-user diagnostics simple.
 
-The dashboard always talks to 麦途智造 over `/api` HTTP/WebSocket; the
+The dashboard always talks to 麦途 over `/api` HTTP/WebSocket; the
 React SPA never imports a Python module and never opens the SQLite
 file directly.
 
@@ -85,7 +85,7 @@ Three surfaces share the same agent runtime:
 | Surface | Wire | Session key (default) | Notes |
 |---------|------|-----------------------|-------|
 | Web UI | WebSocket `/api/agents/{aid}/chat/ws` | `<aid>:dashboard:<user_id>:dm` | Dashboard turn endpoint |
-| CLI | Embedded `麦途智造Server` (REPL) or WebSocket | `<aid>:cli:<user_id>:dm` | `maitu chats send` / `chats repl` |
+| CLI | Embedded `麦途Server` (REPL) or WebSocket | `<aid>:cli:<user_id>:dm` | `maitu chats send` / `chats repl` |
 | IM channel | gateway `ChannelManager` | `<aid>:<channel_kind>:<platform_session>:<dm\|group>` | See `infra/gateway/process/message_keys.py` |
 | Cron job | APScheduler trigger → `Gateway.push_text_from_session` | row's `session_key` (defaults to `dashboard_key` of the owner) | `task_type=text\|agent` chooses direct-push vs run-AI-then-push |
 
@@ -123,7 +123,7 @@ read and written through the agent's `BackendWorkspace`
 (`octop.infra.backend` → `harness_agent.backends`). The default
 backend is a `filesystem` adapter rooted at
 `~/.maitu/agents/<agent_id>/`; remote backends (S3, COS) are mounted
-on top of the same root_dir and the 麦途智造 service never reads
+on top of the same root_dir and the 麦途 service never reads
 content files via `Path.write_text` / `read_text` (see
 [agent-backend-file-io.md](./agent-backend-file-io.md) for the full
 rules). Checkpointing, langgraph state, and the
@@ -148,7 +148,7 @@ tool labels from `GET /api/i18n/tools`.
 [agent-interop-mailbox.md](./agent-interop-mailbox.md) for the queue
 contract and [agent-call-agent.md](./agent-call-agent.md) /
 [agent-delegation.md](./agent-delegation.md) for the two user-side
-entry points. 麦途智造's `GlobalProcessor` implements the
+entry points. 麦途's `GlobalProcessor` implements the
 `TeamProcessor` protocol so replies land back in the parent thread
 checkpoint and are pushed to the dashboard / IM channel by
 `on_reply`.

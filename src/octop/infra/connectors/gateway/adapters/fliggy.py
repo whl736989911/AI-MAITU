@@ -117,7 +117,7 @@ def _x_ff_ctx() -> str:
         },
         "fingerprint": {
             "language": "zh",
-            "platform": "MAITU Smart Manufacturing",
+            "platform": "AIWAY",
             "userAgent": _USER_AGENT,
             "hardwareConcurrency": 4,
             "deviceMemory": 8,

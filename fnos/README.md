@@ -1,17 +1,17 @@
-# 麦途智造 — 飞牛 FnOS 安装包
+# 麦途 — 飞牛 FnOS 安装包
 
-本目录包含将 [TencentCloud/麦途智造](https://github.com/TencentCloud/麦途智造) 打包为飞牛 fnOS `.fpk` 安装包所需的全部文件，并附带自动同步上游 + 自动构建的 GitHub Actions。
+本目录包含将基于 [TencentCloud/Octop](https://github.com/TencentCloud/Octop) 的麦途打包为飞牛 fnOS `.fpk` 安装包所需的全部文件，并附带自动同步上游 + 自动构建的 GitHub Actions。
 
 ## 首次使用（初始账号）
 
 安装向导中设置管理员账号与密码，两种方式任选：
 
-1. **自己输入密码** —— 至少 8 位，且必须同时包含字母和数字（与应用侧密码策略一致；过于常见的密码如 `麦途智造123` 会被拒绝，无效输入会在安装时直接提示，不会装完才失败）。
+1. **自己输入密码** —— 至少 8 位，且必须同时包含字母和数字（与应用侧密码策略一致；过于常见的密码如 `麦途123` 会被拒绝，无效输入会在安装时直接提示，不会装完才失败）。
 2. **自动生成随机密码（推荐）** —— 安装时自动生成 16 位强密码。
 
 生成的 / 设置的密码通过以下两种方式**双保险**送达用户：
 
-- **应用「设置」窗口**：飞牛应用中心 → 麦途智造 → 设置，窗口顶部直接显示当前管理员账号与密码，也可在此随时改密（保持不变 / 随机生成 / 自己设置）；
+- **应用「设置」窗口**：飞牛应用中心 → 麦途 → 设置，窗口顶部直接显示当前管理员账号与密码，也可在此随时改密（保持不变 / 随机生成 / 自己设置）；
 - **回落备份文件**：数据共享目录下的 `maitu-login.txt`（本地版在 data-share 共享目录，Docker 版在 `/var/apps/octop/share/octop/data/`），永久保留并随改密同步更新。
 
 > 若你在 Web 控制台「头像菜单 → 修改密码」中改过密码，则以 Web 密码为准（`maitu-login.txt` 与「设置」窗口显示的是安装/配置阶段写入的凭据）。
@@ -43,9 +43,9 @@ maitu backup --help     # 备份/恢复
 | **本地版（非 Docker）** | `MAITU-fnos-native-<ver>.fpk` | ~560 MB | 自带 Python 3.12 运行时 + 前端 + 核心依赖，原生运行在飞牛主机 | 无需 Docker |
 
 - **Docker 版**实现为 FnOS `docker-project`：包体只含 `docker-compose.yaml` 与向导配置，运行时由飞牛从 GHCR 拉取镜像。镜像已内置 `desktop` 桌面控制与前端；Playwright Chromium 不预装，可在控制台按需安装。
-- **本地版**实现为 FnOS 原生 `app`：包内自带独立 Python 3.12 运行时、麦途智造核心依赖、前端构建产物，以及 `data-share` 共享数据目录，直接以进程方式运行，不依赖 Docker。
+- **本地版**实现为 FnOS 原生 `app`：包内自带独立 Python 3.12 运行时、麦途核心依赖、前端构建产物，以及 `data-share` 共享数据目录，直接以进程方式运行，不依赖 Docker。
 
-> 两款包随正式版一起挂在 **`v*` GitHub Release** 上（例如 [v0.9.31](https://github.com/TencentCloud/麦途智造/releases/latest)）：`麦途智造-fnos-docker-<ver>.fpk` / `麦途智造-fnos-native-<ver>.fpk`。
+> 两款包随本项目正式版一起挂在 **`v*` GitHub Release** 上：`MAITU-fnos-docker-<ver>.fpk` / `MAITU-fnos-native-<ver>.fpk`。本项目发布地址为 <https://github.com/whl736989911/AI-MAITU/releases>，不要从上游下载同名版本来替换本项目。
 
 ## 目录结构
 
@@ -107,7 +107,7 @@ bash scripts/build-fpk.sh native     # 仅本地版      → dist/MAITU-fnos-nat
    - 想用 Docker 跑、主机已装 Docker → 选 `MAITU-fnos-docker-<version>.fpk`
    - 不想依赖 Docker、希望自带运行时原生运行 → 选 `MAITU-fnos-native-<version>.fpk`
 2. 安装向导中设置管理员账号/密码、日志级别、LLM 密钥（可选）。
-3. 安装完成后桌面出现「麦途智造 AI 助手」图标，浏览器打开 `http://<设备IP>:8088`。
+3. 安装完成后桌面出现「麦途 AI 助手」图标，浏览器打开 `http://<设备IP>:8088`。
 4. Docker 版镜像首次会从 GHCR `ghcr.io/tencentcloud/octop:latest` 拉取；请确保该包为 Public（首次推送后可在 GitHub Packages 设置）。本地版无需联网拉镜像。Playwright Chromium 不预装，需要远程浏览器时在控制台按需安装。
 
 > 服务端口固定为 `8088`（飞牛端口映射与桌面图标均据此）。`desktop` 桌面控制已在镜像中默认安装。

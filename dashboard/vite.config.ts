@@ -195,7 +195,7 @@ export default defineConfig(({ mode }) => {
         // the SW precache. Asset paths follow ``brand.config.json``.
         includeAssets: [
           "offline.html",
-          "brand/favicon.png",
+          "brand/favicon.ico",
           "brand/mark-512.png",
           "brand/pwa-192.png",
           "brand/pwa-512.png",

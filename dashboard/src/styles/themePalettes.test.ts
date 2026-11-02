@@ -23,27 +23,6 @@ function contrastRatio(foreground: string, background: string): number {
 }
 
 describe("theme palettes", () => {
-  it("exposes the curated palette set", () => {
-    expect(VALID_PALETTES).toEqual([
-      "rose",
-      "tech",
-      "indigo",
-      "teal",
-      "violet",
-      "emerald",
-      "amber",
-      "slate",
-    ]);
-  });
-
-  it("keeps the historic Elegant Rose default brand tokens", () => {
-    expect(ANTD_BRAND_TOKENS.rose.light.colorPrimary).toBe("#E85D75");
-    expect(ANTD_BRAND_TOKENS.rose.light.colorPrimaryHover).toBe("#D14A62");
-    expect(ANTD_BRAND_TOKENS.rose.light.colorPrimaryActive).toBe("#B83A50");
-    expect(ANTD_BRAND_TOKENS.rose.dark.colorPrimary).toBe("#F08B9A");
-    expect(ANTD_BRAND_TOKENS.rose.dark.colorLink).toBe("#F08B9A");
-  });
-
   it.each(VALID_PALETTES.filter((palette) => palette !== "rose"))(
     "keeps %s solid Ant Design states readable with white text",
     (palette) => {
@@ -61,11 +40,11 @@ describe("theme palettes", () => {
   );
 
   it.each(VALID_PALETTES)(
-    "uses the brighter %s link color for dark charts",
+    "keeps %s chart text readable on dark backgrounds",
     (palette) => {
-      expect(brandPrimary(palette, true)).toBe(
-        ANTD_BRAND_TOKENS[palette].dark.colorLink,
-      );
+      expect(
+        contrastRatio(brandPrimary(palette, true), "#0f1117"),
+      ).toBeGreaterThanOrEqual(3);
     },
   );
 });

@@ -11,6 +11,8 @@ import {
 export type ThemePreference = "system" | "light" | "dark";
 
 export type StoredAppearance = {
+  /** Current serialized appearance format; unversioned settings are migrated once. */
+  version: 2;
   preference: ThemePreference;
   palette: ThemePalette;
   /** Brand hex for the "custom" palette; ignored for curated palettes. */
@@ -46,6 +48,7 @@ export function readStoredAppearance(): StoredAppearance {
   const raw = localStorage.getItem(THEME_STORAGE_KEY);
   if (!raw) {
     return {
+      version: 2,
       preference: "system",
       palette: readLegacyPalette(),
       customColor: DEFAULT_CUSTOM_COLOR,
@@ -55,6 +58,7 @@ export function readStoredAppearance(): StoredAppearance {
   // Legacy: plain preference string
   if (isPreference(raw)) {
     return {
+      version: 2,
       preference: raw,
       palette: readLegacyPalette(),
       customColor: DEFAULT_CUSTOM_COLOR,
@@ -68,18 +72,24 @@ export function readStoredAppearance(): StoredAppearance {
       const preference = isPreference(obj.preference)
         ? obj.preference
         : "system";
-      const palette = isPalette(obj.palette)
-        ? obj.palette
-        : readLegacyPalette();
+      let palette = isPalette(obj.palette) ? obj.palette : readLegacyPalette();
       const customColor =
         normalizeHexColor(obj.customColor as string) ?? DEFAULT_CUSTOM_COLOR;
-      return { preference, palette, customColor };
+      if (
+        obj.version === undefined &&
+        palette === "custom" &&
+        customColor.toLowerCase() === "#e5484d"
+      ) {
+        palette = DEFAULT_PALETTE;
+      }
+      return { version: 2, preference, palette, customColor };
     }
   } catch {
     // fall through
   }
 
   return {
+    version: 2,
     preference: "system",
     palette: readLegacyPalette(),
     customColor: DEFAULT_CUSTOM_COLOR,
@@ -87,10 +97,13 @@ export function readStoredAppearance(): StoredAppearance {
 }
 
 /** Persist both fields under the same `theme` key; drop legacy palette key. */
-export function writeStoredAppearance(appearance: StoredAppearance): void {
+export function writeStoredAppearance(
+  appearance: Pick<StoredAppearance, "preference" | "palette" | "customColor">,
+): void {
   localStorage.setItem(
     THEME_STORAGE_KEY,
     JSON.stringify({
+      version: 2,
       preference: appearance.preference,
       palette: appearance.palette,
       customColor:

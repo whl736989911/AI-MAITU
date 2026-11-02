@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# 麦途智造 — 安装后回调
+# 麦途 — 安装后回调
 #
-# 密码策略（修复 issue #502：旧版写死麦途智造123 被应用弱密码黑名单拒绝，
+# 密码策略（修复 issue #502：旧版写死麦途123 被应用弱密码黑名单拒绝，
 # 容器首次 init 报 "password is too common" 退出、反复重启）：
 # 安装向导提供「自己输入密码 / 自动生成随机密码」两种方式，此处预校验
 # 自定义密码，随机密码本地生成，统一写入 docker/.env 供容器首次 init 使用；
@@ -19,7 +19,7 @@ _OCTOP_COMMON="$(dirname "$0")/common.sh"
 [ -f "$_OCTOP_COMMON" ] || _OCTOP_COMMON="/var/apps/octop/cmd/common.sh"
 [ -f "$_OCTOP_COMMON" ] && source "$_OCTOP_COMMON"
 
-# 释放麦途智造端口（8088=Docker 版，8089=本地版），杀掉残留/孤儿进程，避免重装端口冲突。
+# 释放麦途端口（8088=Docker 版，8089=本地版），杀掉残留/孤儿进程，避免重装端口冲突。
 free_octop_ports
 
 ENV_FILE="${TRIM_APPDEST:-/var/apps/octop/target}/docker/.env"

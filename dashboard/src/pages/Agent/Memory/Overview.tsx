@@ -38,6 +38,7 @@ import {
   type MemoryScope,
 } from "../../../api/modules/memoryDashboard";
 import { useTheme } from "../../../context/ThemeContext";
+import { useBranding } from "../../../context/BrandingContext";
 import { brandPrimary } from "../../../styles/themePalettes";
 import styles from "./Overview.module.less";
 
@@ -91,8 +92,14 @@ export default function Overview({
   onOpenSettings,
 }: Props) {
   const { t } = useTranslation();
-  const { palette, isDark } = useTheme();
-  const brand = brandPrimary(palette, isDark);
+  const { palette, isDark, customColor } = useTheme();
+  const branding = useBranding();
+  const brand = brandPrimary(
+    palette,
+    isDark,
+    customColor,
+    branding.colors.accent,
+  );
   const kindColor: Record<string, string> = useMemo(
     () => ({ ...KIND_COLOR_BASE, Preference: brand }),
     [brand],

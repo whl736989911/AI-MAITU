@@ -163,7 +163,7 @@ def seed_workspace_dir_on_create(
         if host != expected:
             raise OctopError(
                 ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
-                "Agent workspaces must remain inside MAITU Smart Manufacturing's managed workspace directory.",
+                "Agent workspaces must remain inside AIWAY's managed workspace directory.",
             )
     expected.mkdir(parents=True, exist_ok=True)
     config["workspace_dir"] = str(expected)

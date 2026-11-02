@@ -63,9 +63,9 @@ def _health_failure_hint(runtime: ServiceRuntime) -> str:
     log_dir = runtime.home / "logs"
     if runtime.mode == "systemd":
         journal = (
-            "journalctl --user -u MAITU Smart Manufacturing -n 80 --no-pager"
+            "journalctl --user -u maitu -n 80 --no-pager"
             if runtime.scope == "user"
-            else "journalctl -u MAITU Smart Manufacturing -n 80 --no-pager"
+            else "journalctl -u maitu -n 80 --no-pager"
         )
         return f"hint: inspect logs with `{journal}` or under `{log_dir}`"
     return (

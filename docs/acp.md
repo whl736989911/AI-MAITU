@@ -1,13 +1,13 @@
 # ACP (Agent Client Protocol)
 
-麦途智造 integrates [ACP](https://agentclientprotocol.com/) in two directions:
+麦途 integrates [ACP](https://agentclientprotocol.com/) in two directions:
 
 | Direction | ACP server | ACP client | Typical use |
 |-----------|------------|------------|-------------|
-| **Inbound** | 麦途智造 (`maitu acp`) | Zed, OpenCode, … | External IDE drives your 麦途智造 agent |
-| **Outbound** | OpenCode, CodeBuddy, … | 麦途智造 (`acp_runner` tool) | 麦途智造 agent delegates coding tasks |
+| **Inbound** | 麦途 (`maitu acp`) | Zed, OpenCode, … | External IDE drives your 麦途 agent |
+| **Outbound** | OpenCode, CodeBuddy, … | 麦途 (`acp_runner` tool) | 麦途 agent delegates coding tasks |
 
-Both use **stdio** JSON-RPC today. 麦途智造 does not expose an HTTP ACP endpoint.
+Both use **stdio** JSON-RPC today. 麦途 does not expose an HTTP ACP endpoint.
 
 ---
 
@@ -63,13 +63,13 @@ Example user message:
 
 Permission prompts from the external agent appear in chat; pick an option or instruct the agent to call `action=respond` with the option id.
 
-After changing global runners, 麦途智造 reloads your agents automatically. Changing only `tool_enabled` reloads that agent.
+After changing global runners, 麦途 reloads your agents automatically. Changing only `tool_enabled` reloads that agent.
 
 ---
 
-## CLI: inbound — expose 麦途智造 as an ACP server
+## CLI: inbound — expose 麦途 as an ACP server
 
-Let external clients (e.g. Zed) use an 麦途智造 agent as their coding agent:
+Let external clients (e.g. Zed) use an 麦途 agent as their coding agent:
 
 ```bash
 maitu acp --agent main
@@ -80,7 +80,7 @@ maitu acp --agent main
 | `--agent ID` | Agent to expose (default: CLI `default_agent` or first agent) |
 | `--debug` | Log to stderr |
 
-This starts a **standalone** `麦途智造Server` (reads `~/.maitu`), boots the agent, and speaks ACP on stdin/stdout. It does **not** require `maitu run` to be running; it is a separate process.
+This starts a **standalone** `麦途Server` (reads `~/.maitu`), boots the agent, and speaks ACP on stdin/stdout. It does **not** require `maitu run` to be running; it is a separate process.
 
 Pin the default agent for convenience:
 
@@ -97,7 +97,7 @@ maitu --agent main acp
 ```json
 {
   "agent_servers": {
-    "麦途智造": {
+    "麦途": {
       "command": "maitu",
       "args": ["acp", "--agent", "main"],
       "env": {}
@@ -111,7 +111,7 @@ From a dev checkout:
 ```json
 {
   "agent_servers": {
-    "麦途智造": {
+    "麦途": {
       "command": "uv",
       "args": ["run", "maitu", "acp", "--agent", "main"],
       "env": {}
@@ -164,7 +164,7 @@ Runner shape:
 
 ## Prerequisites
 
-- **harness-agent `[acp]` extra** — pulls in `agent-client-protocol` (included in the 麦途智造 wheel dependency on harness-agent).
+- **harness-agent `[acp]` extra** — pulls in `agent-client-protocol` (included in the 麦途 wheel dependency on harness-agent).
 - **Outbound:** install external CLIs (`opencode`, `codebuddy`, …) on the machine running `maitu run`.
 - **Inbound:** agent must start successfully (provider + model configured).
 

@@ -5,7 +5,6 @@ import {
   screen,
   waitFor,
 } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../../api/request", () => ({ request: vi.fn() }));
@@ -44,15 +43,13 @@ async function openDingtalkManual() {
       <ChannelsPanel agentId="ag1" />
     </CurrentUserProvider>,
   );
-  await userEvent.click(
-    (await screen.findAllByText("channels.label_dingtalk"))[0],
-  );
-  await userEvent.click(await screen.findByText("channels.manualConfig"));
+  fireEvent.click((await screen.findAllByText("channels.label_dingtalk"))[0]);
+  fireEvent.click(await screen.findByText("channels.manualConfig"));
 }
 
 async function selectKind(label: string) {
-  await userEvent.click(screen.getByRole("combobox"));
-  await userEvent.click(
+  fireEvent.mouseDown(screen.getByRole("combobox"));
+  fireEvent.click(
     await screen.findByText(label, {
       selector: ".ant-select-item-option-content",
     }),
@@ -123,10 +120,8 @@ describe("channel QR lifecycle", () => {
           ),
         ).toHaveLength(1),
       );
-      await userEvent.click(
-        screen.getByRole("button", { name: "common.cancel" }),
-      );
-      await userEvent.click(
+      fireEvent.click(screen.getByRole("button", { name: "common.cancel" }));
+      fireEvent.click(
         (await screen.findAllByText("channels.label_dingtalk"))[0],
       );
       await act(async () => {

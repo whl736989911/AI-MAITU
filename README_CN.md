@@ -1,10 +1,10 @@
-# AI-MAITU · 麦途智造
+# 麦途 · AIWAY
 
 面向制造企业的**自托管企业 AI 工作台**。
 
-基于 **[腾讯云麦途智造](https://github.com/TencentCloud/麦途智造)**（多用户、多 Agent 的自托管 AI 助手）改造，扩展为**有治理的业务能力平台**。
+基于 **[腾讯云 Octop](https://github.com/TencentCloud/Octop)**（多用户、多 Agent 的自托管 AI 助手）改造，扩展为**有治理的业务能力平台**。
 
-> **本项目是一个派生（fork）项目。** 我们更换了品牌，并新增了下文描述的企业模块。上游项目本身、它的架构与工程质量，属于麦途智造的作者们。详见 [开源协议与署名](#开源协议与署名)。
+> **本项目是一个派生（fork）项目。** 我们更换了品牌，并新增了下文描述的企业模块。上游项目本身、它的架构与工程质量，属于 Octop 的作者们。详见 [开源协议与署名](#开源协议与署名)。
 
 ---
 
@@ -21,7 +21,7 @@
 
 **为制造业而做**：能力本身是流程密集型的（多步骤、需人工把关、产出文档），产出的东西要交给工艺员、车间和机床用。
 
-## 我们在麦途智造之上做了什么
+## 我们在上游项目之上做了什么
 
 | 模块 | 作用 |
 |---|---|
@@ -132,19 +132,31 @@ make precommit      # 格式化、lint、类型检查、受影响测试
 uv run python scripts/apply_brand.py
 ```
 
+当前展示名为 **麦途 / AIWAY**，定位为 **AI 工具平台**；平台域名为
+<https://ai.xiaocar.cn>，账户菜单中的 **帮助与反馈**打开
+<https://ai.xiaocar.cn/help>。配置中的 `identity` 明确保留
+`maitu` 命令、数据目录和 `MAITU` 技术标识，不随展示名迁移。
+网页、PWA 和飞牛图标采用最终交付的 AIWAY 图形；本仓库没有 Tauri 桌面外壳。
+已有实例在品牌设置中保存的自定义内容仍优先于源码默认值，需要时在品牌设置中显式重置。
+
+默认配色跟随实例品牌强调色，当前为紫蓝色 `#4F46E5`；浅深主题中的按钮、
+链接、焦点和选中态同步更新，错误、删除等语义红色不变。升级时自动迁移
+未带版本标记的旧红色默认偏好；其他已选配色，以及新版本中显式选择的红色
+继续保留。可在配色菜单选择“品牌默认”恢复跟随实例品牌，或自行选择其他配色。
+
 ## 开源协议与署名
 
 **本项目采用 MIT 协议。见 [LICENSE](LICENSE)。**
 
 ### 上游项目
 
-本项目派生自 **[TencentCloud/麦途智造](https://github.com/TencentCloud/麦途智造)**，该项目同样采用 MIT 协议。
+本项目派生自 **[TencentCloud/Octop](https://github.com/TencentCloud/Octop)**，该项目同样采用 MIT 协议。
 
 MIT 协议要求：**原始版权声明与许可声明必须包含在本软件的所有副本和实质性部分中**。
 **上游声明已在 [`LICENSE`](LICENSE) 中原样保留**：
 
 ```
-Copyright (c) 2026 麦途智造
+Copyright (c) 2026 Octop
 ```
 
 我们的修改记录在其下方：
@@ -164,10 +176,10 @@ Copyright (c) 2026 Suzhou Maitou — modifications in this fork
 - 新增：功能目录、权限模型、共享治理、自我改进闭环、数据源模块
 - 新增数据库迁移 `016`–`022`
 
-**其余部分均为上游麦途智造的成果。** 如需同步上游更新，可添加上游仓库：
+**其余部分均为上游 Octop 的成果。** 如需同步上游更新，可添加上游仓库：
 
 ```bash
-git remote add upstream https://github.com/TencentCloud/麦途智造.git
+git remote add upstream https://github.com/TencentCloud/Octop.git
 git fetch upstream
 ```
 
@@ -181,4 +193,4 @@ git fetch upstream
 
 ## 致谢
 
-本项目的基石——Agent 运行时、工具与技能系统、网关、多渠道架构、以及整个仪表盘——**是 [麦途智造](https://github.com/TencentCloud/麦途智造) 作者与贡献者们的成果**。在此致谢。
+本项目的基石——Agent 运行时、工具与技能系统、网关、多渠道架构、以及整个仪表盘——**是 [Octop](https://github.com/TencentCloud/Octop) 作者与贡献者们的成果**。在此致谢。
