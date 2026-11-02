@@ -23,6 +23,24 @@ export class InstanceLicenseLockedError extends Error {
   }
 }
 
+/**
+ * A non-2xx response whose HTTP status the caller needs.
+ *
+ * The message stays identical to the plain Error this class replaces, so
+ * existing text assertions keep working; download surfaces read `status` to
+ * distinguish "file is gone" (404) from "disk is full" (507) from a retryable
+ * network failure instead of collapsing every case into "please try again".
+ */
+export class HttpStatusError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "HttpStatusError";
+    this.status = status;
+  }
+}
+
 export const LICENSE_LOCKED_EVENT = "octop:license-locked";
 
 function notifyLicenseLocked(path: string, status: number, body: string): void {
@@ -427,7 +445,8 @@ export async function requestBlob(
   if (!response.ok) {
     const text = await response.text().catch(() => "");
     notifyLicenseLocked(path, response.status, text);
-    throw new Error(
+    throw new HttpStatusError(
+      response.status,
       `Request failed: ${response.status} ${response.statusText}${
         text ? ` - ${text}` : ""
       }`,

@@ -30,6 +30,7 @@ Commands:
   completion Shell completion utilities.
   config     CLI state (base URL, defaults).
   cron       Cron job management commands.
+  doctor     Audit runtime dependencies and install missing OS packages.
   init       Bootstrap an 麦途 server install.
   models     Model catalog and active-model settings.
   plugin     Install and manage plugins.

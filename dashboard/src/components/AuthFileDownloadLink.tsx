@@ -11,7 +11,8 @@ import {
   type ReactNode,
 } from "react";
 import { useTranslation } from "react-i18next";
-import { requestBlob } from "../api/request";
+import type { TFunction } from "i18next";
+import { HttpStatusError, requestBlob } from "../api/request";
 import { isDataUrl, needsAuthBlobFetch } from "../utils/toolMediaBlocks";
 
 import { message as antMessage } from "@/utils/antdMessage";
@@ -82,6 +83,22 @@ export async function downloadAuthFile(
   setTimeout(() => URL.revokeObjectURL(objUrl), 100);
 }
 
+/**
+ * Name the real reason. A download that 404s or hits a full disk will never
+ * succeed by retrying, so those two say what happened; only an unclassified
+ * failure keeps the retryable wording.
+ */
+export function downloadErrorMessage(error: unknown, t: TFunction): string {
+  const status = error instanceof HttpStatusError ? error.status : 0;
+  if (status === 404) {
+    return t("chat.downloadFailedNotFound", "文件未生成或已被删除");
+  }
+  if (status === 507) {
+    return t("chat.downloadFailedDiskFull", "磁盘空间不足，请联系管理员");
+  }
+  return t("chat.downloadFailed", "下载失败，请重试");
+}
+
 const defaultLinkStyle: CSSProperties = {
   background: "none",
   border: "none",
@@ -115,8 +132,8 @@ export function AuthFileDownloadLink({
       setLoading(true);
       try {
         await downloadAuthFile(url, { filename });
-      } catch {
-        antMessage.error(t("chat.downloadFailed", "下载失败，请重试"));
+      } catch (error) {
+        antMessage.error(downloadErrorMessage(error, t));
       } finally {
         setLoading(false);
       }

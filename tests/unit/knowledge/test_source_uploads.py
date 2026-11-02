@@ -485,8 +485,9 @@ async def test_parse_failure_keeps_source_original_and_failure_state(
         filename="empty.txt",
         content=b"",
     )
-    with pytest.raises(ValueError, match="no extractable text"):
+    with pytest.raises(OctopError) as exc_info:
         await enqueue_index_document(env.services, env.kb_id, doc.id)
+    assert exc_info.value.code is ErrorCode.KNOWLEDGE_NO_EXTRACTABLE_TEXT
     assert (env.root / "empty.txt").read_bytes() == b""
     current = env.services.knowledge_repo.get_document(doc.id)
     assert current.status == "failed"

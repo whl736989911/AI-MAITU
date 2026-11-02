@@ -165,6 +165,14 @@ def _path(value: object, workspace_dir: Path) -> str:
     return resolved.as_posix()
 
 
+def _is_deliverable_file(path: str) -> bool:
+    try:
+        file_path = Path(path)
+        return file_path.is_file() and file_path.stat().st_size > 0
+    except OSError:
+        return False
+
+
 def current_thread_id() -> str:
     try:
         raw = (get_config().get("configurable") or {}).get("thread_id")
@@ -242,7 +250,7 @@ def artifacts_for_response(
             continue
         path = _path(raw, workspace_dir)
         key = ("", path)
-        if path and key not in seen:
+        if path and _is_deliverable_file(path) and key not in seen:
             seen.add(key)
             out.append(path)
     return out
@@ -278,6 +286,8 @@ def _workspace_snapshot(workspace_dir: Path) -> dict[str, tuple[int, int]]:
                 stat = absolute.stat()
             except OSError:
                 continue
+            if stat.st_size == 0:
+                continue
             snapshot[rel] = (stat.st_mtime_ns, stat.st_size)
             if len(snapshot) >= _MAX_SNAPSHOT_FILES:
                 return snapshot
@@ -292,7 +302,7 @@ def _changed_workspace_paths(
     changed: list[str] = []
     for rel, state in after.items():
         previous = before.get(rel)
-        if previous == state:
+        if previous == state or state[1] == 0:
             continue
         # New and modified files are both candidates; whether they belong to the
         # user is decided from the conversation below, not from the change alone.
@@ -498,7 +508,16 @@ class ThreadArtifactsMiddleware(AgentMiddleware[Any, Any]):
 
     def _append(self, tid: str, paths: Sequence[str]) -> None:
         try:
-            self._threads.append_artifacts(tid, list(paths))
+            filtered: list[str] = []
+            for path in paths:
+                if path.startswith("team-artifact://"):
+                    filtered.append(path)
+                    continue
+                resolved = _path(path, self._workspace_dir)
+                if resolved and _is_deliverable_file(resolved):
+                    filtered.append(path)
+            if filtered:
+                self._threads.append_artifacts(tid, filtered)
         except Exception:
             logger.warning("Failed to persist thread artifacts for %s", tid, exc_info=True)
 
@@ -538,6 +557,9 @@ class ThreadArtifactsMiddleware(AgentMiddleware[Any, Any]):
             result=result.content,
             workspace_dir=self._workspace_dir,
         )
+        if not paths:
+            return
+        paths = [path for path in paths if _is_deliverable_file(path)]
         if not paths:
             return
         try:

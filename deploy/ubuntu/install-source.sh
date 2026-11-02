@@ -15,7 +15,7 @@ DATA_HOME="/var/lib/maitu"
 SERVICE_USER="maitu"
 BIND_HOST="0.0.0.0"
 PORT="8088"
-EXTRAS="office,knowledge-ocr"
+EXTRAS="office,knowledge-ocr,local-embedding"
 BUILD_FRONTEND=0
 NO_APT=0
 OPEN_FIREWALL=0
@@ -35,7 +35,7 @@ Run from an extracted maitu-source ZIP root. Options:
   --service-user NAME   systemd user/group (default: maitu)
   --host HOST           bind host (default: 0.0.0.0 for LAN access)
   --port PORT           HTTP port (default: 8088)
-  --extras LIST         comma-separated extras (default: office,knowledge-ocr)
+  --extras LIST         comma-separated extras (default: office,knowledge-ocr,local-embedding)
                         supported: office,knowledge-ocr,local-embedding,browser,desktop
   --build-frontend      install Node 22 and rebuild dashboard assets
   --no-apt              skip apt package installation (packages already present)
@@ -174,12 +174,13 @@ run() {
 
 if [[ "$NO_APT" -eq 0 ]]; then
   say "installing OS build/runtime dependencies (apt)"
+  # opencv-python requires libGL (libgl1) and GLib at runtime.
   run env DEBIAN_FRONTEND=noninteractive apt-get update
   run env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     ca-certificates curl unzip build-essential python3 python3-venv pkg-config \
     libssl-dev libffi-dev zlib1g-dev libjpeg-dev libfreetype6-dev libtiff-dev \
     libwebp-dev liblcms2-dev libopenjp2-7-dev libsqlite3-dev libxml2-dev \
-    libxslt1-dev linux-libc-dev libasound2-dev
+    libxslt1-dev linux-libc-dev libasound2-dev libgl1 libglib2.0-0
 else
   for command in curl unzip python3 gcc pkg-config; do
     command -v "$command" >/dev/null 2>&1 || die "--no-apt but $command is missing"
@@ -230,7 +231,18 @@ done
   UV_PYTHON_INSTALL_DIR="$PYTHON_INSTALL_DIR" \
     uv sync --frozen --inexact --no-dev --python 3.12 "${extra_args[@]}"
 )
-[[ -x "$SOURCE_DIR/.venv/bin/maitu" ]] || die "uv sync finished but .venv/bin/maitu is missing"
+doctor="$SOURCE_DIR/.venv/bin/maitu"
+[[ -x "$doctor" ]] || die "uv sync finished but .venv/bin/maitu is missing"
+if [[ "$NO_APT" -eq 1 ]]; then
+  if ! run "$doctor" doctor --require "$EXTRAS"; then
+    die "required dependencies are missing; install the reported OS packages, then rerun octop doctor --require '$EXTRAS'."
+  fi
+else
+  run "$doctor" doctor --require "$EXTRAS" --fix || true
+  if ! run "$doctor" doctor --require "$EXTRAS"; then
+    die "dependency check failed; missing component keys are listed above."
+  fi
+fi
 [[ -f "$SOURCE_DIR/src/octop/dashboard/index.html" ]] || die "dashboard assets are missing after setup"
 
 say "setting read-only source permissions for the service account"
@@ -250,6 +262,10 @@ Description=MAITU AI Server
 Documentation=https://github.com/whl736989911/AI-MAITU
 After=network-online.target
 Wants=network-online.target
+# A full disk cannot fix itself by restarting: stop after a few attempts and
+# leave one clear failure instead of a restart loop that floods the journal.
+StartLimitBurst=5
+StartLimitIntervalSec=600
 
 [Service]
 Type=simple
@@ -262,6 +278,8 @@ Environment="PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 ExecStart=$SOURCE_DIR/.venv/bin/maitu run --host $BIND_HOST --port $PORT
 Restart=on-failure
 RestartSec=5
+# errno 28 (ENOSPC) is an operational state, not a transient crash.
+RestartPreventExitStatus=28
 TimeoutStopSec=30
 LimitNOFILE=65535
 

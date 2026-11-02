@@ -85,6 +85,8 @@ class KnowledgeIndex:
     def _initialize(self) -> None:
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as conn:
+            # Existing non-empty databases require a one-time VACUUM to change this setting.
+            conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS chunks (
@@ -113,6 +115,16 @@ class KnowledgeIndex:
                 CREATE INDEX IF NOT EXISTS idx_segment_terms_doc ON segment_terms(doc_id);
                 """
             )
+
+    def storage_stats(self) -> dict[str, int]:
+        """Return SQLite storage settings and page usage for this index."""
+        with self._connect() as conn:
+            return {
+                "auto_vacuum": int(conn.execute("PRAGMA auto_vacuum").fetchone()[0]),
+                "page_count": int(conn.execute("PRAGMA page_count").fetchone()[0]),
+                "freelist_count": int(conn.execute("PRAGMA freelist_count").fetchone()[0]),
+                "page_size": int(conn.execute("PRAGMA page_size").fetchone()[0]),
+            }
 
     def replace_doc_chunks(
         self,

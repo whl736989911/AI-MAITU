@@ -13,6 +13,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.chunk import chunk_text
 from octop.infra.knowledge.embed import embed_knowledge_texts
 from octop.infra.knowledge.files import document_path, file_digest
@@ -20,7 +21,12 @@ from octop.infra.knowledge.gate import assert_embedding_usable
 from octop.infra.knowledge.index import KnowledgeIndex
 from octop.infra.knowledge.ocr import optional_ocr_extractor
 from octop.infra.knowledge.params import get_advanced_settings
-from octop.infra.knowledge.parse import ParsedBlock, failure_status, parse_document
+from octop.infra.knowledge.parse import (
+    ParsedBlock,
+    ParsedDocument,
+    failure_status,
+    parse_document,
+)
 from octop.infra.knowledge.sources import SourceConnector
 
 logger = logging.getLogger(__name__)
@@ -178,6 +184,17 @@ def _embedding_batches(
         yield texts, embed_knowledge_texts(services, texts), metadata
 
 
+def _no_extractable_text(parsed: ParsedDocument) -> OctopError:
+    """Name the actual condition: a file with no text is not an index failure."""
+    pages = parsed.pages if parsed.pages is not None else len(parsed.blocks)
+    return OctopError(
+        ErrorCode.KNOWLEDGE_NO_EXTRACTABLE_TEXT,
+        f"Knowledge document has no extractable text ({pages} pages); "
+        "upload a file with a text layer or enable OCR.",
+        details={"pages": pages},
+    )
+
+
 def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> None:
     """Run one ingestion at a time, including its native model allocations."""
     repo = services.knowledge_repo
@@ -202,14 +219,14 @@ def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: Parse
             parsed = replace(parsed, filename=document.filename)
         text = parsed.text
         if not text.strip():
-            raise ValueError("knowledge document has no extractable text")
+            raise _no_extractable_text(parsed)
         blocks = parsed.blocks or (
             ParsedBlock(text=text, kind="document", locator={"kind": "document"}),
         )
         index = KnowledgeIndex(kb_id)
         count = index.replace_doc_segments(doc_id, blocks, version=digest)
         if not count:
-            raise ValueError("knowledge document has no extractable text")
+            raise _no_extractable_text(parsed)
         dimension = 0
         try:
             assert_embedding_usable(

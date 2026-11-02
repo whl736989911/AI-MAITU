@@ -920,6 +920,19 @@
   line-height: 18px;
 }
 
+/* A failed document names why: "index failed" alone hides the remedy. */
+.docErrorText {
+  margin-top: 4px;
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
 .docUpdatedAt {
   flex: 1 1 auto;
   min-width: 0;

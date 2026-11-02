@@ -52,6 +52,9 @@ class ErrorCode(StrEnum):
     MODEL_UNAVAILABLE = "MODEL_UNAVAILABLE"
     STORAGE_BACKEND_REFERENCED = "STORAGE_BACKEND_REFERENCED"
     STORAGE_BACKEND_DEPS_FAILED = "STORAGE_BACKEND_DEPS_FAILED"
+    # Running out of disk is an operational state with a remedy (free space),
+    # never an internal error: it must reach the caller as a structured refusal.
+    DISK_FULL = "DISK_FULL"
     CHANNEL_KIND_UNSUPPORTED = "CHANNEL_KIND_UNSUPPORTED"
     CHANNEL_INVALID_CREDENTIALS = "CHANNEL_INVALID_CREDENTIALS"
     CHANNEL_NAME_TAKEN = "CHANNEL_NAME_TAKEN"
@@ -99,6 +102,13 @@ class ErrorCode(StrEnum):
     PLUGIN_ALREADY_EXISTS = "PLUGIN_ALREADY_EXISTS"
     KNOWLEDGE_FEATURE_DISABLED = "KNOWLEDGE_FEATURE_DISABLED"
     KNOWLEDGE_PREREQUISITES_FAILED = "KNOWLEDGE_PREREQUISITES_FAILED"
+    # The generic prerequisite code cannot say what an administrator must run.
+    # Local ONNX embeddings need an installable extra, so a missing import is
+    # its own code carrying the exact command in ``details``.
+    KNOWLEDGE_EMBEDDING_DEPS_MISSING = "KNOWLEDGE_EMBEDDING_DEPS_MISSING"
+    # A parsed document that yields no text is a property of the file, not a
+    # broken index: naming it lets the UI say so instead of "index failed".
+    KNOWLEDGE_NO_EXTRACTABLE_TEXT = "KNOWLEDGE_NO_EXTRACTABLE_TEXT"
     KNOWLEDGE_NOT_FOUND = "KNOWLEDGE_NOT_FOUND"
     KNOWLEDGE_FORBIDDEN = "KNOWLEDGE_FORBIDDEN"
     # A refusal that is about *changing* a knowledge base its caller may already
@@ -245,6 +255,7 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.STORAGE_BACKEND_NAME_TAKEN: 409,
     ErrorCode.STORAGE_BACKEND_REFERENCED: 409,
     ErrorCode.STORAGE_BACKEND_DEPS_FAILED: 503,
+    ErrorCode.DISK_FULL: 507,
     ErrorCode.MODEL_UNAVAILABLE: 503,
     ErrorCode.CHANNEL_KIND_UNSUPPORTED: 400,
     ErrorCode.CHANNEL_INVALID_CREDENTIALS: 400,
@@ -296,6 +307,8 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.PLUGIN_ALREADY_EXISTS: 409,
     ErrorCode.KNOWLEDGE_FEATURE_DISABLED: 403,
     ErrorCode.KNOWLEDGE_PREREQUISITES_FAILED: 409,
+    ErrorCode.KNOWLEDGE_EMBEDDING_DEPS_MISSING: 409,
+    ErrorCode.KNOWLEDGE_NO_EXTRACTABLE_TEXT: 422,
     ErrorCode.KNOWLEDGE_NOT_FOUND: 404,
     ErrorCode.KNOWLEDGE_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN: 403,

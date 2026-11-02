@@ -38,6 +38,8 @@ def test_artifact_paths_reject_escaping_the_workspace(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
     inside = (workspace / "plans" / "review.md").as_posix()
     outside = (tmp_path / "private.md").as_posix()
+    (workspace / "plans").mkdir(parents=True)
+    (workspace / "plans" / "review.md").write_text("body", encoding="utf-8")
     assert extract_artifact_paths(
         tool_name="write_file", args={"path": "plans/review.md"}, workspace_dir=workspace
     ) == [inside]
@@ -54,6 +56,10 @@ def test_artifact_paths_reject_escaping_the_workspace(tmp_path: Path) -> None:
         == []
     )
     assert artifacts_for_response(["plans/review.md", inside, outside], workspace) == [inside]
+    # A path the tool merely reported is not downloadable while nothing is on disk.
+    assert (
+        artifacts_for_response([(workspace / "plans" / "missing.md").as_posix()], workspace) == []
+    )
 
 
 def test_artifact_paths_keep_virtual_roots_and_full_nested_paths(tmp_path: Path) -> None:
@@ -105,6 +111,9 @@ def test_same_named_artifacts_in_different_directories_remain_distinct(
     tmp_path: Path,
 ) -> None:
     workspace = tmp_path / "workspace"
+    for folder in ("reports", "archive"):
+        (workspace / folder / "outbound").mkdir(parents=True)
+        (workspace / folder / "outbound" / "x.docx").write_text(folder, encoding="utf-8")
     paths = artifacts_for_response(
         ["reports/outbound/x.docx", "archive/outbound/x.docx"],
         workspace,
@@ -146,6 +155,8 @@ def test_team_artifact_reference_keeps_producer_and_validates_its_workspace(
 
 def test_successful_plan_write_tracks_artifact_and_pending_plan(tmp_path: Path) -> None:
     workspace = tmp_path / "workspace"
+    (workspace / "plans").mkdir(parents=True)
+    (workspace / "plans" / "review.md").write_text("plan body", encoding="utf-8")
     threads = _Threads()
     middleware = ThreadArtifactsMiddleware(thread_repo=threads, workspace_dir=workspace)
     result = ToolMessage(content="saved", tool_call_id="tc1")
@@ -163,6 +174,33 @@ def test_successful_plan_write_tracks_artifact_and_pending_plan(tmp_path: Path) 
     assert returned is result
     assert threads.artifacts == [("thread-a", [(workspace / "plans/review.md").as_posix()])]
     assert threads.pending_plan == "plans/review.md"
+
+
+def test_reported_write_without_a_file_is_not_offered(tmp_path: Path) -> None:
+    """A tool that reports success while leaving nothing on disk must not
+    become a downloadable artifact: a 404 the user can never resolve is worse
+    than no entry at all."""
+    workspace = tmp_path / "workspace"
+    (workspace / "output").mkdir(parents=True)
+    empty = workspace / "output" / "never-written.docx"
+    empty.write_bytes(b"")
+    threads = _Threads()
+    middleware = ThreadArtifactsMiddleware(thread_repo=threads, workspace_dir=workspace)
+    result = ToolMessage(content="saved", tool_call_id="tc1")
+    with patch(
+        "octop.infra.agents.middleware.thread_artifacts.current_thread_id",
+        return_value="thread-a",
+    ):
+        middleware.wrap_tool_call(_request("output/missing.docx"), lambda _req: result)
+        middleware.wrap_tool_call(_request("output/never-written.docx"), lambda _req: result)
+
+    assert threads.artifacts == []
+    assert (
+        artifacts_for_response(
+            [empty.as_posix(), (workspace / "output" / "missing.docx").as_posix()], workspace
+        )
+        == []
+    )
 
 
 def test_failed_write_does_not_offer_an_unwritten_plan(tmp_path: Path) -> None:

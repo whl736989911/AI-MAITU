@@ -55,7 +55,8 @@ sudo bash deploy/ubuntu/install-source.sh --yes --port 8088
 - apt 安装构建依赖（`--no-apt` 可跳过，适合已有镜像）；
 - 安装 `uv`，把 Python 3.12 安装到 `/opt/maitu-python`，项目 venv 为 `/opt/maitu/.venv`；
 - 创建系统用户/组 `maitu`，数据目录 `/var/lib/maitu`（0700）；
-- 按 `uv.lock` 执行 `uv sync --frozen --inexact --no-dev --extra office --extra knowledge-ocr`；
+- 按 `uv.lock` 执行 `uv sync --frozen --inexact --no-dev` 并安装所选扩展；默认包含本地 embedding 和 OCR；
+  安装器会自动运行 `maitu doctor --require "$EXTRAS" --fix`，检查依赖并尝试安装缺失的 apt 软件包；
 - 写 `/etc/systemd/system/maitu.service`（`User=maitu`），启动并等待 `/api/health` 通过。
 
 常用参数：
@@ -80,6 +81,10 @@ sudo bash deploy/ubuntu/install-source.sh --dry-run
 - 默认使用 ZIP 内已构建的 `src/octop/dashboard/`，因此首次安装不需要 Node；`--build-frontend` 才会安装 Node 22 并执行 `npm ci && npm run build`。
 - 服务以 `maitu` 用户运行；源码归 root、组可读，数据目录归 `maitu`。不要把源码目录改为 `maitu` 可写，除非你明确接受 Agent 能修改自身代码。
 - 重新对同一路径执行安装会拒绝覆盖已有的 `.venv`/service；修复重装用 `--force`，升级走下一节的 upgrade 脚本。
+
+### 依赖检查
+
+安装或升级后可运行 `octop doctor [--require ...] [--fix]` 检查运行时依赖；`--require` 接受逗号分隔的扩展名，`--fix` 会在 Linux/apt 环境尝试安装缺失的系统软件包。该安装器会自动运行此检查。
 
 ### 2. 防火墙与访问
 

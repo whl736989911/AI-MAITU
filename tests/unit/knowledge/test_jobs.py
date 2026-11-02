@@ -15,6 +15,7 @@ from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.db.repos.users import UserRepo
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge import jobs
 from octop.infra.knowledge.files import write_document
 from octop.infra.knowledge.index import KnowledgeIndex
@@ -230,8 +231,9 @@ def test_process_document_marks_empty_extract_as_failed(
         jobs, "embed_knowledge_texts", lambda *_a, **_k: (_ for _ in ()).throw(AssertionError())
     )
 
-    with pytest.raises(ValueError, match="no extractable text"):
+    with pytest.raises(OctopError) as exc_info:
         jobs.process_document(services, kb.id, doc.id)
+    assert exc_info.value.code is ErrorCode.KNOWLEDGE_NO_EXTRACTABLE_TEXT
 
     updated = repo.get_document(doc.id)
     assert updated is not None

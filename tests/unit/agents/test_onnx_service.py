@@ -148,11 +148,16 @@ def test_ensure_deps_noop_when_available(monkeypatch) -> None:
 
 def test_ensure_deps_refuses_install_by_default(monkeypatch) -> None:
     from octop.infra.agents.providers import onnx_service as mod
+    from octop.infra.errors import ErrorCode, OctopError
 
     monkeypatch.delenv("OCTOP_ALLOW_RUNTIME_PIP", raising=False)
     monkeypatch.setattr(mod, "local_embedding_deps_available", lambda: False)
-    with pytest.raises(RuntimeError, match="Enable the ONNX service"):
+    with pytest.raises(OctopError) as exc_info:
         mod.ensure_local_embedding_deps()
+    # A refusal must name what to install: "enable the ONNX service" cannot be
+    # acted on when the operator is the one who deployed this host.
+    assert exc_info.value.code is ErrorCode.KNOWLEDGE_EMBEDDING_DEPS_MISSING
+    assert "local-embedding" in exc_info.value.details["install_command"]
 
 
 def test_ensure_deps_installs_when_env_allows(monkeypatch) -> None:

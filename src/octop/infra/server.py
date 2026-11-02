@@ -68,15 +68,36 @@ class SizeTimedRotatingFileHandler(TimedRotatingFileHandler):
         self.max_bytes = max(0, max_bytes)
         self.compress_rotated = compress_rotated
 
+    def handleError(self, record: logging.LogRecord | None) -> None:
+        """Report handler failures directly to stderr without logging recursively."""
+        with suppress(Exception):
+            os.write(2, b"Octop rotating log handler failed\n")
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            super().emit(record)
+        except Exception:
+            self.handleError(record)
+
+    def flush(self) -> None:
+        try:
+            super().flush()
+        except Exception:
+            self.handleError(None)
+
     def shouldRollover(self, record: logging.LogRecord) -> bool:
-        if super().shouldRollover(record):
-            return True
-        if self.max_bytes <= 0:
+        try:
+            if super().shouldRollover(record):
+                return True
+            if self.max_bytes <= 0:
+                return False
+            if self.stream is None:
+                self.stream = self._open()
+            self.stream.flush()
+            return self.stream.tell() >= self.max_bytes
+        except OSError:
+            self.handleError(record)
             return False
-        if self.stream is None:
-            self.stream = self._open()
-        self.stream.flush()
-        return self.stream.tell() >= self.max_bytes
 
     def rotate(self, source: str, dest: str) -> None:
         super().rotate(source, dest)

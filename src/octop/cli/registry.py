@@ -33,6 +33,11 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
         "Show the installed AIWAY version.",
     ),
     "completion": (".commands.completion", "completion", "Shell completion utilities."),
+    "doctor": (
+        ".commands.doctor",
+        "doctor",
+        "Check runtime dependency availability.",
+    ),
     "update": (
         ".commands.update",
         "update",

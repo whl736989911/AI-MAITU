@@ -27,12 +27,41 @@ from octop.infra.agents.providers.onnx_catalog import (
     list_onnx_catalog_models,
 )
 from octop.infra.agents.providers.onnx_download import download_model_raced
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.paths import PathLayout
 from octop.infra.utils.runtime_packages import (
     PackageInstallSpec,
     install_packages,
     purge_import_cache,
 )
+
+_LOCAL_EMBEDDING_INSTALL_COMMAND = (
+    "uv sync --frozen --inexact --no-dev --extra office "
+    "--extra knowledge-ocr --extra local-embedding"
+)
+
+
+def _local_embedding_deps_error() -> OctopError:
+    missing = []
+    for module in ("fastembed", "huggingface_hub"):
+        try:
+            __import__(module)
+        except ImportError:
+            missing.append(module)
+    missing_text = ", ".join(missing) or "fastembed, huggingface_hub"
+    message = (
+        f"Local embedding components are missing ({missing_text}). "
+        f"Install them with: {_LOCAL_EMBEDDING_INSTALL_COMMAND}"
+    )
+    return OctopError(
+        ErrorCode.KNOWLEDGE_EMBEDDING_DEPS_MISSING,
+        message,
+        details={
+            "missing": missing_text,
+            "install_command": _LOCAL_EMBEDDING_INSTALL_COMMAND,
+        },
+    )
+
 
 logger = logging.getLogger(__name__)
 
@@ -82,13 +111,10 @@ def _purge_failed_imports() -> None:
 
 
 def require_local_embedding_deps() -> None:
-    """Raise RuntimeError when optional local-embedding extras are missing."""
+    """Raise a typed error when optional local-embedding extras are missing."""
     if local_embedding_deps_available():
         return
-    raise RuntimeError(
-        "Local embedding components are not installed. "
-        "Enable the ONNX service to install them automatically."
-    )
+    raise _local_embedding_deps_error()
 
 
 def ensure_local_embedding_deps(*, allow_install: bool | None = None) -> str:
@@ -103,16 +129,18 @@ def ensure_local_embedding_deps(*, allow_install: bool | None = None) -> str:
         allow_install = runtime_pip_allowed()
     if not allow_install:
         require_local_embedding_deps()
-    outcome = install_packages(
-        _LOCAL_EMBEDDING_SPEC,
-        is_satisfied=local_embedding_deps_available,
-        import_modules=("fastembed", "huggingface_hub"),
-    )
-    if not local_embedding_deps_available():
-        raise RuntimeError(
-            "Local embedding components were installed but could not be loaded. "
-            "Restart the server and try again."
+    try:
+        outcome = install_packages(
+            _LOCAL_EMBEDDING_SPEC,
+            is_satisfied=local_embedding_deps_available,
+            import_modules=("fastembed", "huggingface_hub"),
         )
+    except Exception as exc:
+        if not local_embedding_deps_available():
+            raise _local_embedding_deps_error() from exc
+        raise
+    if not local_embedding_deps_available():
+        raise _local_embedding_deps_error()
     return outcome
 
 

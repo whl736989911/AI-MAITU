@@ -3229,6 +3229,15 @@ export default function KnowledgeBasesPage() {
                                       },
                                     )}`}
                               </div>
+                              {document.status === "failed" &&
+                              document.error_message ? (
+                                <div
+                                  className={styles.docErrorText}
+                                  title={document.error_message}
+                                >
+                                  {document.error_message}
+                                </div>
+                              ) : null}
                               {document.is_dir ? null : (
                                 <div className={styles.docCardFooter}>
                                   <Tooltip
@@ -3396,28 +3405,41 @@ export default function KnowledgeBasesPage() {
                           {
                             title: t("knowledgeBases.status"),
                             key: "status",
-                            width: 100,
+                            width: 220,
                             render: (_, document) =>
                               document.is_dir ? (
                                 "—"
                               ) : (
-                                <Tooltip
-                                  title={
-                                    document.archive_reason
-                                      ? t(
-                                          `knowledgeBases.archiveReasons.${document.archive_reason}`,
-                                        )
-                                      : document.error_message || undefined
-                                  }
-                                >
-                                  <Tag
-                                    color={documentStatusColor(document.status)}
+                                <>
+                                  <Tooltip
+                                    title={
+                                      document.archive_reason
+                                        ? t(
+                                            `knowledgeBases.archiveReasons.${document.archive_reason}`,
+                                          )
+                                        : document.error_message || undefined
+                                    }
                                   >
-                                    {t(
-                                      `knowledgeBases.statusesShort.${document.status}`,
-                                    )}
-                                  </Tag>
-                                </Tooltip>
+                                    <Tag
+                                      color={documentStatusColor(
+                                        document.status,
+                                      )}
+                                    >
+                                      {t(
+                                        `knowledgeBases.statusesShort.${document.status}`,
+                                      )}
+                                    </Tag>
+                                  </Tooltip>
+                                  {document.status === "failed" &&
+                                  document.error_message ? (
+                                    <div
+                                      className={styles.docErrorText}
+                                      title={document.error_message}
+                                    >
+                                      {document.error_message}
+                                    </div>
+                                  ) : null}
+                                </>
                               ),
                           },
                           {

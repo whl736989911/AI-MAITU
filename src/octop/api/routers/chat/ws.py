@@ -13,6 +13,7 @@ from pydantic import ValidationError
 from starlette.websockets import WebSocketState
 
 from octop.api.common.agent import assert_agent_access
+from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.deps import resolve_user_from_token
 from octop.api.routers.chat.models import UserTurnWsFrame
 from octop.api.routers.chat.sse import json_chunk_default
@@ -25,8 +26,11 @@ from octop.api.routers.chat.turn import (
 from octop.infra.errors import OctopError
 from octop.infra.gateway.steering import SteeringConflict
 from octop.infra.gateway.ws.ws_channel import WS_CHANNEL_ID
+from octop.infra.utils.disk import require_headroom
 
 logger = logging.getLogger(__name__)
+
+CHAT_TURN_MINIMUM_FREE_BYTES = 512 * 1024 * 1024
 
 router = APIRouter()
 
@@ -223,6 +227,11 @@ async def dashboard_chat_ws(
                 continue
 
             try:
+                require_headroom(
+                    resolve_agent_workspace_dir(server, agent_id),
+                    minimum_bytes=CHAT_TURN_MINIMUM_FREE_BYTES,
+                    label="chat turn",
+                )
                 prepared = await prepare_dashboard_turn(
                     server,
                     agent_id=agent_id,

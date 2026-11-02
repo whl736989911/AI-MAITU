@@ -22,7 +22,7 @@ DRY_RUN=0
 PYTHON_INSTALL_DIR="/opt/maitu-python"
 SERVICE_USER="maitu"
 PORT="8088"
-EXTRAS="office,knowledge-ocr"
+EXTRAS="office,knowledge-ocr,local-embedding"
 
 usage() {
   cat <<'EOF'
@@ -35,7 +35,7 @@ Run from the NEW extracted source tree (the one containing pyproject.toml):
   --backup-dir DIR    backup destination (default: /var/backups/maitu)
   --service-user NAME systemd user/group (default: maitu)
   --port PORT         HTTP port for the health check (default: 8088)
-  --extras LIST       comma-separated extras to sync (default: office,knowledge-ocr)
+  --extras LIST       comma-separated extras to sync (default: office,knowledge-ocr,local-embedding)
   --skip-verify       skip SOURCE-PACKAGE.json hash verification
   --yes               do not ask for confirmation
   --dry-run           print the plan and exit
@@ -177,6 +177,13 @@ done
 )
 chown -R root:"$SERVICE_USER" "$INSTALL_DIR"
 chmod -R go+rX "$INSTALL_DIR"
+
+say "checking runtime dependencies"
+"$INSTALL_DIR/.venv/bin/maitu" doctor --require "$EXTRAS" || {
+  say "dependency check failed; install the reported OS packages, then rerun:"
+  say "  $INSTALL_DIR/.venv/bin/maitu doctor --require $EXTRAS --fix"
+  die "refusing to start an upgrade whose required dependencies are missing"
+}
 
 say "reloading and starting maitu.service"
 systemctl daemon-reload
