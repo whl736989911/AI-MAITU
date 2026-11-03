@@ -46,12 +46,14 @@ export const VISIBILITY_HINT_KEYS: Record<SharingVisibility, string> = {
 
 export const PERMISSION_LABEL_KEYS: Record<SharingPermission, string> = {
   read: "sharing.permission.read",
+  upload: "sharing.permission.upload",
   write: "sharing.permission.write",
 };
 
 /** Longer copy for the permission radio cards. */
 export const PERMISSION_HINT_KEYS: Record<SharingPermission, string> = {
   read: "sharing.permissionHint.read",
+  upload: "sharing.permissionHint.upload",
   write: "sharing.permissionHint.write",
 };
 

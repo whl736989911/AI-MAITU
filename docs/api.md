@@ -983,8 +983,10 @@ retarget an existing collection. Knowledge backups include the derived artifacts
 
 Permission updates take `{expected_version, visibility, unit_key?, permission,
 grants?, reason?}`. `visibility` is `public` (company), `unit` (department), or
-`private` (personal; private with grants is custom). `permission` is `read` or
-`write`; grants identify users, units or roles. Responses include the effective
+`private` (personal; private with grants is custom). `permission` is `read`,
+`upload` or `write`; grants identify users, units or roles. `upload` lets the
+grantee add new files without changing, renaming or deleting existing ones —
+that still needs `write`, which the owner and administrators always hold. Responses include the effective
 permission and applied/pending change metadata. Stale versions return `409`.
 The knowledge-base owner and system administrator manage ACLs; content write
 permission alone does not grant ACL management. Sharing retains approvals/audit,

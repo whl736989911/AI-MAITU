@@ -59,7 +59,7 @@ CHANGE_STATUSES = (CHANGE_APPLIED, CHANGE_PENDING, CHANGE_REJECTED, CHANGE_ROLLE
 
 Visibility = Literal["private", "unit", "public"]
 GranteeType = Literal["user", "unit", "role"]
-Permission = Literal["read", "write"]
+Permission = Literal["read", "upload", "write"]
 
 
 class GrantBody(BaseModel):

@@ -16,6 +16,7 @@ from octop.infra.sharing import (
     VISIBILITY_UNIT,
     AclEntry,
     can_access,
+    can_upload,
     can_write,
     grant_delegates,
 )
@@ -493,7 +494,7 @@ class KnowledgePermissionService:
             raise LookupError("knowledge base not found")
         role, unit_keys = self._acl.scope_for_user(actor_user_id)
         base_entry = self._base_entry(base)
-        self._require_read(base_entry, actor_user_id, role, unit_keys)
+        self._require_upload(base_entry, actor_user_id, role, unit_keys)
         folder_rel = normalize_kb_path(folder)
         if data_source_id:
             folder_rel = self._source_folder_rel(kb_id, data_source_id, folder_rel)
@@ -563,7 +564,7 @@ class KnowledgePermissionService:
             raise LookupError("knowledge base not found")
         role, unit_keys = self._acl.scope_for_user(actor_user_id)
         base_entry = self._base_entry(base)
-        self._require_read(base_entry, actor_user_id, role, unit_keys)
+        self._require_upload(base_entry, actor_user_id, role, unit_keys)
         folder_rel = normalize_kb_path(folder)
         if data_source_id:
             folder_rel = self._source_folder_rel(kb_id, data_source_id, folder_rel)
@@ -900,4 +901,14 @@ class KnowledgePermissionService:
         if not can_access(entry, user_id=actor_user_id, role=role, unit_keys=unit_keys):
             raise OctopError(
                 ErrorCode.KNOWLEDGE_FORBIDDEN, "knowledge base read access is required"
+            )
+
+    def _require_upload(
+        self, entry: AclEntry, actor_user_id: int, role: str, unit_keys: tuple[str, ...]
+    ) -> None:
+        """Adding files needs ``upload``; reading is not enough."""
+        if not can_upload(entry, user_id=actor_user_id, role=role, unit_keys=unit_keys):
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN,
+                "knowledge base upload access is required",
             )

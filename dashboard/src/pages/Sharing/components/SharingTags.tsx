@@ -8,6 +8,7 @@ import {
   Lock,
   Pencil,
   Undo2,
+  Upload,
   UserRound,
   XCircle,
 } from "lucide-react";
@@ -74,10 +75,19 @@ export function PermissionTag({
 }) {
   const { t } = useTranslation();
   const writable = permission === "write";
+  const contributes = permission === "upload";
   return (
     <Tag
-      color={writable ? "gold" : undefined}
-      icon={writable ? <Pencil size={ICON_SIZE} /> : <Eye size={ICON_SIZE} />}
+      color={writable ? "gold" : contributes ? "blue" : undefined}
+      icon={
+        writable ? (
+          <Pencil size={ICON_SIZE} />
+        ) : contributes ? (
+          <Upload size={ICON_SIZE} />
+        ) : (
+          <Eye size={ICON_SIZE} />
+        )
+      }
       style={{ marginInlineEnd: 0 }}
     >
       {t(PERMISSION_LABEL_KEYS[permission])}

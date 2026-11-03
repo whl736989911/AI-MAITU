@@ -31,7 +31,7 @@ class GrantBody(BaseModel):
 class PermissionBody(BaseModel):
     visibility: Literal["private", "unit", "public"]
     unit_key: str | None = Field(default=None, max_length=64)
-    permission: Literal["read", "write"] = "read"
+    permission: Literal["read", "upload", "write"] = "read"
     grants: list[GrantBody] = Field(default_factory=list, max_length=100)
     reason: str | None = Field(default=None, max_length=200)
     expected_version: int = Field(ge=0)
@@ -52,7 +52,7 @@ class KnowledgeGrantView(BaseModel):
 class KnowledgeAclEntry(BaseModel):
     visibility: Literal["private", "unit", "public"]
     unit_key: str | None
-    permission: Literal["read", "write"]
+    permission: Literal["read", "upload", "write"]
     grants: list[KnowledgeGrantView]
     version: int
 
@@ -80,7 +80,7 @@ class KnowledgePermissionView(KnowledgePermissionOrigin):
     access_scope: Literal["company", "department", "personal", "custom"]
     department_name: str | None
     inherited_from: KnowledgePermissionOrigin | None
-    permission: Literal["read", "write"]
+    permission: Literal["read", "upload", "write"]
     effective: KnowledgeEffectivePermission
     can_manage: bool = Field(
         description="Content write access alone does not permit ACL management."
@@ -97,7 +97,7 @@ class KnowledgePermissionView(KnowledgePermissionOrigin):
 
 class UploadAccess(BaseModel):
     scope: Literal["company", "department", "personal", "authorized"]
-    permission: Literal["read", "write"]
+    permission: Literal["read", "upload", "write"]
     unit_key: str | None = None
     department_name: str | None = None
 
@@ -125,7 +125,7 @@ class DelegationPrincipal(BaseModel):
 class DelegationListing(BaseModel):
     version: int
     can_delegate: bool
-    permission: Literal["read", "write"]
+    permission: Literal["read", "upload", "write"]
     grants: list[DelegationGrant]
     principals: list[DelegationPrincipal]
 

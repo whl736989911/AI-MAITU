@@ -85,6 +85,25 @@ async def test_owner_change_takes_effect_immediately(api: dict[str, Any]) -> Non
     assert queue.json()["changes"] == []
 
 
+async def test_upload_level_is_accepted_and_recorded(api: dict[str, Any]) -> None:
+    """A department share can grant ``upload`` without granting maintenance."""
+    client: httpx.AsyncClient = api["client"]
+
+    changed = await client.post(
+        _acl_url(api),
+        headers=api["member"],
+        json={"visibility": "unit", "unit_key": "eng", "permission": "upload"},
+    )
+    assert changed.status_code == 200, changed.text
+    body = changed.json()
+    assert body["applied"] is True
+    assert body["entry"]["permission"] == "upload"
+
+    read = await client.get(_acl_url(api), headers=api["member"])
+    assert read.status_code == 200, read.text
+    assert read.json()["entry"]["permission"] == "upload"
+
+
 async def test_without_users_permission_cannot_read_or_change_acl(api: dict[str, Any]) -> None:
     client: httpx.AsyncClient = api["client"]
     outsider = await create_user(client, api["admin"], username="outsider")

@@ -35,8 +35,9 @@ VISIBILITY_PUBLIC = "public"
 #: enterprise knowledge space is seeded with, so "everyone can reach it" means
 #: "everyone can read it", never "everyone can write it".
 PERMISSION_READ = "read"
+PERMISSION_UPLOAD = "upload"
 PERMISSION_WRITE = "write"
-PERMISSIONS = (PERMISSION_READ, PERMISSION_WRITE)
+PERMISSIONS = (PERMISSION_READ, PERMISSION_UPLOAD, PERMISSION_WRITE)
 
 IMPACT_SELF = "self"
 IMPACT_UNIT = "unit"
@@ -48,6 +49,7 @@ __all__ = [
     "IMPACT_UNIT",
     "PERMISSIONS",
     "PERMISSION_READ",
+    "PERMISSION_UPLOAD",
     "PERMISSION_WRITE",
     "RESOURCE_TYPES",
     "VISIBILITY_PRIVATE",
@@ -56,6 +58,7 @@ __all__ = [
     "AclEntry",
     "allowed_resource_ids",
     "can_access",
+    "can_upload",
     "can_write",
     "grant_delegates",
     "impact_scope",
@@ -87,7 +90,7 @@ class AclEntry:
     unit_key: str | None
     version: int
     grants: tuple[tuple[str, str], ...] = ()  # ((grantee_type, grantee_id), ...)
-    permission: str = PERMISSION_READ  # read | write
+    permission: str = PERMISSION_READ  # read | upload | write
     #: The subset of *individual user* grants that also carry delegation
     #: authority: the grantee may pass their entry-derived access on to other
     #: individual users through the knowledge delegation graph. It never
@@ -171,6 +174,27 @@ def can_access(
     if any(("unit", unit) in grants for unit in unit_keys):
         return True
     return ("role", role) in grants
+
+
+def can_upload(
+    entry: AclEntry,
+    *,
+    user_id: int,
+    role: str,
+    unit_keys: Collection[str],
+) -> bool:
+    """Whether this user may add new resources without changing existing ones.
+
+    ``upload`` sits between ``read`` and ``write``: a department can contribute
+    files to a shared archive while nobody but the owner (or an administrator)
+    may replace, rename or delete what is already there. An entry that predates
+    the level reads as ``read``, so it never gains this ability by accident.
+    """
+    if role == "admin" or user_id == entry.owner_user_id:
+        return True
+    return entry.permission in (PERMISSION_UPLOAD, PERMISSION_WRITE) and can_access(
+        entry, user_id=user_id, role=role, unit_keys=unit_keys
+    )
 
 
 def can_write(

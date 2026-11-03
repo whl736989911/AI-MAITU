@@ -8,6 +8,7 @@ from octop.infra.sharing import (
     AclEntry,
     allowed_resource_ids,
     can_access,
+    can_upload,
     can_write,
     impact_scope,
     requires_approval,
@@ -332,3 +333,34 @@ def test_impact_scope_narrowing_a_public_write_row_back_to_read_is_self() -> Non
     after = _entry(visibility="public", owner_user_id=7)
 
     assert impact_scope(before, after) == "self"
+
+
+# --- can_upload -----------------------------------------------------------
+def test_can_upload_allows_adding_without_maintaining() -> None:
+    """``upload`` adds files; ``write`` is what edits or removes them."""
+    entry = _entry(owner_user_id=7, grants=(("user", "8"),), permission="upload")
+
+    assert can_upload(entry, user_id=8, role="user", unit_keys=()) is True
+    assert can_write(entry, user_id=8, role="user", unit_keys=()) is False
+
+
+def test_can_upload_is_implied_by_write_but_not_by_read() -> None:
+    writer = _entry(owner_user_id=7, grants=(("user", "8"),), permission="write")
+    reader = _entry(owner_user_id=7, grants=(("user", "8"),), permission="read")
+
+    assert can_upload(writer, user_id=8, role="user", unit_keys=()) is True
+    assert can_upload(reader, user_id=8, role="user", unit_keys=()) is False
+
+
+def test_can_upload_keeps_the_owner_and_admin_bypass() -> None:
+    private = _entry(owner_user_id=7, permission="read")
+
+    assert can_upload(private, user_id=7, role="user", unit_keys=()) is True
+    assert can_upload(private, user_id=99, role="admin", unit_keys=()) is True
+    assert can_upload(private, user_id=99, role="user", unit_keys=()) is False
+
+
+def test_upload_level_is_a_declared_permission() -> None:
+    from octop.infra.sharing import PERMISSIONS
+
+    assert PERMISSIONS == ("read", "upload", "write")

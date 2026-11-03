@@ -17,7 +17,7 @@ export type SharingVisibility = "private" | "unit" | "public";
  * so a share nobody chose a level for — the published enterprise space
  * included — is reachable but not writable.
  */
-export type SharingPermission = "read" | "write";
+export type SharingPermission = "read" | "upload" | "write";
 
 /** How widely a change lands: the actor alone, their unit, or the whole org. */
 export type SharingImpactScope = "self" | "unit" | "org";

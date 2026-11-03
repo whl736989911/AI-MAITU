@@ -3501,11 +3501,13 @@
     },
     "permission": {
       "read": "Read only",
-      "write": "Read and write"
+      "write": "Read and write",
+      "upload": "Can upload"
     },
     "permissionHint": {
       "read": "They can open, search, and use it, but not change what is inside.",
-      "write": "They can open, search, and use it, and also maintain it — rename, edit, or remove it."
+      "write": "They can open, search, and use it, and also maintain it — rename, edit, or remove it.",
+      "upload": "Can open, search and add new files; cannot change, rename or delete existing content."
     }
   },
   "teams": {

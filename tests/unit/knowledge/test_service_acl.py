@@ -76,7 +76,7 @@ def test_shared_reader_cannot_upload(service: KnowledgeService) -> None:
     viewer = users.create(username="viewer", password_hash="h", role="user")
     kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs", shared=True)
 
-    with pytest.raises(PermissionError, match="write"):
+    with pytest.raises(PermissionError, match="upload"):
         service.upload_document(
             kb.id,
             actor_user_id=viewer,
@@ -148,7 +148,8 @@ def test_shared_writer_can_upload_and_maintain(service: KnowledgeService) -> Non
 
     share("read")
     assert service.get_readable_base(kb.id, actor_user_id=writer).id == kb.id
-    with pytest.raises(PermissionError, match="write"):
+    # Adding files is its own level: a narrowed share stops it before write does.
+    with pytest.raises(PermissionError, match="upload"):
         service.upload_document(
             kb.id,
             actor_user_id=writer,
@@ -156,6 +157,56 @@ def test_shared_writer_can_upload_and_maintain(service: KnowledgeService) -> Non
             content_type="text/markdown",
             content=b"# blocked",
         )
+
+
+def test_upload_level_contributes_files_without_maintaining_them(
+    service: KnowledgeService,
+) -> None:
+    """The archive rule: a department may add files, not rewrite the archive."""
+    users = service._services.user_repo
+    owner = users.create(username="owner", role="user", password_hash="h")
+    contributor = users.create(username="contributor", role="user", password_hash="h")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
+    SharingService(service._services.db).apply_change(
+        owner,
+        "knowledge_base",
+        kb.id,
+        AclEntry(
+            resource_type="knowledge_base",
+            resource_id=kb.id,
+            owner_user_id=owner,
+            visibility="private",
+            unit_key=None,
+            version=0,
+            grants=(("user", str(contributor)),),
+            permission="upload",
+        ),
+    )
+
+    doc = service.upload_document(
+        kb.id,
+        actor_user_id=contributor,
+        filename="contribution.md",
+        content_type="text/markdown",
+        content=b"# contributed",
+    )
+    assert doc.filename == "contribution.md"
+    assert service.get_readable_base(kb.id, actor_user_id=contributor).id == kb.id
+
+    with pytest.raises(PermissionError, match="write"):
+        service.update_text_document(kb.id, doc.id, actor_user_id=contributor, content="rewritten")
+    with pytest.raises(PermissionError, match="write"):
+        service.rename_document(kb.id, doc.id, new_name="renamed.md", actor_user_id=contributor)
+    with pytest.raises(PermissionError, match="write"):
+        service.delete_document(kb.id, doc.id, actor_user_id=contributor)
+
+    # The archive owner keeps full control of what a department contributed.
+    assert (
+        service.update_text_document(
+            kb.id, doc.id, actor_user_id=owner, content="owner edit"
+        ).filename
+        == "contribution.md"
+    )
 
 
 def test_shared_reader_can_preview_document_text(service: KnowledgeService) -> None:

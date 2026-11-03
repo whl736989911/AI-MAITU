@@ -50,7 +50,7 @@ const VISIBILITIES: readonly SharingVisibility[] = [
 ];
 const GRANTEE_TYPES: readonly SharingGranteeType[] = ["user", "unit", "role"];
 /** Read first: it is the default and the narrower of the two. */
-const PERMISSIONS: readonly SharingPermission[] = ["read", "write"];
+const PERMISSIONS: readonly SharingPermission[] = ["read", "upload", "write"];
 
 export interface SharingSettingsDrawerProps {
   open: boolean;

@@ -5,10 +5,11 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable, Mapping
 from typing import Any
 
-from octop.infra.sharing import AclEntry, can_access, can_write
+from octop.infra.sharing import AclEntry, can_access, can_upload, can_write
 
 __all__ = [
     "document_access_ids",
+    "document_upload_ids",
     "may_read_document",
     "may_read_knowledge_base",
     "readable_documents",
@@ -40,11 +41,46 @@ def document_access_ids(
     user/unit/role grant on a file may bypass those folder ACLs, but never the
     file's own ACL or the knowledge-base ACL (checked by the caller).
     """
+    restricted, readable, writable, _uploadable = _document_scope(
+        documents, entries, user_id=user_id, role=role, unit_keys=unit_keys
+    )
+    return restricted, readable, writable
+
+
+def document_upload_ids(
+    documents: Iterable[Any],
+    entries: Mapping[str, AclEntry],
+    *,
+    user_id: int,
+    role: str,
+    unit_keys: Collection[str],
+) -> tuple[set[str], set[str]]:
+    """Return restricted and uploadable document ids for one base.
+
+    The same ancestor rule as :func:`document_access_ids`: an ``upload`` grant on
+    a folder is what lets a department add files there, while modifying or
+    deleting an existing file still needs ``write``.
+    """
+    restricted, _readable, _writable, uploadable = _document_scope(
+        documents, entries, user_id=user_id, role=role, unit_keys=unit_keys
+    )
+    return restricted, uploadable
+
+
+def _document_scope(
+    documents: Iterable[Any],
+    entries: Mapping[str, AclEntry],
+    *,
+    user_id: int,
+    role: str,
+    unit_keys: Collection[str],
+) -> tuple[set[str], set[str], set[str], set[str]]:
     rows = list(documents)
     by_path = {str(row.path): row for row in rows}
     restricted: set[str] = set()
     readable: set[str] = set()
     writable: set[str] = set()
+    uploadable: set[str] = set()
 
     for row in rows:
         doc_id = str(row.id)
@@ -85,7 +121,14 @@ def document_access_ids(
         if own_write and ancestors_write:
             writable.add(doc_id)
 
-    return restricted, readable, writable
+        own_upload = own is None or can_upload(own, user_id=user_id, role=role, unit_keys=unit_keys)
+        ancestors_upload = explicit_file_grant or all(
+            can_upload(acl, user_id=user_id, role=role, unit_keys=unit_keys) for acl in ancestors
+        )
+        if own_upload and ancestors_upload:
+            uploadable.add(doc_id)
+
+    return restricted, readable, writable, uploadable
 
 
 def may_read_document(

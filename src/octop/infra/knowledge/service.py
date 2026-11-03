@@ -36,6 +36,7 @@ from octop.infra.knowledge.relpath import (
 )
 from octop.infra.knowledge.scope import (
     document_access_ids,
+    document_upload_ids,
     may_read_document,
     may_read_knowledge_base,
     readable_documents,
@@ -48,7 +49,7 @@ from octop.infra.knowledge.search import (
     snippet,
 )
 from octop.infra.knowledge.sources import SourceError
-from octop.infra.sharing import VISIBILITY_PRIVATE, AclEntry, can_write
+from octop.infra.sharing import VISIBILITY_PRIVATE, AclEntry, can_upload, can_write
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,7 @@ MAX_DOCUMENT_BYTES = upload_mb_to_bytes(DEFAULT_MAX_UPLOAD_MB)
 # Upper bound for the per-base max_documents field. Mirrors Field(le=10000).
 MAX_KB_MAX_DOCUMENTS = 10_000
 ACCESS_READ = "read"
+ACCESS_UPLOAD = "upload"
 ACCESS_WRITE = "write"
 
 
@@ -740,6 +742,21 @@ class KnowledgeService:
                 "knowledge document write access is required", access=ACCESS_WRITE
             )
 
+    def require_document_uploadable(
+        self, document: KnowledgeDocumentRow, *, actor_user_id: int
+    ) -> None:
+        """Require the right to add into this folder without modifying it."""
+        role, unit_keys = self._repo.scope_for_user(actor_user_id)
+        entries = self._repo.document_acl_entries()
+        documents = self._repo.list_documents(document.kb_id)
+        _restricted, uploadable = document_upload_ids(
+            documents, entries, user_id=actor_user_id, role=role, unit_keys=unit_keys
+        )
+        if document.id not in uploadable:
+            raise KnowledgeAccessDenied(
+                "knowledge document upload access is required", access=ACCESS_UPLOAD
+            )
+
     def require_document_readable(
         self, document: KnowledgeDocumentRow, *, actor_user_id: int, is_admin: bool = False
     ) -> None:
@@ -791,6 +808,28 @@ class KnowledgeService:
             return base
         raise KnowledgeAccessDenied("knowledge base write access is required", access=ACCESS_WRITE)
 
+    def get_upload_base(
+        self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
+    ) -> KnowledgeBaseRow:
+        """Read access plus the right to add files, without the right to change them."""
+        base = self._require_base(kb_id)
+        entry = self._repo.acl_entry(kb_id)
+        if entry is None:
+            entry = AclEntry(
+                resource_type="knowledge_base",
+                resource_id=kb_id,
+                owner_user_id=base.owner_user_id,
+                visibility=VISIBILITY_PRIVATE,
+                unit_key=None,
+                version=0,
+            )
+        role, unit_keys = self._repo.scope_for_user(actor_user_id)
+        if can_upload(entry, user_id=actor_user_id, role=role, unit_keys=unit_keys):
+            return base
+        raise KnowledgeAccessDenied(
+            "knowledge base upload access is required", access=ACCESS_UPLOAD
+        )
+
     def require_owner(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
@@ -817,7 +856,7 @@ class KnowledgeService:
         assert_knowledge_usable(
             self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
         )
-        base = self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        base = self.get_upload_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         limit = self.max_document_bytes()
         if len(content) > limit:
             raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
@@ -825,7 +864,7 @@ class KnowledgeService:
         for parent in ancestor_dirs(rel):
             existing = self._repo.get_document_by_path(kb_id, parent)
             if existing is not None:
-                self.require_document_writable(existing, actor_user_id=actor_user_id)
+                self.require_document_uploadable(existing, actor_user_id=actor_user_id)
         name = path_basename(rel)
         if not name:
             raise ValueError("invalid knowledge document filename")
