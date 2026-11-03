@@ -196,3 +196,68 @@ def test_custom_role_default_stays_private_after_its_parent_becomes_public(permi
         unit_keys=(),
     )
     assert document.id in restricted and document.id not in readable
+
+
+def _acl(env, resource_type, resource_id, *, visibility, permission, unit_key=None, grants=()):
+    env.services.resource_acl_repo.upsert(
+        AclEntry(
+            resource_type,
+            resource_id,
+            env.actor,
+            visibility,
+            unit_key,
+            1,
+            permission=permission,
+            grants=grants,
+        )
+    )
+
+
+def test_upload_options_are_refused_when_the_base_only_allows_reading(permission_context):
+    """A readable archive is not an uploadable one: no dialog, no choices."""
+    env = permission_context
+    alice = env.services.user_repo.create(username="alice", password_hash="unused", role="user")
+    _acl(env, "knowledge_base", env.base.id, visibility="public", permission="read")
+
+    with pytest.raises(OctopError):
+        KnowledgePermissionService(env.services).upload_access(env.base.id, actor_user_id=alice)
+
+
+def test_upload_options_are_refused_when_a_folder_boundary_only_allows_reading(permission_context):
+    """Every boundary on the way down must allow adding files."""
+    env = permission_context
+    alice = env.services.user_repo.create(username="alice", password_hash="unused", role="user")
+    _acl(env, "knowledge_base", env.base.id, visibility="public", permission="upload")
+    folder = env.services.knowledge_repo.ensure_folder(env.base.id, "readonly")
+    _acl(env, "knowledge_document", folder.id, visibility="public", permission="read")
+
+    with pytest.raises(OctopError):
+        KnowledgePermissionService(env.services).upload_access(
+            env.base.id, folder="readonly", actor_user_id=alice
+        )
+
+
+def test_upload_options_exist_when_every_boundary_allows_uploading(permission_context):
+    env = permission_context
+    alice = env.services.user_repo.create(username="alice", password_hash="unused", role="user")
+    _acl(env, "knowledge_base", env.base.id, visibility="public", permission="upload")
+
+    choices = KnowledgePermissionService(env.services).upload_access(
+        env.base.id, actor_user_id=alice
+    )
+    assert choices["default"]["scope"] == "company"
+
+
+def test_permission_payload_reports_the_upload_level(permission_context):
+    """The UI gates its upload entry on this flag, so write-only would hide it."""
+    env = permission_context
+    alice = env.services.user_repo.create(username="alice", password_hash="unused", role="user")
+    _acl(env, "knowledge_base", env.base.id, visibility="public", permission="upload")
+
+    payload = KnowledgePermissionService(env.services).list_permissions(
+        env.base.id, actor_user_id=alice
+    )["knowledge_base"]
+
+    assert payload["effective"]["upload"] is True
+    assert payload["effective"]["write"] is False
+    assert payload["permission"] == "upload"

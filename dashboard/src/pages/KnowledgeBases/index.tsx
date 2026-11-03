@@ -779,6 +779,11 @@ export default function KnowledgeBasesPage() {
   const canWriteSelected = Boolean(
     permissionsOverview?.knowledge_base.effective.write,
   );
+  // Adding files is its own level: an upload-only department can contribute
+  // without being able to maintain what is already there.
+  const canUploadSelected =
+    canWriteSelected ||
+    Boolean(permissionsOverview?.knowledge_base.effective.upload);
   const permissionsByDocument = useMemo(
     () =>
       new Map(
@@ -1723,7 +1728,7 @@ export default function KnowledgeBasesPage() {
   };
 
   const canDropUpload =
-    canWriteSelected && usable && !isAtDocumentLimit && !uploadState;
+    canUploadSelected && usable && !isAtDocumentLimit && !uploadState;
 
   const resetDragActive = () => {
     dragDepthRef.current = 0;
@@ -2895,7 +2900,7 @@ export default function KnowledgeBasesPage() {
                             {t("knowledgeBases.createFile")}
                           </Button>
                         ) : null}
-                        {canWriteSelected ? (
+                        {canUploadSelected ? (
                           <Button
                             type="primary"
                             icon={<FileUp size={14} />}
@@ -2967,7 +2972,7 @@ export default function KnowledgeBasesPage() {
                           );
                         })}
                       </nav>
-                      {canWriteSelected ? (
+                      {canUploadSelected ? (
                         <Typography.Text
                           type="secondary"
                           className={styles.uploadHint}
@@ -3115,7 +3120,7 @@ export default function KnowledgeBasesPage() {
                       <Empty
                         image={Empty.PRESENTED_IMAGE_SIMPLE}
                         description={
-                          canWriteSelected
+                          canUploadSelected
                             ? t("knowledgeBases.emptyDocumentsDropHint")
                             : t("knowledgeBases.emptyDocuments")
                         }

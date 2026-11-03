@@ -39,6 +39,17 @@ PERMISSION_UPLOAD = "upload"
 PERMISSION_WRITE = "write"
 PERMISSIONS = (PERMISSION_READ, PERMISSION_UPLOAD, PERMISSION_WRITE)
 
+#: Widening what a public entry lets everyone do is an org-wide escalation.
+#: Adding a capability between read and write means "is this an escalation?"
+#: must be a rank comparison, not a check for exactly ``write``.
+_PERMISSION_RANK = {PERMISSION_READ: 0, PERMISSION_UPLOAD: 1, PERMISSION_WRITE: 2}
+
+
+def permission_rank(permission: str) -> int:
+    """Ordering of ACL levels; an unknown legacy value counts as ``read``."""
+    return _PERMISSION_RANK.get(permission, 0)
+
+
 IMPACT_SELF = "self"
 IMPACT_UNIT = "unit"
 IMPACT_ORG = "org"
@@ -61,6 +72,7 @@ __all__ = [
     "can_upload",
     "can_write",
     "grant_delegates",
+    "permission_rank",
     "impact_scope",
     "requires_approval",
 ]
@@ -124,7 +136,7 @@ def impact_scope(before: AclEntry, after: AclEntry) -> str:
     if after.visibility == VISIBILITY_PUBLIC:
         if before.visibility != VISIBILITY_PUBLIC:
             return IMPACT_ORG
-        if after.permission == PERMISSION_WRITE and before.permission != PERMISSION_WRITE:
+        if permission_rank(after.permission) > permission_rank(before.permission):
             return IMPACT_ORG
     if after.visibility == VISIBILITY_UNIT and before.visibility == VISIBILITY_PRIVATE:
         return IMPACT_UNIT

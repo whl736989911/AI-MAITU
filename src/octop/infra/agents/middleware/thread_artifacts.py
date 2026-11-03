@@ -166,11 +166,23 @@ def _path(value: object, workspace_dir: Path) -> str:
 
 
 def _is_deliverable_file(path: str) -> bool:
+    """Drop a path only when this host can prove it is not a usable file.
+
+    A remote workspace (S3/COS/SMB) or a container backend never materialises
+    the file under the host workspace, so "missing here" must not mean
+    "missing for the user": those paths are kept. The two real failures we do
+    see are a directory that exists while the file does not (a write that never
+    landed) and a zero-byte file; both are provable from the parent directory.
+    """
+    file_path = Path(path)
     try:
-        file_path = Path(path)
-        return file_path.is_file() and file_path.stat().st_size > 0
+        if file_path.is_file():
+            return file_path.stat().st_size > 0
+        if file_path.exists():
+            return False
+        return not file_path.parent.is_dir()
     except OSError:
-        return False
+        return True
 
 
 def current_thread_id() -> str:
