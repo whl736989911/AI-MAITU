@@ -19,6 +19,7 @@ BACKUP_DIR="/var/backups/maitu"
 SKIP_VERIFY=0
 ASSUME_YES=0
 DRY_RUN=0
+NO_BACKUP=0
 PYTHON_INSTALL_DIR="/opt/maitu-python"
 SERVICE_USER="maitu"
 PORT="8088"
@@ -37,6 +38,9 @@ Run from the NEW extracted source tree (the one containing pyproject.toml):
   --port PORT         HTTP port for the health check (default: 8088)
   --extras LIST       comma-separated extras to sync (default: office,knowledge-ocr,local-embedding)
   --skip-verify       skip SOURCE-PACKAGE.json hash verification
+  --no-backup         skip the data-home tar archive (requires --yes).
+                      The source can still roll back; the database cannot, so
+                      copy \$DATA_HOME/maitu.db and config.json first.
   --yes               do not ask for confirmation
   --dry-run           print the plan and exit
   -h, --help          show this help
@@ -57,6 +61,7 @@ while [[ $# -gt 0 ]]; do
     --port) PORT="${2:?}"; shift 2 ;;
     --extras) EXTRAS="${2:?}"; shift 2 ;;
     --skip-verify) SKIP_VERIFY=1; shift ;;
+    --no-backup) NO_BACKUP=1; shift ;;
     --yes) ASSUME_YES=1; shift ;;
     --dry-run) DRY_RUN=1; shift ;;
     -h|--help) usage; exit 0 ;;
@@ -77,6 +82,9 @@ die()  { printf '\033[0;31m[maitu]\033[0m %s\n' "$*" >&2; exit 1; }
 
 if [[ "$DRY_RUN" -eq 0 && "${EUID}" -ne 0 ]]; then
   die "run this upgrade as root"
+fi
+if [[ "$NO_BACKUP" -eq 1 && "$ASSUME_YES" -ne 1 ]]; then
+  die "--no-backup must be combined with --yes: skipping the archive is a deliberate choice"
 fi
 [[ -f "$SOURCE_DIR/pyproject.toml" ]] || die "new source has no pyproject.toml: $SOURCE_DIR"
 [[ -f "$INSTALL_DIR/pyproject.toml" ]] || die "current install not found at $INSTALL_DIR"
@@ -142,16 +150,41 @@ rollback() {
   systemctl start maitu.service
   systemctl status maitu.service --no-pager || true
   set -e
-  die "upgrade failed; old source restored. Data backup: $backup_file (not restored automatically; restore it yourself if the new version migrated the database)."
+  die "upgrade failed; old source restored. Data backup: ${backup_file:-none (--no-backup)} (not restored automatically; restore it yourself if the new version migrated the database)."
 }
 trap 'rollback' ERR
 
-say "backing up data home to $BACKUP_DIR"
-data_parent="$(dirname -- "$DATA_HOME")"
-data_name="$(basename -- "$DATA_HOME")"
-backup_file="$BACKUP_DIR/maitu-home-${STAMP}.tar.gz"
-tar --numeric-owner -C "$data_parent" -czf "$backup_file" "$data_name"
-say "data backup: $backup_file"
+if [[ "$NO_BACKUP" -eq 1 ]]; then
+  backup_file="$BACKUP_DIR/maitu-db-${STAMP}.sqlite"
+  warn "skipping the data-home archive (--no-backup)"
+  say "  the source can still roll back; the database cannot."
+  say "  saving the control-plane database instead (consistent copy, WAL included):"
+  python3 - "$DATA_HOME/maitu.db" "$backup_file" <<'PY'
+import sqlite3, sys
+source, target = sys.argv[1], sys.argv[2]
+src = sqlite3.connect(f"file:{source}?mode=ro", uri=True)
+dst = sqlite3.connect(target)
+try:
+    src.backup(dst)
+finally:
+    dst.close()
+    src.close()
+PY
+  say "  control-plane database: $backup_file"
+  if [[ -f "$DATA_HOME/config.json" ]]; then
+    cp -a "$DATA_HOME/config.json" "$BACKUP_DIR/config-${STAMP}.json"
+    say "  config:                 $BACKUP_DIR/config-${STAMP}.json"
+  fi
+  say "  checkpoint/memory databases and the knowledge index are NOT archived:"
+  say "  the index can be rebuilt from originals, checkpoints only hold undo state."
+else
+  say "backing up data home to $BACKUP_DIR"
+  data_parent="$(dirname -- "$DATA_HOME")"
+  data_name="$(basename -- "$DATA_HOME")"
+  backup_file="$BACKUP_DIR/maitu-home-${STAMP}.tar.gz"
+  tar --numeric-owner -C "$data_parent" -czf "$backup_file" "$data_name"
+  say "data backup: $backup_file"
+fi
 
 say "moving current source to $PREVIOUS_DIR"
 mv -- "$INSTALL_DIR" "$PREVIOUS_DIR"
