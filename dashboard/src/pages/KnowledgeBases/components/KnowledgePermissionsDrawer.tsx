@@ -409,6 +409,14 @@ export default function KnowledgePermissionsDrawer({
               )}
             </Tag>
             <Tag>
+              {t("knowledgeBases.permissions.upload")}:{" "}
+              {t(
+                metadata.effective.upload
+                  ? "knowledgeBases.permissions.allowed"
+                  : "knowledgeBases.permissions.denied",
+              )}
+            </Tag>
+            <Tag>
               {t("knowledgeBases.permissions.write")}:{" "}
               {t(
                 metadata.effective.write
@@ -484,6 +492,7 @@ export default function KnowledgePermissionsDrawer({
                 options={(
                   [
                     ["read", t("knowledgeBases.permissions.read")],
+                    ["upload", t("knowledgeBases.permissions.upload")],
                     ["write", t("knowledgeBases.permissions.write")],
                   ] as const
                 ).map(([value, label]) => ({ value, label }))}

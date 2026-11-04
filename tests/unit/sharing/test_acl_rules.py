@@ -364,3 +364,29 @@ def test_upload_level_is_a_declared_permission() -> None:
     from octop.infra.sharing import PERMISSIONS
 
     assert PERMISSIONS == ("read", "upload", "write")
+
+
+# --- public curriculum escalation ----------------------------------------
+def test_public_upload_escalation_needs_approval() -> None:
+    """Adding a maintenance level to a public row reaches the whole org too."""
+    before = _entry(visibility="public", permission="read")
+    after = _entry(visibility="public", permission="upload")
+
+    assert impact_scope(before, after) == "org"
+    assert requires_approval(before, after) is True
+
+
+def test_public_write_escalation_from_upload_needs_approval() -> None:
+    before = _entry(visibility="public", permission="upload")
+    after = _entry(visibility="public", permission="write")
+
+    assert impact_scope(before, after) == "org"
+    assert requires_approval(before, after) is True
+
+
+def test_public_downgrade_from_write_to_upload_needs_no_approval() -> None:
+    before = _entry(visibility="public", permission="write")
+    after = _entry(visibility="public", permission="upload")
+
+    assert impact_scope(before, after) == "self"
+    assert requires_approval(before, after) is False

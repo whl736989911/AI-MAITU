@@ -8,7 +8,10 @@ Four decisions shape this module:
   ``knowledge_base`` ACL entry through ``sharing.can_access``.
 - **Write access is owner or admin.** Creating, deleting, and syncing all go
   through :meth:`KnowledgeService.get_writable_base`, so "may see it" never
-  silently becomes "may change it".
+  silently becomes "may change it". Adding one new original into an existing
+  folder is the exception: it goes through
+  :meth:`KnowledgeService.get_upload_base`, because contributing a file is the
+  ``upload`` level even when the bytes land on the customer's share.
 - **Ingest reuses the document pipeline.** ``kind='upload'`` syncs a knowledge
   document through ``knowledge.jobs.process_document`` — the same
   parse → chunk → embed → index chain the upload endpoint runs. ``kind='url'``
@@ -227,8 +230,8 @@ class DataSourceService:
 
     def upload_targets(self, kb_id: str, *, actor_user_id: int) -> list[SourceUploadTarget]:
         """Offer authorized indexed folders without disclosing storage addresses."""
-        self._knowledge.get_writable_base(kb_id, actor_user_id=actor_user_id)
-        _restricted, _readable, writable = self._knowledge.document_access_scope(actor_user_id)
+        self._knowledge.get_upload_base(kb_id, actor_user_id=actor_user_id)
+        _restricted, uploadable = self._knowledge.document_upload_scope(actor_user_id)
         documents = {row.path: row for row in self._knowledge_repo.list_documents(kb_id)}
         targets: list[SourceUploadTarget] = []
         for source in self._repo.list_for_base(kb_id):
@@ -237,14 +240,18 @@ class DataSourceService:
             prefix = self._source_root_prefix(source)
             root_path = f"{source.id}/{prefix}".rstrip("/")
             if any(
-                documents[path].id not in writable
+                documents[path].id not in uploadable
                 for path in [*ancestor_dirs(root_path), root_path]
                 if path in documents
             ):
                 continue
             folders = {""}
             for path, row in documents.items():
-                if not row.is_dir or row.id not in writable or not path.startswith(root_path + "/"):
+                if (
+                    not row.is_dir
+                    or row.id not in uploadable
+                    or not path.startswith(root_path + "/")
+                ):
                     continue
                 folders.add(path[len(root_path) + 1 :])
             targets.append(SourceUploadTarget(source.id, source.name, sorted(folders)))
@@ -261,7 +268,7 @@ class DataSourceService:
             if row is not None:
                 if not row.is_dir:
                     raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_INVALID)
-                self._knowledge.require_document_writable(row, actor_user_id=actor_user_id)
+                self._knowledge.require_document_uploadable(row, actor_user_id=actor_user_id)
 
     def upload_document(
         self,
@@ -281,7 +288,7 @@ class DataSourceService:
             self._services.settings_repo.get, getattr(self._services, "provider_repo", None)
         )
         with _source_lock(ds_id):
-            base = self._knowledge.get_writable_base(kb_id, actor_user_id=actor_user_id)
+            base = self._knowledge.get_upload_base(kb_id, actor_user_id=actor_user_id)
             source = self._require(ds_id)
             if source.knowledge_base_id != kb_id:
                 raise LookupError("knowledge source not found")

@@ -125,5 +125,5 @@ async def test_source_upload_http_refuses_readonly_conflict_and_ungranted_user(
         path, headers=member, files={"upload": ("member.txt", b"no", "text/plain")}
     )
     assert unauthorized.status_code == 403, unauthorized.text
-    assert unauthorized.json()["error"]["code"] == "KNOWLEDGE_WRITE_FORBIDDEN"
+    assert unauthorized.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_FORBIDDEN"
     assert not (root / "member.txt").exists()

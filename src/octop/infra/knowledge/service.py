@@ -732,6 +732,36 @@ class KnowledgeService:
         restricted, readable, _writable = self.document_access_scope(actor_user_id)
         return restricted, readable
 
+    def document_upload_scope(self, actor_user_id: int) -> tuple[set[str], set[str]]:
+        """Return restricted/uploadable ids across bases, mirroring the read scope.
+
+        Adding a file is checked per folder with the same ancestor rule as
+        reading, so a listing of "folders this actor may contribute to" cannot
+        disagree with what an upload then does.
+        """
+        role, unit_keys = self._repo.scope_for_user(actor_user_id)
+        entries = self._repo.document_acl_entries()
+        restricted: set[str] = set()
+        uploadable: set[str] = set()
+        for base in self._repo.list_all():
+            documents = self._repo.list_documents(base.id)
+            base_entry = self._repo.acl_entry(base.id)
+            if not may_read_knowledge_base(
+                base_entry, user_id=actor_user_id, role=role, unit_keys=unit_keys
+            ):
+                restricted.update(document.id for document in documents)
+                continue
+            scoped = document_upload_ids(
+                documents,
+                entries,
+                user_id=actor_user_id,
+                role=role,
+                unit_keys=unit_keys,
+            )
+            restricted.update(scoped[0])
+            uploadable.update(scoped[1])
+        return restricted, uploadable
+
     def require_document_writable(
         self, document: KnowledgeDocumentRow, *, actor_user_id: int
     ) -> None:

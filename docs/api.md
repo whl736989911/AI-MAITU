@@ -829,14 +829,14 @@ platform storage uses the platform root, not the source's reserved namespace.
 
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
-| `POST` | `/knowledge-bases/{kb}/documents` | writer | existing platform upload; multipart `upload` and optional knowledge-base-relative `path` |
-| `GET` | `/knowledge-bases/{kb}/upload-targets` | writer | writable local/SMB sources as `{id, name, folders: string[]}`; only authorized indexed folders, no physical addresses or credentials |
-| `POST` | `/knowledge-bases/{kb}/data-sources/{source}/documents` | writer | multipart `upload`, optional source-root-relative `path` including filename; `201` means the source original is saved and indexing is queued |
+| `POST` | `/knowledge-bases/{kb}/documents` | uploader or writer | existing platform upload; multipart `upload` and optional knowledge-base-relative `path` |
+| `GET` | `/knowledge-bases/{kb}/upload-targets` | uploader or writer | writable local/SMB sources the caller may add files to as `{id, name, folders: string[]}`; only authorized indexed folders, no physical addresses or credentials |
+| `POST` | `/knowledge-bases/{kb}/data-sources/{source}/documents` | uploader or writer | multipart `upload`, optional source-root-relative `path` including filename; `201` means the source original is saved and indexing is queued |
 | `GET` | `/knowledge-bases/{kb}/upload-permissions` | reader with knowledge module | query `folder` and optional `data_source_id`; returns safe `options` and the exact maximum `default` for that destination |
 
 These routes require the `knowledge_bases` module permission and knowledge-base
-write access. Source uploads additionally check every existing destination
-ancestor's write ACL, the source's `read_only` flag, file type/size and
+upload access (`write` implies `upload`). Source uploads additionally check every
+existing destination ancestor's upload ACL, the source's `read_only` flag, file type/size and
 include/exclude rules. Folder choices are relative to the configured source root;
 `""` means root. Sync a source to discover newly added subfolders. Uploads only
 write into existing physical folders; they never create parent directories.

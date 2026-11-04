@@ -25,7 +25,7 @@ export interface KnowledgePermissionMetadata {
   } | null;
   /** Current actor's effective permission; `null` means no access. */
   permission: SharingPermission | null;
-  effective: { read: boolean; write: boolean };
+  effective: { read: boolean; upload: boolean; write: boolean };
   can_manage: boolean;
   can_delegate: boolean;
   version: number;

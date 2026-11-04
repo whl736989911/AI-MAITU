@@ -59,6 +59,10 @@ class KnowledgeAclEntry(BaseModel):
 
 class KnowledgeEffectivePermission(BaseModel):
     read: bool
+    #: The level between read and write. Without this field FastAPI's response
+    #: model silently dropped it, so the UI could never see that an upload-only
+    #: actor may contribute files.
+    upload: bool = False
     write: bool
 
 
@@ -97,7 +101,9 @@ class KnowledgePermissionView(KnowledgePermissionOrigin):
 
 class UploadAccess(BaseModel):
     scope: Literal["company", "department", "personal", "authorized"]
-    permission: Literal["read", "upload", "write"]
+    #: An uploaded file can be read or maintained; "upload" describes what a
+    #: folder ACL lets a contributor do, not what a new file grants its readers.
+    permission: Literal["read", "write"]
     unit_key: str | None = None
     department_name: str | None = None
 

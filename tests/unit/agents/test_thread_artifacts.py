@@ -294,3 +294,29 @@ def test_explicit_send_request_matches_requested_file_type(tmp_path: Path) -> No
         middleware.after_agent(state, None)
 
     assert threads.artifacts == [("thread-a", [report.as_posix()])]
+
+
+def test_unverifiable_remote_paths_survive_the_filter(tmp_path: Path) -> None:
+    """A remote/S3 workspace has no local parent directory to stat.
+
+    Dropping such a path because this host cannot see it would empty every
+    artifact list for object-storage and container backends.
+    """
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    # A remote backend keeps the workspace-relative path, but never creates the
+    # directory on this host, so the parent is absent.
+    remote_like = (workspace / "out" / "bid.docx").as_posix()
+
+    assert artifacts_for_response([remote_like], workspace) == [remote_like]
+
+
+def test_zero_byte_and_missing_sibling_still_dropped(tmp_path: Path) -> None:
+    """The failures the filter exists for stay filtered."""
+    workspace = tmp_path / "workspace"
+    (workspace / "out").mkdir(parents=True)
+    empty = workspace / "out" / "empty.docx"
+    empty.write_bytes(b"")
+
+    assert artifacts_for_response([empty.as_posix()], workspace) == []
+    assert artifacts_for_response([(workspace / "out" / "never.docx").as_posix()], workspace) == []

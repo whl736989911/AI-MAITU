@@ -9,7 +9,7 @@ from octop.infra.db.repos.resource_acl import CHANGE_PENDING, AclChangeRow
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.delegations import KnowledgeDelegationService
 from octop.infra.knowledge.relpath import ancestor_dirs, normalize_kb_path
-from octop.infra.knowledge.scope import document_access_ids
+from octop.infra.knowledge.scope import document_access_ids, document_upload_ids
 from octop.infra.sharing import (
     VISIBILITY_PRIVATE,
     VISIBILITY_PUBLIC,
@@ -92,6 +92,14 @@ class KnowledgePermissionService:
             role=role,
             unit_keys=unit_keys,
         )
+        _restricted, doc_uploads = document_upload_ids(
+            all_documents,
+            all_entries,
+            user_id=actor_user_id,
+            role=role,
+            unit_keys=unit_keys,
+        )
+        base_upload = can_upload(base_entry, user_id=actor_user_id, role=role, unit_keys=unit_keys)
         derived_rights = KnowledgeDelegationService(self._services.db).derived_rights(
             kb_id, actor_user_id=actor_user_id
         )
@@ -112,6 +120,7 @@ class KnowledgePermissionService:
             entries=[base_entry],
             own_entry=self._acl.get("knowledge_base", kb_id),
             effective_read=True,
+            effective_upload=base_upload,
             effective_write=can_write(
                 base_entry, user_id=actor_user_id, role=role, unit_keys=unit_keys
             ),
@@ -144,6 +153,7 @@ class KnowledgePermissionService:
                     entries=effective_entries,
                     own_entry=own_entry,
                     effective_read=True,
+                    effective_upload=(row.id in doc_uploads and base_upload),
                     effective_write=(
                         row.id in doc_writes
                         and can_write(
@@ -375,6 +385,17 @@ class KnowledgePermissionService:
         chain, _ = self._folder_chain(kb_id, folder_rel, base_entry)
         for entry in chain:
             self._require_read(entry, actor_user_id, role, unit_keys)
+        # Reading is not enough to add a file here: every boundary on the way
+        # down must allow it, or the dialog would offer choices whose upload is
+        # then refused after the user picked one.
+        if not all(
+            can_upload(entry, user_id=actor_user_id, role=role, unit_keys=unit_keys)
+            for entry in chain
+        ):
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_UPLOAD_FORBIDDEN,
+                "knowledge base upload access is required",
+            )
         writer = all(
             can_write(entry, user_id=actor_user_id, role=role, unit_keys=unit_keys)
             for entry in chain
@@ -766,6 +787,7 @@ class KnowledgePermissionService:
         own_entry: AclEntry | None,
         effective_read: bool,
         effective_write: bool,
+        effective_upload: bool = False,
         manageable: bool,
         units: dict[str, Any],
         pending: AclChangeRow | None,
@@ -793,8 +815,14 @@ class KnowledgePermissionService:
             "access_scope": scope,
             "department_name": department_name,
             "inherited_from": inherited_from,
-            "permission": "write" if effective_write else "read",
-            "effective": {"read": effective_read, "write": effective_write},
+            "permission": (
+                "write" if effective_write else "upload" if effective_upload else "read"
+            ),
+            "effective": {
+                "read": effective_read,
+                "upload": effective_upload,
+                "write": effective_write,
+            },
             "can_manage": manageable,
             # Server-effective delegated authority: the actor may issue
             # delegation edges for this resource. Deliberately independent of
@@ -909,6 +937,6 @@ class KnowledgePermissionService:
         """Adding files needs ``upload``; reading is not enough."""
         if not can_upload(entry, user_id=actor_user_id, role=role, unit_keys=unit_keys):
             raise OctopError(
-                ErrorCode.KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN,
+                ErrorCode.KNOWLEDGE_UPLOAD_FORBIDDEN,
                 "knowledge base upload access is required",
             )

@@ -263,8 +263,9 @@ async def list_data_sources(
     response_model=list[SourceUploadTargetResponse],
     summary="List authorized source-folder upload destinations",
     description=(
-        "Requires knowledge-base write access. Returns only writable local or SMB sources "
-        "and authorized indexed folders, without host addresses or credentials. "
+        "Requires knowledge-base upload access. Returns only local or SMB sources the caller "
+        "may add files to, and authorized indexed folders, without host addresses or "
+        "credentials. "
         "An empty folder path denotes the configured source root."
     ),
 )
@@ -291,7 +292,7 @@ async def upload_targets(
     response_model=SourceUploadedDocument,
     summary="Upload a new original into a writable source folder",
     description=(
-        "Requires knowledge-base and destination-folder write access. Writes to an existing "
+        "Requires knowledge-base and destination-folder upload access. Writes to an existing "
         "folder under a registered writable source, never overwriting an existing file. "
         "The source remains the original's only permanent storage; indexing is queued. "
         "Storage failures never fall back to platform storage."

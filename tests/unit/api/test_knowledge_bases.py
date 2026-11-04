@@ -645,6 +645,44 @@ def test_map_knowledge_error_prerequisites_distinguished() -> None:
     assert err_model.status == 409
 
 
+def test_map_knowledge_error_classifies_user_input_instead_of_500() -> None:
+    """Caller mistakes are 4xx, not "internal error" with a leaked cause.
+
+    These messages come from the knowledge service and router and are all
+    reachable from the HTTP surface; every one of them used to fall through to
+    ``INTERNAL_ERROR``/500.
+    """
+    from octop.api.routers.knowledge_bases import _map_knowledge_error
+
+    cases: list[tuple[ValueError, ErrorCode, int]] = [
+        (
+            ValueError("invalid knowledge document filename"),
+            ErrorCode.KNOWLEDGE_NAME_INVALID,
+            400,
+        ),
+        (
+            ValueError("path exists and is not a folder: notes.txt"),
+            ErrorCode.KNOWLEDGE_NAME_TAKEN,
+            409,
+        ),
+        (ValueError("target folder not found"), ErrorCode.KNOWLEDGE_NOT_FOUND, 404),
+        (
+            ValueError("cannot move a folder into itself"),
+            ErrorCode.KNOWLEDGE_REQUEST_INVALID,
+            400,
+        ),
+        (ValueError("folders cannot be reindexed"), ErrorCode.KNOWLEDGE_REQUEST_INVALID, 400),
+        (
+            ValueError("knowledge document is not valid UTF-8 text"),
+            ErrorCode.KNOWLEDGE_REQUEST_INVALID,
+            400,
+        ),
+    ]
+    for exc, code, status in cases:
+        err = _map_knowledge_error(exc, locale="zh")
+        assert (err.code, err.status) == (code, status), exc
+
+
 def test_map_knowledge_error_tells_a_write_refusal_from_a_read_one() -> None:
     """④: a refusal that is about *changing* a readable base says so.
 
@@ -656,6 +694,7 @@ def test_map_knowledge_error_tells_a_write_refusal_from_a_read_one() -> None:
     from octop.api.routers.knowledge_bases import _map_knowledge_error
     from octop.infra.knowledge.service import (
         ACCESS_READ,
+        ACCESS_UPLOAD,
         ACCESS_WRITE,
         KnowledgeAccessDenied,
     )
@@ -682,8 +721,26 @@ def test_map_knowledge_error_tells_a_write_refusal_from_a_read_one() -> None:
     assert refused_read.code == ErrorCode.KNOWLEDGE_FORBIDDEN
     assert refused_read.status == 403
 
-    # Two codes, two sentences: what the client shows cannot be the same line.
-    assert refused_write.localized_message("zh") != refused_read.localized_message("zh")
+    # Contributing is a third level: a reader who cannot add files is neither
+    # denied the base nor refused an edit.
+    refused_upload = _map_knowledge_error(
+        KnowledgeAccessDenied("knowledge base upload access is required", access=ACCESS_UPLOAD),
+        locale="zh",
+    )
+    assert refused_upload.code == ErrorCode.KNOWLEDGE_UPLOAD_FORBIDDEN
+    assert refused_upload.status == 403
+
+    # Three codes, three sentences: what the client shows cannot be one line.
+    assert (
+        len(
+            {
+                refused_write.localized_message("zh"),
+                refused_read.localized_message("zh"),
+                refused_upload.localized_message("zh"),
+            }
+        )
+        == 3
+    )
 
     # A bare ``PermissionError`` (anything that never learned the distinction)
     # keeps the access wording rather than claiming a write was refused.
