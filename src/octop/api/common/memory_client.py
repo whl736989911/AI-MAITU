@@ -1,4 +1,4 @@
-"""Scoped ``harness_memory`` dashboard clients for agents and feature callers.
+"""Scoped ``octop_memory`` dashboard clients for agents and feature callers.
 
 A feature's existing agent namespace is its shared training memory. Once its
 workflow is active, API calls default to the authenticated caller's private
@@ -161,8 +161,8 @@ class _MemoryCache:
         backend_config: dict[str, Any] | None,
         fingerprint: str,
     ) -> tuple[Any, Any]:
-        from harness_memory.adapters.bridge.handlers import Bridge  # noqa: PLC0415
-        from harness_memory.core import Memory  # noqa: PLC0415
+        from octop_memory.adapters.bridge.handlers import Bridge  # noqa: PLC0415
+        from octop_memory.core import Memory  # noqa: PLC0415
 
         with self._lock:
             cached = self._entries.get(namespace)
@@ -298,7 +298,7 @@ async def call_memory_rpc(
     }
 
     def dispatch() -> dict[str, Any]:
-        from harness_memory.storage.backends.sqlite import SqliteMemoryBackend  # noqa: PLC0415
+        from octop_memory.storage.backends.sqlite import SqliteMemoryBackend  # noqa: PLC0415
 
         memory, bridge = _open_memory_for_agent(
             server, agent_id, user_id=user.id if selected == "private" else None

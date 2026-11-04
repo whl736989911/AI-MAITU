@@ -6,8 +6,8 @@ from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from harness_gateway.media import MediaBackend
-from harness_gateway.models import MessageEvent
+from octop_gateway.media import MediaBackend
+from octop_gateway.models import MessageEvent
 
 from octop.i18n import channel_tool_hint_end, channel_tool_hint_start, tool_display_name
 from octop.infra.gateway.hitl.format import format_hitl_card

@@ -215,8 +215,8 @@ def install_backend_compatibility_patches() -> None:
     """
     import deepagents.backends.filesystem as filesystem_module
     from deepagents.backends.filesystem import FilesystemBackend
-    from harness_agent.backends.bwrap_shell import BubbledLocalShellBackend
-    from harness_agent.backends.local_shell import HarnessLocalShellBackend
+    from octop_harness.backends.bwrap_shell import BubbledLocalShellBackend
+    from octop_harness.backends.local_shell import HarnessLocalShellBackend
 
     if not getattr(FilesystemBackend, "_octop_utf8_rg_installed", False):
         subprocess_api = SimpleNamespace(**vars(subprocess))
@@ -341,7 +341,7 @@ def install_backend_compatibility_patches() -> None:
         cast(Any, HarnessLocalShellBackend)._octop_utf8_output_installed = True
 
     if not getattr(BubbledLocalShellBackend, "_octop_utf8_output_installed", False):
-        from harness_agent.backends.bwrap_shell import build_bwrap_argv
+        from octop_harness.backends.bwrap_shell import build_bwrap_argv
 
         def execute_bwrap(
             self: Any, command: str, *, timeout: int | None = None

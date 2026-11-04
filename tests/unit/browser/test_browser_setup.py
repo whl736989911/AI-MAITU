@@ -29,7 +29,7 @@ posix_only = pytest.mark.skipif(os.name != "posix", reason="POSIX-only runtime d
 def test_configure_browser_idle_timeout_updates_harness(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from harness_browser.settings import settings as hb_settings
+    from octop_browser.settings import settings as hb_settings
 
     from octop.infra.utils.browser_media import configure_browser_idle_timeout
 

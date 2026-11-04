@@ -41,7 +41,7 @@ def _is_codex_base_url(base_url: str | None) -> bool:
 
 def build_probe_chat_model(row: Any, *, model_id: str | None = None) -> Any:
     """Construct a chat model from a provider row for probing."""
-    from harness_agent.config import ProviderConfig
+    from octop_harness.config import ProviderConfig
 
     from octop.infra.agents.providers.harness_factory import build_configured_chat_model
     from octop.infra.agents.providers.model_config import ProviderModelConfig
@@ -269,7 +269,10 @@ async def probe_provider_row(
         "latency_ms": latency_ms,
         "api_mode": entry.get("api_mode")
         or ("responses" if _is_codex_base_url(row.base_url) else "chat_completions"),
-        "fallback_used": result_metadata.get("octop_api_fallback") == "chat_completions",
+        "fallback_used": (
+            result_metadata.get("api_fallback") == "chat_completions"
+            or result_metadata.get("octop_api_fallback") == "chat_completions"
+        ),
     }
 
 

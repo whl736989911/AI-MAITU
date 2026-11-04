@@ -5,8 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from harness_agent.config import HarnessAgentConfig, ModelConfig, ProviderConfig
-from harness_agent.manager import HarnessAgentManager
+from octop_harness.config import HarnessAgentConfig, ModelConfig, ProviderConfig
+from octop_harness.manager import HarnessAgentManager
 
 
 def _config(tmp_path: Path, *, name: str = "agent") -> HarnessAgentConfig:
@@ -29,7 +29,7 @@ def _mgr(tmp_path: Path) -> HarnessAgentManager:
     mock_agent = MagicMock()
     mock_agent.init_workspace.return_value = MagicMock()
     mock_agent.call = AsyncMock(return_value={"messages": [{"role": "assistant", "content": "ok"}]})
-    with patch("harness_agent.manager.HarnessAgent", return_value=mock_agent):
+    with patch("octop_harness.manager.HarnessAgent", return_value=mock_agent):
         mgr = HarnessAgentManager()
         mgr.create_agent(
             _config(tmp_path, name="main"),

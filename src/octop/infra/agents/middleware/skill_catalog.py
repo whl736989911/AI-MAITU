@@ -33,8 +33,8 @@ from langchain.agents.middleware.types import PrivateStateAttr
 from octop.infra.errors import OctopError
 
 if TYPE_CHECKING:
-    from harness_agent import HarnessAgent
     from langchain_core.runnables import RunnableConfig
+    from octop_harness import HarnessAgent
 
 logger = logging.getLogger(__name__)
 

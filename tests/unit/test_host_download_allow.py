@@ -62,7 +62,7 @@ def test_denied_host_download_etc(tmp_path: Path) -> None:
     assert is_allowed_host_download_abs_path("/etc/passwd", workspace=tmp_path) is False
 
 
-def test_denied_harness_browser(tmp_path: Path) -> None:
+def test_denied_octop_browser(tmp_path: Path) -> None:
     path = tmp_path / ".harness-browser" / "screenshots" / "x.png"
     path.parent.mkdir(parents=True)
     path.write_bytes(b"x")

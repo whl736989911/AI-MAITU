@@ -23,14 +23,14 @@ def _unmanaged(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _bwrap_on_path(monkeypatch: pytest.MonkeyPatch, path: str = "/usr/bin/bwrap") -> None:
     monkeypatch.setattr(
-        "harness_agent.backends.bwrap_shell.resolve_bubbled_bwrap",
+        "octop_harness.backends.bwrap_shell.resolve_bubbled_bwrap",
         lambda **_kwargs: path,
     )
 
 
 def _bwrap_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "harness_agent.backends.bwrap_shell.resolve_bubbled_bwrap",
+        "octop_harness.backends.bwrap_shell.resolve_bubbled_bwrap",
         lambda **_kwargs: None,
     )
 

@@ -6,7 +6,7 @@ import json
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, Any
 
-from harness_agent.config import ModelConfig, ProviderConfig
+from octop_harness.config import ModelConfig, ProviderConfig
 
 from octop.infra.agents.providers.model_config import ProviderModelConfig
 from octop.infra.agents.providers.model_flags import is_chat_eligible_model, is_vision_model

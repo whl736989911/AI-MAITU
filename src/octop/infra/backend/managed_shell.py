@@ -21,9 +21,9 @@ from pathlib import Path
 from typing import Any
 
 from deepagents.backends.protocol import ExecuteResponse
-from harness_agent.backends import _maybe_wrap_workspace_artifacts
-from harness_agent.backends.bwrap_shell import BubbledLocalShellBackend, build_bwrap_argv
-from harness_agent.backends.local_shell import format_execute_result
+from octop_harness.backends import _maybe_wrap_workspace_artifacts
+from octop_harness.backends.bwrap_shell import BubbledLocalShellBackend, build_bwrap_argv
+from octop_harness.backends.local_shell import format_execute_result
 
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.env_file import validate_managed_environment
@@ -299,7 +299,7 @@ def _source_local_shell(spec: Any, *, workspace_dir: Path, system_files_path: st
             ErrorCode.INSTANCE_DEPLOYMENT_RESTRICTED,
             "Native local shell root is not confined.",
         )
-    from harness_agent.backends.bwrap_shell import resolve_bubbled_bwrap  # noqa: PLC0415
+    from octop_harness.backends.bwrap_shell import resolve_bubbled_bwrap  # noqa: PLC0415
 
     bwrap = resolve_bubbled_bwrap(virtual_mode=bool(spec.get("virtual_mode", True)), root_dir=root)
     if bwrap is None:

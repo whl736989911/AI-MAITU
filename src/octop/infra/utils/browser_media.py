@@ -122,7 +122,7 @@ def configure_browser_profiles_dir(profiles_dir: Path | None = None) -> Path:
     resolved = root.resolve()
     os.environ["BROWSER_USE_PROFILES_DIR"] = str(resolved)
     with contextlib.suppress(Exception):
-        from harness_browser.settings import settings as hb_settings  # noqa: PLC0415
+        from octop_browser.settings import settings as hb_settings  # noqa: PLC0415
 
         hb_settings.profiles_dir = resolved
     logger.debug("BROWSER_USE_PROFILES_DIR=%s", resolved)
@@ -134,7 +134,7 @@ def configure_browser_idle_timeout(timeout_minutes: int) -> None:
     timeout = max(int(timeout_minutes), 0)
     os.environ["BROWSER_USE_IDLE_TIMEOUT_MINUTES"] = str(timeout)
     with contextlib.suppress(Exception):
-        from harness_browser.settings import settings as hb_settings  # noqa: PLC0415
+        from octop_browser.settings import settings as hb_settings  # noqa: PLC0415
 
         runtime_settings: Any = hb_settings
         runtime_settings.idle_timeout_minutes = float(timeout)
@@ -142,12 +142,12 @@ def configure_browser_idle_timeout(timeout_minutes: int) -> None:
 
 
 def harness_settings_for_screenshots_dir(screenshots_dir: Path) -> Any | None:
-    """Build :class:`HarnessSettings` when harness-browser is installed."""
+    """Build :class:`OctopSettings` when harness-browser is installed."""
     try:
-        from harness_browser.settings import HarnessSettings
+        from octop_browser.settings import OctopSettings
     except ImportError:
         return None
-    return HarnessSettings(screenshots_dir=screenshots_dir.resolve())
+    return OctopSettings(screenshots_dir=screenshots_dir.resolve())
 
 
 def legacy_harness_screenshots_dir() -> Path:

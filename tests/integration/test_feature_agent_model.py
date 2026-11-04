@@ -147,7 +147,7 @@ async def test_feature_training_memory_and_published_caller_memory(
     env_with_author: tuple[httpx.AsyncClient, OctopServer, Any],
 ) -> None:
     """Deprecation works in training; publication freezes shared memory without freezing callers."""
-    pytest.importorskip("harness_memory.adapters.bridge.handlers")
+    pytest.importorskip("octop_memory.adapters.bridge.handlers")
     client, srv, (admin_auth, author_auth, author_id, caller_auth) = env_with_author
     await _create_feature_agent(srv, author_id)
     base = f"/api/agents/{AGENT_ID}/memory"

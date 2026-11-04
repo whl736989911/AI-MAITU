@@ -231,7 +231,7 @@ async def test_enterprise_manager_tools_use_real_turn_identity_and_keep_drafts_p
     import json
 
     from deepagents.backends.local_shell import LocalShellBackend
-    from harness_agent.backends.workspace import BackendWorkspace
+    from octop_harness.backends.workspace import BackendWorkspace
 
     from octop.infra.agents import feature_data as fd
     from octop.infra.agents.feature_data_tools import build_feature_data_tools

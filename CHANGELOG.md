@@ -6,6 +6,10 @@
 
 ## [Unreleased]
 
+### 变更
+
+- 运行时依赖切换到更名后的 `octop-harness 1.0.6`、`octop-gateway 1.0.3`、`octop-memory 1.0.2`、`octop-browser 1.0.0`，导入名同步为 `octop_*`；LangChain 升至 1.4.5、deepagents 升至 0.7.25。用户数据目录、`OCTOP_*` 环境变量与数据库保持兼容，不做迁移；Responses 请求继续强制 `store=false`，配额不足与模型不存在错误仍直接返回、不触发 Chat Completions 回退。
+
 ### 新增
 
 - 知识库权限新增「可上传」等级：部门成员可以新建、上传文件，但不能修改、改名、移动或删除已有内容；修改仍需「读写」授权，知识库所有者与管理员保持完整权限。授权接口、共享设置页与文件列表标签同步支持该等级。

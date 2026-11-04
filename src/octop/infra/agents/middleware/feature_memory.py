@@ -41,9 +41,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from harness_agent.memory.llm_client import HarnessAgentLLMClient
-from harness_agent.memory.store import MemoryIdentity, shared_memory_store
-from harness_agent.middleware.memory import (
+from langchain.agents.middleware import AgentMiddleware
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import BaseTool, tool
+from langgraph.config import get_config
+from octop_harness.memory.llm_client import HarnessAgentLLMClient
+from octop_harness.memory.store import MemoryIdentity, shared_memory_store
+from octop_harness.middleware.memory import (
     _extract_messages,
     _filter_visible_messages,
     _find_turn_trigger_user,
@@ -52,15 +56,11 @@ from harness_agent.middleware.memory import (
     _split_user_assistant,
     _stringify_content,
 )
-from harness_agent.middleware.memory_recall import (
+from octop_harness.middleware.memory_recall import (
     has_recall_snapshot,
     stamp_recall_snapshot,
 )
-from harness_memory import Memory, MemoryService
-from langchain.agents.middleware import AgentMiddleware
-from langchain_core.messages import HumanMessage
-from langchain_core.tools import BaseTool, tool
-from langgraph.config import get_config
+from octop_memory import Memory, MemoryService
 
 from octop.infra.agents.memory_backend import memory_namespace
 

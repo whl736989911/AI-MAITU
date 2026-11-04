@@ -6,8 +6,8 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 import pytest
-from harness_agent.teams.inbox import InboxMessage
-from harness_agent.teams.processor import ReplyEvent
+from octop_harness.teams.inbox import InboxMessage
+from octop_harness.teams.processor import ReplyEvent
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
@@ -118,7 +118,7 @@ async def test_on_reply_increments_unread_on_dashboard(processor_env: dict) -> N
 async def test_prepare_peer_session_creates_callee_thread_without_rebind(
     processor_env: dict,
 ) -> None:
-    from harness_agent.teams.util import PeerCall
+    from octop_harness.teams.util import PeerCall
 
     processor = processor_env["processor"]
     parent_sk = processor_env["parent_sk"]

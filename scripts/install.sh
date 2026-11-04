@@ -878,7 +878,7 @@ _detect_system_chrome() {
     chrome="$("$MAITU_VENV/bin/python" -c '
 import sys
 try:
-    from harness_browser.cdp.launcher import find_chrome
+    from octop_browser.cdp.launcher import find_chrome
 except Exception:
     sys.exit(0)
 p = find_chrome()

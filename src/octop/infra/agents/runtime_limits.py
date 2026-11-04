@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from harness_agent.middleware.model_settings import (
+from octop_harness.middleware.model_settings import (
     CONFIGURABLE_MAX_INPUT_TOKENS,
     CONFIGURABLE_MODEL_SETTINGS,
 )

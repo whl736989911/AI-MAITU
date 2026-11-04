@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from harness_memory import Memory
+from octop_memory import Memory
 
 from octop.infra.agents.memory_backup import (
     create_backup,

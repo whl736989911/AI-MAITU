@@ -1221,7 +1221,7 @@ def _note_catalog_changed(server: Any, agent_id: str) -> None:
 
 async def _skill_disable_keys(ctx: _AgentCtx, name: str) -> set[str]:
     """Return slug / display-name keys to toggle for enable/disable."""
-    from harness_agent.skills.catalog import skill_identity_keys
+    from octop_harness.skills.catalog import skill_identity_keys
 
     slug = name.strip()
     keys = {slug} if slug else set()

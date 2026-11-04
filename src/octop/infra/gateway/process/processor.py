@@ -8,17 +8,17 @@ from collections.abc import AsyncIterator, Mapping
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Literal
 
-from harness_agent.slash import SlashSink
-from harness_agent.teams.inbox import InboxMessage
-from harness_agent.teams.processor import ReplyEvent
-from harness_agent.teams.util import PeerCall, PeerSession
-from harness_gateway.models import (
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from octop_gateway.models import (
     InboundMessage,
     MessageEvent,
     MessageEventType,
     TextContent,
 )
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from octop_harness.slash import SlashSink
+from octop_harness.teams.inbox import InboxMessage
+from octop_harness.teams.processor import ReplyEvent
+from octop_harness.teams.util import PeerCall, PeerSession
 
 from octop.i18n import tr
 from octop.i18n.domains.stream import format_stream_error

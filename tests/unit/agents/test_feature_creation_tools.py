@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 from deepagents.backends.local_shell import LocalShellBackend
-from harness_agent.backends.workspace import BackendWorkspace
+from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.infra.agents import feature_creation_tools as module
 from octop.infra.agents.feature_creation_tools import (

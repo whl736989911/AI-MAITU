@@ -218,8 +218,8 @@ def _trusted_sandbox(backend: Any) -> Any | None:
                     "SourceShellBackend",
                 }
             )
-            or (module == "harness_agent.backends.docker_sandbox" and name == "DockerSandbox")
-            or (module == "harness_agent.backends.opensandbox_sandbox" and name == "OpenSandbox")
+            or (module == "octop_harness.backends.docker_sandbox" and name == "DockerSandbox")
+            or (module == "octop_harness.backends.opensandbox_sandbox" and name == "OpenSandbox")
         ):
             return current
         current = getattr(current, "default", None)

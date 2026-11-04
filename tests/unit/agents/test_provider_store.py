@@ -11,8 +11,8 @@ from typing import Any
 import httpx
 import openai
 import pytest
-from harness_agent.llm.factory import build_chat_model
 from langchain_core.messages import HumanMessage
+from octop_harness.llm.factory import build_chat_model
 from PIL import Image
 
 from octop.config import OctopConfig

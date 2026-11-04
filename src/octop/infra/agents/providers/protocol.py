@@ -6,7 +6,7 @@ from dataclasses import replace
 from typing import Literal
 from urllib.parse import urlsplit, urlunsplit
 
-from harness_agent.config import ProviderConfig
+from octop_harness.config import ProviderConfig
 
 
 def alternate_protocol_config(provider: ProviderConfig) -> ProviderConfig:

@@ -224,7 +224,7 @@ async def test_export_rejects_a_source_changed_after_version_approval(
     tmp_path: Path,
 ) -> None:
     from deepagents.backends.local_shell import LocalShellBackend
-    from harness_agent.backends.workspace import BackendWorkspace
+    from octop_harness.backends.workspace import BackendWorkspace
 
     env = source_env
     document, original = _source(env, "approved.md", b"Approved version")
@@ -310,12 +310,12 @@ async def test_shared_original_export_cannot_bypass_main_graph_approval(
     source_env: SimpleNamespace, tmp_path: Path, nested: bool, initialized: bool
 ) -> None:
     from deepagents.backends.local_shell import LocalShellBackend
-    from harness_agent.backends.workspace import BackendWorkspace
     from langchain_core.messages import AIMessage
     from langchain_core.tools import StructuredTool
     from langgraph.checkpoint.memory import MemorySaver
     from langgraph.graph import END, START, MessagesState, StateGraph
     from langgraph.prebuilt import ToolNode
+    from octop_harness.backends.workspace import BackendWorkspace
 
     env = source_env
     document, _ = _source(env, "protected.md", b"Authorized source, not a shared copy.")

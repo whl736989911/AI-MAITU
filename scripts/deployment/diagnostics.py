@@ -400,7 +400,7 @@ def check_native(
         "maitu",
         "fastapi",
         "uvicorn",
-        "harness_agent",
+        "octop_harness",
         "pdfplumber",
         "pandas",
         "rapidocr",

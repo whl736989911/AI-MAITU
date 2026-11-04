@@ -15,7 +15,7 @@ from typing import Any
 
 import pytest
 from deepagents.backends.local_shell import LocalShellBackend
-from harness_agent.backends.workspace import BackendWorkspace
+from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.infra.agents import feature_workflow as wf
 from octop.infra.agents import feature_workflow_tools as tools_module

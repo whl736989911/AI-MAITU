@@ -17,7 +17,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from harness_agent.plugins import PluginManifest
+from octop_harness.plugins import PluginManifest
 
 from octop.infra.agents.plugins.bundled import default_bundled_plugins_root
 from octop.infra.agents.plugins.manager import (

@@ -60,7 +60,7 @@ def test_langfuse_reads_legacy_plaintext_secret(store: LangfuseSettingsStore) ->
         host="http://langfuse.example",
     )
     assert cfg.configured is True
-    from harness_agent.observability.langfuse import LangfuseConfig
+    from octop_harness.observability.langfuse import LangfuseConfig
 
     harness_config = store.harness_config()
     assert isinstance(harness_config, LangfuseConfig)
@@ -79,7 +79,7 @@ def test_langfuse_reads_legacy_plaintext_secret(store: LangfuseSettingsStore) ->
 
 
 def test_langfuse_harness_config(store: LangfuseSettingsStore) -> None:
-    from harness_agent.observability.langfuse import LangfuseConfig
+    from octop_harness.observability.langfuse import LangfuseConfig
 
     assert store.harness_config() == LangfuseConfig(enabled=False)
     store.save(

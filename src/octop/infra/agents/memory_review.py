@@ -163,9 +163,9 @@ def apply_review_changes(
     read_documents: Callable[[], list[Any]],
     check_access: Callable[[], None],
 ) -> list[str]:
-    from harness_memory.adapters.bridge.handlers import Bridge
-    from harness_memory.storage.backends.postgres import PostgresMemoryBackend
-    from harness_memory.storage.backends.sqlite import SqliteMemoryBackend
+    from octop_memory.adapters.bridge.handlers import Bridge
+    from octop_memory.storage.backends.postgres import PostgresMemoryBackend
+    from octop_memory.storage.backends.sqlite import SqliteMemoryBackend
 
     from octop.infra.agents.memory_context import exclusive_file_lock
 

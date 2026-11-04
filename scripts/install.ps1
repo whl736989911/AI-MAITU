@@ -257,7 +257,7 @@ if (-not $script:ConsoleAvailable) {
 function Find-SystemChrome {
     # Prefer harness-browser's detector (same path used at runtime)
     try {
-        $p = & $VenvPython -c "from harness_browser.cdp.launcher import find_chrome; p=find_chrome(); print(p or '', end='')" 2>$null
+        $p = & $VenvPython -c "from octop_browser.cdp.launcher import find_chrome; p=find_chrome(); print(p or '', end='')" 2>$null
         if ($p) { return $p }
     } catch { }
     # Common commands

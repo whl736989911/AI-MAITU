@@ -59,7 +59,7 @@ async def wecom_qr_poll(scode: str) -> dict[str, Any]:
 async def qq_qr_generate(session_id: str) -> dict[str, str]:
     """Create a QQ Bot QR task, replacing any pending task for this session."""
     try:
-        from harness_gateway.channels.qq import QQBotQRLogin
+        from octop_gateway.channels.qq import QQBotQRLogin
     except ImportError as exc:
         raise RuntimeError("QQ QR login requires a recent harness-gateway installation.") from exc
 
@@ -101,7 +101,7 @@ async def qq_qr_poll(session_id: str, qrcode_token: str) -> dict[str, Any]:
 
 async def weixin_qr_generate() -> dict[str, str]:
     try:
-        from harness_gateway.channels.weixin.login_qr import WeixinQRLogin
+        from octop_gateway.channels.weixin.login_qr import WeixinQRLogin
     except ImportError as exc:
         raise RuntimeError(
             "WeChat QR login requires harness-gateway with weixin channel support."
@@ -116,7 +116,7 @@ async def weixin_qr_generate() -> dict[str, str]:
 
 async def weixin_qr_poll(qrcode_token: str) -> dict[str, Any]:
     try:
-        from harness_gateway.channels.weixin.login_qr import WeixinQRLogin
+        from octop_gateway.channels.weixin.login_qr import WeixinQRLogin
     except ImportError as exc:
         raise RuntimeError(
             "WeChat QR login requires harness-gateway with weixin channel support."

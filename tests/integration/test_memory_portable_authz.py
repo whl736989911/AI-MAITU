@@ -24,7 +24,7 @@ from typing import Any
 
 import pytest
 
-pytest.importorskip("harness_memory.operations.migration.portable")
+pytest.importorskip("octop_memory.operations.migration.portable")
 
 from octop.api.common.memory_client import memory_db_path_for_cfg
 from octop.api.routers.memory_portable import (
@@ -277,10 +277,10 @@ def _agent_config(server: Any, agent_id: str) -> dict[str, Any]:
 
 def _write_package(server: Any, agent_id: str, tmp_path: Path) -> bytes:
     """Seed one raw event into the agent store and pack a real ``.hmpkg``."""
-    from harness_memory.core import Memory
-    from harness_memory.operations.migration.portable import pack
-    from harness_memory.operations.migration.portable.models import SourceInfo
-    from harness_memory.types import RawEvent
+    from octop_memory.core import Memory
+    from octop_memory.operations.migration.portable import pack
+    from octop_memory.operations.migration.portable.models import SourceInfo
+    from octop_memory.types import RawEvent
 
     workspace = server.app_runtime.agent_registry.resolve_workspace_dir(agent_id)
     db_path = memory_db_path_for_cfg(workspace, _agent_config(server, agent_id))

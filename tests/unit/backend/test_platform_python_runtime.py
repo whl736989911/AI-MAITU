@@ -157,7 +157,7 @@ def test_mark_binds_read_only_flips_only_runtime_pairs() -> None:
 
 
 def test_built_argv_marks_platform_runtime_read_only(tmp_path: Path) -> None:
-    from harness_agent.backends.bwrap_shell import build_bwrap_argv
+    from octop_harness.backends.bwrap_shell import build_bwrap_argv
 
     argv = build_bwrap_argv(
         bwrap="/usr/bin/bwrap",

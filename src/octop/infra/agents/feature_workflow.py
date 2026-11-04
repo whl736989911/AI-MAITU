@@ -53,7 +53,7 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.locale import normalize_locale
 
 if TYPE_CHECKING:
-    from harness_agent.backends.workspace import BackendWorkspace
+    from octop_harness.backends.workspace import BackendWorkspace
 
 logger = logging.getLogger(__name__)
 

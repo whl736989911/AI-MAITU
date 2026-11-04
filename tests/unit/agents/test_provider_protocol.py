@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from harness_agent.config import ModelConfig, ProviderConfig
+from octop_harness.config import ModelConfig, ProviderConfig
 
 from octop.infra.agents.providers.protocol import alternate_protocol_config
 

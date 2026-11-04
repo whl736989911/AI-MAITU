@@ -824,7 +824,7 @@ async def qq_qrcode_poll(
 def _get_weixin_qr_login() -> Any:
     """Import WeixinQRLogin lazily from harness-gateway weixin channel."""
     try:
-        from harness_gateway.channels.weixin.login_qr import WeixinQRLogin
+        from octop_gateway.channels.weixin.login_qr import WeixinQRLogin
 
         return WeixinQRLogin
     except ImportError:

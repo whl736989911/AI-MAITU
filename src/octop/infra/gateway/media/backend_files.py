@@ -24,7 +24,7 @@ from typing import TYPE_CHECKING
 from octop.infra.gateway.media.attachment_hints import is_preview_media_type
 
 if TYPE_CHECKING:
-    from harness_agent.backends.workspace import BackendWorkspace
+    from octop_harness.backends.workspace import BackendWorkspace
 
 logger = logging.getLogger(__name__)
 

@@ -6,7 +6,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from harness_agent.security.models import SecurityPolicy
+from octop_harness.security.models import SecurityPolicy
 
 from octop.infra.agents.security.hitl_session import HitlSessionPolicyStore, apply_session_bypass
 

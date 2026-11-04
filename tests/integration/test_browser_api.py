@@ -37,26 +37,26 @@ def test_probe_env_when_playwright_missing() -> None:
     with patch("builtins.__import__", side_effect=fake_import):
         out = br._probe_env()
     assert out["playwright"] is False
-    if not out.get("harness_browser"):
+    if not out.get("octop_browser"):
         assert out["browsers_ok"] is False
         assert out["error"]
 
 
-def test_probe_env_harness_browser_without_chromium() -> None:
+def test_probe_env_octop_browser_without_chromium() -> None:
     """``browsers_ok`` must stay false when no Chrome/Chromium is available."""
     from octop.api.routers.browser import env as br
 
     try:
-        import harness_browser  # noqa: F401
+        import octop_browser  # noqa: F401
     except ImportError:
         return
 
     with patch(
-        "harness_browser.cdp.launcher.find_chrome",
+        "octop_browser.cdp.launcher.find_chrome",
         return_value=None,
     ):
         out = br._probe_env()
-    assert out["harness_browser"] is True
+    assert out["octop_browser"] is True
     assert out["browsers_ok"] is False
     assert out["error"]
 
@@ -66,13 +66,13 @@ def test_probe_env_accepts_system_chrome() -> None:
     from octop.api.routers.browser import env as br
 
     try:
-        import harness_browser  # noqa: F401
+        import octop_browser  # noqa: F401
     except ImportError:
         return
 
     with (
         patch(
-            "harness_browser.cdp.launcher.find_chrome",
+            "octop_browser.cdp.launcher.find_chrome",
             return_value="/usr/bin/google-chrome",
         ),
         patch(
@@ -85,7 +85,7 @@ def test_probe_env_accepts_system_chrome() -> None:
         ),
     ):
         out = br._probe_env()
-    assert out["harness_browser"] is True
+    assert out["octop_browser"] is True
     assert out["browsers_ok"] is True
     assert out["chrome_path"] == "/usr/bin/google-chrome"
     assert out["chrome_source"] == "system"
@@ -180,8 +180,8 @@ async def test_managed_browser_routes_are_denied_before_probe_install_or_shutdow
         patch.object(browser_env, "_probe_env") as probe,
         patch.object(browser_env, "_verify_browser_binary") as verify,
         patch.object(browser_harness, "user_browser_profile") as profile,
-        patch("harness_browser.tool_interface.browser_tool", new=AsyncMock()) as browser_tool,
-        patch("harness_browser.cdp.launcher.find_chrome", return_value="/fake/chrome"),
+        patch("octop_browser.tool_interface.browser_tool", new=AsyncMock()) as browser_tool,
+        patch("octop_browser.cdp.launcher.find_chrome", return_value="/fake/chrome"),
     ):
         verify.return_value = (True, "Chrome")
         for auth in (admin_auth, member_auth):

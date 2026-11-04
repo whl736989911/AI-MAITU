@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
-from harness_agent.config import ProviderConfig
+from octop_harness.config import ProviderConfig
 from openai import APIStatusError
 
 from octop.infra.agents.providers.harness_factory import OctopChatModelFactory
@@ -166,7 +166,7 @@ async def test_responses_protocol_rejection_falls_back_once(provider_http_server
         )
         result = await chat.ainvoke("ping")
         assert result.text == "ok"
-        assert result.response_metadata["octop_api_fallback"] == "chat_completions"
+        assert result.response_metadata["api_fallback"] == "chat_completions"
         assert [path.split("/v1/", 1)[-1] for path, _ in server.requests] == [
             "responses",
             "chat/completions",

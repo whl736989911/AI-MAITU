@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import discord
 import pytest
-from harness_gateway.channels.discord import DiscordChannel, DiscordConfig
+from octop_gateway.channels.discord import DiscordChannel, DiscordConfig
 from tests.unit.gateway.test_gateway_runtime_status import _make_gateway
 
 from octop.infra.gateway.gateway import Gateway

@@ -8,15 +8,15 @@ from typing import Any
 
 import httpx
 import pytest
-from harness_agent.config import ModelConfig
-from harness_agent.llm.factory import _inject_model_token_limits
-from harness_agent.middleware.model_settings import apply_configurable_model_settings
 from langchain.agents.middleware import ModelRequest
 from langchain_core.callbacks import CallbackManager
 from langchain_core.messages import AIMessage, AIMessageChunk
 from langchain_core.runnables import RunnableLambda
 from langchain_core.runnables.config import RunnableConfig
 from langchain_openai import ChatOpenAI
+from octop_harness.config import ModelConfig
+from octop_harness.llm.factory import _inject_model_token_limits
+from octop_harness.middleware.model_settings import apply_configurable_model_settings
 from openai import BadRequestError
 
 from octop.infra.agents.providers.harness_factory import (

@@ -215,9 +215,9 @@ def load_provider_presets() -> list[dict[str, Any]]:
     """Serialize harness-agent provider templates for API / CLI."""
     from importlib import resources
 
-    from harness_agent.providers import load_provider_templates, serialize_provider_preset
+    from octop_harness.providers import load_provider_templates, serialize_provider_preset
 
-    bundled = resources.files("harness_agent.providers").joinpath("provider_template.json")
+    bundled = resources.files("octop_harness.providers").joinpath("provider_template.json")
     out = [serialize_provider_preset(p) for p in load_provider_templates(str(bundled))]
     if not any(p.get("id") == "openai-codex" for p in out):
         out.insert(

@@ -95,9 +95,9 @@ def test_slice_message_page_long_thread_no_gaps_or_overlaps() -> None:
 
 
 def test_isolated_sqlite_history_supports_pypi_memory_0_9_7(tmp_path: Path) -> None:
-    from harness_memory import Memory
     from langchain_core.messages import AIMessage
     from langgraph.checkpoint.base import empty_checkpoint
+    from octop_memory import Memory
 
     db_path = tmp_path / "checkpoint.db"
     memory = Memory(
@@ -133,7 +133,7 @@ def test_isolated_sqlite_history_supports_pypi_memory_0_9_7(tmp_path: Path) -> N
 def test_isolated_history_reads_compact_checkpoint_with_closed_live_connection(
     tmp_path: Path, warm_cache: bool
 ) -> None:
-    compact = pytest.importorskip("harness_memory.storage.backends.sqlite_checkpoint")
+    compact = pytest.importorskip("octop_memory.storage.backends.sqlite_checkpoint")
     from langgraph.checkpoint.base import empty_checkpoint
 
     path = tmp_path / "compact.sqlite"
@@ -454,8 +454,8 @@ async def test_history_file_restores_downloadable_workspace_bytes(
     tmp_path: Path, shape: str
 ) -> None:
     from deepagents.backends.local_shell import LocalShellBackend
-    from harness_agent.backends.workspace import BackendWorkspace
     from langchain_core.messages import ToolMessage
+    from octop_harness.backends.workspace import BackendWorkspace
 
     workspace = BackendWorkspace(
         LocalShellBackend(root_dir=str(tmp_path), virtual_mode=True), tmp_path

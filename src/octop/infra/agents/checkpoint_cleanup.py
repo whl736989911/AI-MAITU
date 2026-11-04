@@ -126,7 +126,7 @@ def _delete_memory_thread(
     backend_config: dict[str, Any] | None,
     thread_id: str,
 ) -> bool:
-    from harness_memory import Memory  # noqa: PLC0415
+    from octop_memory import Memory  # noqa: PLC0415
 
     memory = Memory(namespace=namespace, backend=backend, backend_config=backend_config)
     try:
