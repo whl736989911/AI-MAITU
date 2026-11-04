@@ -126,6 +126,22 @@ export interface KnowledgeDocument {
   /** Values for the base's metadata fields, keyed by field key. */
   metadata?: Record<string, unknown>;
 }
+export interface KnowledgeDocumentSuggestion {
+  suggestion_id: string;
+  document_id: string;
+  kb_id: string;
+  /** Hash of the document content the model saw; a mismatch blocks applying. */
+  content_hash: string;
+  status: "pending" | "applied" | "rejected";
+  summary: string;
+  keywords: string[];
+  /** Only schema fields the model proposed; unknown keys are dropped server-side. */
+  fields: Record<string, unknown>;
+  model: string;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+}
 export interface KnowledgeOnnxModel {
   id: string;
   name: string;
@@ -437,6 +453,49 @@ export const knowledgeBasesApi = {
     request<{ document_id: string; metadata: Record<string, unknown> }>(
       `/knowledge-bases/${id}/documents/${documentId}/metadata`,
       { method: "PATCH", body: JSON.stringify({ metadata }) },
+    ),
+
+  enrichDocument: (id: string, documentId: string) =>
+    request<KnowledgeDocumentSuggestion>(
+      `/knowledge-bases/${id}/documents/${documentId}/enrich`,
+      { method: "POST" },
+    ),
+
+  listSuggestions: (
+    id: string,
+    params?: {
+      documentId?: string;
+      status?: "pending" | "applied" | "rejected";
+      limit?: number;
+    },
+  ) => {
+    const query = new URLSearchParams();
+    if (params?.documentId) query.set("document_id", params.documentId);
+    if (params?.status) query.set("status", params.status);
+    if (params?.limit) query.set("limit", String(params.limit));
+    const suffix = query.toString();
+    return request<KnowledgeDocumentSuggestion[]>(
+      `/knowledge-bases/${id}/suggestions${suffix ? `?${suffix}` : ""}`,
+    );
+  },
+
+  applySuggestion: (
+    id: string,
+    suggestionId: string,
+    fields?: Record<string, unknown>,
+  ) =>
+    request<KnowledgeDocumentSuggestion>(
+      `/knowledge-bases/${id}/suggestions/${suggestionId}/apply`,
+      {
+        method: "POST",
+        body: JSON.stringify(fields ? { fields } : {}),
+      },
+    ),
+
+  rejectSuggestion: (id: string, suggestionId: string) =>
+    request<KnowledgeDocumentSuggestion>(
+      `/knowledge-bases/${id}/suggestions/${suggestionId}/reject`,
+      { method: "POST" },
     ),
 
   createFolder: (id: string, path: string) =>

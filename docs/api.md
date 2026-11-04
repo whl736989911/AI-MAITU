@@ -796,6 +796,10 @@ Zed setup example.
 | `PATCH` | `/knowledge-bases/{kb}/documents/{doc}/metadata` | writer | merge typed field values; `null`/empty clears a value |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/facts` | reader | located facts extracted from this document (dimension annotations, clause numbers, …) |
 | `GET` | `/knowledge-bases/{kb}/facts?q=…` | reader | search located facts across readable documents; optional `fact_type`, `limit` ≤ 200 |
+| `POST` | `/knowledge-bases/{kb}/documents/{doc}/enrich` | reader | bounded preview + metadata schema sent to the active chat model; returns a `pending` suggestion and never writes the document |
+| `GET` | `/knowledge-bases/{kb}/suggestions?document_id=…&status=…` | reader | pending/applied/rejected AI suggestions, filtered to readable documents |
+| `POST` | `/knowledge-bases/{kb}/suggestions/{id}/apply` | writer | optional reviewed `fields`; revalidates the schema and document SHA-256, then merges values through document metadata |
+| `POST` | `/knowledge-bases/{kb}/suggestions/{id}/reject` | writer | marks the suggestion rejected; the document is unchanged |
 | `GET` | `/knowledge-bases/{kb}/coverage` | reader | counts only readable files, not hidden folders or siblings |
 | `GET` | `/knowledge-bases/{kb}/search?q=…` | reader | lexical/optional vector search filtered by the same effective ACL; optional `metadata` JSON filter |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/preview` | reader | up to 200,000 characters from the completed index plus per-segment `blocks` with their source locators; verifies the original hash, never repeats OCR |
@@ -816,6 +820,14 @@ returned. New extractors implement :class:`FactExtractor` and register in
 
 Document metadata is a generic, per-base capability: fields are typed
 (`text`, `number`, `date`, or `enum`) and validation happens server-side.
+AI suggestions are also review-only: the model receives at most 12,000
+characters of the verified preview plus the base's field definitions, and its
+summary, keywords and field values are stored as `pending`. Applying a
+suggestion requires document write permission, drops unknown or invalid values,
+and returns `409 KNOWLEDGE_SOURCE_VERSION_CHANGED` when the file changed after
+the suggestion was generated. Summary and keywords are advisory; only schema
+fields are written back.
+
 Values are stored per document and are visible only where that document is
 readable; schema changes are limited to the base owner or an administrator.
 Lists and search accept the same `metadata` JSON object for equality/contains

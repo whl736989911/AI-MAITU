@@ -432,6 +432,94 @@ class KnowledgeRepo:
                 conn=conn,
             )
 
+    def create_suggestion(
+        self,
+        *,
+        suggestion_id: str,
+        document_id: str,
+        kb_id: str,
+        content_hash: str,
+        summary: str,
+        keywords: list[str],
+        fields: dict[str, Any],
+        model: str,
+    ) -> dict[str, Any]:
+        ts = now_ts()
+        with self._db.transaction() as conn:
+            conn.execute(
+                "INSERT INTO knowledge_document_suggestions("
+                "suggestion_id, document_id, kb_id, content_hash, status, summary, "
+                "keywords_json, fields_json, model, error, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'pending', ?, ?, ?, ?, NULL, ?, ?)",
+                (
+                    suggestion_id,
+                    document_id,
+                    kb_id,
+                    content_hash,
+                    summary,
+                    json.dumps(keywords, ensure_ascii=False),
+                    json.dumps(fields, ensure_ascii=False),
+                    model,
+                    ts,
+                    ts,
+                ),
+            )
+        row = self.get_suggestion(suggestion_id)
+        if row is None:
+            raise RuntimeError("knowledge suggestion insert failed")
+        return row
+
+    def get_suggestion(self, suggestion_id: str) -> dict[str, Any] | None:
+        with self._db.connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM knowledge_document_suggestions WHERE suggestion_id = ?",
+                (suggestion_id,),
+            ).fetchone()
+        return _suggestion_payload(row) if row is not None else None
+
+    def list_suggestions(
+        self,
+        kb_id: str,
+        *,
+        document_id: str | None = None,
+        status: str | None = None,
+        allowed_document_ids: set[str] | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        clauses = ["kb_id = ?"]
+        params: list[Any] = [kb_id]
+        if document_id:
+            clauses.append("document_id = ?")
+            params.append(document_id)
+        if status:
+            clauses.append("status = ?")
+            params.append(status)
+        if allowed_document_ids is not None:
+            if not allowed_document_ids:
+                return []
+            placeholders = ", ".join("?" for _ in allowed_document_ids)
+            clauses.append(f"document_id IN ({placeholders})")
+            params.extend(sorted(allowed_document_ids))
+        params.append(max(1, min(limit, 200)))
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM knowledge_document_suggestions "
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY created_at DESC, id DESC LIMIT ?",
+                params,
+            ).fetchall()
+        return [_suggestion_payload(row) for row in rows]
+
+    def set_suggestion_status(
+        self, suggestion_id: str, status: str, *, error: str | None = None
+    ) -> None:
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_document_suggestions "
+                "SET status = ?, error = ?, updated_at = ? WHERE suggestion_id = ?",
+                (status, error, now_ts(), suggestion_id),
+            )
+
     def clear_document_facts(self, doc_id: str) -> None:
         with self._db.transaction() as conn:
             conn.execute(
@@ -984,4 +1072,28 @@ def _fact_payload(row: DbRow) -> dict[str, Any]:
         "normalized": str(row["normalized"]),
         "locator": locator if isinstance(locator, dict) else {},
         "extractor": str(row["extractor"]),
+    }
+
+
+def _suggestion_payload(row: DbRow) -> dict[str, Any]:
+    def _json(value: Any, fallback: Any) -> Any:
+        try:
+            decoded = json.loads(str(value or ""))
+        except ValueError:
+            return fallback
+        return decoded if isinstance(decoded, type(fallback)) else fallback
+
+    return {
+        "suggestion_id": str(row["suggestion_id"]),
+        "document_id": str(row["document_id"]),
+        "kb_id": str(row["kb_id"]),
+        "content_hash": str(row["content_hash"]),
+        "status": str(row["status"]),
+        "summary": str(row["summary"]),
+        "keywords": _json(row["keywords_json"], []),
+        "fields": _json(row["fields_json"], {}),
+        "model": str(row["model"]),
+        "error": str(row["error"]) if row["error"] is not None else None,
+        "created_at": int(row["created_at"]),
+        "updated_at": int(row["updated_at"]),
     }

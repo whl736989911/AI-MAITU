@@ -1806,7 +1806,8 @@
     "TEAM_NOT_SHAREABLE": "当前版本不支持分享团队。",
     "ORG_UNIT_HAS_CHILDREN": "该部门下还有下级部门，请先处理。",
     "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。",
-    "KNOWLEDGE_METADATA_INVALID": "元数据字段或取值无效。"
+    "KNOWLEDGE_METADATA_INVALID": "元数据字段或取值无效。",
+    "KNOWLEDGE_ENRICHMENT_FAILED": "AI 整理失败，请稍后重试。"
   },
   "license": {
     "lockedTitle": "需要许可证",
@@ -2494,6 +2495,26 @@
       "filterValue": "值",
       "applyFilter": "筛选",
       "clearFilter": "清除"
+    },
+    "suggestions": {
+      "button": "AI 整理",
+      "title": "AI 整理建议",
+      "generate": "生成建议",
+      "regenerate": "重新生成",
+      "loadFailed": "加载 AI 建议失败",
+      "generateFailed": "AI 整理失败",
+      "applyFailed": "应用建议失败",
+      "rejectFailed": "忽略建议失败",
+      "applySuccess": "已应用建议",
+      "rejectSuccess": "已忽略建议",
+      "empty": "暂无待审阅的 AI 建议",
+      "emptySummary": "（模型未给出摘要）",
+      "emptyKeywords": "（无关键词）",
+      "summary": "摘要",
+      "keywords": "关键词",
+      "fields": "字段建议",
+      "apply": "应用",
+      "reject": "忽略"
     }
   },
   "setupWizard": {
