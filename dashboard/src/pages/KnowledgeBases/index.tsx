@@ -60,6 +60,7 @@ import {
   RefreshCw,
   Search,
   Settings,
+  Sparkles,
   SlidersHorizontal,
   Tag as TagsIcon,
   Trash2,
@@ -145,6 +146,7 @@ import DataSourcesPanel from "./components/DataSourcesPanel";
 import KnowledgeProcessorNotice from "./components/KnowledgeProcessorNotice";
 import KnowledgeCollections from "./components/KnowledgeCollections";
 import KnowledgeMetadataModal from "./components/KnowledgeMetadataModal";
+import KnowledgeSuggestionModal from "./components/KnowledgeSuggestionModal";
 import KnowledgePermissionsDrawer from "./components/KnowledgePermissionsDrawer";
 import styles from "./index.module.less";
 import { isImeComposing } from "../Chat/utils/ime";
@@ -339,7 +341,11 @@ export default function KnowledgeBasesPage() {
   const [metadataModal, setMetadataModal] = useState<{
     document?: KnowledgeDocument;
   } | null>(null);
-  const [metadataFilterKey, setMetadataFilterKey] = useState<string | undefined>();
+  const [suggestionTarget, setSuggestionTarget] =
+    useState<KnowledgeDocument | null>(null);
+  const [metadataFilterKey, setMetadataFilterKey] = useState<
+    string | undefined
+  >();
   const [metadataFilterValue, setMetadataFilterValue] = useState("");
   const [currentFolder, setCurrentFolder] = useState("");
   const [folderModalOpen, setFolderModalOpen] = useState(false);
@@ -2359,6 +2365,17 @@ export default function KnowledgeBasesPage() {
             />
           </Tooltip>
         ) : null}
+        {!document.is_dir && canWriteThis ? (
+          <Tooltip title={t("knowledgeBases.suggestions.button")}>
+            <Button
+              type="text"
+              size="small"
+              icon={<Sparkles size={14} />}
+              aria-label={t("knowledgeBases.suggestions.button")}
+              onClick={() => setSuggestionTarget(document)}
+            />
+          </Tooltip>
+        ) : null}
         {permissionMetadata?.can_manage || permissionMetadata?.can_delegate ? (
           <Tooltip title={t("knowledgeBases.permissions.title")}>
             <Button
@@ -2800,15 +2817,15 @@ export default function KnowledgeBasesPage() {
                             permissionsOverview.knowledge_base.effective.write
                               ? "knowledgeBases.permissions.writeShort"
                               : permissionsOverview.knowledge_base.effective
-                                    .upload
-                                ? "knowledgeBases.permissions.uploadShort"
-                                : "knowledgeBases.permissions.readShort",
+                                  .upload
+                              ? "knowledgeBases.permissions.uploadShort"
+                              : "knowledgeBases.permissions.readShort",
                             permissionsOverview.knowledge_base.effective.write
                               ? "写"
                               : permissionsOverview.knowledge_base.effective
-                                    .upload
-                                ? "上传"
-                                : "读",
+                                  .upload
+                              ? "上传"
+                              : "读",
                           )}
                         </Typography.Text>
                       </div>
@@ -2963,19 +2980,27 @@ export default function KnowledgeBasesPage() {
                             <Select
                               allowClear
                               style={{ width: 140 }}
-                              placeholder={t("knowledgeBases.metadata.filterField")}
+                              placeholder={t(
+                                "knowledgeBases.metadata.filterField",
+                              )}
                               value={metadataFilterKey}
-                              options={(selected.metadata_schema ?? []).map((field) => ({
-                                value: field.key,
-                                label: field.label || field.key,
-                              }))}
+                              options={(selected.metadata_schema ?? []).map(
+                                (field) => ({
+                                  value: field.key,
+                                  label: field.label || field.key,
+                                }),
+                              )}
                               onChange={(value) => setMetadataFilterKey(value)}
                             />
                             <Input
                               style={{ width: 160 }}
-                              placeholder={t("knowledgeBases.metadata.filterValue")}
+                              placeholder={t(
+                                "knowledgeBases.metadata.filterValue",
+                              )}
                               value={metadataFilterValue}
-                              onChange={(event) => setMetadataFilterValue(event.target.value)}
+                              onChange={(event) =>
+                                setMetadataFilterValue(event.target.value)
+                              }
                               onPressEnter={() => void applyMetadataFilter()}
                             />
                             <Button onClick={() => void applyMetadataFilter()}>
@@ -4796,6 +4821,16 @@ export default function KnowledgeBasesPage() {
             ),
           )
         }
+      />
+      <KnowledgeSuggestionModal
+        open={suggestionTarget !== null}
+        baseId={selected?.id ?? ""}
+        schema={selected?.metadata_schema ?? []}
+        document={suggestionTarget}
+        onClose={() => setSuggestionTarget(null)}
+        onSaved={() => {
+          if (selected) void loadDetail(selected.id, { silent: true });
+        }}
       />
       <KnowledgePermissionsDrawer
         baseId={selected?.id ?? ""}

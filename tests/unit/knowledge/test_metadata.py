@@ -9,6 +9,7 @@ from octop.infra.knowledge.metadata import (
     metadata_matches,
     normalize_schema,
     normalize_values,
+    validate_suggested_values,
 )
 
 SCHEMA = normalize_schema(
@@ -95,3 +96,17 @@ def test_filters_match_text_number_and_case() -> None:
     assert not metadata_matches(values, {"weight": 13})
     assert not metadata_matches(values, {"sheet": "A0"})
     assert metadata_matches(values, {})
+
+
+def test_suggested_values_keep_only_known_and_valid_fields() -> None:
+    assert validate_suggested_values(
+        SCHEMA,
+        {
+            "drawing_no": "A-102",
+            "sheet": "A9",
+            "weight": "heavy",
+            "unknown": "x",
+            "issue_date": "2026-01-31",
+        },
+    ) == {"drawing_no": "A-102", "issue_date": "2026-01-31"}
+    assert validate_suggested_values(SCHEMA, None) == {}

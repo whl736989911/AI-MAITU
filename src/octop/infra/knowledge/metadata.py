@@ -152,10 +152,33 @@ def metadata_matches(values: Mapping[str, Any], filters: Mapping[str, Any]) -> b
     return True
 
 
+def validate_suggested_values(schema: list[dict[str, Any]], raw: Any) -> dict[str, Any]:
+    """Keep only known, well-formed values from a model suggestion.
+
+    Suggestions are advisory: unknown keys and invalid values are dropped instead
+    of failing the enrichment, and required fields are not enforced here because
+    a human may still add them before applying.
+    """
+    if not isinstance(raw, Mapping):
+        return {}
+    by_key = {str(field["key"]): field for field in schema}
+    out: dict[str, Any] = {}
+    for key, value in raw.items():
+        field = by_key.get(str(key))
+        if field is None or value is None or value == "" or value == []:
+            continue
+        try:
+            out[str(key)] = _validate_value(field, value)
+        except MetadataError:
+            continue
+    return out
+
+
 __all__ = [
     "FIELD_TYPES",
     "MetadataError",
     "metadata_matches",
     "normalize_schema",
     "normalize_values",
+    "validate_suggested_values",
 ]

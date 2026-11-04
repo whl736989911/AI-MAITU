@@ -51,6 +51,7 @@ from octop.infra.agents.providers.onnx_service import (
     status_payload,
 )
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.knowledge.enrichment import KnowledgeEnrichmentService
 from octop.infra.knowledge.files import document_path
 from octop.infra.knowledge.gate import (
     assert_knowledge_usable,
@@ -237,6 +238,13 @@ class DocumentMetadataBody(BaseModel):
     )
 
 
+class SuggestionApplyBody(BaseModel):
+    fields: dict[str, Any] | None = Field(
+        default=None,
+        description="Optional reviewed field values; defaults to the suggested ones.",
+    )
+
+
 class UpdateBaseBody(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
@@ -255,6 +263,12 @@ def _knowledge_service(server: OctopServer) -> KnowledgeService:
     if server.services is None:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "knowledge services are not initialized")
     return KnowledgeService(server.services)
+
+
+def _enrichment_service(server: OctopServer) -> KnowledgeEnrichmentService:
+    runtime = getattr(server, "app_runtime", None)
+    registry = getattr(runtime, "agent_registry", None)
+    return KnowledgeEnrichmentService(server.services, agent_registry=registry)
 
 
 def _metadata_filter(raw: str | None) -> dict[str, Any] | None:
@@ -1010,6 +1024,128 @@ async def search_facts(
             fact_type=fact_type,
             limit=limit,
             is_admin=_is_admin(user),
+        )
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.post(
+    "/{kb_id}/documents/{doc_id}/enrich",
+    summary="Generate an AI summary, keywords and field suggestions",
+    description=(
+        "Stores a pending suggestion. Nothing is written to the document until a "
+        "human applies it through the suggestion endpoint."
+    ),
+)
+async def enrich_document(
+    kb_id: str,
+    doc_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> dict[str, Any]:
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                _enrichment_service(server).enrich_document,
+                kb_id,
+                doc_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
+        )
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.get(
+    "/{kb_id}/suggestions",
+    summary="List AI enrichment suggestions",
+)
+async def list_suggestions(
+    kb_id: str,
+    request: Request,
+    document_id: str | None = Query(default=None, max_length=64),
+    status: Literal["pending", "applied", "rejected"] | None = Query(default=None),
+    limit: int = Query(default=50, ge=1, le=200),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> list[dict[str, Any]]:
+    try:
+        return _enrichment_service(server).list_suggestions(
+            kb_id,
+            actor_user_id=user.id,
+            document_id=document_id,
+            status=status,
+            limit=limit,
+            is_admin=_is_admin(user),
+        )
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.post(
+    "/{kb_id}/suggestions/{suggestion_id}/apply",
+    summary="Apply a pending AI suggestion",
+    description=(
+        "Revalidates field values against the current schema and document hash, "
+        "then writes the chosen fields to the document metadata."
+    ),
+)
+async def apply_suggestion(
+    kb_id: str,
+    suggestion_id: str,
+    body: SuggestionApplyBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                _enrichment_service(server).apply_suggestion,
+                kb_id,
+                suggestion_id,
+                actor_user_id=user.id,
+                fields=body.fields,
+                is_admin=_is_admin(user),
+            ),
+        )
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.post(
+    "/{kb_id}/suggestions/{suggestion_id}/reject",
+    summary="Reject a pending AI suggestion",
+)
+async def reject_suggestion(
+    kb_id: str,
+    suggestion_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    try:
+        return await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                _enrichment_service(server).reject_suggestion,
+                kb_id,
+                suggestion_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
         )
     except Exception as exc:
         raise _map_knowledge_error(

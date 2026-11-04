@@ -1,0 +1,147 @@
+"""AI enrichment stores pending suggestions and writes back only on apply."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+
+from octop.infra.db.migrate import run_migrations
+from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.settings import SettingsRepo
+from octop.infra.db.repos.users import UserRepo
+from octop.infra.db.services import RepoBundle
+from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.knowledge import service as service_module
+from octop.infra.knowledge.enrichment import KnowledgeEnrichmentService
+from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.sharing import AclEntry
+from octop.infra.utils.paths import PathLayout
+
+MODEL_JSON = json.dumps(
+    {
+        "summary": "法兰图纸摘要",
+        "keywords": ["法兰", "φ120", "检验"],
+        "fields": {"drawing_no": "A-102", "sheet": "A9", "unknown": "x"},
+    },
+    ensure_ascii=False,
+)
+
+
+@pytest.fixture
+def env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "home"))
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    services = SimpleNamespace(
+        db=pool,
+        repos=RepoBundle.from_pool(pool),
+        knowledge_repo=KnowledgeRepo(pool),
+        settings_repo=SettingsRepo(pool),
+        user_repo=UserRepo(pool),
+        paths=PathLayout.from_env(),
+    )
+    monkeypatch.setattr(service_module, "assert_knowledge_usable", lambda *_args: None)
+    monkeypatch.setattr(
+        KnowledgeService,
+        "preview_document",
+        lambda self, kb_id, doc_id, **kwargs: {
+            "title": "法兰图纸",
+            "filename": "drawing.pdf",
+            "text": "法兰 φ120，第5.3条 检验方法",
+            "blocks": [],
+        },
+    )
+
+    async def fake_ainvoke(_llm, _messages, timeout=None):
+        return MODEL_JSON
+
+    monkeypatch.setattr("octop.infra.utils.llm_text.ainvoke_text", fake_ainvoke)
+    return SimpleNamespace(services=services, pool=pool)
+
+
+def _setup(env: SimpleNamespace):
+    services = env.services
+    owner = services.user_repo.create(username="owner", password_hash="h", role="user")
+    kb = services.knowledge_repo.create_base(owner_user_id=owner, name="Enrichment")
+    document = services.knowledge_repo.create_document(
+        kb_id=kb.id, filename="drawing.pdf", content_type="application/pdf", byte_size=1
+    )
+    service = KnowledgeService(services)
+    service.update_metadata_schema(
+        kb.id,
+        actor_user_id=owner,
+        schema=[
+            {"key": "drawing_no", "label": "Drawing", "type": "text"},
+            {"key": "sheet", "label": "Sheet", "type": "enum", "options": ["A0", "A1"]},
+        ],
+    )
+    return owner, kb, document, service
+
+
+def test_enrichment_stores_pending_suggestion_and_filters_fields(env: SimpleNamespace) -> None:
+    owner, kb, document, _service = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+
+    assert suggestion["status"] == "pending"
+    assert suggestion["summary"] == "法兰图纸摘要"
+    assert suggestion["keywords"] == ["法兰", "φ120", "检验"]
+    assert suggestion["fields"] == {"drawing_no": "A-102"}
+    assert document.metadata == {}
+    assert enrichment.list_suggestions(kb.id, actor_user_id=owner) == [suggestion]
+
+
+def test_apply_writes_metadata_and_rejects_a_stale_suggestion(env: SimpleNamespace) -> None:
+    owner, kb, document, service = _setup(env)
+    env.services.knowledge_repo.update_document(document.id, content_hash="v1")
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+
+    applied = enrichment.apply_suggestion(
+        kb.id,
+        suggestion["suggestion_id"],
+        actor_user_id=owner,
+        fields={"drawing_no": "A-102", "sheet": "A0"},
+    )
+    assert applied["status"] == "applied"
+    assert service._services.knowledge_repo.get_document(document.id).metadata == {
+        "drawing_no": "A-102",
+        "sheet": "A0",
+    }
+
+    second = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    env.services.knowledge_repo.update_document(document.id, content_hash="v2")
+    with pytest.raises(OctopError) as stale:
+        enrichment.apply_suggestion(kb.id, second["suggestion_id"], actor_user_id=owner)
+    assert stale.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
+
+
+def test_reject_and_permission_checks(env: SimpleNamespace) -> None:
+    owner, kb, document, _service = _setup(env)
+    viewer = env.services.user_repo.create(username="viewer", password_hash="h", role="user")
+    env.services.repos.resource_acl_repo.upsert(
+        AclEntry(
+            resource_type="knowledge_base",
+            resource_id=kb.id,
+            owner_user_id=owner,
+            visibility="public",
+            unit_key=None,
+            version=1,
+            permission="read",
+        )
+    )
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    rejected = enrichment.reject_suggestion(kb.id, suggestion["suggestion_id"], actor_user_id=owner)
+    assert rejected["status"] == "rejected"
+
+    with pytest.raises(PermissionError):
+        enrichment.enrich_document(kb.id, document.id, actor_user_id=viewer, llm=object())
+    pending = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    with pytest.raises(PermissionError):
+        enrichment.apply_suggestion(kb.id, pending["suggestion_id"], actor_user_id=viewer)

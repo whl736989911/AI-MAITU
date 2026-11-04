@@ -1806,7 +1806,8 @@
     "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first.",
     "KNOWLEDGE_COLLECTION_GENERATING": "This collection is already being organized. Wait for the current run to finish.",
     "KNOWLEDGE_COLLECTION_INVALID": "The collection selection, name, or keywords are invalid.",
-    "KNOWLEDGE_METADATA_INVALID": "Metadata field or value is invalid."
+    "KNOWLEDGE_METADATA_INVALID": "Metadata field or value is invalid.",
+    "KNOWLEDGE_ENRICHMENT_FAILED": "The AI enrichment request failed. Please try again."
   },
   "license": {
     "lockedTitle": "License required",
@@ -2494,6 +2495,26 @@
       "filterValue": "Value",
       "applyFilter": "Filter",
       "clearFilter": "Clear"
+    },
+    "suggestions": {
+      "button": "AI organize",
+      "title": "AI suggestions",
+      "generate": "Generate suggestion",
+      "regenerate": "Regenerate",
+      "loadFailed": "Could not load AI suggestions",
+      "generateFailed": "AI organization failed",
+      "applyFailed": "Could not apply the suggestion",
+      "rejectFailed": "Could not dismiss the suggestion",
+      "applySuccess": "Suggestion applied",
+      "rejectSuccess": "Suggestion dismissed",
+      "empty": "No AI suggestion is waiting for review",
+      "emptySummary": "(the model returned no summary)",
+      "emptyKeywords": "(no keywords)",
+      "summary": "Summary",
+      "keywords": "Keywords",
+      "fields": "Field suggestions",
+      "apply": "Apply",
+      "reject": "Dismiss"
     }
   },
   "setupWizard": {
