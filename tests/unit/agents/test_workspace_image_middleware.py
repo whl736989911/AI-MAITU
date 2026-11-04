@@ -14,9 +14,9 @@ import httpx
 import openai
 import pytest
 from deepagents.backends.local_shell import LocalShellBackend
-from harness_agent.backends.workspace import BackendWorkspace
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_openai import ChatOpenAI
+from octop_harness.backends.workspace import BackendWorkspace
 from PIL import Image
 
 from octop.api.common.attachments import save_attachment

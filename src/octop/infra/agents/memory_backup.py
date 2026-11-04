@@ -404,8 +404,8 @@ def _json_record(value: Any) -> dict[str, Any]:
 
 
 def _namespace_meta(memory: Any) -> dict[str, str]:
-    from harness_memory.storage.backends.postgres import PostgresMemoryBackend
-    from harness_memory.storage.backends.sqlite import SqliteMemoryBackend
+    from octop_memory.storage.backends.postgres import PostgresMemoryBackend
+    from octop_memory.storage.backends.sqlite import SqliteMemoryBackend
 
     backend = memory.backend
     if isinstance(backend, SqliteMemoryBackend):
@@ -436,7 +436,7 @@ def _extended_snapshot(memory: Any) -> dict[str, Any]:
 def _restore_extended(memory: Any, snapshot: dict[str, Any]) -> None:
     from datetime import datetime
 
-    from harness_memory.types import DigestRecord, Episode, MemoryNode
+    from octop_memory.types import DigestRecord, Episode, MemoryNode
 
     backend = memory.backend
     # Native atom imports rebuild their organizational leaves. Replace that
@@ -476,8 +476,8 @@ def _restore_extended(memory: Any, snapshot: dict[str, Any]) -> None:
 
 
 def _clear_namespace_meta(memory: Any, keep: set[str]) -> None:
-    from harness_memory.storage.backends.postgres import PostgresMemoryBackend
-    from harness_memory.storage.backends.sqlite import SqliteMemoryBackend
+    from octop_memory.storage.backends.postgres import PostgresMemoryBackend
+    from octop_memory.storage.backends.sqlite import SqliteMemoryBackend
 
     backend = memory.backend
     keep = keep | {"schema_version", "fts_text_version"}
@@ -546,7 +546,7 @@ def create_backup(
     fallback_path: Path | None,
     memory_enabled: bool,
 ) -> dict[str, Any]:
-    from harness_memory.operations.migration.export import export_namespace
+    from octop_memory.operations.migration.export import export_namespace
 
     root.mkdir(parents=True, exist_ok=True)
     backup_id = f"{uuid.uuid4().hex}.zip"
@@ -690,7 +690,7 @@ def restore_backup(
     fallback_path: Path | None,
     memory_enabled: bool,
 ) -> dict[str, Any]:
-    from harness_memory.operations.migration.import_ import import_namespace
+    from octop_memory.operations.migration.import_ import import_namespace
 
     if not _SAFE_ID.fullmatch(backup_id):
         raise ValueError("invalid backup id")
@@ -712,7 +712,7 @@ def restore_backup(
     _validate_extended(extended)
     import json as _json
 
-    from harness_memory.operations.migration import EXPORT_TABLES, EXPORT_VERSION
+    from octop_memory.operations.migration import EXPORT_TABLES, EXPORT_VERSION
 
     lines = namespace_data.splitlines()
     if len(lines) < 2:
@@ -787,8 +787,8 @@ def restore_backup(
 
 
 def _purge_namespace(memory: Any) -> None:
-    from harness_memory.storage.backends.postgres import PostgresMemoryBackend
-    from harness_memory.storage.backends.sqlite import SqliteMemoryBackend
+    from octop_memory.storage.backends.postgres import PostgresMemoryBackend
+    from octop_memory.storage.backends.sqlite import SqliteMemoryBackend
 
     backend = memory.backend
     if isinstance(backend, PostgresMemoryBackend):

@@ -98,7 +98,7 @@ async def test_shared_agent_serves_the_callers_own_mcp_connector(
             for server_name, spec in configs.items()
         ]
 
-    monkeypatch.setattr("harness_agent.mcp.aload_mcp_tools", _load_http_tools)
+    monkeypatch.setattr("octop_harness.mcp.aload_mcp_tools", _load_http_tools)
     client, srv, admin_auth = env
     await seed_openai_provider(client, admin_auth)
     owner_auth = await create_user(client, admin_auth, username="mcp_owner")

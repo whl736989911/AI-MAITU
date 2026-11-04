@@ -510,8 +510,8 @@ async def test_shared_history_restores_virtual_and_inline_file_downloads(
     import base64
     import json
 
-    from harness_agent.builtin.tools.send_file import build_send_file_to_user_tool
     from langchain_core.messages import HumanMessage, ToolMessage
+    from octop_harness.builtin.tools.send_file import build_send_file_to_user_tool
 
     from octop.infra.gateway.process.history_projection import message_inputs
     from octop.infra.history.recorder import RecordingTracker

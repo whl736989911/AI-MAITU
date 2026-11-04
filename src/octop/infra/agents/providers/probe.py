@@ -41,7 +41,7 @@ def _is_codex_base_url(base_url: str | None) -> bool:
 
 def build_probe_chat_model(row: Any, *, model_id: str | None = None) -> Any:
     """Construct a chat model from a provider row for probing."""
-    from harness_agent.config import ProviderConfig
+    from octop_harness.config import ProviderConfig
 
     from octop.infra.agents.providers.harness_factory import build_configured_chat_model
     from octop.infra.agents.providers.model_config import ProviderModelConfig

@@ -28,7 +28,7 @@ from octop.infra.gateway.media.attachment_hints import (
 )
 
 if TYPE_CHECKING:
-    from harness_agent.backends.workspace import BackendWorkspace
+    from octop_harness.backends.workspace import BackendWorkspace
 
 ModelForImages = Callable[[ModelRequest[Any], bool], BaseChatModel]
 _TOOL_IMAGE_TYPES = frozenset({"image_url", "image", "input_image"})

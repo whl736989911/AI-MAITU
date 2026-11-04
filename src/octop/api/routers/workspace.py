@@ -11,7 +11,7 @@ from zipfile import BadZipFile, ZipFile
 
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import Response, StreamingResponse
-from harness_agent.backends.utils import BackendOperationNotSupportedError
+from octop_harness.backends.utils import BackendOperationNotSupportedError
 from pydantic import BaseModel
 
 from octop.api.common.agent import AgentCapability, user_owns_agent

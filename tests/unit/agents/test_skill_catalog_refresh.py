@@ -22,10 +22,10 @@ from typing import Any
 import pytest
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.middleware.skills import SkillsMiddleware
-from harness_agent import HarnessAgentManager
-from harness_agent.llm.factory import ChatModelFactory
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage
+from octop_harness import HarnessAgentManager
+from octop_harness.llm.factory import ChatModelFactory
 
 from octop.config import OctopConfig
 from octop.infra.agents.manager import AgentCreateSpec, AgentManager
@@ -181,8 +181,8 @@ class _FakeToolModel(GenericFakeChatModel):
 class _FakeChatModelFactory(ChatModelFactory):
     """A real model factory whose models never leave the process."""
 
-    def _build(self, provider: Any, model: Any) -> Any:
-        del provider, model
+    def _build(self, provider: Any, model: Any, *, max_retries: int | None = None) -> Any:
+        del provider, model, max_retries
         return _FakeToolModel(messages=itertools.cycle([AIMessage(content="pong")]))
 
 
@@ -226,7 +226,7 @@ async def test_a_skill_installed_mid_thread_is_visible_to_that_threads_next_turn
 ) -> None:
     """End to end, on a real graph: install, then the same thread's next turn."""
     manager = _manager_with_fake_model(tmp_path)
-    filter_log = logging.getLogger("harness_agent.middleware.skill_filter")
+    filter_log = logging.getLogger("octop_harness.middleware.skill_filter")
     try:
         row = await manager.create(
             AgentCreateSpec(

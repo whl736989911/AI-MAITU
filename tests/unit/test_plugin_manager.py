@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
-from harness_agent.plugins import PluginRegistry
+from octop_harness.plugins import PluginRegistry
 
 from octop.infra.agents.plugins.manager import (
     PluginManager,

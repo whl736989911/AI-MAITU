@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from harness_agent.acp.models import ACPConfig, default_acp_runners
+from octop_harness.acp.models import ACPConfig, default_acp_runners
 
 from octop.infra.db.repos.agents import AgentRepo, AgentRow
 from octop.infra.db.repos.settings import SettingsRepo

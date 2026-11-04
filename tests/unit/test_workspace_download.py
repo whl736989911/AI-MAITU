@@ -16,7 +16,7 @@ def test_normalize_workspace_media_path_outbound() -> None:
     assert normalize_workspace_media_path("outbound/a.png") == "outbound/a.png"
 
 
-def test_normalize_download_rejects_harness_browser() -> None:
+def test_normalize_download_rejects_octop_browser() -> None:
     with pytest.raises(ValueError):
         normalize_workspace_download_path("/Users/me/.harness-browser/screenshots/x.png")
 

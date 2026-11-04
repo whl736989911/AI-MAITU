@@ -61,7 +61,7 @@ def test_output_decoder_preserves_chinese_gb18030_bytes() -> None:
 
 
 def test_installed_local_shell_decodes_real_gb18030_subprocess(tmp_path: Path) -> None:
-    from harness_agent.backends.local_shell import HarnessLocalShellBackend
+    from octop_harness.backends.local_shell import HarnessLocalShellBackend
 
     install_backend_compatibility_patches()
     payload = "文件完成".encode("gb18030").hex()

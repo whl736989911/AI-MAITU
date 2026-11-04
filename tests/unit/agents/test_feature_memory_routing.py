@@ -14,11 +14,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from harness_agent.middleware.memory_recall import RECALL_SNAPSHOT_KEY, has_recall_snapshot
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from langgraph.config import var_child_runnable_config
 from langgraph.prebuilt.tool_node import ToolCallRequest
+from octop_harness.middleware.memory_recall import RECALL_SNAPSHOT_KEY, has_recall_snapshot
 
 from octop.infra.agents.kinds import KIND_AGENT, KIND_FEATURE
 from octop.infra.agents.memory_backend import memory_namespace

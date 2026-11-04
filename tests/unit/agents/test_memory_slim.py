@@ -17,7 +17,7 @@ from octop.infra.agents.memory_slim import MemorySlimCoordinator
 
 
 def _live_memory(tmp_path: Path):
-    from harness_memory import Memory
+    from octop_memory import Memory
 
     path = tmp_path / "memory.sqlite"
     conn = sqlite3.connect(path)
@@ -34,7 +34,7 @@ def _live_memory(tmp_path: Path):
 
 @pytest.mark.asyncio
 async def test_live_maintenance_waits_for_turn_then_releases_admission(tmp_path, monkeypatch):
-    from harness_memory.application import checkpoint_maintenance
+    from octop_memory.application import checkpoint_maintenance
 
     memory, path, config, expected = _live_memory(tmp_path)
     active = {"agent": True}

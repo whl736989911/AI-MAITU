@@ -10,10 +10,10 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
-from harness_gateway.channel import ChannelCredentialsError, MessageProcessor
-from harness_gateway.channels import ChannelKind
-from harness_gateway.manager import ChannelManager
-from harness_gateway.models import ChannelSubject, InboundMessage, MessageEvent
+from octop_gateway.channel import ChannelCredentialsError, MessageProcessor
+from octop_gateway.channels import ChannelKind
+from octop_gateway.manager import ChannelManager
+from octop_gateway.models import ChannelSubject, InboundMessage, MessageEvent
 
 from octop.i18n import (
     channel_permission_revoked,

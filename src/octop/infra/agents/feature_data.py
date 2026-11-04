@@ -47,7 +47,7 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.ulid import new_ulid
 
 if TYPE_CHECKING:
-    from harness_agent.backends.workspace import BackendWorkspace
+    from octop_harness.backends.workspace import BackendWorkspace
 
 SCHEMA_VERSION = 1
 SCHEMA_LEAF = "feature-data/schema.json"

@@ -118,7 +118,7 @@ def _install_document_transport(
 
         return [StructuredTool.from_function(read_document, name="shared_read_document")]
 
-    monkeypatch.setattr("harness_agent.mcp.aload_mcp_tools", load)
+    monkeypatch.setattr("octop_harness.mcp.aload_mcp_tools", load)
 
 
 @pytest.mark.asyncio

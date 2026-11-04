@@ -47,7 +47,7 @@ class SkillContentBody(BaseModel):
 
 async def ensure_record_daemon() -> dict[str, Any]:
     try:
-        from harness_browser.record.daemon import ensure_daemon
+        from octop_browser.record.daemon import ensure_daemon
     except ImportError as exc:
         raise OctopError(
             ErrorCode.INTERNAL_ERROR,
@@ -59,7 +59,7 @@ async def ensure_record_daemon() -> dict[str, Any]:
 
 async def send_record_request(request: dict[str, Any]) -> dict[str, Any]:
     try:
-        from harness_browser.record.daemon import send_request
+        from octop_browser.record.daemon import send_request
     except ImportError as exc:
         raise OctopError(
             ErrorCode.INTERNAL_ERROR,
@@ -76,7 +76,7 @@ async def run_replay_recording(
     inputs: dict[str, str],
 ) -> dict[str, Any]:
     try:
-        from harness_browser.record.replay import ReplayRunner
+        from octop_browser.record.replay import ReplayRunner
     except ImportError as exc:
         raise OctopError(
             ErrorCode.INTERNAL_ERROR,
@@ -88,7 +88,7 @@ async def run_replay_recording(
 
 def _latest_recording_id(profile: str) -> str | None:
     try:
-        from harness_browser.record.store import RecordingStore
+        from octop_browser.record.store import RecordingStore
     except ImportError:
         return None
     recordings = [
@@ -102,7 +102,7 @@ def _latest_recording_id(profile: str) -> str | None:
 
 def _require_owned_recording(recording_id: str, profile: str) -> Any:
     try:
-        from harness_browser.record.store import RecordingStore
+        from octop_browser.record.store import RecordingStore
     except ImportError as exc:
         raise OctopError(
             ErrorCode.INTERNAL_ERROR,
@@ -132,7 +132,7 @@ def _active_for_profile(data: dict[str, Any], profile: str) -> Any:
 def _daemon_unreachable(exc: BaseException) -> bool:
     """True when *exc* proves no daemon can hold a recording for this host.
 
-    ``harness_browser`` runs the recording inside its daemon process, so a
+    ``octop_browser`` runs the recording inside its daemon process, so a
     socket that was never created (``FileNotFoundError``), a refused/reset
     connection, or a host whose event loop has no unix-socket transport at all
     (Windows raises ``AttributeError`` for ``open_unix_connection``) all mean
@@ -279,7 +279,7 @@ async def record_stop_and_generate_skill(
     skill_content = None
     skill_name = None
     try:
-        from harness_browser.record.store import RecordingStore
+        from octop_browser.record.store import RecordingStore
 
         store = RecordingStore()
         # Find the recording directory
@@ -319,7 +319,7 @@ async def get_skill_content(
     skill_exists = False
     profile = user_browser_profile(user.id)
     manifest = _require_owned_recording(body.recording_id, profile)
-    from harness_browser.record.store import RecordingStore
+    from octop_browser.record.store import RecordingStore
 
     store = RecordingStore()
     rec_dir = store.recording_dir(body.recording_id)

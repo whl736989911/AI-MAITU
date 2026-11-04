@@ -70,7 +70,7 @@ async def resolve_harness_session(
     agent_id: str | None = None,
     create: bool = True,
 ) -> Any | None:
-    """Return a live :class:`harness_browser.BrowserSession` for ``profile_hint``.
+    """Return a live :class:`octop_browser.BrowserSession` for ``profile_hint``.
 
     *profile_hint* must be a concrete profile name (``user-<id>``). Empty /
     ``auto`` never falls back to another user's session or to ``default``.
@@ -86,8 +86,8 @@ async def resolve_harness_session(
     When ``create=False`` and no live session exists, returns ``None``.
     """
     try:
-        from harness_browser import BrowserSession
-        from harness_browser.tool_interface import _registry
+        from octop_browser import BrowserSession
+        from octop_browser.tool_interface import _registry
     except ImportError as exc:
         raise OctopError(
             ErrorCode.INTERNAL_ERROR,
@@ -146,8 +146,8 @@ async def resolve_harness_session(
 
     # Fresh ProfileManager picks up any BROWSER_USE_PROFILES_DIR relocation
     # done by prepare (default singleton is bound at import time).
-    from harness_browser.profile import ProfileManager  # noqa: PLC0415
-    from harness_browser.settings import settings as hb_settings  # noqa: PLC0415
+    from octop_browser.profile import ProfileManager  # noqa: PLC0415
+    from octop_browser.settings import settings as hb_settings  # noqa: PLC0415
 
     profile_manager = ProfileManager(base_dir=Path(hb_settings.profiles_dir))
 
@@ -260,7 +260,7 @@ async def harness_list_tabs(sess: Any) -> list[dict[str, Any]]:
 async def harness_sessions_payload(profile_name: str) -> dict[str, Any]:
     """Shape expected by the dashboard ``BrowserSessionsResponse`` type."""
     try:
-        from harness_browser.tool_interface import _registry
+        from octop_browser.tool_interface import _registry
     except ImportError:
         return {"ok": False, "environment": "headless-server", "sessions": []}
 
@@ -349,7 +349,7 @@ async def handoff(
 async def shutdown_browser(user: User = Depends(require_permission("browser"))) -> dict[str, Any]:
     """Terminate the current user's Octop-managed Chrome. Cookies stay on disk."""
     try:
-        from harness_browser.tool_interface import browser_tool
+        from octop_browser.tool_interface import browser_tool
     except ImportError as exc:
         raise OctopError(
             ErrorCode.INTERNAL_ERROR,

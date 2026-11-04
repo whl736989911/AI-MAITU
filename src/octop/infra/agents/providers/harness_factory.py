@@ -6,9 +6,6 @@ import logging
 from collections.abc import AsyncIterator, Iterator, Sequence
 from typing import TYPE_CHECKING, Any
 
-from harness_agent.config import ModelConfig, ProviderConfig
-from harness_agent.llm.factory import ChatModelFactory
-from harness_agent.manager import HarnessAgentManager
 from langchain_core.callbacks import (
     AsyncCallbackManagerForLLMRun,
     BaseCallbackHandler,
@@ -19,12 +16,15 @@ from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage
 from langchain_core.outputs import ChatGenerationChunk, ChatResult
 from langchain_core.runnables import Runnable
 from langchain_core.runnables.config import RunnableConfig, merge_configs
+from octop_harness.config import ModelConfig, ProviderConfig
+from octop_harness.llm.factory import ChatModelFactory
+from octop_harness.manager import HarnessAgentManager
 from pydantic import PrivateAttr
 
 from octop.infra.agents.providers.model_config import ProviderModelConfig
 
 if TYPE_CHECKING:
-    from harness_agent.manager import HarnessAgentManager as HarnessAgentManagerType
+    from octop_harness.manager import HarnessAgentManager as HarnessAgentManagerType
 
 logger = logging.getLogger(__name__)
 
@@ -287,21 +287,27 @@ class _ResponsesFallbackChatModel(BaseChatModel):
 class OctopChatModelFactory(ChatModelFactory):
     """Build Responses API models only when the model config explicitly asks."""
 
-    def _build(self, provider: ProviderConfig, model: ModelConfig) -> Any:
+    def _build(
+        self,
+        provider: ProviderConfig,
+        model: ModelConfig,
+        *,
+        max_retries: int | None = None,
+    ) -> Any:
         if provider.protocol != "openai" or not isinstance(model, ProviderModelConfig):
-            return super()._build(provider, model)
+            return super()._build(provider, model, max_retries=max_retries)
         if model.api_mode == "chat_completions":
-            return super()._build(provider, model)
-        from harness_agent.llm.factory import (
+            return super()._build(provider, model, max_retries=max_retries)
+        from langchain_openai import ChatOpenAI
+        from octop_harness.llm.factory import (
             _get_reasoning_aware_chat_openai,
             _inject_model_token_limits,
             _stamp_native_tool_search_capability,
         )
-        from harness_agent.llm.session_header import (
+        from octop_harness.llm.session_header import (
             attach_session_http_clients,
             session_http_clients,
         )
-        from langchain_openai import ChatOpenAI
 
         kwargs: dict[str, Any] = {
             "model": model.id,
@@ -314,6 +320,8 @@ class OctopChatModelFactory(ChatModelFactory):
         }
         if provider.headers:
             kwargs["default_headers"] = dict(provider.headers)
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
         session_clients = None
         if provider.session_header:
             session_clients = session_http_clients(provider.session_header)
@@ -325,18 +333,20 @@ class OctopChatModelFactory(ChatModelFactory):
         _stamp_native_tool_search_capability(instance, provider.protocol, model.native_tool_search)
         _inject_model_token_limits(instance, model)
         if model.api_fallback == "chat_completions":
-            from harness_agent.llm.factory import _build_openai
+            from octop_harness.llm.factory import _build_openai
 
             if model.native_tool_search:
                 raise ValueError("Responses fallback is incompatible with native_tool_search")
-            return _ResponsesFallbackChatModel(instance, _build_openai(provider, model))
+            return _ResponsesFallbackChatModel(
+                instance, _build_openai(provider, model, max_retries=max_retries)
+            )
         return instance
 
     @staticmethod
     def _close_fallback_clients(model: Any) -> None:
         if not isinstance(model, _ResponsesFallbackChatModel):
             return
-        from harness_agent.llm.session_header import close_session_http_clients
+        from octop_harness.llm.session_header import close_session_http_clients
 
         close_session_http_clients(model._primary)
         close_session_http_clients(model._fallback)
@@ -345,7 +355,7 @@ class OctopChatModelFactory(ChatModelFactory):
     async def _aclose_fallback_clients(model: Any) -> None:
         if not isinstance(model, _ResponsesFallbackChatModel):
             return
-        from harness_agent.llm.session_header import aclose_session_http_clients
+        from octop_harness.llm.session_header import aclose_session_http_clients
 
         await aclose_session_http_clients(model._primary)
         await aclose_session_http_clients(model._fallback)
@@ -436,8 +446,8 @@ class OctopHarnessAgentManager(HarnessAgentManager):
         from dataclasses import replace
         from datetime import UTC, datetime
 
-        from harness_agent.mcp import merge_mcp_server_configs
-        from harness_agent.registry import AgentEntry
+        from octop_harness.mcp import merge_mcp_server_configs
+        from octop_harness.registry import AgentEntry
 
         from octop.infra.agents.middleware.capabilities import CapabilityHarnessAgent
 

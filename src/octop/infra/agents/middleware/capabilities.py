@@ -5,11 +5,11 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping
 from typing import Any
 
-from harness_agent import HarnessAgent
 from langchain.agents.middleware import AgentMiddleware, ModelRequest, ModelResponse
 from langchain_core.messages import AIMessage, ToolMessage
 from langgraph.config import get_config
 from langgraph.types import Command
+from octop_harness import HarnessAgent
 
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.capabilities import UserCapabilityPolicy
@@ -128,7 +128,11 @@ class CapabilityMiddleware(AgentMiddleware[Any, Any]):
 
     def _visible_tools(self, tools: list[Any]) -> list[Any]:
         user_id = _user_id(_run_configurable())
-        self._policy.require_permissions(user_id, ())
+        # Internal/system runs carry no acting user. Only an *existing* user can
+        # be checked for being disabled; per-tool checks still demand the
+        # permission keys such a run actually lacks.
+        if user_id is not None:
+            self._policy.require_permissions(user_id, ())
         return [tool for tool in tools if self._denial(_tool_name(tool), user_id, tool) is None]
 
     def wrap_model_call(
@@ -205,7 +209,7 @@ def guarded_subagent_specs(
 ) -> list[dict[str, Any]]:
     """Guard every inline subagent and remove the owner's static MCP tools."""
     from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
-    from harness_agent.mcp import filter_tools_for_mcp_servers
+    from octop_harness.mcp import filter_tools_for_mcp_servers
 
     specs = list(specs)
     if not any(spec.get("name") == "general-purpose" for spec in specs):

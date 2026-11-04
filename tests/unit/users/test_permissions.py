@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import pytest
-from harness_gateway.channels import SUPPORTED_CHANNEL_KINDS
+from octop_gateway.channels import SUPPORTED_CHANNEL_KINDS
 
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import (

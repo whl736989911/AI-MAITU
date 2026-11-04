@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from harness_agent.plugins import (
+from octop_harness.plugins import (
     LoadedPlugin,
     PluginManifest,
     PluginRegistry,
@@ -559,7 +559,7 @@ class PluginManager:
         agent_plugins: object = None,
     ) -> None:
         _require_business_access()
-        from harness_agent.backends.workspace import BackendWorkspace
+        from octop_harness.backends.workspace import BackendWorkspace
 
         from octop.infra.agents.plugin_tool_defaults import agent_plugin_enabled
 

@@ -13,8 +13,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from deepagents.backends.local_shell import LocalShellBackend
-from harness_agent.backends.workspace import BackendWorkspace
-from harness_gateway.models import ChannelSubject, InboundMessage, TextContent
+from octop_gateway.models import ChannelSubject, InboundMessage, TextContent
+from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.infra.agents.feature_workflow import (
     CONFIGURABLE_WORKFLOW_KEY,

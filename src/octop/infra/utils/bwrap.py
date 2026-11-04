@@ -224,7 +224,7 @@ def _status_result(
 def _probe_runtime(
     binary: str, *, installed: bool = False, manager: str | None = None
 ) -> dict[str, Any]:
-    from harness_agent.backends.bwrap_shell import build_bwrap_argv
+    from octop_harness.backends.bwrap_shell import build_bwrap_argv
 
     try:
         with tempfile.TemporaryDirectory(prefix="maitu-bwrap-check-") as root:

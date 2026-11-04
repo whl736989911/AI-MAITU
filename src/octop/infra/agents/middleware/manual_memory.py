@@ -60,7 +60,7 @@ def filter_native_memory_sources(sources: Any) -> tuple[Any, ...]:
     USER.md/MEMORY.md; return those defaults with just the manual files removed.
     An explicit empty setting remains empty (bootstrap suppression).
     """
-    from harness_agent.backends.workspace import DEFAULT_MEMORY_FILES
+    from octop_harness.backends.workspace import DEFAULT_MEMORY_FILES
 
     selected = DEFAULT_MEMORY_FILES if sources is None else sources
     if isinstance(selected, (str, bytes)):

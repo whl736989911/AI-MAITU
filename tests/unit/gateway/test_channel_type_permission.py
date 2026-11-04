@@ -18,8 +18,8 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from harness_gateway.channel import MessageProcessor
-from harness_gateway.models import (
+from octop_gateway.channel import MessageProcessor
+from octop_gateway.models import (
     ChannelSubject,
     InboundMessage,
     MessageEvent,

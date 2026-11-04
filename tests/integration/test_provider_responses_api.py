@@ -8,7 +8,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 import pytest
-from harness_agent.config import ProviderConfig
+from octop_harness.config import ProviderConfig
 from openai import APIStatusError
 
 from octop.infra.agents.providers.harness_factory import OctopChatModelFactory

@@ -355,7 +355,7 @@ def pkill_chrome_profile(profile_dir: Path) -> bool:
 
 def _profiles_root() -> Path:
     try:
-        from harness_browser.settings import settings as _settings  # noqa: PLC0415
+        from octop_browser.settings import settings as _settings  # noqa: PLC0415
 
         return Path(_settings.profiles_dir)
     except Exception:  # noqa: BLE001
@@ -408,7 +408,7 @@ def chrome_source_for_path(chrome_path: str | None) -> str | None:
             continue
     # Also match when chromium_executable() reports the same path.
     try:
-        from harness_browser.install import chromium_executable  # noqa: PLC0415
+        from octop_browser.install import chromium_executable  # noqa: PLC0415
 
         pw = chromium_executable()
         if pw and Path(pw).resolve() == resolved:
@@ -421,7 +421,7 @@ def chrome_source_for_path(chrome_path: str | None) -> str | None:
 async def _cdp_port_listening(port: int) -> bool:
     try:
         import aiohttp  # noqa: PLC0415
-        from harness_browser.settings import settings as _settings  # noqa: PLC0415
+        from octop_browser.settings import settings as _settings  # noqa: PLC0415
 
         host = _settings.cdp_host
         timeout = aiohttp.ClientTimeout(total=1)
@@ -436,7 +436,7 @@ async def _cdp_port_listening(port: int) -> bool:
 
 def _profile_port(profile_name: str) -> int | None:
     try:
-        from harness_browser.profile import ProfileManager  # noqa: PLC0415
+        from octop_browser.profile import ProfileManager  # noqa: PLC0415
 
         pm = ProfileManager()
         profile = pm.get_or_create(profile_name)
@@ -447,7 +447,7 @@ def _profile_port(profile_name: str) -> int | None:
 
 def _profile_data_dir(profile_name: str) -> Path:
     try:
-        from harness_browser.profile import ProfileManager  # noqa: PLC0415
+        from octop_browser.profile import ProfileManager  # noqa: PLC0415
 
         return Path(ProfileManager().get_or_create(profile_name).data_dir)
     except Exception:  # noqa: BLE001
@@ -457,7 +457,7 @@ def _profile_data_dir(profile_name: str) -> Path:
 async def _close_harness_registry() -> int:
     closed = 0
     try:
-        from harness_browser.tool_interface import _registry  # noqa: PLC0415
+        from octop_browser.tool_interface import _registry  # noqa: PLC0415
     except ImportError:
         return 0
 

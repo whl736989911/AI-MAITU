@@ -17,9 +17,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 from uuid import uuid4
 
-from harness_agent import HarnessAgent, HarnessAgentConfig, HarnessAgentManager
-from harness_agent.registry import AgentEntry
-from harness_agent.security.models import SecurityPolicy
+from octop_harness import HarnessAgent, HarnessAgentConfig, HarnessAgentManager
+from octop_harness.registry import AgentEntry
+from octop_harness.security.models import SecurityPolicy
 
 from octop.i18n.domains.agents import (
     AGENT_START_TIMEOUT,
@@ -356,7 +356,7 @@ class AgentManager:
       - CRUD: create / update / delete
       - Reads: get_row, list_*, get_config, resolve_user_agent
       - Runtime: get_agent, stream / call / HITL / thread model
-      - Hot-reload: reload*, on_provider_changed, reload_harness_agents
+      - Hot-reload: reload*, on_provider_changed, reload_octop_harnesss
       - Connectors: reload_connectors*, prepare_chat_mcp
       - Settings stores: langfuse, security, acp_settings, tool_guard_rules, providers
     """
@@ -451,7 +451,7 @@ class AgentManager:
         self._plugin_tool_labels: dict[str, dict[str, str]] = {}
         # Per-agent feature-memory routing (middleware holding shared + per-user
         # private services). Closed alongside the harness memory store when the
-        # agent is removed or rebuilt — see ``_quiesce_harness_memory``.
+        # agent is removed or rebuilt — see ``_quiesce_octop_memory``.
         self._feature_memory_routings: dict[str, Any] = {}
 
     def replace_persistence(self, repos: RepoBundle, config: OctopConfig) -> None:
@@ -1067,7 +1067,7 @@ class AgentManager:
         async with self._lock:
             if not is_team_agent(row):
                 affected_teams = await self._teams.adrop_member(agent_id)
-            await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
+            await asyncio.to_thread(self._quiesce_octop_memory, agent_id)
             if self._harness_manager is not None:
                 await self._harness_manager.aremove_agent(agent_id)
         self._plugin_tool_labels.pop(agent_id, None)
@@ -1108,14 +1108,14 @@ class AgentManager:
             row = self._repos.agent_repo.get(agent_id)
             if row is None:
                 raise OctopError(ErrorCode.AGENT_NOT_FOUND, f"agent {agent_id!r} not found")
-            await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
+            await asyncio.to_thread(self._quiesce_octop_memory, agent_id)
             await self._harness_manager.aremove_agent(agent_id)  # type: ignore[union-attr]
             self.forget_turn_mcp_tools(agent_id)
             if not preserve_paused_contexts:
                 self._hitl_resume_contexts.clear_agent(agent_id)
             self._repos.agent_repo.set_state(agent_id, "stopped", error=None)
 
-    def _quiesce_harness_memory(self, agent_id: str) -> None:
+    def _quiesce_octop_memory(self, agent_id: str) -> None:
         """Stop memory GC before the harness closes the SQLite backend.
 
         ``harness-memory`` runs lifecycle GC on a daemon thread. Closing the
@@ -1580,7 +1580,7 @@ class AgentManager:
             with hitl_thread_scope(thread_id_from_request(req)):
                 async for chunk in self._harness_manager.stream(agent_id, cast(Any, req)):
                     if isinstance(chunk, dict) and chunk.get("type") == "hitl_required":
-                        from harness_agent.request import ChatRequest
+                        from octop_harness.request import ChatRequest
 
                         self._hitl_resume_contexts.remember(
                             agent_id, thread_id, ChatRequest.coerce(req).to_runnable_config()
@@ -1634,7 +1634,7 @@ class AgentManager:
             self._apply_pending_bootstrap_graph_refresh(agent_id)
             config = self._hitl_resume_contexts.take(agent_id, thread_id)
             if config is None and fallback_request is not None:
-                from harness_agent.request import ChatRequest
+                from octop_harness.request import ChatRequest
 
                 prepared = self._prepare_stream_request(agent_id, fallback_request)
                 config = ChatRequest.coerce(prepared).to_runnable_config()
@@ -1702,7 +1702,7 @@ class AgentManager:
         ]
         await self._reload_agents(agent_ids)
 
-    def reload_harness_agents(self) -> None:
+    def reload_octop_harnesss(self) -> None:
         """Rebuild harness agents in place (e.g. after tool-guard rules changed on disk).
 
         Does not rebuild Octop-side agent config from the DB — use :meth:`reload` for that.
@@ -1900,7 +1900,7 @@ class AgentManager:
     ) -> list[Any]:
         """Load custom MCP tools once per user/server/fingerprint; share across agents."""
         self._capability_policy.require_permissions(user_id, {"connectors"})
-        from harness_agent.mcp import aload_mcp_tools
+        from octop_harness.mcp import aload_mcp_tools
 
         from octop.infra.connectors.mcp_tool_cache import (
             fingerprint_mcp_spec,
@@ -2065,7 +2065,7 @@ class AgentManager:
     async def _load_connector_tools_for_user(self, user_id: int, server_name: str) -> list[Any]:
         """Tools of one built-in connector instance *user_id* may use, or ``[]``."""
         self._capability_policy.require_permissions(user_id, {"connectors"})
-        from harness_agent.mcp import aload_mcp_tools
+        from octop_harness.mcp import aload_mcp_tools
 
         from octop.infra.connectors.builder import build_http_mcp_spec
         from octop.infra.connectors.catalog import get_catalog_entry
@@ -2671,7 +2671,7 @@ class AgentManager:
                 slug,
                 row.get("error") or "corrupt",
             )
-        from harness_agent.skills import catalog as harness_skill_catalog  # noqa: PLC0415
+        from octop_harness.skills import catalog as harness_skill_catalog  # noqa: PLC0415
 
         if getattr(harness_skill_catalog, "SKILL_PRESENTATION_METADATA_VERSION", 0) < 1:
             workspace = getattr(agent, "workspace", None)
@@ -2800,7 +2800,7 @@ class AgentManager:
 
     def sync_effective_tools_disabled(self, agent_id: str) -> None:
         """Hot-sync builtin + plugin denylist derived from current agent config."""
-        from harness_agent.plugins import PluginRegistry
+        from octop_harness.plugins import PluginRegistry
 
         from octop.infra.agents.tool_catalog import effective_tools_disabled
 
@@ -3374,8 +3374,8 @@ class AgentManager:
         allow_ephemeral_remote: bool = False,
     ) -> Any:
         """Resolve :class:`BackendWorkspace` for *row* without a running harness agent."""
-        from harness_agent.backends import resolve_backend  # noqa: PLC0415
-        from harness_agent.backends.workspace import BackendWorkspace  # noqa: PLC0415
+        from octop_harness.backends import resolve_backend  # noqa: PLC0415
+        from octop_harness.backends.workspace import BackendWorkspace  # noqa: PLC0415
 
         from octop.infra.agents.workspace_dir import system_files_path_from_config  # noqa: PLC0415
         from octop.infra.backend.compat import adapt_backend_protocol  # noqa: PLC0415
@@ -3580,7 +3580,7 @@ class AgentManager:
         self.forget_turn_mcp_tools(agent_id)
         row = self._repos.agent_repo.get(agent_id)
         if not row or not row.enabled or row.last_state == "stopped":
-            await asyncio.to_thread(self._quiesce_harness_memory, agent_id)
+            await asyncio.to_thread(self._quiesce_octop_memory, agent_id)
             await self._harness_manager.aremove_agent(agent_id)
             return
         if self._harness_manager.shared_factory is None:
@@ -3757,7 +3757,7 @@ class AgentManager:
         return row.user_id
 
     def _prepare_stream_request(self, agent_id: str, request: dict[str, Any]) -> dict[str, Any]:
-        from harness_agent.plugins import collect_plugin_tool_configs  # noqa: PLC0415
+        from octop_harness.plugins import collect_plugin_tool_configs  # noqa: PLC0415
 
         req = dict(request)
         if req.get("agent_id") is None:
@@ -3907,7 +3907,7 @@ class AgentManager:
         factory = self._harness_manager.shared_factory if self._harness_manager else None
         if factory is None:
             return None
-        from harness_agent.memory.llm_client import HarnessAgentLLMClient  # noqa: PLC0415
+        from octop_harness.memory.llm_client import HarnessAgentLLMClient  # noqa: PLC0415
 
         mem = cfg.get("memory")
         refs = _memory_aux_model_settings(
@@ -3933,7 +3933,7 @@ class AgentManager:
         self, row: AgentRow, *, team_member_ids: Sequence[str] | None = None
     ) -> HarnessAgentConfig:
         """Convert an AgentRow into a HarnessAgentConfig."""
-        from harness_agent.middleware.bootstrap import bootstrap_marker_exists  # noqa: PLC0415
+        from octop_harness.middleware.bootstrap import bootstrap_marker_exists  # noqa: PLC0415
 
         from octop.infra.agents.workspace_dir import (  # noqa: PLC0415
             harness_workspace_path,
@@ -4053,7 +4053,7 @@ class AgentManager:
                 paths=self.paths,
             )
 
-        from harness_agent.plugins import PluginRegistry, build_plugin_tools  # noqa: PLC0415
+        from octop_harness.plugins import PluginRegistry, build_plugin_tools  # noqa: PLC0415
 
         from octop.infra.agents.plugin_tool_defaults import (  # noqa: PLC0415
             agent_plugin_enabled,
@@ -4170,13 +4170,13 @@ class AgentManager:
         )
 
         def automatic_model_ref(request: ModelRequest[Any]) -> str | None:
-            from harness_agent.middleware.runtime import runtime_config
+            from octop_harness.middleware.runtime import runtime_config
 
             configured = (runtime_config(request).get("configurable") or {}).get("model")
             return configured if isinstance(configured, str) else self.resolve_fallback_model_ref()
 
         def model_for_images(request: ModelRequest[Any], alternate: bool = False) -> BaseChatModel:
-            from harness_agent.middleware.runtime import runtime_config
+            from octop_harness.middleware.runtime import runtime_config
 
             from octop.i18n import tr
 
@@ -4311,7 +4311,7 @@ class AgentManager:
 
         acp_section = cfg.get("acp")
         acp_raw: dict[str, Any] = acp_section if isinstance(acp_section, dict) else {}
-        from harness_agent.acp.models import ACPConfig
+        from octop_harness.acp.models import ACPConfig
 
         if team_host:
             acp_raw = {}

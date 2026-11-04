@@ -3,7 +3,7 @@
 Live sessions are harness-browser (see ``harness.py`` / ``stream.py``), not
 in-process Playwright.
 
-  GET    /api/browser/env-status  → { playwright, browsers_ok, harness_browser, … }
+  GET    /api/browser/env-status  → { playwright, browsers_ok, octop_browser, … }
   POST   /api/browser/install     → SSE Playwright Chromium install (or reuse system Chrome)
 """
 
@@ -38,7 +38,7 @@ def _probe_env() -> dict[str, Any]:
     out: dict[str, Any] = {
         "playwright": False,
         "browsers_ok": False,
-        "harness_browser": False,
+        "octop_browser": False,
         "playwright_chromium": False,
         "chrome_path": None,
         "chrome_source": None,  # "system" | "playwright" | None
@@ -53,10 +53,10 @@ def _probe_env() -> dict[str, Any]:
     out["playwright_chromium"] = playwright_chromium_installed()
 
     try:
-        from harness_browser import BrowserSession  # noqa: F401, PLC0415
-        from harness_browser.cdp.launcher import find_chrome  # noqa: PLC0415
+        from octop_browser import BrowserSession  # noqa: F401, PLC0415
+        from octop_browser.cdp.launcher import find_chrome  # noqa: PLC0415
 
-        out["harness_browser"] = True
+        out["octop_browser"] = True
         chrome = find_chrome()
         if chrome:
             out["browsers_ok"] = True
@@ -75,7 +75,7 @@ def _probe_env() -> dict[str, Any]:
 
         out["playwright"] = True
     except ImportError as exc:
-        if not out["harness_browser"]:
+        if not out["octop_browser"]:
             out["error"] = (
                 f"playwright not installed: {exc}. Install octop[browser] extras or harness-browser."
             )
@@ -122,7 +122,7 @@ def _verify_browser_binary(exe: str) -> tuple[bool, str]:
 async def install(_: Any = Depends(require_permission("browser"))) -> StreamingResponse:
     """Stream Chromium install progress as SSE.
 
-    Each event is a JSON line conforming to ``harness_browser.InstallEvent``:
+    Each event is a JSON line conforming to ``octop_browser.InstallEvent``:
       ``{"log": "..."}``                              — progress line
       ``{"done": true, "success": true}``             — finished OK
       ``{"done": true, "success": false, "error": "..."}``  — failed
@@ -137,7 +137,7 @@ async def install(_: Any = Depends(require_permission("browser"))) -> StreamingR
 
     async def _event_stream() -> AsyncGenerator[str, None]:
         try:
-            from harness_browser.cdp.launcher import find_chrome  # noqa: PLC0415
+            from octop_browser.cdp.launcher import find_chrome  # noqa: PLC0415
 
             chrome = find_chrome()
             if chrome:
@@ -161,7 +161,7 @@ async def install(_: Any = Depends(require_permission("browser"))) -> StreamingR
                     + "\n\n"
                 )
 
-            from harness_browser import install_chromium_stream  # noqa: PLC0415
+            from octop_browser import install_chromium_stream  # noqa: PLC0415
 
             async for event in install_chromium_stream():
                 yield f"data: {json.dumps(event)}\n\n"

@@ -55,7 +55,7 @@ def _refuse_postgres_portable(server: Any, agent_id: str) -> None:
     SQLite: one file per agent — pack/adopt moves that file's contents between
     hosts (Octop / OpenClaw / hermes).
 
-    PostgreSQL: all agents share fixed tables in the ``harness_memory`` schema,
+    PostgreSQL: all agents share fixed tables in the ``octop_memory`` schema,
     isolated by a ``namespace`` column. There is no per-agent file to pack, and
     ``pg_dump`` of the schema must NOT be suggested as a substitute — it would
     export every agent's memory, not just this one. The supported way to give
@@ -142,7 +142,7 @@ def resolve_adopt_target(
     target_host: str | None,
     target_namespace: str | None,
 ) -> tuple[str, str]:
-    """Server-derived ``(host, namespace)`` for ``harness_memory.adopt``.
+    """Server-derived ``(host, namespace)`` for ``octop_memory.adopt``.
 
     The caller may omit both values; otherwise they must name the URL agent's
     own store. The returned tuple is what the dependency is called with — never
@@ -154,7 +154,7 @@ def resolve_adopt_target(
 
 
 def resolve_doctor_host_spec(agent_id: str, host_spec: str | None) -> tuple[str, str]:
-    """Server-derived ``(host, namespace)`` for ``harness_memory.doctor``.
+    """Server-derived ``(host, namespace)`` for ``octop_memory.doctor``.
 
     Accepts ``agent`` / empty / ``agent:<own namespace>``; any other host or
     namespace is refused before the dependency sees it.
@@ -199,7 +199,7 @@ async def list_portable_sources(
 ) -> JSONResponse:
     """List all migratable memory stores on this host."""
     try:
-        from harness_memory.operations.migration.portable import list_sources
+        from octop_memory.operations.migration.portable import list_sources
 
         sources = list_sources()
         return JSONResponse(content={"sources": [s.to_dict() for s in sources]})
@@ -229,9 +229,9 @@ async def pack_agent_memory(
     _refuse_postgres_portable(server, agent_id)
 
     try:
-        from harness_memory.operations.migration.portable import pack
-        from harness_memory.operations.migration.portable.models import SourceInfo
-        from harness_memory.operations.migration.portable.sources import _probe_db
+        from octop_memory.operations.migration.portable import pack
+        from octop_memory.operations.migration.portable.models import SourceInfo
+        from octop_memory.operations.migration.portable.sources import _probe_db
 
         # Resolve the agent's db path and namespace
         workspace = resolve_agent_workspace_dir(server, agent_id)
@@ -317,7 +317,7 @@ async def adopt_agent_memory(
     _refuse_postgres_portable(server, agent_id)
 
     try:
-        from harness_memory.operations.migration.portable import adopt
+        from octop_memory.operations.migration.portable import adopt
 
         # Resolve the agent's db path, so the dependency writes exactly there.
         workspace = resolve_agent_workspace_dir(server, agent_id)
@@ -376,7 +376,7 @@ async def doctor_agent_memory(
     _refuse_postgres_portable(server, agent_id)
 
     try:
-        from harness_memory.operations.migration.portable import doctor
+        from octop_memory.operations.migration.portable import doctor
 
         # Resolve the agent's db path
         workspace = resolve_agent_workspace_dir(server, agent_id)

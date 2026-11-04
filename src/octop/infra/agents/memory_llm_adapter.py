@@ -16,8 +16,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from harness_agent.memory.llm_client import HarnessAgentLLMClient
-from harness_memory.ports.llm import LLMTier
+from octop_harness.memory.llm_client import HarnessAgentLLMClient
 
 logger = logging.getLogger(__name__)
 
@@ -52,14 +51,9 @@ def coerce_aux_extra_body(value: Any) -> dict[str, Any] | None:
 class OctopusMemoryLLMClient(HarnessAgentLLMClient):
     """Harness memory LLM client carrying the user's extraction budgets.
 
-    * light/heavy timeouts come straight from the parent constructor;
-    * ``max_tokens`` is applied to every call that does not pass one — the
-      harness-memory extract/promotion pipeline never passes one, so without
-      this the configured cap would silently never reach a request;
-    * ``extra_body`` is merged into the bound call kwargs, which OpenAI-style
-      LangChain adapters forward as the SDK's ``extra_body`` argument. A
-      provider that cannot honor it fails the call loudly (logged, extraction
-      degrades) — it is never silently dropped.
+    octop-harness 1.0.6 accepts ``default_max_tokens`` and ``extra_body`` on the
+    client itself, so this subclass only keeps the historical coercion rules for
+    stored dashboard values (``None``/0/empty keep their "no override" meaning).
     """
 
     def __init__(
@@ -79,57 +73,9 @@ class OctopusMemoryLLMClient(HarnessAgentLLMClient):
             default_model=default_model,
             light_timeout_s=light_timeout_s,
             heavy_timeout_s=heavy_timeout_s,
+            default_max_tokens=coerce_aux_max_tokens(max_tokens),
+            extra_body=coerce_aux_extra_body(extra_body),
         )
-        self._max_tokens = coerce_aux_max_tokens(max_tokens)
-        self._extra_body = coerce_aux_extra_body(extra_body)
-
-    def call_llm(
-        self,
-        prompt: str,
-        *,
-        tier: LLMTier = "light",
-        system: str | None = None,
-        max_tokens: int | None = None,
-        temperature: float | None = None,
-        response_format: str = "text",
-    ) -> str:
-        effective_max_tokens = max_tokens if max_tokens is not None else self._max_tokens
-        return super().call_llm(
-            prompt,
-            tier=tier,
-            system=system,
-            max_tokens=effective_max_tokens,
-            temperature=temperature,
-            response_format=response_format,  # type: ignore[arg-type]
-        )
-
-    def _apply_call_options(
-        self,
-        model: object,
-        *,
-        max_tokens: int | None,
-        temperature: float | None,
-        response_format: str,
-        timeout_s: float | None = None,
-    ) -> Any:
-        bound = super()._apply_call_options(
-            model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            response_format=response_format,  # type: ignore[arg-type]
-            timeout_s=timeout_s,
-        )
-        if self._extra_body is None:
-            return bound
-        merged = dict(self._extra_body)
-        if bound is model:
-            # The parent returned the model unbound (no other options).
-            bind = getattr(model, "bind", None)
-            if bind is None:  # pragma: no cover - LangChain models always bind
-                return model
-            return bind(extra_body=merged)
-        # The parent bound other options; extend the same binding.
-        return bound.bind(extra_body=merged)
 
 
 def memory_llm_budget(mem_cfg: dict[str, Any] | None) -> dict[str, Any]:

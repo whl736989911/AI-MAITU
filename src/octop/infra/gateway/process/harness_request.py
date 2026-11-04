@@ -5,8 +5,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any, cast
 
-from harness_gateway.media import MediaBackend
-from harness_gateway.models import ContentPart, ImageContent, InboundMessage, TextContent
+from octop_gateway.media import MediaBackend
+from octop_gateway.models import ContentPart, ImageContent, InboundMessage, TextContent
 
 from octop.i18n.domains.attachment import attachment_empty_image, attachment_empty_message
 from octop.infra.gateway.media.attachment_hints import (

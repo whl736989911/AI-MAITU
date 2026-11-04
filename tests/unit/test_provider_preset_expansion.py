@@ -16,10 +16,12 @@ def test_load_provider_presets_integration() -> None:
 
     deepseek = next(p for p in presets if p["id"] == "deepseek")
     deepseek_ids = {m["id"] for m in deepseek["models"]}
-    assert "deepseek-v4-flash" in deepseek_ids
+    # octop-harness 1.0.6 ships the standard DeepSeek catalog as
+    # ``deepseek-flash`` + ``deepseek-v4-pro``; the pro entry carries thinking.
+    assert "deepseek-flash" in deepseek_ids
     assert "deepseek-v4-pro" in deepseek_ids
-    flash = next(m for m in deepseek["models"] if m["id"] == "deepseek-v4-flash")
-    assert flash["reasoning_config"]["adapter"] == "thinking"
+    pro = next(m for m in deepseek["models"] if m["id"] == "deepseek-v4-pro")
+    assert pro["reasoning_config"]["adapter"] == "thinking"
 
     token_plan = next(p for p in presets if p["id"] == "tencent-token-plan")
     token_ids = {m["id"] for m in token_plan["models"]}

@@ -6,9 +6,9 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
-from harness_agent import HarnessAgentManager
-from harness_agent.llm.session_header import session_header_scope
-from harness_agent.observability.logging import logging_scope
+from octop_harness import HarnessAgentManager
+from octop_harness.llm.session_header import session_header_scope
+from octop_harness.observability.logging import logging_scope
 
 _CONTEXT_TTL_SECONDS = 30 * 60
 _MAX_PAUSED_CONTEXTS = 1024

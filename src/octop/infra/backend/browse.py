@@ -8,7 +8,7 @@ import shutil
 import tempfile
 from typing import Any
 
-from harness_agent.backends import resolve_backend
+from octop_harness.backends import resolve_backend
 
 from octop.infra.backend.adapter import row_to_backend_spec
 from octop.infra.backend.compat import adapt_backend_protocol
