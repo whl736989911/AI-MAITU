@@ -10,6 +10,7 @@ import meituanTravel from "./meituan-travel.png";
 import notion from "./notion.png";
 import qqMail from "./qq-mail.png";
 import qqMusic from "./qq-music.png";
+import ragflow from "./ragflow.svg";
 import tencentDocs from "./tencent-docs.png";
 import tencentIma from "./tencent-ima.png";
 import tencentMeeting from "./tencent-meeting.png";
@@ -28,6 +29,7 @@ export const CONNECTOR_LOGOS: Record<string, string> = {
   "baidu-map": baiduMap,
   "qq-mail": qqMail,
   "qq-music": qqMusic,
+  ragflow,
   fliggy,
   "ctrip-wendao": ctripWendao,
   didi,

@@ -397,12 +397,14 @@ async def probe_connector(
     *,
     instance_id: str,
     config: OctopConfig,
+    locale: str = "en",
 ) -> dict[str, Any]:
     if entry.kind == "qcc":
         from octop.infra.connectors.qcc import bearer_token, probe
 
         return await probe(bearer_token(cred_payload))
     if entry.mcp_mode == "gateway":
+        cred_payload = {**cred_payload, "_locale": locale}
         try:
             await asyncio.to_thread(probe_gateway_credentials, entry.kind, cred_payload)
         except Exception as exc:

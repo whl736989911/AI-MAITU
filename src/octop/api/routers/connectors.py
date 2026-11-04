@@ -944,6 +944,7 @@ async def delete_instance(
 @router.post("/connector-instances/{instance_id}/test", summary="Test connector")
 async def test_instance(
     instance_id: str,
+    request: Request,
     user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
@@ -979,6 +980,7 @@ async def test_instance(
             creds,
             instance_id=instance_id,
             config=server.services.config,
+            locale=resolve_request_locale(request),
         )
     except Exception as exc:
         logger.exception("connector test failed for %s", instance_id)
@@ -988,6 +990,7 @@ async def test_instance(
 @router.post("/connectors/test-credentials", summary="Test credentials")
 async def test_credentials(
     body: TestCredentialsBody,
+    request: Request,
     user: Any = Depends(require_permission("connectors")),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
@@ -1016,6 +1019,7 @@ async def test_credentials(
             cred_payload,
             instance_id="probe",
             config=server.services.config,
+            locale=resolve_request_locale(request),
         )
     except Exception as exc:
         logger.exception("connector credential test failed for %s", body.kind)
