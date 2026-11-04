@@ -1805,7 +1805,8 @@
     "ORG_UNIT_HAS_CHILDREN": "This department still has sub-departments; move or delete them first.",
     "ORG_UNIT_IN_USE": "This department still has members; move or reassign them first.",
     "KNOWLEDGE_COLLECTION_GENERATING": "This collection is already being organized. Wait for the current run to finish.",
-    "KNOWLEDGE_COLLECTION_INVALID": "The collection selection, name, or keywords are invalid."
+    "KNOWLEDGE_COLLECTION_INVALID": "The collection selection, name, or keywords are invalid.",
+    "KNOWLEDGE_METADATA_INVALID": "Metadata field or value is invalid."
   },
   "license": {
     "lockedTitle": "License required",
@@ -2466,7 +2467,34 @@
     "moveDocumentTarget": "Moving: {{name}}",
     "rootFolder": "Root",
     "moveDocumentSuccess": "Moved",
-    "moveDocumentFailed": "Move failed"
+    "moveDocumentFailed": "Move failed",
+    "metadata": {
+      "schemaButton": "Fields",
+      "schemaTitle": "Document fields",
+      "documentTitle": "Edit document fields",
+      "addField": "Add field",
+      "key": "Key",
+      "label": "Label",
+      "type": "Type",
+      "text": "Text",
+      "number": "Number",
+      "date": "Date",
+      "enum": "Choice",
+      "options": "Options (comma separated)",
+      "required": "Required",
+      "searchable": "Searchable",
+      "remove": "Remove",
+      "emptyFields": "No fields defined yet.",
+      "save": "Save",
+      "saved": "Field schema saved.",
+      "documentSaved": "Document fields saved.",
+      "saveFailed": "Could not save fields.",
+      "editButton": "Edit fields",
+      "filterField": "Field",
+      "filterValue": "Value",
+      "applyFilter": "Filter",
+      "clearFilter": "Clear"
+    }
   },
   "setupWizard": {
     "title": "Setup Wizard",

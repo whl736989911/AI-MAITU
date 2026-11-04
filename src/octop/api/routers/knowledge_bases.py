@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from collections.abc import Collection
 from contextlib import suppress
@@ -216,6 +217,26 @@ class RenameDocumentBody(BaseModel):
     new_name: str = Field(min_length=1, max_length=255, description="New document or folder name.")
 
 
+class MetadataFieldBody(BaseModel):
+    key: str = Field(min_length=1, max_length=64)
+    label: str = Field(default="", max_length=100)
+    type: Literal["text", "number", "date", "enum"] = "text"
+    options: list[str] = Field(default_factory=list, max_length=100)
+    required: bool = False
+    searchable: bool = True
+
+
+class MetadataSchemaBody(BaseModel):
+    fields: list[MetadataFieldBody] = Field(default_factory=list, max_length=50)
+
+
+class DocumentMetadataBody(BaseModel):
+    metadata: dict[str, Any] = Field(
+        default_factory=dict,
+        description="Field values keyed by metadata field key; null/empty clears a value.",
+    )
+
+
 class UpdateBaseBody(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     description: str | None = Field(default=None, max_length=2000)
@@ -236,12 +257,30 @@ def _knowledge_service(server: OctopServer) -> KnowledgeService:
     return KnowledgeService(server.services)
 
 
+def _metadata_filter(raw: str | None) -> dict[str, Any] | None:
+    if not raw:
+        return None
+    try:
+        parsed = json.loads(raw)
+    except ValueError as exc:
+        raise OctopError(
+            ErrorCode.KNOWLEDGE_METADATA_INVALID, "metadata filter must be a JSON object"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise OctopError(
+            ErrorCode.KNOWLEDGE_METADATA_INVALID, "metadata filter must be a JSON object"
+        )
+    return {str(key): value for key, value in parsed.items()}
+
+
 def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any]:
     payload = asdict(row)
     # The stored structure (design §3.4) is a cache, not an API value: shipping
     # it raw would send every table twice — the text already carries them — so
     # the row reports the one field of it a reader asks for.
     payload.pop("derived_json", None)
+    payload.pop("metadata_json", None)
+    payload["metadata"] = getattr(row, "metadata", {})
     payload["document_id"] = row.id
     payload["title"] = getattr(row, "title", "")
     if has_original is None:
@@ -298,6 +337,13 @@ def _base_payload(
     the dashboard reads this field to render the share state.
     """
     payload = asdict(row)
+    payload.pop("metadata_schema", None)
+    try:
+        payload["metadata_schema"] = json.loads(
+            getattr(row, "metadata_schema", "[]") or "[]"
+        )
+    except ValueError:
+        payload["metadata_schema"] = []
     payload["knowledge_base_id"] = row.id
     if public_ids is None:
         public_ids = _public_base_ids(server, [row.id])
@@ -841,6 +887,84 @@ async def update_base(
         ) from exc
 
 
+@router.get(
+    "/{kb_id}/metadata-schema",
+    summary="Get the knowledge-base metadata schema",
+)
+async def get_metadata_schema(
+    kb_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> dict[str, Any]:
+    try:
+        fields = _knowledge_service(server).get_metadata_schema(
+            kb_id, actor_user_id=user.id, is_admin=_is_admin(user)
+        )
+        return {"fields": fields}
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.put(
+    "/{kb_id}/metadata-schema",
+    summary="Replace the knowledge-base metadata schema",
+    description=(
+        "Field definitions only. Existing document values are kept; a field removed "
+        "from the schema is no longer shown or filterable."
+    ),
+)
+async def put_metadata_schema(
+    kb_id: str,
+    body: MetadataSchemaBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    try:
+        fields = _knowledge_service(server).update_metadata_schema(
+            kb_id,
+            actor_user_id=user.id,
+            schema=[field.model_dump() for field in body.fields],
+            is_admin=_is_admin(user),
+        )
+        return {"fields": fields}
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.patch(
+    "/{kb_id}/documents/{doc_id}/metadata",
+    summary="Update one document's metadata values",
+    description="Merges the supplied values over the stored ones; null or empty clears a field.",
+)
+async def patch_document_metadata(
+    kb_id: str,
+    doc_id: str,
+    body: DocumentMetadataBody,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_permission("knowledge_bases")),
+) -> dict[str, Any]:
+    try:
+        metadata = _knowledge_service(server).update_document_metadata(
+            kb_id,
+            doc_id,
+            actor_user_id=user.id,
+            metadata=body.metadata,
+            is_admin=_is_admin(user),
+        )
+        return {"document_id": doc_id, "metadata": metadata}
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
 @router.delete(
     "/{kb_id}", status_code=status.HTTP_204_NO_CONTENT, summary="Delete a knowledge base"
 )
@@ -868,6 +992,11 @@ async def list_documents(
         default=None,
         description="When set, only immediate children of this relative folder path.",
     ),
+    metadata: str | None = Query(
+        default=None,
+        max_length=2000,
+        description='JSON object of metadata filters, e.g. {"drawing_no":"A-102"}.',
+    ),
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> list[dict[str, Any]]:
@@ -875,7 +1004,11 @@ async def list_documents(
         return [
             _row_payload(document)
             for document in _knowledge_service(server).list_documents(
-                kb_id, actor_user_id=user.id, is_admin=_is_admin(user), prefix=prefix
+                kb_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+                prefix=prefix,
+                metadata_filters=_metadata_filter(metadata),
             )
         ]
     except Exception as exc:
@@ -1077,6 +1210,11 @@ async def search_documents(
     limit: int = Query(
         default=DEFAULT_SEARCH_K, ge=1, le=50, description="Maximum hits to return."
     ),
+    metadata: str | None = Query(
+        default=None,
+        max_length=2000,
+        description="JSON object of metadata filters applied before search.",
+    ),
     server: OctopServer = Depends(get_server),
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> list[SearchHit]:
@@ -1093,6 +1231,7 @@ async def search_documents(
                 limit=limit,
                 is_admin=_is_admin(user),
                 generate_query_vector=True,
+                metadata_filters=_metadata_filter(metadata),
             ),
         )
     except Exception as exc:

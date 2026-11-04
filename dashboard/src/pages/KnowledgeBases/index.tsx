@@ -60,6 +60,8 @@ import {
   RefreshCw,
   Search,
   Settings,
+  SlidersHorizontal,
+  Tag as TagsIcon,
   Trash2,
   X,
 } from "lucide-react";
@@ -80,6 +82,7 @@ import {
   type KnowledgeUploadTarget,
   type KnowledgeCoverage,
   type KnowledgeEvidence,
+  type KnowledgeMetadataField,
   type KnowledgeSearchHit,
 } from "../../api/modules/knowledgeBases";
 import {
@@ -141,6 +144,7 @@ import TextDocumentEditorModal, {
 import DataSourcesPanel from "./components/DataSourcesPanel";
 import KnowledgeProcessorNotice from "./components/KnowledgeProcessorNotice";
 import KnowledgeCollections from "./components/KnowledgeCollections";
+import KnowledgeMetadataModal from "./components/KnowledgeMetadataModal";
 import KnowledgePermissionsDrawer from "./components/KnowledgePermissionsDrawer";
 import styles from "./index.module.less";
 import { isImeComposing } from "../Chat/utils/ime";
@@ -332,6 +336,11 @@ export default function KnowledgeBasesPage() {
   const [permissionsError, setPermissionsError] = useState<unknown>(null);
   const [permissionsTarget, setPermissionsTarget] =
     useState<KnowledgePermissionMetadata | null>(null);
+  const [metadataModal, setMetadataModal] = useState<{
+    document?: KnowledgeDocument;
+  } | null>(null);
+  const [metadataFilterKey, setMetadataFilterKey] = useState<string | undefined>();
+  const [metadataFilterValue, setMetadataFilterValue] = useState("");
   const [currentFolder, setCurrentFolder] = useState("");
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -1038,6 +1047,28 @@ export default function KnowledgeBasesPage() {
     },
     [t],
   );
+
+  const applyMetadataFilter = useCallback(async () => {
+    if (!selected) return;
+    const key = metadataFilterKey;
+    const value = metadataFilterValue.trim();
+    try {
+      const rows = await knowledgeBasesApi.listDocuments(
+        selected.id,
+        undefined,
+        key && value ? { [key]: value } : undefined,
+      );
+      setDocuments(rows);
+    } catch (error) {
+      message.error(apiErrorMessage(error, t("knowledgeBases.loadFailed"), t));
+    }
+  }, [selected, metadataFilterKey, metadataFilterValue, message, t]);
+
+  useEffect(() => {
+    setMetadataFilterKey(undefined);
+    setMetadataFilterValue("");
+  }, [selected?.id]);
+
   const loadCoverage = useCallback(async (id: string, silent = false) => {
     const requestId = ++coverageRequestRef.current;
     if (!silent) setCoverageState("loading");
@@ -2315,6 +2346,19 @@ export default function KnowledgeBasesPage() {
             ) : null}
           </>
         )}
+        {!document.is_dir &&
+        canWriteThis &&
+        (selected?.metadata_schema?.length ?? 0) > 0 ? (
+          <Tooltip title={t("knowledgeBases.metadata.editButton")}>
+            <Button
+              type="text"
+              size="small"
+              icon={<TagsIcon size={14} />}
+              aria-label={t("knowledgeBases.metadata.editButton")}
+              onClick={() => setMetadataModal({ document })}
+            />
+          </Tooltip>
+        ) : null}
         {permissionMetadata?.can_manage || permissionMetadata?.can_delegate ? (
           <Tooltip title={t("knowledgeBases.permissions.title")}>
             <Button
@@ -2905,6 +2949,48 @@ export default function KnowledgeBasesPage() {
                           >
                             {t("knowledgeBases.createFile")}
                           </Button>
+                        ) : null}
+                        {canManageSelected ? (
+                          <Button
+                            icon={<SlidersHorizontal size={14} />}
+                            onClick={() => setMetadataModal({})}
+                          >
+                            {t("knowledgeBases.metadata.schemaButton")}
+                          </Button>
+                        ) : null}
+                        {(selected.metadata_schema?.length ?? 0) > 0 ? (
+                          <Space.Compact>
+                            <Select
+                              allowClear
+                              style={{ width: 140 }}
+                              placeholder={t("knowledgeBases.metadata.filterField")}
+                              value={metadataFilterKey}
+                              options={(selected.metadata_schema ?? []).map((field) => ({
+                                value: field.key,
+                                label: field.label || field.key,
+                              }))}
+                              onChange={(value) => setMetadataFilterKey(value)}
+                            />
+                            <Input
+                              style={{ width: 160 }}
+                              placeholder={t("knowledgeBases.metadata.filterValue")}
+                              value={metadataFilterValue}
+                              onChange={(event) => setMetadataFilterValue(event.target.value)}
+                              onPressEnter={() => void applyMetadataFilter()}
+                            />
+                            <Button onClick={() => void applyMetadataFilter()}>
+                              {t("knowledgeBases.metadata.applyFilter")}
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                setMetadataFilterKey(undefined);
+                                setMetadataFilterValue("");
+                                void loadDetail(selected.id, { silent: true });
+                              }}
+                            >
+                              {t("knowledgeBases.metadata.clearFilter")}
+                            </Button>
+                          </Space.Compact>
                         ) : null}
                         {canUploadSelected ? (
                           <Button
@@ -4691,6 +4777,26 @@ export default function KnowledgeBasesPage() {
           {t("models.localDownloadBackgroundHint")}
         </Typography.Text>
       </Modal>
+      <KnowledgeMetadataModal
+        open={metadataModal !== null}
+        baseId={selected?.id ?? ""}
+        schema={selected?.metadata_schema ?? []}
+        document={metadataModal?.document}
+        onClose={() => setMetadataModal(null)}
+        onSchemaSaved={(fields: KnowledgeMetadataField[]) => {
+          setSelected((current) =>
+            current ? { ...current, metadata_schema: fields } : current,
+          );
+          if (selected) void loadDetail(selected.id, { silent: true });
+        }}
+        onDocumentSaved={(docId, metadata) =>
+          setDocuments((current) =>
+            current.map((row) =>
+              row.id === docId ? { ...row, metadata } : row,
+            ),
+          )
+        }
+      />
       <KnowledgePermissionsDrawer
         baseId={selected?.id ?? ""}
         open={permissionsTarget !== null}
