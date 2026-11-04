@@ -12,6 +12,7 @@ from octop.infra.connectors.gateway.adapters import (
     meituan_travel,
     qq_mail,
     qq_music,
+    ragflow,
     tencent_ima,
     tencent_news,
     wechat_reading,
@@ -43,6 +44,7 @@ _ADAPTERS: dict[str, GatewayAdapter] = {
     "feishu-cli": feishu_cli,
     "wecom-cli": wecom_cli,
     "weknora": weknora,
+    "ragflow": ragflow,
 }
 
 
