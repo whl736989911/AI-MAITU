@@ -31,12 +31,12 @@ vi.mock("@/utils/antdMessage", () => ({
 
 import SharingSettingsDrawer from "./SharingSettingsDrawer";
 
-function renderDrawer() {
+function renderDrawer(resourceType: "agent" | "knowledge_base" = "knowledge_base") {
   return render(
     <SharingSettingsDrawer
       open
       onClose={() => undefined}
-      resourceType="knowledge_base"
+      resourceType={resourceType}
       resourceId="kb-1"
       resourceName="Handbook"
     />,
@@ -47,6 +47,32 @@ describe("<SharingSettingsDrawer />", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     listOrgUnits.mockResolvedValue([]);
+  });
+
+  it("offers upload only where files can be added", async () => {
+    getAcl.mockResolvedValue({
+      resource_type: "knowledge_base",
+      resource_id: "kb-1",
+      entry: null,
+    });
+    const knowledgeDrawer = renderDrawer("knowledge_base");
+    await waitFor(() =>
+      expect(getAcl).toHaveBeenCalledWith("knowledge_base", "kb-1"),
+    );
+    expect(screen.getByText("sharing.permission.upload")).toBeInTheDocument();
+    knowledgeDrawer.unmount();
+
+    getAcl.mockResolvedValue({
+      resource_type: "agent",
+      resource_id: "kb-1",
+      entry: null,
+    });
+    renderDrawer("agent");
+    await waitFor(() => expect(getAcl).toHaveBeenCalledWith("agent", "kb-1"));
+    expect(
+      screen.queryByText("sharing.permission.upload"),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("sharing.permission.read")).toBeInTheDocument();
   });
 
   it("shows the ACL in force for the resource", async () => {

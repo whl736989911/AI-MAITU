@@ -51,6 +51,8 @@ const VISIBILITIES: readonly SharingVisibility[] = [
 const GRANTEE_TYPES: readonly SharingGranteeType[] = ["user", "unit", "role"];
 /** Read first: it is the default and the narrower of the two. */
 const PERMISSIONS: readonly SharingPermission[] = ["read", "upload", "write"];
+/** Only a knowledge resource can take new files; elsewhere "upload" grants nothing. */
+const NON_KNOWLEDGE_PERMISSIONS: readonly SharingPermission[] = ["read", "write"];
 
 export interface SharingSettingsDrawerProps {
   open: boolean;
@@ -151,6 +153,19 @@ export default function SharingSettingsDrawer({
       })),
     [orgUnits, locale],
   );
+  // "upload" is meaningful only where files can be added (knowledge bases and
+  // their documents). An entry already stored that way still renders its level
+  // instead of showing an empty radio group.
+  const permissionChoices = useMemo<readonly SharingPermission[]>(() => {
+    const base: readonly SharingPermission[] = resourceType.startsWith(
+      "knowledge",
+    )
+      ? PERMISSIONS
+      : NON_KNOWLEDGE_PERMISSIONS;
+    return base.includes("upload") || permission !== "upload"
+      ? base
+      : [...base, "upload"];
+  }, [permission, resourceType]);
 
   const nextGrants = grants
     .map((grant) => ({ ...grant, grantee_id: grant.grantee_id.trim() }))
@@ -302,7 +317,7 @@ export default function SharingSettingsDrawer({
               setPermission(event.target.value as SharingPermission)
             }
           >
-            {PERMISSIONS.map((option) => (
+            {permissionChoices.map((option) => (
               <Radio
                 key={option}
                 value={option}
