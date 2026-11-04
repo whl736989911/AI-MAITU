@@ -122,6 +122,8 @@ class ErrorCode(StrEnum):
     # A malformed knowledge request (bad path, folder move cycle, ...) is the
     # caller's mistake; answering 500 hides that behind "internal error".
     KNOWLEDGE_REQUEST_INVALID = "KNOWLEDGE_REQUEST_INVALID"
+    # A metadata schema or value did not match the field definitions.
+    KNOWLEDGE_METADATA_INVALID = "KNOWLEDGE_METADATA_INVALID"
     KNOWLEDGE_DELEGATION_FORBIDDEN = "KNOWLEDGE_DELEGATION_FORBIDDEN"
     KNOWLEDGE_DOC_LIMIT = "KNOWLEDGE_DOC_LIMIT"
     KNOWLEDGE_DOC_TOO_LARGE = "KNOWLEDGE_DOC_TOO_LARGE"
@@ -321,6 +323,7 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_UPLOAD_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_REQUEST_INVALID: 400,
+    ErrorCode.KNOWLEDGE_METADATA_INVALID: 400,
     ErrorCode.KNOWLEDGE_DELEGATION_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_DOC_LIMIT: 409,
     ErrorCode.KNOWLEDGE_DOC_TOO_LARGE: 413,

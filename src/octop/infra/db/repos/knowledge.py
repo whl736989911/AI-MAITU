@@ -65,6 +65,7 @@ class KnowledgeBaseRow:
     is_enterprise: bool
     created_at: int
     updated_at: int
+    metadata_schema: str = "[]"
 
     @classmethod
     def from_row(cls, r: DbRow) -> KnowledgeBaseRow:
@@ -75,6 +76,7 @@ class KnowledgeBaseRow:
         keys = frozenset(r.keys()) if hasattr(r, "keys") else frozenset()
         max_doc = int(r["max_documents"]) if "max_documents" in keys else 100
         is_enterprise = bool(int(r["is_enterprise"])) if "is_enterprise" in keys else False
+        metadata_schema = str(r["metadata_schema"] or "[]") if "metadata_schema" in keys else "[]"
         return cls(
             id=str(r["knowledge_base_id"]),
             pk=int(r["id"]),
@@ -88,6 +90,7 @@ class KnowledgeBaseRow:
             doc_count=r["doc_count"],
             max_documents=max_doc,
             is_enterprise=is_enterprise,
+            metadata_schema=metadata_schema,
             created_at=r["created_at"],
             updated_at=r["updated_at"],
         )
@@ -118,6 +121,16 @@ class KnowledgeDocumentRow:
     created_at: int
     updated_at: int
     derived_json: str = ""
+    metadata_json: str = "{}"
+
+    @property
+    def metadata(self) -> dict[str, Any]:
+        """Stored metadata values; corrupt JSON degrades to an empty object."""
+        try:
+            decoded = json.loads(self.metadata_json or "{}")
+        except ValueError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
 
     @property
     def derived(self) -> dict[str, Any]:
@@ -183,6 +196,7 @@ class KnowledgeDocumentRow:
             created_at=r["created_at"],
             updated_at=r["updated_at"],
             derived_json=str(r["derived_json"] or "") if "derived_json" in keys else "",
+            metadata_json=str(r["metadata_json"] or "{}") if "metadata_json" in keys else "{}",
         )
 
     def scan_row(self) -> IndexedFile:
@@ -416,6 +430,22 @@ class KnowledgeRepo:
                 owner_user_id=row["owner_user_id"],
                 unit_key=None,
                 conn=conn,
+            )
+
+    def update_base_metadata_schema(self, kb_id: str, schema_json: str) -> None:
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_bases SET metadata_schema = ?, updated_at = ? "
+                "WHERE knowledge_base_id = ?",
+                (schema_json, now_ts(), kb_id),
+            )
+
+    def set_document_metadata(self, doc_id: str, metadata_json: str) -> None:
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_documents SET metadata_json = ?, updated_at = ? "
+                "WHERE document_id = ?",
+                (metadata_json, now_ts(), doc_id),
             )
 
     def delete_base(self, kb_id: str) -> None:

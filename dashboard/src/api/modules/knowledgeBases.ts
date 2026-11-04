@@ -45,6 +45,15 @@ export interface KnowledgeProcessors {
   processors: KnowledgeProcessorCapability[];
 }
 
+export interface KnowledgeMetadataField {
+  key: string;
+  label: string;
+  type: "text" | "number" | "date" | "enum";
+  options: string[];
+  required: boolean;
+  searchable: boolean;
+}
+
 export interface KnowledgeBase {
   id: string;
   knowledge_base_id?: string;
@@ -64,6 +73,8 @@ export interface KnowledgeBase {
   embedding_dim: number;
   doc_count: number;
   max_documents: number;
+  /** Per-base document field definitions (empty when unused). */
+  metadata_schema?: KnowledgeMetadataField[];
   created_at: number;
   updated_at: number;
 }
@@ -112,6 +123,8 @@ export interface KnowledgeDocument {
   data_source_id?: string;
   source_path?: string;
   has_original?: boolean;
+  /** Values for the base's metadata fields, keyed by field key. */
+  metadata?: Record<string, unknown>;
 }
 export interface KnowledgeOnnxModel {
   id: string;
@@ -390,13 +403,40 @@ export const knowledgeBasesApi = {
   delete: (id: string) =>
     request<void>(`/knowledge-bases/${id}`, { method: "DELETE" }),
 
-  listDocuments: (id: string, prefix?: string) =>
-    request<KnowledgeDocument[]>(
-      prefix
-        ? `/knowledge-bases/${id}/documents?prefix=${encodeURIComponent(
-            prefix,
-          )}`
-        : `/knowledge-bases/${id}/documents`,
+  listDocuments: (
+    id: string,
+    prefix?: string,
+    metadata?: Record<string, unknown>,
+  ) => {
+    const params = new URLSearchParams();
+    if (prefix) params.set("prefix", prefix);
+    if (metadata && Object.keys(metadata).length > 0)
+      params.set("metadata", JSON.stringify(metadata));
+    const query = params.toString();
+    return request<KnowledgeDocument[]>(
+      `/knowledge-bases/${id}/documents${query ? `?${query}` : ""}`,
+    );
+  },
+
+  getMetadataSchema: (id: string) =>
+    request<{ fields: KnowledgeMetadataField[] }>(
+      `/knowledge-bases/${id}/metadata-schema`,
+    ),
+
+  putMetadataSchema: (id: string, fields: KnowledgeMetadataField[]) =>
+    request<{ fields: KnowledgeMetadataField[] }>(
+      `/knowledge-bases/${id}/metadata-schema`,
+      { method: "PUT", body: JSON.stringify({ fields }) },
+    ),
+
+  updateDocumentMetadata: (
+    id: string,
+    documentId: string,
+    metadata: Record<string, unknown>,
+  ) =>
+    request<{ document_id: string; metadata: Record<string, unknown> }>(
+      `/knowledge-bases/${id}/documents/${documentId}/metadata`,
+      { method: "PATCH", body: JSON.stringify({ metadata }) },
     ),
 
   createFolder: (id: string, path: string) =>
@@ -496,13 +536,19 @@ export const knowledgeBasesApi = {
     ),
 
   /** Keyword and full-text search over what this base may show (design §9). */
-  searchDocuments: (id: string, query: string, limit = 20) =>
-    request<KnowledgeSearchHit[]>(
-      `/knowledge-bases/${id}/search?${new URLSearchParams({
-        q: query,
-        limit: String(limit),
-      }).toString()}`,
-    ),
+  searchDocuments: (
+    id: string,
+    query: string,
+    limit = 20,
+    metadata?: Record<string, unknown>,
+  ) => {
+    const params = new URLSearchParams({ q: query, limit: String(limit) });
+    if (metadata && Object.keys(metadata).length > 0)
+      params.set("metadata", JSON.stringify(metadata));
+    return request<KnowledgeSearchHit[]>(
+      `/knowledge-bases/${id}/search?${params.toString()}`,
+    );
+  },
   coverage: (id: string) =>
     request<KnowledgeCoverage>(`/knowledge-bases/${id}/coverage`),
 

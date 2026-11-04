@@ -1805,7 +1805,8 @@
     "TEAM_MEMBER_BUSY": "该专家有进行中的团队任务，请等结束后再改编制或删除。",
     "TEAM_NOT_SHAREABLE": "当前版本不支持分享团队。",
     "ORG_UNIT_HAS_CHILDREN": "该部门下还有下级部门，请先处理。",
-    "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。"
+    "ORG_UNIT_IN_USE": "该部门下还有成员，请先移出或转岗。",
+    "KNOWLEDGE_METADATA_INVALID": "元数据字段或取值无效。"
   },
   "license": {
     "lockedTitle": "需要许可证",
@@ -2466,7 +2467,34 @@
     "moveDocumentTarget": "正在移动：{{name}}",
     "rootFolder": "根目录",
     "moveDocumentSuccess": "已移动",
-    "moveDocumentFailed": "移动失败"
+    "moveDocumentFailed": "移动失败",
+    "metadata": {
+      "schemaButton": "字段",
+      "schemaTitle": "文档字段",
+      "documentTitle": "编辑文档字段",
+      "addField": "添加字段",
+      "key": "字段键",
+      "label": "名称",
+      "type": "类型",
+      "text": "文本",
+      "number": "数字",
+      "date": "日期",
+      "enum": "选项",
+      "options": "选项（逗号分隔）",
+      "required": "必填",
+      "searchable": "可检索",
+      "remove": "删除",
+      "emptyFields": "尚未定义字段。",
+      "save": "保存",
+      "saved": "字段结构已保存。",
+      "documentSaved": "文档字段已保存。",
+      "saveFailed": "无法保存字段。",
+      "editButton": "编辑字段",
+      "filterField": "按字段筛选",
+      "filterValue": "值",
+      "applyFilter": "筛选",
+      "clearFilter": "清除"
+    }
   },
   "setupWizard": {
     "title": "设置向导",

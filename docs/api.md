@@ -790,9 +790,12 @@ Zed setup example.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET` | `/knowledge-bases/enterprise` | user | the deployment's enterprise knowledge space |
-| `GET` | `/knowledge-bases/{kb}/documents` | reader | only documents in the caller's effective folder/file ACL scope |
+| `GET` | `/knowledge-bases/{kb}/documents` | reader | only documents in the caller's effective folder/file ACL scope; optional `metadata` JSON filter over document fields |
+| `GET` | `/knowledge-bases/{kb}/metadata-schema` | reader | field definitions for this base (`{fields: [...]}`); values follow document ACLs |
+| `PUT` | `/knowledge-bases/{kb}/metadata-schema` | owner/admin | replace field definitions; existing document values are kept |
+| `PATCH` | `/knowledge-bases/{kb}/documents/{doc}/metadata` | writer | merge typed field values; `null`/empty clears a value |
 | `GET` | `/knowledge-bases/{kb}/coverage` | reader | counts only readable files, not hidden folders or siblings |
-| `GET` | `/knowledge-bases/{kb}/search?q=…` | reader | lexical/optional vector search filtered by the same effective ACL |
+| `GET` | `/knowledge-bases/{kb}/search?q=…` | reader | lexical/optional vector search filtered by the same effective ACL; optional `metadata` JSON filter |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/preview` | reader | up to 200,000 characters from the completed index plus per-segment `blocks` with their source locators; verifies the original hash, never repeats OCR |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/segments/{segment}` | reader | revalidates the file and its permission before returning verified evidence |
 | `GET`/`PUT` | `/knowledge-bases/{kb}/permissions` | reader / ACL manager | effective scope metadata for the base and accessible documents; changes use existing approval/audit |
@@ -800,6 +803,15 @@ Zed setup example.
 | `GET` | `/knowledge-bases/{kb}/permission-principals` | ACL manager | safe user, department and role choices without requiring the users module |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; optional `version` requires matching actual SHA-256 and returns 409 if changed; does not require a completed index |
 | `GET` | `/knowledge-bases/processors` | user | available built-in processors and optional CAD CLI capability; unavailable formats remain archive-only |
+
+Document metadata is a generic, per-base capability: fields are typed
+(`text`, `number`, `date`, or `enum`) and validation happens server-side.
+Values are stored per document and are visible only where that document is
+readable; schema changes are limited to the base owner or an administrator.
+Lists and search accept the same `metadata` JSON object for equality/contains
+filtering, so a deployment can model drawings, contracts, certificates or
+equipment registers without a dedicated module. Removing a field from the
+schema keeps stored values but hides them from listings and filters.
 
 Folder ACLs intersect with ancestor restrictions by default. Only a matching
 explicit user, department, or role grant on a single file can bypass ancestor

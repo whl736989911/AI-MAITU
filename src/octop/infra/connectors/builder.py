@@ -456,13 +456,9 @@ def validate_create_credentials(
             if not api_key or any(char in api_key for char in "\r\n\x00"):
                 raise ValueError(tr("ragflow.api_key_required"))
             return {
-                "base_url": normalize_ragflow_base_url(
-                    str(credentials.get("base_url") or "")
-                ),
+                "base_url": normalize_ragflow_base_url(str(credentials.get("base_url") or "")),
                 "api_key": api_key,
-                "dataset_ids": normalize_ragflow_dataset_ids(
-                    credentials.get("dataset_ids")
-                ),
+                "dataset_ids": normalize_ragflow_dataset_ids(credentials.get("dataset_ids")),
                 "internal_token": new_internal_token(),
             }
         if entry.kind == "weknora":

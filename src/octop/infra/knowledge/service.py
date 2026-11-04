@@ -6,6 +6,7 @@ legacy per-base share column is only still written as a compatibility mirror.
 
 from __future__ import annotations
 
+import json
 import logging
 import unicodedata
 from collections.abc import Sequence
@@ -27,6 +28,12 @@ from octop.infra.knowledge.files import (
 )
 from octop.infra.knowledge.gate import assert_knowledge_usable, get_capability
 from octop.infra.knowledge.index import KnowledgeIndex
+from octop.infra.knowledge.metadata import (
+    MetadataError,
+    metadata_matches,
+    normalize_schema,
+    normalize_values,
+)
 from octop.infra.knowledge.permissions import KnowledgePermissionService
 from octop.infra.knowledge.relpath import (
     ancestor_dirs,
@@ -233,7 +240,13 @@ class KnowledgeService:
         return self._require_base(kb_id)
 
     def list_documents(
-        self, kb_id: str, *, actor_user_id: int, is_admin: bool = False, prefix: str | None = None
+        self,
+        kb_id: str,
+        *,
+        actor_user_id: int,
+        is_admin: bool = False,
+        prefix: str | None = None,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[KnowledgeDocumentRow]:
         self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         documents = (
@@ -244,10 +257,10 @@ class KnowledgeService:
         # design §14: a file the actor may not read is absent from the listing
         # and from search — one filter, so the two cannot disagree.
         restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
-        return cast(
-            list[KnowledgeDocumentRow],
-            readable_documents(documents, restricted=restricted, readable=readable),
-        )
+        rows = readable_documents(documents, restricted=restricted, readable=readable)
+        if metadata_filters:
+            rows = [row for row in rows if metadata_matches(row.metadata, metadata_filters)]
+        return cast(list[KnowledgeDocumentRow], rows)
 
     def create_folder(
         self, kb_id: str, *, actor_user_id: int, path: str, is_admin: bool = False
@@ -429,6 +442,7 @@ class KnowledgeService:
         is_admin: bool = False,
         query_vector: Sequence[float] | None = None,
         generate_query_vector: bool = False,
+        metadata_filters: dict[str, Any] | None = None,
     ) -> list[SearchHit]:
         """Find authorized filenames and existing content without personal policies."""
         cleaned = (query or "").strip()
@@ -452,6 +466,7 @@ class KnowledgeService:
                     self._repo.list_documents(base.id), restricted=restricted, readable=readable
                 )
                 if not row.is_dir
+                and (not metadata_filters or metadata_matches(row.metadata, metadata_filters))
             ]
             ready = {row.id: row for row in documents if row.status == "ready"}
             if ready and not embedding_attempted:
@@ -860,6 +875,54 @@ class KnowledgeService:
             "knowledge base upload access is required", access=ACCESS_UPLOAD
         )
 
+    def get_metadata_schema(
+        self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
+    ) -> list[dict[str, Any]]:
+        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        return _parse_metadata_schema(self._require_base(kb_id))
+
+    def update_metadata_schema(
+        self,
+        kb_id: str,
+        *,
+        actor_user_id: int,
+        schema: Any,
+        is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        self.require_owner(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        try:
+            normalized = normalize_schema(schema)
+        except MetadataError as exc:
+            raise OctopError(ErrorCode.KNOWLEDGE_METADATA_INVALID, str(exc)) from exc
+        self._repo.update_base_metadata_schema(
+            kb_id, json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        )
+        return normalized
+
+    def update_document_metadata(
+        self,
+        kb_id: str,
+        doc_id: str,
+        *,
+        actor_user_id: int,
+        metadata: Any,
+        is_admin: bool = False,
+    ) -> dict[str, Any]:
+        self.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        document = self._repo.get_document(doc_id)
+        if document is None or document.kb_id != kb_id or document.is_dir:
+            raise LookupError("knowledge document not found")
+        self.require_document_writable(document, actor_user_id=actor_user_id)
+        schema = _parse_metadata_schema(self._require_base(kb_id))
+        try:
+            values = normalize_values(schema, metadata, existing=document.metadata)
+        except MetadataError as exc:
+            raise OctopError(ErrorCode.KNOWLEDGE_METADATA_INVALID, str(exc)) from exc
+        self._repo.set_document_metadata(
+            doc_id, json.dumps(values, ensure_ascii=False, separators=(",", ":"))
+        )
+        return values
+
     def require_owner(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> KnowledgeBaseRow:
@@ -1154,3 +1217,14 @@ class KnowledgeService:
         if base is None:
             raise LookupError("knowledge base not found")
         return cast(KnowledgeBaseRow, base)
+
+
+def _parse_metadata_schema(base: KnowledgeBaseRow) -> list[dict[str, Any]]:
+    try:
+        raw = json.loads(base.metadata_schema or "[]")
+    except ValueError:
+        return []
+    try:
+        return normalize_schema(raw)
+    except MetadataError:
+        return []

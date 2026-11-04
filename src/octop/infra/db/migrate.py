@@ -1651,6 +1651,23 @@ def _ensure_knowledge_sync_runs_schema(db: DatabasePool) -> None:
         )
 
 
+def _ensure_knowledge_metadata_schema(db: DatabasePool) -> None:
+    """Add schema v48 metadata columns; idempotent for clamped databases."""
+    if not _table_exists(db, "knowledge_bases"):
+        return
+    if "metadata_schema" not in _table_columns(db, "knowledge_bases"):
+        with db.transaction() as conn:
+            conn.execute(
+                "ALTER TABLE knowledge_bases ADD COLUMN metadata_schema TEXT NOT NULL DEFAULT '[]'"
+            )
+    if "metadata_json" not in _table_columns(db, "knowledge_documents"):
+        with db.transaction() as conn:
+            conn.execute(
+                "ALTER TABLE knowledge_documents "
+                "ADD COLUMN metadata_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+
 def _ensure_knowledge_derived_schema(db: DatabasePool) -> None:
     """Give ``knowledge_documents`` the parsed structure it derives (schema v29).
 
@@ -3664,6 +3681,14 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 48:
+        # ``048_knowledge_document_metadata.sql`` is the readable record; the
+        # helper applies both columns only when missing, so a downstamped
+        # watermark cannot hit "duplicate column name".
+        _ensure_knowledge_metadata_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     if version == 41:
         # ``041_knowledge_prompt_collections.sql`` is the readable record; this
         # helper re-applies the same shape idempotently so a downstamped
@@ -3798,4 +3823,5 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_file_index_schema(db)
     _ensure_knowledge_sync_runs_schema(db)
     _ensure_knowledge_derived_schema(db)
+    _ensure_knowledge_metadata_schema(db)
     _repair_connector_text_credentials(db)
