@@ -339,9 +339,7 @@ def _base_payload(
     payload = asdict(row)
     payload.pop("metadata_schema", None)
     try:
-        payload["metadata_schema"] = json.loads(
-            getattr(row, "metadata_schema", "[]") or "[]"
-        )
+        payload["metadata_schema"] = json.loads(getattr(row, "metadata_schema", "[]") or "[]")
     except ValueError:
         payload["metadata_schema"] = []
     payload["knowledge_base_id"] = row.id
@@ -959,6 +957,60 @@ async def patch_document_metadata(
             is_admin=_is_admin(user),
         )
         return {"document_id": doc_id, "metadata": metadata}
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.get(
+    "/{kb_id}/documents/{doc_id}/facts",
+    summary="List typed facts extracted from one document",
+    description="Dimensions, clause numbers and other located facts; permission follows the document ACL.",
+)
+async def list_document_facts(
+    kb_id: str,
+    doc_id: str,
+    request: Request,
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> list[dict[str, Any]]:
+    try:
+        return _knowledge_service(server).document_facts(
+            kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
+        )
+    except Exception as exc:
+        raise _map_knowledge_error(
+            exc, locale=resolve_request_locale(request), server=server
+        ) from exc
+
+
+@router.get(
+    "/{kb_id}/facts",
+    summary="Search typed facts across readable documents",
+    description=(
+        "Returns located facts whose value or normalized form contains the query, "
+        "filtered by the caller's document ACL. Use fact_type to narrow the kind."
+    ),
+)
+async def search_facts(
+    kb_id: str,
+    request: Request,
+    q: str = Query(default="", max_length=200, description="Value fragment to match."),
+    fact_type: str | None = Query(default=None, max_length=64),
+    limit: int = Query(default=50, ge=1, le=200),
+    server: OctopServer = Depends(get_server),
+    user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
+) -> list[dict[str, Any]]:
+    try:
+        return _knowledge_service(server).search_facts(
+            kb_id,
+            actor_user_id=user.id,
+            query=q,
+            fact_type=fact_type,
+            limit=limit,
+            is_admin=_is_admin(user),
+        )
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server

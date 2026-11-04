@@ -427,3 +427,40 @@ def test_large_document_keeps_all_vectors_with_a_bounded_embedding_backend(
         f"{doc.id}:{number}" for number in range(45)
     ]
     assert repo.get_document(doc.id).status == "ready"
+
+
+def test_process_document_extracts_located_facts_and_clears_on_reindex(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "home"))
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = KnowledgeRepo(pool)
+    owner_id = UserRepo(pool).create(username="owner", password_hash="h", role="user")
+    kb = repo.create_base(owner_user_id=owner_id, name="Facts")
+    doc = repo.create_document(
+        kb_id=kb.id, filename="drawing.md", content_type="text/markdown", byte_size=1
+    )
+    write_document(
+        kb.id,
+        doc.id,
+        doc.filename,
+        "Flange φ120，第5.3条 试验方法".encode(),
+    )
+    services = SimpleNamespace(knowledge_repo=repo, settings_repo=SettingsRepo(pool))
+    monkeypatch.setattr(jobs, "assert_embedding_usable", lambda *_args: None)
+    monkeypatch.setattr(
+        jobs, "embed_knowledge_texts", lambda _services, texts: [[1.0, 0.0] for _ in texts]
+    )
+
+    jobs.process_document(services, kb.id, doc.id)
+
+    facts = repo.list_document_facts(doc.id)
+    by_type = {(fact["fact_type"], fact["normalized"]) for fact in facts}
+    assert ("diameter", "φ120") in by_type
+    assert ("clause", "5.3") in by_type
+    assert all(fact["locator"] for fact in facts)
+
+    write_document(kb.id, doc.id, doc.filename, b"plain text without facts")
+    jobs.process_document(services, kb.id, doc.id)
+    assert repo.list_document_facts(doc.id) == []

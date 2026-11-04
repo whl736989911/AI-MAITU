@@ -9,13 +9,14 @@ import tempfile
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.chunk import chunk_text
 from octop.infra.knowledge.embed import embed_knowledge_texts
+from octop.infra.knowledge.extractors import extract_facts
 from octop.infra.knowledge.files import document_path, file_digest
 from octop.infra.knowledge.gate import assert_embedding_usable
 from octop.infra.knowledge.index import KnowledgeIndex
@@ -206,6 +207,10 @@ def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: Parse
         return
     repo.update_document(doc_id, status="processing", error_message="")
     try:
+        repo.clear_document_facts(doc_id)
+    except Exception:
+        logger.warning("knowledge fact cleanup failed for %s", doc_id, exc_info=True)
+    try:
         with parse_path(document) as path:
             digest = file_digest(path)
             parsed = parse_document(
@@ -223,6 +228,11 @@ def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: Parse
         blocks = parsed.blocks or (
             ParsedBlock(text=text, kind="document", locator={"kind": "document"}),
         )
+        try:
+            facts = extract_facts(blocks)
+            repo.replace_document_facts(doc_id, kb_id, [asdict(fact) for fact in facts])
+        except Exception:
+            logger.warning("knowledge fact extraction failed for %s", doc_id, exc_info=True)
         index = KnowledgeIndex(kb_id)
         count = index.replace_doc_segments(doc_id, blocks, version=digest)
         if not count:

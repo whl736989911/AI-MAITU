@@ -432,6 +432,96 @@ class KnowledgeRepo:
                 conn=conn,
             )
 
+    def clear_document_facts(self, doc_id: str) -> None:
+        with self._db.transaction() as conn:
+            conn.execute(
+                "DELETE FROM knowledge_document_facts WHERE document_id = ?",
+                (doc_id,),
+            )
+
+    def replace_document_facts(self, doc_id: str, kb_id: str, facts: list[dict[str, Any]]) -> None:
+        ts = now_ts()
+        with self._db.transaction() as conn:
+            conn.execute(
+                "DELETE FROM knowledge_document_facts WHERE document_id = ?",
+                (doc_id,),
+            )
+            if not facts:
+                return
+            conn.executemany(
+                "INSERT INTO knowledge_document_facts("
+                "document_id, kb_id, fact_type, value, normalized, locator_json, "
+                "extractor, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        doc_id,
+                        kb_id,
+                        str(fact.get("fact_type") or ""),
+                        str(fact.get("value") or ""),
+                        str(fact.get("normalized") or ""),
+                        json.dumps(fact.get("locator") or {}, ensure_ascii=False),
+                        str(fact.get("extractor") or ""),
+                        ts,
+                    )
+                    for fact in facts
+                ],
+            )
+
+    def list_document_facts(self, doc_id: str) -> list[dict[str, Any]]:
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT fact_type, value, normalized, locator_json, extractor "
+                "FROM knowledge_document_facts WHERE document_id = ? "
+                "ORDER BY id",
+                (doc_id,),
+            ).fetchall()
+        return [_fact_payload(row) for row in rows]
+
+    def search_facts(
+        self,
+        kb_id: str,
+        *,
+        query: str,
+        fact_type: str | None,
+        allowed_document_ids: set[str],
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        if not allowed_document_ids or limit <= 0:
+            return []
+        placeholders = ", ".join("?" for _ in allowed_document_ids)
+        clauses = [
+            "f.kb_id = ?",
+            f"f.document_id IN ({placeholders})",
+        ]
+        params: list[Any] = [kb_id, *sorted(allowed_document_ids)]
+        if fact_type:
+            clauses.append("f.fact_type = ?")
+            params.append(fact_type)
+        needle = query.strip().lower()
+        if needle:
+            clauses.append("(LOWER(f.value) LIKE ? OR LOWER(f.normalized) LIKE ?)")
+            pattern = f"%{needle}%"
+            params.extend([pattern, pattern])
+        params.append(limit)
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT f.document_id, f.fact_type, f.value, f.normalized, "
+                "f.locator_json, f.extractor, d.filename, d.path "
+                "FROM knowledge_document_facts f "
+                "JOIN knowledge_documents d ON d.document_id = f.document_id "
+                f"WHERE {' AND '.join(clauses)} "
+                "ORDER BY f.document_id, f.id LIMIT ?",
+                params,
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            payload = _fact_payload(row)
+            payload["document_id"] = str(row["document_id"])
+            payload["filename"] = str(row["filename"])
+            payload["path"] = str(row["path"])
+            out.append(payload)
+        return out
+
     def update_base_metadata_schema(self, kb_id: str, schema_json: str) -> None:
         with self._db.transaction() as conn:
             conn.execute(
@@ -881,3 +971,17 @@ class KnowledgeRepo:
                 "ORDER BY kb_id, document_id"
             ).fetchall()
         return map_rows(rows, KnowledgeDocumentRow)
+
+
+def _fact_payload(row: DbRow) -> dict[str, Any]:
+    try:
+        locator = json.loads(str(row["locator_json"] or "{}"))
+    except ValueError:
+        locator = {}
+    return {
+        "fact_type": str(row["fact_type"]),
+        "value": str(row["value"]),
+        "normalized": str(row["normalized"]),
+        "locator": locator if isinstance(locator, dict) else {},
+        "extractor": str(row["extractor"]),
+    }
