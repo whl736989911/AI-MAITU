@@ -794,6 +794,8 @@ Zed setup example.
 | `GET` | `/knowledge-bases/{kb}/metadata-schema` | reader | field definitions for this base (`{fields: [...]}`); values follow document ACLs |
 | `PUT` | `/knowledge-bases/{kb}/metadata-schema` | owner/admin | replace field definitions; existing document values are kept |
 | `PATCH` | `/knowledge-bases/{kb}/documents/{doc}/metadata` | writer | merge typed field values; `null`/empty clears a value |
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/facts` | reader | located facts extracted from this document (dimension annotations, clause numbers, …) |
+| `GET` | `/knowledge-bases/{kb}/facts?q=…` | reader | search located facts across readable documents; optional `fact_type`, `limit` ≤ 200 |
 | `GET` | `/knowledge-bases/{kb}/coverage` | reader | counts only readable files, not hidden folders or siblings |
 | `GET` | `/knowledge-bases/{kb}/search?q=…` | reader | lexical/optional vector search filtered by the same effective ACL; optional `metadata` JSON filter |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/preview` | reader | up to 200,000 characters from the completed index plus per-segment `blocks` with their source locators; verifies the original hash, never repeats OCR |
@@ -803,6 +805,14 @@ Zed setup example.
 | `GET` | `/knowledge-bases/{kb}/permission-principals` | ACL manager | safe user, department and role choices without requiring the users module |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; optional `version` requires matching actual SHA-256 and returns 409 if changed; does not require a completed index |
 | `GET` | `/knowledge-bases/processors` | user | available built-in processors and optional CAD CLI capability; unavailable formats remain archive-only |
+
+Facts are produced by pluggable post-parse extractors (measurement annotations,
+clause numbers) and stored with the same page/paragraph locator as the source
+block. They are derived data: re-indexing replaces a document's facts, and
+deleting the document removes them. Fact search applies the document ACL
+before matching, so a value that exists only in a hidden file is never
+returned. New extractors implement :class:`FactExtractor` and register in
+``octop.infra.knowledge.extractors.default_extractors``.
 
 Document metadata is a generic, per-base capability: fields are typed
 (`text`, `number`, `date`, or `enum`) and validation happens server-side.

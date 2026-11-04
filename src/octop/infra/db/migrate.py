@@ -1651,6 +1651,31 @@ def _ensure_knowledge_sync_runs_schema(db: DatabasePool) -> None:
         )
 
 
+def _ensure_knowledge_facts_schema(db: DatabasePool) -> None:
+    """Create the v49 extracted-fact table and its lookup indexes."""
+    if not _table_exists(db, "knowledge_documents"):
+        return
+    with db.transaction() as conn:
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS knowledge_document_facts ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, "
+            "document_id TEXT NOT NULL REFERENCES knowledge_documents(document_id) "
+            "ON DELETE CASCADE, "
+            "kb_id TEXT NOT NULL, fact_type TEXT NOT NULL, value TEXT NOT NULL, "
+            "normalized TEXT NOT NULL DEFAULT '', "
+            "locator_json TEXT NOT NULL DEFAULT '{}', "
+            "extractor TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_facts_document "
+            "ON knowledge_document_facts(document_id)"
+        )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_facts_lookup "
+            "ON knowledge_document_facts(kb_id, fact_type, normalized)"
+        )
+
+
 def _ensure_knowledge_metadata_schema(db: DatabasePool) -> None:
     """Add schema v48 metadata columns; idempotent for clamped databases."""
     if not _table_exists(db, "knowledge_bases"):
@@ -3681,6 +3706,14 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 49:
+        # ``049_knowledge_document_facts.sql`` is the readable record; the
+        # helper creates the same shapes only when missing, so a downstamped
+        # watermark cannot fail on an existing table.
+        _ensure_knowledge_facts_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     if version == 48:
         # ``048_knowledge_document_metadata.sql`` is the readable record; the
         # helper applies both columns only when missing, so a downstamped
@@ -3824,4 +3857,5 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_sync_runs_schema(db)
     _ensure_knowledge_derived_schema(db)
     _ensure_knowledge_metadata_schema(db)
+    _ensure_knowledge_facts_schema(db)
     _repair_connector_text_credentials(db)

@@ -875,6 +875,48 @@ class KnowledgeService:
             "knowledge base upload access is required", access=ACCESS_UPLOAD
         )
 
+    def document_facts(
+        self,
+        kb_id: str,
+        doc_id: str,
+        *,
+        actor_user_id: int,
+        is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        document = self._repo.get_document(doc_id)
+        if document is None or document.kb_id != kb_id or document.is_dir:
+            raise LookupError("knowledge document not found")
+        self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
+        return cast(list[dict[str, Any]], self._repo.list_document_facts(doc_id))
+
+    def search_facts(
+        self,
+        kb_id: str,
+        *,
+        actor_user_id: int,
+        query: str = "",
+        fact_type: str | None = None,
+        limit: int = 50,
+        is_admin: bool = False,
+    ) -> list[dict[str, Any]]:
+        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
+        documents = readable_documents(
+            self._repo.list_documents(kb_id), restricted=restricted, readable=readable
+        )
+        allowed = {row.id for row in documents if not row.is_dir}
+        return cast(
+            list[dict[str, Any]],
+            self._repo.search_facts(
+            kb_id,
+            query=query,
+            fact_type=fact_type,
+                allowed_document_ids=allowed,
+                limit=max(1, min(limit, 200)),
+            ),
+        )
+
     def get_metadata_schema(
         self, kb_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> list[dict[str, Any]]:
