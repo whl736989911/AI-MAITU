@@ -9,6 +9,7 @@ import {
 import { formatToolArguments } from "../../../utils/formatToolArguments";
 import {
   useToolDisplayNames,
+  resolveDeferredToolLabel,
   resolveToolLabel,
 } from "../../../pages/Chat/hooks/toolDisplayNames";
 import {
@@ -128,6 +129,11 @@ export function DefaultToolRenderer({
     : isStreaming
     ? t("common.running", "Running")
     : t("common.pending", "Pending");
+  const deferredLabel = resolveDeferredToolLabel(
+    toolName,
+    toolData.arguments,
+    displayName,
+  );
 
   return (
     <div className={styles.inlineToolBlock}>
@@ -141,7 +147,8 @@ export function DefaultToolRenderer({
           {t("chatUsage.tool", "Tool")}
         </span>
         <code className={styles.inlineToolName}>
-          {resolveToolLabel(toolName, displayNameProp, displayName)}
+          {deferredLabel ??
+            resolveToolLabel(toolName, displayNameProp, displayName)}
         </code>
         <span className={styles.inlineToolStatus}>{statusLabel}</span>
         <ChevronRight

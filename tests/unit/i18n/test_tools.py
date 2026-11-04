@@ -14,6 +14,8 @@ def test_tool_display_name_known_zh():
     assert tool_display_name("write_todos", "zh") == "编写计划"
     assert tool_display_name("read_env_file", "zh") == "读取环境变量"
     assert tool_display_name("write_env_file", "en") == "Write env file"
+    assert tool_display_name("call_deferred_tool", "zh") == "按需调用"
+    assert tool_display_name("call_deferred_tool", "en") == "Call on demand"
 
 
 def test_tool_display_name_unknown_passthrough():
@@ -58,6 +60,7 @@ def test_hitl_tool_catalog_excludes_must_use_tools():
     assert "cronjob_create" not in names
     assert "task" not in names
     assert "ask_agent" not in names
+    assert "call_deferred_tool" not in names
 
 
 def test_hitl_tool_catalog_includes_common_tools():
