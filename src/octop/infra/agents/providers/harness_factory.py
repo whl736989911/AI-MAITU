@@ -72,6 +72,8 @@ def _is_responses_compatibility_error(exc: BaseException) -> bool:
 def _mark_fallback_output(output: Any) -> Any:
     if isinstance(output, (AIMessage, AIMessageChunk)):
         output.response_metadata["octop_api_fallback"] = "chat_completions"
+        output.response_metadata["api_fallback"] = "chat_completions"
+        output.response_metadata["api_mode"] = "chat_completions"
     return output
 
 
@@ -216,7 +218,7 @@ class _ResponsesFallbackChatModel(BaseChatModel):
                 raise
             result = self._fallback._generate(messages, stop, run_manager, **kwargs)
             for generation in result.generations:
-                generation.message.response_metadata["octop_api_fallback"] = "chat_completions"
+                _mark_fallback_output(generation.message)
             return result
 
     async def _agenerate(
@@ -233,7 +235,7 @@ class _ResponsesFallbackChatModel(BaseChatModel):
                 raise
             result = await self._fallback._agenerate(messages, stop, run_manager, **kwargs)
             for generation in result.generations:
-                generation.message.response_metadata["octop_api_fallback"] = "chat_completions"
+                _mark_fallback_output(generation.message)
             return result
 
     def _stream(
@@ -253,7 +255,7 @@ class _ResponsesFallbackChatModel(BaseChatModel):
                 raise
             chunks = iter(self._fallback._stream(messages, stop, run_manager, **kwargs))
             for chunk in chunks:
-                chunk.message.response_metadata["octop_api_fallback"] = "chat_completions"
+                _mark_fallback_output(chunk.message)
                 yield chunk
             return
         yield first
@@ -276,7 +278,7 @@ class _ResponsesFallbackChatModel(BaseChatModel):
                 raise
             chunks = self._fallback._astream(messages, stop, run_manager, **kwargs)
             async for chunk in chunks:
-                chunk.message.response_metadata["octop_api_fallback"] = "chat_completions"
+                _mark_fallback_output(chunk.message)
                 yield chunk
             return
         yield first
@@ -285,7 +287,15 @@ class _ResponsesFallbackChatModel(BaseChatModel):
 
 
 class OctopChatModelFactory(ChatModelFactory):
-    """Build Responses API models only when the model config explicitly asks."""
+    """Build Responses models without server-side storage and with our fallback rules.
+
+    octop-harness 1.0.6 builds Responses models itself, but it leaves
+    ``store`` at the provider default and retries Chat Completions on any 400
+    that mentions the Responses API — including quota and model-not-found
+    errors. The product requires stateless requests, and those two errors must
+    surface to the user, so the primary and fallback models are built with the
+    runtime fallback disabled and wrapped here.
+    """
 
     def _build(
         self,
@@ -294,53 +304,28 @@ class OctopChatModelFactory(ChatModelFactory):
         *,
         max_retries: int | None = None,
     ) -> Any:
-        if provider.protocol != "openai" or not isinstance(model, ProviderModelConfig):
-            return super()._build(provider, model, max_retries=max_retries)
-        if model.api_mode == "chat_completions":
-            return super()._build(provider, model, max_retries=max_retries)
-        from langchain_openai import ChatOpenAI
-        from octop_harness.llm.factory import (
-            _get_reasoning_aware_chat_openai,
-            _inject_model_token_limits,
-            _stamp_native_tool_search_capability,
-        )
-        from octop_harness.llm.session_header import (
-            attach_session_http_clients,
-            session_http_clients,
-        )
+        from dataclasses import replace
 
-        kwargs: dict[str, Any] = {
-            "model": model.id,
-            "base_url": provider.base_url,
-            "api_key": provider.api_key,
-            "stream_usage": provider.stream_usage,
-            "use_responses_api": True,
-            "output_version": "responses/v1",
-            "store": False,
-        }
-        if provider.headers:
-            kwargs["default_headers"] = dict(provider.headers)
-        if max_retries is not None:
-            kwargs["max_retries"] = max_retries
-        session_clients = None
-        if provider.session_header:
-            session_clients = session_http_clients(provider.session_header)
-            kwargs["http_client"], kwargs["http_async_client"] = session_clients
-        instance = _get_reasoning_aware_chat_openai(ChatOpenAI)(**kwargs)
-        if session_clients is not None:
-            attach_session_http_clients(instance, session_clients[0], session_clients[1])
-        instance._harness_supported_input = set(model.input)
-        _stamp_native_tool_search_capability(instance, provider.protocol, model.native_tool_search)
-        _inject_model_token_limits(instance, model)
-        if model.api_fallback == "chat_completions":
-            from octop_harness.llm.factory import _build_openai
-
-            if model.native_tool_search:
-                raise ValueError("Responses fallback is incompatible with native_tool_search")
-            return _ResponsesFallbackChatModel(
-                instance, _build_openai(provider, model, max_retries=max_retries)
-            )
-        return instance
+        if (
+            provider.protocol != "openai"
+            or not isinstance(model, ProviderModelConfig)
+            or model.api_mode != "responses"
+        ):
+            return super()._build(provider, model, max_retries=max_retries)
+        primary = super()._build(
+            provider, replace(model, api_fallback="none"), max_retries=max_retries
+        )
+        # Never let a Responses request be stored on the provider side.
+        if hasattr(primary, "store"):
+            primary.store = False
+        if model.api_fallback != "chat_completions":
+            return primary
+        fallback = super()._build(
+            provider,
+            replace(model, api_mode="chat_completions", api_fallback="none"),
+            max_retries=max_retries,
+        )
+        return _ResponsesFallbackChatModel(primary, fallback)
 
     @staticmethod
     def _close_fallback_clients(model: Any) -> None:

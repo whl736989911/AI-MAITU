@@ -8,7 +8,7 @@
 
 ### 变更
 
-- 运行时依赖切换到更名后的 `octop-harness 1.0.6`、`octop-gateway 1.0.3`、`octop-memory 1.0.2`、`octop-browser 1.0.0`，导入名同步为 `octop_*`；LangChain 升至 1.4.5、deepagents 升至 0.7.25。用户数据目录、`OCTOP_*` 环境变量与数据库保持兼容，不做迁移。
+- 运行时依赖切换到更名后的 `octop-harness 1.0.6`、`octop-gateway 1.0.3`、`octop-memory 1.0.2`、`octop-browser 1.0.0`，导入名同步为 `octop_*`；LangChain 升至 1.4.5、deepagents 升至 0.7.25。用户数据目录、`OCTOP_*` 环境变量与数据库保持兼容，不做迁移；Responses 请求继续强制 `store=false`，配额不足与模型不存在错误仍直接返回、不触发 Chat Completions 回退。
 
 ### 新增
 

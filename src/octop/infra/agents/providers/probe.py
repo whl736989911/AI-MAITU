@@ -269,7 +269,10 @@ async def probe_provider_row(
         "latency_ms": latency_ms,
         "api_mode": entry.get("api_mode")
         or ("responses" if _is_codex_base_url(row.base_url) else "chat_completions"),
-        "fallback_used": result_metadata.get("octop_api_fallback") == "chat_completions",
+        "fallback_used": (
+            result_metadata.get("api_fallback") == "chat_completions"
+            or result_metadata.get("octop_api_fallback") == "chat_completions"
+        ),
     }
 
 
