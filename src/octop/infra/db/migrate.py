@@ -3218,6 +3218,23 @@ def _sqlite_references_threads(db: DatabasePool, table: str) -> bool:
     return any(str(row["table"]) == "threads" for row in rows)
 
 
+def _repair_connector_text_credentials(db: DatabasePool) -> None:
+    """Cast TEXT ``connectors.credential_blob`` values back to BLOB.
+
+    Idempotent. PostgreSQL ``BYTEA`` cannot store the historical TEXT row, and
+    databases already at the current schema version must still be repaired, so
+    this stays out of the numbered migrations.
+    """
+    if db.dialect != "sqlite" or not _table_exists(db, "connectors"):
+        return
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE connectors "
+            "SET credential_blob = CAST(credential_blob AS BLOB) "
+            "WHERE typeof(credential_blob) = 'text'"
+        )
+
+
 def _repair_legacy_schema(db: DatabasePool) -> None:
     """Idempotent compatibility repairs for local databases from old builds."""
     if _table_exists(db, "users"):
@@ -3781,3 +3798,4 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_file_index_schema(db)
     _ensure_knowledge_sync_runs_schema(db)
     _ensure_knowledge_derived_schema(db)
+    _repair_connector_text_credentials(db)

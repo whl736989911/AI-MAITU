@@ -4178,6 +4178,7 @@
     "agent_list": "List agents",
     "ask_agent": "Ask agent",
     "call_agent": "Call agent",
+    "call_deferred_tool": "Call on demand",
     "acp_runner": "ACP external agent",
     "browser_use": "Use browser",
     "browser_control": "Browser control",

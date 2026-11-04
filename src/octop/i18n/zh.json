@@ -770,6 +770,7 @@
     "agent_list": "列出 Agent",
     "ask_agent": "咨询 Agent",
     "call_agent": "调用 Agent",
+    "call_deferred_tool": "按需调用",
     "acp_runner": "ACP 外部 Agent",
     "browser_use": "使用浏览器",
     "browser_control": "浏览器控制",
