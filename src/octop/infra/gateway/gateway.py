@@ -327,6 +327,11 @@ class Gateway:
         from octop.infra.licensing import current_license
 
         current_license().require_business_access()
+        from octop.infra.gateway.channels.dingtalk_branding import (
+            install as install_branded_dingtalk,
+        )
+
+        install_branded_dingtalk()
         self._processor = GlobalProcessor(
             agent_manager=self._agent_manager,
             thread_registry=self._thread_registry,
