@@ -2027,7 +2027,7 @@ _RESOURCE_ACL_BACKFILL_SOURCES = (
 
 
 def _ensure_acl_permission_level(db: DatabasePool) -> None:
-    """Add ``resource_acl.permission`` (schema v36): read | write.
+    """Add ``resource_acl.permission`` (schema v36): read | upload | write.
 
     The level a share carries, defaulted to ``read`` so every row that predates
     it keeps its reach and gains nothing: ``sharing.can_write`` reads a
