@@ -72,6 +72,7 @@ from octop.infra.knowledge.parse import PasswordRequiredError
 from octop.infra.knowledge.processors import ARCHIVE_REASONS, ArchiveReason
 from octop.infra.knowledge.search import DEFAULT_SEARCH_K, SearchHit
 from octop.infra.knowledge.service import (
+    ACCESS_UPLOAD,
     ACCESS_WRITE,
     MAX_DOCS_PER_KB,
     MAX_DOCUMENT_BYTES,
@@ -332,9 +333,12 @@ def _map_knowledge_error(
     if isinstance(exc, (LookupError, FileNotFoundError)):
         return OctopError.localized(ErrorCode.KNOWLEDGE_NOT_FOUND, locale)
     if isinstance(exc, KnowledgeAccessDenied):
-        # Read and edit are separate permissions (design §5.1): an actor who may
-        # already open the base must not be told they have *no access* to it when
-        # what they lack is the right to change it.
+        # Read, contribute and edit are separate permissions (design §5.1): an
+        # actor who may already open the base must not be told they have *no
+        # access* to it when what they lack is the right to change it or to add
+        # a file.
+        if exc.access == ACCESS_UPLOAD:
+            return OctopError.localized(ErrorCode.KNOWLEDGE_UPLOAD_FORBIDDEN, locale)
         return OctopError.localized(
             ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN
             if exc.access == ACCESS_WRITE
@@ -390,8 +394,20 @@ def _map_knowledge_error(
         return OctopError.localized(ErrorCode.KNOWLEDGE_NAME_TAKEN, locale)
     if "invalid knowledge document name" in text:
         return OctopError.localized(ErrorCode.KNOWLEDGE_NAME_INVALID, locale)
+    if "invalid knowledge document filename" in text:
+        return OctopError.localized(ErrorCode.KNOWLEDGE_NAME_INVALID, locale)
+    if "path exists and is not a folder" in text:
+        # The target path is already occupied by a file; nothing was written.
+        return OctopError.localized(ErrorCode.KNOWLEDGE_NAME_TAKEN, locale)
+    if "target folder not found" in text:
+        return OctopError.localized(ErrorCode.KNOWLEDGE_NOT_FOUND, locale)
     if "prerequisite" in text or "embedding model" in text or "embedding_model" in text:
         return OctopError.localized(ErrorCode.KNOWLEDGE_PREREQUISITES_FAILED, locale)
+    # A plain ValueError from the knowledge layer is the caller's input being
+    # rejected (folder move cycles, non-editable documents, ...). Reporting it
+    # as INTERNAL_ERROR hid a 400 behind a 500 and logged a false bug.
+    if isinstance(exc, ValueError):
+        return OctopError.localized(ErrorCode.KNOWLEDGE_REQUEST_INVALID, locale)
     logger.exception("unhandled error in knowledge base router: %s", exc)
     return OctopError.localized(
         ErrorCode.INTERNAL_ERROR,

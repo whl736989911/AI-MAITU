@@ -723,3 +723,148 @@ async def test_department_move_removes_base_visibility_despite_an_existing_deleg
     await _assert_file_access(
         client, f"/api/knowledge-bases/{kb_id}/documents/{doc_id}", bob, allowed=False
     )
+
+
+async def test_upload_into_a_file_path_is_409_and_reader_refusal_names_upload(env: Any) -> None:
+    """A path collision is the caller's mistake, and a reader is not "denied access".
+
+    Both used to be wrong at the HTTP boundary: the nested path reached the
+    generic handler as a 500, and an actor who could read the base was told they
+    had no access to it when all they lacked was the upload level.
+    """
+    client, server, admin = env
+    services = server.services
+    services.settings_repo.set("knowledge_bases_enabled", "true")
+    admin_id = await resolve_user_id(client, admin, "admin")
+    base = services.knowledge_repo.create_base(owner_user_id=admin_id, name="Upload collisions")
+    services.repos.resource_acl_repo.upsert(
+        AclEntry(
+            resource_type="knowledge_base",
+            resource_id=base.id,
+            owner_user_id=admin_id,
+            visibility="public",
+            unit_key=None,
+            version=1,
+            permission="read",
+        )
+    )
+
+    first = await client.post(
+        f"/api/knowledge-bases/{base.id}/documents",
+        headers=admin,
+        files={"upload": ("notes.txt", b"file", "text/plain")},
+    )
+    assert first.status_code == 201, first.text
+
+    nested = await client.post(
+        f"/api/knowledge-bases/{base.id}/documents",
+        headers=admin,
+        data={"path": "notes.txt/child.txt"},
+        files={"upload": ("child.txt", b"child", "text/plain")},
+    )
+    assert nested.status_code == 409, nested.text
+    assert nested.json()["error"]["code"] == "KNOWLEDGE_NAME_TAKEN"
+
+    reader = await create_user(client, admin, username="upload_reader")
+    refused = await client.post(
+        f"/api/knowledge-bases/{base.id}/documents",
+        headers=reader,
+        files={"upload": ("reader.txt", b"read only", "text/plain")},
+    )
+    assert refused.status_code == 403, refused.text
+    assert refused.json()["error"]["code"] == "KNOWLEDGE_UPLOAD_FORBIDDEN"
+
+
+async def test_effective_upload_reaches_the_client_and_permits_the_upload(env: Any) -> None:
+    """``effective.upload`` must survive the response model, not just the service.
+
+    The listing schema only declared ``read``/``write``, so FastAPI silently
+    dropped the new level: the dashboard therefore never offered the upload
+    action to an upload-only contributor.
+    """
+    client, server, admin = env
+    services = server.services
+    services.settings_repo.set("knowledge_bases_enabled", "true")
+    admin_id = await resolve_user_id(client, admin, "admin")
+    base = services.knowledge_repo.create_base(owner_user_id=admin_id, name="Upload level")
+    services.repos.resource_acl_repo.upsert(
+        AclEntry(
+            resource_type="knowledge_base",
+            resource_id=base.id,
+            owner_user_id=admin_id,
+            visibility="public",
+            unit_key=None,
+            version=1,
+            permission="upload",
+        )
+    )
+    contributor = await create_user(client, admin, username="upload_contributor")
+
+    listing = await client.get(f"/api/knowledge-bases/{base.id}/permissions", headers=contributor)
+    assert listing.status_code == 200, listing.text
+    effective = listing.json()["knowledge_base"]["effective"]
+    assert effective == {"read": True, "upload": True, "write": False}
+
+    uploaded = await client.post(
+        f"/api/knowledge-bases/{base.id}/documents",
+        headers=contributor,
+        files={"upload": ("contributed.txt", b"contributed bytes", "text/plain")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    assert uploaded.json()["filename"] == "contributed.txt"
+
+
+async def test_upload_level_contributes_to_a_source_folder(env: Any, tmp_path: Path) -> None:
+    """The upload level must also cover source-backed folders.
+
+    These uploads write through to the customer's share, but they are still
+    "add a new file". Requiring ``write`` here meant an upload-only department
+    saw no targets and could not contribute at all.
+    """
+    client, server, admin = env
+    services = server.services
+    services.settings_repo.set("knowledge_bases_enabled", "true")
+    admin_id = await resolve_user_id(client, admin, "admin")
+    kb = services.knowledge_repo.create_base(owner_user_id=admin_id, name="Upload-level source")
+    services.repos.resource_acl_repo.upsert(
+        AclEntry(
+            resource_type="knowledge_base",
+            resource_id=kb.id,
+            owner_user_id=admin_id,
+            visibility="public",
+            unit_key=None,
+            version=1,
+            permission="upload",
+        )
+    )
+    physical_root = tmp_path / "share"
+    physical_root.mkdir()
+    (physical_root / "seed.txt").write_text("seed", encoding="utf-8")
+    source = await client.post(
+        f"/api/knowledge-bases/{kb.id}/data-sources",
+        headers=admin,
+        json={
+            "name": "Contributable source",
+            "kind": "local",
+            "folder": {"root_path": str(physical_root), "read_only": False},
+        },
+    )
+    assert source.status_code == 201, source.text
+    source_id = source.json()["id"]
+    sync = await client.post(f"/api/data-sources/{source_id}/sync", headers=admin)
+    assert sync.status_code == 200, sync.text
+    contributor = await create_user(
+        client, admin, username="source_upload_contributor", permissions=["knowledge_bases"]
+    )
+
+    targets = await client.get(f"/api/knowledge-bases/{kb.id}/upload-targets", headers=contributor)
+    assert targets.status_code == 200, targets.text
+    assert source_id in {target["id"] for target in targets.json()}
+
+    uploaded = await client.post(
+        f"/api/knowledge-bases/{kb.id}/data-sources/{source_id}/documents",
+        headers=contributor,
+        files={"upload": ("contributed.txt", b"source contribution", "text/plain")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    assert (physical_root / "contributed.txt").read_bytes() == b"source contribution"

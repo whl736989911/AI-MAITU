@@ -102,6 +102,36 @@ def test_shared_reader_cannot_upload(service: KnowledgeService) -> None:
     assert service._services.knowledge_repo.get_base(kb.id).doc_count == 0
 
 
+def test_upload_below_an_existing_file_path_is_rejected(service: KnowledgeService) -> None:
+    """A file path cannot become a folder just because an upload names it.
+
+    Before the fix this surfaced as ``path exists and is not a folder`` and the
+    router mapped it to a 500, so a mistyped upload looked like a server bug.
+    """
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Docs")
+    service.upload_document(
+        kb.id,
+        actor_user_id=owner,
+        filename="notes.txt",
+        content_type="text/plain",
+        content=b"file",
+    )
+
+    with pytest.raises(ValueError, match="is not a folder"):
+        service.upload_document(
+            kb.id,
+            actor_user_id=owner,
+            filename="child.txt",
+            content_type="text/plain",
+            content=b"child",
+            path="notes.txt/child.txt",
+        )
+
+    assert service._services.knowledge_repo.count_documents(kb.id) == 1
+
+
 def test_shared_writer_can_upload_and_maintain(service: KnowledgeService) -> None:
     """A grant that carries ``write`` is what makes a share maintainable.
 

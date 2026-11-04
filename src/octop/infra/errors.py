@@ -115,7 +115,13 @@ class ErrorCode(StrEnum):
     # read. Read and edit are separate permissions here (design §5.1), so an
     # actor looking at the base must not be told they have no access to it.
     KNOWLEDGE_WRITE_FORBIDDEN = "KNOWLEDGE_WRITE_FORBIDDEN"
+    # Adding files is its own level: an actor may read a base and still lack the
+    # right to contribute, which is neither "no access" nor "cannot change".
+    KNOWLEDGE_UPLOAD_FORBIDDEN = "KNOWLEDGE_UPLOAD_FORBIDDEN"
     KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN = "KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN"
+    # A malformed knowledge request (bad path, folder move cycle, ...) is the
+    # caller's mistake; answering 500 hides that behind "internal error".
+    KNOWLEDGE_REQUEST_INVALID = "KNOWLEDGE_REQUEST_INVALID"
     KNOWLEDGE_DELEGATION_FORBIDDEN = "KNOWLEDGE_DELEGATION_FORBIDDEN"
     KNOWLEDGE_DOC_LIMIT = "KNOWLEDGE_DOC_LIMIT"
     KNOWLEDGE_DOC_TOO_LARGE = "KNOWLEDGE_DOC_TOO_LARGE"
@@ -312,7 +318,9 @@ _DEFAULT_STATUS: dict[ErrorCode, int] = {
     ErrorCode.KNOWLEDGE_NOT_FOUND: 404,
     ErrorCode.KNOWLEDGE_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_WRITE_FORBIDDEN: 403,
+    ErrorCode.KNOWLEDGE_UPLOAD_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN: 403,
+    ErrorCode.KNOWLEDGE_REQUEST_INVALID: 400,
     ErrorCode.KNOWLEDGE_DELEGATION_FORBIDDEN: 403,
     ErrorCode.KNOWLEDGE_DOC_LIMIT: 409,
     ErrorCode.KNOWLEDGE_DOC_TOO_LARGE: 413,

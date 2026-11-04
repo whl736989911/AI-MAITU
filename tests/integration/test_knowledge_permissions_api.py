@@ -93,7 +93,11 @@ async def test_permission_listing_filters_denied_files_and_content_writer_cannot
     payload = result.json()
     assert [item["resource_id"] for item in payload["documents"]] == [visible.id]
     assert hidden.filename not in str(payload)
-    assert payload["documents"][0]["effective"] == {"read": True, "write": True}
+    assert payload["documents"][0]["effective"] == {
+        "read": True,
+        "upload": True,
+        "write": True,
+    }
     assert payload["documents"][0]["can_manage"] is False
     assert payload["documents"][0]["entry"] is None
     assert payload["documents"][0]["inherited_from"]["resource_id"] == kb.id

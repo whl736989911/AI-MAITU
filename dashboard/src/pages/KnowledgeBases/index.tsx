@@ -2755,10 +2755,16 @@ export default function KnowledgeBasesPage() {
                           {t(
                             permissionsOverview.knowledge_base.effective.write
                               ? "knowledgeBases.permissions.writeShort"
-                              : "knowledgeBases.permissions.readShort",
+                              : permissionsOverview.knowledge_base.effective
+                                    .upload
+                                ? "knowledgeBases.permissions.uploadShort"
+                                : "knowledgeBases.permissions.readShort",
                             permissionsOverview.knowledge_base.effective.write
                               ? "写"
-                              : "读",
+                              : permissionsOverview.knowledge_base.effective
+                                    .upload
+                                ? "上传"
+                                : "读",
                           )}
                         </Typography.Text>
                       </div>

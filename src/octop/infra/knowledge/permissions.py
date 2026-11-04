@@ -393,7 +393,7 @@ class KnowledgePermissionService:
             for entry in chain
         ):
             raise OctopError(
-                ErrorCode.KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN,
+                ErrorCode.KNOWLEDGE_UPLOAD_FORBIDDEN,
                 "knowledge base upload access is required",
             )
         writer = all(
@@ -937,6 +937,6 @@ class KnowledgePermissionService:
         """Adding files needs ``upload``; reading is not enough."""
         if not can_upload(entry, user_id=actor_user_id, role=role, unit_keys=unit_keys):
             raise OctopError(
-                ErrorCode.KNOWLEDGE_UPLOAD_PERMISSION_FORBIDDEN,
+                ErrorCode.KNOWLEDGE_UPLOAD_FORBIDDEN,
                 "knowledge base upload access is required",
             )
