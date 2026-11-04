@@ -5,10 +5,12 @@ Replaces the three ad-hoc global booleans (``agents.is_shared``,
 extra grants, and classifies how widely a change lands so the caller can decide
 whether it needs approval.
 
-An entry answers two questions, from the same row: :func:`can_access` — may this
-user reach the resource at all — and :func:`can_write` — may they maintain it.
-Both read the entry's ``permission`` level (``read`` | ``write``), so "share it"
-and "share it read-only" are one table and one rule set.
+An entry answers three questions, from the same row: :func:`can_access` — may
+this user reach the resource at all — :func:`can_upload` — may they add new
+content without maintaining what is already there — and :func:`can_write` — may
+they maintain it. All three read the entry's ``permission`` level (``read`` |
+``upload`` | ``write``), so "share it", "let them contribute" and "share it
+read-only" are one table and one rule set.
 
 Everything here is pure: the caller resolves the user's role and org scope and
 passes them in, so the rules stay unit-testable and IO-free. The org scope is

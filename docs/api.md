@@ -796,7 +796,7 @@ Zed setup example.
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/preview` | reader | up to 200,000 characters from the completed index plus per-segment `blocks` with their source locators; verifies the original hash, never repeats OCR |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/segments/{segment}` | reader | revalidates the file and its permission before returning verified evidence |
 | `GET`/`PUT` | `/knowledge-bases/{kb}/permissions` | reader / ACL manager | effective scope metadata for the base and accessible documents; changes use existing approval/audit |
-| `GET`/`PUT` | `/knowledge-bases/{kb}/documents/{doc}/permissions` | reader / ACL manager | effective document scope, inheritance and read/write; only managers see grant details |
+| `GET`/`PUT` | `/knowledge-bases/{kb}/documents/{doc}/permissions` | reader / ACL manager | effective document scope, inheritance and read/upload/write; only managers see grant details |
 | `GET` | `/knowledge-bases/{kb}/permission-principals` | ACL manager | safe user, department and role choices without requiring the users module |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; optional `version` requires matching actual SHA-256 and returns 409 if changed; does not require a completed index |
 | `GET` | `/knowledge-bases/processors` | user | available built-in processors and optional CAD CLI capability; unavailable formats remain archive-only |
@@ -832,7 +832,7 @@ platform storage uses the platform root, not the source's reserved namespace.
 | `POST` | `/knowledge-bases/{kb}/documents` | uploader or writer | existing platform upload; multipart `upload` and optional knowledge-base-relative `path` |
 | `GET` | `/knowledge-bases/{kb}/upload-targets` | uploader or writer | writable local/SMB sources the caller may add files to as `{id, name, folders: string[]}`; only authorized indexed folders, no physical addresses or credentials |
 | `POST` | `/knowledge-bases/{kb}/data-sources/{source}/documents` | uploader or writer | multipart `upload`, optional source-root-relative `path` including filename; `201` means the source original is saved and indexing is queued |
-| `GET` | `/knowledge-bases/{kb}/upload-permissions` | reader with knowledge module | query `folder` and optional `data_source_id`; returns safe `options` and the exact maximum `default` for that destination |
+| `GET` | `/knowledge-bases/{kb}/upload-permissions` | uploader or writer with knowledge module | query `folder` and optional `data_source_id`; returns safe `options` and the exact maximum `default` for that destination |
 
 These routes require the `knowledge_bases` module permission and knowledge-base
 upload access (`write` implies `upload`). Source uploads additionally check every
