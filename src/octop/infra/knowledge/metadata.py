@@ -10,8 +10,10 @@ certificates, equipment, …) without a dedicated business module.
 
 from __future__ import annotations
 
+import math
 import re
 from collections.abc import Mapping
+from datetime import date
 from typing import Any
 
 FIELD_TYPES = frozenset({"text", "number", "date", "enum"})
@@ -116,11 +118,21 @@ def _validate_value(field: Mapping[str, Any], value: Any) -> Any:
     if field_type == "number":
         if isinstance(value, bool) or not isinstance(value, (int, float)):
             raise MetadataError(f"metadata field {key!r} expects a number")
+        try:
+            finite = math.isfinite(float(value))
+        except OverflowError:
+            finite = False
+        if not finite:
+            raise MetadataError(f"metadata field {key!r} expects a finite number")
         return value
     if field_type == "date":
         text = str(value).strip()
         if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
             raise MetadataError(f"metadata field {key!r} expects an ISO date YYYY-MM-DD")
+        try:
+            date.fromisoformat(text)
+        except ValueError as exc:
+            raise MetadataError(f"metadata field {key!r} expects a real calendar date") from exc
         return text
     text = str(value).strip()
     if not text or len(text) > _MAX_TEXT:
@@ -167,6 +179,16 @@ def validate_suggested_values(schema: list[dict[str, Any]], raw: Any) -> dict[st
         field = by_key.get(str(key))
         if field is None or value is None or value == "" or value == []:
             continue
+        if field.get("type") == "number" and isinstance(value, str):
+            # Models commonly quote numbers; accept a plain decimal form while
+            # still rejecting booleans, NaN/Infinity and arbitrary text.
+            stripped = value.strip()
+            if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", stripped):
+                continue
+            number = float(stripped)
+            if not math.isfinite(number):
+                continue
+            value = int(number) if number.is_integer() else number
         try:
             out[str(key)] = _validate_value(field, value)
         except MetadataError:

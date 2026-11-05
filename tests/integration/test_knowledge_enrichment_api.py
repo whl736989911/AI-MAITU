@@ -32,11 +32,16 @@ async def _base(client: Any, server: Any, admin: dict[str, str]) -> tuple[str, s
     return base.id, upload.json()["document_id"], admin_id
 
 
-async def test_suggestion_apply_and_reject(env: Any) -> None:
+async def test_suggestion_apply_and_reject(env: Any, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "octop.api.routers.knowledge_bases.enqueue_index_document",
+        lambda *_args, **_kwargs: None,
+    )
     client, server, admin = env
     server.services.settings_repo.set("knowledge_bases_enabled", "true")
     kb_id, doc_id, admin_id = await _base(client, server, admin)
     repo = server.services.knowledge_repo
+    repo.update_document(doc_id, status="ready")
     document = repo.get_document(doc_id)
     assert document is not None
     current_hash = document.content_hash
@@ -50,21 +55,11 @@ async def test_suggestion_apply_and_reject(env: Any) -> None:
         fields={"drawing_no": "A-102", "sheet": "A0"},
         model="test/model",
     )
-    repo.create_suggestion(
-        suggestion_id="sug-reject",
-        document_id=doc_id,
-        kb_id=kb_id,
-        content_hash=current_hash,
-        summary="other",
-        keywords=[],
-        fields={},
-        model="test/model",
-    )
     root = f"/api/knowledge-bases/{kb_id}"
 
     listed = await client.get(f"{root}/suggestions", headers=admin, params={"status": "pending"})
     assert listed.status_code == 200, listed.text
-    assert {row["suggestion_id"] for row in listed.json()} == {"sug-apply", "sug-reject"}
+    assert {row["suggestion_id"] for row in listed.json()} == {"sug-apply"}
 
     apply = await client.post(
         f"{root}/suggestions/sug-apply/apply",
@@ -78,6 +73,16 @@ async def test_suggestion_apply_and_reject(env: Any) -> None:
     assert document.metadata == {"drawing_no": "A-102", "sheet": "A0"}
     assert applied["status"] == "pending"
 
+    repo.create_suggestion(
+        suggestion_id="sug-reject",
+        document_id=doc_id,
+        kb_id=kb_id,
+        content_hash=current_hash,
+        summary="other",
+        keywords=[],
+        fields={},
+        model="test/model",
+    )
     reject = await client.post(f"{root}/suggestions/sug-reject/reject", headers=admin)
     assert reject.status_code == 200, reject.text
     assert reject.json()["status"] == "rejected"

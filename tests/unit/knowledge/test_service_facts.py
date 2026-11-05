@@ -111,3 +111,29 @@ def test_readers_only_see_facts_of_readable_documents(service: KnowledgeService)
     assert {fact["document_id"] for fact in found} == {visible.id}
     with pytest.raises(PermissionError):
         service.document_facts(kb.id, hidden.id, actor_user_id=viewer)
+
+
+def test_fact_search_treats_like_wildcards_literally(service: KnowledgeService) -> None:
+    users = service._services.user_repo
+    owner = users.create(username="owner", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Wildcards")
+    document = _upload(service, kb.id, owner)
+    service._services.knowledge_repo.replace_document_facts(
+        document.id,
+        kb.id,
+        FACTS
+        + [
+            {
+                "fact_type": "tolerance",
+                "value": "50%",
+                "normalized": "50%",
+                "locator": {"page": 3},
+                "extractor": "measurement",
+            }
+        ],
+    )
+
+    assert [
+        fact["value"] for fact in service.search_facts(kb.id, actor_user_id=owner, query="%")
+    ] == ["50%"]
+    assert service.search_facts(kb.id, actor_user_id=owner, query="_") == []
