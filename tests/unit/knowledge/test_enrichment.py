@@ -214,3 +214,20 @@ def test_apply_rejects_a_document_that_is_waiting_for_reindex(env: SimpleNamespa
     with pytest.raises(OctopError) as not_ready:
         enrichment.apply_suggestion(kb.id, suggestion["suggestion_id"], actor_user_id=owner)
     assert not_ready.value.code is ErrorCode.KNOWLEDGE_INDEX_NOT_READY
+
+def test_apply_rejects_unknown_explicit_review_fields(env: SimpleNamespace) -> None:
+    owner, kb, document, _service = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(
+        kb.id, document.id, actor_user_id=owner, llm=object()
+    )
+
+    with pytest.raises(OctopError) as invalid:
+        enrichment.apply_suggestion(
+            kb.id,
+            suggestion["suggestion_id"],
+            actor_user_id=owner,
+            fields={"not_a_field": "x"},
+        )
+    assert invalid.value.code is ErrorCode.KNOWLEDGE_METADATA_INVALID
+    assert env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"] == "pending"

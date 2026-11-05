@@ -153,7 +153,9 @@ def metadata_matches(values: Mapping[str, Any], filters: Mapping[str, Any]) -> b
         if isinstance(expected, (int, float)):
             if isinstance(actual, bool) or not isinstance(actual, (int, float)):
                 return False
-            if float(actual) != float(expected):
+            # Compare exactly: float() loses low bits above 2**53 and would
+            # report two different large integers as the same value.
+            if actual != expected:
                 return False
             continue
         needle = str(expected).strip().lower()

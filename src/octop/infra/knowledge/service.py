@@ -685,10 +685,14 @@ class KnowledgeService:
         self._repo.update_document(
             doc_id,
             byte_size=len(encoded),
+            content_hash=document_digest(encoded),
             status="pending",
             error_message="",
             chunk_count=0,
         )
+        # Facts and structure describe the old bytes; keep them out of search
+        # until the reindex replaces them.
+        self._repo.clear_document_facts(doc_id)
         # The old structure described the old text.
         self._repo.set_derived(doc_id, None)
         self._refresh_collections(kb_id, doc_id)
@@ -1073,6 +1077,9 @@ class KnowledgeService:
         resolved_type = _resolve_content_type(name, content_type)
         if resolved_type not in _ALLOWED_CONTENT_TYPES:
             raise ValueError(f"unsupported knowledge document content type: {content_type}")
+        occupied = self._repo.get_document_by_path(kb_id, rel)
+        if occupied is not None and occupied.id != doc_id:
+            raise ValueError("a knowledge document with this name already exists")
         previous_filename = document.filename
         write_document(kb_id, doc_id, name, content)
         if previous_filename != name:
@@ -1088,6 +1095,7 @@ class KnowledgeService:
             error_message="",
             chunk_count=0,
         )
+        self._repo.clear_document_facts(doc_id)
         self._refresh_collections(kb_id, doc_id)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
@@ -1182,7 +1190,7 @@ class KnowledgeService:
                 if descendant.path.startswith(document.path + "/"):
                     self.require_document_writable(descendant, actor_user_id=actor_user_id)
         cleaned = (new_name or "").strip()
-        if not cleaned or "/" in cleaned or "\\" in cleaned:
+        if not cleaned or cleaned in {".", ".."} or "/" in cleaned or "\\" in cleaned:
             raise ValueError("invalid knowledge document name")
         new_path = normalize_kb_path(f"{path_parent(document.path)}/{cleaned}")
         if new_path == document.path:

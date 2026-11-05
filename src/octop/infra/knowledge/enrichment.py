@@ -160,6 +160,13 @@ class KnowledgeEnrichmentService:
         )
         chosen = fields if fields is not None else suggestion["fields"]
         schema_keys = {str(field["key"]) for field in schema}
+        if fields is not None:
+            unknown = sorted(str(key) for key in fields if str(key) not in schema_keys)
+            if unknown:
+                raise OctopError(
+                    ErrorCode.KNOWLEDGE_METADATA_INVALID,
+                    f"unknown metadata field(s): {', '.join(unknown)}",
+                )
         reviewed = {
             str(key): value
             for key, value in chosen.items()

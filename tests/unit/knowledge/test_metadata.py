@@ -142,3 +142,9 @@ def test_numbers_must_be_finite(value: float) -> None:
     with pytest.raises(MetadataError):
         normalize_values(SCHEMA, {"drawing_no": "A-1", "weight": value})
     assert validate_suggested_values(SCHEMA, {"weight": value}) == {}
+
+def test_numeric_filters_compare_large_integers_exactly() -> None:
+    assert not metadata_matches(
+        {"weight": 9007199254740993}, {"weight": 9007199254740992.0}
+    )
+    assert metadata_matches({"weight": 1}, {"weight": 1.0})

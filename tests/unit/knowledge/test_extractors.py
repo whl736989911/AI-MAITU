@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from octop.infra.knowledge.extractors import extract_facts
+from octop.infra.knowledge.extractors import Fact, extract_facts
 from octop.infra.knowledge.parse import ParsedBlock
 
 
@@ -45,3 +45,23 @@ def test_clause_extractor_reads_sentences_and_headings() -> None:
 def test_facts_are_deduplicated_per_location() -> None:
     facts = _facts("φ120 和 φ120")
     assert [fact.normalized for fact in facts].count("φ120") == 1
+
+
+class _ExplodingExtractor:
+    name = "exploding"
+
+    def extract(self, text: str, locator: dict):
+        yield Fact("clause", "1", "1", locator, self.name)
+        raise RuntimeError("extractor iteration failed")
+
+
+def test_broken_extractor_iteration_does_not_fail_ingestion() -> None:
+    facts = extract_facts(
+        [ParsedBlock(text="第 5.3 条", kind="page", locator={"page": 2})],
+        extractors=[_ExplodingExtractor()],
+    )
+    assert [(fact.fact_type, fact.normalized) for fact in facts] == [("clause", "1")]
+
+
+def test_fact_limit_must_be_positive_to_return_facts() -> None:
+    assert extract_facts([ParsedBlock(text="φ120", kind="page", locator={})], limit=0) == []

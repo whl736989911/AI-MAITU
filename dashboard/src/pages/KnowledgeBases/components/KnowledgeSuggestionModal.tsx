@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -49,52 +49,72 @@ export default function KnowledgeSuggestionModal({
   const [generating, setGenerating] = useState(false);
   const [deciding, setDeciding] = useState(false);
   const [error, setError] = useState("");
+  // Every load/generate owns a sequence number. Closing the dialog or opening
+  // another document invalidates older requests so their response cannot
+  // replace the suggestion now on screen.
+  const requestRef = useRef(0);
 
   const adopt = useCallback((next: KnowledgeDocumentSuggestion | null) => {
     setSuggestion(next);
     setValues({ ...(next?.fields ?? {}) });
   }, []);
 
-  const loadPending = useCallback(async () => {
-    if (!target) return;
-    setLoading(true);
-    setError("");
-    try {
-      const rows = await knowledgeBasesApi.listSuggestions(baseId, {
-        documentId: target.id,
-        status: "pending",
-        limit: 1,
-      });
-      adopt(rows[0] ?? null);
-    } catch (err) {
-      setError(
-        apiErrorMessage(err, t("knowledgeBases.suggestions.loadFailed"), t),
-      );
-      adopt(null);
-    } finally {
-      setLoading(false);
-    }
-  }, [adopt, baseId, t, target]);
+  const loadPending = useCallback(
+    async (requestId: number, documentId: string) => {
+      setLoading(true);
+      setError("");
+      try {
+        const rows = await knowledgeBasesApi.listSuggestions(baseId, {
+          documentId,
+          status: "pending",
+          limit: 1,
+        });
+        if (requestId !== requestRef.current) return;
+        adopt(rows[0]?.document_id === documentId ? rows[0] : null);
+      } catch (err) {
+        if (requestId !== requestRef.current) return;
+        setError(
+          apiErrorMessage(err, t("knowledgeBases.suggestions.loadFailed"), t),
+        );
+        adopt(null);
+      } finally {
+        if (requestId === requestRef.current) setLoading(false);
+      }
+    },
+    [adopt, baseId, t],
+  );
 
   useEffect(() => {
-    if (!open) return;
+    const requestId = ++requestRef.current;
+    if (!open || !target) return;
     adopt(null);
     setError("");
-    void loadPending();
-  }, [adopt, loadPending, open]);
+    void loadPending(requestId, target.id);
+    return () => {
+      if (requestRef.current === requestId) requestRef.current += 1;
+    };
+  }, [adopt, loadPending, open, target]);
 
   const generate = async () => {
     if (!target) return;
+    const requestId = ++requestRef.current;
+    const documentId = target.id;
+    setLoading(false);
     setGenerating(true);
     setError("");
     try {
-      adopt(await knowledgeBasesApi.enrichDocument(baseId, target.id));
+      const next = await knowledgeBasesApi.enrichDocument(baseId, documentId);
+      if (requestId !== requestRef.current || next.document_id !== documentId) {
+        return;
+      }
+      adopt(next);
     } catch (err) {
+      if (requestId !== requestRef.current) return;
       setError(
         apiErrorMessage(err, t("knowledgeBases.suggestions.generateFailed"), t),
       );
     } finally {
-      setGenerating(false);
+      if (requestId === requestRef.current) setGenerating(false);
     }
   };
 
