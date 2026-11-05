@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 _MAX_CONTEXT_CHARS = 12_000
 _MAX_SUMMARY_CHARS = 500
 _MAX_KEYWORDS = 12
+_MAX_KEYWORD_CHARS = 80
 _LLM_TIMEOUT_SECONDS = 120.0
 
 _SYSTEM_PROMPT = (
@@ -79,7 +80,7 @@ class KnowledgeEnrichmentService:
         keywords = []
         if isinstance(raw_keywords, list):
             for item in raw_keywords:
-                keyword = str(item).strip()
+                keyword = str(item).strip()[:_MAX_KEYWORD_CHARS]
                 if keyword and keyword not in keywords:
                     keywords.append(keyword)
                 if len(keywords) >= _MAX_KEYWORDS:
@@ -140,6 +141,11 @@ class KnowledgeEnrichmentService:
             raise LookupError("knowledge document not found")
         knowledge.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         knowledge.require_document_writable(document, actor_user_id=actor_user_id)
+        if document.status != "ready":
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_INDEX_NOT_READY,
+                "the document changed and is waiting for reindexing",
+            )
         if (
             suggestion["content_hash"]
             and document.content_hash
@@ -153,7 +159,18 @@ class KnowledgeEnrichmentService:
             kb_id, actor_user_id=actor_user_id, is_admin=is_admin
         )
         chosen = fields if fields is not None else suggestion["fields"]
-        values = validate_suggested_values(schema, chosen)
+        schema_keys = {str(field["key"]) for field in schema}
+        reviewed = {
+            str(key): value
+            for key, value in chosen.items()
+            if str(key) in schema_keys and value is not None and value != "" and value != []
+        }
+        values = validate_suggested_values(schema, reviewed)
+        if len(values) != len(reviewed):
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_METADATA_INVALID,
+                "one or more reviewed field values are no longer valid for this schema",
+            )
         if values:
             knowledge.update_document_metadata(
                 kb_id,

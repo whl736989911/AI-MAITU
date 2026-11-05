@@ -70,6 +70,7 @@ def _setup(env: SimpleNamespace):
     document = services.knowledge_repo.create_document(
         kb_id=kb.id, filename="drawing.pdf", content_type="application/pdf", byte_size=1
     )
+    services.knowledge_repo.update_document(document.id, status="ready")
     service = KnowledgeService(services)
     service.update_metadata_schema(
         kb.id,
@@ -145,3 +146,71 @@ def test_reject_and_permission_checks(env: SimpleNamespace) -> None:
     pending = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
     with pytest.raises(PermissionError):
         enrichment.apply_suggestion(kb.id, pending["suggestion_id"], actor_user_id=viewer)
+
+
+def test_regenerating_supersedes_the_previous_pending_suggestion(env: SimpleNamespace) -> None:
+    owner, kb, document, _service = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    first = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    second = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+
+    pending = enrichment.list_suggestions(kb.id, actor_user_id=owner, status="pending")
+    assert [row["suggestion_id"] for row in pending] == [second["suggestion_id"]]
+    assert (
+        env.services.knowledge_repo.get_suggestion(first["suggestion_id"])["status"] == "rejected"
+    )
+
+
+def test_enrichment_bounds_model_keywords(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, kb, document, _service = _setup(env)
+
+    async def huge_keyword(_llm, _messages, timeout=None):
+        return json.dumps({"summary": "s", "keywords": ["k" * 5000], "fields": {}})
+
+    monkeypatch.setattr("octop.infra.utils.llm_text.ainvoke_text", huge_keyword)
+    suggestion = KnowledgeEnrichmentService(env.services).enrich_document(
+        kb.id, document.id, actor_user_id=owner, llm=object()
+    )
+    assert suggestion["keywords"] == ["k" * 80]
+
+
+def test_apply_rejects_reviewed_values_that_no_longer_match_the_schema(
+    env: SimpleNamespace,
+) -> None:
+    owner, kb, document, service = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    service.update_metadata_schema(
+        kb.id,
+        actor_user_id=owner,
+        schema=[
+            {"key": "drawing_no", "label": "Drawing", "type": "text"},
+            {"key": "sheet", "label": "Sheet", "type": "enum", "options": ["A1"]},
+        ],
+    )
+
+    with pytest.raises(OctopError) as invalid:
+        enrichment.apply_suggestion(
+            kb.id,
+            suggestion["suggestion_id"],
+            actor_user_id=owner,
+            fields={"sheet": "A0"},
+        )
+    assert invalid.value.code is ErrorCode.KNOWLEDGE_METADATA_INVALID
+    assert (
+        env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"]
+        == "pending"
+    )
+
+
+def test_apply_rejects_a_document_that_is_waiting_for_reindex(env: SimpleNamespace) -> None:
+    owner, kb, document, _service = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    env.services.knowledge_repo.update_document(document.id, status="pending")
+
+    with pytest.raises(OctopError) as not_ready:
+        enrichment.apply_suggestion(kb.id, suggestion["suggestion_id"], actor_user_id=owner)
+    assert not_ready.value.code is ErrorCode.KNOWLEDGE_INDEX_NOT_READY

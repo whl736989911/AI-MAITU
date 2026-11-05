@@ -17,6 +17,7 @@ import {
   type KnowledgeMetadataField,
 } from "../../../api/modules/knowledgeBases";
 import { apiErrorMessage } from "../../../utils/apiError";
+import { metadataValuesForSchema } from "../knowledgeMetadata";
 
 interface Props {
   open: boolean;
@@ -100,7 +101,7 @@ export default function KnowledgeMetadataModal({
         const result = await knowledgeBasesApi.updateDocumentMetadata(
           baseId,
           target.id,
-          values,
+          metadataValuesForSchema(values, schema),
         );
         onDocumentSaved?.(target.id, result.metadata);
         message.success(t("knowledgeBases.metadata.documentSaved"));

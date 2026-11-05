@@ -110,3 +110,35 @@ def test_suggested_values_keep_only_known_and_valid_fields() -> None:
         },
     ) == {"drawing_no": "A-102", "issue_date": "2026-01-31"}
     assert validate_suggested_values(SCHEMA, None) == {}
+
+
+def test_suggested_numbers_accept_quoted_decimals_only() -> None:
+    assert validate_suggested_values(SCHEMA, {"weight": "12.5"}) == {"weight": 12.5}
+    assert validate_suggested_values(SCHEMA, {"weight": "12"}) == {"weight": 12}
+    assert validate_suggested_values(SCHEMA, {"weight": "NaN"}) == {}
+    assert validate_suggested_values(SCHEMA, {"weight": "12kg"}) == {}
+
+
+def test_dates_must_be_real_calendar_days() -> None:
+    assert (
+        normalize_values(SCHEMA, {"drawing_no": "A-1", "issue_date": "2024-02-29"})["issue_date"]
+        == "2024-02-29"
+    )
+    with pytest.raises(MetadataError):
+        normalize_values(SCHEMA, {"drawing_no": "A-1", "issue_date": "2025-02-29"})
+    assert validate_suggested_values(SCHEMA, {"issue_date": "2026-02-31"}) == {}
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        pytest.param(float("nan"), id="nan"),
+        pytest.param(float("inf"), id="inf"),
+        pytest.param(float("-inf"), id="negative-inf"),
+        pytest.param(1 << 20000, id="overflowing-int"),
+    ],
+)
+def test_numbers_must_be_finite(value: float) -> None:
+    with pytest.raises(MetadataError):
+        normalize_values(SCHEMA, {"drawing_no": "A-1", "weight": value})
+    assert validate_suggested_values(SCHEMA, {"weight": value}) == {}

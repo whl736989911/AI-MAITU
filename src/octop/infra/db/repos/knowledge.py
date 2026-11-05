@@ -446,6 +446,15 @@ class KnowledgeRepo:
     ) -> dict[str, Any]:
         ts = now_ts()
         with self._db.transaction() as conn:
+            # One current suggestion per document: regenerating replaces the
+            # pending row instead of leaving older ones applicable forever.
+            conn.execute(
+                "UPDATE knowledge_document_suggestions "
+                "SET status = 'rejected', error = 'superseded by a newer suggestion', "
+                "updated_at = ? "
+                "WHERE document_id = ? AND status = 'pending'",
+                (ts, document_id),
+            )
             conn.execute(
                 "INSERT INTO knowledge_document_suggestions("
                 "suggestion_id, document_id, kb_id, content_hash, status, summary, "
@@ -587,8 +596,11 @@ class KnowledgeRepo:
             params.append(fact_type)
         needle = query.strip().lower()
         if needle:
-            clauses.append("(LOWER(f.value) LIKE ? OR LOWER(f.normalized) LIKE ?)")
-            pattern = f"%{needle}%"
+            escaped = needle.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            clauses.append(
+                "(LOWER(f.value) LIKE ? ESCAPE '\\' OR LOWER(f.normalized) LIKE ? ESCAPE '\\')"
+            )
+            pattern = f"%{escaped}%"
             params.extend([pattern, pattern])
         params.append(limit)
         with self._db.connect() as conn:
