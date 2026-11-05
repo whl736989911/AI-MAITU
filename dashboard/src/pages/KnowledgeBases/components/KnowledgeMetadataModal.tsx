@@ -77,9 +77,18 @@ export default function KnowledgeMetadataModal({
     : t("knowledgeBases.metadata.schemaTitle");
 
   const updateField = (index: number, patch: Partial<KnowledgeMetadataField>) => {
+    const previousKey = fields[index]?.key;
+    const nextKey = patch.key;
     setFields((current) =>
       current.map((field, idx) => (idx === index ? { ...field, ...patch } : field)),
     );
+    if (nextKey !== undefined && previousKey !== undefined && nextKey !== previousKey) {
+      setOptionText((current) => {
+        if (!(previousKey in current)) return current;
+        const { [previousKey]: moved, ...rest } = current;
+        return { ...rest, [nextKey]: moved };
+      });
+    }
   };
 
   const schemaPayload = useMemo(

@@ -111,6 +111,8 @@ def extract_facts(
     limit: int = 5000,
 ) -> list[Fact]:
     """Extract facts from every block, de-duplicated by type/value/locator."""
+    if limit <= 0:
+        return []
     selected = tuple(extractors) if extractors is not None else default_extractors()
     facts: list[Fact] = []
     seen: set[tuple[str, str, str]] = set()
@@ -121,17 +123,19 @@ def extract_facts(
         locator = dict(block.locator or {"kind": "document"})
         for extractor in selected:
             try:
-                produced = extractor.extract(text, locator)
+                for fact in extractor.extract(text, locator):
+                    key = (fact.fact_type, fact.normalized, repr(sorted(locator.items())))
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    facts.append(fact)
+                    if len(facts) >= limit:
+                        return facts
             except Exception:  # an extractor bug must not fail ingestion
+                # ``extract`` is a generator in practice; exceptions raised
+                # while iterating it are outside the call itself and must not
+                # escape either.
                 continue
-            for fact in produced:
-                key = (fact.fact_type, fact.normalized, repr(sorted(locator.items())))
-                if key in seen:
-                    continue
-                seen.add(key)
-                facts.append(fact)
-                if len(facts) >= limit:
-                    return facts
     return facts
 
 

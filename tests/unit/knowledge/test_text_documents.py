@@ -14,7 +14,7 @@ from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.db.services import RepoBundle
-from octop.infra.knowledge.files import document_path
+from octop.infra.knowledge.files import document_digest, document_path
 from octop.infra.knowledge.jobs import process_document
 from octop.infra.knowledge.service import KnowledgeService
 from octop.infra.utils.paths import PathLayout
@@ -67,13 +67,28 @@ def test_create_and_update_text_document(
     path = document_path(base.id, created.id, created.filename)
     assert path.read_text(encoding="utf-8") == "# Hello\n"
 
+    services.knowledge_repo.replace_document_facts(
+        created.id,
+        base.id,
+        [
+            {
+                "fact_type": "clause",
+                "value": "old",
+                "normalized": "old",
+                "locator": {"page": 1},
+                "extractor": "test",
+            }
+        ],
+    )
     updated = svc.update_text_document(
         base.id,
         created.id,
         actor_user_id=services.owner_id,
         content="# Updated\n",
     )
+    assert services.knowledge_repo.list_document_facts(created.id) == []
     assert updated.status == "pending"
+    assert updated.content_hash == document_digest(b"# Updated\n")
     assert path.read_text(encoding="utf-8") == "# Updated\n"
     raw = svc.read_text_document(base.id, created.id, actor_user_id=services.owner_id)
     assert raw["text"] == "# Updated\n"
@@ -170,3 +185,64 @@ def test_disabled_ocr_preserves_image_original_without_indexed_text(
     assert archived.chunk_count == 0
     assert archived.content_type == "image/png"
     assert document_path(base.id, created.id, created.filename).read_bytes() == original
+
+def test_rename_rejects_dot_names_that_collapse_to_the_parent(
+    services: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "octop.infra.knowledge.service.assert_knowledge_usable",
+        lambda *_a, **_k: None,
+    )
+    svc = KnowledgeService(services)
+    base = services.knowledge_repo.create_base(owner_user_id=services.owner_id, name="Docs")
+    created = svc.create_text_document(
+        base.id,
+        actor_user_id=services.owner_id,
+        name="notes",
+        format="md",
+        content="# Hello\n",
+    )
+
+    with pytest.raises(ValueError):
+        svc.rename_document(
+            base.id,
+            created.id,
+            new_name=".",
+            actor_user_id=services.owner_id,
+        )
+    assert services.knowledge_repo.get_document(created.id).filename == "notes.md"
+
+def test_replace_content_cannot_take_another_documents_path(
+    services: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "octop.infra.knowledge.service.assert_knowledge_usable",
+        lambda *_a, **_k: None,
+    )
+    svc = KnowledgeService(services)
+    base = services.knowledge_repo.create_base(owner_user_id=services.owner_id, name="Docs")
+    svc.create_text_document(
+        base.id,
+        actor_user_id=services.owner_id,
+        name="first",
+        format="md",
+        content="first\n",
+    )
+    second = svc.create_text_document(
+        base.id,
+        actor_user_id=services.owner_id,
+        name="second",
+        format="md",
+        content="second\n",
+    )
+
+    with pytest.raises(ValueError):
+        svc.replace_document_content(
+            base.id,
+            second.id,
+            actor_user_id=services.owner_id,
+            path="first.md",
+            content_type="text/markdown",
+            content=b"replacement\n",
+        )
+    assert services.knowledge_repo.get_document(second.id).path == "second.md"
