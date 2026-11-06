@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
@@ -16,6 +17,7 @@ from octop.infra.db.repos.agents import AgentRepo
 from octop.infra.db.repos.sessions import SessionRepo
 from octop.infra.db.repos.thread_messages import ThreadMessageRepo
 from octop.infra.db.repos.threads import ThreadRepo
+from octop.infra.db.repos.usage import UsageRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.gateway.threads import ThreadRegistry
 
@@ -408,3 +410,65 @@ async def test_dashboard_text_projects_into_real_sqlite(tmp_path: Path) -> None:
     assert "j1" in page[0].message_json
     assert "记得喝水" in page[1].message_json
     gateway.push_session_text.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "error", "hitl", "cancelled"])
+async def test_stream_usage_is_preserved_for_every_delivery_outcome(
+    tmp_path: Path, outcome: str
+) -> None:
+    db = SqlitePool(tmp_path / "usage.db")
+    run_migrations(db)
+    UserRepo(db).create(username="dummy", password_hash="h", role="user")
+    AgentRepo(db).create(agent_id="a1", user_id=1, name="dummy")
+    ThreadRepo(db).insert(
+        thread_id="thr1",
+        agent_id="a1",
+        user_id=1,
+        channel_type="feishu",
+        session_key="sk",
+    )
+
+    async def stream(_agent_id: str, _request: dict):
+        yield {"type": "token", "content": "partial"}
+        yield {
+            "type": "usage",
+            "call_id": "call-1",
+            "model": "dummy/model",
+            "usage": {"input_tokens": 13, "output_tokens": 7},
+        }
+        if outcome == "error":
+            raise RuntimeError("provider interrupted")
+        if outcome == "cancelled":
+            raise asyncio.CancelledError
+        if outcome == "hitl":
+            yield {"type": "hitl_required"}
+
+    agent_manager = MagicMock()
+    agent_manager.merge_turn_mcp_servers.return_value = None
+    agent_manager.get_row.return_value = None
+    agent_manager.stream = stream
+    gateway = MagicMock()
+    gateway.run_in_session = _run_locked
+    gateway.require_session.return_value = _session(channel_type="feishu")
+    gateway.push_session_text = AsyncMock()
+    repos = MagicMock()
+    repos.resource_acl_repo.scope_for_user.return_value = ("user", ())
+    repos.usage_repo = UsageRepo(db)
+    service = CronDeliveryService(gateway=gateway, agent_manager=agent_manager, repos=repos)
+    try:
+        if outcome == "success":
+            await service.deliver(_command(task_type="agent"))
+        else:
+            expected_error = asyncio.CancelledError if outcome == "cancelled" else RuntimeError
+            with pytest.raises(expected_error):
+                await service.deliver(_command(task_type="agent"))
+            gateway.push_session_text.assert_not_awaited()
+
+        with db.connect() as conn:
+            rows = conn.execute(
+                "SELECT input_tokens, output_tokens, total_tokens, source FROM usage_log"
+            ).fetchall()
+        assert [tuple(row) for row in rows] == [(13, 7, 20, "cron")]
+    finally:
+        db.close()

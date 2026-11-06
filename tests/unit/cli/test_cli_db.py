@@ -80,3 +80,31 @@ def test_agent_list_offline_flag(fake_home: Path) -> None:
     result = runner.invoke(cli, ["agent", "list", "--user", "alice"])
     assert result.exit_code == 0, result.output
     assert "ag1" in result.output
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entrypoint", ["user", "init"])
+async def test_cli_account_creation_uses_the_login_identifier(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, entrypoint: str
+) -> None:
+    from octop.cli.support.db import open_cli_services
+    from octop.infra.users.manager import UserManager
+
+    home = tmp_path / "app"
+    monkeypatch.setenv("OCTOP_HOME", str(home))
+    monkeypatch.setenv("MAITU_HOME", str(home))
+    if entrypoint == "init":
+        args = ["init", "--admin-username", " alice ", "--admin-password", "TestPass12", "--yes"]
+    else:
+        args = ["user", "create", " alice ", "--password", "TestPass12"]
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code == 0, result.output
+
+    with open_cli_services(home) as services:
+        manager = UserManager(services)
+        await manager.boot()
+        user = await manager.authenticate(" alice ", "TestPass12")
+        stored = services.user_repo.get_by_username("alice")
+        assert stored is not None
+        assert user is not None and user.id == stored.id
+        assert services.user_repo.get_by_username(" alice ") is None

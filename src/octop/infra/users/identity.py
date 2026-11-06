@@ -26,6 +26,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from enum import StrEnum
 
+from octop.infra.errors import ErrorCode, OctopError
+
+
+def normalize_username(value: str) -> str:
+    """Validate a local account name using login's identifier trimming."""
+    username = value.strip()
+    if not username:
+        raise OctopError.localized(ErrorCode.SLASH_BAD_ARGS)
+    return username
+
 
 class Role(StrEnum):
     """The four roles of the org model, most senior first."""

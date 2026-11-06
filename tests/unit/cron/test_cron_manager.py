@@ -611,6 +611,33 @@ async def test_update_to_new_date_trigger_clears_previous_run_state(
 
 
 @pytest.mark.asyncio
+async def test_enabling_completed_date_returns_the_persisted_disabled_state(tmp_path: Path) -> None:
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    mgr = _make_manager(services)
+    cid = _cron_id()
+    try:
+        await mgr.create(
+            cron_id=cid,
+            agent_id=aid,
+            user_id=uid,
+            trigger="date:2031-01-01T09:00:00",
+            prompt="one-shot",
+        )
+        services.repos.cron_repo.set_run_status(cid, ts=123, status="ok", error=None)
+        services.repos.cron_repo.update(cid, enabled=False)
+
+        returned = await mgr.update(cid, enabled=1)
+        stored = services.repos.cron_repo.get(cid)
+
+        assert returned.enabled == stored.enabled == 0
+        assert returned.last_status == stored.last_status == "ok"
+        assert returned.last_run_at == stored.last_run_at == 123
+    finally:
+        services.db.close()
+
+
+@pytest.mark.asyncio
 async def test_update_unschedules_when_disabled(tmp_path: Path) -> None:
     """update(enabled=0) removes the APScheduler job."""
     services = _make_services(tmp_path)

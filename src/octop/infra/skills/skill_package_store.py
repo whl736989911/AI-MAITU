@@ -73,17 +73,23 @@ class SkillPackageStore:
         icon_url: str = "",
         allow_download: bool = True,
     ) -> SkillPackageRow:
-        row = self.repo.create(
-            id=_allocate_package_id(self.repo),
-            name=name,
-            description=description,
-            created_by=created_by,
-            icon_name=icon_name,
-            icon_url=icon_url,
-            allow_download=allow_download,
-        )
-        self.package_skills_dir(row.id).mkdir(parents=True, exist_ok=True)
-        return row
+        pack_id = _allocate_package_id(self.repo)
+        package_dir = self.root / pack_id
+        package_dir.mkdir(parents=True, exist_ok=False)
+        try:
+            self.package_skills_dir(pack_id).mkdir(parents=True, exist_ok=True)
+            return self.repo.create(
+                id=pack_id,
+                name=name,
+                description=description,
+                created_by=created_by,
+                icon_name=icon_name,
+                icon_url=icon_url,
+                allow_download=allow_download,
+            )
+        except Exception:
+            shutil.rmtree(package_dir, ignore_errors=True)
+            raise
 
     def package_skills_dir(self, pack_id: str) -> Path:
         return self.root / pack_id / "skills"

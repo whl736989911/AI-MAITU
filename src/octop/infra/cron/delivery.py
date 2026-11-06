@@ -157,15 +157,15 @@ class CronDeliveryService:
         finally:
             # Preserve the prompt and partial stream for failed/incomplete turns.
             self._project_best_effort(session.thread_id, tracker.inputs)
-        if usage.usage is not None:
-            record_turn_usage(
-                self._repos.usage_repo,
-                agent_id=command.agent_id,
-                user_id=session.user_id,
-                thread_id=session.thread_id,
-                usage=usage.usage,
-                source="cron",
-            )
+            if usage.usage is not None:
+                record_turn_usage(
+                    self._repos.usage_repo,
+                    agent_id=command.agent_id,
+                    user_id=session.user_id,
+                    thread_id=session.thread_id,
+                    usage=usage.usage,
+                    source="cron",
+                )
         await self._gateway.push_session_text(
             session,
             outbound,

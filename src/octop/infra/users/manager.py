@@ -10,7 +10,7 @@ import re
 import shutil
 import sqlite3
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 try:
@@ -24,7 +24,7 @@ from octop.infra.db.repos.users import UserRepo
 from octop.infra.db.services import SharedServices
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.email import normalize_email, parse_optional_email
-from octop.infra.users.identity import Role, User
+from octop.infra.users.identity import Role, User, normalize_username
 from octop.infra.users.password import hash_password, validate_password_policy, verify_password
 from octop.infra.users.permissions import validate_permission_keys
 from octop.infra.users.preferences import (
@@ -144,8 +144,7 @@ class UserManager:
         permissions: builtins.list[str] | None = None,
         email: str | None = None,
     ) -> User:
-        if not username:
-            raise OctopError(ErrorCode.USERNAME_TAKEN, "username must not be empty")
+        cleaned_username = normalize_username(username)
         loc = normalize_locale(locale)
         validate_password_policy(password)
         try:
@@ -154,10 +153,10 @@ class UserManager:
             raise OctopError(ErrorCode.FORBIDDEN, str(exc), status=400) from exc
         normalized_email = parse_optional_email(email)
         async with self._lock:
-            if self._services.user_repo.get_by_username(username) is not None:
+            if self._services.user_repo.get_by_username(cleaned_username) is not None:
                 raise OctopError(
                     ErrorCode.USERNAME_TAKEN,
-                    f"username {username!r} already exists",
+                    f"username {cleaned_username!r} already exists",
                 )
             if (
                 normalized_email is not None
@@ -169,7 +168,7 @@ class UserManager:
                 )
             try:
                 uid = self._services.user_repo.create(
-                    username=username,
+                    username=cleaned_username,
                     password_hash=hash_password(password),
                     role=role.value,
                     display_name=display_name,
@@ -186,14 +185,16 @@ class UserManager:
                 raise
             user = User(
                 id=uid,
-                username=username,
+                username=cleaned_username,
                 role=role,
                 display_name=display_name,
                 locale=loc,
                 permissions=keys,
             )
-            self._users[username] = user
-            self._services.audit_repo.write(actor=username, action="user.create", target=username)
+            self._users[cleaned_username] = user
+            self._services.audit_repo.write(
+                actor=cleaned_username, action="user.create", target=cleaned_username
+            )
             return user
 
     def register_cached_user(self, user: User) -> None:
@@ -512,10 +513,10 @@ class UserManager:
         )
 
         updates = {
-            key: changes[key]
-            for key in ("display_name", "disabled", "permissions")
-            if changes.get(key) is not None
+            key: changes[key] for key in ("disabled", "permissions") if changes.get(key) is not None
         }
+        if "display_name" in changes:
+            updates["display_name"] = changes["display_name"]
         for key in ("email", "org_unit", "denied_permissions"):
             if key in changes:
                 updates[key] = changes[key]
@@ -773,15 +774,28 @@ class UserManager:
         )
 
     async def set_locale(self, username: str, locale: str) -> None:
-        row = self._services.user_repo.get_by_username(username)
-        if row is None:
-            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
-        loc = normalize_locale(locale)
-        self._services.user_repo.set_locale(row.id, loc)
+        await self.update_preferences(username, transform=lambda raw: raw, locale=locale)
+
+    async def update_preferences(
+        self,
+        username: str,
+        *,
+        transform: Callable[[str], str],
+        locale: str | None = None,
+    ) -> None:
+        """Apply a serialized JSON preference update and optional locale change."""
         async with self._lock:
+            row = self._services.user_repo.get_by_username(username)
+            if row is None:
+                raise OctopError(ErrorCode.NOT_FOUND, "user not found")
+            updated_preferences = transform(row.preferences_json)
+            updated_locale = normalize_locale(locale) if locale is not None else row.locale
+            self._services.user_repo.set_profile_preferences(
+                row.id, locale=updated_locale, preferences_json=updated_preferences
+            )
             current = self._users.get(username)
             if current is not None:
-                current.locale = loc
+                current.locale = normalize_locale(updated_locale)
 
     def get_remote_browser_bookmarks(self, user_id: int) -> builtins.list[RemoteBrowserBookmark]:
         row = self._services.user_repo.get(user_id)
@@ -794,12 +808,11 @@ class UserManager:
         username: str,
         items: builtins.list[dict[str, str]],
     ) -> builtins.list[RemoteBrowserBookmark]:
-        row = self._services.user_repo.get_by_username(username)
-        if row is None:
-            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
         bookmarks = validate_remote_browser_bookmarks(items)
-        merged = merge_preferences_json(row.preferences_json, bookmarks)
-        self._services.user_repo.set_preferences_json(row.id, merged)
+        await self.update_preferences(
+            username,
+            transform=lambda raw: merge_preferences_json(raw, bookmarks),
+        )
         return bookmarks
 
     async def set_model_preferences(
@@ -809,15 +822,14 @@ class UserManager:
         preferred_model: str | None | object = ...,
         model_reasoning: dict[str, ModelReasoningPreference] | None = None,
     ) -> None:
-        row = self._services.user_repo.get_by_username(username)
-        if row is None:
-            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
-        merged = merge_model_preferences_json(
-            row.preferences_json,
-            preferred_model=preferred_model,
-            model_reasoning=model_reasoning,
+        await self.update_preferences(
+            username,
+            transform=lambda raw: merge_model_preferences_json(
+                raw,
+                preferred_model=preferred_model,
+                model_reasoning=model_reasoning,
+            ),
         )
-        self._services.user_repo.set_preferences_json(row.id, merged)
 
     async def disable(self, username: str) -> None:
         row = self._services.user_repo.get_by_username(username)

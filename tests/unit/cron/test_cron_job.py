@@ -163,3 +163,65 @@ async def test_scheduled_job_rechecks_account_state_before_delivery(
 
     assert error.value.code == ErrorCode.USER_DISABLED
     assert not output.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["interval:60", "date:2031-01-01T09:00:00"])
+async def test_cancelled_delivery_records_failure_without_swallowing_cancellation(
+    setup, trigger: str
+) -> None:
+    cron_repo, audit, cid, _session_key, repos = setup
+    cron_repo.update(cid, trigger=trigger)
+    delivery = SimpleNamespace(deliver=AsyncMock(side_effect=asyncio.CancelledError))
+    job = CronJob.from_row(
+        cron_repo.get(cid),
+        delivery_service=delivery,
+        cron_repo=cron_repo,
+        audit_repo=audit,
+        user_policy=UserCapabilityPolicy(repos),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await job.run()
+
+    stored = cron_repo.get(cid)
+    assert stored.last_status == "error"
+    assert stored.last_run_at is not None
+    assert bool(stored.enabled) == trigger.startswith("interval:")
+    assert audit.query(action="cron.run_failed")
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["disable", "delete"])
+async def test_queued_callback_respects_disabled_or_deleted_job(
+    setup, tmp_path: Path, action: str
+) -> None:
+    cron_repo, audit, cid, _session_key, repos = setup
+    output = tmp_path / "queued-delivery.txt"
+
+    async def deliver(command) -> None:
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(
+            None, lambda: output.write_text(command.prompt, encoding="utf-8")
+        )
+
+    manager = CronManager(
+        gateway=MagicMock(),
+        delivery_service=SimpleNamespace(deliver=deliver),
+        repos=repos,
+        timezone="UTC",
+    )
+    queued = asyncio.create_task(manager._make_job(cron_repo.get(cid)).run())
+    if action == "disable":
+        await manager.update(cid, enabled=0)
+    else:
+        await manager.delete(cid)
+    await queued
+
+    assert not output.exists()
+    assert audit.query(action="cron.run_ok") == []
+    if action == "disable":
+        assert cron_repo.get(cid).last_run_at is None
+        await manager.run_now(cid)
+        assert output.read_text(encoding="utf-8") == "say hi"
+        assert cron_repo.get(cid).last_status == "ok"

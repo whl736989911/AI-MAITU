@@ -64,7 +64,7 @@ def test_legacy_users_table_gets_locale_column(tmp_path: Path):
 def test_set_locale_persists(db: SqlitePool):
     repo = UserRepo(db)
     uid = repo.create(username="u", password_hash="h", role="user")
-    repo.set_locale(uid, "en")
+    repo.set_profile_preferences(uid, locale="en", preferences_json="{}")
     row = repo.get(uid)
     assert row is not None
     assert row.locale == "en"

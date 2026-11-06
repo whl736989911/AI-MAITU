@@ -6,6 +6,7 @@ import datetime as dt
 import re
 
 from apscheduler.triggers.base import BaseTrigger
+from apscheduler.triggers.combining import OrTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -50,12 +51,24 @@ def _unix_day_of_week(expression: str) -> str:
     return ",".join(translated)
 
 
-def _cron_trigger_from_unix_crontab(expression: str, *, timezone: str | None = None) -> CronTrigger:
-    """Build a trigger whose weekday field follows Unix crontab semantics."""
+def _cron_trigger_from_unix_crontab(expression: str, *, timezone: str | None = None) -> BaseTrigger:
+    """Use Unix weekday numbering and union restricted day-of-month/week fields."""
     fields = expression.split()
     if len(fields) != 5:
         raise ValueError(f"Wrong number of fields; got {len(fields)}, expected 5")
+    restricted_days = "*" not in fields[2] and "*" not in fields[4]
     fields[4] = _unix_day_of_week(fields[4])
+    if restricted_days:
+        month_days = fields.copy()
+        month_days[4] = "*"
+        week_days = fields.copy()
+        week_days[2] = "*"
+        return OrTrigger(
+            [
+                CronTrigger.from_crontab(" ".join(month_days), timezone=timezone),
+                CronTrigger.from_crontab(" ".join(week_days), timezone=timezone),
+            ]
+        )
     return CronTrigger.from_crontab(" ".join(fields), timezone=timezone)
 
 

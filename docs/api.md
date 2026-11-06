@@ -168,6 +168,11 @@ cannot be deleted while any account, including a disabled account, belongs to
 it. Changes to department channel grants reconcile channels belonging to
 members of that department and its descendants, including secondary members.
 
+Local account creation trims the username exactly as password login does,
+including CLI creation and first-admin initialization; an all-whitespace name
+is rejected. An explicitly supplied `display_name: null` clears the display name
+in both persisted and cached account state.
+
 
 Agent personalization has separate `skills`, `subagents`, `tools`,
 `agent_plugins` and `memory` module grants. Existing accounts retain their
@@ -232,6 +237,11 @@ This is a platform transfer control, not DRM: mounted skills remain readable to
 the model and it cannot prevent copying content that is already accessible.
 ZIP handling rejects unsafe paths, symlinks and oversized content and excludes
 credential/system files from workspace exports.
+Empty directories survive package reads, workspace transfers, and ZIP round-trips.
+The file quota counts actual files, not directory markers. File/directory path
+collisions are rejected before an existing skill is replaced. Tombstoned package
+skills cannot be copied into a workspace; all selected sources are checked before
+the first destination write.
 
 ## Chat (WebSocket)
 
@@ -366,11 +376,17 @@ changes checkpoint history, not the separate reference-memory retrieval policy.
 
 `task_type` is `"text"` (push prompt directly to the session) or
 `"agent"` (run the prompt through the LLM and push the reply).
-Default: `"agent"`. `trigger` accepts cron expressions
-(`"0 9 * * *"`) plus the `interval:N` / `date:ISO8601` aliases
-documented in `infra/cron/trigger.py`. `prompt` must be non-empty and
+Default: `"text"` for HTTP creation. `trigger` accepts `cron:<5-field expr>`
+(for example, `"cron:0 9 * * *"`) plus the `interval:N` / `date:ISO8601`
+aliases documented in `infra/cron/trigger.py`. `prompt` must be non-empty and
 ≤ 2000 characters. `name` is an optional display label; when omitted,
 the server derives one from `prompt`.
+
+Cron day fields follow [Unix crontab semantics](https://man7.org/linux/man-pages/man5/crontab.5.html):
+when both day-of-month and day-of-week are restricted, either may match.
+For example, `cron:0 0 1 * mon` runs on the first of each month and every Monday,
+once when those dates coincide. A wildcard or wildcard step retains intersection
+with the other day field.
 
 Date jobs are one-shot: an atomic persisted claim prevents scheduled/manual
 races and restart replay. Success and failure both disable the job while
@@ -378,11 +394,19 @@ retaining the outcome. An unclaimed date job missed while the service was stoppe
 is scheduled once on restart; a previously claimed job is not replayed. Changing
 to a different `date:` trigger clears the previous run outcome atomically with
 the new schedule. A disabled task must also be enabled to schedule the new run.
+Enabling a completed one-shot without changing its date does not replay it;
+the update response reflects its persisted disabled state. Cancellation records
+a failed outcome before propagating, rather than leaving a disabled task running
+forever in history.
 
 Changing only metadata (name, prompt, model, session or connector selection)
 keeps an interval job's pending deadline while replacing the execution snapshot.
 A real trigger/enabled-state change rebuilds the schedule; an enabled job missing
 from the scheduler is attached again.
+Queued scheduled callbacks recheck whether the job still exists and is enabled.
+Disabling or deleting a job before its callback begins prevents delivery;
+an explicit `run-now` may still execute a disabled recurring task. Usage reported
+before an agent stream fails or is cancelled remains in the cron usage ledger.
 
 A supplied `session_key` must belong to the task's user and agent, both when
 creating and updating the task. Execution checks that ownership before a
@@ -1111,6 +1135,12 @@ Custom MCP OAuth (streamable HTTP, public HTTPS URL only): 麦途 discovers the 
 server from the MCP URL (401 / RFC 9728 protected-resource metadata), requires dynamic client
 registration (DCR), stores encrypted tokens in the custom MCP spec, and injects `Authorization:
 Bearer` when loading tools. Loopback MCP URLs do not use remote OAuth discovery.
+Stored custom-server OAuth is preserved only when its URL is unchanged. Changing
+the URL requires fresh authorization for the new server. Header names are merged
+case-insensitively; stored OAuth replaces configured authorization regardless of
+header casing, and an existing Bearer header suppresses redundant discovery.
+Authorization URLs retain endpoint query parameters. Disabled custom servers cannot
+be default-open, whether configured by patch or full replacement.
 
 ## Internal MCP (harness agents)
 
@@ -1170,6 +1200,11 @@ endpoint (public, mounted directly in `api/app.py`).
 | `PATCH` | `/plugins/{id}` | admin (`plugins`) | enable/disable plugin (`{ "enabled": bool }`) |
 | `GET` | `/plugins/{id}/ui/{path}` | user | serve prebuilt plugin UI assets (`ui/dist/…`) |
 | `DELETE` | `/plugins/{id}` | admin (`plugins`) | uninstall plugin |
+
+Preference patches validate all supplied fields before persisting locale and
+the merged preference JSON together. Unrelated stored keys are retained; invalid
+IANA timezones, including embedded NULs, and malformed model-reasoning references
+return a structured `400 SLASH_BAD_ARGS` without partial updates.
 
 ## Usage & admin
 

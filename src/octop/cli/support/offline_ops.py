@@ -19,6 +19,7 @@ from octop.infra.cron.task_type import normalize_cron_task_type, require_cron_pr
 from octop.infra.cron.trigger import build_trigger
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.threads import ThreadRegistry
+from octop.infra.users.identity import normalize_username
 from octop.infra.users.password import hash_password
 from octop.infra.utils.ulid import new_cron_id, new_ulid
 
@@ -97,6 +98,7 @@ def create_user_offline(
 ) -> dict[str, Any]:
     from octop.infra.users.email import parse_optional_email
 
+    username = normalize_username(username)
     normalized_email = parse_optional_email(email)
     with open_cli_services(home) as svc:
         if svc.user_repo.get_by_username(username) is not None:

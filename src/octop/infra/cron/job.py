@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import TYPE_CHECKING
@@ -83,13 +84,18 @@ class CronJob:
             user_policy=user_policy,
         )
 
-    async def run(self) -> None:
+    async def run(self, *, scheduled: bool = True) -> None:
         # Cron execution is business work. Check at the final execution boundary
         # so queued/manual invocations cannot deliver or record runs after lock.
         from octop.infra.licensing import current_license
 
         current_license().require_business_access()
         self._user_policy.require_permissions(self._user_id, ())
+        if scheduled:
+            current = self._cron_repo.get(self._cron_id)
+            if current is None or not current.enabled:
+                # Removing a scheduler entry cannot retract an already-queued callback.
+                return
 
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
@@ -116,7 +122,7 @@ class CronJob:
                         mcp_servers=tuple(self._mcp_servers),
                     )
                 )
-            except Exception as exc:
+            except (Exception, asyncio.CancelledError) as exc:
                 METRICS.inc("cron_errors_total")
                 logger.exception("cron job %s failed", self._cron_id)
                 err = str(exc)
@@ -127,6 +133,8 @@ class CronJob:
                     target=self._cron_id,
                     payload=err,
                 )
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 return
             self._cron_repo.set_run_status(self._cron_id, ts=ts, status="ok", error=None)
             self._audit_repo.write(

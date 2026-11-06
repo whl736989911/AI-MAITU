@@ -162,7 +162,10 @@ async def _maybe_attach_oauth_discovery(
     """When auth fails without a bearer token, try MCP OAuth discovery."""
     if result.get("ok") is not False or result.get("error_type") != "auth":
         return result
-    auth_header = str(headers.get("Authorization") or "").strip()
+    auth_header = next(
+        (str(value).strip() for key, value in headers.items() if key.casefold() == "authorization"),
+        "",
+    )
     if auth_header.lower().startswith("bearer ") and len(auth_header) > 7:
         return result
     discovery = await discover_oauth_from_mcp_url(url)

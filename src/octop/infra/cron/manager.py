@@ -229,6 +229,9 @@ class CronManager:
             elif schedule_changed or scheduled is None:
                 self._unschedule(cron_id)
                 self._schedule(row)
+                # Scheduling can keep an already-attempted one-shot disabled.
+                row = self._repos.cron_repo.get(cron_id)
+                assert row is not None
             else:
                 # Replace the callable's row snapshot, not the pending trigger/deadline.
                 self._scheduler.modify_job(cron_id, func=self._make_job(row).run)
@@ -253,7 +256,7 @@ class CronManager:
         job = self._make_job(row)
         if row.trigger.startswith("date:"):
             self._unschedule(cron_id)
-        await job.run()
+        await job.run(scheduled=False)
         logger.info("CronJob %s triggered manually", cron_id)
 
     def _make_job(self, row: Any) -> CronJob:

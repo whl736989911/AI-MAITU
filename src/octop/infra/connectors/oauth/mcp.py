@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import time
 from typing import Any
-from urllib.parse import urlencode, urlparse
+from urllib.parse import urlencode, urlparse, urlsplit, urlunsplit
 
 import httpx
 
@@ -133,7 +133,9 @@ def build_authorize_url(
         params["scope"] = scope
     if resource:
         params["resource"] = resource
-    return f"{metadata['authorization_endpoint']}?{urlencode(params)}"
+    endpoint = urlsplit(str(metadata["authorization_endpoint"]))
+    query = "&".join(part for part in (endpoint.query, urlencode(params)) if part)
+    return urlunsplit((endpoint.scheme, endpoint.netloc, endpoint.path, query, endpoint.fragment))
 
 
 def _http_error_detail(resp: Any) -> str:
