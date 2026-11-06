@@ -7,14 +7,12 @@ import io
 import shutil
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 
 from octop_harness.backends.utils import materialize_storage_path
+from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.infra.agents.builtin_skills import OCTOP_BUILTIN_SKILLS_ROOT
-
-if TYPE_CHECKING:
-    from octop_harness.backends.workspace import BackendWorkspace
 
 WorkspaceImportMode = Literal["merge", "replace"]
 
@@ -224,7 +222,9 @@ async def import_workspace_zip(
         )
 
     if pairs:
-        await workspace.aupload_many(pairs)
+        # Archive names are literal paths, not logical aliases such as skills/.
+        archive_workspace = BackendWorkspace(workspace.backend, workspace.workspace_dir)
+        await archive_workspace.aupload_many(pairs)
 
     return {
         "mode": mode,

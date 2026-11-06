@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 import httpx
+import pytest
 
 from octop.infra.agents.providers.onnx_catalog import get_onnx_model_meta
 from octop.infra.agents.providers.onnx_download import (
@@ -23,6 +24,45 @@ from octop.infra.agents.providers.onnx_download import (
     export_model_tree_for_cos,
     race_download_sources,
 )
+
+
+@pytest.mark.parametrize("failure", ["network", "progress"])
+def test_failed_transfer_removes_only_its_partial_and_preserves_working_model(
+    tmp_path: Path, failure: str
+) -> None:
+    from octop.infra.agents.providers.onnx_download import _download_http_file
+
+    dest = tmp_path / "model.onnx"
+    dest.write_bytes(b"working weights")
+    other_partial = tmp_path / "model.onnx.part"
+    other_partial.write_bytes(b"another transfer")
+
+    class Interrupted(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"x" * 65536
+            if failure == "network":
+                raise httpx.ReadError("connection interrupted")
+
+    def progress(_count: int, _total: int | None, _name: str) -> None:
+        raise ValueError("progress callback interrupted")
+
+    with (
+        httpx.Client(
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, stream=Interrupted()))
+        ) as client,
+        pytest.raises(httpx.ReadError if failure == "network" else ValueError),
+    ):
+        _download_http_file(
+            client,
+            "https://fixture.invalid/model.onnx",
+            dest,
+            on_progress=progress if failure == "progress" else None,
+            downloaded_so_far=0,
+            total=None,
+        )
+    assert dest.read_bytes() == b"working weights"
+    assert other_partial.read_bytes() == b"another transfer"
+    assert set(tmp_path.iterdir()) == {dest, other_partial}
 
 
 def test_bge_small_zh_infers_hf_repo_without_fastembed(monkeypatch) -> None:

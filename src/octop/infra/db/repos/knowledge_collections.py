@@ -162,10 +162,12 @@ class KnowledgeCollectionsRepo:
                 conn.execute(
                     "UPDATE knowledge_collections SET prompt = ?, name = ?, "
                     "prompt_updated_at = ?, generation_state = 'idle', "
-                    "generation_error = '', updated_at = ? WHERE collection_id = ?",
+                    "generation_error = '', updated_at = CASE WHEN updated_at >= ? "
+                    "THEN updated_at + 1 ELSE ? END WHERE collection_id = ?",
                     (
                         prompt,
                         name if name is not None else str(row["name"] or ""),
+                        ts,
                         ts,
                         ts,
                         collection_id,
@@ -173,22 +175,40 @@ class KnowledgeCollectionsRepo:
                 )
             else:
                 conn.execute(
-                    "UPDATE knowledge_collections SET name = ?, updated_at = ? "
+                    "UPDATE knowledge_collections SET name = ?, updated_at = "
+                    "CASE WHEN updated_at >= ? THEN updated_at + 1 ELSE ? END "
                     "WHERE collection_id = ?",
-                    (name if name is not None else str(row["name"] or ""), ts, collection_id),
+                    (
+                        name if name is not None else str(row["name"] or ""),
+                        ts,
+                        ts,
+                        collection_id,
+                    ),
                 )
             row = conn.execute(
                 "SELECT * FROM knowledge_collections WHERE collection_id = ?", (collection_id,)
             ).fetchone()
         return KnowledgeCollectionRow.from_row(row)
 
+    def touch(self, collection_id: str) -> None:
+        """Advance the collection revision after its caller-visible contents change."""
+        ts = now_ts()
+        with self._db.transaction() as conn:
+            conn.execute(
+                "UPDATE knowledge_collections SET updated_at = CASE WHEN updated_at >= ? "
+                "THEN updated_at + 1 ELSE ? END WHERE collection_id = ?",
+                (ts, ts, collection_id),
+            )
+
     def claim_generation(self, collection_id: str) -> bool:
+        ts = now_ts()
         with self._db.transaction() as conn:
             cursor = conn.execute(
                 "UPDATE knowledge_collections SET generation_state = 'running', "
-                "generation_error = '', updated_at = ? "
+                "generation_error = '', updated_at = CASE WHEN updated_at >= ? "
+                "THEN updated_at + 1 ELSE ? END "
                 "WHERE collection_id = ? AND generation_state <> 'running'",
-                (now_ts(), collection_id),
+                (ts, ts, collection_id),
             )
             return bool(cursor.rowcount)
 
@@ -201,22 +221,26 @@ class KnowledgeCollectionsRepo:
         model_ref: str = "",
         generated_at: int | None = None,
     ) -> None:
-        ts = generated_at if generated_at is not None else now_ts()
+        generated_ts = generated_at if generated_at is not None else now_ts()
+        updated_ts = now_ts()
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE knowledge_collections SET generation_state = ?, generation_error = ?, "
-                "generated_model = ?, generated_at = ?, updated_at = ? WHERE collection_id = ?",
-                (state, error, model_ref, ts, now_ts(), collection_id),
+                "generated_model = ?, generated_at = ?, updated_at = CASE WHEN updated_at >= ? "
+                "THEN updated_at + 1 ELSE ? END WHERE collection_id = ?",
+                (state, error, model_ref, generated_ts, updated_ts, updated_ts, collection_id),
             )
 
     def update_target_path(
         self, collection_id: str, target_path: str
     ) -> KnowledgeCollectionRow | None:
+        ts = now_ts()
         with self._db.transaction() as conn:
             conn.execute(
-                "UPDATE knowledge_collections SET target_path = ?, updated_at = ? "
+                "UPDATE knowledge_collections SET target_path = ?, updated_at = "
+                "CASE WHEN updated_at >= ? THEN updated_at + 1 ELSE ? END "
                 "WHERE collection_id = ?",
-                (target_path, now_ts(), collection_id),
+                (target_path, ts, ts, collection_id),
             )
             row = conn.execute(
                 "SELECT * FROM knowledge_collections WHERE collection_id = ?", (collection_id,)

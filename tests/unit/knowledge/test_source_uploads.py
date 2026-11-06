@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -306,6 +307,134 @@ def test_source_conflict_never_overwrites_existing_original(source_env: SimpleNa
     assert target.read_bytes() == b"existing-original"
     assert env.services.knowledge_repo.count_documents(env.kb_id) == 0
     assert not list(env.root.glob(".octop-upload-*"))
+
+
+def test_source_upload_collision_rolls_back_new_virtual_folders(
+    source_env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    env = source_env
+    target = env.root / "certificates" / "raced.txt"
+    assert (
+        env.services.knowledge_repo.get_document_by_path(env.kb_id, f"{env.source.id}/certificates")
+        is None
+    )
+    connector = env.sources.connector(env.source)
+
+    class RacingConnector:
+        @contextmanager
+        def stage_upload(self, path: str, content: bytes):
+            with connector.stage_upload(path, content) as entry:
+                yield entry
+                target.write_bytes(b"concurrent original")
+
+    monkeypatch.setattr(env.sources, "connector", lambda _source: RacingConnector())
+    with pytest.raises(OctopError) as error:
+        env.sources.upload_document(
+            env.kb_id,
+            env.source.id,
+            actor_user_id=env.actor,
+            filename="raced.txt",
+            path="certificates/raced.txt",
+            content=b"upload attempt",
+        )
+
+    assert error.value.code == ErrorCode.DATA_SOURCE_UPLOAD_CONFLICT
+    assert target.read_bytes() == b"concurrent original"
+    assert (
+        env.services.knowledge_repo.get_document_by_path(env.kb_id, f"{env.source.id}/certificates")
+        is None
+    )
+    assert not list(env.root.rglob(".octop-upload-*"))
+
+    assert env.services.knowledge_repo.get_document_by_path(env.kb_id, env.source.id) is None
+
+
+def test_source_original_read_waits_for_upload_publication(
+    source_env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from contextlib import contextmanager
+
+    env = source_env
+    from threading import current_thread
+
+    from octop.infra.knowledge import data_sources as data_sources_module
+
+    staged = Event()
+    release = Event()
+    read_lock_attempted = Event()
+    reader_done = Event()
+    upload_errors: list[BaseException] = []
+    read_results: list[bytes] = []
+    connector = env.sources.connector(env.source)
+
+    class HeldConnector:
+        @contextmanager
+        def stage_upload(self, path: str, content: bytes):
+            with connector.stage_upload(path, content) as entry:
+                yield entry
+                staged.set()
+                if not release.wait(5):
+                    raise TimeoutError("upload publication was not released")
+
+    original_lock = data_sources_module._source_upload_lock
+
+    def observe_reader_lock(source_id: str):
+        if current_thread().name == "source-reader":
+            read_lock_attempted.set()
+        return original_lock(source_id)
+
+    monkeypatch.setattr(data_sources_module, "_source_upload_lock", observe_reader_lock)
+    monkeypatch.setattr(env.sources, "connector", lambda _source: HeldConnector())
+
+    def upload() -> None:
+        try:
+            env.sources.upload_document(
+                env.kb_id,
+                env.source.id,
+                actor_user_id=env.actor,
+                filename="during-upload.txt",
+                content=b"published bytes",
+            )
+        except BaseException as exc:
+            upload_errors.append(exc)
+
+    uploader = Thread(target=upload)
+    uploader.start()
+    try:
+        assert staged.wait(5)
+        document = env.services.knowledge_repo.get_document_by_path(
+            env.kb_id, f"{env.source.id}/during-upload.txt"
+        )
+        assert document is not None
+        assert not (env.root / "during-upload.txt").exists()
+
+        def read_original() -> None:
+            try:
+                with KnowledgeSourceService(env.services).open_original(
+                    env.kb_id, document.id, actor_user_id=env.actor
+                ) as original:
+                    read_results.append(original.read_bytes())
+            except BaseException as exc:
+                upload_errors.append(exc)
+            finally:
+                reader_done.set()
+
+        reader = Thread(target=read_original, name="source-reader")
+        reader.start()
+        assert read_lock_attempted.wait(5)
+        assert not reader_done.is_set()
+        release.set()
+        uploader.join(5)
+        reader.join(5)
+        assert not uploader.is_alive() and not reader.is_alive()
+        assert not upload_errors
+        assert read_results == [b"published bytes"]
+        assert (env.root / "during-upload.txt").read_bytes() == b"published bytes"
+    finally:
+        release.set()
+        uploader.join(5)
 
 
 def test_read_only_source_is_hidden_and_refuses_direct_upload(source_env: SimpleNamespace) -> None:

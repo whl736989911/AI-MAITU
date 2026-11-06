@@ -210,7 +210,11 @@ class KnowledgeCollectionService:
             raise LookupError("knowledge collection not found")
         row = self._sync_target(row)
         target = self._knowledge.get_document(row.target_document_id)
-        if target is not None:
+        if target is None:
+            self._require_write(row, actor_user_id=actor_user_id, is_admin=is_admin)
+        else:
+            if target.kb_id != kb_id:
+                raise LookupError("knowledge collection not found")
             restricted, readable = self._scope(kb_id, actor_user_id, is_admin)
             if not self._may(target.id, restricted, readable):
                 raise LookupError("knowledge collection not found")
@@ -299,6 +303,9 @@ class KnowledgeCollectionService:
         collection: KnowledgeCollectionRow,
         coverage: Mapping[str, int],
     ) -> dict[str, Any]:
+        status = self._status(coverage)
+        if coverage["total"] == 0 and collection.generation_state == "error":
+            status = "error"
         return {
             "id": collection.id,
             "kb_id": collection.kb_id,
@@ -308,7 +315,7 @@ class KnowledgeCollectionService:
             "name": collection.name,
             "prompt": collection.prompt,
             "created_by": collection.owner_user_id,
-            "status": self._status(coverage),
+            "status": status,
             "coverage": dict(coverage),
             "generation": {
                 "state": collection.generation_state,
@@ -552,7 +559,12 @@ class KnowledgeCollectionService:
         for row in self._repo.list_for_base(kb_id):
             row = self._sync_target(row)
             target = self._knowledge.get_document(row.target_document_id)
-            if target is not None and not self._may(target.id, restricted, readable):
+            if target is None:
+                try:
+                    self._require_write(row, actor_user_id=actor_user_id, is_admin=is_admin)
+                except LookupError:
+                    continue
+            elif target.kb_id != kb_id or not self._may(target.id, restricted, readable):
                 continue
             by_id, reads, topics = self._view(row, actor_user_id, is_admin)
             visible.append(self._payload(row, self._coverage(by_id, reads, topics)))
@@ -846,6 +858,7 @@ class KnowledgeCollectionService:
             if not _within(row, document.path):
                 continue
             updated.append(row.id)
+            self._repo.touch(row.id)
             for evidence_row in inserted:
                 correction = {
                     "evidence_id": evidence_row["evidence_id"],

@@ -110,18 +110,23 @@ class KnowledgeSourceService:
     ) -> Iterator[Path]:
         document = self._document(kb_id, doc_id, actor_user_id, is_admin)
         if document.data_source_id:
-            from octop.infra.knowledge.data_sources import DataSourceService
+            from octop.infra.knowledge.data_sources import DataSourceService, _source_upload_lock
             from octop.infra.knowledge.jobs import _source_path
 
-            source = self._services.data_sources_repo.get(document.data_source_id)
-            if source is None:
-                raise FileNotFoundError("knowledge source unavailable")
-            if is_folder_kind(source.kind):
-                connector = DataSourceService(self._services).connector(source)
-                with _source_path(connector, document.source_path, document.filename) as original:
-                    self._document(kb_id, doc_id, actor_user_id, is_admin)
-                    yield original
-                return
+            source_id = document.data_source_id
+            with _source_upload_lock(source_id):
+                document = self._document(kb_id, doc_id, actor_user_id, is_admin)
+                source = self._services.data_sources_repo.get(source_id)
+                if source is None:
+                    raise FileNotFoundError("knowledge source unavailable")
+                if is_folder_kind(source.kind):
+                    connector = DataSourceService(self._services).connector(source)
+                    with _source_path(
+                        connector, document.source_path, document.filename
+                    ) as original:
+                        self._document(kb_id, doc_id, actor_user_id, is_admin)
+                        yield original
+                    return
         original, _, _ = self._knowledge.resolve_document_file(
             kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
         )

@@ -165,11 +165,11 @@ export default function DataSourcesPanel({
   const [loadError, setLoadError] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
-  const [syncingId, setSyncingId] = useState<string | null>(null);
-  const [testingId, setTestingId] = useState<string | null>(null);
-  const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [updatingUploadsId, setUpdatingUploadsId] = useState<string | null>(
-    null,
+  const [syncingIds, setSyncingIds] = useState<Set<string>>(() => new Set());
+  const [testingIds, setTestingIds] = useState<Set<string>>(() => new Set());
+  const [deletingIds, setDeletingIds] = useState<Set<string>>(() => new Set());
+  const [updatingUploadsIds, setUpdatingUploadsIds] = useState<Set<string>>(
+    () => new Set(),
   );
   const [file, setFile] = useState<File | null>(null);
   const [scheduleSource, setScheduleSource] = useState<DataSource | null>(null);
@@ -343,30 +343,31 @@ export default function DataSourcesPanel({
   };
 
   const sync = async (source: DataSource) => {
-    setSyncingId(source.id);
+    setSyncingIds((current) => new Set(current).add(source.id));
     try {
       await dataSourcesApi.sync(source.id);
+      let run: DataSourceRun | undefined;
       if (FOLDER_KINDS.includes(source.kind)) {
-        // A scan's outcome is its counts, not a bare "done": a run that found
-        // files it is still waiting on is not the same as one that indexed them.
-        const [run] = await dataSourcesApi.runs(source.id, 1);
-        message.success(
-          run
-            ? t("knowledgeBases.dataSources.scanDone", {
-                name: source.name,
-                added: run.added,
-                updated: run.updated,
-                removed: run.removed,
-                deferred: run.deferred,
-                failed: run.failed,
-              })
-            : t("knowledgeBases.dataSources.syncDone", { name: source.name }),
-        );
-      } else {
-        message.success(
-          t("knowledgeBases.dataSources.syncDone", { name: source.name }),
-        );
+        // A scan's result counts are supplemental: a history read failure does
+        // not undo an ingest the backend has already confirmed.
+        try {
+          [run] = await dataSourcesApi.runs(source.id, 1);
+        } catch {
+          run = undefined;
+        }
       }
+      message.success(
+        run
+          ? t("knowledgeBases.dataSources.scanDone", {
+              name: source.name,
+              added: run.added,
+              updated: run.updated,
+              removed: run.removed,
+              deferred: run.deferred,
+              failed: run.failed,
+            })
+          : t("knowledgeBases.dataSources.syncDone", { name: source.name }),
+      );
       onDocumentsChanged?.();
     } catch (error) {
       // The backend refuses unimplemented kinds with a dedicated code; that is
@@ -381,12 +382,16 @@ export default function DataSourcesPanel({
     } finally {
       // A failed attempt is recorded on the row; show the outcome either way.
       await load({ silent: true });
-      setSyncingId(null);
+      setSyncingIds((current) => {
+        const next = new Set(current);
+        next.delete(source.id);
+        return next;
+      });
     }
   };
 
   const testConnection = async (source: DataSource) => {
-    setTestingId(source.id);
+    setTestingIds((current) => new Set(current).add(source.id));
     try {
       const result = await dataSourcesApi.test(source.id);
       message.success(
@@ -399,12 +404,16 @@ export default function DataSourcesPanel({
     } finally {
       // The verdict is stored on the row either way, so show what it now says.
       await load({ silent: true });
-      setTestingId(null);
+      setTestingIds((current) => {
+        const next = new Set(current);
+        next.delete(source.id);
+        return next;
+      });
     }
   };
 
   const remove = async (source: DataSource) => {
-    setDeletingId(source.id);
+    setDeletingIds((current) => new Set(current).add(source.id));
     try {
       await dataSourcesApi.remove(source.id);
       message.success(t("knowledgeBases.dataSources.deleted"));
@@ -414,12 +423,16 @@ export default function DataSourcesPanel({
       );
     } finally {
       await load({ silent: true });
-      setDeletingId(null);
+      setDeletingIds((current) => {
+        const next = new Set(current);
+        next.delete(source.id);
+        return next;
+      });
     }
   };
 
   const setUploadsAllowed = async (source: DataSource, allowed: boolean) => {
-    setUpdatingUploadsId(source.id);
+    setUpdatingUploadsIds((current) => new Set(current).add(source.id));
     try {
       await dataSourcesApi.update(source.id, {
         folder: {
@@ -439,7 +452,11 @@ export default function DataSourcesPanel({
         apiErrorMessage(error, t("knowledgeBases.dataSources.updateFailed"), t),
       );
     } finally {
-      setUpdatingUploadsId(null);
+      setUpdatingUploadsIds((current) => {
+        const next = new Set(current);
+        next.delete(source.id);
+        return next;
+      });
     }
   };
 
@@ -766,7 +783,8 @@ export default function DataSourcesPanel({
                     <Switch
                       size="small"
                       checked={!source.read_only}
-                      loading={updatingUploadsId === source.id}
+                      disabled={updatingUploadsIds.has(source.id)}
+                      loading={updatingUploadsIds.has(source.id)}
                       aria-label={t(
                         "knowledgeBases.dataSources.allowUploadsFor",
                         { name: source.name },
@@ -819,7 +837,8 @@ export default function DataSourcesPanel({
                                 <Button
                                   size="small"
                                   type="text"
-                                  loading={testingId === source.id}
+                                  disabled={testingIds.has(source.id)}
+                                  loading={testingIds.has(source.id)}
                                   aria-label={t(
                                     "knowledgeBases.dataSources.test",
                                   )}
@@ -842,8 +861,10 @@ export default function DataSourcesPanel({
                               <Button
                                 size="small"
                                 type="text"
-                                disabled={!syncable}
-                                loading={syncingId === source.id}
+                                disabled={
+                                  !syncable || syncingIds.has(source.id)
+                                }
+                                loading={syncingIds.has(source.id)}
                                 aria-label={t(
                                   "knowledgeBases.dataSources.sync",
                                 )}
@@ -856,7 +877,8 @@ export default function DataSourcesPanel({
                             size="small"
                             type="text"
                             danger
-                            loading={deletingId === source.id}
+                            disabled={deletingIds.has(source.id)}
+                            loading={deletingIds.has(source.id)}
                             aria-label={t("common.delete")}
                             icon={<Trash2 size={14} strokeWidth={1.8} />}
                             onClick={() => confirmDelete(source)}

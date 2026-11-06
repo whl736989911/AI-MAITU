@@ -94,15 +94,19 @@ class SmbConnector:
                         raise SourceError(
                             f"cannot inspect {child} on {self._share}: {_reason(exc)}"
                         ) from exc
-                    if getattr(
-                        info, "st_file_attributes", 0
-                    ) & _FILE_ATTRIBUTE_REPARSE_POINT or getattr(info, "st_reparse_tag", 0):
+                    if _is_reparse_point(info):
                         continue
                     pending.append(child)
                     entries.append(SourceEntry(child, 0, None, True))
-                # A staging file is a half-written upload: invisible to scans
-                # until publication turns it into the real name.
                 elif not entry.name.startswith(UPLOAD_TEMP_PREFIX):
+                    try:
+                        info = client.lstat(self._unc(child), **self._credentials())
+                    except Exception as exc:
+                        raise SourceError(
+                            f"cannot inspect {child} on {self._share}: {_reason(exc)}"
+                        ) from exc
+                    if _is_reparse_point(info):
+                        continue
                     entries.append(self._file_entry(client, child))
         return entries
 
@@ -111,6 +115,7 @@ class SmbConnector:
         relative = _clean_relative(path)
         if not relative:
             raise SourceError("empty source path")
+        self._assert_not_reparse_path(client, relative)
         try:
             with client.open_file(self._unc(relative), mode="rb", **self._credentials()) as handle:
                 # Declared, not inferred: ``client`` is Any, and returning an Any
@@ -126,6 +131,7 @@ class SmbConnector:
         relative = _clean_relative(path)
         if not relative:
             raise SourceError("empty source path")
+        self._assert_not_reparse_path(client, relative)
         try:
             with (
                 client.open_file(self._unc(relative), mode="rb", **self._credentials()) as source,
@@ -162,6 +168,22 @@ class SmbConnector:
     def _unc(self, relative: str) -> str:
         return self.unc_root + ("\\" + relative.replace("/", "\\") if relative else "")
 
+    def _assert_not_reparse_path(self, client: Any, relative: str) -> None:
+        """Keep direct reads within the non-reparse paths exposed by a scan."""
+        parts = relative.split("/")
+        for index in range(len(parts)):
+            path = "/".join(parts[: index + 1])
+            if path == self._root:
+                continue
+            try:
+                info = client.lstat(self._unc(path), **self._credentials())
+            except Exception as exc:
+                raise SourceError(
+                    f"cannot inspect {path} on {self._share}: {_reason(exc)}"
+                ) from exc
+            if _is_reparse_point(info):
+                raise SourceError(f"source path traverses a reparse point: {relative}")
+
     def _scandir(self, client: Any, folder: str) -> list[Any]:
         try:
             return list(client.scandir(self._unc(folder), **self._credentials()))
@@ -183,6 +205,13 @@ class SmbConnector:
 
 
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x0000_0400
+
+
+def _is_reparse_point(info: Any) -> bool:
+    return bool(
+        getattr(info, "st_file_attributes", 0) & _FILE_ATTRIBUTE_REPARSE_POINT
+        or getattr(info, "st_reparse_tag", 0)
+    )
 
 
 class _SmbUpload:

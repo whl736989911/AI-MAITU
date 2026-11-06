@@ -69,14 +69,23 @@ class LocalFolderConnector:
 
             for current, dirnames, filenames in os.walk(self._root, onerror=raise_walk_error):
                 base = Path(current)
-                entries.extend(self._entry(base / name, is_dir=True) for name in dirnames)
+                for name in dirnames:
+                    candidate = base / name
+                    if self._is_confined(candidate) and not self._is_link(candidate):
+                        entries.append(self._entry(candidate, is_dir=True))
+                dirnames[:] = [
+                    name
+                    for name in dirnames
+                    if self._is_confined(base / name) and not self._is_link(base / name)
+                ]
                 # A staging file is a half-written upload: invisible to scans
                 # until publication turns it into the real name.
-                entries.extend(
-                    self._entry(base / name, is_dir=False)
-                    for name in filenames
-                    if not name.startswith(UPLOAD_TEMP_PREFIX)
-                )
+                for name in filenames:
+                    if name.startswith(UPLOAD_TEMP_PREFIX):
+                        continue
+                    candidate = base / name
+                    if self._is_confined(candidate):
+                        entries.append(self._entry(candidate, is_dir=False))
         except OSError as exc:
             raise SourceError(f"cannot list the source root: {_reason(exc)}") from exc
         return entries
@@ -129,6 +138,16 @@ class LocalFolderConnector:
     def _relative(self, absolute: Path) -> str:
         return absolute.relative_to(self._root).as_posix()
 
+    def _is_confined(self, absolute: Path) -> bool:
+        """Whether a walked entry resolves inside the configured source root."""
+        base = os.path.realpath(os.fspath(self._root))
+        resolved = os.path.realpath(os.fspath(absolute))
+        return resolved == base or resolved.startswith(base + os.sep)
+
+    @staticmethod
+    def _is_link(absolute: Path) -> bool:
+        return absolute.is_symlink() or absolute.is_junction()
+
     def _resolve(self, path: str) -> Path:
         """The absolute path of a source-relative one, confined to the root.
 
@@ -175,6 +194,11 @@ class _LocalUpload:
         if parts[-1].startswith(UPLOAD_TEMP_PREFIX):
             raise SourceError(f"source file name uses the reserved upload prefix: {self._path}")
         final = self._connector._resolve(self._path)
+        if any(
+            self._connector._is_link(self._connector.root.joinpath(*parts[:index]))
+            for index in range(1, len(parts))
+        ):
+            raise SourceError(f"source path traverses a directory link: {self._path}")
         parent = final.parent
         if not parent.is_dir():
             # Creating parents would publish into a folder no scan has ever

@@ -141,10 +141,15 @@ class KnowledgeIndex:
             raise ValueError("metadata and texts must have the same length")
 
         def rows() -> Iterator[tuple[str, str, int, str, bytes, str]]:
+            dimension: int | None = None
             for ordinal, (text, embedding) in enumerate(zip(texts, embeddings, strict=True)):
                 vector = [float(value) for value in embedding]
                 if not vector:
                     raise ValueError("embedding cannot be empty")
+                if dimension is None:
+                    dimension = len(vector)
+                elif len(vector) != dimension:
+                    raise ValueError("embedding dimensions must match")
                 meta = metadata[ordinal] if metadata is not None else {}
                 yield (
                     f"{doc_id}:{ordinal}",

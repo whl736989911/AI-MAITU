@@ -390,7 +390,12 @@ def test_deleted_source_prunes_evidence_and_topic_state(setup) -> None:
     assert "needle source body" not in result["reading_document"]
 
 
-def test_shared_reader_sees_source_derived_collections_and_rename_resyncs(setup) -> None:
+def test_shared_reader_sees_source_derived_collections_and_rename_resyncs(
+    setup, monkeypatch
+) -> None:
+    from octop.infra.db.repos import knowledge_collections as collection_repo
+    from octop.infra.knowledge.tools import _required_collection_context
+
     state = setup
     collection = state.api.create(
         state.kb.id, [state.child.id], prompt="payment", actor_user_id=state.owner
@@ -401,12 +406,27 @@ def test_shared_reader_sees_source_derived_collections_and_rename_resyncs(setup)
     assert reader_view["collection"]["target_document_id"] == state.child.id
     with pytest.raises(PermissionError):
         state.api.delete(state.kb.id, collection["id"], actor_user_id=state.reader)
+    before = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)[
+        "collection"
+    ]
+    monkeypatch.setattr(collection_repo, "now_ts", lambda: before["updated_at"])
     state.knowledge.update_document(
         state.child.id, filename="renamed.md", path="reports/child/renamed.md"
     )
     state.api.refresh_for_document(state.kb.id, state.child.id)
     refreshed = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)
-    assert refreshed["collection"]["target_path"] == "reports/child/renamed.md"
+    after = refreshed["collection"]
+    required = _required_collection_context(
+        {
+            "knowledge_collection_reads": [
+                {"id": collection["id"], "updated_at": before["updated_at"]}
+            ]
+        },
+        [after],
+    )
+
+    assert after["target_path"] == "reports/child/renamed.md"
+    assert [item["id"] for item in required] == [collection["id"]]
 
 
 def test_prompt_change_during_generation_never_presents_old_results_current(
@@ -470,6 +490,7 @@ def test_generate_marks_missing_registered_source_failed(setup: SimpleNamespace)
     state.knowledge.delete_document(state.child.id)
     payload = state.api.generate(state.kb.id, collection["id"], actor_user_id=state.owner)
     assert payload["generation"]["state"] == "error", payload
+    assert payload["status"] == "error", payload
 
 
 def test_generate_skips_unsupported_formats_without_hiding_originals(
@@ -678,3 +699,133 @@ def test_large_image_topics_inspect_every_region_without_unbounded_requests(
         )
         rendered = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)
         assert all(item["evidence_id"] in rendered["reading_document"] for item in observations)
+
+
+def test_deleted_target_collection_is_hidden_from_other_readers(setup) -> None:
+    state = setup
+    collection = state.api.create(
+        state.kb.id,
+        [state.child.id],
+        prompt="private topic",
+        actor_user_id=state.owner,
+    )[0]
+
+    state.knowledge.delete_document(state.child.id)
+
+    assert all(
+        item["id"] != collection["id"]
+        for item in state.api.list(state.kb.id, actor_user_id=state.reader)
+    )
+    with pytest.raises(LookupError, match="knowledge collection not found"):
+        state.api.documents(state.kb.id, collection["id"], actor_user_id=state.reader)
+    assert collection["id"] in {
+        item["id"] for item in state.api.list(state.kb.id, actor_user_id=state.owner)
+    }
+    state.api.delete(state.kb.id, collection["id"], actor_user_id=state.owner)
+    assert state.services.knowledge_collections_repo.get(collection["id"]) is None
+
+
+def test_prompt_update_invalidates_the_current_context_receipt(setup, monkeypatch) -> None:
+    from octop.infra.db.repos import knowledge_collections as collection_repo
+    from octop.infra.knowledge.tools import _required_collection_context
+
+    state = setup
+    collection = state.api.create(
+        state.kb.id,
+        [state.child.id],
+        prompt="old topic",
+        actor_user_id=state.owner,
+    )[0]
+    before = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)[
+        "collection"
+    ]
+    monkeypatch.setattr(collection_repo, "now_ts", lambda: before["updated_at"])
+
+    updated = state.api.update(
+        state.kb.id, collection["id"], actor_user_id=state.owner, prompt="new topic"
+    )
+    required = _required_collection_context(
+        {
+            "knowledge_collection_reads": [
+                {"id": collection["id"], "updated_at": before["updated_at"]}
+            ]
+        },
+        [updated],
+    )
+
+    assert updated["prompt"] == "new topic"
+    assert [item["id"] for item in required] == [collection["id"]]
+
+
+def test_source_read_invalidates_collection_context_receipt(setup, monkeypatch) -> None:
+    from octop.infra.db.repos import knowledge_collections as collection_repo
+    from octop.infra.knowledge.tools import _required_collection_context
+
+    state = setup
+    collection = state.api.create(
+        state.kb.id, [state.folder.id], prompt="", actor_user_id=state.owner
+    )[0]
+    before = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)[
+        "collection"
+    ]
+    monkeypatch.setattr(collection_repo, "now_ts", lambda: before["updated_at"])
+
+    outcome = state.api.record_source_read(
+        state.kb.id,
+        state.child.id,
+        _read_evidence("v1", "newly read source text"),
+        actor_user_id=state.owner,
+    )
+    after = next(
+        item
+        for item in state.api.list(state.kb.id, actor_user_id=state.owner)
+        if item["id"] == collection["id"]
+    )
+    rendered = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)
+    required = _required_collection_context(
+        {
+            "knowledge_collection_reads": [
+                {"id": collection["id"], "updated_at": before["updated_at"]}
+            ]
+        },
+        [after],
+    )
+
+    assert outcome["updated"] == 1
+    assert "newly read source text" in rendered["reading_document"]
+    assert [item["id"] for item in required] == [collection["id"]]
+
+
+def test_generation_transitions_do_not_restore_a_stale_context_receipt(setup, monkeypatch) -> None:
+    from octop.infra.db.repos import knowledge_collections as collection_repo
+    from octop.infra.knowledge.tools import _required_collection_context
+
+    state = setup
+    collection = state.api.create(
+        state.kb.id,
+        [state.child.id],
+        prompt="topic",
+        actor_user_id=state.owner,
+    )[0]
+    before = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)[
+        "collection"
+    ]
+    monkeypatch.setattr(collection_repo, "now_ts", lambda: before["updated_at"])
+    state.api.update(state.kb.id, collection["id"], actor_user_id=state.owner, prompt="new topic")
+
+    state.api.generate(state.kb.id, collection["id"], actor_user_id=state.owner)
+    after = next(
+        item
+        for item in state.api.list(state.kb.id, actor_user_id=state.owner)
+        if item["id"] == collection["id"]
+    )
+    required = _required_collection_context(
+        {
+            "knowledge_collection_reads": [
+                {"id": collection["id"], "updated_at": before["updated_at"]}
+            ]
+        },
+        [after],
+    )
+
+    assert [item["id"] for item in required] == [collection["id"]]

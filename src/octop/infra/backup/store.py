@@ -88,12 +88,17 @@ def list_backup_files(paths: PathLayout) -> list[BackupFileInfo]:
     if not root.is_dir():
         return []
     out: list[BackupFileInfo] = []
-    for path in sorted(root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
-        if not path.is_file():
-            continue
+    for path in root.iterdir():
         if not any(path.name.endswith(suffix) for suffix in _BACKUP_SUFFIXES):
             continue
-        out.append(backup_file_info(path))
+        try:
+            out.append(backup_file_info(path))
+        except FileNotFoundError:
+            continue
+        except OctopError as exc:
+            if exc.code != ErrorCode.NOT_FOUND:
+                raise
+    out.sort(key=lambda info: info.modified_at, reverse=True)
     return out
 
 
