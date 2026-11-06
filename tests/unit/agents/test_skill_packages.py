@@ -194,3 +194,31 @@ def test_read_cli_skill_install_does_not_follow_wrapper_symlink(tmp_path: Path) 
 
     with pytest.raises(skill_packages.SkillPackageError, match="did not produce"):
         skill_packages.read_cli_skill_install(tmp_path)
+
+
+def test_empty_directories_survive_filesystem_and_zip_roundtrips(tmp_path: Path) -> None:
+    from octop.infra.skills.skill_packages import build_skill_zip, read_skill_zip
+
+    skill_dir = tmp_path / "skill"
+    (skill_dir / "references" / "empty").mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_bytes(b"# skill")
+
+    files = skill_packages.read_skill_directory(skill_dir)
+    assert ("references/", b"") in files
+    assert ("references/empty/", b"") in files
+    assert ("references/empty/", b"") in read_skill_zip(build_skill_zip({"demo": files}))["demo"]
+
+
+def test_file_limit_does_not_count_empty_directory_markers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(skill_packages, "MAX_SKILL_FILES", 1)
+
+    archive = skill_packages.build_skill_zip({"demo": [("SKILL.md", b"# skill"), ("empty/", b"")]})
+    restored = skill_packages.read_skill_zip(archive)["demo"]
+    assert ("SKILL.md", b"# skill") in restored
+    assert ("empty/", b"") in restored
+    with pytest.raises(skill_packages.SkillPackageTooLarge):
+        skill_packages.build_skill_zip(
+            {"demo": [("SKILL.md", b"# skill"), ("extra.txt", b"extra")]}
+        )

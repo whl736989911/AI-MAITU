@@ -139,3 +139,28 @@ def test_naive_date_trigger_uses_requested_timezone() -> None:
         9,
         dt.timedelta(hours=8),
     )
+
+
+def test_restricted_month_days_and_weekdays_match_either_without_duplicate_fires() -> None:
+    trigger = build_trigger("cron:0 0 1 * mon", timezone="UTC")
+    current = dt.datetime(2027, 1, 2, tzinfo=dt.UTC)
+    expected = [
+        dt.datetime(2027, 1, 4, tzinfo=dt.UTC),
+        dt.datetime(2027, 1, 11, tzinfo=dt.UTC),
+        dt.datetime(2027, 1, 18, tzinfo=dt.UTC),
+        dt.datetime(2027, 1, 25, tzinfo=dt.UTC),
+        dt.datetime(2027, 2, 1, tzinfo=dt.UTC),
+        dt.datetime(2027, 2, 8, tzinfo=dt.UTC),
+    ]
+    previous = None
+    for expected_fire in expected:
+        actual = trigger.get_next_fire_time(previous, current)
+        assert actual == expected_fire
+        previous = current = actual
+
+
+def test_wildcard_day_steps_still_intersect_the_weekday() -> None:
+    trigger = build_trigger("cron:0 0 */2 * mon", timezone="UTC")
+    assert trigger.get_next_fire_time(None, dt.datetime(2027, 1, 2, tzinfo=dt.UTC)) == dt.datetime(
+        2027, 1, 11, tzinfo=dt.UTC
+    )

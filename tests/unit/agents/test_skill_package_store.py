@@ -110,6 +110,47 @@ def test_skill_validation_errors_are_mapped_to_octop_errors(
     assert exc_info.value.code is ErrorCode.SLASH_BAD_ARGS
 
 
+@pytest.mark.parametrize(
+    "conflicting_entries",
+    [
+        [("notes.txt", b"file"), ("notes.txt/child.txt", b"invalid")],
+        [("notes.txt/child.txt", b"invalid"), ("notes.txt", b"file")],
+        [("notes.txt", b"file"), ("notes.txt/", b"")],
+        [("notes.txt/", b""), ("notes.txt", b"file")],
+    ],
+)
+def test_rejected_file_directory_collision_preserves_existing_skill(
+    store: SkillPackageStore, conflicting_entries: list[tuple[str, bytes]]
+) -> None:
+    row = store.create(name="P", description="", created_by="42")
+    store.write_skill(row.id, "demo", [("SKILL.md", b"old"), ("notes.txt", b"keep")])
+
+    with pytest.raises(OctopError):
+        store.write_skill(
+            row.id,
+            "demo",
+            [("SKILL.md", b"new"), *conflicting_entries],
+        )
+
+    skill_dir = store.package_skills_dir(row.id) / "demo"
+    assert (skill_dir / "SKILL.md").read_bytes() == b"old"
+    assert (skill_dir / "notes.txt").read_bytes() == b"keep"
+
+
+def test_package_storage_failure_does_not_leave_database_row(
+    tmp_path: Path,
+    db: SqlitePool,
+) -> None:
+    blocked_root = tmp_path / "not-a-directory"
+    blocked_root.write_text("block", encoding="utf-8")
+    store = SkillPackageStore(repo=SkillPackageRepo(db), root=blocked_root)
+
+    with pytest.raises(OSError):
+        store.create(name="P", description="", created_by="42")
+
+    assert store.repo.list_all() == []
+
+
 def test_write_skill_recreates_empty_directories(store: SkillPackageStore) -> None:
     row = store.create(name="P", description="", created_by="42")
 

@@ -129,7 +129,7 @@ def normalize_server_spec(name: str, raw: Any) -> dict[str, Any]:
 
     enabled = raw.get("enabled", True) is not False
     spec: dict[str, Any] = {"transport": transport, "enabled": enabled}
-    if raw.get("default_open") is True:
+    if enabled and raw.get("default_open") is True:
         spec["default_open"] = True
     if raw.get("shared") is True:
         spec["shared"] = True
@@ -286,7 +286,7 @@ def merge_preserved_oauth(
     new_servers: dict[str, Any],
     existing: dict[str, Any],
 ) -> dict[str, Any]:
-    """Drop client-supplied oauth blobs; keep stored tokens per server name."""
+    """Drop client-supplied OAuth; preserve stored tokens only for an unchanged server URL."""
     out: dict[str, Any] = {}
     for name, raw in new_servers.items():
         if not isinstance(raw, dict):
@@ -295,7 +295,7 @@ def merge_preserved_oauth(
         spec = dict(raw)
         spec.pop(_OAUTH_KEY, None)
         old = existing.get(name)
-        if isinstance(old, dict):
+        if isinstance(old, dict) and spec.get("url") == old.get("url"):
             old_oauth = old.get(_OAUTH_KEY)
             if isinstance(old_oauth, dict) and str(old_oauth.get("access_token") or "").strip():
                 spec[_OAUTH_KEY] = dict(old_oauth)
@@ -314,8 +314,12 @@ def harness_spec_for_server(spec: dict[str, Any]) -> dict[str, Any]:
     oauth = oauth_tokens_from_spec(normalized)
     token = str(oauth.get("access_token") or "").strip()
     if token:
+        for key in tuple(headers):
+            if key.casefold() == "authorization":
+                del headers[key]
         headers["Authorization"] = f"Bearer {token}"
-    headers.setdefault("Accept", _MCP_STREAMABLE_HTTP_ACCEPT)
+    if not any(key.casefold() == "accept" for key in headers):
+        headers["Accept"] = _MCP_STREAMABLE_HTTP_ACCEPT
     out["headers"] = headers
     return out
 

@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
+from octop.api.routers.preferences import PatchPreferencesBody, patch_preferences
 from octop.config import OctopConfig
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
@@ -43,6 +46,18 @@ async def test_create_user_writes_db(manager: UserManager):
     assert user.username == "alice"
     assert user.role is Role.ADMIN
     assert manager.get("alice") is not None
+
+
+async def test_create_trims_username_to_the_login_identifier(manager: UserManager):
+    user = await manager.create(username=" alice ", password="TestPass12", role=Role.USER)
+
+    assert user.username == "alice"
+    assert manager.get_row(user.id).username == "alice"
+    assert await manager.authenticate(" alice ", "TestPass12") is not None
+    with pytest.raises(OctopError) as exc:
+        await manager.create(username="   ", password="TestPass12", role=Role.USER)
+    assert exc.value.code is ErrorCode.SLASH_BAD_ARGS
+    assert exc.value.status == 400
 
 
 async def test_duplicate_username_rejected(manager: UserManager):
@@ -495,6 +510,101 @@ async def test_account_patch_validates_email_before_any_write(manager: UserManag
     assert stored.role == "user"
     assert stored.display_name == "Original"
     assert stored.email is None
+
+
+async def test_account_patch_clears_display_name(manager: UserManager):
+    user = await manager.create(
+        username="owner", password="TestPass12", role=Role.USER, display_name="Original"
+    )
+
+    await manager.update_account("owner", {"display_name": None})
+
+    stored = manager.get_row(user.id)
+    assert stored is not None
+    assert stored.display_name is None
+    assert manager.get("owner").display_name is None
+
+
+async def test_invalid_preference_patch_does_not_persist_locale(manager: UserManager):
+    user = await manager.create(username="owner", password="TestPass12", role=Role.USER)
+    server = SimpleNamespace(services=manager._services, user_manager=manager)
+
+    with pytest.raises(OctopError) as exc:
+        await patch_preferences(
+            PatchPreferencesBody(locale="en", timezone="Not/AZone"),
+            user=user,
+            server=server,
+        )
+    assert exc.value.code is ErrorCode.SLASH_BAD_ARGS
+    assert exc.value.status == 400
+
+    stored = manager.get_row(user.id)
+    assert stored is not None
+    assert stored.locale == "zh"
+    assert stored.preferences_json == "{}"
+
+
+async def test_preference_patch_merges_all_fields_and_preserves_existing_keys(
+    manager: UserManager,
+):
+    user = await manager.create(username="owner", password="TestPass12", role=Role.USER)
+    manager._services.user_repo.set_profile_preferences(
+        user.id, locale="zh", preferences_json='{"preserved":1,"timezone":"UTC"}'
+    )
+    server = SimpleNamespace(services=manager._services, user_manager=manager)
+
+    response = await patch_preferences(
+        PatchPreferencesBody(
+            remote_browser_bookmarks=[{"url": "https://example.test", "title": "Example"}],
+            sidebar={"order": ["agent"], "hidden": []},
+            timezone="Asia/Shanghai",
+        ),
+        user=user,
+        server=server,
+    )
+
+    stored = manager.get_row(user.id)
+    assert stored is not None
+    assert response.timezone == "Asia/Shanghai"
+    assert response.sidebar["order"] == ["agent"]
+    assert len(response.remote_browser_bookmarks) == 1
+    assert json.loads(stored.preferences_json)["preserved"] == 1
+
+
+async def test_invalid_timezone_with_null_byte_is_a_client_error(manager: UserManager):
+    user = await manager.create(username="owner", password="TestPass12", role=Role.USER)
+    server = SimpleNamespace(services=manager._services, user_manager=manager)
+
+    with pytest.raises(OctopError) as exc:
+        await patch_preferences(
+            PatchPreferencesBody(timezone="\x00"),
+            user=user,
+            server=server,
+        )
+    assert exc.value.code is ErrorCode.SLASH_BAD_ARGS
+    assert exc.value.status == 400
+
+    stored = manager.get_row(user.id)
+    assert stored is not None
+    assert stored.preferences_json == "{}"
+
+
+async def test_malformed_model_reasoning_reference_is_rejected(manager: UserManager):
+    user = await manager.create(username="owner", password="TestPass12", role=Role.USER)
+    server = SimpleNamespace(services=manager._services, user_manager=manager)
+
+    with pytest.raises(OctopError) as exc:
+        await patch_preferences(
+            PatchPreferencesBody(model_reasoning={"malformed": {"mode": "enabled"}}),
+            user=user,
+            server=server,
+        )
+    assert exc.value.code is ErrorCode.SLASH_BAD_ARGS
+    assert exc.value.status == 400
+
+    stored = manager.get_row(user.id)
+    assert stored is not None
+    assert stored.preferences_json == "{}"
 
 
 async def test_account_patch_rolls_back_profile_policy_and_cache_on_failure(

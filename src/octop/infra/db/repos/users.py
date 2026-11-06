@@ -336,15 +336,12 @@ class UserRepo:
         with self._db.transaction() as conn:
             conn.execute("UPDATE users SET email = ? WHERE id = ?", (email, user_id))
 
-    def set_locale(self, user_id: int, locale: str) -> None:
-        with self._db.transaction() as conn:
-            conn.execute("UPDATE users SET locale = ? WHERE id = ?", (locale, user_id))
-
-    def set_preferences_json(self, user_id: int, preferences_json: str) -> None:
+    def set_profile_preferences(self, user_id: int, *, locale: str, preferences_json: str) -> None:
+        """Persist locale and the merged preference document in one update."""
         with self._db.transaction() as conn:
             conn.execute(
-                "UPDATE users SET preferences_json = ? WHERE id = ?",
-                (preferences_json, user_id),
+                "UPDATE users SET locale = ?, preferences_json = ? WHERE id = ?",
+                (locale, preferences_json, user_id),
             )
 
     def set_permissions(self, user_id: int, permissions: builtins.list[str]) -> None:

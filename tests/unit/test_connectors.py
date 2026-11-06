@@ -1518,3 +1518,135 @@ def test_migration_rewrites_text_credential_blob(db: SqlitePool) -> None:
     repaired = repo.get(text_id)
     assert repaired is not None
     assert repaired.credential_blob == token.encode("utf-8")
+
+
+def test_custom_mcp_update_drops_oauth_when_server_url_changes(db: SqlitePool) -> None:
+    from octop.infra.connectors.service import ConnectorService
+    from octop.infra.db.repos.secrets import SecretRepo
+    from octop.infra.db.repos.settings import SettingsRepo
+
+    repo = ConnectorRepo(db)
+    user_id = _insert_connector_user(db, "custom-oauth-update")
+    service = ConnectorService(
+        repo=repo,
+        secret_repo=SecretRepo(db),
+        settings_repo=SettingsRepo(db),
+        config=OctopConfig(),
+    )
+    service.put_custom_servers(
+        user_id,
+        {"docs": {"transport": "streamable_http", "url": "http://localhost/old"}},
+    )
+    service.apply_custom_server_oauth(
+        user_id,
+        "docs",
+        {"access_token": "old-access", "refresh_token": "old-refresh"},
+        issuer="https://issuer.example",
+        resource=None,
+    )
+    service.put_custom_servers(
+        user_id,
+        {
+            "docs": {
+                "transport": "streamable_http",
+                "url": "http://localhost/old",
+                "display_name": "Docs",
+            }
+        },
+    )
+    assert service.get_custom_servers(user_id)["docs"]["oauth"]["access_token"] == "old-access"
+
+    service.put_custom_servers(
+        user_id, {"docs": {"transport": "streamable_http", "url": "http://localhost/new"}}
+    )
+    assert "oauth" not in service.get_custom_servers(user_id)["docs"]
+
+
+def test_custom_mcp_headers_are_merged_case_insensitively() -> None:
+    from httpx import Headers
+
+    from octop.infra.connectors.custom_mcp import harness_spec_for_server
+
+    spec = harness_spec_for_server(
+        {
+            "transport": "streamable_http",
+            "url": "http://localhost/mcp",
+            "headers": {"accept": "text/plain", "authorization": "Bearer user"},
+            "oauth": {"access_token": "stored-token"},
+        }
+    )
+
+    headers = Headers(spec["headers"])
+    assert headers.get_list("accept") == ["text/plain"]
+    assert headers.get_list("authorization") == ["Bearer stored-token"]
+
+
+@pytest.mark.asyncio
+async def test_custom_mcp_probe_detects_lowercase_bearer_header(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from octop.infra.connectors import probe
+
+    async def unexpected_discovery(_url: str) -> dict[str, object]:
+        pytest.fail("OAuth discovery must not run when a bearer token is present")
+
+    monkeypatch.setattr(probe, "discover_oauth_from_mcp_url", unexpected_discovery)
+    result = await probe._maybe_attach_oauth_discovery(
+        {"ok": False, "error_type": "auth"},
+        url="https://mcp.example/mcp",
+        headers={"authorization": "Bearer existing-token"},
+    )
+
+    assert "oauth" not in result
+
+
+def test_oauth_authorize_url_preserves_existing_endpoint_query() -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    from octop.infra.connectors.oauth.mcp import build_authorize_url
+
+    url = build_authorize_url(
+        {"authorization_endpoint": "https://auth.example/authorize?tenant=acme"},
+        client_id="client",
+        redirect_uri="https://app.example/callback",
+        state="state",
+        code_challenge="challenge",
+    )
+    params = parse_qs(urlsplit(url).query)
+
+    assert params["tenant"] == ["acme"]
+    assert params["response_type"] == ["code"]
+    assert params["client_id"] == ["client"]
+
+
+@pytest.mark.parametrize("write_mode", ["patch", "replace"])
+def test_disabled_custom_mcp_cannot_be_default_open(db: SqlitePool, write_mode: str) -> None:
+    from octop.infra.connectors.service import ConnectorService
+    from octop.infra.db.repos.secrets import SecretRepo
+    from octop.infra.db.repos.settings import SettingsRepo
+
+    repo = ConnectorRepo(db)
+    user_id = _insert_connector_user(db, "disabled-custom")
+    service = ConnectorService(
+        repo=repo,
+        secret_repo=SecretRepo(db),
+        settings_repo=SettingsRepo(db),
+        config=OctopConfig(),
+    )
+    service.put_custom_servers(
+        user_id,
+        {
+            "docs": {
+                "transport": "streamable_http",
+                "url": "http://localhost/mcp",
+                "enabled": False,
+                "default_open": write_mode == "replace",
+            }
+        },
+    )
+    if write_mode == "patch":
+        service.patch_custom_server_default_open(user_id, "docs", default_open=True)
+
+    assert "default_open" not in service.get_custom_servers(user_id)["docs"]
+    service.patch_custom_server_enabled(user_id, "docs", enabled=True)
+    assert service.list_default_open_mcp_server_names(user_id) == []

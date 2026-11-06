@@ -71,6 +71,7 @@ async def read_workspace_skill_files(
 
     files: list[tuple[str, bytes]] = []
     total_bytes = 0
+    file_count = 0
     pending: list[tuple[str, str]] = [(root, "")]
     visited: set[str] = set()
     while pending:
@@ -78,8 +79,6 @@ async def read_workspace_skill_files(
         if current in visited:
             raise SkillPackageError(f"workspace contains a directory cycle: {current}")
         visited.add(current)
-        if len(visited) > MAX_SKILL_FILES:
-            raise SkillPackageTooLarge("skill package has too many directories")
 
         result = await workspace.als(current)
         if result is None:
@@ -91,6 +90,7 @@ async def read_workspace_skill_files(
             child = f"{current}/{name}"
             relative_path = f"{relative_dir}/{name}" if relative_dir else name
             if is_dir:
+                files.append((f"{relative_path}/", b""))
                 pending.append((child, relative_path))
                 continue
             content = await workspace.adownload_bytes(child)
@@ -98,7 +98,8 @@ async def read_workspace_skill_files(
                 raise SkillPackageError(f"workspace cannot read skill file: {child}")
             files.append((relative_path, content))
             total_bytes += len(content)
-            if len(files) > MAX_SKILL_FILES:
+            file_count += 1
+            if file_count > MAX_SKILL_FILES:
                 raise SkillPackageTooLarge("skill package has too many files")
             if total_bytes > MAX_SKILL_BYTES:
                 raise SkillPackageTooLarge("skill package size exceeds 64 MB")
@@ -140,7 +141,11 @@ async def copy_package_skills_to_workspace(
         skill_dir = store.package_skills_dir(package_id) / slug
         if not (skill_dir / "SKILL.md").is_file():
             raise SkillTransferNotFound(slug)
-        sources[slug] = read_skill_directory(skill_dir)
+        files = read_skill_directory(skill_dir)
+        manifest = next(content for path, content in files if path == "SKILL.md")
+        if not _is_live_manifest(manifest.decode("utf-8")):
+            raise SkillTransferNotFound(slug)
+        sources[slug] = files
 
     if not overwrite:
         for slug in selected:

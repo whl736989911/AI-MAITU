@@ -19,8 +19,12 @@ from octop.infra.users.preferences import (
     get_preferred_model_from_json,
     get_remote_browser_bookmarks_from_json,
     get_sidebar_preferences_from_json,
+    merge_model_preferences_json,
+    merge_preferences_json,
     merge_sidebar_preferences_json,
+    normalize_model_ref,
     parse_preferences_json,
+    validate_remote_browser_bookmarks,
 )
 from octop.infra.utils.locale import normalize_locale
 
@@ -145,58 +149,73 @@ async def patch_preferences(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> PreferencesResponse:
-    if body.locale is not None:
-        await server.user_manager.set_locale(user.username, body.locale)
+    bookmarks = None
     if body.remote_browser_bookmarks is not None:
-        items = [b.model_dump() for b in body.remote_browser_bookmarks]
-        await server.user_manager.set_remote_browser_bookmarks(user.username, items)
-    if "preferred_model" in body.model_fields_set or body.model_reasoning is not None:
-        preferred: str | None | object = ...
-        if "preferred_model" in body.model_fields_set:
-            preferred = body.preferred_model
-            if (
-                preferred is not None
-                and not server.app_runtime.agent_registry.providers.is_model_ref_usable(preferred)
-            ):
-                raise OctopError(
-                    ErrorCode.SLASH_BAD_ARGS,
-                    "preferred_model must reference an enabled model",
-                )
-        reasoning = None
-        if body.model_reasoning is not None:
-            reasoning = {
-                ref: ModelReasoningPreference(mode=value.mode, effort=value.effort)
-                for ref, value in body.model_reasoning.items()
-            }
-        await server.user_manager.set_model_preferences(
-            user.username,
-            preferred_model=preferred,
-            model_reasoning=reasoning,
+        bookmarks = validate_remote_browser_bookmarks(
+            [item.model_dump() for item in body.remote_browser_bookmarks]
         )
-    if "timezone" in body.model_fields_set:
-        raw_timezone = body.timezone
-        row = server.services.user_repo.get(user.id)
-        data = parse_preferences_json(row.preferences_json if row else None)
-        if raw_timezone is not None:
-            trimmed = raw_timezone.strip()
-            if not trimmed:
-                raise OctopError(ErrorCode.SLASH_BAD_ARGS, "timezone cannot be empty")
-            try:
-                ZoneInfo(trimmed)
-            except ZoneInfoNotFoundError:
-                raise OctopError(
-                    ErrorCode.SLASH_BAD_ARGS,
-                    "timezone must be a valid IANA timezone",
-                ) from None
-            data[PREFERENCES_KEY_TIMEZONE] = trimmed
-        else:
-            data.pop(PREFERENCES_KEY_TIMEZONE, None)
-        server.services.user_repo.set_preferences_json(user.id, json.dumps(data))
-    if body.sidebar is not None:
-        row = server.services.user_repo.get(user.id)
-        server.services.user_repo.set_preferences_json(
-            user.id,
-            merge_sidebar_preferences_json(row.preferences_json if row else None, body.sidebar),
-        )
+
+    preferred: str | None | object = ...
+    if "preferred_model" in body.model_fields_set:
+        preferred = body.preferred_model
+        if (
+            preferred is not None
+            and not server.app_runtime.agent_registry.providers.is_model_ref_usable(preferred)
+        ):
+            raise OctopError(
+                ErrorCode.SLASH_BAD_ARGS,
+                "preferred_model must reference an enabled model",
+            )
+    reasoning = None
+    if body.model_reasoning is not None:
+        reasoning = {
+            ref: ModelReasoningPreference(mode=value.mode, effort=value.effort)
+            for ref, value in body.model_reasoning.items()
+        }
+        if any(normalize_model_ref(ref) is None for ref in reasoning):
+            raise OctopError(
+                ErrorCode.SLASH_BAD_ARGS,
+                "model_reasoning keys must be model references",
+            )
+
+    timezone = body.timezone
+    if "timezone" in body.model_fields_set and timezone is not None:
+        timezone = timezone.strip()
+        if not timezone:
+            raise OctopError(ErrorCode.SLASH_BAD_ARGS, "timezone cannot be empty")
+        try:
+            ZoneInfo(timezone)
+        except (ZoneInfoNotFoundError, ValueError):
+            raise OctopError(
+                ErrorCode.SLASH_BAD_ARGS,
+                "timezone must be a valid IANA timezone",
+            ) from None
+
+    def merge(raw: str) -> str:
+        merged = raw
+        if bookmarks is not None:
+            merged = merge_preferences_json(merged, bookmarks)
+        if "preferred_model" in body.model_fields_set or body.model_reasoning is not None:
+            merged = merge_model_preferences_json(
+                merged,
+                preferred_model=preferred,
+                model_reasoning=reasoning,
+            )
+        if "timezone" in body.model_fields_set:
+            data = parse_preferences_json(merged)
+            if timezone is not None:
+                data[PREFERENCES_KEY_TIMEZONE] = timezone
+            else:
+                data.pop(PREFERENCES_KEY_TIMEZONE, None)
+            merged = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+        if body.sidebar is not None:
+            merged = merge_sidebar_preferences_json(merged, body.sidebar)
+        return merged
+
+    await server.user_manager.update_preferences(
+        user.username,
+        transform=merge,
+        locale=body.locale,
+    )
     row = server.services.user_repo.get(user.id)
     return _response(row)

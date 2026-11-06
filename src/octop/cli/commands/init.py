@@ -53,6 +53,7 @@ def init(
     from octop.infra.db.migrate import run_migrations
     from octop.infra.db.repos.users import UserRepo
     from octop.infra.errors import OctopError
+    from octop.infra.users.identity import normalize_username
     from octop.infra.users.password import hash_password, validate_password_policy
     from octop.infra.utils.env_file import apply_env_file, env_file_path
     from octop.infra.utils.paths import PathLayout
@@ -110,6 +111,7 @@ def init(
             click.echo("error: admin username is required", err=True)
             raise SystemExit(1)
         try:
+            username = normalize_username(username)
             validate_password_policy(password or "")
         except OctopError as exc:
             click.echo(f"error: {exc.message}", err=True)

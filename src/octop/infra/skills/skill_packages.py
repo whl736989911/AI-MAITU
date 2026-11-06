@@ -75,22 +75,36 @@ def normalize_skill_files(
     require_manifest: bool = True,
 ) -> tuple[tuple[str, bytes], ...]:
     """Validate and canonicalize source-relative skill files."""
-    if len(files) > MAX_SKILL_FILES:
+    file_count = sum(not path.endswith("/") for path, _content in files)
+    if file_count > MAX_SKILL_FILES:
         raise SkillPackageTooLarge("skill package has too many files")
 
     normalized: list[tuple[str, bytes]] = []
     seen: set[str] = set()
+    files_seen: set[str] = set()
     total = 0
     for relative_path, content in files:
         path = _normalize_relative_path(relative_path)
         if path in seen:
             raise SkillPackageError(f"duplicate skill package path: {path}")
+        plain_path = path.rstrip("/")
+        components = plain_path.split("/")
+        if plain_path in files_seen or any(
+            "/".join(components[:index]) in files_seen for index in range(1, len(components))
+        ):
+            raise SkillPackageError(f"file conflicts with directory in skill package: {path}")
+        if not path.endswith("/") and (
+            f"{path}/" in seen or any(existing.startswith(f"{path}/") for existing in seen)
+        ):
+            raise SkillPackageError(f"file conflicts with directory in skill package: {path}")
         if not isinstance(content, bytes):
             raise SkillPackageError(f"skill package content must be bytes: {path}")
         seen.add(path)
-        total += len(content)
-        if total > MAX_SKILL_BYTES:
-            raise SkillPackageTooLarge("skill package size exceeds 64 MB")
+        if not path.endswith("/"):
+            files_seen.add(path)
+            total += len(content)
+            if total > MAX_SKILL_BYTES:
+                raise SkillPackageTooLarge("skill package size exceeds 64 MB")
         normalized.append((path, content))
 
     if require_manifest and "SKILL.md" not in seen:
@@ -121,12 +135,13 @@ def build_skill_zip(skills: dict[str, list[tuple[str, bytes]]]) -> bytes:
                     part.startswith(".") or part.lower() in _SKILL_SECRET_NAMES for part in parts
                 ):
                     continue
-                total_files += 1
-                total_bytes += len(content)
-                if total_files > MAX_SKILL_FILES:
-                    raise SkillPackageTooLarge("skill ZIP has too many files")
-                if total_bytes > MAX_SKILL_BYTES:
-                    raise SkillPackageTooLarge("skill ZIP contents exceed 64 MB")
+                if not relative_path.endswith("/"):
+                    total_files += 1
+                    total_bytes += len(content)
+                    if total_files > MAX_SKILL_FILES:
+                        raise SkillPackageTooLarge("skill ZIP has too many files")
+                    if total_bytes > MAX_SKILL_BYTES:
+                        raise SkillPackageTooLarge("skill ZIP contents exceed 64 MB")
                 archive.writestr(f"{safe_slug}/{relative_path}", content)
     result = output.getvalue()
     if len(result) > MAX_SKILL_BYTES:
@@ -146,8 +161,10 @@ def read_skill_zip(data: bytes) -> dict[str, list[tuple[str, bytes]]]:
     seen: set[tuple[str, str]] = set()
     total = 0
     entries = archive.infolist()
-    if len(entries) > MAX_SKILL_FILES:
+    file_count = sum(not entry.is_dir() for entry in entries)
+    if file_count > MAX_SKILL_FILES:
         raise SkillPackageTooLarge("skill ZIP has too many files")
+
     for entry in entries:
         name = entry.filename
         mode = (entry.external_attr >> 16) & 0xFFFF
@@ -155,6 +172,23 @@ def read_skill_zip(data: bytes) -> dict[str, list[tuple[str, bytes]]]:
             raise SkillPackageError(f"symlinks are not allowed in skill ZIP: {name}")
         if entry.is_dir():
             _normalize_relative_path(name)
+            parts = PurePosixPath(name).parts
+            if parts and parts[0] == "skills":
+                parts = parts[1:]
+            if len(parts) >= 2:
+                slug = validate_skill_slug(parts[0])
+                relative = _normalize_relative_path(
+                    PurePosixPath(*parts[1:]).as_posix().rstrip("/") + "/"
+                )
+                if not any(
+                    part.startswith(".") or part.lower() in _SKILL_SECRET_NAMES
+                    for part in parts[1:]
+                ):
+                    key = (slug, relative)
+                    if key in seen:
+                        raise SkillPackageError(f"duplicate skill ZIP path: {name}")
+                    seen.add(key)
+                    skills.setdefault(slug, []).append((relative, b""))
             continue
         path = PurePosixPath(name)
         if (
@@ -235,11 +269,14 @@ def read_skill_directory(skill_dir: Path) -> list[tuple[str, bytes]]:
     """Read a CLI-produced package without following links."""
     files: list[tuple[str, bytes]] = []
     total = 0
+    file_count = 0
     for dirpath, dirnames, filenames in os.walk(skill_dir, followlinks=False):
         current = Path(dirpath)
         for dirname in dirnames:
             if (current / dirname).is_symlink():
                 raise SkillPackageError(f"unsupported symlink in skill package: {dirname}")
+            directory = current / dirname
+            files.append((f"{directory.relative_to(skill_dir).as_posix()}/", b""))
         for filename in filenames:
             path = current / filename
             entry_stat = path.lstat()
@@ -249,7 +286,8 @@ def read_skill_directory(skill_dir: Path) -> list[tuple[str, bytes]]:
             if total > MAX_SKILL_BYTES:
                 raise SkillPackageTooLarge("skill package size exceeds 64 MB")
             files.append((path.relative_to(skill_dir).as_posix(), path.read_bytes()))
-            if len(files) > MAX_SKILL_FILES:
+            file_count += 1
+            if file_count > MAX_SKILL_FILES:
                 raise SkillPackageTooLarge("skill package has too many files")
     return list(normalize_skill_files(files))
 
