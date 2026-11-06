@@ -6,7 +6,9 @@ import asyncio
 import gzip
 import logging
 import os
+import re
 import shutil
+import stat
 import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -51,6 +53,8 @@ logger = logging.getLogger(__name__)
 # Default 100 MiB per active log file before size-triggered rollover (in addition to daily).
 DEFAULT_LOG_MAX_BYTES = 100 * 1024 * 1024
 DEFAULT_LOG_RETENTION_DAYS = 14
+DEFAULT_LOG_ARCHIVE_MAX_BYTES = 1024 * 1024 * 1024
+_ROTATED_LOG_SUFFIX = re.compile(r"\d{4}-\d{2}-\d{2}(?:-\d{3,})?(?:\.gz)?\Z")
 
 
 class SizeTimedRotatingFileHandler(TimedRotatingFileHandler):
@@ -103,7 +107,15 @@ class SizeTimedRotatingFileHandler(TimedRotatingFileHandler):
         super().rotate(source, dest)
         if self.compress_rotated:
             # logrotate delaycompress: leave this cycle's dest plain; gzip prior plains.
-            delaycompress_rotated_logs(Path(dest).parent, enabled=True, keep=Path(dest))
+            delaycompress_rotated_logs(
+                Path(dest).parent,
+                enabled=True,
+                keep=Path(dest),
+                log_name=Path(self.baseFilename).name,
+            )
+        _purge_stale_logs(
+            Path(dest).parent, self.backupCount, log_name=Path(self.baseFilename).name
+        )
 
     def rotation_filename(self, default_name: str) -> str:
         """Avoid overwriting an existing daily backup when size rolls twice same day."""
@@ -119,10 +131,10 @@ class SizeTimedRotatingFileHandler(TimedRotatingFileHandler):
 
 def gzip_rotated_log(path: Path) -> None:
     """Compress a rotated log file to ``{name}.gz`` and remove the plain file."""
-    if not path.is_file() or path.suffix == ".gz":
+    if not path.is_file() or path.is_symlink() or path.suffix == ".gz":
         return
     gz_path = path.with_name(f"{path.name}.gz")
-    if gz_path.exists():
+    if gz_path.exists() or gz_path.is_symlink():
         return
     try:
         with path.open("rb") as src, gzip.open(gz_path, "wb", compresslevel=6) as dst:
@@ -152,12 +164,15 @@ def delaycompress_rotated_logs(
     previous log file until the next rotation cycle
     (https://github.com/logrotate/logrotate).
     """
-    if not enabled or not log_dir.is_dir():
+    if not enabled or not log_dir.is_dir() or log_dir.is_symlink() or log_dir.is_junction():
         return
     plains = [
         entry
         for entry in log_dir.glob(f"{log_name}.*")
-        if entry.is_file() and not entry.name.endswith(".gz")
+        if entry.is_file()
+        and not entry.is_symlink()
+        and not entry.name.endswith(".gz")
+        and _ROTATED_LOG_SUFFIX.fullmatch(entry.name[len(log_name) + 1 :])
     ]
     if not plains:
         return
@@ -217,20 +232,42 @@ def _purge_stale_logs(
     retention_days: int,
     *,
     log_name: str = LOG_FILENAME,
+    max_total_bytes: int = DEFAULT_LOG_ARCHIVE_MAX_BYTES,
 ) -> None:
-    """Delete rotated log files older than ``retention_days`` (mtime based).
-
-    ``TimedRotatingFileHandler`` only trims by count at rollover time, so a service
-    that is offline for a long stretch can accumulate stale files. This purges them
-    on startup as a safety net.
-    """
-    if retention_days <= 0:
+    """Bound recognized rotated logs by both age and aggregate disk usage."""
+    if retention_days <= 0 or not log_dir.exists():
+        return
+    root_info = log_dir.lstat()
+    if not stat.S_ISDIR(root_info.st_mode) or (
+        getattr(root_info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+    ):
         return
     cutoff = time.time() - retention_days * 86400
+    archives: list[tuple[float, Path, int]] = []
     for entry in log_dir.glob(f"{log_name}.*"):
-        if entry.is_file() and entry.stat().st_mtime < cutoff:
-            with suppress(OSError):
+        if not _ROTATED_LOG_SUFFIX.fullmatch(entry.name[len(log_name) + 1 :]):
+            continue
+        try:
+            info = entry.lstat()
+            if not stat.S_ISREG(info.st_mode) or (
+                getattr(info, "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            ):
+                continue
+            if info.st_mtime < cutoff:
                 entry.unlink()
+            else:
+                archives.append((info.st_mtime, entry, info.st_size))
+        except OSError:
+            continue
+    total = sum(size for _, _, size in archives)
+    for _, entry, size in sorted(archives):
+        if total <= max_total_bytes:
+            break
+        try:
+            entry.unlink()
+        except OSError:
+            continue
+        total -= size
 
 
 def _attach_log_handler(target: logging.Logger, handler: TimedRotatingFileHandler) -> None:
@@ -328,6 +365,7 @@ class OctopServer:
         self._license_monitoring = False
         self._business_lock = asyncio.Lock()
         self._license_listeners: list[Callable[[bool], Awaitable[None]]] = []
+        self._storage_maintenance_task: asyncio.Task[None] | None = None
 
     @staticmethod
     def default_license_state_dir(root: Path) -> Path:
@@ -475,6 +513,7 @@ class OctopServer:
         self._setup_logging()
         config = ensure_mobile_capabilities_probed(self.paths.config)
         self.config = config
+        await self._run_storage_maintenance()
 
         # Licensing first: a managed, locked install must never reach plugin
         # executable imports or business runtime boot below.
@@ -510,6 +549,7 @@ class OctopServer:
 
             install_auto_renewal_job(paths=self.paths, timezone=config.default_timezone)
             self._emit_wizard_password(user_count=0)
+            self._start_storage_maintenance()
             logger.info("control-plane database deferred until setup wizard chooses a backend")
             return
 
@@ -530,6 +570,7 @@ class OctopServer:
         install_auto_renewal_job(paths=self.paths, timezone=config.default_timezone)
         assert self.user_manager is not None
         self._emit_wizard_password(user_count=self.user_manager.count())
+        self._start_storage_maintenance()
 
     async def bind_control_plane(self) -> None:
         """Open the configured control-plane DB and boot runtime (first-run wizard).
@@ -878,6 +919,7 @@ class OctopServer:
         from octop.infra.setup.tls.renewal import shutdown_auto_renewal_scheduler
 
         shutdown_auto_renewal_scheduler()
+        await self._stop_storage_maintenance()
         if self._license_monitoring and self.license_manager is not None:
             self._license_monitoring = False
             with suppress(Exception):
@@ -902,6 +944,47 @@ class OctopServer:
             logger.info("octop server stopped")
 
     # ----- helpers -----
+    def _maintain_storage(self) -> None:
+        from octop.infra.storage import maintain_storage
+
+        result = maintain_storage(self.paths)
+        _purge_stale_logs(
+            self.paths.logs_dir, _parse_log_retention_days(), log_name=self.paths.log.name
+        )
+        if any(result.values()):
+            logger.info("runtime storage maintenance: %s", result)
+
+    async def _run_storage_maintenance(self) -> None:
+        # Keep directory scans and deletion off the event loop. Cancellation
+        # waits for the owned worker, so shutdown cannot leave it using files.
+        worker = asyncio.get_running_loop().run_in_executor(None, self._maintain_storage)
+        try:
+            await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            with suppress(Exception):
+                await worker
+            raise
+        except Exception:
+            logger.warning("runtime storage maintenance failed", exc_info=True)
+
+    def _start_storage_maintenance(self) -> None:
+        if self._storage_maintenance_task is None:
+            self._storage_maintenance_task = asyncio.create_task(
+                self._storage_maintenance_loop(), name="storage-maintenance"
+            )
+
+    async def _storage_maintenance_loop(self) -> None:
+        while True:
+            await asyncio.sleep(3600)
+            await self._run_storage_maintenance()
+
+    async def _stop_storage_maintenance(self) -> None:
+        task = self._storage_maintenance_task
+        self._storage_maintenance_task = None
+        if task is not None:
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
 
     def _setup_logging(self) -> None:
         log_dir = self.paths.logs_dir

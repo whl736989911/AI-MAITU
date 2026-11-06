@@ -72,6 +72,7 @@ class _LazyCLI(click.Group):
             "completion",
             "version",
             "update",
+            "storage",
         }
     )
 
@@ -170,10 +171,12 @@ def cli(
 ) -> None:
     """MAITU command-line interface."""
     _ensure_utf8_stdio()
-    # Upgrade a pre-white-label data home before any command resolves paths.
-    from octop.infra.utils.paths import migrate_legacy_home
+    # Storage inspection must remain genuinely read-only: in particular, it
+    # must not run the legacy-home upgrader before reporting its selected root.
+    if ctx.invoked_subcommand != "storage":
+        from octop.infra.utils.paths import migrate_legacy_home
 
-    migrate_legacy_home()
+        migrate_legacy_home()
     ctx.ensure_object(dict)
     ctx.obj["as_user"] = as_user
     ctx.obj["agent_id"] = agent_id

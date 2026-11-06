@@ -8,7 +8,6 @@ import platform
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -30,6 +29,7 @@ from octop.infra.utils.paths import (
     PathLayout,
 )
 from octop.infra.utils.posix_compat import chown, geteuid, getuid, is_root
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -645,11 +645,9 @@ def _read_text(path: Path) -> str | None:
 def _write_managed_file(destination: Path, content: str, *, run_as_user: str) -> None:
     use_sudo = _needs_sudo(destination)
     if use_sudo and geteuid() != 0:
-        with tempfile.NamedTemporaryFile("w", encoding="utf-8", delete=False) as tmp:
-            tmp.write(content)
-            tmp.flush()
-            tmp_path = tmp.name
-        try:
+        with managed_tempdir("service-unit-") as directory:
+            tmp_path = str(directory / "unit")
+            Path(tmp_path).write_text(content, encoding="utf-8")
             mkdir_proc = _run_cmd(["mkdir", "-p", str(destination.parent)], use_sudo=True)
             _cmd_ok(mkdir_proc, f"failed to create {destination.parent}")
             proc = _run_cmd(["cp", tmp_path, str(destination)], use_sudo=True)
@@ -660,8 +658,6 @@ def _write_managed_file(destination: Path, content: str, *, run_as_user: str) ->
                     ["chown", f"{run_as_user}:{run_as_user}", str(destination)],
                     use_sudo=True,
                 )
-        finally:
-            os.unlink(tmp_path)
         return
 
     destination.parent.mkdir(parents=True, exist_ok=True)

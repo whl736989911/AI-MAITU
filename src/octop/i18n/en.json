@@ -1171,5 +1171,31 @@
     "datasets_required": "Choose dataset_ids from list_datasets or configure default dataset IDs before searching.",
     "invalid_id": "A valid {field} is required.",
     "unknown_tool": "Unknown RAGFlow tool: {name}"
+  },
+  "storage": {
+    "title": "Storage inventory: {root}",
+    "locale_note": "Display language follows OS locale; application preference is not read to keep status read-only.",
+    "disk": "Disk: {total} bytes total, {free} bytes free",
+    "category": {
+      "temp": "Temporary files: {bytes} bytes ({files} files)",
+      "previews": "Preview caches: {bytes} bytes ({files} files)",
+      "logs": "Logs: {bytes} bytes ({files} files)",
+      "backups": "Backups: {bytes} bytes ({files} files)",
+      "knowledge": "Knowledge data: {bytes} bytes ({files} files)",
+      "workspaces": "Workspaces: {bytes} bytes ({files} files)",
+      "databases": "Databases: {bytes} bytes ({files} files)",
+      "models": "Downloaded models: {bytes} bytes ({files} files)",
+      "other": "Other: {bytes} bytes ({files} files)"
+    },
+    "inventory_scope": "Inventory scans this storage root only; configured databases and workspaces outside it are excluded.",
+    "scope": {
+      "sqlite": "Database scope: SQLite files inside this storage root; configured external files are excluded.",
+      "external": "Database scope: the configured database is remote or outside this storage root; its bytes are excluded.",
+      "outside": "Database scope: configured SQLite path is outside this storage root; its bytes are excluded.",
+      "unknown": "Database scope: configuration could not be safely read; see JSON details."
+    },
+    "retention": "Retention: originals, attachments (including workspace attachments without a complete global reference index), chat content, embedding models, and manual backups are preserved; no age-based or guessed orphan deletion is performed. Trajectory retains 50 user turns. HistoryArchive removes bodies only on explicit thread deletion and when no body_refs remain. Temporary work is cleaned after use; logs are limited to 14 days / 1 GiB rotated files; rebuildable previews to 7 days / 1 GiB / 10,000 files.",
+    "reclamation": "SQLite free pages, if any, are reusable database space, not operating-system free bytes. Status reports file bytes and disk free separately but does not inspect freelist pages. No automatic full VACUUM or live sidecar deletion is performed.",
+    "error": "Inventory warning: {error}"
   }
 }

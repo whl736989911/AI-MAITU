@@ -5,8 +5,6 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
-import shutil
-import tempfile
 import uuid
 from typing import Any, cast
 
@@ -18,6 +16,7 @@ from octop.infra.backend.docker_spec import (
     enrich_docker_backend_spec,
 )
 from octop.infra.db.repos.backends import BackendRow
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +168,9 @@ def _probe_docker(row: BackendRow) -> dict[str, Any]:
     # Ephemeral probe container: close() removes it.
     spec["auto_remove"] = True
 
-    workspace = tempfile.mkdtemp(prefix="octop-docker-probe-")
+    owner = managed_tempdir(prefix="docker-probe-")
+    workspace_path = owner.__enter__()
+    workspace = str(workspace_path)
     test_name = f".octop-probe-{uuid.uuid4().hex}.txt"
     test_path = f"/{test_name}"
     backend: Any = None
@@ -212,7 +213,7 @@ def _probe_docker(row: BackendRow) -> dict[str, Any]:
                 if callable(close):
                     with contextlib.suppress(Exception):
                         close()
-        shutil.rmtree(workspace, ignore_errors=True)
+        owner.__exit__(None, None, None)
 
 
 def _probe_opensandbox(row: BackendRow) -> dict[str, Any]:

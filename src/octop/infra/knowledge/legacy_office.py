@@ -26,10 +26,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+
+from octop.infra.utils.tempfiles import managed_tempdir
 
 LEGACY_OFFICE_SUFFIXES: dict[str, str] = {".doc": ".docx", ".ppt": ".pptx"}
 """The binary formats, and the XML format each converts to before parsing."""
@@ -103,8 +104,7 @@ def converted_copy(path: Path) -> Iterator[Path]:
             f"reading {path.suffix.lower()} files needs LibreOffice: install it, "
             f"or point {_ENV_OVERRIDE} at the soffice binary"
         )
-    with tempfile.TemporaryDirectory(prefix="octop-legacy-") as tmp:
-        workdir = Path(tmp)
+    with managed_tempdir(prefix="legacy-") as workdir:
         outdir = workdir / "out"
         outdir.mkdir()
         result = _run_converter(binary, path, outdir, target, workdir)

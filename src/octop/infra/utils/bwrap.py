@@ -7,9 +7,10 @@ import os
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 from typing import Any
+
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -227,7 +228,7 @@ def _probe_runtime(
     from octop_harness.backends.bwrap_shell import build_bwrap_argv
 
     try:
-        with tempfile.TemporaryDirectory(prefix="maitu-bwrap-check-") as root:
+        with managed_tempdir("bwrap-check-") as root:
             result = subprocess.run(
                 build_bwrap_argv(bwrap=binary, root_dir=Path(root), command="true"),
                 check=False,

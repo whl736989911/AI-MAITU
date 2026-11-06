@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import sys
 import threading
 from pathlib import Path
@@ -149,3 +150,44 @@ async def test_cancellation_kills_and_removes_runner(
 
     assert killed.is_set()
     assert removed.is_set()
+
+
+def test_runner_failure_removes_scratch_but_preserves_workspace(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace, managed_root, _mapped, client = _mapped_workspace(tmp_path)
+    original = workspace / "drawing.dwg"
+    original.write_bytes(b"source")
+    scratch: list[Path] = []
+
+    def fail_launch(_image, **kwargs):
+        policy = json.loads(kwargs["command"][-1])
+        overlay = workspace.parent / policy["work_name"]
+        assert overlay.is_dir()
+        assert list(overlay.iterdir()) == []  # OverlayFS workdirs must start empty.
+        (overlay / "partial").write_bytes(b"intermediate")
+        scratch.append(overlay.parent)
+        raise OSError("runner unavailable")
+
+    client.containers.run.side_effect = fail_launch
+    monkeypatch.setitem(
+        sys.modules,
+        "docker",
+        SimpleNamespace(
+            from_env=lambda **_kwargs: client,
+            types=SimpleNamespace(LogConfig=lambda **kwargs: kwargs),
+        ),
+    )
+    from deepagents.backends.filesystem import FilesystemBackend
+
+    backend = IsolatedFilesystemBackend(
+        filesystem=FilesystemBackend(root_dir=workspace),
+        managed_root=managed_root,
+        locale="en",
+        feature_agent=False,
+        readonly_dirs=[],
+    )
+    response = backend.execute("true", timeout=1)
+    assert response.exit_code == 125
+    assert scratch and not scratch[0].exists()
+    assert original.read_bytes() == b"source"

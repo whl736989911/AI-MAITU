@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import tempfile
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from contextvars import copy_context
@@ -27,6 +26,7 @@ from octop.infra.db.repos.audit import ACTOR_SYSTEM
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.legacy_names import LEGACY_MANUAL_BACKUP_PREFIX
 from octop.infra.utils.paths import BRAND_ID
+from octop.infra.utils.tempfiles import managed_tempdir
 
 if TYPE_CHECKING:
     from octop.config import DatabaseConfig
@@ -196,8 +196,8 @@ def create_and_store_auto_backup(
     include_chats: bool = False,
 ) -> tuple[BackupFileInfo, list[str]]:
     """Create a selected-content system backup with the auto prefix and prune."""
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp) / "backup.tar.gz"
+    with managed_tempdir(prefix="auto-backup-", root=paths.root / "tmp") as tmp:
+        tmp_path = tmp / "backup.tar.gz"
         suggested = create_system_backup(
             paths=paths,
             agent_rows=agent_rows,

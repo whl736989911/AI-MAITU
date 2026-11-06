@@ -7,15 +7,14 @@ Mounted routes:
   POST /api/agents/{agent_id}/memory/portable/doctor
 """
 
-from __future__ import annotations
-
+import asyncio
 import logging
-import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from octop.api.common.agent import require_agent_owner_row
@@ -26,9 +25,11 @@ from octop.api.common.memory_client import (
     memory_db_path_for_cfg,
     resolve_memory_access,
 )
+from octop.api.common.temporary_files import OwnedFileResponse, wait_owned_worker
 from octop.api.deps import current_user, get_server
 from octop.infra.agents.memory_backend import memory_namespace, open_memory_kwargs
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -223,7 +224,7 @@ async def pack_agent_memory(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
     as_user: int | None = Query(default=None),
-) -> StreamingResponse:
+) -> FileResponse:
     """Package the agent's memory into a .hmpkg file and serve it as a download attachment."""
     require_agent_owner_row(agent_id, user=user, as_user=as_user, server=server)
     _refuse_postgres_portable(server, agent_id)
@@ -233,44 +234,44 @@ async def pack_agent_memory(
         from octop_memory.operations.migration.portable.models import SourceInfo
         from octop_memory.operations.migration.portable.sources import _probe_db
 
-        # Resolve the agent's db path and namespace
         workspace = resolve_agent_workspace_dir(server, agent_id)
         db_path = memory_db_path_for_cfg(workspace, _agent_config_dict(server, agent_id))
         ns = memory_namespace(agent_id)
 
-        # Build SourceInfo
-        sources = _probe_db(db_path, "agent")
-        src = next((s for s in sources if s.namespace == ns), None)
-        if src is None:
-            # If not found, build a minimal one
-            src = SourceInfo(
-                host_kind="agent",
-                db_path=str(db_path),
-                namespace=ns,
-                agent_name=agent_id,
+        def _create_package() -> tuple[Path, Any, ExitStack]:
+            sources = _probe_db(db_path, "agent")
+            src = next((item for item in sources if item.namespace == ns), None)
+            if src is None:
+                src = SourceInfo(
+                    host_kind="agent",
+                    db_path=str(db_path),
+                    namespace=ns,
+                    agent_name=agent_id,
+                )
+            owner = ExitStack()
+            directory = owner.enter_context(
+                managed_tempdir(prefix="memory-pack-", root=server.paths.root / "tmp")
             )
+            target = directory / "memory.hmpkg"
+            try:
+                summary = pack(src, out=target)
+            except BaseException:
+                owner.close()
+                raise
+            return target, summary, owner
 
-        # Package into a temp file
-        with tempfile.NamedTemporaryFile(suffix=".hmpkg", delete=False) as tmp:
-            tmp.flush()
-            tmp_path = Path(tmp.name)
+        worker = asyncio.get_running_loop().run_in_executor(None, _create_package)
+        tmp_path, summary, owner = await wait_owned_worker(
+            worker, dispose=lambda result: result[2].close()
+        )
 
-        summary = pack(src, out=tmp_path)
-
-        # Read the file content and stream it back
         from datetime import UTC, datetime
 
         ts = datetime.now(UTC).strftime("%Y%m%d-%H%M")
         filename = f"{agent_id}-{ts}.hmpkg"
-
-        def _iter_file() -> Any:
-            with open(tmp_path, "rb") as f:
-                while chunk := f.read(65536):
-                    yield chunk
-            tmp_path.unlink(missing_ok=True)
-
-        return StreamingResponse(
-            _iter_file(),
+        return OwnedFileResponse(
+            tmp_path,
+            cleanup=owner.close,
             media_type="application/octet-stream",
             headers={
                 "Content-Disposition": content_disposition(filename),
@@ -323,26 +324,25 @@ async def adopt_agent_memory(
         workspace = resolve_agent_workspace_dir(server, agent_id)
         db_path = memory_db_path_for_cfg(workspace, _agent_config_dict(server, agent_id))
 
-        # Write the uploaded file to a temp file
-        with tempfile.NamedTemporaryFile(suffix=".hmpkg", delete=False) as tmp:
-            content = await pkg_file.read()
-            tmp.write(content)
-            tmp.flush()
-            tmp_path = Path(tmp.name)
+        content = await pkg_file.read()
 
-        try:
-            summary = adopt(
-                tmp_path,
-                target_host,
-                target_namespace=target_namespace,
-                on_conflict=on_conflict,
-                host_rewrite=host_rewrite,
-                dry_run=dry_run,
-                target_db_path=str(db_path),
-            )
-        finally:
-            tmp_path.unlink(missing_ok=True)
+        def _adopt_package() -> Any:
+            with managed_tempdir(
+                prefix="memory-adopt-", root=server.paths.root / "tmp"
+            ) as directory:
+                tmp_path = directory / "memory.hmpkg"
+                tmp_path.write_bytes(content)
+                return adopt(
+                    tmp_path,
+                    target_host,
+                    target_namespace=target_namespace,
+                    on_conflict=on_conflict,
+                    host_rewrite=host_rewrite,
+                    dry_run=dry_run,
+                    target_db_path=str(db_path),
+                )
 
+        summary = await asyncio.get_running_loop().run_in_executor(None, _adopt_package)
         return JSONResponse(content=summary.to_dict())
 
     except ImportError:
@@ -382,28 +382,24 @@ async def doctor_agent_memory(
         workspace = resolve_agent_workspace_dir(server, agent_id)
         db_path = memory_db_path_for_cfg(workspace, _agent_config_dict(server, agent_id))
 
-        # Handle the optional comparison package
-        compare_path: Path | None = None
-        tmp_compare: Path | None = None
-        if compare_pkg is not None:
-            with tempfile.NamedTemporaryFile(suffix=".hmpkg", delete=False) as tmp:
-                content = await compare_pkg.read()
-                tmp.write(content)
-                tmp.flush()
-                tmp_compare = Path(tmp.name)
-            compare_path = tmp_compare
+        content = await compare_pkg.read() if compare_pkg is not None else None
 
-        try:
-            report = doctor(
-                target_host,
-                namespace=target_namespace,
-                db_path=str(db_path),
-                compare_with=compare_path,
-            )
-        finally:
-            if tmp_compare:
-                tmp_compare.unlink(missing_ok=True)
+        def _run_doctor() -> Any:
+            with managed_tempdir(
+                prefix="memory-doctor-", root=server.paths.root / "tmp"
+            ) as directory:
+                compare_path = None
+                if content is not None:
+                    compare_path = directory / "compare.hmpkg"
+                    compare_path.write_bytes(content)
+                return doctor(
+                    target_host,
+                    namespace=target_namespace,
+                    db_path=str(db_path),
+                    compare_with=compare_path,
+                )
 
+        report = await asyncio.get_running_loop().run_in_executor(None, _run_doctor)
         return JSONResponse(content=report.to_dict())
 
     except ImportError:

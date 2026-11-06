@@ -12,12 +12,14 @@ import json
 import os
 import re
 import sqlite3
-import tempfile
 import time
 import uuid
 import zipfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any
+
+from octop.infra.utils.tempfiles import managed_tempdir
 
 _FORMAT = 1
 _MAX_ARCHIVE = 512 * 1024 * 1024
@@ -550,9 +552,8 @@ def create_backup(
 
     root.mkdir(parents=True, exist_ok=True)
     backup_id = f"{uuid.uuid4().hex}.zip"
-    fd, temp_name = tempfile.mkstemp(prefix=".memory-export-", suffix=".jsonl", dir=root)
-    os.close(fd)
-    temp = Path(temp_name)
+    temporary = ExitStack()
+    temp = temporary.enter_context(managed_tempdir("memory-export-")) / "namespace.jsonl"
     archive_tmp = root / f".{backup_id}.tmp"
     try:
         export_namespace(memory, temp)
@@ -614,7 +615,7 @@ def create_backup(
             "total_rows": manifest["total_rows"],
         }
     finally:
-        temp.unlink(missing_ok=True)
+        temporary.close()
         archive_tmp.unlink(missing_ok=True)
 
 
@@ -752,9 +753,8 @@ def restore_backup(
     extra_rows = len(extended["nodes"]) + len(extended["episodes"]) + len(extended["digests"])
     if sum(counts.values()) + extra_rows != int(manifest.get("total_rows", -1)):
         raise ValueError("memory archive row count does not match its manifest")
-    temp_fd, temp_name = tempfile.mkstemp(prefix=".memory-import-", suffix=".jsonl", dir=root)
-    os.close(temp_fd)
-    temp = Path(temp_name)
+    temporary = ExitStack()
+    temp = temporary.enter_context(managed_tempdir("memory-import-")) / "namespace.jsonl"
     try:
         temp.write_bytes(namespace_data)
         backend_store = memory.backend
@@ -783,7 +783,7 @@ def restore_backup(
             "checkpoint_threads": len({r["thread_id"] for r in checkpoints}),
         }
     finally:
-        temp.unlink(missing_ok=True)
+        temporary.close()
 
 
 def _purge_namespace(memory: Any) -> None:

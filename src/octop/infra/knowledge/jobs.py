@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import tempfile
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import AbstractContextManager, contextmanager
@@ -28,7 +26,8 @@ from octop.infra.knowledge.parse import (
     failure_status,
     parse_document,
 )
-from octop.infra.knowledge.sources import SourceConnector
+from octop.infra.knowledge.sources.base import SourceConnector
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -112,14 +111,11 @@ def _source_path(
     """
     if connector is None:
         raise ValueError("a source file needs its connector")
-    handle, temp_name = tempfile.mkstemp(suffix=Path(filename).suffix, prefix="octop-kbsrc-")
-    os.close(handle)
-    temp = Path(temp_name)
-    try:
+    with managed_tempdir(prefix="kbsrc-") as workdir:
+        temp = workdir / f"source{Path(filename).suffix}"
+        temp.touch()
         connector.copy_to(source_path, temp)
         yield temp
-    finally:
-        temp.unlink(missing_ok=True)
 
 
 def process_document(services: Any, kb_id: str, doc_id: str) -> None:
