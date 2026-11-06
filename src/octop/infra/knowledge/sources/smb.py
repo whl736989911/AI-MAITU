@@ -88,6 +88,16 @@ class SmbConnector:
                 # into every stored path.
                 child = f"{folder}/{entry.name}" if folder else str(entry.name)
                 if entry.is_dir():
+                    try:
+                        info = client.lstat(self._unc(child), **self._credentials())
+                    except Exception as exc:
+                        raise SourceError(
+                            f"cannot inspect {child} on {self._share}: {_reason(exc)}"
+                        ) from exc
+                    if getattr(
+                        info, "st_file_attributes", 0
+                    ) & _FILE_ATTRIBUTE_REPARSE_POINT or getattr(info, "st_reparse_tag", 0):
+                        continue
                     pending.append(child)
                     entries.append(SourceEntry(child, 0, None, True))
                 # A staging file is a half-written upload: invisible to scans

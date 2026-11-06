@@ -11,6 +11,7 @@ import logging
 import shutil
 import unicodedata
 from collections.abc import Sequence
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, cast
 
@@ -249,7 +250,7 @@ class KnowledgeService:
         prefix: str | None = None,
         metadata_filters: dict[str, Any] | None = None,
     ) -> list[KnowledgeDocumentRow]:
-        self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
+        base = self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         documents = (
             self._repo.list_documents(kb_id)
             if prefix is None
@@ -259,9 +260,20 @@ class KnowledgeService:
         # and from search — one filter, so the two cannot disagree.
         restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
         rows = readable_documents(documents, restricted=restricted, readable=readable)
-        if metadata_filters:
-            rows = [row for row in rows if metadata_matches(row.metadata, metadata_filters)]
-        return cast(list[KnowledgeDocumentRow], rows)
+        allowed_keys = {field["key"] for field in _parse_metadata_schema(base)}
+        visible_rows: list[KnowledgeDocumentRow] = []
+        for row in rows:
+            stored = row.metadata
+            visible = {key: value for key, value in stored.items() if key in allowed_keys}
+            if metadata_filters and not metadata_matches(visible, metadata_filters):
+                continue
+            if len(visible) != len(stored):
+                row = replace(
+                    row,
+                    metadata_json=json.dumps(visible, ensure_ascii=False, separators=(",", ":")),
+                )
+            visible_rows.append(row)
+        return visible_rows
 
     def create_folder(
         self, kb_id: str, *, actor_user_id: int, path: str, is_admin: bool = False
@@ -461,6 +473,10 @@ class KnowledgeService:
         embedding_attempted = not generate_query_vector or search_vector is not None
         hits: list[SearchHit] = []
         for base in bases:
+            if metadata_filters:
+                allowed_keys = {field["key"] for field in _parse_metadata_schema(base)}
+                if any(key not in allowed_keys for key in metadata_filters):
+                    continue
             documents = [
                 row
                 for row in readable_documents(
@@ -941,9 +957,8 @@ class KnowledgeService:
             normalized = normalize_schema(schema)
         except MetadataError as exc:
             raise OctopError(ErrorCode.KNOWLEDGE_METADATA_INVALID, str(exc)) from exc
-        self._repo.update_base_metadata_schema(
-            kb_id, json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
-        )
+        encoded_schema = json.dumps(normalized, ensure_ascii=False, separators=(",", ":"))
+        self._repo.update_base_metadata_schema(kb_id, encoded_schema)
         return normalized
 
     def update_document_metadata(
@@ -1223,6 +1238,11 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         if moved_original:
             delete_document_file(kb_id, doc_id, document.filename)
+        if not document.is_dir:
+            content_type = _resolve_content_type(cleaned, document.content_type)
+            if content_type != document.content_type:
+                self._repo.update_document(doc_id, content_type=content_type)
+                result = self._repo.get_document(doc_id)
         self._refresh_collections(kb_id, doc_id)
         return cast(KnowledgeDocumentRow, result)
 

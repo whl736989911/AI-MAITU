@@ -88,6 +88,25 @@ class KnowledgeEnrichmentService:
                 "the document changed while the suggestion was being generated",
             )
         knowledge.require_document_writable(current, actor_user_id=actor_user_id)
+        if document.content_hash:
+            from octop.infra.knowledge.source_access import KnowledgeSourceService
+            from octop.infra.knowledge.sources import SourceError
+
+            try:
+                with KnowledgeSourceService(self._services).open_original(
+                    kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
+                ) as original:
+                    current_digest = file_digest(original)
+            except (OSError, SourceError) as exc:
+                raise OctopError(
+                    ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                    "the document source changed or became unavailable while the suggestion was generated",
+                ) from exc
+            if current_digest != document.content_hash:
+                raise OctopError(
+                    ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                    "the document source changed while the suggestion was being generated",
+                )
         summary = str(payload.get("summary") or "").strip()[:_MAX_SUMMARY_CHARS]
         raw_keywords = payload.get("keywords")
         keywords = []
@@ -201,12 +220,21 @@ class KnowledgeEnrichmentService:
                 ErrorCode.KNOWLEDGE_METADATA_INVALID,
                 "one or more reviewed field values are no longer valid for this schema",
             )
-        if values:
+        updates = dict(values)
+        if fields is not None:
+            updates.update(
+                {
+                    str(key): value
+                    for key, value in fields.items()
+                    if str(key) in schema_keys and (value is None or value == "" or value == [])
+                }
+            )
+        if updates:
             knowledge.update_document_metadata(
                 kb_id,
                 document.id,
                 actor_user_id=actor_user_id,
-                metadata=values,
+                metadata=updates,
                 is_admin=is_admin,
             )
         self._repo.set_suggestion_status(suggestion_id, "applied")

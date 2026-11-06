@@ -584,6 +584,19 @@ def test_smb_walk_respects_a_root_path(fake_smb: _FakeSmbClient) -> None:
     assert {entry.path for entry in entries} == {"reports/q1.txt"}
 
 
+def test_smb_walk_does_not_follow_reparse_directories(fake_smb: _FakeSmbClient) -> None:
+    fake_smb._tree[_unc()].append(_FakeEntry("linked", is_dir=True))
+    fake_smb._tree[_unc("linked")] = [_FakeEntry("remote.md", is_dir=False)]
+    fake_smb._dirs.add(_unc("linked"))
+    fake_smb._files[_unc("linked", "remote.md")] = b"outside the configured tree"
+    fake_smb._reparse_points.add(_unc("linked"))
+
+    entries = {entry.path for entry in _smb_connector().walk()}
+
+    assert entries == {"notes.md", "reports", "reports/q1.txt"}
+    assert _unc("linked") not in [call[1] for call in fake_smb.calls if call[0] == "scandir"]
+
+
 def test_smb_read_returns_the_file_bytes(fake_smb: _FakeSmbClient) -> None:
     assert _smb_connector().read_bytes("reports/q1.txt") == b"quarter"
 

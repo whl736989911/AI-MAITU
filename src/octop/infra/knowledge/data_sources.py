@@ -424,13 +424,25 @@ class DataSourceService:
         name: str | None = None,
         folder: FolderSettings | None = None,
     ) -> DataSourceRow:
-        """Patch a source's name and connection settings.
+        with _source_lock(ds_id):
+            return self._update_source_locked(
+                ds_id,
+                actor_user_id=actor_user_id,
+                is_admin=is_admin,
+                name=name,
+                folder=folder,
+            )
 
-        The candidate settings are validated by building the connector first, so
-        an edit that would break the source is refused instead of stored; then
-        the row is written and the secret replaced only when the caller supplied
-        one (:attr:`FolderSettings.password` carries that distinction).
-        """
+    def _update_source_locked(
+        self,
+        ds_id: str,
+        *,
+        actor_user_id: int,
+        is_admin: bool,
+        name: str | None,
+        folder: FolderSettings | None,
+    ) -> DataSourceRow:
+        """Validate and apply a source change while its scans are excluded."""
         data_source = self._require(ds_id)
         self._knowledge.get_writable_base(
             data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
@@ -449,6 +461,13 @@ class DataSourceService:
             )
         if settings is not None and data_source.kind in (KIND_LOCAL, KIND_SMB, KIND_NFS):
             self._validated_folder(kind=data_source.kind, folder=settings)
+        connection_changed = settings is not None and (
+            settings.password is not None
+            or data_source.server != settings.server.strip()
+            or data_source.share != settings.share.strip()
+            or data_source.root_path != settings.root_path.strip()
+            or data_source.username != settings.username.strip()
+        )
         self._repo.update_source_fields(
             ds_id,
             name=cleaned,
@@ -463,10 +482,18 @@ class DataSourceService:
                 max(0, settings.scan_interval_seconds) if settings is not None else None
             ),
         )
+        if connection_changed and data_source.kind in (KIND_LOCAL, KIND_SMB):
+            # Path identity is rooted in this endpoint; never compare a newly
+            # configured folder against bytes indexed from the previous one.
+            for document in self._knowledge_repo.list_source_files(ds_id):
+                if not document.is_dir:
+                    self._knowledge_repo.update_document(
+                        document.id, status="discovered", error_message=""
+                    )
         if settings is not None and settings.password is not None:
             self._repo.set_credentials(ds_id, self._encrypted_secret(settings))
-            # A new credential makes the last test's verdict stale: the source
-            # may now be reachable, or no longer be.
+        if connection_changed:
+            # Any endpoint or credential change makes the prior probe stale.
             self._repo.set_connection(ds_id, status=CONNECTION_UNKNOWN, error=None)
         return self._require(ds_id)
 
@@ -492,13 +519,14 @@ class DataSourceService:
         return detail
 
     def delete(self, ds_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:
-        data_source = self._require(ds_id)
-        base = self._knowledge.get_writable_base(
-            data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
-        )
-        if is_folder_kind(data_source.kind):
-            self._delete_source_files(base.id, ds_id, actor_user_id=actor_user_id)
-        self._repo.delete(ds_id)
+        with _source_lock(ds_id):
+            data_source = self._require(ds_id)
+            base = self._knowledge.get_writable_base(
+                data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
+            )
+            if is_folder_kind(data_source.kind):
+                self._delete_source_files(base.id, ds_id, actor_user_id=actor_user_id)
+            self._repo.delete(ds_id)
 
     def _delete_source_files(self, kb_id: str, data_source_id: str, *, actor_user_id: int) -> None:
         """Drop a folder source's index along with its source rows."""
@@ -819,6 +847,10 @@ class DataSourceService:
         The previous results — and every document already indexed — stay as they
         were, and the source is marked so an administrator can see why.
         """
+        # Callers hold the source lock; reload after acquiring it so a scan
+        # queued behind a settings change uses the new endpoint, not its stale
+        # pre-lock snapshot.
+        data_source = self._require(data_source.id)
         run = self._runs.start(data_source_id=data_source.id, trigger=trigger)
         self._repo.mark_sync(data_source.id, status=SYNC_RUNNING)
         try:

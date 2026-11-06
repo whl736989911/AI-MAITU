@@ -113,3 +113,46 @@ def test_overlapping_ticks_are_skipped(monkeypatch):
 
     asyncio.run(scenario())
     assert scanned == ["source"]
+
+
+@pytest.mark.parametrize("worker_fails", [False, True])
+def test_cancelled_tick_and_shutdown_wait_for_the_worker(monkeypatch, worker_fails):
+    started = Event()
+    release = Event()
+
+    def scan(_source_id):
+        started.set()
+        if not release.wait(5):
+            raise TimeoutError("the test did not release its running scan")
+        if worker_fails:
+            raise RuntimeError("source disconnected while cancelling the scan")
+
+    monkeypatch.setattr(
+        "octop.infra.knowledge.data_sources.DataSourceService",
+        lambda _services: SimpleNamespace(sync_scheduled=scan),
+    )
+
+    async def scenario():
+        loop = asyncio.get_running_loop()
+        runner = auto_sync.AutoSyncRunner(SimpleNamespace(services=_Services([_source()])))
+        tick = asyncio.create_task(runner.run())
+        shutdown = None
+        try:
+            assert await loop.run_in_executor(None, started.wait, 5)
+            tick.cancel()
+            shutdown = asyncio.create_task(runner.shutdown())
+            await asyncio.sleep(0)
+            tick.cancel()
+            await asyncio.sleep(0)
+            assert not tick.done()
+            assert not shutdown.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await tick
+            await shutdown
+        finally:
+            release.set()
+            pending = [tick] if shutdown is None else [tick, shutdown]
+            await asyncio.gather(*pending, return_exceptions=True)
+
+    asyncio.run(scenario())

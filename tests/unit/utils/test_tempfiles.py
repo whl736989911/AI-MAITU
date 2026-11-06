@@ -138,3 +138,51 @@ def test_readonly_conversion_files_are_removed_without_changing_user_files(tmp_p
         assert original.stat().st_mode & stat.S_IWUSR == 0
     finally:
         original.chmod(stat.S_IRUSR | stat.S_IWUSR)
+
+
+def test_directory_lock_serializes_process_updates_without_leaving_lock_files(
+    tmp_path: Path,
+) -> None:
+    counter = tmp_path / "counter.txt"
+    counter.write_text("0", encoding="utf-8")
+    script = (
+        "import sys,time\n"
+        "from pathlib import Path\n"
+        "from octop.infra.utils.tempfiles import directory_lock\n"
+        "root = Path(sys.argv[1])\n"
+        "counter = root / 'counter.txt'\n"
+        "print('ready', flush=True)\n"
+        "sys.stdin.readline()\n"
+        "for _ in range(20):\n"
+        "    with directory_lock(root):\n"
+        "        value = int(counter.read_text(encoding='utf-8'))\n"
+        "        time.sleep(0.002)\n"
+        "        counter.write_text(str(value + 1), encoding='utf-8')\n"
+    )
+    workers: list[subprocess.Popen[str]] = []
+    try:
+        for _ in range(2):
+            worker = subprocess.Popen(
+                [sys.executable, "-u", "-c", script, str(tmp_path)],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            workers.append(worker)
+            assert worker.stdout is not None
+            assert worker.stdout.readline().strip() == "ready"
+        for worker in workers:
+            assert worker.stdin is not None
+            worker.stdin.write("\n")
+            worker.stdin.flush()
+        for worker in workers:
+            stdout, stderr = worker.communicate(timeout=20)
+            assert worker.returncode == 0, stdout + stderr
+        assert counter.read_text(encoding="utf-8") == "40"
+        assert set(tmp_path.iterdir()) == {counter}
+    finally:
+        for worker in workers:
+            if worker.poll() is None:
+                worker.kill()
+            worker.communicate(timeout=10)

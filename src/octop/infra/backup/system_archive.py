@@ -165,10 +165,18 @@ def _add_dir(
     *,
     skip_chats: bool,
     system_files_path: str = "",
+    excluded_paths: tuple[Path, ...] = (),
 ) -> None:
     if not src.is_dir():
         return
+    resolved_parents: dict[Path, Path] = {}
     for path in sorted(src.rglob("*")):
+        parent = path.parent
+        if parent not in resolved_parents:
+            resolved_parents[parent] = parent.resolve()
+        absolute = resolved_parents[parent] / path.name
+        if any(absolute.is_relative_to(excluded) for excluded in excluded_paths):
+            continue
         if not path.is_file():
             continue
         rel = path.relative_to(src)
@@ -252,6 +260,7 @@ def create_system_backup(
     include_plugins: bool = True,
     include_knowledge: bool = True,
     include_chats: bool = False,
+    exclude_paths: tuple[Path, ...] = (),
 ) -> str:
     """Write a ``.tar.gz`` archive to *dest* (streamed to disk).
 
@@ -260,6 +269,9 @@ def create_system_backup(
     because thread/session history usually dominates archive size. Restore
     keeps live chats and omitted directories when the manifest says they were
     not packed.
+
+    ``exclude_paths`` keeps caller-owned publication destinations out of the
+    archive when the archive itself is built at a different staging location.
 
     Returns the suggested basename (``<brand>-backup-….tar.gz``). Callers that
     need a different name should rename/move *dest* afterward.
@@ -300,6 +312,9 @@ def create_system_backup(
 
     try:
         with managed_tempdir(prefix="backup-build-", root=paths.root / "tmp") as root:
+            excluded_paths = tuple(
+                path.parent.resolve() / path.name for path in (dest, partial, root, *exclude_paths)
+            )
             db_dest = root / db_arc
             history_path = paths.root / "history_v2.sqlite"
             history_dest = root / "history_v2.sqlite"
@@ -366,6 +381,7 @@ def create_system_backup(
                                 f"{_WORKSPACES_DIR}/{agent_id}",
                                 skip_chats=not include_chats,
                                 system_files_path=_system_files_path_from_row(row),
+                                excluded_paths=excluded_paths,
                             )
                         except OSError:
                             logger.warning(
@@ -379,6 +395,7 @@ def create_system_backup(
                         paths.skill_packages_dir,
                         _SKILL_PACKAGES_DIR,
                         skip_chats=False,
+                        excluded_paths=excluded_paths,
                     )
                 if include_plugins and paths.plugins_dir.is_dir():
                     _add_dir(
@@ -386,6 +403,7 @@ def create_system_backup(
                         paths.plugins_dir,
                         _PLUGINS_DIR,
                         skip_chats=False,
+                        excluded_paths=excluded_paths,
                     )
                 if include_knowledge and paths.knowledge_dir.is_dir():
                     _add_dir(
@@ -393,6 +411,7 @@ def create_system_backup(
                         paths.knowledge_dir,
                         _KNOWLEDGE_DIR,
                         skip_chats=False,
+                        excluded_paths=excluded_paths,
                     )
                 if include_knowledge and paths.knowledge_collections_dir.is_dir():
                     _add_dir(
@@ -400,6 +419,7 @@ def create_system_backup(
                         paths.knowledge_collections_dir,
                         _KNOWLEDGE_COLLECTIONS_DIR,
                         skip_chats=False,
+                        excluded_paths=excluded_paths,
                     )
         partial.replace(dest)
     except Exception:

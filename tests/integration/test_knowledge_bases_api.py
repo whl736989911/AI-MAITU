@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import sys
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+from octop.infra.knowledge.data_sources import DataSourceService, FolderSettings
+from octop.infra.knowledge.files import document_digest
 from octop.infra.knowledge.service import KnowledgeService
 from tests.support.auth import create_user, resolve_user_id
 
@@ -201,3 +205,102 @@ async def test_original_download_missing_document_returns_not_found(env: Any) ->
 
     assert response.status_code == 404, response.text
     assert response.json()["error"]["code"] == "KNOWLEDGE_NOT_FOUND"
+
+
+async def test_render_non_cad_document_returns_unsupported_media_type(env: Any) -> None:
+    client, server, auth = env
+    services = server.services
+    services.settings_repo.set("knowledge_bases_enabled", "true")
+    actor = await resolve_user_id(client, auth, "admin")
+    service = KnowledgeService(services)
+    kb_id = service.enterprise_space().id
+    document = service.upload_document(
+        kb_id,
+        actor_user_id=actor,
+        filename="notes.txt",
+        content_type="text/plain",
+        content=b"not a CAD drawing",
+    )
+
+    response = await client.get(
+        f"/api/knowledge-bases/{kb_id}/documents/{document.id}/render", headers=auth
+    )
+
+    assert response.status_code == 415, response.text
+    original = await client.get(
+        f"/api/knowledge-bases/{kb_id}/documents/{document.id}/file", headers=auth
+    )
+    assert original.status_code == 200, original.text
+    assert original.content == b"not a CAD drawing"
+
+
+async def test_cad_render_uses_current_source_bytes_before_next_scan(
+    env: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client, server, auth = env
+    services = server.services
+    actor = await resolve_user_id(client, auth, "admin")
+    kb_id = KnowledgeService(services).enterprise_space().id
+    share = tmp_path / "external-cad"
+    share.mkdir()
+    original = share / "drawing.dwg"
+    original.write_bytes(b"drawing revision one")
+    source = DataSourceService(services).create(
+        kb_id,
+        actor_user_id=actor,
+        name="Drawings",
+        kind="local",
+        folder=FolderSettings(root_path=str(share)),
+    )
+    stored_hash = document_digest(original.read_bytes())
+    document = services.knowledge_repo.create_document(
+        kb_id=kb_id,
+        filename=original.name,
+        path=f"{source.id}/{original.name}",
+        data_source_id=source.id,
+        source_path=original.name,
+        content_type="application/acad",
+        byte_size=original.stat().st_size,
+        content_hash=stored_hash,
+        status="discovered",
+    )
+    converter = tmp_path / "preview_converter.py"
+    converter.write_text(
+        r"""
+import hashlib
+import struct
+import sys
+import zlib
+from pathlib import Path
+
+def chunk(kind, payload):
+    return (struct.pack(">I", len(payload)) + kind + payload
+            + struct.pack(">I", zlib.crc32(kind + payload) & 0xffffffff))
+
+source = Path(sys.argv[1]).read_bytes()
+image = b"\x89PNG\r\n\x1a\n"
+image += chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0))
+image += chunk(b"IDAT", zlib.compress(b"\x00" + hashlib.sha256(source).digest()[:3]))
+image += chunk(b"IEND", b"")
+Path(sys.argv[2], "preview.png").write_bytes(image)
+counter = Path(__file__).with_suffix(".calls")
+counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1")
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("OCTOP_DWG_PREVIEW_SCRIPT", str(converter))
+    monkeypatch.setenv("OCTOP_DWG_PREVIEW_PYTHON", sys.executable)
+    endpoint = f"/api/knowledge-bases/{kb_id}/documents/{document.id}/render"
+
+    first = await client.get(endpoint, headers=auth)
+    original.write_bytes(b"drawing revision two")
+    second = await client.get(endpoint, headers=auth)
+    repeated = await client.get(endpoint, headers=auth)
+
+    assert first.status_code == second.status_code == repeated.status_code == 200
+    assert first.headers["content-type"] == "image/png"
+    assert first.content.startswith(b"\x89PNG\r\n\x1a\n")
+    assert first.content != second.content
+    assert repeated.content == second.content
+    assert converter.with_suffix(".calls").read_text() == "2"
+    assert services.knowledge_repo.get_document(document.id).content_hash == stored_hash

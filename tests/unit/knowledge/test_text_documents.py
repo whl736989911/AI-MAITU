@@ -243,6 +243,7 @@ def test_rename_preserves_original_bytes_across_extension_change(
 
     new_path = document_path(base.id, created.id, renamed.filename)
     assert renamed.filename == "notes.txt"
+    assert renamed.content_type == "text/plain"
     assert new_path.read_bytes() == b"# Original\n"
     assert not old_path.exists()
 

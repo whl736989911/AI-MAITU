@@ -808,7 +808,7 @@ Zed setup example.
 | `GET`/`PUT` | `/knowledge-bases/{kb}/documents/{doc}/permissions` | reader / ACL manager | effective document scope, inheritance and read/upload/write; only managers see grant details |
 | `GET` | `/knowledge-bases/{kb}/permission-principals` | ACL manager | safe user, department and role choices without requiring the users module |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; optional `version` requires matching actual SHA-256 and returns 409 if changed; does not require a completed index |
-| `GET` | `/knowledge-bases/{kb}/documents/{doc}/render` | reader | authorized CAD PNG preview; content-keyed cache, 415 when unavailable and 502 on conversion failure; response-owned snapshot survives cache eviction |
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/render` | reader | authorized CAD PNG preview; cache keyed by the current original's actual SHA-256, even before the next source scan; 415 for non-CAD/unavailable conversion and 502 on conversion failure; response-owned snapshot survives cache eviction |
 | `GET` | `/knowledge-bases/processors` | user | available built-in processors and optional CAD CLI capability; unavailable formats remain archive-only |
 
 Facts are produced by pluggable post-parse extractors (measurement annotations,
@@ -915,6 +915,15 @@ entering the background index queue. Scans create ordinary run records with a
 scheduled trigger and their actual result, including failures. Inspect them with
 `GET /api/data-sources/{ds_id}/runs`. Shutdown waits for scans and active indexing
 workers before closing the database; queued documents resume at startup.
+
+Cancelling a scheduled scan waits for its disk worker, including when the worker
+fails during cancellation. Deleting a source or changing its connection settings
+shares the source's scan lock. Changed local/SMB endpoints invalidate the previous
+connection verdict and mark existing files for reconfirmation and reindexing,
+even when the new endpoint reports the same path, size and timestamp. Source
+timestamps remain epoch seconds. SMB scans do not descend into reparse-point
+directories.
+
 
 Sources are `read_only` by default. To upload to a source, an administrator
 must explicitly configure it as writable (`read_only: false`) and enable source

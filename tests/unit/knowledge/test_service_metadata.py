@@ -125,3 +125,44 @@ def test_non_owner_cannot_change_schema_or_document_metadata(service: KnowledgeS
             actor_user_id=viewer,
             metadata={"drawing_no": "A-1"},
         )
+
+
+def test_removed_schema_values_are_preserved_but_hidden_from_reads_and_filters(
+    service: KnowledgeService,
+) -> None:
+    users = service._services.user_repo
+    owner = users.create(username="schema-owner", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Schema")
+    document = _upload(service, kb.id, owner, name="drawing.pdf")
+    schema = [
+        {"key": "obsolete", "type": "text"},
+        {"key": "active", "type": "text"},
+    ]
+    service.update_metadata_schema(kb.id, actor_user_id=owner, schema=schema)
+    stored = {"obsolete": "old-value", "active": "still-visible"}
+    service.update_document_metadata(kb.id, document.id, actor_user_id=owner, metadata=stored)
+
+    service.update_metadata_schema(kb.id, actor_user_id=owner, schema=schema[1:])
+
+    assert service._services.knowledge_repo.get_document(document.id).metadata == stored
+    assert service.list_documents(kb.id, actor_user_id=owner)[0].metadata == {
+        "active": "still-visible"
+    }
+    assert (
+        service.list_documents(
+            kb.id, actor_user_id=owner, metadata_filters={"obsolete": "old-value"}
+        )
+        == []
+    )
+    assert (
+        service.search(
+            kb_id=kb.id,
+            actor_user_id=owner,
+            query="drawing",
+            metadata_filters={"obsolete": "old-value"},
+        )
+        == []
+    )
+
+    service.update_metadata_schema(kb.id, actor_user_id=owner, schema=schema)
+    assert service.list_documents(kb.id, actor_user_id=owner)[0].metadata == stored

@@ -54,7 +54,7 @@ from octop.infra.agents.providers.onnx_service import (
 )
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.enrichment import KnowledgeEnrichmentService
-from octop.infra.knowledge.files import document_path
+from octop.infra.knowledge.files import document_path, file_digest
 from octop.infra.knowledge.gate import (
     assert_knowledge_usable,
     get_capability,
@@ -1579,8 +1579,7 @@ async def render_document_preview(
             kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
         )
         if not cad_preview.supports(str(metadata.get("filename") or "")):
-            raise HTTPException(status_code=415, detail="this document has no CAD preview")
-        row = server.services.knowledge_repo.get_document(doc_id)
+            raise cad_preview.CadPreviewUnavailable("this document has no CAD preview")
         from octop.infra.utils.tempfiles import managed_tempdir
 
         def create_snapshot() -> tuple[Any, Path]:
@@ -1594,7 +1593,7 @@ async def render_document_preview(
                     kb_id=kb_id,
                     doc_id=doc_id,
                     original=path,
-                    content_hash=(row.content_hash if row is not None else ""),
+                    content_hash=file_digest(path),
                     filename=str(metadata.get("filename") or ""),
                     snapshot=snapshot_dir / "preview.png",
                 )

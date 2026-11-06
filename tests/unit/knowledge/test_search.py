@@ -97,6 +97,29 @@ def test_snippet_centres_on_the_match() -> None:
     assert len(out) <= 82  # the window plus its two ellipses
 
 
+def test_snippet_centres_on_casefolded_unicode_match() -> None:
+    text = "x" * 400 + " Straße is the policy. " + "y" * 400
+
+    out = snippet(text, ("strasse",), width=80)
+
+    assert "Straße is the policy." in out
+    assert out.startswith("…")
+    assert out.endswith("…")
+
+
+@pytest.mark.parametrize(
+    "text,term,matched",
+    [
+        ("con tract " + "x" * 300 + " contract details", "contract", "contract details"),
+        ("x" * 300 + " cafe\u0301 policy", "café", "cafe\u0301 policy"),
+    ],
+)
+def test_snippet_normalization_preserves_word_boundaries_and_combining_marks(
+    text: str, term: str, matched: str
+) -> None:
+    assert matched in snippet(text, (term,), width=80)
+
+
 def _hit(chunk_id: str, text: str) -> Hit:
     return Hit(
         chunk_id=chunk_id,

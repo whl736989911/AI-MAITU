@@ -90,8 +90,16 @@ def _configured_sqlite_paths(
     if paths.config.exists():
         try:
             config = json.loads(paths.config.read_text(encoding="utf-8"))
-            value = config.get("database", {}) if isinstance(config, dict) else {}
-            if isinstance(value, dict):
+            if not isinstance(config, dict):
+                raise ValueError(
+                    f"config.json must contain a JSON object, got {type(config).__name__}"
+                )
+            value = config.get("database")
+            if value is not None:
+                if not isinstance(value, dict):
+                    raise ValueError(
+                        f"config.database must be an object, got {type(value).__name__}"
+                    )
                 database = value
         except (OSError, ValueError, TypeError) as exc:
             errors.append(f"config.json: {type(exc).__name__}: {exc}")
@@ -122,9 +130,11 @@ def _configured_sqlite_paths(
         except (OSError, UnicodeError, ValueError) as exc:
             errors.append(f"env: {type(exc).__name__}: {exc}")
             return dbs, {"kind": "unknown"}
-    driver = db_environment.get(
-        "OCTOP_DATABASE_DRIVER", str(database.get("driver", "sqlite"))
-    ).lower()
+    driver = (
+        (db_environment.get("OCTOP_DATABASE_DRIVER") or str(database.get("driver", "sqlite")))
+        .strip()
+        .lower()
+    )
     if db_environment.get("OCTOP_DATABASE_URL"):
         return dbs, {
             "kind": "external",
@@ -133,7 +143,9 @@ def _configured_sqlite_paths(
         return dbs, {
             "kind": "external",
         }
-    raw = db_environment.get("OCTOP_DATABASE_SQLITE_PATH", database.get("sqlite_path", "maitu.db"))
+    raw = db_environment.get("OCTOP_DATABASE_SQLITE_PATH") or database.get(
+        "sqlite_path", "maitu.db"
+    )
     if not isinstance(raw, str) or not raw:
         errors.append("database.sqlite_path is not a usable string")
         return dbs, {

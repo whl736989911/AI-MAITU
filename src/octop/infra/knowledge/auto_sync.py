@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from contextlib import suppress
 from typing import Any
 
 from octop.infra.cron.manager import CronManager
@@ -13,6 +14,24 @@ from octop.infra.db.repos.data_sources import KIND_LOCAL, KIND_SMB
 logger = logging.getLogger(__name__)
 AUTO_SYNC_JOB_ID = "knowledge.data_sources.auto_sync"
 AUTO_SYNC_TICK_SECONDS = 15
+
+
+async def _await_worker(work: asyncio.Future[Any]) -> Any:
+    """Keep a cancelled tick alive until its database-using thread exits."""
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        while not work.done():
+            try:
+                await asyncio.shield(work)
+            except asyncio.CancelledError:
+                continue
+            except Exception:
+                break
+        # Cancellation remains caller-visible even if the joined worker failed.
+        with suppress(BaseException):
+            work.result()
+        raise
 
 
 class AutoSyncRunner:
@@ -78,7 +97,10 @@ class AutoSyncRunner:
                         if document.status == "pending" and not document.is_dir
                     ]
 
-                pending_documents = await asyncio.to_thread(scan_and_harvest, source.id)
+                loop = asyncio.get_running_loop()
+                pending_documents = await _await_worker(
+                    loop.run_in_executor(None, scan_and_harvest, source.id)
+                )
                 for kb_id, document_id in pending_documents:
                     enqueue_index_document(services, kb_id, document_id)
             except Exception:
