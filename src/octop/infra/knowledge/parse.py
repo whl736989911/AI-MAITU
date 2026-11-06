@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from octop.infra.knowledge.legacy_office import LEGACY_OFFICE_SUFFIXES, converted_copy
 from octop.infra.knowledge.ocr import OCR_IMAGE_SUFFIXES
 from octop.infra.knowledge.relpath import path_basename
+from octop.infra.utils.tempfiles import managed_tempdir
 
 if TYPE_CHECKING:
     from zipfile import ZipFile
@@ -1036,12 +1037,10 @@ def _pdf_document(path: Path, source_path: str, *, ocr: OcrExtractor | None) -> 
                 value = page.extract_text() or ""
                 kind = "page"
                 if not value.strip() and ocr is not None:
-                    from tempfile import TemporaryDirectory
-
                     from pypdf import PdfWriter
 
-                    with TemporaryDirectory(prefix="octop-pdf-page-") as temporary:
-                        temp_path = Path(temporary) / f"page-{index}.pdf"
+                    with managed_tempdir(prefix="pdf-page-") as temporary:
+                        temp_path = temporary / f"page-{index}.pdf"
                         writer = PdfWriter()
                         writer.add_page(page)
                         with temp_path.open("wb") as handle:

@@ -8,7 +8,6 @@ import hashlib
 import json
 import mimetypes
 import os
-import tempfile
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -23,6 +22,7 @@ from octop.infra.knowledge.parse import ParsedBlock, PasswordRequiredError, pars
 from octop.infra.knowledge.relpath import normalize_kb_path
 from octop.infra.knowledge.service import KnowledgeService, knowledge_content_type
 from octop.infra.knowledge.sources import is_folder_kind
+from octop.infra.utils.tempfiles import managed_tempdir
 
 _READ_LOCK = threading.RLock()
 _MAX_TEXT = 40_000
@@ -138,55 +138,54 @@ class KnowledgeSourceService:
         is_admin: bool = False,
     ) -> Iterator[Path]:
         """Copy and verify a requested version into a stable, bounded snapshot."""
-        with self.open_original(
-            kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
-        ) as original:
-            snapshot_fd, snapshot_name = tempfile.mkstemp(prefix="octop-knowledge-")
-            snapshot = Path(snapshot_name)
+        with (
+            self.open_original(
+                kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
+            ) as original,
+            managed_tempdir(prefix="knowledge-version-") as workdir,
+        ):
+            snapshot = workdir / "snapshot"
             digest = hashlib.sha256()
-            try:
-                with os.fdopen(snapshot_fd, "wb") as target, original.open("rb") as source:
-                    before = os.fstat(source.fileno())
-                    source_path_before = original.stat()
-                    remaining = before.st_size
-                    while remaining:
-                        chunk = source.read(min(1024 * 1024, remaining))
-                        if not chunk:
-                            break
-                        remaining -= len(chunk)
-                        digest.update(chunk)
-                        target.write(chunk)
-                    target.flush()
-                    after = os.fstat(source.fileno())
-                    source_path_after = original.stat()
-                identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
-                identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
-                path_before = (
-                    source_path_before.st_dev,
-                    source_path_before.st_ino,
-                    source_path_before.st_size,
-                    source_path_before.st_mtime_ns,
-                )
-                path_after = (
-                    source_path_after.st_dev,
-                    source_path_after.st_ino,
-                    source_path_after.st_size,
-                    source_path_after.st_mtime_ns,
-                )
-                actual_version = digest.hexdigest()
-                if (
-                    remaining != 0
-                    or identity_before != identity_after
-                    or path_before != path_after
-                    or identity_before != path_before
-                    or identity_after != path_after
-                    or actual_version != expected_version
-                ):
-                    raise OctopError.localized(ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED)
-                self._document(kb_id, doc_id, actor_user_id, is_admin)
-                yield snapshot
-            finally:
-                snapshot.unlink(missing_ok=True)
+            with snapshot.open("xb") as target, original.open("rb") as source:
+                before = os.fstat(source.fileno())
+                source_path_before = original.stat()
+                remaining = before.st_size
+                while remaining:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    digest.update(chunk)
+                    target.write(chunk)
+                target.flush()
+                after = os.fstat(source.fileno())
+                source_path_after = original.stat()
+            identity_before = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+            identity_after = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+            path_before = (
+                source_path_before.st_dev,
+                source_path_before.st_ino,
+                source_path_before.st_size,
+                source_path_before.st_mtime_ns,
+            )
+            path_after = (
+                source_path_after.st_dev,
+                source_path_after.st_ino,
+                source_path_after.st_size,
+                source_path_after.st_mtime_ns,
+            )
+            actual_version = digest.hexdigest()
+            if (
+                remaining != 0
+                or identity_before != identity_after
+                or path_before != path_after
+                or identity_before != path_before
+                or identity_after != path_after
+                or actual_version != expected_version
+            ):
+                raise OctopError.localized(ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED)
+            self._document(kb_id, doc_id, actor_user_id, is_admin)
+            yield snapshot
 
     @staticmethod
     def _evidence_id(doc_id: str, version: str, locator: dict[str, Any]) -> str:

@@ -8,7 +8,6 @@ import logging
 import os
 import shutil
 import tarfile
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -46,6 +45,7 @@ from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.env_file import env_file_path
 from octop.infra.utils.paths import BRAND_ID, PathLayout
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -299,8 +299,7 @@ def create_system_backup(
     partial = dest.with_name(dest.name + ".partial")
 
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+        with managed_tempdir(prefix="backup-build-", root=paths.root / "tmp") as root:
             db_dest = root / db_arc
             history_path = paths.root / "history_v2.sqlite"
             history_dest = root / "history_v2.sqlite"
@@ -402,7 +401,6 @@ def create_system_backup(
                         _KNOWLEDGE_COLLECTIONS_DIR,
                         skip_chats=False,
                     )
-
         partial.replace(dest)
     except Exception:
         partial.unlink(missing_ok=True)
@@ -508,7 +506,7 @@ def restore_system_backup(
     performing the restore) receives all imported ``user_id`` ownership. When
     omitted, the first preserved admin (else first preserved user) is used.
     """
-    with tempfile.TemporaryDirectory() as tmp:
+    with managed_tempdir(prefix="backup-restore-", root=paths.root / "tmp") as tmp:
         extracted = Path(tmp) / "extracted"
         _extract_archive(source, extracted)
         manifest = _extract_manifest_from_dir(extracted)

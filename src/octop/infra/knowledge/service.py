@@ -1148,11 +1148,14 @@ class KnowledgeService:
             for descendant in descendants:
                 self.require_document_writable(descendant, actor_user_id=actor_user_id)
         removed = self._repo.delete_document(doc_id)
+        from octop.infra.knowledge.cad_preview import delete_document_previews
+
         for row in removed:
             if row.is_dir:
                 continue
             KnowledgeIndex(kb_id).delete_doc(row.id)
             delete_document_file(kb_id, row.id, row.filename)
+            delete_document_previews(kb_id, row.id)
         self._refresh_collections(kb_id, doc_id)
 
     def reindex_document(

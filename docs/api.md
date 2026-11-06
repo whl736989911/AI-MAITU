@@ -808,6 +808,7 @@ Zed setup example.
 | `GET`/`PUT` | `/knowledge-bases/{kb}/documents/{doc}/permissions` | reader / ACL manager | effective document scope, inheritance and read/upload/write; only managers see grant details |
 | `GET` | `/knowledge-bases/{kb}/permission-principals` | ACL manager | safe user, department and role choices without requiring the users module |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; optional `version` requires matching actual SHA-256 and returns 409 if changed; does not require a completed index |
+| `GET` | `/knowledge-bases/{kb}/documents/{doc}/render` | reader | authorized CAD PNG preview; content-keyed cache, 415 when unavailable and 502 on conversion failure; response-owned snapshot survives cache eviction |
 | `GET` | `/knowledge-bases/processors` | user | available built-in processors and optional CAD CLI capability; unavailable formats remain archive-only |
 
 Facts are produced by pluggable post-parse extractors (measurement annotations,

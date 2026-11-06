@@ -334,8 +334,6 @@ async def test_cancelled_restore_finishes_runtime_rehydration(
 async def test_cancelled_export_removes_its_completed_temporary_archive(
     isolated_backup_server: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from fastapi import BackgroundTasks
-
     server = isolated_backup_server
     started = threading.Event()
     release = threading.Event()
@@ -343,7 +341,7 @@ async def test_cancelled_export_removes_its_completed_temporary_archive(
     created: list[Path] = []
     original = backup_router._create_ephemeral_backup
 
-    def paused(**kwargs: Any) -> tuple[Path, str]:
+    def paused(**kwargs: Any) -> tuple[Path, str, Any]:
         started.set()
         assert release.wait(20)
         try:
@@ -356,7 +354,6 @@ async def test_cancelled_export_removes_its_completed_temporary_archive(
     monkeypatch.setattr(backup_router, "_create_ephemeral_backup", paused)
     task = asyncio.create_task(
         backup_router.export_backup(
-            BackgroundTasks(),
             include_config=False,
             include_workspaces=False,
             include_skill_packages=False,

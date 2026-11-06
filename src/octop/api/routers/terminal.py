@@ -12,11 +12,9 @@ import json
 import logging
 import os
 import platform
-import shutil
 import signal
 import socket
 import subprocess
-import tempfile
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, WebSocket
@@ -32,6 +30,7 @@ from octop.api.deps import (
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.permissions import user_has_permission
 from octop.infra.utils import posix_compat
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -130,12 +129,17 @@ precmd_functions=("${precmd_functions[@]}" octop_web_terminal_precmd)
 """
 
 
-def _zsh_web_zdotdir() -> str:
-    """Return a temp ZDOTDIR whose .zshrc sources the user config then re-applies fixes."""
-    d = tempfile.mkdtemp(prefix="octop-zdotdir-")
-    with open(os.path.join(d, ".zshrc"), "w", encoding="utf-8") as fh:
-        fh.write(_ZSH_WEB_TERMINAL_RC)
-    return d
+def _zsh_web_zdotdir() -> tuple[str, Any]:
+    """Own a temporary ZDOTDIR until its terminal shell exits."""
+    owner = managed_tempdir(prefix="zdotdir-")
+    directory = owner.__enter__()
+    try:
+        with (directory / ".zshrc").open("w", encoding="utf-8") as fh:
+            fh.write(_ZSH_WEB_TERMINAL_RC)
+    except BaseException:
+        owner.__exit__(None, None, None)
+        raise
+    return str(directory), owner
 
 
 def _shell_env(*, shell: str) -> dict[str, str]:
@@ -171,6 +175,7 @@ class _PtySession:
         rows: int,
         persistent: bool,
         zdotdir: str | None = None,
+        zdotdir_owner: Any = None,
     ) -> None:
         self.sid = sid
         self.agent_id = agent_id
@@ -179,8 +184,8 @@ class _PtySession:
         self.proc = proc
         self.master_fd = master_fd
         self.cols = cols
-        self.rows = rows
         self.zdotdir = zdotdir
+        self.zdotdir_owner = zdotdir_owner
         # Bounded scrollback ring buffer (raw bytes), replayed on attach.
         self.scrollback: bytearray = bytearray()
         # Output fan-out queues, one per currently attached connection.
@@ -252,8 +257,9 @@ def _spawn_pty_session(
     cmd = [shell, "-i"] if ("bash" in shell or "zsh" in shell) else [shell]
     env = _shell_env(shell=shell)
     zdotdir: str | None = None
+    zdotdir_owner: Any = None
     if "zsh" in shell:
-        zdotdir = _zsh_web_zdotdir()
+        zdotdir, zdotdir_owner = _zsh_web_zdotdir()
         env["ZDOTDIR"] = zdotdir
 
     cwd = workspace_dir
@@ -268,20 +274,38 @@ def _spawn_pty_session(
             cwd,
         )
 
-    proc = subprocess.Popen(
-        cmd,
-        stdin=slave_fd,
-        stdout=slave_fd,
-        stderr=slave_fd,
-        close_fds=True,
-        preexec_fn=posix_compat.setsid,  # separate process group for clean teardown
-        env=env,
-        cwd=cwd,
-    )
+    try:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            close_fds=True,
+            preexec_fn=posix_compat.setsid,  # separate process group for clean teardown
+            env=env,
+            cwd=cwd,
+        )
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.close(slave_fd)
+        with contextlib.suppress(OSError):
+            os.close(master_fd)
+        if zdotdir_owner is not None:
+            zdotdir_owner.__exit__(None, None, None)
+        raise
     os.close(slave_fd)
 
     session = _PtySession(
-        sid, agent_id, user_id, proc, master_fd, cols, rows, persistent, zdotdir=zdotdir
+        sid,
+        agent_id,
+        user_id,
+        proc,
+        master_fd,
+        cols,
+        rows,
+        persistent,
+        zdotdir=zdotdir,
+        zdotdir_owner=zdotdir_owner,
     )
     logger.info(
         "terminal opened: agent=%s sid=%s pid=%s shell=%s cwd=%s persistent=%s",
@@ -364,15 +388,30 @@ async def _destroy_session(session: _PtySession, *, cancel_pump: bool) -> None:
     with contextlib.suppress(OSError):
         os.close(session.master_fd)
 
-    if session.zdotdir:
-        shutil.rmtree(session.zdotdir, ignore_errors=True)
-
-    # Kill the whole process group off-thread so we never block the loop.
+    # Keep ZDOTDIR alive until the process-group worker has definitely finished.
     proc = session.proc
+    cancelled = False
     if proc.poll() is None:
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, _terminate_process_group, proc)
-
+        worker = asyncio.get_running_loop().run_in_executor(None, _terminate_process_group, proc)
+        while not worker.done():
+            try:
+                await asyncio.shield(worker)
+            except asyncio.CancelledError:
+                cancelled = True
+        worker.result()
+    if session.zdotdir_owner is not None:
+        cleanup = asyncio.get_running_loop().run_in_executor(
+            None, session.zdotdir_owner.__exit__, None, None, None
+        )
+        while not cleanup.done():
+            try:
+                await asyncio.shield(cleanup)
+            except asyncio.CancelledError:
+                cancelled = True
+        cleanup.result()
+        session.zdotdir_owner = None
+    if cancelled:
+        raise asyncio.CancelledError
     logger.info(
         "terminal session ended: agent=%s sid=%s active=%d",
         session.agent_id,

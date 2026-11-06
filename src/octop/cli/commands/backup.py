@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import tempfile
 from pathlib import Path
 
 import click
@@ -15,6 +14,7 @@ from octop.infra.db.factory import open_database
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.services import build_shared_services
 from octop.infra.utils.paths import PathLayout
+from octop.infra.utils.tempfiles import managed_tempdir
 
 
 def _paths(home: Path | None = None) -> PathLayout:
@@ -60,8 +60,8 @@ def create(
     services = build_shared_services(db=db, paths=paths, config=config)
     rows = services.agent_repo.list_all()
     try:
-        with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp) / "backup.tar.gz"
+        with managed_tempdir(prefix="backup-cli-", root=paths.root / "tmp") as tmp:
+            tmp_path = tmp / "backup.tar.gz"
             suggested = create_system_backup(
                 paths=paths,
                 agent_rows=rows,

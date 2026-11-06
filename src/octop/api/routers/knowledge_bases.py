@@ -5,10 +5,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import sys
 from collections.abc import Collection
 from contextlib import suppress
 from dataclasses import asdict
 from functools import partial
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import (
@@ -24,9 +26,9 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
-from starlette.background import BackgroundTask
 
 from octop.api.common.content_disposition import content_disposition
+from octop.api.common.temporary_files import OwnedFileResponse, wait_owned_worker
 from octop.api.common.upload_limit import read_upload_capped
 from octop.api.deps import get_server, require_any_permission, require_permission
 from octop.config import DEFAULT_MAX_UPLOAD_MB, MAX_MAX_UPLOAD_MB, upload_mb_to_bytes
@@ -1515,12 +1517,15 @@ async def download_document_file(
         metadata = source.describe_document(
             kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
         )
-        path = await asyncio.get_running_loop().run_in_executor(None, original.__enter__)
+        worker = asyncio.get_running_loop().run_in_executor(None, original.__enter__)
+        path = await wait_owned_worker(
+            worker, dispose=lambda _path: original.__exit__(None, None, None)
+        )
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
         ) from exc
-    return FileResponse(
+    return OwnedFileResponse(
         path=path,
         media_type=metadata["content_type"] or "application/octet-stream",
         headers={
@@ -1528,7 +1533,7 @@ async def download_document_file(
                 metadata["filename"], disposition=disposition
             )
         },
-        background=BackgroundTask(original.__exit__, None, None, None),
+        cleanup=partial(original.__exit__, None, None, None),
     )
 
 
@@ -1536,6 +1541,11 @@ async def download_document_file(
     "/{kb_id}/documents/{doc_id}/render",
     summary="Render a CAD drawing to an inline PNG preview",
     response_class=FileResponse,
+    responses={
+        200: {"content": {"image/png": {"schema": {"type": "string", "format": "binary"}}}},
+        415: {"description": "CAD preview conversion is unavailable for this document or host."},
+        502: {"description": "CAD conversion failed or exceeded the preview size limit."},
+    },
     description=(
         "Converts a DWG/DXF original with the configured external converter and returns a "
         "PNG for inline display. The image is cached per document content version, so an "
@@ -1556,8 +1566,14 @@ async def render_document_preview(
 
     assert server.services is not None
     source = KnowledgeSourceService(server.services)
-    original = source.open_original(kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user))
+    original = source.open_original(
+        kb_id,
+        doc_id,
+        actor_user_id=user.id,
+        is_admin=_is_admin(user),
+    )
     loop = asyncio.get_running_loop()
+    response_context = None
     try:
         metadata = source.describe_document(
             kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
@@ -1565,17 +1581,41 @@ async def render_document_preview(
         if not cad_preview.supports(str(metadata.get("filename") or "")):
             raise HTTPException(status_code=415, detail="this document has no CAD preview")
         row = server.services.knowledge_repo.get_document(doc_id)
-        path = await loop.run_in_executor(None, original.__enter__)
-        png = await loop.run_in_executor(
-            None,
-            partial(
-                cad_preview.render_preview,
-                kb_id=kb_id,
-                doc_id=doc_id,
-                original=path,
-                content_hash=(row.content_hash if row is not None else ""),
-                filename=str(metadata.get("filename") or ""),
-            ),
+        from octop.infra.utils.tempfiles import managed_tempdir
+
+        def create_snapshot() -> tuple[Any, Path]:
+            path = original.__enter__()
+            work_context = managed_tempdir(prefix="cad-preview-response-")
+            work_context_entered = False
+            try:
+                snapshot_dir = work_context.__enter__()
+                work_context_entered = True
+                png_path = cad_preview.snapshot_preview(
+                    kb_id=kb_id,
+                    doc_id=doc_id,
+                    original=path,
+                    content_hash=(row.content_hash if row is not None else ""),
+                    filename=str(metadata.get("filename") or ""),
+                    snapshot=snapshot_dir / "preview.png",
+                )
+            except BaseException:
+                error_info = sys.exc_info()
+                try:
+                    if work_context_entered:
+                        work_context.__exit__(*error_info)
+                finally:
+                    original.__exit__(*error_info)
+                raise
+            try:
+                original.__exit__(None, None, None)
+            except BaseException:
+                work_context.__exit__(*sys.exc_info())
+                raise
+            return work_context, png_path
+
+        pending = loop.run_in_executor(None, create_snapshot)
+        response_context, png = await wait_owned_worker(
+            pending, dispose=lambda result: result[0].__exit__(None, None, None)
         )
     except cad_preview.CadPreviewUnavailable as exc:
         raise HTTPException(status_code=415, detail=str(exc)) from exc
@@ -1585,9 +1625,8 @@ async def render_document_preview(
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
         ) from exc
-    finally:
-        original.__exit__(None, None, None)
-    return FileResponse(
+
+    return OwnedFileResponse(
         path=png,
         media_type="image/png",
         headers={
@@ -1596,6 +1635,7 @@ async def render_document_preview(
             ),
             "Cache-Control": "private, max-age=300",
         },
+        cleanup=partial(response_context.__exit__, None, None, None),
     )
 
 
@@ -1722,8 +1762,16 @@ async def delete_document(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> None:
     try:
-        _knowledge_service(server).delete_document(
-            kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
+        service = _knowledge_service(server)
+        await asyncio.get_running_loop().run_in_executor(
+            None,
+            partial(
+                service.delete_document,
+                kb_id,
+                doc_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
         )
     except Exception as exc:
         raise _map_knowledge_error(

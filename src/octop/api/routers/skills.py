@@ -34,10 +34,8 @@ import contextlib
 import logging
 import os
 import shutil
-import tempfile
 from collections.abc import Sequence
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, cast
 
 import yaml
@@ -79,6 +77,7 @@ from octop.infra.skills.skill_transfer import (
     read_workspace_skill_files,
 )
 from octop.infra.utils.locale import Locale, resolve_request_locale
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -1297,8 +1296,8 @@ async def _download_skillhub_package_via_cli(
     skillhub_bin = await _ensure_skillhub_cli()
     await _upgrade_skillhub_cli(skillhub_bin)
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        install_args = ["--dir", tmpdir, "install", skill_name]
+    with managed_tempdir(prefix="skillhub-install-") as tmpdir:
+        install_args = ["--dir", str(tmpdir), "install", skill_name]
         try:
             rc, _stdout, stderr = await _run_skillhub_cmd(
                 skillhub_bin,
@@ -1345,7 +1344,7 @@ async def _download_skillhub_package_via_cli(
                 detail=_skillhub_cli_failure_detail("install", err_msg, locale="en"),
             )
 
-        return read_cli_skill_install(Path(tmpdir))
+        return read_cli_skill_install(tmpdir)
 
 
 def _parse_skillhub_search_output(text: str) -> list[dict[str, Any]]:

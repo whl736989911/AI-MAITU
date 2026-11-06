@@ -1171,5 +1171,31 @@
     "datasets_required": "请先通过 list_datasets 选择 dataset_ids，或配置默认知识库 ID，再进行检索。",
     "invalid_id": "请提供有效的 {field}。",
     "unknown_tool": "未知的 RAGFlow 工具：{name}"
+  },
+  "storage": {
+    "title": "存储清单：{root}",
+    "locale_note": "显示语言遵循操作系统区域设置；为保持状态查询只读，不读取应用内语言偏好。",
+    "disk": "磁盘：总计 {total} 字节，可用 {free} 字节",
+    "category": {
+      "temp": "临时文件：{bytes} 字节（{files} 个）",
+      "previews": "预览缓存：{bytes} 字节（{files} 个）",
+      "logs": "日志：{bytes} 字节（{files} 个）",
+      "backups": "备份：{bytes} 字节（{files} 个）",
+      "knowledge": "知识库数据：{bytes} 字节（{files} 个）",
+      "workspaces": "工作区：{bytes} 字节（{files} 个）",
+      "databases": "数据库：{bytes} 字节（{files} 个）",
+      "models": "已下载模型：{bytes} 字节（{files} 个）",
+      "other": "其他：{bytes} 字节（{files} 个）"
+    },
+    "inventory_scope": "仅清点此存储根目录下的文件；目录外配置的数据库与工作区不计入。",
+    "scope": {
+      "sqlite": "数据库范围：存储根目录内的 SQLite 文件；排除配置在目录外的文件。",
+      "external": "数据库范围：配置的数据库位于远端或存储根目录外，其占用不计入。",
+      "outside": "数据库范围：配置的 SQLite 路径位于存储根目录外，其占用不计入。",
+      "unknown": "数据库范围：无法安全读取配置；详情请查看 JSON。"
+    },
+    "retention": "保留策略：保留原始资料、附件（包括缺少完整全局引用索引的工作区附件）、聊天内容、嵌入模型和手动备份；不按年龄删除数据，也不猜测孤立附件。轨迹保留 50 个用户轮次。仅在显式删除会话且不再有 body_refs 时，HistoryArchive 才会删除正文。临时工作目录用后清理；日志最多保留 14 天且轮转文件预算为 1 GiB；可重建预览缓存最多 7 天、1 GiB、10,000 个文件。",
+    "reclamation": "SQLite 空闲页（若存在）是可复用的数据库空间，不等于操作系统磁盘空闲。状态查询分别报告文件大小与磁盘空闲空间，但不读取 freelist。不会自动执行完整 VACUUM 或删除活动 sidecar。",
+    "error": "清单警告：{error}"
   }
 }

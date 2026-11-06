@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
-import tempfile
-from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile
@@ -31,6 +30,7 @@ from octop.infra.agents.plugins.catalog import (
 from octop.infra.agents.plugins.manager import PluginManager
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.server import OctopServer
+from octop.infra.utils.tempfiles import managed_tempdir
 
 router = APIRouter(prefix="/plugins", tags=["plugins"])
 
@@ -190,13 +190,16 @@ async def upload_plugin(
     if not raw:
         raise OctopError(ErrorCode.PLUGIN_INVALID_ARCHIVE, "empty plugin archive")
     try:
-        with tempfile.NamedTemporaryFile(suffix=".zip", delete=False) as tmp:
-            tmp.write(raw)
-            tmp_path = Path(tmp.name)
-        try:
-            loaded = mgr.install_archive(tmp_path, force=force)
-        finally:
-            tmp_path.unlink(missing_ok=True)
+
+        def _install() -> Any:
+            with managed_tempdir(
+                prefix="plugin-upload-", root=server.paths.root / "tmp"
+            ) as directory:
+                archive = directory / "plugin.zip"
+                archive.write_bytes(raw)
+                return mgr.install_archive(archive, force=force)
+
+        loaded = await asyncio.get_running_loop().run_in_executor(None, _install)
     except OctopError:
         raise
     except Exception as exc:

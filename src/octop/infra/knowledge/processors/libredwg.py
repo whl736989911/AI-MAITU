@@ -7,11 +7,11 @@ import os
 import re
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
 from octop.infra.knowledge.parse import ParsedBlock, ParsedDocument
+from octop.infra.utils.tempfiles import managed_tempdir
 
 _ENV = "OCTOP_LIBREDWG_DWGREAD"
 _TIMEOUT_SECONDS = 120
@@ -45,8 +45,8 @@ def parse_dwg(path: Path, *, source_path: str) -> ParsedDocument:
         raise CadProcessorUnavailable(
             f"DWG extraction unavailable: install LibreDWG 0.14 and configure {_ENV}"
         )
-    with tempfile.TemporaryDirectory(prefix="octop-libredwg-") as directory:
-        output = Path(directory) / "drawing.json"
+    with managed_tempdir(prefix="libredwg-") as directory:
+        output = directory / "drawing.json"
         try:
             result = subprocess.run(
                 [binary, "-O", "JSON", "-o", str(output), str(path)],

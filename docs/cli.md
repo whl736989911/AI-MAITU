@@ -38,6 +38,7 @@ Commands:
   run        Run octop-server in the foreground.
   service    System service lifecycle (start/stop/restart/status).
   skills     Per-agent skill enable/disable.
+  storage    Inspect storage usage without changing user data.
   update     Check for and install a newer 麦途 release.
   user       User management commands.
   version    Show the installed maitu version.
@@ -361,6 +362,22 @@ Default schedule when enabled: `cron:0 4 * * *` (daily 04:00, server
 timezone). Automatic archives are named `maitu-auto-backup-*.tar.gz`;
 retention only deletes those files and never touches manual
 `maitu-backup-*.tar.gz` archives.
+
+## `maitu storage`
+
+只读查看当前实例的文件占用，不需要运行中的服务或登录，也不会执行旧目录迁移、创建配置、删除文件或压缩数据库。
+
+```bash
+maitu storage status
+maitu storage status --home /path/to/instance
+maitu storage status --json
+```
+
+`octop storage status` 是同一入口。`--home` 必须写在 `status` 后；未指定时按 `MAITU_HOME`、兼容的 `OCTOP_HOME`、默认 `~/.maitu` 解析实例目录。只读盘点不会把旧的 `~/.octop` 自动迁到新目录，需要查看旧目录时请显式传入 `--home`。
+
+输出按临时文件、预览、日志、备份、知识库、工作区、数据库、已下载模型和其他文件分类计数，数据库文件及其 sidecar 不重复计入工作区。符号链接与 Windows junction 不会被遍历；实例目录外的数据库、自定义工作区及远程存储不属于本地盘点范围。读取失败会出现在报告中，不能把失败当成零占用。
+
+该命令不是 `maitu clean --all` 的别名，不提供“清空工作区”操作。自动维护只处理明确归属的平台临时目录、可重建预览和已识别的日志归档；原件、历史附件、交付文件、模型及手动备份保留。详见 [运行时存储生命周期](configuration.md#runtime-storage-lifecycle)。
 
 ## `maitu update`
 

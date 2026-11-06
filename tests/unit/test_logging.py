@@ -293,3 +293,26 @@ def test_setup_logging_respects_max_bytes_env(tmp_path: Path, monkeypatch):
         if isinstance(h, SizeTimedRotatingFileHandler) and h.baseFilename == str(server.paths.log)
     )
     assert handler.max_bytes == 8192
+
+
+def test_rotated_log_budget_evicts_oldest_without_touching_active_or_unknown_files(
+    tmp_path: Path,
+) -> None:
+    active = tmp_path / "maitu.log"
+    unknown = tmp_path / "maitu.log.manual-export"
+    active.write_bytes(b"active")
+    unknown.write_bytes(b"user copy")
+    oldest = tmp_path / "maitu.log.2026-01-01-001.gz"
+    newest = tmp_path / "maitu.log.2026-01-01-002"
+    oldest.write_bytes(b"a" * 8)
+    newest.write_bytes(b"b" * 8)
+    past = time.time() - 60
+    os.utime(oldest, (past, past))
+
+    _purge_stale_logs(tmp_path, retention_days=14, max_total_bytes=10)
+    delaycompress_rotated_logs(tmp_path, enabled=True)
+
+    assert not oldest.exists()
+    assert newest.read_bytes() == b"b" * 8
+    assert active.read_bytes() == b"active"
+    assert unknown.read_bytes() == b"user copy"

@@ -9,7 +9,6 @@ import json
 import logging
 import os
 import socket
-import tempfile
 import threading
 import time
 from collections.abc import Sequence
@@ -20,6 +19,8 @@ from typing import Any, cast
 from deepagents.backends.composite import CompositeBackend
 from deepagents.backends.filesystem import FilesystemBackend
 from deepagents.backends.protocol import ExecuteResponse, SandboxBackendProtocol
+
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -355,13 +356,17 @@ class IsolatedFilesystemBackend(FilesystemBackend, SandboxBackendProtocol):
         docker_sdk = cast(Any, docker)
         client = docker_sdk.from_env(timeout=_DOCKER_TIMEOUT)
         container = None
-        work_dir: tempfile.TemporaryDirectory[str] | None = None
+        temporary = contextlib.ExitStack()
         started = time.monotonic()
         try:
             image, host_workspace = _resolve_image_and_workspace(
                 client, self.cwd, self._managed_root
             )
-            work_dir = tempfile.TemporaryDirectory(prefix=".execute-", dir=self.cwd.parent)
+            scratch = temporary.enter_context(
+                managed_tempdir("execute-", root=self.cwd.parent / ".execute-tmp")
+            )
+            work_dir = scratch / "overlay"
+            work_dir.mkdir()
             runner_argv = [
                 "/usr/bin/env",
                 "-i",
@@ -381,7 +386,7 @@ class IsolatedFilesystemBackend(FilesystemBackend, SandboxBackendProtocol):
                         "shared_writable": shared_writable,
                         "readonly_dirs": self._readonly_dirs,
                         "workspace_name": host_workspace.name,
-                        "work_name": Path(work_dir.name).name,
+                        "work_name": work_dir.relative_to(self.cwd.parent).as_posix(),
                     }
                 ),
             ]
@@ -471,9 +476,10 @@ class IsolatedFilesystemBackend(FilesystemBackend, SandboxBackendProtocol):
                     container.remove(force=True, v=True)
                 except Exception:
                     logger.warning("Could not remove isolated execute container")
-            client.close()
-            if work_dir is not None:
-                work_dir.cleanup()
+            try:
+                client.close()
+            finally:
+                temporary.close()
 
 
 class IsolatedCompositeBackend(CompositeBackend, SandboxBackendProtocol):

@@ -7,7 +7,6 @@ import logging
 import os
 import shutil
 import sys
-import tempfile
 import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
@@ -19,6 +18,7 @@ from typing import Any
 import httpx
 
 from octop.infra.agents.providers.onnx_catalog import get_onnx_model_meta
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -427,7 +427,7 @@ def export_model_tree_for_cos(
     hf_repo = _hf_repo_id(model_name)
     dest = cos_local_model_dir(dest_root, model_name)
     tqdm_cls = _progress_tqdm(on_progress) if on_progress is not None else None
-    with tempfile.TemporaryDirectory(prefix="octop-onnx-cos-") as tmp:
+    with managed_tempdir(prefix="onnx-cos-") as tmp:
         snapshot = Path(
             snapshot_download(
                 repo_id=hf_repo,

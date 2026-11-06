@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import tempfile
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, cast
 
-from fastapi import APIRouter, BackgroundTasks, Depends, File, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Query, UploadFile
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from octop.api.common.content_disposition import content_disposition
+from octop.api.common.temporary_files import OwnedFileResponse
 from octop.api.deps import get_server, require_permission
 from octop.config import DatabaseConfig, load_config
 from octop.infra.backup.auto import (
@@ -41,6 +41,7 @@ from octop.infra.db.pool import DatabasePool
 from octop.infra.db.repos.audit import ACTOR_ADMIN
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.paths import PathLayout
+from octop.infra.utils.tempfiles import managed_tempdir
 
 logger = logging.getLogger(__name__)
 
@@ -108,9 +109,9 @@ def _create_and_store_manual_backup(
     db_config: DatabaseConfig,
     options: CreateBackupBody,
 ) -> BackupFileInfo:
-    """Sync create + place for ``asyncio.to_thread`` (keeps the event loop free)."""
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp) / "backup.tar.gz"
+    """Sync create + place for the backup worker (keeps the event loop free)."""
+    with managed_tempdir(prefix="manual-backup-", root=paths.root / "tmp") as tmp:
+        tmp_path = tmp / "backup.tar.gz"
         filename = create_system_backup(
             paths=paths,
             agent_rows=agent_rows,
@@ -136,7 +137,7 @@ def _restore_stored_backup(
     restore_config: bool,
     owner_user_id: int,
 ) -> dict[str, Any]:
-    """Sync path-based restore for ``asyncio.to_thread``."""
+    """Sync path-based restore for a worker thread."""
     archive = resolve_backup_path(paths, filename)
     return restore_system_backup(
         archive,
@@ -155,11 +156,11 @@ def _create_ephemeral_backup(
     pool: DatabasePool,
     db_config: DatabaseConfig,
     options: CreateBackupBody,
-) -> tuple[Path, str]:
-    """Write a backup to a temp file; caller must delete after the response is sent."""
-    fd, name = tempfile.mkstemp(prefix="octop-export-", suffix=".tar.gz")
-    os.close(fd)
-    tmp_path = Path(name)
+) -> tuple[Path, str, ExitStack]:
+    """Create a response archive whose owner outlives request preparation."""
+    owner = ExitStack()
+    tmp = owner.enter_context(managed_tempdir(prefix="backup-export-", root=paths.root / "tmp"))
+    tmp_path = tmp / "backup.tar.gz"
     try:
         filename = create_system_backup(
             paths=paths,
@@ -174,17 +175,10 @@ def _create_ephemeral_backup(
             include_knowledge=options.include_knowledge,
             include_chats=options.include_chats,
         )
-    except Exception:
-        tmp_path.unlink(missing_ok=True)
+    except BaseException:
+        owner.close()
         raise
-    return tmp_path, filename
-
-
-def _unlink_quiet(path: Path) -> None:
-    try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        logger.warning("failed to remove ephemeral backup %s", path, exc_info=True)
+    return tmp_path, filename, owner
 
 
 async def _rehydrate_runtime_after_restore(server: Any) -> None:
@@ -400,7 +394,6 @@ async def remove_backup_file(
     response_class=FileResponse,
 )
 async def export_backup(
-    background_tasks: BackgroundTasks,
     include_config: bool = Query(default=True),
     include_workspaces: bool = Query(default=True),
     include_skill_packages: bool = Query(default=True),
@@ -434,14 +427,14 @@ async def export_backup(
             ),
         )
         try:
-            tmp_path, filename = await wait_backup_worker(worker)
+            tmp_path, filename, owner = await wait_backup_worker(worker)
         except asyncio.CancelledError:
-            tmp_path, _filename = worker.result()
-            await wait_backup_worker(start_backup_worker(_unlink_quiet, tmp_path))
+            _tmp_path, _filename, owner = worker.result()
+            await wait_backup_worker(start_backup_worker(owner.close))
             raise
-    background_tasks.add_task(_unlink_quiet, tmp_path)
-    return FileResponse(
+    return OwnedFileResponse(
         tmp_path,
+        cleanup=owner.close,
         media_type="application/gzip",
         filename=filename,
         headers={"Content-Disposition": content_disposition(filename)},

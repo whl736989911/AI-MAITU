@@ -60,4 +60,5 @@ COMMANDS: dict[str, tuple[str, str, str]] = {
         "license",
         "Instance license status and activation (offline import supported).",
     ),
+    "storage": (".commands.storage", "storage", "Read-only storage inventory."),
 }

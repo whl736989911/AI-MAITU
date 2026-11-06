@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import shutil
 from unittest.mock import patch
 
 from octop.api.routers.terminal import (
@@ -31,7 +30,7 @@ def test_terminal_unsupported_on_windows() -> None:
 def test_zsh_web_zdotdir_sources_user_rc_and_clears_prompt_markers() -> None:
     if os.name != "posix":
         return
-    zdotdir = _zsh_web_zdotdir()
+    zdotdir, owner = _zsh_web_zdotdir()
     try:
         rc_path = os.path.join(zdotdir, ".zshrc")
         assert os.path.isfile(rc_path)
@@ -42,4 +41,5 @@ def test_zsh_web_zdotdir_sources_user_rc_and_clears_prompt_markers() -> None:
         assert "prompt_sp" in text
         assert 'source "${HOME}/.zshrc"' in text
     finally:
-        shutil.rmtree(zdotdir, ignore_errors=True)
+        owner.__exit__(None, None, None)
+    assert not os.path.exists(zdotdir)
