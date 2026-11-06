@@ -796,7 +796,7 @@ Zed setup example.
 | `PATCH` | `/knowledge-bases/{kb}/documents/{doc}/metadata` | writer | merge typed field values; `null`/empty clears a value |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/facts` | reader | located facts extracted from this document (dimension annotations, clause numbers, …) |
 | `GET` | `/knowledge-bases/{kb}/facts?q=…` | reader | search located facts across readable documents; optional `fact_type`, `limit` ≤ 200 |
-| `POST` | `/knowledge-bases/{kb}/documents/{doc}/enrich` | reader | bounded preview + metadata schema sent to the active chat model; returns a `pending` suggestion and never writes the document |
+| `POST` | `/knowledge-bases/{kb}/documents/{doc}/enrich` | writer | bounded preview + metadata schema sent to the active chat model; returns a `pending` suggestion only if the document version is still current after generation |
 | `GET` | `/knowledge-bases/{kb}/suggestions?document_id=…&status=…` | reader | pending/applied/rejected AI suggestions, filtered to readable documents |
 | `POST` | `/knowledge-bases/{kb}/suggestions/{id}/apply` | writer | optional reviewed `fields`; revalidates the schema and document SHA-256, then merges values through document metadata |
 | `POST` | `/knowledge-bases/{kb}/suggestions/{id}/reject` | writer | marks the suggestion rejected; the document is unchanged |
@@ -822,10 +822,15 @@ Document metadata is a generic, per-base capability: fields are typed
 (`text`, `number`, `date`, or `enum`) and validation happens server-side.
 AI suggestions are also review-only: the model receives at most 12,000
 characters of the verified preview plus the base's field definitions, and its
-summary, keywords and field values are stored as `pending`. Applying a
-suggestion requires document write permission, drops unknown or invalid values,
-and returns `409 KNOWLEDGE_SOURCE_VERSION_CHANGED` when the file changed after
-the suggestion was generated. Summary and keywords are advisory; only schema
+summary, keywords and field values are stored as `pending`. A document change
+during generation rejects that result without superseding a newer suggestion.
+Applying a suggestion requires document write permission and a ready document.
+The server verifies the actual uploaded or connected original's SHA-256, not
+only the cached row hash, and rejects changed content with
+`409 KNOWLEDGE_SOURCE_VERSION_CHANGED`. Reviewed values must match the current
+schema; removed, unknown or invalid fields return
+`400 KNOWLEDGE_METADATA_INVALID` and leave the suggestion pending. Summary and
+keywords are advisory; only schema
 fields are written back.
 
 Values are stored per document and are visible only where that document is

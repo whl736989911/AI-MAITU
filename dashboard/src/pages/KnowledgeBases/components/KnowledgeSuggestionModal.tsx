@@ -53,6 +53,8 @@ export default function KnowledgeSuggestionModal({
   // another document invalidates older requests so their response cannot
   // replace the suggestion now on screen.
   const requestRef = useRef(0);
+  const sessionRef = useRef(0);
+  const targetId = target?.id;
 
   const adopt = useCallback((next: KnowledgeDocumentSuggestion | null) => {
     setSuggestion(next);
@@ -85,15 +87,18 @@ export default function KnowledgeSuggestionModal({
   );
 
   useEffect(() => {
+    const sessionId = ++sessionRef.current;
     const requestId = ++requestRef.current;
-    if (!open || !target) return;
+    setGenerating(false);
+    setDeciding(false);
     adopt(null);
     setError("");
-    void loadPending(requestId, target.id);
+    if (open && targetId) void loadPending(requestId, targetId);
     return () => {
-      if (requestRef.current === requestId) requestRef.current += 1;
+      if (sessionRef.current === sessionId) sessionRef.current += 1;
+      requestRef.current += 1;
     };
-  }, [adopt, loadPending, open, target]);
+  }, [adopt, loadPending, open, targetId]);
 
   const generate = async () => {
     if (!target) return;
@@ -120,6 +125,7 @@ export default function KnowledgeSuggestionModal({
 
   const apply = async () => {
     if (!suggestion) return;
+    const sessionId = sessionRef.current;
     setDeciding(true);
     try {
       await knowledgeBasesApi.applySuggestion(
@@ -127,34 +133,39 @@ export default function KnowledgeSuggestionModal({
         suggestion.suggestion_id,
         values,
       );
+      if (sessionId !== sessionRef.current) return;
       message.success(t("knowledgeBases.suggestions.applySuccess"));
       onSaved?.();
       onClose();
     } catch (err) {
+      if (sessionId !== sessionRef.current) return;
       message.error(
         apiErrorMessage(err, t("knowledgeBases.suggestions.applyFailed"), t),
       );
     } finally {
-      setDeciding(false);
+      if (sessionId === sessionRef.current) setDeciding(false);
     }
   };
 
   const reject = async () => {
     if (!suggestion) return;
+    const sessionId = sessionRef.current;
     setDeciding(true);
     try {
       await knowledgeBasesApi.rejectSuggestion(
         baseId,
         suggestion.suggestion_id,
       );
+      if (sessionId !== sessionRef.current) return;
       message.success(t("knowledgeBases.suggestions.rejectSuccess"));
       adopt(null);
     } catch (err) {
+      if (sessionId !== sessionRef.current) return;
       message.error(
         apiErrorMessage(err, t("knowledgeBases.suggestions.rejectFailed"), t),
       );
     } finally {
-      setDeciding(false);
+      if (sessionId === sessionRef.current) setDeciding(false);
     }
   };
 
@@ -180,7 +191,7 @@ export default function KnowledgeSuggestionModal({
           <Space>
             <Button
               icon={<X size={14} />}
-              disabled={deciding}
+              disabled={deciding || generating}
               onClick={() => void reject()}
             >
               {t("knowledgeBases.suggestions.reject")}
@@ -189,6 +200,7 @@ export default function KnowledgeSuggestionModal({
               type="primary"
               icon={<Check size={14} />}
               loading={deciding}
+              disabled={generating}
               onClick={() => void apply()}
             >
               {t("knowledgeBases.suggestions.apply")}

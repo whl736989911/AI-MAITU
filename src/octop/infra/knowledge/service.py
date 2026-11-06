@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import unicodedata
 from collections.abc import Sequence
 from pathlib import Path
@@ -913,9 +914,9 @@ class KnowledgeService:
         return cast(
             list[dict[str, Any]],
             self._repo.search_facts(
-            kb_id,
-            query=query,
-            fact_type=fact_type,
+                kb_id,
+                query=query,
+                fact_type=fact_type,
                 allowed_document_ids=allowed,
                 limit=max(1, min(limit, 200)),
             ),
@@ -1077,6 +1078,11 @@ class KnowledgeService:
         resolved_type = _resolve_content_type(name, content_type)
         if resolved_type not in _ALLOWED_CONTENT_TYPES:
             raise ValueError(f"unsupported knowledge document content type: {content_type}")
+        for parent in ancestor_dirs(rel):
+            folder = self._repo.get_document_by_path(kb_id, parent)
+            if folder is None or not folder.is_dir:
+                raise ValueError("destination folder not found")
+            self.require_document_writable(folder, actor_user_id=actor_user_id)
         occupied = self._repo.get_document_by_path(kb_id, rel)
         if occupied is not None and occupied.id != doc_id:
             raise ValueError("a knowledge document with this name already exists")
@@ -1197,9 +1203,23 @@ class KnowledgeService:
             return cast(KnowledgeDocumentRow, document)
         if self._repo.get_document_by_path(kb_id, new_path) is not None:
             raise ValueError("a knowledge document with this name already exists")
-        result = self._repo.rename_document(kb_id, doc_id, cleaned)
+        old_file = document_path(kb_id, doc_id, document.filename)
+        new_file = document_path(kb_id, doc_id, cleaned)
+        moved_original = not document.is_dir and old_file != new_file and old_file.exists()
+        if moved_original:
+            shutil.copyfile(old_file, new_file)
+        try:
+            result = self._repo.rename_document(kb_id, doc_id, cleaned)
+        except Exception:
+            if moved_original:
+                delete_document_file(kb_id, doc_id, cleaned)
+            raise
         if result is None:
+            if moved_original:
+                delete_document_file(kb_id, doc_id, cleaned)
             raise LookupError("knowledge document not found")
+        if moved_original:
+            delete_document_file(kb_id, doc_id, document.filename)
         self._refresh_collections(kb_id, doc_id)
         return cast(KnowledgeDocumentRow, result)
 

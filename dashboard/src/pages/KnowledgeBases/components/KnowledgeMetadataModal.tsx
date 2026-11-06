@@ -54,7 +54,7 @@ export default function KnowledgeMetadataModal({
   const { t } = useTranslation();
   const editingDocument = Boolean(target);
   const [fields, setFields] = useState<KnowledgeMetadataField[]>(schema);
-  const [optionText, setOptionText] = useState<Record<string, string>>({});
+  const [optionText, setOptionText] = useState<string[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
 
@@ -65,37 +65,29 @@ export default function KnowledgeMetadataModal({
       return;
     }
     setFields(schema);
-    setOptionText(
-      Object.fromEntries(
-        schema.map((field) => [field.key, (field.options ?? []).join(", ")]),
-      ),
-    );
+    setOptionText(schema.map((field) => (field.options ?? []).join(", ")));
   }, [editingDocument, open, schema, target]);
 
   const title = editingDocument
     ? t("knowledgeBases.metadata.documentTitle")
     : t("knowledgeBases.metadata.schemaTitle");
 
-  const updateField = (index: number, patch: Partial<KnowledgeMetadataField>) => {
-    const previousKey = fields[index]?.key;
-    const nextKey = patch.key;
+  const updateField = (
+    index: number,
+    patch: Partial<KnowledgeMetadataField>,
+  ) => {
     setFields((current) =>
-      current.map((field, idx) => (idx === index ? { ...field, ...patch } : field)),
+      current.map((field, idx) =>
+        idx === index ? { ...field, ...patch } : field,
+      ),
     );
-    if (nextKey !== undefined && previousKey !== undefined && nextKey !== previousKey) {
-      setOptionText((current) => {
-        if (!(previousKey in current)) return current;
-        const { [previousKey]: moved, ...rest } = current;
-        return { ...rest, [nextKey]: moved };
-      });
-    }
   };
 
   const schemaPayload = useMemo(
     () =>
-      fields.map((field) => ({
+      fields.map((field, index) => ({
         ...field,
-        options: (optionText[field.key] ?? field.options.join(", "))
+        options: (optionText[index] ?? field.options.join(", "))
           .split(",")
           .map((value) => value.trim())
           .filter(Boolean),
@@ -115,7 +107,10 @@ export default function KnowledgeMetadataModal({
         onDocumentSaved?.(target.id, result.metadata);
         message.success(t("knowledgeBases.metadata.documentSaved"));
       } else {
-        const result = await knowledgeBasesApi.putMetadataSchema(baseId, schemaPayload);
+        const result = await knowledgeBasesApi.putMetadataSchema(
+          baseId,
+          schemaPayload,
+        );
         onSchemaSaved?.(result.fields);
         message.success(t("knowledgeBases.metadata.saved"));
       }
@@ -148,7 +143,9 @@ export default function KnowledgeMetadataModal({
           ) : (
             schema.map((field) => (
               <label key={field.key} style={{ display: "block" }}>
-                <Typography.Text strong>{field.label || field.key}</Typography.Text>
+                <Typography.Text strong>
+                  {field.label || field.key}
+                </Typography.Text>
                 {field.type === "enum" ? (
                   <Select
                     allowClear
@@ -213,13 +210,17 @@ export default function KnowledgeMetadataModal({
                 style={{ width: 130 }}
                 placeholder={t("knowledgeBases.metadata.key")}
                 value={field.key}
-                onChange={(event) => updateField(index, { key: event.target.value })}
+                onChange={(event) =>
+                  updateField(index, { key: event.target.value })
+                }
               />
               <Input
                 style={{ width: 150 }}
                 placeholder={t("knowledgeBases.metadata.label")}
                 value={field.label}
-                onChange={(event) => updateField(index, { label: event.target.value })}
+                onChange={(event) =>
+                  updateField(index, { label: event.target.value })
+                }
               />
               <Select
                 style={{ width: 110 }}
@@ -234,12 +235,15 @@ export default function KnowledgeMetadataModal({
                 <Input
                   style={{ width: 180 }}
                   placeholder={t("knowledgeBases.metadata.options")}
-                  value={optionText[field.key] ?? field.options.join(", ")}
+                  value={optionText[index] ?? field.options.join(", ")}
                   onChange={(event) =>
-                    setOptionText((current) => ({
-                      ...current,
-                      [field.key]: event.target.value,
-                    }))
+                    setOptionText((current) =>
+                      fields.map((item, idx) =>
+                        idx === index
+                          ? event.target.value
+                          : current[idx] ?? item.options.join(", "),
+                      ),
+                    )
                   }
                 />
               ) : null}
@@ -266,15 +270,25 @@ export default function KnowledgeMetadataModal({
               <Button
                 danger
                 type="text"
-                onClick={() =>
-                  setFields((current) => current.filter((_, idx) => idx !== index))
-                }
+                onClick={() => {
+                  setFields((current) =>
+                    current.filter((_, idx) => idx !== index),
+                  );
+                  setOptionText((current) =>
+                    current.filter((_, idx) => idx !== index),
+                  );
+                }}
               >
                 {t("knowledgeBases.metadata.remove")}
               </Button>
             </Space>
           ))}
-          <Button onClick={() => setFields((current) => [...current, emptyField()])}>
+          <Button
+            onClick={() => {
+              setFields((current) => [...current, emptyField()]);
+              setOptionText((current) => [...current, ""]);
+            }}
+          >
             {t("knowledgeBases.metadata.addField")}
           </Button>
         </Space>

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable, Sequence
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -120,15 +121,26 @@ def extract_facts(
         text = block.text or ""
         if not text.strip():
             continue
-        locator = dict(block.locator or {"kind": "document"})
+        locator = deepcopy(dict(block.locator or {"kind": "document"}))
         for extractor in selected:
             try:
-                for fact in extractor.extract(text, locator):
-                    key = (fact.fact_type, fact.normalized, repr(sorted(locator.items())))
+                for fact in extractor.extract(text, deepcopy(locator)):
+                    fact_locator = deepcopy(fact.locator)
+                    key = (fact.fact_type, fact.normalized, repr(sorted(fact_locator.items())))
                     if key in seen:
                         continue
                     seen.add(key)
-                    facts.append(fact)
+                    # Freeze each emitted location before a generator reuses
+                    # its dictionary, while retaining extractor refinements.
+                    facts.append(
+                        Fact(
+                            fact_type=fact.fact_type,
+                            value=fact.value,
+                            normalized=fact.normalized,
+                            locator=fact_locator,
+                            extractor=fact.extractor,
+                        )
+                    )
                     if len(facts) >= limit:
                         return facts
             except Exception:  # an extractor bug must not fail ingestion

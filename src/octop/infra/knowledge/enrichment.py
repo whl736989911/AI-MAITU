@@ -15,6 +15,7 @@ import logging
 from typing import Any, cast
 
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.knowledge.files import file_digest
 from octop.infra.knowledge.metadata import validate_suggested_values
 from octop.infra.knowledge.service import KnowledgeService
 from octop.infra.utils.ulid import new_ulid
@@ -75,6 +76,18 @@ class KnowledgeEnrichmentService:
                 ErrorCode.MODEL_UNAVAILABLE, "no chat model is configured for enrichment"
             )
         payload = self._call_model(llm, preview, schema)
+        current = self._repo.get_document(doc_id)
+        if (
+            current is None
+            or current.kb_id != kb_id
+            or current.content_hash != document.content_hash
+            or current.status != document.status
+        ):
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                "the document changed while the suggestion was being generated",
+            )
+        knowledge.require_document_writable(current, actor_user_id=actor_user_id)
         summary = str(payload.get("summary") or "").strip()[:_MAX_SUMMARY_CHARS]
         raw_keywords = payload.get("keywords")
         keywords = []
@@ -155,18 +168,28 @@ class KnowledgeEnrichmentService:
                 ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
                 "the document changed after this suggestion was generated",
             )
+        if suggestion["content_hash"]:
+            from octop.infra.knowledge.source_access import KnowledgeSourceService
+
+            with KnowledgeSourceService(self._services).open_original(
+                kb_id, document.id, actor_user_id=actor_user_id, is_admin=is_admin
+            ) as original:
+                if file_digest(original) != suggestion["content_hash"]:
+                    raise OctopError(
+                        ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                        "the original changed after this suggestion was generated",
+                    )
         schema = knowledge.get_metadata_schema(
             kb_id, actor_user_id=actor_user_id, is_admin=is_admin
         )
         chosen = fields if fields is not None else suggestion["fields"]
         schema_keys = {str(field["key"]) for field in schema}
-        if fields is not None:
-            unknown = sorted(str(key) for key in fields if str(key) not in schema_keys)
-            if unknown:
-                raise OctopError(
-                    ErrorCode.KNOWLEDGE_METADATA_INVALID,
-                    f"unknown metadata field(s): {', '.join(unknown)}",
-                )
+        unknown = sorted(str(key) for key in chosen if str(key) not in schema_keys)
+        if unknown:
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_METADATA_INVALID,
+                f"unknown metadata field(s): {', '.join(unknown)}",
+            )
         reviewed = {
             str(key): value
             for key, value in chosen.items()
