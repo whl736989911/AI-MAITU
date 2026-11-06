@@ -65,3 +65,34 @@ def test_broken_extractor_iteration_does_not_fail_ingestion() -> None:
 
 def test_fact_limit_must_be_positive_to_return_facts() -> None:
     assert extract_facts([ParsedBlock(text="φ120", kind="page", locator={})], limit=0) == []
+
+
+def test_extractor_locators_are_isolated_and_emitted_locations_are_frozen() -> None:
+    class RefiningExtractor:
+        name = "refining"
+
+        def extract(self, text: str, locator: dict):
+            locator["offset"] = 1
+            locator["details"]["section"] = "first"
+            yield Fact("custom", text, text, locator, self.name)
+            locator["offset"] = 2
+            locator["details"]["section"] = "second"
+            yield Fact("custom", text, text, locator, self.name)
+
+    class FollowingExtractor:
+        name = "following"
+
+        def extract(self, text: str, locator: dict):
+            yield Fact("following", text, text, locator, self.name)
+
+    source_locator = {"page": 2, "details": {"section": "A"}}
+    facts = extract_facts(
+        [ParsedBlock(text="source fact", kind="page", locator=source_locator)],
+        extractors=[RefiningExtractor(), FollowingExtractor()],
+    )
+    assert [fact.locator for fact in facts] == [
+        {"page": 2, "details": {"section": "first"}, "offset": 1},
+        {"page": 2, "details": {"section": "second"}, "offset": 2},
+        source_locator,
+    ]
+    assert source_locator == {"page": 2, "details": {"section": "A"}}

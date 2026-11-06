@@ -14,6 +14,7 @@ import math
 import re
 from collections.abc import Mapping
 from datetime import date
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 FIELD_TYPES = frozenset({"text", "number", "date", "enum"})
@@ -182,15 +183,18 @@ def validate_suggested_values(schema: list[dict[str, Any]], raw: Any) -> dict[st
         if field is None or value is None or value == "" or value == []:
             continue
         if field.get("type") == "number" and isinstance(value, str):
-            # Models commonly quote numbers; accept a plain decimal form while
-            # still rejecting booleans, NaN/Infinity and arbitrary text.
+            # Parse integer-valued suggestions without routing them through a
+            # binary float, which would round large but valid integers.
             stripped = value.strip()
             if not re.fullmatch(r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?", stripped):
                 continue
-            number = float(stripped)
-            if not math.isfinite(number):
+            try:
+                number = Decimal(stripped)
+                if not number.is_finite() or not math.isfinite(float(number)):
+                    continue
+                value = int(number) if number == number.to_integral_value() else float(number)
+            except (InvalidOperation, OverflowError, ValueError):
                 continue
-            value = int(number) if number.is_integer() else number
         try:
             out[str(key)] = _validate_value(field, value)
         except MetadataError:

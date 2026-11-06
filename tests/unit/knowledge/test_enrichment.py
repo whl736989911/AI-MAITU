@@ -17,6 +17,7 @@ from octop.infra.db.services import RepoBundle
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge import service as service_module
 from octop.infra.knowledge.enrichment import KnowledgeEnrichmentService
+from octop.infra.knowledge.files import document_digest, write_document
 from octop.infra.knowledge.service import KnowledgeService
 from octop.infra.sharing import AclEntry
 from octop.infra.utils.paths import PathLayout
@@ -70,7 +71,11 @@ def _setup(env: SimpleNamespace):
     document = services.knowledge_repo.create_document(
         kb_id=kb.id, filename="drawing.pdf", content_type="application/pdf", byte_size=1
     )
-    services.knowledge_repo.update_document(document.id, status="ready")
+    content = b"original document"
+    write_document(kb.id, document.id, document.filename, content)
+    services.knowledge_repo.update_document(
+        document.id, status="ready", content_hash=document_digest(content)
+    )
     service = KnowledgeService(services)
     service.update_metadata_schema(
         kb.id,
@@ -99,7 +104,6 @@ def test_enrichment_stores_pending_suggestion_and_filters_fields(env: SimpleName
 
 def test_apply_writes_metadata_and_rejects_a_stale_suggestion(env: SimpleNamespace) -> None:
     owner, kb, document, service = _setup(env)
-    env.services.knowledge_repo.update_document(document.id, content_hash="v1")
     enrichment = KnowledgeEnrichmentService(env.services)
     suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
 
@@ -215,12 +219,11 @@ def test_apply_rejects_a_document_that_is_waiting_for_reindex(env: SimpleNamespa
         enrichment.apply_suggestion(kb.id, suggestion["suggestion_id"], actor_user_id=owner)
     assert not_ready.value.code is ErrorCode.KNOWLEDGE_INDEX_NOT_READY
 
+
 def test_apply_rejects_unknown_explicit_review_fields(env: SimpleNamespace) -> None:
     owner, kb, document, _service = _setup(env)
     enrichment = KnowledgeEnrichmentService(env.services)
-    suggestion = enrichment.enrich_document(
-        kb.id, document.id, actor_user_id=owner, llm=object()
-    )
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
 
     with pytest.raises(OctopError) as invalid:
         enrichment.apply_suggestion(
@@ -230,4 +233,66 @@ def test_apply_rejects_unknown_explicit_review_fields(env: SimpleNamespace) -> N
             fields={"not_a_field": "x"},
         )
     assert invalid.value.code is ErrorCode.KNOWLEDGE_METADATA_INVALID
-    assert env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"] == "pending"
+    assert (
+        env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"]
+        == "pending"
+    )
+
+
+def test_changed_document_during_generation_does_not_replace_current_suggestion(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, kb, document, _service = _setup(env)
+    repo = env.services.knowledge_repo
+    repo.update_document(document.id, content_hash="v1")
+
+    async def document_changes(_llm, _messages, timeout=None):
+        repo.update_document(document.id, content_hash="v2")
+        repo.create_suggestion(
+            suggestion_id="current-v2",
+            document_id=document.id,
+            kb_id=kb.id,
+            content_hash="v2",
+            summary="current content",
+            keywords=[],
+            fields={"drawing_no": "NEW"},
+            model="test",
+        )
+        return MODEL_JSON
+
+    monkeypatch.setattr("octop.infra.utils.llm_text.ainvoke_text", document_changes)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    with pytest.raises(OctopError) as stale:
+        enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    assert stale.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
+    pending = enrichment.list_suggestions(kb.id, actor_user_id=owner, status="pending")
+    assert [row["suggestion_id"] for row in pending] == ["current-v2"]
+
+
+def test_removed_schema_field_cannot_be_silently_applied(env: SimpleNamespace) -> None:
+    owner, kb, document, knowledge = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    knowledge.update_metadata_schema(kb.id, actor_user_id=owner, schema=[])
+    with pytest.raises(OctopError) as invalid:
+        enrichment.apply_suggestion(kb.id, suggestion["suggestion_id"], actor_user_id=owner)
+    assert invalid.value.code is ErrorCode.KNOWLEDGE_METADATA_INVALID
+    assert (
+        env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"]
+        == "pending"
+    )
+
+
+def test_apply_checks_actual_original_bytes_not_only_the_cached_hash(env: SimpleNamespace) -> None:
+    owner, kb, document, _knowledge = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    write_document(kb.id, document.id, document.filename, b"externally changed")
+    with pytest.raises(OctopError) as stale:
+        enrichment.apply_suggestion(kb.id, suggestion["suggestion_id"], actor_user_id=owner)
+    assert stale.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
+    assert env.services.knowledge_repo.get_document(document.id).metadata == {}
+    assert (
+        env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"]
+        == "pending"
+    )

@@ -143,8 +143,19 @@ def test_numbers_must_be_finite(value: float) -> None:
         normalize_values(SCHEMA, {"drawing_no": "A-1", "weight": value})
     assert validate_suggested_values(SCHEMA, {"weight": value}) == {}
 
+
 def test_numeric_filters_compare_large_integers_exactly() -> None:
-    assert not metadata_matches(
-        {"weight": 9007199254740993}, {"weight": 9007199254740992.0}
-    )
+    assert not metadata_matches({"weight": 9007199254740993}, {"weight": 9007199254740992.0})
     assert metadata_matches({"weight": 1}, {"weight": 1.0})
+
+
+@pytest.mark.parametrize(
+    ("suggestion", "expected"),
+    [
+        ("9007199254740993", 9007199254740993),
+        ("9007199254740993123456789", 9007199254740993123456789),
+        ("9.007199254740993e15", 9007199254740993),
+    ],
+)
+def test_suggested_integer_strings_preserve_exact_value(suggestion: str, expected: int) -> None:
+    assert validate_suggested_values(SCHEMA, {"weight": suggestion}) == {"weight": expected}

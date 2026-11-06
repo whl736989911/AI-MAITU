@@ -1,4 +1,5 @@
 import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -74,5 +75,47 @@ describe("<KnowledgeMetadataModal />", () => {
     );
     await waitFor(() => expect(api.putMetadataSchema).toHaveBeenCalledTimes(1));
     expect(api.putMetadataSchema.mock.calls[0][1][0].options).toEqual(["B1"]);
+  });
+  it("keeps each row's edited options when keys temporarily collide", () => {
+    render(
+      <KnowledgeMetadataModal
+        open
+        baseId="kb"
+        schema={[
+          {
+            key: "alpha",
+            label: "Alpha",
+            type: "enum",
+            options: ["A"],
+            required: false,
+            searchable: true,
+          },
+          {
+            key: "beta",
+            label: "Beta",
+            type: "enum",
+            options: ["B"],
+            required: false,
+            searchable: true,
+          },
+        ]}
+        onClose={() => undefined}
+      />,
+    );
+    const inputs = screen.getAllByPlaceholderText(
+      "knowledgeBases.metadata.options",
+    );
+    fireEvent.change(inputs[0], { target: { value: "A edited" } });
+    fireEvent.change(inputs[1], { target: { value: "B edited" } });
+    const key = screen.getAllByPlaceholderText(
+      "knowledgeBases.metadata.key",
+    )[0];
+    fireEvent.change(key, { target: { value: "beta" } });
+    fireEvent.change(key, { target: { value: "gamma" } });
+    const options = screen.getAllByPlaceholderText(
+      "knowledgeBases.metadata.options",
+    );
+    expect(options[0]).toHaveValue("A edited");
+    expect(options[1]).toHaveValue("B edited");
   });
 });

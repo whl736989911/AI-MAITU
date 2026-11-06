@@ -52,7 +52,10 @@ const GRANTEE_TYPES: readonly SharingGranteeType[] = ["user", "unit", "role"];
 /** Read first: it is the default and the narrower of the two. */
 const PERMISSIONS: readonly SharingPermission[] = ["read", "upload", "write"];
 /** Only a knowledge resource can take new files; elsewhere "upload" grants nothing. */
-const NON_KNOWLEDGE_PERMISSIONS: readonly SharingPermission[] = ["read", "write"];
+const NON_KNOWLEDGE_PERMISSIONS: readonly SharingPermission[] = [
+  "read",
+  "write",
+];
 
 export interface SharingSettingsDrawerProps {
   open: boolean;

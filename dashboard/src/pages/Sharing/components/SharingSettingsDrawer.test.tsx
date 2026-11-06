@@ -31,7 +31,9 @@ vi.mock("@/utils/antdMessage", () => ({
 
 import SharingSettingsDrawer from "./SharingSettingsDrawer";
 
-function renderDrawer(resourceType: "agent" | "knowledge_base" = "knowledge_base") {
+function renderDrawer(
+  resourceType: "agent" | "knowledge_base" = "knowledge_base",
+) {
   return render(
     <SharingSettingsDrawer
       open

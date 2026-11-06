@@ -12,11 +12,13 @@ import pytest
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.db.services import RepoBundle
 from octop.infra.knowledge.files import document_digest, document_path
 from octop.infra.knowledge.jobs import process_document
 from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.sharing import AclEntry
 from octop.infra.utils.paths import PathLayout
 
 
@@ -186,6 +188,7 @@ def test_disabled_ocr_preserves_image_original_without_indexed_text(
     assert archived.content_type == "image/png"
     assert document_path(base.id, created.id, created.filename).read_bytes() == original
 
+
 def test_rename_rejects_dot_names_that_collapse_to_the_parent(
     services: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -211,6 +214,90 @@ def test_rename_rejects_dot_names_that_collapse_to_the_parent(
             actor_user_id=services.owner_id,
         )
     assert services.knowledge_repo.get_document(created.id).filename == "notes.md"
+
+
+def test_rename_preserves_original_bytes_across_extension_change(
+    services: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "octop.infra.knowledge.service.assert_knowledge_usable",
+        lambda *_a, **_k: None,
+    )
+    svc = KnowledgeService(services)
+    base = services.knowledge_repo.create_base(owner_user_id=services.owner_id, name="Docs")
+    created = svc.create_text_document(
+        base.id,
+        actor_user_id=services.owner_id,
+        name="notes",
+        format="md",
+        content="# Original\n",
+    )
+    old_path = document_path(base.id, created.id, created.filename)
+
+    renamed = svc.rename_document(
+        base.id,
+        created.id,
+        new_name="notes.txt",
+        actor_user_id=services.owner_id,
+    )
+
+    new_path = document_path(base.id, created.id, renamed.filename)
+    assert renamed.filename == "notes.txt"
+    assert new_path.read_bytes() == b"# Original\n"
+    assert not old_path.exists()
+
+
+def test_replace_content_rejects_missing_or_unwritable_destination_folder(
+    services: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "octop.infra.knowledge.service.assert_knowledge_usable",
+        lambda *_a, **_k: None,
+    )
+    svc = KnowledgeService(services)
+    base = services.knowledge_repo.create_base(owner_user_id=services.owner_id, name="Docs")
+    created = svc.create_text_document(
+        base.id,
+        actor_user_id=services.owner_id,
+        name="notes",
+        format="md",
+        content="# Original\n",
+    )
+    original_file = document_path(base.id, created.id, created.filename)
+    folder = services.knowledge_repo.ensure_folder(base.id, "restricted")
+    ResourceAclRepo(services.db).upsert(
+        AclEntry(
+            resource_type="knowledge_document",
+            resource_id=folder.id,
+            owner_user_id=None,
+            visibility="private",
+            unit_key=None,
+            version=1,
+            grants=(),
+        )
+    )
+
+    with pytest.raises(ValueError):
+        svc.replace_document_content(
+            base.id,
+            created.id,
+            actor_user_id=services.owner_id,
+            path="missing/notes.md",
+            content_type="text/markdown",
+            content=b"# Replacement\n",
+        )
+    with pytest.raises(PermissionError):
+        svc.replace_document_content(
+            base.id,
+            created.id,
+            actor_user_id=services.owner_id,
+            path="restricted/notes.md",
+            content_type="text/markdown",
+            content=b"# Replacement\n",
+        )
+    assert services.knowledge_repo.get_document(created.id) == created
+    assert original_file.read_bytes() == b"# Original\n"
+
 
 def test_replace_content_cannot_take_another_documents_path(
     services: SimpleNamespace, monkeypatch: pytest.MonkeyPatch

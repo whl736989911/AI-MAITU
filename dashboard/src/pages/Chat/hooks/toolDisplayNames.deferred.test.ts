@@ -28,17 +28,27 @@ describe("deferredCallTargetName", () => {
 describe("resolveDeferredToolLabel", () => {
   it("labels the forwarded tool instead of the wrapper", () => {
     expect(
-      resolveDeferredToolLabel("call_deferred_tool", { name: "read_file" }, translate),
+      resolveDeferredToolLabel(
+        "call_deferred_tool",
+        { name: "read_file" },
+        translate,
+      ),
     ).toBe("label:read_file");
   });
 
   it("keeps the wrapper label until the target is known", () => {
-    expect(resolveDeferredToolLabel("call_deferred_tool", {}, translate)).toBeNull();
-    expect(resolveDeferredToolLabel("call_deferred_tool", "{}", translate)).toBeNull();
+    expect(
+      resolveDeferredToolLabel("call_deferred_tool", {}, translate),
+    ).toBeNull();
+    expect(
+      resolveDeferredToolLabel("call_deferred_tool", "{}", translate),
+    ).toBeNull();
   });
 
   it("does not rewrite ordinary tools", () => {
-    expect(resolveDeferredToolLabel("read_file", { name: "write_file" }, translate)).toBeNull();
+    expect(
+      resolveDeferredToolLabel("read_file", { name: "write_file" }, translate),
+    ).toBeNull();
   });
 
   it("ignores a nested deferred call", () => {

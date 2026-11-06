@@ -1,4 +1,5 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const api = vi.hoisted(() => ({
@@ -106,5 +107,89 @@ describe("<KnowledgeSuggestionModal />", () => {
 
     expect(screen.queryByText("summary for A")).toBeNull();
     expect(screen.getByText("summary for B")).toBeInTheDocument();
+  });
+  it.each(["apply", "reject"] as const)(
+    "does not let an old %s response act on a newly opened document",
+    async (action) => {
+      const pending = deferred<KnowledgeDocumentSuggestion>();
+      api.listSuggestions.mockImplementation(
+        (_baseId: string, params: { documentId?: string }) =>
+          Promise.resolve([
+            suggestion(
+              `sug-${params.documentId}`,
+              params.documentId!,
+              `summary for ${params.documentId}`,
+            ),
+          ]),
+      );
+      const mutation =
+        action === "apply" ? api.applySuggestion : api.rejectSuggestion;
+      mutation.mockReturnValue(pending.promise);
+      const onClose = vi.fn();
+      const onSaved = vi.fn();
+      const props = { open: true, baseId: "kb", schema: [], onClose, onSaved };
+      const user = userEvent.setup();
+      const { rerender } = render(
+        <KnowledgeSuggestionModal
+          {...props}
+          document={document("a", "a.pdf")}
+        />,
+      );
+      await screen.findByText("summary for a");
+      await user.click(
+        screen.getByRole("button", {
+          name: `knowledgeBases.suggestions.${action}`,
+        }),
+      );
+      rerender(
+        <KnowledgeSuggestionModal
+          {...props}
+          document={document("b", "b.pdf")}
+        />,
+      );
+      await screen.findByText("summary for b");
+      await act(async () => {
+        pending.resolve(suggestion("sug-a", "a", "summary for a"));
+        await pending.promise;
+      });
+      expect(screen.getByText("summary for b")).toBeInTheDocument();
+      expect(onClose).not.toHaveBeenCalled();
+      expect(onSaved).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows generation on a new document while an old generation is pending", async () => {
+    const oldGeneration = deferred<KnowledgeDocumentSuggestion>();
+    api.listSuggestions.mockResolvedValue([]);
+    api.enrichDocument.mockImplementation(
+      (_baseId: string, documentId: string) =>
+        documentId === "a"
+          ? oldGeneration.promise
+          : Promise.resolve(suggestion("sug-b", "b", "generated for b")),
+    );
+    const user = userEvent.setup();
+    const props = { open: true, baseId: "kb", schema: [], onClose: vi.fn() };
+    const { rerender } = render(
+      <KnowledgeSuggestionModal {...props} document={document("a", "a.pdf")} />,
+    );
+    await user.click(
+      await screen.findByRole("button", {
+        name: /knowledgeBases\.suggestions\.generate/,
+      }),
+    );
+    rerender(
+      <KnowledgeSuggestionModal {...props} document={document("b", "b.pdf")} />,
+    );
+    await user.click(
+      await screen.findByRole("button", {
+        name: /knowledgeBases\.suggestions\.generate/,
+      }),
+    );
+    await screen.findByText("generated for b");
+    await act(async () => {
+      oldGeneration.resolve(suggestion("sug-a", "a", "generated for a"));
+      await oldGeneration.promise;
+    });
+    expect(screen.queryByText("generated for a")).not.toBeInTheDocument();
   });
 });
