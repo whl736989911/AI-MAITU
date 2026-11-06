@@ -16,6 +16,7 @@ import shutil
 import sqlite3
 from dataclasses import asdict, replace
 from pathlib import Path
+from threading import Event, Thread
 from types import SimpleNamespace
 
 import pytest
@@ -842,6 +843,119 @@ def test_update_replaces_clears_or_keeps_the_secret(
     assert env.services.data_sources_repo.get_credentials(source.id) is None
 
 
+def test_updating_connection_endpoint_invalidates_the_connection_verdict(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+    base = _base(env, people.owner)
+    source = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Share",
+        kind="smb",
+        folder=FolderSettings(server="files-a", share="company"),
+    )
+    env.services.data_sources_repo.set_connection(source.id, status="ok", error=None)
+
+    updated = env.sources.update_source(
+        source.id,
+        actor_user_id=people.owner,
+        folder=FolderSettings(server="files-b", share="company"),
+    )
+
+    assert updated.server == "files-b"
+    assert updated.connection_status == "unknown"
+
+
+def test_local_root_change_reprocesses_matching_path_metadata(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    old_root = tmp_path / "old"
+    new_root = tmp_path / "new"
+    old_root.mkdir()
+    new_root.mkdir()
+    old_file = old_root / "same.md"
+    new_file = new_root / "same.md"
+    old_file.write_bytes(b"one")
+    new_file.write_bytes(b"two")
+    old_mtime = 1_700_000_000
+    os.utime(old_file, (old_mtime, old_mtime))
+    os.utime(new_file, (old_mtime, old_mtime))
+
+    base, source = _scanned_source(env, people.owner, old_root)
+    document = env.services.knowledge_repo.create_document(
+        kb_id=base.id,
+        filename="same.md",
+        path=f"{source.id}/same.md",
+        content_type="text/markdown",
+        byte_size=3,
+        content_hash=document_digest(b"one"),
+        status="ready",
+        data_source_id=source.id,
+        source_path="same.md",
+        source_size=3,
+        source_modified_at=old_mtime,
+    )
+    env.services.knowledge_repo.record_observation(
+        document.id, size=3, modified_at=old_mtime, at=old_mtime - 600
+    )
+
+    env.sources.update_source(
+        source.id,
+        actor_user_id=people.owner,
+        folder=FolderSettings(root_path=str(new_root)),
+    )
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    refreshed = env.services.knowledge_repo.get_document(document.id)
+    assert refreshed.status == "pending"
+    assert refreshed.content_hash == document_digest(b"one")
+
+
+def test_smb_endpoint_change_reprocesses_matching_path_metadata(
+    env: SimpleNamespace, people: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from octop.infra.knowledge.sources import SourceEntry
+
+    class RemoteTree:
+        def walk(self):
+            return [SourceEntry("same.md", 3, 1_700_000_000, False)]
+
+    monkeypatch.setattr(data_sources_module, "build_connector", lambda **_kwargs: RemoteTree())
+    base = _base(env, people.owner)
+    source = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Share",
+        kind="smb",
+        folder=FolderSettings(server="files-a", share="docs"),
+    )
+    document = env.services.knowledge_repo.create_document(
+        kb_id=base.id,
+        filename="same.md",
+        path=f"{source.id}/same.md",
+        content_type="text/markdown",
+        byte_size=3,
+        content_hash=document_digest(b"one"),
+        status="ready",
+        data_source_id=source.id,
+        source_path="same.md",
+        source_size=3,
+        source_modified_at=1_700_000_000,
+    )
+    env.services.knowledge_repo.record_observation(
+        document.id, size=3, modified_at=1_700_000_000, at=1_699_999_400
+    )
+
+    env.sources.update_source(
+        source.id,
+        actor_user_id=people.owner,
+        folder=FolderSettings(server="files-b", share="docs"),
+    )
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    assert env.services.knowledge_repo.get_document(document.id).status == "pending"
+
+
 def test_update_validates_before_it_writes(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
 ) -> None:
@@ -1343,6 +1457,54 @@ async def test_malformed_source_document_does_not_block_other_indexing(
         kb_id=base.id, actor_user_id=people.owner, query="Recovered searchable evidence"
     )
     assert {hit.document_id for hit in hits} == {healthy.id}
+
+
+def test_deleting_a_folder_source_waits_for_an_active_scan(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = _local_root(tmp_path)
+    _source_file(root, "policy.md", _DOC_BODY)
+    _base_row, source = _scanned_source(env, people.owner, root)
+    started, release, deleted = Event(), Event(), Event()
+    original_walk = LocalFolderConnector.walk
+    failures: list[BaseException] = []
+
+    def held_walk(connector: LocalFolderConnector):
+        started.set()
+        if not release.wait(5):
+            raise TimeoutError("the test did not release the active scan")
+        return original_walk(connector)
+
+    def scan() -> None:
+        try:
+            env.sources.sync(source.id, actor_user_id=people.owner)
+        except BaseException as exc:
+            failures.append(exc)
+
+    def delete() -> None:
+        try:
+            env.sources.delete(source.id, actor_user_id=people.owner)
+        except BaseException as exc:
+            failures.append(exc)
+        finally:
+            deleted.set()
+
+    monkeypatch.setattr(LocalFolderConnector, "walk", held_walk)
+    scanner = Thread(target=scan)
+    scanner.start()
+    assert started.wait(5)
+    deleter = Thread(target=delete)
+    deleter.start()
+    assert not deleted.wait(0.05)
+    release.set()
+    scanner.join(5)
+    deleter.join(5)
+
+    assert not scanner.is_alive()
+    assert not deleter.is_alive()
+    assert failures == []
+    assert env.services.data_sources_repo.get(source.id) is None
+    assert env.services.knowledge_repo.list_source_files(source.id) == []
 
 
 def test_deleting_a_folder_source_takes_its_index_with_it(

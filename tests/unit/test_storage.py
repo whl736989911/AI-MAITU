@@ -5,6 +5,7 @@ import sqlite3
 from contextlib import suppress
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 from octop.cli.main import cli
@@ -172,3 +173,44 @@ def test_storage_maintenance_prunes_only_rebuildable_preview_cache(
     assert source.read_bytes() == b"original"
     assert manual_backup.read_bytes() == b"backup"
     assert not cached_preview.exists()
+
+
+@pytest.mark.parametrize("blank_key", ["OCTOP_DATABASE_DRIVER", "OCTOP_DATABASE_SQLITE_PATH"])
+def test_storage_report_ignores_empty_database_environment_override(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, blank_key: str
+) -> None:
+    for key in ("OCTOP_DATABASE_URL", "OCTOP_DATABASE_DRIVER", "OCTOP_DATABASE_SQLITE_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv(blank_key, "")
+    (tmp_path / "config.json").write_text(
+        json.dumps({"database": {"driver": "sqlite", "sqlite_path": "custom.db"}}),
+        encoding="utf-8",
+    )
+    payload = b"configured database"
+    (tmp_path / "custom.db").write_bytes(payload)
+
+    report = storage_report(PathLayout(tmp_path))
+
+    assert report["database_scope"] == {"kind": "sqlite"}
+    assert report["categories"]["databases"] == {"bytes": len(payload), "files": 1}
+    assert report["errors"] == []
+
+
+@pytest.mark.parametrize(
+    "config", [[], None, {"database": []}, {"database": "private-credential-marker"}]
+)
+def test_storage_report_marks_malformed_config_shape_unknown(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, config: object
+) -> None:
+    for key in ("OCTOP_DATABASE_URL", "OCTOP_DATABASE_DRIVER", "OCTOP_DATABASE_SQLITE_PATH"):
+        monkeypatch.delenv(key, raising=False)
+    config_file = tmp_path / "config.json"
+    original = json.dumps(config).encode()
+    config_file.write_bytes(original)
+
+    report = storage_report(PathLayout(tmp_path))
+
+    assert report["database_scope"] == {"kind": "unknown"}
+    assert report["errors"]
+    assert "private-credential-marker" not in json.dumps(report)
+    assert config_file.read_bytes() == original

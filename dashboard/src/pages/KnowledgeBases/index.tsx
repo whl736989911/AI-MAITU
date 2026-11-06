@@ -347,6 +347,7 @@ export default function KnowledgeBasesPage() {
     string | undefined
   >();
   const [metadataFilterValue, setMetadataFilterValue] = useState("");
+  const metadataFilterRequestRef = useRef(0);
   const [currentFolder, setCurrentFolder] = useState("");
   const [folderModalOpen, setFolderModalOpen] = useState(false);
   const [folderName, setFolderName] = useState("");
@@ -1056,19 +1057,29 @@ export default function KnowledgeBasesPage() {
 
   const applyMetadataFilter = useCallback(async () => {
     if (!selected) return;
+    const requestId = ++metadataFilterRequestRef.current;
+    const selectedId = selected.id;
     const key = metadataFilterKey;
     const value = metadataFilterValue.trim();
     try {
       const rows = await knowledgeBasesApi.listDocuments(
-        selected.id,
+        selectedId,
         undefined,
         key && value ? { [key]: value } : undefined,
       );
-      setDocuments(rows);
+      if (metadataFilterRequestRef.current === requestId) setDocuments(rows);
     } catch (error) {
-      message.error(apiErrorMessage(error, t("knowledgeBases.loadFailed"), t));
+      if (metadataFilterRequestRef.current === requestId) {
+        message.error(
+          apiErrorMessage(error, t("knowledgeBases.loadFailed"), t),
+        );
+      }
     }
   }, [selected, metadataFilterKey, metadataFilterValue, message, t]);
+
+  useEffect(() => {
+    metadataFilterRequestRef.current += 1;
+  }, [selected?.id, metadataFilterKey, metadataFilterValue]);
 
   useEffect(() => {
     setMetadataFilterKey(undefined);

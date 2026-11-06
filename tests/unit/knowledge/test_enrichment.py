@@ -126,6 +126,24 @@ def test_apply_writes_metadata_and_rejects_a_stale_suggestion(env: SimpleNamespa
     assert stale.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
 
 
+def test_explicit_empty_review_value_clears_existing_metadata(env: SimpleNamespace) -> None:
+    owner, kb, document, service = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    service.update_document_metadata(
+        kb.id, document.id, actor_user_id=owner, metadata={"drawing_no": "A-OLD"}
+    )
+
+    enrichment.apply_suggestion(
+        kb.id,
+        suggestion["suggestion_id"],
+        actor_user_id=owner,
+        fields={"drawing_no": ""},
+    )
+
+    assert service._services.knowledge_repo.get_document(document.id).metadata == {}
+
+
 def test_reject_and_permission_checks(env: SimpleNamespace) -> None:
     owner, kb, document, _service = _setup(env)
     viewer = env.services.user_repo.create(username="viewer", password_hash="h", role="user")
@@ -267,6 +285,24 @@ def test_changed_document_during_generation_does_not_replace_current_suggestion(
     assert stale.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
     pending = enrichment.list_suggestions(kb.id, actor_user_id=owner, status="pending")
     assert [row["suggestion_id"] for row in pending] == ["current-v2"]
+
+
+def test_original_changed_during_generation_does_not_store_stale_suggestion(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, kb, document, _service = _setup(env)
+
+    async def original_changes(_llm, _messages, timeout=None):
+        write_document(kb.id, document.id, document.filename, b"externally changed")
+        return MODEL_JSON
+
+    monkeypatch.setattr("octop.infra.utils.llm_text.ainvoke_text", original_changes)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    with pytest.raises(OctopError) as stale:
+        enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+
+    assert stale.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
+    assert enrichment.list_suggestions(kb.id, actor_user_id=owner) == []
 
 
 def test_removed_schema_field_cannot_be_silently_applied(env: SimpleNamespace) -> None:

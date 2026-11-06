@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type MouseEvent,
 } from "react";
@@ -69,6 +70,10 @@ export default function KnowledgeCollections({
     useState<KnowledgeCollectionDocuments | null>(null);
   const [inspectLoading, setInspectLoading] = useState(false);
   const [createPrompt, setCreatePrompt] = useState("");
+  const collectionRequestRef = useRef(0);
+  const inspectRequestRef = useRef(0);
+  const latestBaseIdRef = useRef(baseId);
+  latestBaseIdRef.current = baseId;
   const documentTree = useMemo(() => {
     const sources = new Map(
       documents.map((doc) => [doc.path || doc.filename, doc]),
@@ -146,10 +151,12 @@ export default function KnowledgeCollections({
   }, [selectionTree]);
 
   const loadCollections = useCallback(async () => {
+    const requestId = ++collectionRequestRef.current;
     setLoading(true);
     setLoadError(false);
     try {
       const rows = await knowledgeBasesApi.listCollections(baseId);
+      if (collectionRequestRef.current !== requestId) return;
       setCollections(rows);
       setDrafts(
         Object.fromEntries(
@@ -157,31 +164,64 @@ export default function KnowledgeCollections({
         ),
       );
     } catch {
-      setLoadError(true);
+      if (collectionRequestRef.current === requestId) setLoadError(true);
     } finally {
-      setLoading(false);
+      if (collectionRequestRef.current === requestId) setLoading(false);
     }
   }, [baseId]);
+
+  useEffect(() => {
+    collectionRequestRef.current += 1;
+    inspectRequestRef.current += 1;
+    setCreating(false);
+    setCollections([]);
+    setDrafts({});
+    setSelectedIds([]);
+    setCreatePrompt("");
+    setQuery("");
+    setExpandedKeys([]);
+    setInspectLoading(false);
+    setInspecting(null);
+    setLoadError(false);
+  }, [baseId]);
+
+  useEffect(() => {
+    setSelectedIds((current) =>
+      current.filter((id) => documents.some((document) => document.id === id)),
+    );
+  }, [documents]);
 
   useEffect(() => {
     if (open) void loadCollections();
   }, [open, loadCollections]);
 
   const create = async () => {
+    const requestBaseId = baseId;
     const prompt = createPrompt.trim();
     if (!selectedIds.length || prompt.length > 2000) return;
     setCreating(true);
     try {
-      await knowledgeBasesApi.createCollections(baseId, selectedIds, prompt);
+      await knowledgeBasesApi.createCollections(
+        requestBaseId,
+        selectedIds,
+        prompt,
+      );
+      if (latestBaseIdRef.current !== requestBaseId) return;
       setSelectedIds([]);
       setCreatePrompt("");
       await loadCollections();
     } catch (error) {
-      message.error(
-        apiErrorMessage(error, t("knowledgeBases.collections.actionFailed"), t),
-      );
+      if (latestBaseIdRef.current === requestBaseId) {
+        message.error(
+          apiErrorMessage(
+            error,
+            t("knowledgeBases.collections.actionFailed"),
+            t,
+          ),
+        );
+      }
     } finally {
-      setCreating(false);
+      if (latestBaseIdRef.current === requestBaseId) setCreating(false);
     }
   };
 
@@ -256,17 +296,26 @@ export default function KnowledgeCollections({
   };
 
   const inspect = async (row: KnowledgeCollection) => {
+    const requestId = ++inspectRequestRef.current;
     setInspectLoading(true);
     try {
-      setInspecting(
-        await knowledgeBasesApi.getCollectionDocuments(baseId, row.id),
+      const result = await knowledgeBasesApi.getCollectionDocuments(
+        baseId,
+        row.id,
       );
+      if (inspectRequestRef.current === requestId) setInspecting(result);
     } catch (error) {
-      message.error(
-        apiErrorMessage(error, t("knowledgeBases.collections.actionFailed"), t),
-      );
+      if (inspectRequestRef.current === requestId) {
+        message.error(
+          apiErrorMessage(
+            error,
+            t("knowledgeBases.collections.actionFailed"),
+            t,
+          ),
+        );
+      }
     } finally {
-      setInspectLoading(false);
+      if (inspectRequestRef.current === requestId) setInspectLoading(false);
     }
   };
 

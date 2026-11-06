@@ -1,4 +1,4 @@
-"""Task-owned scratch directories, with cross-process leases for crash recovery.
+"""Task-owned scratch directories, crash-recovery leases and storage mutation locks.
 
 Only directories made by this module are eligible for automatic removal. Atomic
 sibling staging files and user workspace content deliberately remain outside it.
@@ -7,12 +7,14 @@ sibling staging files and user workspace content deliberately remain outside it.
 from __future__ import annotations
 
 import errno
+import hashlib
 import importlib
 import logging
 import os
 import re
 import shutil
 import stat
+import sys
 import time
 import uuid
 from collections.abc import Iterator
@@ -84,6 +86,53 @@ def _remove_tree(directory: Path) -> None:
             elif stat.S_ISREG(info.st_mode):
                 current.chmod(stat.S_IMODE(info.st_mode) | stat.S_IRUSR | stat.S_IWUSR)
         shutil.rmtree(directory)
+
+
+@contextmanager
+def directory_lock(directory: Path) -> Iterator[None]:
+    """Lock an existing directory across threads/processes without a lock file."""
+    if sys.platform == "win32":
+        import ctypes
+
+        # Keep the established identity so existing cache workers coordinate.
+        # Services and interactive workers may run in different sessions.
+        mutex_name = (
+            "Global\\OctopCadPreview-"
+            + hashlib.sha256(os.path.normcase(str(directory.resolve())).encode("utf-8")).hexdigest()
+        )
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+        kernel32.CreateMutexW.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
+        kernel32.WaitForSingleObject.restype = ctypes.c_uint
+        kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        mutex = kernel32.CreateMutexW(None, False, mutex_name)
+        if not mutex:
+            raise ctypes.WinError(ctypes.get_last_error())
+        try:
+            result = kernel32.WaitForSingleObject(mutex, 0xFFFFFFFF)
+            if result not in (0, 0x80):
+                raise ctypes.WinError(ctypes.get_last_error())
+            try:
+                yield
+            finally:
+                if not kernel32.ReleaseMutex(mutex):
+                    raise ctypes.WinError(ctypes.get_last_error())
+        finally:
+            kernel32.CloseHandle(mutex)
+    else:
+        import fcntl
+
+        descriptor = os.open(directory, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
+        finally:
+            os.close(descriptor)
 
 
 @contextmanager

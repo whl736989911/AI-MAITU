@@ -24,7 +24,6 @@ import os
 import re
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from collections.abc import Iterator
@@ -32,6 +31,7 @@ from pathlib import Path
 
 from octop.infra.knowledge.files import knowledge_base_dir
 from octop.infra.utils.paths import PathLayout
+from octop.infra.utils.tempfiles import directory_lock
 
 CAD_PREVIEW_SUFFIXES = frozenset({".dwg", ".dxf"})
 """Formats the external converter understands."""
@@ -45,7 +45,6 @@ _MAX_CACHE_FILES = 10_000
 _MAX_CACHE_AGE_SECONDS = 7 * 24 * 60 * 60
 _CACHE_NAME = re.compile(r"^[A-Za-z0-9_-]+-(?:[0-9a-f]{16}|[0-9a-f]{64}|current)\.png$")
 _CACHE_STAGE_NAME = re.compile(r"^\.[A-Za-z0-9_-]+-[0-9a-f]{64}\.png\.[0-9a-f]{32}\.tmp$")
-_CACHE_LOCK = threading.RLock()
 
 
 class CadPreviewUnavailable(RuntimeError):
@@ -114,48 +113,8 @@ def _cache_lock(root: Path) -> Iterator[None]:
     """Serialize cache mutations without leaving a persistent lock artifact."""
     if _is_link_or_reparse(root) or not root.is_dir():
         raise CadPreviewFailed("preview cache home is not a plain directory")
-    with _CACHE_LOCK:
-        if sys.platform == "win32":
-            import ctypes
-
-            # Services and interactive workers may run in different sessions.
-            mutex_name = (
-                "Global\\OctopCadPreview-"
-                + hashlib.sha256(os.path.normcase(str(root.resolve())).encode("utf-8")).hexdigest()
-            )
-            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-            kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
-            kernel32.CreateMutexW.restype = ctypes.c_void_p
-            kernel32.WaitForSingleObject.argtypes = [ctypes.c_void_p, ctypes.c_uint]
-            kernel32.WaitForSingleObject.restype = ctypes.c_uint
-            kernel32.ReleaseMutex.argtypes = [ctypes.c_void_p]
-            kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-            mutex = kernel32.CreateMutexW(None, False, mutex_name)
-            if not mutex:
-                raise ctypes.WinError(ctypes.get_last_error())
-            try:
-                result = kernel32.WaitForSingleObject(mutex, 0xFFFFFFFF)
-                if result not in (0, 0x80):
-                    raise ctypes.WinError(ctypes.get_last_error())
-                try:
-                    yield
-                finally:
-                    if not kernel32.ReleaseMutex(mutex):
-                        raise ctypes.WinError(ctypes.get_last_error())
-            finally:
-                kernel32.CloseHandle(mutex)
-        else:
-            import fcntl
-
-            descriptor = os.open(root, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-                try:
-                    yield
-                finally:
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
-            finally:
-                os.close(descriptor)
+    with directory_lock(root):
+        yield
 
 
 def _render_locked(

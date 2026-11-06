@@ -342,6 +342,15 @@ Commands:
   auto       Automatic backup status and one-shot run.
 ```
 
+`maitu backup create --output PATH` builds an archive in task-owned scratch
+space before publishing to the selected destination. When that destination is
+inside a directory included in the backup, it is excluded from the archive.
+Overlapping exports keep separate staging files even when they select the same
+output path. On Windows, final publication is serialized across processes
+without creating lock files. Repeating an export does not nest the previous
+export inside the new archive; unrelated original files remain included.
+
+
 ### `maitu backup auto`
 
 Automatic backups are scheduled **inside** a running `maitu run` process

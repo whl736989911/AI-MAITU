@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+from contextlib import nullcontext
 from pathlib import Path
 
 import click
@@ -14,7 +16,7 @@ from octop.infra.db.factory import open_database
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.services import build_shared_services
 from octop.infra.utils.paths import PathLayout
-from octop.infra.utils.tempfiles import managed_tempdir
+from octop.infra.utils.tempfiles import directory_lock, managed_tempdir
 
 
 def _paths(home: Path | None = None) -> PathLayout:
@@ -74,6 +76,7 @@ def create(
                 include_plugins=not no_plugins,
                 include_knowledge=not no_knowledge,
                 include_chats=include_chats,
+                exclude_paths=(output,) if output is not None else (),
             )
             if output is None:
                 entry = place_backup_file(paths, suggested, tmp_path)
@@ -82,8 +85,12 @@ def create(
             else:
                 dest = output
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                tmp_path.replace(dest)
-                size = dest.stat().st_size
+                # Windows rejects overlapping replacements of the same target.
+                # POSIX rename is already atomic; do not require directory flock
+                # support from a potentially remote backup destination there.
+                with directory_lock(dest.parent) if os.name == "nt" else nullcontext():
+                    tmp_path.replace(dest)
+                    size = dest.stat().st_size
     finally:
         db.close()
 

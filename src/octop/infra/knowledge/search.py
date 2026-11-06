@@ -111,7 +111,19 @@ def snippet(text: str, terms: Sequence[str], *, width: int = SNIPPET_CHARS) -> s
     collapsed = " ".join(text.split())
     if len(collapsed) <= width:
         return collapsed
-    at = _first_match(collapsed.lower(), terms)
+    normalized = normalize_query(collapsed)
+    prefix = normalized[: _first_match(normalized, terms) + 1]
+    # Find the source character that completes this normalized prefix. Whole
+    # prefixes preserve word boundaries and combining-character composition,
+    # while casefold expansions (such as ß -> ss) still map to their source.
+    low, high = 0, len(collapsed) - 1
+    while low < high:
+        middle = (low + high) // 2
+        if normalize_query(collapsed[: middle + 1]).startswith(prefix):
+            high = middle
+        else:
+            low = middle + 1
+    at = low
     start = max(0, min(at - width // 3, len(collapsed) - width))
     end = start + width
     head = "…" if start > 0 else ""
