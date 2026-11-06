@@ -8,6 +8,7 @@ import os
 import shutil
 import sys
 import time
+import uuid
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from contextlib import redirect_stderr, redirect_stdout
@@ -359,18 +360,21 @@ def _download_http_file(
     total: int | None,
 ) -> int:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    tmp = dest.with_name(dest.name + ".part")
+    tmp = dest.with_name(f".{dest.name}.{uuid.uuid4().hex}.part")
     written = 0
-    with client.stream("GET", url) as response:
-        response.raise_for_status()
-        with tmp.open("wb") as handle:
-            for chunk in response.iter_bytes(64 * 1024):
-                handle.write(chunk)
-                written += len(chunk)
-                if on_progress is not None:
-                    on_progress(downloaded_so_far + written, total, dest.name)
-    tmp.replace(dest)
-    return written
+    try:
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            with tmp.open("xb") as handle:
+                for chunk in response.iter_bytes(64 * 1024):
+                    handle.write(chunk)
+                    written += len(chunk)
+                    if on_progress is not None:
+                        on_progress(downloaded_so_far + written, total, dest.name)
+        tmp.replace(dest)
+        return written
+    finally:
+        tmp.unlink(missing_ok=True)
 
 
 def _download_cos_snapshot(

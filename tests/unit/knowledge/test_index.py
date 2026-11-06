@@ -175,3 +175,16 @@ def test_document_preview_is_bounded_and_ordinal_ordered(tmp_path, monkeypatch) 
     )
     assert index.document_preview("doc", max_chars=8) == "second\nf"
     assert index.document_preview("doc", max_chars=0) == ""
+
+
+def test_chunk_replacement_rejects_mixed_dimensions_without_losing_old_rows(
+    tmp_path, monkeypatch
+) -> None:
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    index = KnowledgeIndex("kb-dimensions")
+    index.replace_doc_chunks("doc", ["previous"], [[1.0, 0.0]])
+
+    with pytest.raises(ValueError, match="embedding dimensions must match"):
+        index.replace_doc_chunks("doc", ["first", "second"], [[1.0, 0.0], [1.0, 0.0, 0.0]])
+
+    assert [item[0] for item in index.doc_chunks("doc")] == ["previous"]

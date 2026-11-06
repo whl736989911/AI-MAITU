@@ -8,6 +8,7 @@ import logging
 import os
 import shutil
 import tarfile
+import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -141,7 +142,7 @@ def _timestamp() -> str:
 
 def suggested_backup_filename() -> str:
     """Canonical basename for a newly created manual backup archive."""
-    return f"{BRAND_ID}-backup-{_timestamp()}.tar.gz"
+    return f"{BRAND_ID}-backup-{_timestamp()}-{uuid.uuid4().hex}.tar.gz"
 
 
 def _should_skip_path(
@@ -496,6 +497,23 @@ def _replace_tree_from_archive(extracted: Path, dest: Path, arc_name: str) -> in
     return count
 
 
+def _upgrade_restore_database(
+    pool: DatabasePool, manifest: BackupManifest, runtime_schema_version: int
+) -> None:
+    try:
+        run_migrations(pool)
+    except Exception as exc:
+        raise OctopError(
+            ErrorCode.BACKUP_SCHEMA_INCOMPATIBLE,
+            f"failed to upgrade backup schema version {manifest.schema_version} "
+            f"to {runtime_schema_version}: {exc}",
+            details={
+                "archive_schema_version": manifest.schema_version,
+                "runtime_schema_version": runtime_schema_version,
+            },
+        ) from exc
+
+
 def restore_system_backup(
     source: Path | bytes,
     *,
@@ -568,8 +586,21 @@ def restore_system_backup(
             )
 
         db_path = extracted / manifest.db_file
+        if not db_path.resolve().is_relative_to(extracted.resolve()):
+            raise OctopError(ErrorCode.SLASH_BAD_ARGS, "backup database path escapes the archive")
         if not db_path.is_file():
             raise OctopError(ErrorCode.SLASH_BAD_ARGS, "backup archive missing database file")
+        if pool.dialect == "sqlite":
+            if not isinstance(pool, SqlitePool):
+                raise OctopError(ErrorCode.INTERNAL_ERROR, "sqlite restore requires SqlitePool")
+            # Upgrade only the extracted copy. A rejected schema must never
+            # replace the current database or its login credentials.
+            db_path.chmod(0o600)
+            staged_pool = SqlitePool(db_path)
+            try:
+                _upgrade_restore_database(staged_pool, manifest, runtime_schema_version)
+            finally:
+                staged_pool.close()
 
         saved_chats = (
             capture_chat_tables(pool, Path(tmp) / "preserved-chats.sqlite")
@@ -601,28 +632,10 @@ def restore_system_backup(
         ownership_remap: dict[str, int] | None = None
         if pool.dialect == "postgresql":
             restore_postgres(db_config.postgresql_conninfo(), db_path)
+            _upgrade_restore_database(pool, manifest, runtime_schema_version)
         else:
-            if isinstance(pool, SqlitePool):
-                restore_sqlite_into_pool(db_path, pool)
-            else:
-                raise OctopError(ErrorCode.INTERNAL_ERROR, "sqlite restore requires SqlitePool")
-
-        # Upgrade the restored database before any current-version repository or
-        # preservation helper queries it. This keeps old backups usable after
-        # tables gain required columns or are rebuilt by later migrations.
-        try:
-            run_migrations(pool)
-        except Exception as exc:
-            details = {
-                "archive_schema_version": manifest.schema_version,
-                "runtime_schema_version": runtime_schema_version,
-            }
-            raise OctopError(
-                ErrorCode.BACKUP_SCHEMA_INCOMPATIBLE,
-                f"failed to upgrade backup schema version {manifest.schema_version} "
-                f"to {runtime_schema_version}: {exc}",
-                details=details,
-            ) from exc
+            assert isinstance(pool, SqlitePool)
+            restore_sqlite_into_pool(db_path, pool)
 
         if restore_config:
             cfg_path = extracted / _CONFIG_DIR / "config.json"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import tarfile
+from contextlib import closing
 from io import BytesIO
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pytest
 
 from octop.config import DatabaseConfig
 from octop.infra.backup.manifest import MANIFEST_VERSION, BackupManifest
+from octop.infra.backup.store import list_backup_files, place_backup_file
 from octop.infra.backup.system_archive import (
     create_system_backup,
     restore_system_backup,
@@ -28,6 +30,88 @@ def layout(tmp_path: Path) -> PathLayout:
     root = tmp_path / ".maitu"
     root.mkdir()
     return PathLayout(root)
+
+
+def test_same_second_backups_preserve_both_snapshots(
+    layout: PathLayout, monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr("octop.infra.backup.system_archive._timestamp", lambda: "20260101T000000Z")
+    pool = SqlitePool(layout.db)
+    run_migrations(pool)
+    original = layout.knowledge_dir / "kb" / "notes.txt"
+    original.parent.mkdir(parents=True)
+    entries = []
+    try:
+        for number, content in enumerate((b"before", b"after")):
+            original.write_bytes(content)
+            stage = tmp_path / f"export-{number}.tar.gz"
+            name = create_system_backup(
+                paths=layout,
+                agent_rows=[],
+                pool=pool,
+                db_config=DatabaseConfig(),
+                dest=stage,
+                include_config=False,
+                include_workspaces=False,
+                include_skill_packages=False,
+                include_plugins=False,
+                include_knowledge=True,
+                include_chats=False,
+            )
+            entries.append(place_backup_file(layout, name, stage))
+        snapshots = []
+        for entry in entries:
+            with tarfile.open(layout.backup_file(entry.name)) as archive:
+                member = archive.extractfile("knowledge/kb/notes.txt")
+                assert member is not None
+                snapshots.append(member.read())
+        assert snapshots == [b"before", b"after"]
+        assert {item.name for item in list_backup_files(layout)} == {item.name for item in entries}
+    finally:
+        pool.close()
+
+
+def test_failed_sqlite_schema_upgrade_preserves_live_database(
+    layout: PathLayout, tmp_path: Path
+) -> None:
+    pool = SqlitePool(layout.db)
+    run_migrations(pool)
+    with pool.connect() as conn:
+        conn.execute(
+            "INSERT INTO users(username,password_hash,role,created_at) "
+            "VALUES ('current-admin','hash','admin',1)"
+        )
+    incompatible = tmp_path / "incompatible.sqlite"
+    with closing(sqlite3.connect(incompatible)) as connection:
+        connection.execute("CREATE VIEW users AS SELECT 1 AS id, 'foreign-admin' AS username")
+    manifest = BackupManifest(
+        manifest_version=MANIFEST_VERSION,
+        octop_version="0.1.0",
+        schema_version=1,
+        created_at="2026-01-01",
+        home="",
+        includes_chats=True,
+        includes_config=False,
+        includes_skill_packages=False,
+    )
+    archive_path = tmp_path / "incompatible.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        data = manifest.to_json().encode()
+        member = tarfile.TarInfo("manifest.json")
+        member.size = len(data)
+        archive.addfile(member, BytesIO(data))
+        archive.add(incompatible, arcname=manifest.db_file)
+    try:
+        with pytest.raises(OctopError) as error:
+            restore_system_backup(archive_path, paths=layout, pool=pool, db_config=DatabaseConfig())
+        assert error.value.code == ErrorCode.BACKUP_SCHEMA_INCOMPATIBLE
+        with pool.connect() as conn:
+            assert [row[0] for row in conn.execute("SELECT username FROM users")] == [
+                "current-admin"
+            ]
+        assert list((layout.root / "tmp").iterdir()) == []
+    finally:
+        pool.close()
 
 
 def test_manifest_roundtrip_includes_driver_fields() -> None:

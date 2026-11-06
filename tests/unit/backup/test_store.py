@@ -45,6 +45,29 @@ def test_store_roundtrip(tmp_path: Path) -> None:
     assert list_backup_files(layout) == []
 
 
+def test_listing_survives_a_backup_deleted_during_metadata_read(
+    tmp_path: Path, monkeypatch
+) -> None:
+    layout = PathLayout(tmp_path / "home")
+    write_backup_file(layout, "deleted.tar.gz", b"old")
+    write_backup_file(layout, "kept.tar.gz", b"keep")
+    victim = layout.backup_file("deleted.tar.gz")
+    original_stat = Path.stat
+    removed = False
+
+    def disappearing(path, *args, **kwargs):
+        nonlocal removed
+        if path == victim and not removed:
+            victim.unlink()
+            removed = True
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", disappearing)
+    items = list_backup_files(layout)
+    assert [item.name for item in items] == ["kept.tar.gz"]
+    assert read_backup_file(layout, "kept.tar.gz") == b"keep"
+
+
 def test_reject_unsafe_filename() -> None:
     with pytest.raises(OctopError):
         normalize_backup_filename("../escape.tar.gz")

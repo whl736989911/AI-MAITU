@@ -136,6 +136,19 @@ def _source_lock(source_id: str) -> threading.RLock:
         return lock
 
 
+_source_upload_locks: dict[str, threading.RLock] = {}
+
+
+def _source_upload_lock(source_id: str) -> threading.RLock:
+    """Coordinate publication with readers without serializing scans."""
+    with _source_locks_guard:
+        lock = _source_upload_locks.get(source_id)
+        if lock is None:
+            lock = threading.RLock()
+            _source_upload_locks[source_id] = lock
+        return lock
+
+
 @dataclass(frozen=True)
 class SourceUploadTarget:
     id: str
@@ -339,30 +352,55 @@ class DataSourceService:
                 unit_key=access_unit_key,
             )
             connector = self.connector(source)
+            ancestor_paths = ancestor_dirs(document_path)
+            existing_folders = {
+                path
+                for path in ancestor_paths
+                if self._knowledge_repo.get_document_by_path(kb_id, path) is not None
+            }
             document: KnowledgeDocumentRow | None = None
-            try:
-                with connector.stage_upload(source_path, content) as entry:
-                    document = self._knowledge_repo.create_document(
-                        kb_id=kb_id,
-                        filename=path_basename(relative),
-                        path=document_path,
-                        content_type=content_type,
-                        byte_size=entry.size,
-                        content_hash=document_digest(content),
-                        max_documents=base.max_documents,
-                        data_source_id=source.id,
-                        source_path=source_path,
-                        initial_acl=initial_acl,
-                    )
-                    self._knowledge_repo.record_observation(
-                        document.id, size=entry.size, modified_at=entry.modified_at, at=now_ts()
-                    )
-            except Exception as exc:
-                if document is not None:
-                    self._knowledge_repo.delete_document(document.id)
-                if isinstance(exc, FileExistsError):
-                    raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_CONFLICT) from exc
-                raise
+            with _source_upload_lock(ds_id):
+                try:
+                    with connector.stage_upload(source_path, content) as entry:
+                        document = self._knowledge_repo.create_document(
+                            kb_id=kb_id,
+                            filename=path_basename(relative),
+                            path=document_path,
+                            content_type=content_type,
+                            byte_size=entry.size,
+                            content_hash=document_digest(content),
+                            max_documents=base.max_documents,
+                            data_source_id=source.id,
+                            source_path=source_path,
+                            initial_acl=initial_acl,
+                        )
+                        self._knowledge_repo.record_observation(
+                            document.id,
+                            size=entry.size,
+                            modified_at=entry.modified_at,
+                            at=now_ts(),
+                        )
+                except Exception as exc:
+                    if document is not None:
+                        self._knowledge_repo.delete_document(document.id)
+                    for path in reversed(ancestor_paths):
+                        if path in existing_folders:
+                            continue
+                        folder = self._knowledge_repo.get_document_by_path(kb_id, path)
+                        if (
+                            folder is None
+                            or not folder.is_dir
+                            or folder.data_source_id != source.id
+                        ):
+                            continue
+                        if not any(
+                            row.path.startswith(path + "/")
+                            for row in self._knowledge_repo.list_documents(kb_id)
+                        ):
+                            self._knowledge_repo.delete_document(folder.id)
+                    if isinstance(exc, FileExistsError):
+                        raise OctopError.localized(ErrorCode.DATA_SOURCE_UPLOAD_CONFLICT) from exc
+                    raise
             assert document is not None
             self._audit(actor_user_id, "knowledge.source.upload", source.id, source_path)
             refreshed = self._knowledge_repo.get_document(document.id)
@@ -865,10 +903,6 @@ class DataSourceService:
                 exclude_globs=data_source.exclude_globs,
             )
             now = now_ts()
-            # Folders are kept out of the plan: a directory carries no content, and
-            # the source's own root folder has no listing entry to match, so leaving
-            # it in would make every scan try to remove it and the next one re-create
-            # it. The tree still gets its folder rows from ``create_document``.
             indexed = [
                 row
                 for row in self._knowledge_repo.list_source_files(data_source.id)

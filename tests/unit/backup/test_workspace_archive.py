@@ -343,3 +343,37 @@ async def test_replace_preserves_existing_octop_builtin_skills(tmp_path: Path) -
     assert not (ws / "old.txt").exists()
     assert (ws / "new.txt").read_bytes() == b"new"
     assert builtin.read_bytes() == b"managed built-in"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mountless", [False, True])
+async def test_import_preserves_distinct_literal_legacy_and_system_paths(
+    tmp_path: Path, mountless: bool
+) -> None:
+    source = tmp_path / "source"
+    expected = {
+        "skills/user/SKILL.md": b"legacy skill",
+        ".octop/skills/user/SKILL.md": b"canonical skill",
+    }
+    for relative, data in expected.items():
+        file = source / relative
+        file.parent.mkdir(parents=True, exist_ok=True)
+        file.write_bytes(data)
+    original = BackendWorkspace(
+        LocalShellBackend(root_dir=str(source), virtual_mode=False),
+        source,
+        system_files_path=".octop",
+    )
+    blob = await export_workspace_zip(original)
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    backend = (
+        _MountlessBackend({})
+        if mountless
+        else LocalShellBackend(root_dir=str(destination), virtual_mode=False)
+    )
+    target = BackendWorkspace(backend, destination, system_files_path=".octop")
+    await import_workspace_zip(target, blob, mode="merge")
+    restored = await export_workspace_zip(target)
+    with zipfile.ZipFile(io.BytesIO(restored)) as archive:
+        assert {name: archive.read(name) for name in archive.namelist()} == expected

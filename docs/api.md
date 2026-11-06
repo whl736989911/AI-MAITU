@@ -722,6 +722,10 @@ only that agent's configured `/.maitu/workspaces/<id>/...` (or legacy
 Explicit `file://` paths retain host-path semantics. Normalization never removes
 traversal checks or owner-only system-file restrictions.
 
+Workspace ZIP imports preserve literal archive paths rather than applying logical
+system-directory aliases. A legacy `skills/` tree and a canonical `.octop/skills/`
+tree remain separate, on host-mounted and mountless backends alike.
+
 For a feature, its author may edit shared memory while the workflow is a draft;
 in-scope enterprise administrators may inspect the draft and training memory.
 After publication, shared memory (including workspace files and the SQLite store)
@@ -921,8 +925,12 @@ fails during cancellation. Deleting a source or changing its connection settings
 shares the source's scan lock. Changed local/SMB endpoints invalidate the previous
 connection verdict and mark existing files for reconfirmation and reindexing,
 even when the new endpoint reports the same path, size and timestamp. Source
-timestamps remain epoch seconds. SMB scans do not descend into reparse-point
-directories.
+timestamps remain epoch seconds. Local scans omit escaping file links and do
+not descend into directory links; uploads reject those directory-link paths.
+SMB scans omit reparse directories and files, and direct reads/copies reject
+reparse components before opening the destination. Failed uploads remove only
+new, still-empty virtual ancestor folders. Original reads wait for same-process
+upload publication to finish before accessing a newly registered file.
 
 
 Sources are `read_only` by default. To upload to a source, an administrator
@@ -1017,6 +1025,15 @@ topic results; ordinary reading does not automatically rescan the whole folder.
 Agent tools browse and locate authorized originals without requiring vectors or
 completed indexes. Related collection Markdown must be read before source content.
 Receipt state is server-stamped for each turn, not trusted from client config.
+
+Deleted collection targets are hidden from ordinary readers. Knowledge-base
+managers can still inspect empty derived state and remove orphan collections.
+Collection `updated_at` also acts as a monotonically
+advancing second-based change marker: prompt edits, new source evidence,
+generation transitions and target-path changes invalidate old reading receipts,
+including multiple changes in one wall-clock second. `prompt_updated_at` remains
+the actual wall-clock timestamp.
+
 The original export tool binds approval to the actual source SHA-256; shared
 workspaces require explicit, non-bypassable confirmation because an exported copy
 can be read by other workspace users and is no longer protected by the source ACL.

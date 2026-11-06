@@ -15,12 +15,20 @@ vi.mock("../../../api/modules/knowledgeBases", async (importOriginal) => {
   return { ...actual, knowledgeBasesApi: api };
 });
 
+import type { KnowledgeDocument } from "../../../api/modules/knowledgeBases";
 import KnowledgeMetadataModal from "./KnowledgeMetadataModal";
 
 beforeEach(() => {
   api.putMetadataSchema.mockReset();
   api.updateDocumentMetadata.mockReset();
 });
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 describe("<KnowledgeMetadataModal />", () => {
   it("keeps edited enum options when the field key changes", async () => {
@@ -117,5 +125,101 @@ describe("<KnowledgeMetadataModal />", () => {
     );
     expect(options[0]).toHaveValue("A edited");
     expect(options[1]).toHaveValue("B edited");
+  });
+  it("does not close the replacement document after an earlier save finishes", async () => {
+    const pending = deferred<{ metadata: Record<string, unknown> }>();
+    api.updateDocumentMetadata.mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const props = {
+      open: true,
+      baseId: "kb",
+      schema: [
+        {
+          key: "serial",
+          label: "Serial",
+          type: "text" as const,
+          options: [],
+          required: false,
+          searchable: true,
+        },
+      ],
+      onClose,
+    };
+    const document = (id: string) =>
+      ({
+        id,
+        filename: `${id}.pdf`,
+        path: `${id}.pdf`,
+        is_dir: false,
+        metadata: {},
+      }) as KnowledgeDocument;
+    const { rerender } = render(
+      <KnowledgeMetadataModal {...props} document={document("first")} />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "knowledgeBases.metadata.save" }),
+    );
+    await waitFor(() =>
+      expect(api.updateDocumentMetadata).toHaveBeenCalledWith(
+        "kb",
+        "first",
+        {},
+      ),
+    );
+    rerender(
+      <KnowledgeMetadataModal {...props} document={document("second")} />,
+    );
+    pending.resolve({ metadata: {} });
+    await waitFor(() => expect(onClose).not.toHaveBeenCalled());
+  });
+  it("ignores a schema save after the modal closes and reopens for the same base", async () => {
+    const pending = deferred<{ fields: [] }>();
+    api.putMetadataSchema.mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onSchemaSaved = vi.fn();
+    const props = {
+      open: true,
+      baseId: "kb",
+      schema: [],
+      onClose,
+      onSchemaSaved,
+    };
+    const { rerender } = render(<KnowledgeMetadataModal {...props} />);
+
+    await user.click(
+      screen.getByRole("button", { name: "knowledgeBases.metadata.save" }),
+    );
+    await waitFor(() => expect(api.putMetadataSchema).toHaveBeenCalledTimes(1));
+    rerender(<KnowledgeMetadataModal {...props} open={false} />);
+    rerender(<KnowledgeMetadataModal {...props} />);
+    pending.resolve({ fields: [] });
+
+    await waitFor(() => expect(onSchemaSaved).not.toHaveBeenCalled());
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("ignores a schema save after switching knowledge bases", async () => {
+    const pending = deferred<{ fields: [] }>();
+    api.putMetadataSchema.mockReturnValue(pending.promise);
+    const user = userEvent.setup();
+    const onClose = vi.fn();
+    const onSchemaSaved = vi.fn();
+    const props = { open: true, schema: [], onClose, onSchemaSaved };
+    const { rerender } = render(
+      <KnowledgeMetadataModal {...props} baseId="kb-first" />,
+    );
+
+    await user.click(
+      screen.getByRole("button", { name: "knowledgeBases.metadata.save" }),
+    );
+    await waitFor(() => expect(api.putMetadataSchema).toHaveBeenCalledTimes(1));
+    rerender(<KnowledgeMetadataModal {...props} baseId="kb-second" />);
+    pending.resolve({ fields: [] });
+
+    await waitFor(() => expect(onSchemaSaved).not.toHaveBeenCalled());
+    expect(onClose).not.toHaveBeenCalled();
   });
 });

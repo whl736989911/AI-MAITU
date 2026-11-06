@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Button,
   Input,
@@ -57,6 +57,35 @@ export default function KnowledgeMetadataModal({
   const [optionText, setOptionText] = useState<string[]>([]);
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [saving, setSaving] = useState(false);
+  const currentTarget = useRef({
+    open,
+    baseId,
+    targetId: target?.id,
+    editingDocument,
+    generation: 0,
+  });
+  if (
+    currentTarget.current.open !== open ||
+    currentTarget.current.baseId !== baseId ||
+    currentTarget.current.targetId !== target?.id ||
+    currentTarget.current.editingDocument !== editingDocument
+  ) {
+    currentTarget.current = {
+      open,
+      baseId,
+      targetId: target?.id,
+      editingDocument,
+      generation: currentTarget.current.generation + 1,
+    };
+  }
+  const targetGeneration = currentTarget.current.generation;
+  const requestIsCurrent = (generation: number) =>
+    currentTarget.current.open &&
+    currentTarget.current.generation === generation;
+
+  useEffect(() => {
+    setSaving(false);
+  }, [targetGeneration]);
 
   useEffect(() => {
     if (!open) return;
@@ -96,6 +125,7 @@ export default function KnowledgeMetadataModal({
   );
 
   const save = async () => {
+    const generation = currentTarget.current.generation;
     setSaving(true);
     try {
       if (editingDocument && target) {
@@ -104,6 +134,7 @@ export default function KnowledgeMetadataModal({
           target.id,
           metadataValuesForSchema(values, schema),
         );
+        if (!requestIsCurrent(generation)) return;
         onDocumentSaved?.(target.id, result.metadata);
         message.success(t("knowledgeBases.metadata.documentSaved"));
       } else {
@@ -111,16 +142,19 @@ export default function KnowledgeMetadataModal({
           baseId,
           schemaPayload,
         );
+        if (!requestIsCurrent(generation)) return;
         onSchemaSaved?.(result.fields);
         message.success(t("knowledgeBases.metadata.saved"));
       }
-      onClose();
+      if (requestIsCurrent(generation)) onClose();
     } catch (error) {
-      message.error(
-        apiErrorMessage(error, t("knowledgeBases.metadata.saveFailed"), t),
-      );
+      if (requestIsCurrent(generation)) {
+        message.error(
+          apiErrorMessage(error, t("knowledgeBases.metadata.saveFailed"), t),
+        );
+      }
     } finally {
-      setSaving(false);
+      if (requestIsCurrent(generation)) setSaving(false);
     }
   };
 

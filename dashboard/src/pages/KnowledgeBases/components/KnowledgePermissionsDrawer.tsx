@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   Button,
@@ -79,11 +79,42 @@ export default function KnowledgePermissionsDrawer({
   const [delegationCanDelegate, setDelegationCanDelegate] = useState(false);
   const [delegationLoading, setDelegationLoading] = useState(false);
   const [delegationSaving, setDelegationSaving] = useState(false);
+  const currentContext = useRef({
+    baseId,
+    open,
+    resourceType: metadata?.resource_type,
+    resourceId: metadata?.resource_id,
+    generation: 0,
+  });
+  if (
+    currentContext.current.baseId !== baseId ||
+    currentContext.current.open !== open ||
+    currentContext.current.resourceType !== metadata?.resource_type ||
+    currentContext.current.resourceId !== metadata?.resource_id
+  ) {
+    currentContext.current = {
+      baseId,
+      open,
+      resourceType: metadata?.resource_type,
+      resourceId: metadata?.resource_id,
+      generation: currentContext.current.generation + 1,
+    };
+  }
+  const contextGeneration = currentContext.current.generation;
+  const requestIsCurrent = (generation: number) =>
+    currentContext.current.open &&
+    currentContext.current.generation === generation;
+
+  useEffect(() => {
+    setSaving(false);
+    setDelegationSaving(false);
+  }, [contextGeneration]);
 
   useEffect(() => {
     if (!open || !metadata) return;
     let cancelled = false;
     setLoading(true);
+    setSaving(false);
     setError(null);
     setReason("");
     const fetchMetadata =
@@ -177,6 +208,7 @@ export default function KnowledgePermissionsDrawer({
     }
     let cancelled = false;
     setDelegationLoading(true);
+    setDelegationSaving(false);
     knowledgePermissionsApi
       .delegations(baseId, metadata.resource_id)
       .then((result) => {
@@ -244,6 +276,7 @@ export default function KnowledgePermissionsDrawer({
 
   const save = async () => {
     if (!metadata || scopeInvalid || loading) return;
+    const generation = currentContext.current.generation;
     setSaving(true);
     setError(null);
     try {
@@ -268,12 +301,14 @@ export default function KnowledgePermissionsDrawer({
               metadata.resource_id,
               body,
             );
-      onSaved(response.permission);
-      setError(null);
+      if (requestIsCurrent(generation)) {
+        onSaved(response.permission);
+        setError(null);
+      }
     } catch (cause) {
-      setError(cause);
+      if (requestIsCurrent(generation)) setError(cause);
     } finally {
-      setSaving(false);
+      if (requestIsCurrent(generation)) setSaving(false);
     }
   };
 
@@ -309,6 +344,7 @@ export default function KnowledgePermissionsDrawer({
     )
       return;
     setDelegationSaving(true);
+    const generation = currentContext.current.generation;
     try {
       const result = await knowledgePermissionsApi.addDelegation(
         baseId,
@@ -318,13 +354,15 @@ export default function KnowledgePermissionsDrawer({
           can_delegate: delegationCanDelegate,
         },
       );
-      setDelegations(result);
-      setDelegationRecipient(undefined);
-      setDelegationCanDelegate(false);
+      if (requestIsCurrent(generation)) {
+        setDelegations(result);
+        setDelegationRecipient(undefined);
+        setDelegationCanDelegate(false);
+      }
     } catch (cause) {
-      setError(cause);
+      if (requestIsCurrent(generation)) setError(cause);
     } finally {
-      setDelegationSaving(false);
+      if (requestIsCurrent(generation)) setDelegationSaving(false);
     }
   };
 
@@ -336,6 +374,7 @@ export default function KnowledgePermissionsDrawer({
     )
       return;
     setDelegationSaving(true);
+    const generation = currentContext.current.generation;
     try {
       await knowledgePermissionsApi.revokeDelegation(
         baseId,
@@ -346,11 +385,11 @@ export default function KnowledgePermissionsDrawer({
         baseId,
         metadata.resource_id,
       );
-      setDelegations(result);
+      if (requestIsCurrent(generation)) setDelegations(result);
     } catch (cause) {
-      setError(cause);
+      if (requestIsCurrent(generation)) setError(cause);
     } finally {
-      setDelegationSaving(false);
+      if (requestIsCurrent(generation)) setDelegationSaving(false);
     }
   };
 

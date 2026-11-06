@@ -121,6 +121,70 @@ def test_local_read_refuses_a_symlink_that_points_out_of_the_root(
         LocalFolderConnector(str(root)).read_bytes("escape.txt")
 
 
+@posix_only
+def test_local_walk_omits_symlinks_that_escape_the_root(tmp_path: Path, octop_home: Path) -> None:
+    root = _tree(tmp_path)
+    outside = tmp_path / "outside.txt"
+    outside.write_bytes(b"not part of the source")
+    (root / "escape.txt").symlink_to(outside)
+
+    entries = {entry.path for entry in LocalFolderConnector(str(root)).walk()}
+    assert "escape.txt" not in entries
+
+
+@posix_only
+def test_local_upload_does_not_publish_through_an_unwalked_directory_link(
+    tmp_path: Path, octop_home: Path
+) -> None:
+    root = _tree(tmp_path)
+    (root / "linked").symlink_to(root / "reports", target_is_directory=True)
+    connector = LocalFolderConnector(str(root))
+
+    assert "linked" not in {entry.path for entry in connector.walk()}
+    with (
+        pytest.raises(SourceError, match="directory link"),
+        connector.stage_upload("linked/new.txt", b"not indexed"),
+    ):
+        pass
+
+    assert not (root / "reports" / "new.txt").exists()
+    assert not list(root.rglob(f"{UPLOAD_TEMP_PREFIX}*"))
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_local_upload_does_not_publish_through_a_windows_junction(
+    tmp_path: Path, octop_home: Path
+) -> None:
+    import subprocess
+
+    root = _tree(tmp_path)
+    link = root / "linked"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(link), str(root / "reports")],
+        capture_output=True,
+        encoding="utf-8",
+        errors="replace",
+    )
+    if result.returncode != 0:
+        pytest.skip(f"could not create a junction: {result.stdout} {result.stderr}")
+    try:
+        connector = LocalFolderConnector(str(root))
+        assert "linked" not in {entry.path for entry in connector.walk()}
+        with (
+            pytest.raises(SourceError, match="directory link"),
+            connector.stage_upload("linked/new.txt", b"not indexed"),
+        ):
+            pass
+        assert not (root / "reports" / "new.txt").exists()
+    finally:
+        subprocess.run(
+            ["cmd", "/c", "rmdir", str(link)],
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+        )
+
+
 def test_local_test_lists_the_root_without_walking_it(tmp_path: Path, octop_home: Path) -> None:
     detail = LocalFolderConnector(str(_tree(tmp_path))).test()
 
@@ -597,6 +661,22 @@ def test_smb_walk_does_not_follow_reparse_directories(fake_smb: _FakeSmbClient) 
     assert _unc("linked") not in [call[1] for call in fake_smb.calls if call[0] == "scandir"]
 
 
+def test_smb_walk_omits_reparse_files_that_direct_reads_reject(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = _unc("linked-file.md")
+    client = _fake_client(reparse_points={path})
+    client._tree[_unc()].append(_FakeEntry("linked-file.md", is_dir=False))
+    client._files[path] = b"outside the configured tree"
+    monkeypatch.setattr(smb_module, "_smbclient", lambda: client)
+
+    assert {entry.path for entry in _smb_connector().walk()} == {
+        "notes.md",
+        "reports",
+        "reports/q1.txt",
+    }
+
+
 def test_smb_read_returns_the_file_bytes(fake_smb: _FakeSmbClient) -> None:
     assert _smb_connector().read_bytes("reports/q1.txt") == b"quarter"
 
@@ -653,6 +733,30 @@ def test_smb_without_the_dependency_says_what_to_install(
 def test_smb_requires_a_usable_server_and_share(server: str, share: str) -> None:
     with pytest.raises(SourceError):
         SmbConnector(server=server, share=share)
+
+
+def test_smb_direct_reads_refuse_reparse_paths(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    linked = _unc("linked")
+    remote_file = _unc("linked", "remote.md")
+    client = _fake_client(reparse_points={linked})
+    client._tree[_unc()].append(_FakeEntry("linked", is_dir=True))
+    client._tree[linked] = [_FakeEntry("remote.md", is_dir=False)]
+    client._dirs.add(linked)
+    client._files[remote_file] = b"outside the source root"
+    monkeypatch.setattr(smb_module, "_smbclient", lambda: client)
+    connector = _smb_connector()
+    destination = tmp_path / "snapshot.txt"
+    destination.write_bytes(b"preserve on failure")
+
+    with pytest.raises(SourceError, match="reparse point"):
+        connector.read_bytes("linked/remote.md")
+    with pytest.raises(SourceError, match="reparse point"):
+        connector.copy_to("linked/remote.md", destination)
+
+    assert destination.read_bytes() == b"preserve on failure"
+    assert client._files[remote_file] == b"outside the source root"
 
 
 def test_smb_refuses_a_path_that_leaves_the_share(fake_smb: _FakeSmbClient) -> None:

@@ -350,6 +350,14 @@ output path. On Windows, final publication is serialized across processes
 without creating lock files. Repeating an export does not nest the previous
 export inside the new archive; unrelated original files remain included.
 
+Automatically named manual and automatic backups include a unique suffix, so
+creating multiple snapshots in the same second does not overwrite earlier ones.
+An explicit `--output` still publishes to that exact path.
+
+SQLite restore upgrades the extracted database before replacing the live one.
+A rejected schema upgrade leaves the current database and login credentials
+unchanged.
+
 
 ### `maitu backup auto`
 
