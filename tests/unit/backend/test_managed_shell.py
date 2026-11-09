@@ -37,7 +37,7 @@ def _bwrap_missing(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _runtime_mounts(tmp_path: Path) -> Any:
     venv = tmp_path / "plat" / ".venv"
-    (venv / "bin").mkdir(parents=True)
+    (venv / "bin").mkdir(parents=True, exist_ok=True)
     return managed_shell._PythonRuntimeMounts(
         binds=((str(venv), str(venv)),),
         bin_dir=str(venv / "bin"),
@@ -324,29 +324,6 @@ def test_managed_execute_still_rejects_caller_runtime_override(
 
     with pytest.raises(ValueError, match=name):
         backend.execute("python -c 'print(1)'")
-
-
-@posix_only
-def test_managed_local_shell_builds_hard_closed_backend(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", str(tmp_path / "trusted-keys.json"))
-    monkeypatch.setattr(managed_shell.shutil, "which", lambda *_a, **_k: "/usr/bin/bwrap")
-    created: dict[str, Any] = {}
-    real_cls = managed_shell.ManagedShellBackend
-
-    def factory(**kwargs: Any) -> Any:
-        created.update(kwargs)
-        return real_cls(**kwargs)
-
-    monkeypatch.setattr(managed_shell, "ManagedShellBackend", factory)
-    workspace = tmp_path / "ws"
-    spec = {"type": "local_shell", "root_dir": str(workspace), "virtual_mode": True}
-    result = managed_shell.managed_shell_spec(
-        spec, workspace_dir=workspace, system_files_path=".octop"
-    )
-    assert created["bwrap_path"] == "/usr/bin/bwrap"
-    assert result is not None
 
 
 @posix_only

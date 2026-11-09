@@ -8,7 +8,7 @@
  */
 
 import { getApiUrl } from "../../../api/config";
-import { getAuthToken } from "../../../api/request";
+import { getAuthToken, handleAccessExpired } from "../../../api/request";
 import type { TokenUsage } from "../../../api/types";
 import { buildDashboardChatWsUrl } from "../../../api/modules/wsChat";
 import {
@@ -2212,6 +2212,14 @@ async function sendTurnWebSocket(
       try {
         const data = JSON.parse(String(event.data)) as HarnessChunk;
         if (!data || typeof data !== "object") return;
+        const expiryFrame = data as {
+          code?: string;
+          details?: { notice?: unknown; expires_at?: unknown };
+        };
+        if (expiryFrame.code === "ACCESS_EXPIRED") {
+          handleAccessExpired(expiryFrame.details?.notice);
+          return;
+        }
         if (!frameBelongsToThread(data, live.threadId)) return;
         if ((data as { type?: string }).type === "turn_status") return;
         handleHarnessChunk(state, data, sessionId);

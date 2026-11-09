@@ -520,6 +520,7 @@
     "INSTANCE_DEPLOYMENT_RESTRICTED": "实例部署安全策略禁止此操作。请联系部署管理员。",
     "NOT_FOUND": "未找到。",
     "USER_DISABLED": "账号已禁用。",
+    "ACCESS_EXPIRED": "账号访问权限已到期。",
     "LOGIN_LOCKED": "登录失败次数过多，请 {minutes} 分钟后再试。",
     "USERNAME_TAKEN": "用户名已被占用。",
     "EMAIL_TAKEN": "邮箱已被占用。",

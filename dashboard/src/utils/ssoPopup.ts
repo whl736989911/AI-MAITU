@@ -6,6 +6,7 @@ export type SsoPopupMessage = {
   redirect?: string;
   bind?: boolean;
   error?: string;
+  notice?: string;
 };
 
 export function isSsoPopup(): boolean {

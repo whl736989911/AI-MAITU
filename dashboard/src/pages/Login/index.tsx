@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, type ReactNode } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Input, Button } from "antd";
+import { Input, Button, Modal } from "antd";
 import { message } from "@/utils/antdMessage";
 
 import { KeyRound, Lock, User } from "lucide-react";
@@ -9,7 +9,7 @@ import { clearAuthToken, setAuthToken } from "../../api";
 import { authApi, type OauthProviderStatus } from "../../api/modules/auth";
 import { publicUrl } from "../../utils/publicUrl";
 
-import { apiErrorMessage } from "../../utils/apiError";
+import { apiErrorMessage, parseApiError } from "../../utils/apiError";
 import { refreshServerLabels } from "../../i18n";
 import { applyUserLocale, applyGuestLocale } from "../../utils/locale";
 import { useTheme } from "../../context/ThemeContext";
@@ -83,6 +83,9 @@ export default function LoginPage() {
     provider: "slider",
   });
   const captchaRef = useRef<CaptchaFieldHandle>(null);
+  const [accessExpiredNotice, setAccessExpiredNotice] = useState<string | null>(
+    null,
+  );
 
   useEffect(() => {
     void applyGuestLocale();
@@ -128,8 +131,20 @@ export default function LoginPage() {
   }, [navigate]);
 
   useEffect(() => {
+    if (searchParams.get("oidc_error") !== "access_expired") return;
+    const params = new URLSearchParams(window.location.hash.slice(1));
+    const notice = params.get("access_notice") || "";
+    if (notifySsoOpener({ ok: false, error: "access_expired", notice })) return;
+    setAccessExpiredNotice(
+      notice ||
+        t("login.accessExpiredDefault", "Your account access has expired."),
+    );
+    navigate("/login", { replace: true });
+  }, [navigate, searchParams, t]);
+
+  useEffect(() => {
     const code = searchParams.get("oidc_error");
-    if (!code) return;
+    if (!code || code === "access_expired") return;
     if (notifySsoOpener({ ok: false, error: code })) return;
     message.error(
       t(`login.oidcError.${code}`, {
@@ -146,13 +161,22 @@ export default function LoginPage() {
           isSsoPopupMessage(event, window.location.origin) &&
           !event.data.ok
         ) {
-          setSsoLoadingKind(null);
           const code = event.data.error || "generic";
-          message.error(
-            t(`login.oidcError.${code}`, {
-              defaultValue: t("login.oidcError.generic"),
-            }),
-          );
+          if (code === "access_expired") {
+            setAccessExpiredNotice(
+              event.data.notice ||
+                t(
+                  "login.accessExpiredDefault",
+                  "Your account access has expired.",
+                ),
+            );
+          } else {
+            message.error(
+              t(`login.oidcError.${code}`, {
+                defaultValue: t("login.oidcError.generic"),
+              }),
+            );
+          }
         }
         return;
       }
@@ -210,7 +234,17 @@ export default function LoginPage() {
       void refreshServerLabels(res.user.locale);
       navigate("/chat", { replace: true });
     } catch (err) {
-      message.error(apiErrorMessage(err, t("login.failed"), t));
+      const parsed = parseApiError(err);
+      if (parsed?.code === "ACCESS_EXPIRED") {
+        const notice = parsed.details?.notice;
+        setAccessExpiredNotice(
+          typeof notice === "string" && notice
+            ? notice
+            : t("login.accessExpiredDefault"),
+        );
+      } else {
+        message.error(apiErrorMessage(err, t("login.failed"), t));
+      }
       resetCaptcha();
     } finally {
       setLoading(false);
@@ -222,165 +256,181 @@ export default function LoginPage() {
   }
 
   return (
-    <div
-      style={{
-        minHeight: "100dvh",
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        background: "var(--fn-bg-layout)",
-        transition: "background var(--fn-transition)",
-        boxSizing: "border-box",
-        padding:
-          "max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))",
-      }}
-    >
+    <>
+      <Modal
+        open={accessExpiredNotice !== null}
+        title={t("login.accessExpiredTitle", "Account access expired")}
+        onOk={() => setAccessExpiredNotice(null)}
+        onCancel={() => setAccessExpiredNotice(null)}
+        cancelButtonProps={{ style: { display: "none" } }}
+        okText={t("common.ok", "OK")}
+      >
+        <div style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+          {accessExpiredNotice}
+        </div>
+      </Modal>
       <div
         style={{
-          width: "100%",
-          maxWidth: 360,
-          padding: "48px 32px 40px",
-          background: "var(--fn-bg-elevated)",
-          borderRadius: 16,
-          boxShadow: "0 8px 32px rgba(0,0,0,0.08)",
-          border: "1px solid var(--fn-border-primary)",
+          minHeight: "100dvh",
           display: "flex",
-          flexDirection: "column",
           alignItems: "center",
-          gap: 20,
-          margin: "0 16px",
+          justifyContent: "center",
+          background: "var(--fn-bg-layout)",
+          transition: "background var(--fn-transition)",
+          boxSizing: "border-box",
+          padding:
+            "max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))",
         }}
       >
-        <img
-          src={isDark ? brand.logos.wordmark_dark : brand.logos.wordmark_light}
-          alt={brand.name.en}
+        <div
           style={{
-            height: 48,
-            width: "auto",
-            maxWidth: 260,
-            objectFit: "contain",
-            display: "block",
-          }}
-        />
-
-        <h2
-          style={{
-            fontSize: 20,
-            fontWeight: 600,
-            color: "var(--fn-text-primary)",
-            margin: 0,
-            textAlign: "center",
-          }}
-        >
-          {t("login.title")}
-        </h2>
-
-        <Input
-          prefix={
-            <User size={16} style={{ color: "var(--fn-text-quaternary)" }} />
-          }
-          placeholder={t("login.username")}
-          size="large"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-          autoFocus
-          style={{ borderRadius: 10 }}
-        />
-
-        <Input.Password
-          prefix={
-            <Lock size={16} style={{ color: "var(--fn-text-quaternary)" }} />
-          }
-          placeholder={t("login.password")}
-          size="large"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          onPressEnter={handleLogin}
-          style={{ borderRadius: 10 }}
-        />
-
-        <CaptchaField
-          ref={captchaRef}
-          config={captcha}
-          resetKey={captchaResetKey}
-          slideHint={t("login.slideHint")}
-          slideVerifiedLabel={t("login.slideVerified")}
-          unsupportedLabel={t("login.unsupportedCaptcha")}
-          onReadyChange={setCaptchaReady}
-        />
-
-        <Button
-          type="primary"
-          size="large"
-          block
-          loading={loading}
-          onClick={handleLogin}
-          disabled={!username || !password || !captchaReady}
-          style={{ borderRadius: 10, height: 44, fontWeight: 500 }}
-        >
-          {t("login.submit")}
-        </Button>
-
-        <p
-          data-testid="login-forgot-password"
-          style={{
-            margin: 0,
-            fontSize: 13,
-            lineHeight: 1.6,
-            color: "var(--fn-text-tertiary)",
-            textAlign: "center",
             width: "100%",
+            maxWidth: 360,
+            padding: "48px 32px 40px",
+            background: "var(--fn-bg-elevated)",
+            borderRadius: 16,
+            boxShadow: "0 8px 32px rgba(0,0,0,0.08)",
+            border: "1px solid var(--fn-border-primary)",
+            display: "flex",
+            flexDirection: "column",
+            alignItems: "center",
+            gap: 20,
+            margin: "0 16px",
           }}
         >
-          {t("login.forgotPasswordHint", {
-            brand: brand.name[i18n.language.startsWith("zh") ? "zh" : "en"],
-          })}
-        </p>
+          <img
+            src={
+              isDark ? brand.logos.wordmark_dark : brand.logos.wordmark_light
+            }
+            alt={brand.name.en}
+            style={{
+              height: 48,
+              width: "auto",
+              maxWidth: 260,
+              objectFit: "contain",
+              display: "block",
+            }}
+          />
 
-        {providers.length > 0 && (
-          <>
-            <div
-              style={{
-                width: "100%",
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                color: "var(--fn-text-tertiary)",
-                fontSize: 13,
-              }}
-            >
-              <span
+          <h2
+            style={{
+              fontSize: 20,
+              fontWeight: 600,
+              color: "var(--fn-text-primary)",
+              margin: 0,
+              textAlign: "center",
+            }}
+          >
+            {t("login.title")}
+          </h2>
+
+          <Input
+            prefix={
+              <User size={16} style={{ color: "var(--fn-text-quaternary)" }} />
+            }
+            placeholder={t("login.username")}
+            size="large"
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+            style={{ borderRadius: 10 }}
+          />
+
+          <Input.Password
+            prefix={
+              <Lock size={16} style={{ color: "var(--fn-text-quaternary)" }} />
+            }
+            placeholder={t("login.password")}
+            size="large"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            onPressEnter={handleLogin}
+            style={{ borderRadius: 10 }}
+          />
+
+          <CaptchaField
+            ref={captchaRef}
+            config={captcha}
+            resetKey={captchaResetKey}
+            slideHint={t("login.slideHint")}
+            slideVerifiedLabel={t("login.slideVerified")}
+            unsupportedLabel={t("login.unsupportedCaptcha")}
+            onReadyChange={setCaptchaReady}
+          />
+
+          <Button
+            type="primary"
+            size="large"
+            block
+            loading={loading}
+            onClick={handleLogin}
+            disabled={!username || !password || !captchaReady}
+            style={{ borderRadius: 10, height: 44, fontWeight: 500 }}
+          >
+            {t("login.submit")}
+          </Button>
+
+          <p
+            data-testid="login-forgot-password"
+            style={{
+              margin: 0,
+              fontSize: 13,
+              lineHeight: 1.6,
+              color: "var(--fn-text-tertiary)",
+              textAlign: "center",
+              width: "100%",
+            }}
+          >
+            {t("login.forgotPasswordHint", {
+              brand: brand.name[i18n.language.startsWith("zh") ? "zh" : "en"],
+            })}
+          </p>
+
+          {providers.length > 0 && (
+            <>
+              <div
                 style={{
-                  flex: 1,
-                  height: 1,
-                  background: "var(--fn-border-primary)",
+                  width: "100%",
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  color: "var(--fn-text-tertiary)",
+                  fontSize: 13,
                 }}
-              />
-              {t("login.or")}
-              <span
-                style={{
-                  flex: 1,
-                  height: 1,
-                  background: "var(--fn-border-primary)",
-                }}
-              />
-            </div>
-            {providers.map((provider) => (
-              <Button
-                key={provider.kind}
-                size="large"
-                block
-                icon={providerIcon(provider)}
-                loading={ssoLoadingKind === provider.kind}
-                onClick={() => void onSso(provider.kind)}
-                style={{ borderRadius: 10, height: 44, fontWeight: 500 }}
               >
-                {t("login.oidcWith", { name: providerLabel(provider, t) })}
-              </Button>
-            ))}
-          </>
-        )}
+                <span
+                  style={{
+                    flex: 1,
+                    height: 1,
+                    background: "var(--fn-border-primary)",
+                  }}
+                />
+                {t("login.or")}
+                <span
+                  style={{
+                    flex: 1,
+                    height: 1,
+                    background: "var(--fn-border-primary)",
+                  }}
+                />
+              </div>
+              {providers.map((provider) => (
+                <Button
+                  key={provider.kind}
+                  size="large"
+                  block
+                  icon={providerIcon(provider)}
+                  loading={ssoLoadingKind === provider.kind}
+                  onClick={() => void onSso(provider.kind)}
+                  style={{ borderRadius: 10, height: 44, fontWeight: 500 }}
+                >
+                  {t("login.oidcWith", { name: providerLabel(provider, t) })}
+                </Button>
+              ))}
+            </>
+          )}
+        </div>
       </div>
-    </div>
+    </>
   );
 }

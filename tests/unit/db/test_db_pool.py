@@ -19,6 +19,37 @@ def db(tmp_path: Path) -> SqlitePool:
     return pool
 
 
+@pytest.mark.parametrize("watermark", [50, 51])
+def test_account_expiry_upgrade_preserves_users_and_repairs_stamped_schema(
+    db: SqlitePool, watermark: int
+):
+    from octop.infra.db.repos.users import UserRepo
+
+    repo = UserRepo(db)
+    uid = repo.create(username="existing-account", password_hash="stored-hash", role="user")
+    with db.connect() as conn:
+        conn.execute("ALTER TABLE users DROP COLUMN access_expires_at")
+        conn.execute("ALTER TABLE users DROP COLUMN access_notice")
+        conn.execute("UPDATE _schema_version SET version = ?", (watermark,))
+    run_migrations(db)
+    row = repo.get(uid)
+    assert row is not None
+    assert row.username == "existing-account"
+    assert row.password_hash == "stored-hash"
+    assert row.disabled == 0
+    assert row.access_expires_at is None
+    assert row.access_notice is None
+    with db.transaction() as conn:
+        repo.update_account(
+            uid, {"access_expires_at": 1234567890, "access_notice": "renew"}, conn=conn
+        )
+    run_migrations(db)
+    row = repo.get(uid)
+    assert row is not None
+    assert row.access_expires_at == 1234567890
+    assert row.access_notice == "renew"
+
+
 def test_db_pool_creates_file(tmp_path: Path):
     db_path = tmp_path / "octop.db"
     SqlitePool(db_path)
@@ -123,7 +154,7 @@ def test_run_migrations_idempotent(db: SqlitePool):
         sso_indexes = {
             r["name"] for r in conn.execute("PRAGMA index_list(sso_providers)").fetchall()
         }
-    assert v == 50
+    assert v == 51
     assert "login_failed_count" in cols
     assert "login_locked_until" in cols
     assert "preferences_json" in cols
@@ -193,7 +224,7 @@ def test_v36_repairs_missing_thread_mode_and_policy_columns(db: SqlitePool) -> N
     with db.connect() as conn:
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         actual = {row["name"] for row in conn.execute("PRAGMA table_info(threads)")}
-    assert version == 50
+    assert version == 51
     assert set(columns).issubset(actual)
 
 
@@ -237,7 +268,7 @@ def test_watermark_at_25_gets_agent_kind_and_loses_the_feature_tables(tmp_path: 
             r["name"]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 50
+    assert version == 51
     assert kinds["feat-legacy"] == "feature"
     assert kinds["expert-legacy"] == "agent"
     assert "feature_tasks" not in tables
@@ -269,7 +300,7 @@ def test_watermark_at_20_without_data_sources_is_repaired(tmp_path: Path) -> Non
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(data_sources)").fetchall()}
-    assert version == 50
+    assert version == 51
     assert "data_sources" in tables
     assert {"knowledge_base_id", "kind", "config_json", "sync_status"}.issubset(cols)
 
@@ -310,7 +341,7 @@ def test_migration_002_idempotent_when_column_already_present(tmp_path: Path) ->
     with pool.connect() as conn:
         v = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
         cron_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cron_jobs)").fetchall()}
-    assert v == 50
+    assert v == 51
     assert "mcp_servers" in cron_cols
     assert "skill_packages" in {
         r["name"]
@@ -354,7 +385,7 @@ def test_migration_005_preserves_populated_users_and_constraints(tmp_path: Path)
             ("legacy-agent",),
         ).fetchone()
         assert user is not None
-        assert dict(user) == {
+        preserved = {
             "id": 101,
             "username": "legacy-user",
             "password_hash": "legacy-hash",
@@ -373,6 +404,9 @@ def test_migration_005_preserves_populated_users_and_constraints(tmp_path: Path)
             "org_unit": None,
             "denied_permissions": None,
         }
+        assert {key: user[key] for key in preserved} == preserved
+        assert user["access_expires_at"] is None
+        assert user["access_notice"] is None
         assert dict(agent) == {
             "agent_id": "legacy-agent",
             "user_id": 101,
@@ -497,7 +531,7 @@ def test_stuck_version_6_without_permissions_column_is_repaired(tmp_path: Path) 
     with pool.connect() as conn:
         cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
         version = conn.execute("SELECT version FROM _schema_version").fetchone()[0]
-    assert version == 50
+    assert version == 51
     assert "permissions" in cols
 
 
@@ -522,7 +556,7 @@ def test_schema_v10_without_projection_tables_is_repaired(tmp_path: Path) -> Non
         }
         kb_cols = {r["name"] for r in conn.execute("PRAGMA table_info(knowledge_bases)").fetchall()}
         cron_cols = {r["name"] for r in conn.execute("PRAGMA table_info(cron_jobs)").fetchall()}
-    assert version == 50
+    assert version == 51
     assert {"thread_messages", "thread_history_projection", "trajectory_events"}.issubset(
         table_names
     )
@@ -557,7 +591,7 @@ def test_ahead_of_max_schema_version_clamps_to_max(tmp_path: Path) -> None:
             r["name"]
             for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
-    assert version == 50
+    assert version == 51
     assert "skill_package_id" in pkg_cols
     assert "published_expert_id" in pub_cols
     assert "user_invites" in invite_tables
@@ -645,7 +679,7 @@ def test_pre_squash_schema_version_clamped_and_knowledge_tables_filled(
             for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
         }
         user_cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
-    assert version == 50
+    assert version == 51
     assert "permissions" in user_cols
     assert {
         "published_experts",
@@ -853,7 +887,7 @@ def test_v14_to_v15_adds_sso_provider_kind_without_rebuilding(tmp_path: Path) ->
         bound = conn.execute(
             "SELECT sso_provider_id FROM users WHERE username = 'sso-admin'"
         ).fetchone()[0]
-    assert version == 50
+    assert version == 51
     assert int(row["id"]) == int(provider_id)
     assert row["kind"] == "oidc"
     assert row["extra"] == "{}"

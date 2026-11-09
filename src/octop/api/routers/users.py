@@ -95,6 +95,18 @@ class UserCreateBody(BaseModel):
     )
     workspace_root_dir: str | None = None
     token_quota: int | None = Field(default=None, ge=0)
+    access_expires_at: int | None = Field(
+        default=None,
+        gt=0,
+        le=253402300799,
+        strict=True,
+        description="System-admin only. Unix seconds when login and sessions expire; null is permanent.",
+    )
+    access_notice: str | None = Field(
+        default=None,
+        max_length=500,
+        description="System-admin only. Plain-text message displayed after account access expires.",
+    )
 
 
 class UserPatchBody(BaseModel):
@@ -126,6 +138,44 @@ class UserPatchBody(BaseModel):
     denied_permissions: list[str] | None = None
     workspace_root_dir: str | None = None
     token_quota: int | None = Field(default=None, ge=0)
+    access_expires_at: int | None = Field(
+        default=None,
+        gt=0,
+        le=253402300799,
+        strict=True,
+        description="System-admin only, other accounts only. Unix seconds; null clears the expiry.",
+    )
+    access_notice: str | None = Field(
+        default=None,
+        max_length=500,
+        description="System-admin only, other accounts only. Expiry popup text; null clears it.",
+    )
+
+
+class UserResponse(BaseModel):
+    id: int
+    username: str
+    role: str
+    display_name: str | None
+    email: str | None
+    has_password: bool
+    sso_linked: bool
+    disabled: bool
+    access_expires_at: int | None = Field(
+        description="Unix seconds when account access expires, or null for permanent access."
+    )
+    access_notice: str | None = Field(description="Plain-text notice shown after access expires.")
+    login_failed_count: int
+    login_locked: bool
+    login_locked_until: int
+    login_retry_after_seconds: int
+    created_at: int
+    permissions: list[str]
+    org_unit: str | None
+    org_units: list[str]
+    denied_permissions: list[str]
+    workspace_root_dir: str | None
+    token_quota: int | None
 
 
 def _department_units(body: UserCreateBody | UserPatchBody) -> list[str] | None:
@@ -162,6 +212,8 @@ def _row_to_dict(
         "has_password": r.password_hash is not None,
         "sso_linked": r.sso_provider_id is not None and r.sso_subject is not None,
         "disabled": bool(r.disabled),
+        "access_expires_at": getattr(r, "access_expires_at", None),
+        "access_notice": getattr(r, "access_notice", None),
         "login_failed_count": int(getattr(r, "login_failed_count", 0) or 0),
         "login_locked": locked,
         "login_locked_until": locked_until if locked else 0,
@@ -399,7 +451,7 @@ async def list_users(
     ]
 
 
-@router.post("", status_code=201)
+@router.post("", status_code=201, summary="Create an account", response_model=UserResponse)
 async def create_user(
     request: Request,
     body: UserCreateBody,
@@ -412,6 +464,8 @@ async def create_user(
     administrators require one, while a system-created enterprise admin is
     unbound and receives the dynamic enterprise-wide scope.
     """
+    if {"access_expires_at", "access_notice"} & body.model_fields_set:
+        _assert_admin(actor, "set account access expiry")
     _assert_can_assign(request, server, actor, body.permissions)
     scope = _scope(server, actor)
     role = _require_known_role(body.role)
@@ -452,6 +506,9 @@ async def create_user(
         display_name=body.display_name,
         email=body.email,
         permissions=body.permissions,
+        access_expires_at=body.access_expires_at,
+        access_notice=body.access_notice,
+        actor=actor.username,
     )
     if units:
         await server.user_manager.update_account(user.username, {"org_units": units})
@@ -488,11 +545,14 @@ async def get_user(
 @router.patch(
     "/{user_id}",
     summary="Update an account atomically",
+    response_model=UserResponse,
     description=(
         "Requires user-management permission and scope over the account. Validates "
         "the entire patch before committing profile, access, policy and audit changes "
         "together. Omitted fields are unchanged; null email, org_unit and "
-        "denied_permissions clear those values when permitted."
+        "denied_permissions clear those values when permitted. Only system administrators "
+        "may set access_expires_at and access_notice, and cannot change their own validity. "
+        "Null access_expires_at restores permanent access without enabling a disabled account."
     ),
 )
 async def patch_user(
@@ -560,8 +620,12 @@ async def patch_user(
             )
     if "denied_permissions" in body.model_fields_set:
         _assert_admin(actor, "deny permissions for an account")
+    if {"access_expires_at", "access_notice"} & body.model_fields_set:
+        _assert_admin(actor, "set account access expiry")
+        if user_id == actor.id:
+            raise OctopError(ErrorCode.FORBIDDEN, "cannot set your own account access expiry")
     patch = body.model_dump(exclude_unset=True)
-    await server.user_manager.update_account(row.username, patch)
+    await server.user_manager.update_account(row.username, patch, actor=actor.username)
     if _writes_access(body):
         # The account's effective ``channel_<kind>`` may have just changed, and
         # a channel that lost its type key stops now rather than at its next

@@ -20,6 +20,26 @@ every outstanding token immediately. Login attempts are rate-limited
 (`MAITU_LOGIN_MAX_ATTEMPTS` / `MAITU_LOGIN_LOCKOUT_SECONDS`); the
 admin can clear the lockout with `POST /api/users/{id}/unlock-login`.
 
+Account validity is separate from JWT lifetime. A system administrator may give
+another account an `access_expires_at` deadline (Unix seconds) and an optional
+`access_notice` (plain text, at most 500 characters) on user creation or PATCH.
+Existing accounts remain permanent by default. Null clears a deadline or notice;
+omitted PATCH fields are unchanged. Only system administrators may write these
+fields, and they may not edit their own validity. Setting or clearing a deadline
+does not enable a manually disabled account.
+
+At `now >= access_expires_at`, password/SSO login and subsequent authenticated
+requests return `ACCESS_EXPIRED` (403), with
+`details: {notice, expires_at}`. Existing chat connections recheck before handling
+each message, and remote-control sockets retain their live account checks.
+The dashboard returns to login and shows the custom notice in a popup; an empty
+notice uses the localized default. An already-started external action is not
+rolled back. Extending the deadline or clearing it restores access without
+deleting user data. Dashboard validity inputs use the server timezone.
+Login responses and `GET /auth/me` include both fields on the user profile so
+clients can refresh authorization at the deadline. User creation and PATCH
+responses use the typed `UserResponse` schema, including nullable validity fields.
+
 ### Auth column legend
 
 - **public** — no token required.
@@ -146,9 +166,9 @@ updates the same provider instead of creating duplicates.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET`    | `/users` | admin | `[{id, username, role, display_name, email, enabled, ...}]` |
-| `POST`   | `/users` | scoped user manager (`users`) | body `{username, password, role, display_name?, email?, permissions?, org_units?, org_unit?, workspace_root_dir?, token_quota?}` → `201`; employees and department administrators require a department |
+| `POST`   | `/users` | scoped user manager (`users`) | body `{username, password, role, display_name?, email?, permissions?, org_units?, org_unit?, workspace_root_dir?, token_quota?, access_expires_at?, access_notice?}` → `201`; employees and department administrators require a department; validity fields are system-admin only |
 | `GET`    | `/users/{id}` | admin | full user row |
-| `PATCH`  | `/users/{id}` | scoped user manager (`users`) | body subset of `{role, display_name, email, disabled, permissions, org_units, org_unit, denied_permissions, workspace_root_dir, token_quota}`; account fields, department memberships, policy and audit writes commit together after the whole patch is validated |
+| `PATCH`  | `/users/{id}` | scoped user manager (`users`) | body subset of `{role, display_name, email, disabled, permissions, org_units, org_unit, denied_permissions, workspace_root_dir, token_quota, access_expires_at, access_notice}`; account fields, department memberships, policy and audit writes commit together after the whole patch is validated; validity fields are system-admin only and cannot target the caller |
 | `POST`   | `/users/{id}/reset-password` | admin | body `{new_password}` → `204` |
 | `POST`   | `/users/{id}/unlock-login` | admin | `204` (clears the lockout) |
 | `DELETE` | `/users/{id}` | admin | `204` |

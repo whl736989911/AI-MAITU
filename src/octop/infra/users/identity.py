@@ -147,6 +147,8 @@ class User:
     org_unit: str | None = None
     # Explicit denies. Denies outrank role defaults, unit grants and grants.
     denied_permissions: list[str] = field(default_factory=list)
+    access_expires_at: int | None = None
+    access_notice: str | None = None
 
     @property
     def label(self) -> str:

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable
 from typing import Any
 
@@ -33,15 +34,39 @@ class UserCapabilityPolicy:
             unit_grants.update(unit_permissions(str(unit_key), self._org_unit_repo))
         return set(effective_permissions(user, unit_grants=unit_grants))
 
+    @staticmethod
+    def _expired(user: Any) -> bool:
+        expires_at = getattr(user, "access_expires_at", None)
+        return expires_at is not None and int(time.time()) >= int(expires_at)
+
     def _active_user(self, user_id: int | None) -> Any | None:
         if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
             return None
         user = self._user_repo.get(user_id)
-        return user if user is not None and not bool(user.disabled) else None
+        return (
+            user
+            if user is not None and not bool(user.disabled) and not self._expired(user)
+            else None
+        )
 
     def require_permissions(self, user_id: int | None, keys: Iterable[str]) -> None:
         user = self._active_user(user_id)
         if user is None:
+            account = (
+                self._user_repo.get(user_id)
+                if isinstance(user_id, int) and not isinstance(user_id, bool) and user_id > 0
+                else None
+            )
+            if account is not None and not bool(account.disabled) and self._expired(account):
+                expires_at = int(account.access_expires_at)
+                raise OctopError(
+                    ErrorCode.ACCESS_EXPIRED,
+                    "account access has expired",
+                    details={
+                        "notice": getattr(account, "access_notice", None),
+                        "expires_at": expires_at,
+                    },
+                )
             raise OctopError.localized(ErrorCode.USER_DISABLED)
         required = set(keys)
         if required and not required.issubset(self.permissions_for(user_id)):

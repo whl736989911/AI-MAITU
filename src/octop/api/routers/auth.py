@@ -51,6 +51,8 @@ def _user_json(
         "granted_permissions": sorted(explicit),
         "org_unit": getattr(user, "org_unit", None),
         "org_units": units,
+        "access_expires_at": getattr(user, "access_expires_at", None),
+        "access_notice": getattr(user, "access_notice", None),
     }
 
 

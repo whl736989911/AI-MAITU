@@ -7,6 +7,7 @@ from typing import Any
 
 import pytest
 
+from octop.infra.users.permissions import BASELINE_PERMISSIONS
 from tests.support.auth import create_user
 
 posix_only = pytest.mark.skipif(
@@ -16,10 +17,14 @@ posix_only = pytest.mark.skipif(
 
 async def _owner_and_peer(
     env: tuple[Any, Any, dict[str, str]],
+    *,
+    peer_permissions: list[str] | None = None,
 ) -> tuple[Any, Any, dict[str, str], dict[str, str], str]:
     client, server, admin_auth = env
     owner_auth = await create_user(client, admin_auth, username="publish_owner")
-    peer_auth = await create_user(client, admin_auth, username="publish_peer")
+    peer_auth = await create_user(
+        client, admin_auth, username="publish_peer", permissions=peer_permissions
+    )
     created = await client.post(
         "/api/agents/from-expert/default",
         headers=owner_auth,
@@ -79,7 +84,9 @@ async def test_publish_list_install_and_unpublish_preserves_installed_fork(
 async def test_install_published_expert_accepts_create_options(
     env: tuple[Any, Any, dict[str, str]],
 ) -> None:
-    client, _server, owner_auth, peer_auth, source_agent_id = await _owner_and_peer(env)
+    client, _server, owner_auth, peer_auth, source_agent_id = await _owner_and_peer(
+        env, peer_permissions=sorted({*BASELINE_PERMISSIONS, "terminal"})
+    )
 
     published = await client.post(
         f"/api/agents/{source_agent_id}/publish-expert",

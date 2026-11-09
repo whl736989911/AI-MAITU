@@ -320,6 +320,12 @@ class SsoService:
         except OctopError as exc:
             if exc.code is ErrorCode.USER_DISABLED:
                 return self._error_redirect(frontend, "disabled")
+            if exc.code is ErrorCode.ACCESS_EXPIRED:
+                return RedirectResult(
+                    f"{frontend.rstrip('/')}/login?"
+                    f"{urlencode({'oidc_error': 'access_expired'})}"
+                    f"#{urlencode({'access_notice': exc.details.get('notice') or ''})}"
+                )
             if exc.code is ErrorCode.SSO_IDENTITY_TAKEN:
                 return self._error_redirect(frontend, "identity_taken")
             return self._error_redirect(frontend, "generic")
@@ -345,6 +351,8 @@ class SsoService:
         user = self._user_manager.get_by_id(consumed["user_id"])
         if user is None:
             raise ValueError("SSO user is unavailable")
+        row = self._services.user_repo.get(user.id)
+        self._user_manager.raise_if_access_expired(row or user)
         self._services.audit_repo.write(
             actor=user.username, action="auth.oidc_login", target=user.username
         )

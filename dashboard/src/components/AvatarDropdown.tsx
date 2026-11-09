@@ -307,11 +307,15 @@ export default function AvatarDropdown({
       setSsoBindingKind(null);
       if (!event.data.ok) {
         const code = event.data.error || "generic";
-        message.error(
-          t(`login.oidcError.${code}`, {
-            defaultValue: t("login.oidcError.generic"),
-          }),
-        );
+        if (code === "access_expired" && event.data.notice) {
+          message.error(event.data.notice);
+        } else {
+          message.error(
+            t(`login.oidcError.${code}`, {
+              defaultValue: t("login.oidcError.generic"),
+            }),
+          );
+        }
         return;
       }
       void authApi
