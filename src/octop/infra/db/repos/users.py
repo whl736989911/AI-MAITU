@@ -67,10 +67,13 @@ class UserRow:
     permissions: builtins.list[str] = field(default_factory=list)
     org_unit: str | None = None
     denied_permissions: builtins.list[str] = field(default_factory=list)
+    access_expires_at: int | None = None
+    access_notice: str | None = None
 
     @classmethod
     def from_row(cls, r: DbRow) -> UserRow:
         keys = set(r.keys())
+
         return cls(
             id=r["id"],
             username=r["username"],
@@ -91,6 +94,12 @@ class UserRow:
             denied_permissions=_parse_permissions(
                 r["denied_permissions"] if "denied_permissions" in keys else None
             ),
+            access_expires_at=(
+                int(r["access_expires_at"])
+                if "access_expires_at" in keys and r["access_expires_at"] is not None
+                else None
+            ),
+            access_notice=r["access_notice"] if "access_notice" in keys else None,
         )
 
 
@@ -112,6 +121,8 @@ class UserRepo:
         permissions: builtins.list[str] | None = None,
         org_unit: str | None = None,
         denied_permissions: builtins.list[str] | None = None,
+        access_expires_at: int | None = None,
+        access_notice: str | None = None,
     ) -> int:
         perms_json = json.dumps(permissions or [], ensure_ascii=False)
         denied_json = json.dumps(denied_permissions or [], ensure_ascii=False)
@@ -120,8 +131,8 @@ class UserRepo:
                 conn,
                 "INSERT INTO users(username, password_hash, role, display_name, locale, "
                 "email, sso_provider_id, sso_subject, disabled, created_at, permissions, "
-                "org_unit, denied_permissions) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)",
+                "org_unit, denied_permissions, access_expires_at, access_notice) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?, ?)",
                 (
                     username,
                     password_hash,
@@ -135,6 +146,8 @@ class UserRepo:
                     perms_json,
                     org_unit,
                     denied_json,
+                    access_expires_at,
+                    access_notice,
                 ),
             )
 
@@ -290,6 +303,8 @@ class UserRepo:
             "disabled",
             "permissions",
             "denied_permissions",
+            "access_expires_at",
+            "access_notice",
         ):
             if column not in updates:
                 continue

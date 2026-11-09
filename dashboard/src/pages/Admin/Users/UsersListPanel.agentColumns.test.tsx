@@ -14,7 +14,7 @@
  * decision is pinned in ``tests/unit/i18n/test_admin_users_expert_naming.py``.
  */
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEventLibrary, {
   PointerEventsCheckLevel,
@@ -146,8 +146,14 @@ const FEATURE = agent("weekly-report", "feature", 1);
 let agents: OctopAgent[] = [];
 let permissionCatalog: PermissionCatalogItem[] = [];
 let userEvent: UserEvent;
+let serverTimezone = "UTC";
+
+vi.mock("../../../hooks/useServerTimezone", () => ({
+  useServerTimezone: () => serverTimezone,
+}));
 
 beforeEach(() => {
+  serverTimezone = "UTC";
   userEvent = userEventLibrary.setup({
     pointerEventsCheck: PointerEventsCheckLevel.EachTarget,
     delay: null,
@@ -173,6 +179,8 @@ beforeEach(() => {
     throw new Error(`unexpected request: ${url}`);
   });
 });
+
+afterEach(() => vi.useRealTimers());
 
 function renderPanel() {
   return render(
@@ -422,4 +430,58 @@ describe("Admin → Users team permissions", () => {
     expect(experts).toHaveAttribute("aria-pressed", "false");
     expect(teams).toHaveAttribute("aria-pressed", "false");
   });
+});
+
+describe("Admin → Users authorization deadlines", () => {
+  it.each(["profile", "notice"])(
+    "preserves the deadline instant in a repeated DST hour when changing only %s",
+    async (field) => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-11-09T12:00:00Z"));
+      serverTimezone = "America/New_York";
+      const deadline = Date.parse("2026-11-01T01:30:17-04:00") / 1000;
+      const row = {
+        ...USERS[0],
+        username: "dst-trial",
+        role: "enterprise_admin",
+        access_expires_at: deadline,
+        access_notice: "Original notice",
+      };
+      const fallback = requestMock.getMockImplementation()!;
+      requestMock.mockImplementation(
+        async (url: string, options?: RequestInit) => {
+          if (url === "/users") return [row];
+          if (url === "/users/1" && options?.method === "PATCH") return row;
+          return fallback(url, options);
+        },
+      );
+      agents = [];
+      renderPanel();
+      let edit: HTMLElement | undefined;
+      await waitFor(() => {
+        edit = findButtonByAccessibleLabel(document.body, "编辑");
+        expect(edit).toBeDefined();
+      });
+      await userEvent.click(edit!);
+      const drawer = await screen.findByRole("dialog", { hidden: true });
+      const input = within(drawer).getByRole("textbox", {
+        hidden: true,
+        name: field === "profile" ? /显示名称/ : "到期提示",
+      });
+      await userEvent.clear(input);
+      await userEvent.type(input, "Updated value");
+      await userEvent.click(findButtonByAccessibleLabel(drawer, "保存")!);
+      await waitFor(() => {
+        const call = requestMock.mock.calls.find(
+          ([url, options]) => url === "/users/1" && options?.method === "PATCH",
+        );
+        expect(call).toBeDefined();
+        const patch = JSON.parse(call![1].body as string);
+        const resultingDeadline = Object.hasOwn(patch, "access_expires_at")
+          ? patch.access_expires_at
+          : deadline;
+        expect(resultingDeadline).toBe(deadline);
+      });
+    },
+  );
 });

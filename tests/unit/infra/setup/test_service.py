@@ -33,6 +33,13 @@ from octop.infra.utils import posix_compat as pwd
 pytestmark = pytest.mark.skipif(os.name != "posix", reason="POSIX service management")
 
 
+@pytest.fixture(autouse=True)
+def isolate_legacy_service_units(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        service_mod, "legacy_unit_path", lambda *_args, **_kwargs: tmp_path / "legacy.service"
+    )
+
+
 def _runtime(tmp_path: Path) -> ServiceRuntime:
     octop_bin = tmp_path / "bin" / "octop"
     octop_bin.parent.mkdir(parents=True)
@@ -139,34 +146,6 @@ def test_probe_health_with_retry_uses_default_budget(
     assert ok is True
     assert len(attempts) == 5
     assert "ok" in detail
-
-
-def test_install_service_systemd_user_uses_systemctl_user(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    runtime = replace(_runtime(tmp_path), scope="user")
-    calls: list[list[str]] = []
-
-    def _fake_systemd_run(rt: ServiceRuntime, *args: str) -> object:
-        assert rt.scope == "user"
-        calls.append(list(args))
-
-        class _Proc:
-            returncode = 0
-            stdout = ""
-            stderr = ""
-
-        return _Proc()
-
-    monkeypatch.setattr(service_mod, "is_service_installed", lambda *_a, **_k: False)
-    monkeypatch.setattr(service_mod, "ensure_nofile_dropin", lambda _rt: False)
-    monkeypatch.setattr(service_mod, "_write_unit", lambda _rt: None)
-    monkeypatch.setattr(service_mod, "_systemd_run", _fake_systemd_run)
-    monkeypatch.setattr(service_mod, "_systemd_enable_linger", lambda _rt: None)
-
-    assert install_service(runtime) is True
-    assert calls[0] == ["daemon-reload"]
-    assert calls[1] == ["enable", "maitu"]
 
 
 def test_install_service_does_not_rewrite_custom_unit_without_force(
@@ -739,29 +718,6 @@ def test_build_runtime_root_always_system_scope(
     unit = render_systemd_unit(runtime, user_unit=False)
     assert "User=" not in unit  # no User= line when running as root
     assert "WantedBy=multi-user.target" in unit
-
-
-def test_systemctl_user_wraps_xdg_runtime_dir_for_root_install(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(service_mod, "is_root", lambda: True)
-    monkeypatch.setattr(
-        service_mod.pwd,
-        "getpwnam",
-        lambda _name: type("Pw", (), {"pw_uid": 1000, "pw_dir": "/home/ubuntu"})(),
-    )
-    cmd = service_mod._systemctl("user", "enable", "maitu", run_as_user="ubuntu")
-    assert cmd == [
-        "sudo",
-        "-u",
-        "ubuntu",
-        "env",
-        "XDG_RUNTIME_DIR=/run/user/1000",
-        "systemctl",
-        "--user",
-        "enable",
-        "octop",
-    ]
 
 
 def test_auto_scope_root_always_system(

@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Spin } from "antd";
-import { clearAuthToken, getAuthToken } from "../api/request";
+import { clearAuthToken, getAuthToken, serverNowMs } from "../api/request";
 import { authApi, type OctopUser } from "../api/modules/auth";
 import { applyUserLocale } from "../utils/locale";
 import { isNetworkFetchError } from "../utils/networkError";
@@ -116,6 +116,35 @@ export default function AuthGuard({ children }: AuthGuardProps) {
       window.removeEventListener("focus", refreshUser);
     };
   }, [authed]);
+
+  useEffect(() => {
+    if (!authed || user?.access_expires_at == null) return;
+    let cancelled = false;
+    let timer: number;
+    const schedule = () => {
+      const delay = Math.max(0, user.access_expires_at! * 1000 - serverNowMs());
+      timer = window.setTimeout(
+        () => {
+          if (delay > 2_147_000_000) {
+            schedule();
+            return;
+          }
+          void authApi
+            .me()
+            .then((me) => {
+              if (!cancelled) setUser(me);
+            })
+            .catch(() => undefined);
+        },
+        Math.min(delay, 2_147_000_000),
+      );
+    };
+    schedule();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [authed, user?.access_expires_at]);
 
   if (offline) {
     return (

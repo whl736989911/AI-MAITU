@@ -5,6 +5,12 @@ import i18n from "../i18n";
 import { markNavigatingAway } from "../utils/reloadOnStaleChunk";
 
 const AUTH_TOKEN_KEY = "auth_token";
+let serverTimeOffsetMs = 0;
+
+/** Account deadlines follow the server clock, not the device's wall clock. */
+export function serverNowMs(): number {
+  return Date.now() + serverTimeOffsetMs;
+}
 
 /**
  * Fired when the session is no longer valid. Cancelable: a listener inside the
@@ -16,6 +22,35 @@ export const UNAUTHORIZED_EVENT = "octop:unauthorized";
 export const FORBIDDEN_EVENT = "octop:forbidden";
 /** Fired when the server denies a business request because the instance is locked. */
 export const INSTANCE_LICENSE_LOCKED_EVENT = "octop:instance-license-locked";
+let _redirectingForAccessExpiry = false;
+
+export function handleAccessExpired(noticeValue?: unknown): void {
+  const notice = typeof noticeValue === "string" ? noticeValue : "";
+  clearAuthToken();
+  const path = appPathname(window.location.pathname);
+  if (path.startsWith("/login") || _redirectingForAccessExpiry) return;
+  _redirectingForAccessExpiry = true;
+  markNavigatingAway();
+  const fragment = new URLSearchParams({ access_notice: notice });
+  window.location.replace(
+    `${publicUrl("/login?oidc_error=access_expired")}#${fragment.toString()}`,
+  );
+}
+
+async function throwIfAccessExpired(response: Response): Promise<void> {
+  if (response.status !== 403) return;
+  const body = (await response
+    .clone()
+    .json()
+    .catch(() => null)) as {
+    error?: {
+      code?: string;
+      details?: { notice?: unknown; expires_at?: unknown };
+    };
+  } | null;
+  if (body?.error?.code !== "ACCESS_EXPIRED") return;
+  handleAccessExpired(body.error.details?.notice);
+}
 export class InstanceLicenseLockedError extends Error {
   constructor() {
     super("Instance license locked");
@@ -377,6 +412,11 @@ export async function request<T = unknown>(
     ...options,
     headers,
   });
+  const serverTime = Date.parse(response.headers.get("Date") ?? "");
+  if (Number.isFinite(serverTime)) {
+    serverTimeOffsetMs = serverTime - Date.now();
+  }
+  await throwIfAccessExpired(response);
 
   if (await check503ForSetupRequired(path, response)) {
     throw new SetupRequiredError();
@@ -433,6 +473,7 @@ export async function requestBlob(
     ...options,
     headers: { ...headers, ...(options.headers as Record<string, string>) },
   });
+  await throwIfAccessExpired(response);
 
   if (await check503ForSetupRequired(path, response)) {
     throw new SetupRequiredError();
@@ -493,6 +534,7 @@ export async function probeAuthResource(
   if (await check503ForSetupRequired(path, response)) {
     throw new SetupRequiredError();
   }
+  await throwIfAccessExpired(response);
 
   await throwIfUnauthorized(path, response);
   await throwIfLicenseLocked(response);
@@ -535,6 +577,7 @@ export async function requestStream(
   if (await check503ForSetupRequired(path, response)) {
     throw new SetupRequiredError();
   }
+  await throwIfAccessExpired(response);
 
   await throwIfUnauthorized(path, response);
   await throwIfLicenseLocked(response);
@@ -632,6 +675,7 @@ export async function requestUpload<T = unknown>(
           status,
           headers: responseHeaders,
         });
+        await throwIfAccessExpired(response);
 
         if (await check503ForSetupRequired(path, response)) {
           reject(new SetupRequiredError());

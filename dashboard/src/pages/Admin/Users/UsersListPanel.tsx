@@ -63,6 +63,9 @@ import {
 import { message } from "@/utils/antdMessage";
 import { ResizableTable } from "@/components/ResizableTable";
 import type { ColumnsType } from "antd/es/table";
+import dayjs from "dayjs";
+import utc from "dayjs/plugin/utc";
+import timezone from "dayjs/plugin/timezone";
 
 import {
   Ban,
@@ -144,14 +147,10 @@ interface UserRow {
   login_locked_until?: number;
   login_retry_after_seconds?: number;
   created_at?: number;
+  access_expires_at?: number | null;
+  access_notice?: string | null;
   permissions?: string[];
-  /**
-   * Keys this account is refused, whoever grants them (``role ∪ unit ∪ grant
-   * − deny``). Admin-writable only; absent from an older backend, in which
-   * case the deny editor simply reads as empty.
-   */
   denied_permissions?: string[];
-  /** Org unit key — non-admin accounts can carry the unit scope. */
   org_unit?: string | null;
   org_units?: string[];
   workspace_root_dir?: string | null;
@@ -214,6 +213,8 @@ interface CreateValues extends PolicyFormValues {
   role: OctopRole;
   org_units?: string[];
   permissions?: string[];
+  access_expires_local?: string;
+  access_notice?: string;
 }
 
 interface EditValues extends PolicyFormValues {
@@ -222,7 +223,8 @@ interface EditValues extends PolicyFormValues {
   role: OctopRole;
   org_units?: string[];
   permissions?: string[];
-  /** Deny list; only sent once the picker was touched (see ``denyTouched``). */
+  access_expires_local?: string;
+  access_notice?: string;
   denied_permissions?: string[];
 }
 
@@ -259,6 +261,61 @@ function lockRemainingSeconds(row: UserRow, nowSec: number): number {
 function formatUserTs(ts: number | undefined, timeZone: string): string {
   if (!ts) return "—";
   return formatServerDateTime(ts, timeZone);
+}
+dayjs.extend(utc);
+dayjs.extend(timezone);
+
+function expiryToLocalInput(
+  seconds: number | null | undefined,
+  timeZone: string,
+): string {
+  return seconds == null
+    ? ""
+    : dayjs.unix(seconds).tz(timeZone).format("YYYY-MM-DDTHH:mm:ss");
+}
+
+function localInputToExpiry(value: string, timeZone: string): number | null {
+  return value ? dayjs.tz(value, timeZone).unix() : null;
+}
+
+function AccessValidityFields({ timeZone }: { timeZone: string }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <Form.Item
+        label={t("adminUsers.accessExpiresAt")}
+        name="access_expires_local"
+        extra={t("adminUsers.accessExpiryTimezone", { timezone: timeZone })}
+        rules={[
+          {
+            validator: async (_, value: string | undefined) => {
+              if (!value) return;
+              const seconds = localInputToExpiry(value, timeZone);
+              if (
+                seconds == null ||
+                !Number.isFinite(seconds) ||
+                seconds <= 0 ||
+                seconds > 253402300799 ||
+                expiryToLocalInput(seconds, timeZone) !==
+                  (value.length === 16 ? `${value}:00` : value)
+              ) {
+                throw new Error(t("adminUsers.accessExpiryInvalid"));
+              }
+            },
+          },
+        ]}
+      >
+        <Input type="datetime-local" step="1" />
+      </Form.Item>
+      <Form.Item
+        label={t("adminUsers.accessNotice")}
+        name="access_notice"
+        rules={[{ max: 500, message: t("adminUsers.accessNoticeLimit") }]}
+      >
+        <Input.TextArea rows={3} maxLength={500} showCount />
+      </Form.Item>
+    </>
+  );
 }
 
 interface UserCardGridProps {
@@ -1099,6 +1156,8 @@ export default function UsersListPanel() {
    * so an untouched drawer omits it instead of rewriting the stored list.
    */
   const [denyTouched, setDenyTouched] = useState(false);
+  const [expiryTouched, setExpiryTouched] = useState(false);
+  const [noticeTouched, setNoticeTouched] = useState(false);
   const unitGrantRequest = useRef<string | null>(null);
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([]);
   const [fsTreeRoot, setFsTreeRoot] = useState(HOST_FS_ROOT);
@@ -1437,6 +1496,15 @@ export default function UsersListPanel() {
               : values.org_units ?? [],
           permissions: values.role === "admin" ? [] : values.permissions ?? [],
           ...policyPayload(values, { workspaceRootAllowed }),
+          ...(admin
+            ? {
+                access_expires_at: localInputToExpiry(
+                  values.access_expires_local ?? "",
+                  timeZone,
+                ),
+                access_notice: values.access_notice || null,
+              }
+            : {}),
         }),
       });
       message.success(
@@ -1468,6 +1536,8 @@ export default function UsersListPanel() {
       workspace_root_dir: undefined,
       limit_token_quota: false,
       token_quota: undefined,
+      access_expires_local: "",
+      access_notice: "",
     });
     setCreateOpen(true);
   };
@@ -1501,6 +1571,8 @@ export default function UsersListPanel() {
   const openEdit = (row: UserRow) => {
     setEditTarget(row);
     setDenyTouched(false);
+    setExpiryTouched(false);
+    setNoticeTouched(false);
     loadUnitGrants(row.org_units?.[0] ?? row.org_unit);
     editForm.setFieldsValue({
       display_name: row.display_name ?? "",
@@ -1521,6 +1593,8 @@ export default function UsersListPanel() {
         : undefined,
       limit_token_quota: row.token_quota != null,
       token_quota: row.token_quota ?? undefined,
+      access_expires_local: expiryToLocalInput(row.access_expires_at, timeZone),
+      access_notice: row.access_notice ?? "",
     });
   };
 
@@ -1572,23 +1646,27 @@ export default function UsersListPanel() {
     };
     if (assignableRoleValues.length > 0) {
       body.role = values.role;
-      // Enterprise administrators are unbound; legacy bindings are cleared on
-      // edit. Unit administrators remain attached to their managed department.
       body.org_units =
         values.role === "admin" || values.role === "enterprise_admin"
           ? []
           : values.org_units ?? [];
       body.permissions =
         values.role === "admin" ? [] : values.permissions ?? [];
-      // Deny is admin-only on the backend, and a PATCH carries it as
-      // omit = keep / null = clear / array = set. Only a touched picker sends
-      // it, so saving the display name never rewrites the stored deny list.
       if (denyTouched) {
         const denied = values.denied_permissions ?? [];
         body.denied_permissions = denied.length > 0 ? denied : null;
       }
     } else if (canSubmitPermissions) {
       body.permissions = values.permissions ?? [];
+    }
+    if (admin && editTarget.id !== currentUser?.id) {
+      if (expiryTouched) {
+        body.access_expires_at = localInputToExpiry(
+          values.access_expires_local ?? "",
+          timeZone,
+        );
+      }
+      if (noticeTouched) body.access_notice = values.access_notice || null;
     }
     try {
       await request(`/users/${editTarget.id}`, {
@@ -2204,6 +2282,7 @@ export default function UsersListPanel() {
                 <RolePicker options={assignableRoleOptions} />
               </Form.Item>
             )}
+            {admin ? <AccessValidityFields timeZone={timeZone} /> : null}
             <Form.Item
               noStyle
               shouldUpdate={(prev, cur) => prev.role !== cur.role}
@@ -2303,6 +2382,8 @@ export default function UsersListPanel() {
             // Fires on user edits only (``setFieldsValue`` does not), which is
             // exactly the "touched" signal the three-state deny field needs.
             if ("denied_permissions" in changed) setDenyTouched(true);
+            if ("access_expires_local" in changed) setExpiryTouched(true);
+            if ("access_notice" in changed) setNoticeTouched(true);
             // Rebinding the department changes which keys its grants cover.
             if ("org_unit" in changed) loadUnitGrants(changed.org_unit);
           }}
@@ -2367,6 +2448,9 @@ export default function UsersListPanel() {
                 />
               </Form.Item>
             )}
+            {admin && editTarget?.id !== currentUser?.id ? (
+              <AccessValidityFields timeZone={timeZone} />
+            ) : null}
             <Form.Item
               noStyle
               shouldUpdate={(prev, cur) => prev.role !== cur.role}

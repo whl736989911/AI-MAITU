@@ -194,5 +194,5 @@ def test_managed_shell_policy_protects_license_paths_and_preserves_workspace_io(
         link.symlink_to(license_dir, target_is_directory=True)
     except OSError:
         return
-    symlink_read = safe_backend.read("/license-link/state.json")
-    assert symlink_read.error is not None or symlink_read.file_data is None
+    with pytest.raises(ValueError):
+        safe_backend.read("/license-link/state.json")

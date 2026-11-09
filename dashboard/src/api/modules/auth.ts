@@ -73,6 +73,8 @@ export interface OctopUser {
   /** Linked SSO providers (multi-identity). */
   sso_identities?: SsoIdentity[];
   has_password?: boolean;
+  access_expires_at?: number | null;
+  access_notice?: string | null;
 }
 
 export interface LoginResponse {

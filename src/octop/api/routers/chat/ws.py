@@ -86,6 +86,19 @@ async def dashboard_chat_ws(
         while websocket.application_state == WebSocketState.CONNECTED:
             raw = await websocket.receive_text()
             try:
+                user = resolve_user_from_token(server, token)
+            except OctopError as exc:
+                await send_frame(
+                    {
+                        "type": "error",
+                        "code": exc.code.value,
+                        "message": exc.message,
+                        "details": exc.details,
+                    }
+                )
+                await websocket.close(code=4001, reason=f"auth: {exc.code.value}")
+                return
+            try:
                 payload = json.loads(raw)
             except json.JSONDecodeError:
                 payload = {"type": "user_turn", "text": raw}

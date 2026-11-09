@@ -182,6 +182,7 @@ def resolve_user_from_token(server: OctopServer, token: str) -> User:
     user = server.user_manager.get_by_id(int(payload["sub"]))
     if user is None:
         raise OctopError(ErrorCode.USER_DISABLED, "user not active")
+    server.user_manager.raise_if_access_expired(user)
     return user
 
 

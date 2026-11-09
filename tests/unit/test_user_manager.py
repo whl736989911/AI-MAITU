@@ -15,6 +15,7 @@ from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.services import build_shared_services
 from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.users.capabilities import UserCapabilityPolicy
 from octop.infra.users.identity import Role
 from octop.infra.users.manager import UserManager
 from octop.infra.utils.paths import PathLayout
@@ -248,6 +249,46 @@ async def test_sso_disabled_user_is_rejected(manager: UserManager):
             claims={"name": "Alice"},
         )
     assert ei.value.code is ErrorCode.USER_DISABLED
+
+
+async def test_sso_login_rejects_expired_user(manager: UserManager):
+    provider_id = _insert_sso_provider(manager)
+    user_id = manager._services.user_repo.create(
+        username="expired-sso",
+        password_hash=None,
+        role="user",
+        access_expires_at=1,
+        access_notice="SSO notice",
+    )
+    manager._services.user_repo.upsert_sso_identity(
+        user_id, provider_id=provider_id, subject="expired-subject"
+    )
+
+    with pytest.raises(OctopError) as exc_info:
+        await manager.resolve_or_create_sso_user(
+            provider_id=provider_id,
+            subject="expired-subject",
+            claims={"preferred_username": "expired-sso"},
+        )
+    assert exc_info.value.code is ErrorCode.ACCESS_EXPIRED
+    assert exc_info.value.details == {"notice": "SSO notice", "expires_at": 1}
+
+
+async def test_capability_policy_treats_expired_user_as_inactive(manager: UserManager):
+    user = await manager.create(
+        username="expired-capability",
+        password="TestPass12",
+        role=Role.USER,
+        access_expires_at=1,
+        access_notice="Capability notice",
+    )
+    policy = UserCapabilityPolicy(manager._services)
+
+    assert policy.permissions_for(user.id) == set()
+    with pytest.raises(OctopError) as exc_info:
+        policy.require_permissions(user.id, [])
+    assert exc_info.value.code is ErrorCode.ACCESS_EXPIRED
+    assert exc_info.value.details == {"notice": "Capability notice", "expires_at": 1}
 
 
 async def test_bind_sso_identity_links_current_user_and_rejects_taken_identity(

@@ -97,6 +97,8 @@ def _user_from_row(row: Any) -> User:
         permissions=list(row.permissions),
         org_unit=getattr(row, "org_unit", None),
         denied_permissions=list(getattr(row, "denied_permissions", None) or []),
+        access_expires_at=getattr(row, "access_expires_at", None),
+        access_notice=getattr(row, "access_notice", None),
     )
 
 
@@ -143,6 +145,9 @@ class UserManager:
         locale: str | None = None,
         permissions: builtins.list[str] | None = None,
         email: str | None = None,
+        access_expires_at: int | None = None,
+        access_notice: str | None = None,
+        actor: str | None = None,
     ) -> User:
         cleaned_username = normalize_username(username)
         loc = normalize_locale(locale)
@@ -175,6 +180,8 @@ class UserManager:
                     locale=loc,
                     email=normalized_email,
                     permissions=keys,
+                    access_expires_at=access_expires_at,
+                    access_notice=access_notice,
                 )
             except Exception as exc:
                 if _is_unique_violation(exc) and normalized_email is not None:
@@ -190,10 +197,12 @@ class UserManager:
                 display_name=display_name,
                 locale=loc,
                 permissions=keys,
+                access_expires_at=access_expires_at,
+                access_notice=access_notice,
             )
             self._users[cleaned_username] = user
             self._services.audit_repo.write(
-                actor=cleaned_username, action="user.create", target=cleaned_username
+                actor=actor or cleaned_username, action="user.create", target=cleaned_username
             )
             return user
 
@@ -308,6 +317,7 @@ class UserManager:
             assert row is not None  # The retry loop either returns, raises, or finds this identity.
             if row.disabled:
                 raise OctopError(ErrorCode.USER_DISABLED, "user is disabled")
+            self.raise_if_access_expired(row)
             if email is not None:
                 email_owner = self._services.user_repo.get_by_email(email)
                 if email_owner is not None and email_owner.id != row.id:
@@ -429,6 +439,20 @@ class UserManager:
                 details={"retry_after_seconds": retry_after, "minutes": minutes},
             )
 
+    def raise_if_access_expired(self, account: Any) -> None:
+        """Raise the access-expired contract error at the exact expiry boundary."""
+        expires_at = getattr(account, "access_expires_at", None)
+        if expires_at is None or int(time.time()) < int(expires_at):
+            return
+        raise OctopError(
+            ErrorCode.ACCESS_EXPIRED,
+            "account access has expired",
+            details={
+                "notice": getattr(account, "access_notice", None),
+                "expires_at": int(expires_at),
+            },
+        )
+
     async def authenticate(self, username: str, password: str) -> User | None:
         identifier = (username or "").strip()
         if not identifier:
@@ -472,6 +496,7 @@ class UserManager:
                     details={"retry_after_seconds": retry_after, "minutes": minutes},
                 )
             return None
+        self.raise_if_access_expired(row)
         self._services.user_repo.clear_login_lockout(row.id)
         user = self._users.get(row.username)
         if user is None:
@@ -503,7 +528,9 @@ class UserManager:
             actor=ACTOR_ADMIN, action="user.password_reset", target=username
         )
 
-    async def update_account(self, username: str, changes: Mapping[str, Any]) -> None:
+    async def update_account(
+        self, username: str, changes: Mapping[str, Any], *, actor: str | None = None
+    ) -> None:
         """Commit a validated profile, access and policy patch before updating the cache."""
         from octop.infra.users.resource_policy import (
             POLICY_TOKEN_QUOTA,
@@ -518,6 +545,9 @@ class UserManager:
         if "display_name" in changes:
             updates["display_name"] = changes["display_name"]
         for key in ("email", "org_unit", "denied_permissions"):
+            if key in changes:
+                updates[key] = changes[key]
+        for key in ("access_expires_at", "access_notice"):
             if key in changes:
                 updates[key] = changes[key]
         if changes.get("role") is not None:
@@ -553,6 +583,7 @@ class UserManager:
             quota = normalize_token_quota(changes[POLICY_TOKEN_QUOTA])
             policies[POLICY_TOKEN_QUOTA] = None if quota is None else str(quota)
 
+        audit_actor = actor or ACTOR_ADMIN
         async with self._lock:
             row = self._services.user_repo.get_by_username(username)
             if row is None:
@@ -575,6 +606,8 @@ class UserManager:
                         "org_units",
                         "permissions",
                         "denied_permissions",
+                        "access_expires_at",
+                        "access_notice",
                     ):
                         if key not in updates:
                             continue
@@ -587,7 +620,7 @@ class UserManager:
                             else None
                         )
                         self._services.audit_repo.write(
-                            actor=ACTOR_ADMIN,
+                            actor=audit_actor,
                             action=f"user.set_{key}",
                             target=username,
                             payload=payload,
@@ -595,14 +628,14 @@ class UserManager:
                         )
                     if "disabled" in updates:
                         self._services.audit_repo.write(
-                            actor=ACTOR_ADMIN,
+                            actor=audit_actor,
                             action="user.disable" if updates["disabled"] else "user.enable",
                             target=username,
                             conn=conn,
                         )
                     for key, value in policies.items():
                         self._services.audit_repo.write(
-                            actor=ACTOR_ADMIN,
+                            actor=audit_actor,
                             action=f"user.set_{key}",
                             target=username,
                             payload=value,

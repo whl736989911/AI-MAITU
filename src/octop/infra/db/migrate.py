@@ -3319,6 +3319,13 @@ def _repair_connector_text_credentials(db: DatabasePool) -> None:
         )
 
 
+def _ensure_user_access_expiry_schema(db: DatabasePool) -> None:
+    if _table_exists(db, "users"):
+        integer_type = "BIGINT" if db.dialect == "postgresql" else "INTEGER"
+        _ensure_column(db, "users", "access_expires_at", integer_type)
+        _ensure_column(db, "users", "access_notice", "TEXT")
+
+
 def _repair_legacy_schema(db: DatabasePool) -> None:
     """Idempotent compatibility repairs for local databases from old builds."""
     if _table_exists(db, "users"):
@@ -3360,6 +3367,7 @@ def _repair_legacy_schema(db: DatabasePool) -> None:
         _ensure_org_units_schema(db)
         _ensure_sso_oidc_schema(db)
         _ensure_knowledge_bases_schema(db)
+        _ensure_user_access_expiry_schema(db)
         # SSO rebuild recreates ``users``; ensure permissions after that path.
         _ensure_column(db, "users", "permissions", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_resource_acl_schema(db)
@@ -3748,6 +3756,13 @@ def _apply_sqlite_migration(db: DatabasePool, version: int, path: Path) -> None:
         with db.connect() as conn:
             conn.execute("UPDATE _schema_version SET version = ?", (version,))
         return
+    if version == 51:
+        # ``051_user_access_expiry.sql`` is the readable record; repair both
+        # nullable columns idempotently for already-stamped or partial DBs.
+        _ensure_user_access_expiry_schema(db)
+        with db.connect() as conn:
+            conn.execute("UPDATE _schema_version SET version = ?", (version,))
+        return
     if version == 50:
         # ``050_knowledge_document_suggestions.sql`` is the readable record; the
         # helper creates the same shapes only when missing.
@@ -3908,4 +3923,5 @@ def run_migrations(db: DatabasePool) -> None:
     _ensure_knowledge_metadata_schema(db)
     _ensure_knowledge_facts_schema(db)
     _ensure_knowledge_suggestions_schema(db)
+    _ensure_user_access_expiry_schema(db)
     _repair_connector_text_credentials(db)
