@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -455,7 +457,7 @@ class LicenseSetupBody(BaseModel):
         default=None,
         description="Public trusted-keys.json content (KID to PEM); empty means configure later",
     )
-    ca_pem: str | None = Field(default=None, description="Optional private root CA PEM")
+    ca_pem: str | None = Field(default=None, description="Optional public root CA certificate PEM")
     allow_loopback: bool = Field(
         default=False, description="Testing only: allow HTTP on a loopback center URL"
     )
@@ -474,25 +476,34 @@ async def setup_license_config(
         return {"ok": True, "configured": False, "skipped": True}
     from octop.infra.licensing.settings import load_license_settings, write_license_files
 
-    try:
-        write_license_files(
-            server.paths,
-            trusted_keys_json=body.trusted_keys_json,
-            ca_pem=body.ca_pem,
-            center_url=body.center_url,
-            allow_loopback=body.allow_loopback,
-        )
-        await server.reload_license_config()
-        if getattr(server, "_license_config_error", False):
-            raise OctopError(
-                ErrorCode.SLASH_BAD_ARGS,
-                "license configuration was written but could not be loaded",
+    async with server.license_settings_lock:
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                partial(
+                    write_license_files,
+                    server.paths,
+                    trusted_keys_json=body.trusted_keys_json,
+                    ca_pem=body.ca_pem,
+                    center_url=body.center_url,
+                    allow_loopback=body.allow_loopback,
+                ),
             )
-        settings = load_license_settings(
-            server.paths,
-            default_state_dir=server.default_license_state_dir(server.paths.root),
-        )
-    except ValueError as exc:
-        raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
-    configured = settings.trusted_keys_file is not None and settings.trusted_keys_file.is_file()
-    return {"ok": True, "configured": configured, "managed": server.license_manager is not None}
+            await server.reload_license_config()
+            if getattr(server, "_license_config_error", False):
+                raise OctopError(
+                    ErrorCode.SLASH_BAD_ARGS,
+                    "license configuration was written but could not be loaded",
+                )
+            settings = await asyncio.get_running_loop().run_in_executor(
+                None,
+                partial(
+                    load_license_settings,
+                    server.paths,
+                    default_state_dir=server.default_license_state_dir(server.paths.root),
+                ),
+            )
+        except ValueError as exc:
+            raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
+        configured = settings.trusted_keys_file is not None and settings.trusted_keys_file.is_file()
+        return {"ok": True, "configured": configured, "managed": server.license_manager is not None}

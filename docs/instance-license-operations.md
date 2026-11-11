@@ -16,6 +16,8 @@
 
 推荐使用根目录统一终端入口 `deploy.sh`：腾讯云 Ubuntu 运行 `sudo bash ./deploy.sh center`，办公室 Ubuntu 导入公开接入包后运行 `sudo bash ./deploy.sh platform`；两端各完成一次向导，再用 `check --role center`／`check --role platform` 进行只读诊断。备份接收方公钥、接管旧数据、秘密输入、配置备份和失败恢复的完整步骤，见 [两机一体化部署向导](license-center-deployment.md#0-推荐入口两台主机各运行一次部署向导)。下文的手工安装仍适用于不使用向导的受控运维场景。
 
+中心只读身份诊断分别比较授权与发行公钥指纹，同名 KID 按用途区分，并包含预置及历史公钥。出现差异时先检查是否导出了最新接入包，不要通过重建签发密钥处理诊断错误。
+
 ### 2.1 本地安装
 
 在该目录执行：
@@ -40,11 +42,12 @@ export LICENSE_CENTER_DATA=/var/lib/maitu-license-center
 export LICENSE_CENTER_TIMEZONE=Asia/Shanghai
 umask 077
 uv run license-center init
-uv run license-center export-trust /etc/maitu/license/trusted-keys.json
+uv run license-center export-connection /etc/maitu/license/connection.json --server-url https://license-center.example/
 uv run license-center run --host 127.0.0.1 --port 8090
 ```
 
 `init` 会交互要求至少 12 位密码，显示一次 TOTP 密钥和配对 URI，并要求输入当前验证码。配对到交付方自己的身份验证器。初始化失败或恢复账户时只能在中心主机本地操作，不向客户提供万能密码。
+如果 `LICENSE_CENTER_DATA` 中存在从旧版中心导入的 active 签发键，`init` 会复用该 KID 和密钥文件，仅创建管理员，不会轮换或删除旧键；仅当没有 active 签发键时才生成首键。
 
 默认使用安全 Cookie；公网登录必须经过 HTTPS。仅在真正的回环网络本地开发时可以设置 `LICENSE_CENTER_COOKIE_SECURE=0`；不要用于生产。
 
@@ -71,11 +74,11 @@ docker network inspect maitu-license-center
 ```bash
 docker compose build
 docker compose run --rm license-center init
-docker compose run --rm license-center export-trust
-docker compose up -d
+docker compose run --rm license-center export-connection /data/connection.json --server-url https://license-center.example/
+cp "${LICENSE_CENTER_DATA}/connection.json" ./connection.json
 ```
 
-将 `export-trust` 输出的 JSON 保存到客户主机的 `trusted-keys.json`。它只有公开验签密钥；不得复制中心的 `keys/` 或完整中心数据目录。
+将 `connection.json` 中的公开密钥 JSON 保存到客户主机的 `trusted-keys.json`。`export-connection` 需要目标路径及 `--server-url`，可选 `--ca-file` 指定 CA 证书；目标文件已存在且内容不同时需传 `--confirm`。它只导出公开验签密钥和中心连接设置；不得复制中心的 `keys/` 或完整中心数据目录。
 
 参考同目录 `nginx.conf.example` 配置宿主机 HTTPS 反向代理。替换示例 IP、证书路径和管理网段。私钥仅由 Nginx 使用；限制 `/api/v1/admin/`，包括登录接口。实例接口 `/api/v1/instance/` 保持客户可访问。配置证书自动续期、中心健康检查、磁盘容量及备份告警；不能只依赖界面上显示的证书日期。
 
@@ -93,7 +96,9 @@ uv run license-center restore /protected-backups/center.sqlite3 --confirm
 
 恢复配套的密钥文件后启动服务。不要在运行中的服务上直接复制 SQLite 主文件。
 
-签发密钥轮换顺序：先 `stage-key`，将包含新公开密钥的 `export-trust` 分发到所有客户主机，重启客户服务以加载更新后的可信密钥，逐台确认仍可验签，再 `activate-key <kid> --confirm`。客户端在初始化时读取可信密钥文件，不能只复制文件就立即切换签发密钥。保留旧公开密钥覆盖仍有效的历史缓存。新签发私钥始终留在中心。
+已有管理员或签发材料时，缺失 `keys/encryption.key` 不会自动生成替代密钥。启动和 `/health` 会检查原加密密钥能否解密管理员因子及签发私钥；不完整或不匹配的恢复会阻止启动，运行中发现同类问题返回 503。应恢复同一份备份配套的数据库、加密密钥和签发文件，再启动服务；不要先执行账户恢复或重新初始化来掩盖密钥丢失。
+
+签发密钥轮换顺序：先 `stage-key`，将包含新公开密钥的 `export-connection <目标路径> --server-url https://license-center.example/` 输出分发到所有客户主机，重启客户服务以加载更新后的可信密钥，逐台确认仍可验签，再 `activate-key <kid> --confirm`。客户端在初始化时读取可信密钥文件，不能只复制文件就立即切换签发密钥。保留旧公开密钥覆盖仍有效的历史缓存。新签发私钥始终留在中心。
 
 遗失中心管理员身份验证器时，由中心主机运维人员执行 `recover <username> --confirm`，设置新密码、重新配对 TOTP 并验证。旧会话会失效；该操作有审计记录，不影响客户签发身份。
 
@@ -124,6 +129,11 @@ docker compose -f docker/docker-compose.yml \
 `MAITU_LICENSE_TRUSTED_KEYS_FILE`、`MAITU_LICENSE_STATE_DIR`、`MAITU_LICENSE_CENTER_URL`、`MAITU_UPDATE_TRUSTED_KEYS_FILE`、`MAITU_UPDATE_QUEUE_DIR` 和 `MAITU_UPDATE_CENTER_URL` 由托管 Compose overlay 指向容器内路径。keyring 应保留所有仍可能用于验证有效凭据/发布签名的 KID；换钥前先导出更新接入包。私有 CA 环境由中心连接包与部署向导配置，不能关闭 TLS 验证。已有实例升级务必保留原 `MAITU_DATA`、授权身份目录、队列目录和 Compose project name。
 
 平台也可以在初始化向导的“授权”步骤或 **应用设置 → 高级设置 → 授权中心** 中配置同一组公开 trust 材料（授权中心根地址、`trusted-keys.json`、可选根 CA）。此时显式的 `config.json` `license` 配置优先于 `MAITU_LICENSE_*` 环境变量；实例状态目录和 keyring 路径默认会保留原环境配置，避免升级时更换实例身份。若仍使用 `setup-license.sh` 修改环境变量，而平台已有 `config.json` 授权配置，请先在应用设置中更新，或移除旧 `license` 段后再重启，否则脚本写入的环境值会被显式配置覆盖。
+
+省略字段或提交 `null` 保留现值。中心地址显式提交空串后不再连接中心，已有凭据仍受原期限约束；CA 显式提交空串后使用系统信任库，不再回退环境 CA。清空公钥仅移除应用内覆盖，不移除部署环境提供的强制公钥，也不删除外部信任文件。
+
+只提交公开 Ed25519 公钥和公开 PEM 证书，不要粘贴任何私钥。混入私钥、额外非证书内容或重复 KID 的材料会被拒绝；旧配置含私钥或中心 URL 凭证时，设置接口拒绝返回该配置，避免向企业管理员泄露。校验既有配置失败时不会先改写信任文件。
+
 实例身份、已验证的在线/离线凭据、共用版本栅栏和提醒账本存放在独立的授权状态 bind mount；业务数据备份不能覆盖它们。默认执行器使用镜像内 Bubblewrap，能读到 `/usr/local/maitu-venv` 的只读 Python 环境，但不能访问授权目录、源码或宿主 Docker socket。Compose 默认不挂载 Docker socket；独立 Docker 执行路径仅由可信运维显式启用，宿主更新器运行于单独的 systemd 服务，不向客户业务容器开放。Linux 镜像包含 LibreOffice / Bubblewrap，用户命名空间必须由宿主 AppArmor/内核策略允许；见 [Docker 部署说明](../docker/README_CN.md#执行沙箱与浏览器linux)。Windows 部署还需要设置真实 NTFS ACL，不能把 `chmod` 当作 NTFS 权限隔离。
 
 ### 3.2 开通与交付
@@ -179,7 +189,9 @@ uv run maitu license refresh
 4. 延期或恢复后由企业管理员手动检查；已失效缓存本身不能用来解除锁定。
 5. 配置错误、中心暂时不可达、缓存过期和真正授权到期分别排查；不要用删缓存、回滚时钟、改数据库或关闭验签处理。
 
-授权地址、信任文件或 CA 配置错误时，业务平台以未配置锁定状态启动，并保留登录与授权诊断入口；具体配置异常写入主机日志。修正运维配置后重启平台，再检查授权；这不是临时放行或跳过验签。
+授权地址、信任文件或 CA 配置错误时，业务平台以未配置锁定状态启动，HTTP 与直接领域业务调用均拒绝准入，并保留登录与授权诊断入口；具体配置异常写入主机日志。通过设置接口修正配置会自动重载；若直接修改运维文件，重启平台后再检查授权。这不是临时放行或跳过验签。锁定时先通知在途请求与连接，再等待业务组件关闭，避免慢速关闭推迟取消。
+
+更新检查失败会清除旧发行版本、说明和可更新标记，并将失败状态写入本地缓存；重启不能把此前成功的发行信息重新显示为当前可用更新。安装前仍须重新完成可信更新检查。
 
 中心实例列表的“最近联系”取自 `last_seen_at`；显示 `—` 表示接口没有返回联系时间，不表示已在线。成功通过身份验证的在线激活或授权同步会写入该字段，检查新版本、下载升级包不会更新它。平台启动同步还要求容器内实际配置了 `MAITU_LICENSE_TRUSTED_KEYS_FILE` 和 `MAITU_LICENSE_CENTER_URL`；升级中心配置不能替代授权中心配置。
 
