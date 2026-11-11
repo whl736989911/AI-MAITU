@@ -363,6 +363,7 @@ class OctopServer:
         self.license_manager: LicenseManager | None = None
         self._license_config_error = False
         self._license_monitoring = False
+        self.license_settings_lock = asyncio.Lock()
         self._business_lock = asyncio.Lock()
         self._license_listeners: list[Callable[[bool], Awaitable[None]]] = []
         self._storage_maintenance_task: asyncio.Task[None] | None = None
@@ -387,13 +388,14 @@ class OctopServer:
         return manager is None or bool(manager.business_allowed)
 
     def add_license_listener(self, callback: Callable[[bool], Awaitable[None]]) -> None:
-        """Register a post-transition hook (e.g. the HTTP/WS gate cancellation)."""
+        """Register a license transition hook (e.g. the HTTP/WS gate revocation)."""
         self._license_listeners.append(callback)
 
     def _init_license(self) -> None:
         """Construct the managed license manager; install it for the plugin hook."""
         from octop.infra.licensing import (
             LicenseManager,
+            install_license_configuration_error,
             install_license_manager,
             install_unmanaged_license_manager,
         )
@@ -414,7 +416,7 @@ class OctopServer:
         except Exception:
             logger.exception("license manager construction failed; install stays locked")
             self._license_config_error = True
-            install_unmanaged_license_manager()
+            install_license_configuration_error()
             return
         if not manager.managed:
             # Unmanaged developer installs keep existing behavior exactly.
@@ -452,7 +454,13 @@ class OctopServer:
             if not self._started:
                 return
             running = self.app_runtime is not None and self.app_runtime.business_running
+            notified = False
             try:
+                if not allowed:
+                    # Revoke in-flight business access before shutdown can wait
+                    # on workers or service cleanup.
+                    await self._notify_license_listeners(False)
+                    notified = True
                 if allowed and not running:
                     if self.services is not None and self.config is not None:
                         await self._boot_business(self.config)
@@ -464,7 +472,8 @@ class OctopServer:
                     with suppress(Exception):
                         await self._shutdown_business()
             finally:
-                await self._notify_license_listeners(allowed)
+                if not notified:
+                    await self._notify_license_listeners(allowed)
 
     async def _notify_license_listeners(self, allowed: bool) -> None:
         for callback in tuple(self._license_listeners):

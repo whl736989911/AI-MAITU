@@ -321,3 +321,291 @@ async def test_online_proof_binds_canonical_request_to_challenge(
     assert claims["operation"] == "activate"
     assert claims["challenge"] == "nonce"
     assert claims["content_hash"] == hashlib.sha256(canonical).hexdigest()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("trigger", ["expiry", "revocation"])
+async def test_license_lock_stops_running_work_even_when_persistence_fails(
+    tmp_path: Path,
+    clock: list[int],
+    license_keys: tuple[Ed25519PrivateKey, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    trigger: str,
+) -> None:
+    center, public_path = license_keys
+    manager = LicenseManager(tmp_path / "state", public_path)
+    expiry = clock[0] + 60
+    await manager.import_offline(signed(manager, center, expires=expiry))
+    running_work = asyncio.create_task(asyncio.Event().wait())
+
+    async def on_change(allowed: bool) -> None:
+        if not allowed:
+            running_work.cancel()
+            await asyncio.gather(running_work, return_exceptions=True)
+
+    await manager.start(on_change=on_change)
+
+    def disk_full(*args: Any) -> None:
+        raise OSError("No space left on device")
+
+    monkeypatch.setattr("octop.infra.licensing.service._atomic_write", disk_full)
+    try:
+        if trigger == "expiry":
+            clock[0] = expiry
+            with pytest.raises(OSError):
+                await manager._notify_if_changed()
+        else:
+            manager.center_url = "https://license.example.test"
+            token = signed(
+                manager,
+                center,
+                purpose="online-license",
+                status="revoked",
+                version=2,
+                expires=expiry,
+            )
+
+            async def request(path: str, body: dict[str, Any]) -> dict[str, Any]:
+                return (
+                    {"challenge": "fresh-challenge"}
+                    if path.endswith("/challenges")
+                    else {"token": token}
+                )
+
+            monkeypatch.setattr(manager, "_request", request)
+            with pytest.raises(OSError):
+                await manager.refresh()
+        assert manager.business_allowed is False
+        assert running_work.cancelled()
+    finally:
+        await manager.stop()
+        running_work.cancel()
+        await asyncio.gather(running_work, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_deadline_monitor_survives_failed_lock_checkpoint(
+    tmp_path: Path,
+    clock: list[int],
+    license_keys: tuple[Ed25519PrivateKey, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    center, public_path = license_keys
+    manager = LicenseManager(tmp_path / "state", public_path)
+    expiry = clock[0] + 60
+    await manager.import_offline(signed(manager, center, expires=expiry))
+    stopped = asyncio.Event()
+
+    async def on_change(allowed: bool) -> None:
+        if not allowed:
+            stopped.set()
+
+    def disk_full(*args: Any) -> None:
+        raise OSError("No space left on device")
+
+    await manager.start(on_change=on_change)
+    monkeypatch.setattr("octop.infra.licensing.service._atomic_write", disk_full)
+    try:
+        clock[0] = expiry
+        await asyncio.wait_for(stopped.wait(), timeout=5)
+        await asyncio.sleep(0)
+        assert manager.snapshot()["reason"] == "expired"
+        assert not manager._tasks[0].done()
+    finally:
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("entry", ["online", "offline"])
+@pytest.mark.parametrize("fail_write", [False, True])
+async def test_restored_grant_requires_completed_durable_write(
+    tmp_path: Path,
+    clock: list[int],
+    license_keys: tuple[Ed25519PrivateKey, Path],
+    monkeypatch: pytest.MonkeyPatch,
+    entry: str,
+    fail_write: bool,
+) -> None:
+    import threading
+
+    from octop.infra.licensing import service
+
+    center, public_path = license_keys
+    state_dir = tmp_path / "state"
+    manager = LicenseManager(state_dir, public_path)
+    await manager.import_offline(signed(manager, center, status="revoked"))
+    original_write = service._atomic_write
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_write(path: Path, data: bytes) -> None:
+        started.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test checkpoint release was not received")
+        if fail_write:
+            raise OSError("No space left on device")
+        original_write(path, data)
+
+    monkeypatch.setattr(service, "_atomic_write", blocked_write)
+    token = signed(
+        manager,
+        center,
+        version=2,
+        restored=True,
+        purpose=f"{entry}-license",
+        valid_until=clock[0] + 3600,
+    )
+    if entry == "online":
+        manager.center_url = "https://license.example.test"
+
+        async def request(path: str, body: dict[str, Any]) -> dict[str, Any]:
+            return (
+                {"challenge": "fresh-challenge"}
+                if path.endswith("/challenges")
+                else {"token": token}
+            )
+
+        monkeypatch.setattr(manager, "_request", request)
+    task = asyncio.create_task(
+        manager.refresh() if entry == "online" else manager.import_offline(token)
+    )
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        assert manager.business_allowed is False
+        release.set()
+        if fail_write:
+            with pytest.raises(OSError):
+                await task
+            assert manager.snapshot()["reason"] == "revoked"
+        else:
+            assert (await task)["business_allowed"] is True
+        restarted = LicenseManager(state_dir, public_path)
+        try:
+            assert restarted.business_allowed is not fail_write
+        finally:
+            await restarted.stop()
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_trusted_time_checkpoints_continue_after_temporary_write_failure(
+    tmp_path: Path,
+    clock: list[int],
+    license_keys: tuple[Ed25519PrivateKey, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from octop.infra.licensing import service
+
+    center, public_path = license_keys
+    state_dir = tmp_path / "state"
+    manager = LicenseManager(state_dir, public_path)
+    await manager.import_offline(signed(manager, center))
+    original_sleep = asyncio.sleep
+    original_write = service._atomic_write
+    ticks: asyncio.Queue[None] = asyncio.Queue()
+    failed = asyncio.Event()
+    saved = asyncio.Event()
+    loop = asyncio.get_running_loop()
+    attempts = 0
+
+    async def sleep(delay: float) -> None:
+        if delay == 60:
+            await ticks.get()
+        else:
+            await original_sleep(delay)
+
+    def write_after_one_failure(path: Path, data: bytes) -> None:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            loop.call_soon_threadsafe(failed.set)
+            raise OSError("No space left on device")
+        original_write(path, data)
+        loop.call_soon_threadsafe(saved.set)
+
+    monkeypatch.setattr(service.asyncio, "sleep", sleep)
+    monkeypatch.setattr(service, "_atomic_write", write_after_one_failure)
+    task = asyncio.create_task(manager._time_loop())
+    try:
+        clock[0] += 60
+        ticks.put_nowait(None)
+        await asyncio.wait_for(failed.wait(), timeout=5)
+        clock[0] += 60
+        ticks.put_nowait(None)
+        await asyncio.wait_for(saved.wait(), timeout=5)
+        assert not task.done()
+        restarted = LicenseManager(state_dir, public_path)
+        try:
+            assert restarted.business_allowed is True
+            assert restarted._state["trusted_time"] == clock[0]
+        finally:
+            await restarted.stop()
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await manager.stop()
+
+
+@pytest.mark.asyncio
+async def test_clock_calibration_survives_snapshot_during_pending_checkpoint(
+    tmp_path: Path,
+    clock: list[int],
+    license_keys: tuple[Ed25519PrivateKey, Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import threading
+
+    from octop.infra.licensing import service
+
+    center, public_path = license_keys
+    real_now = clock[0]
+    state_dir = tmp_path / "state"
+    clock[0] += 10000
+    original = LicenseManager(state_dir, public_path)
+    await original.import_offline(signed(original, center))
+    clock[0] = real_now
+    manager = LicenseManager(state_dir, public_path, "https://license.example.test")
+    token = signed(
+        manager,
+        center,
+        purpose="online-license",
+        version=2,
+        issued=real_now,
+        expires=real_now + 3600,
+        valid_until=real_now + 3600,
+    )
+
+    async def request(path: str, body: dict[str, Any]) -> dict[str, Any]:
+        return (
+            {"challenge": "fresh-challenge"} if path.endswith("/challenges") else {"token": token}
+        )
+
+    started = threading.Event()
+    release = threading.Event()
+    original_write = service._atomic_write
+
+    def blocked_write(path: Path, data: bytes) -> None:
+        started.set()
+        if not release.wait(timeout=5):
+            raise TimeoutError("test checkpoint release was not received")
+        original_write(path, data)
+
+    monkeypatch.setattr(manager, "_request", request)
+    monkeypatch.setattr(service, "_atomic_write", blocked_write)
+    task = asyncio.create_task(manager.refresh())
+    try:
+        assert await asyncio.to_thread(started.wait, 5)
+        assert manager.snapshot()["reason"] == "time_anomaly"
+        release.set()
+        result = await task
+        assert result["business_allowed"] is True
+        assert result["credential_type"] == "online"
+        assert result["license_version"] == 2
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)
+        await manager.stop()
+        await original.stop()

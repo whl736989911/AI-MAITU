@@ -197,6 +197,15 @@ async def test_activation_starts_business_once_and_expiry_stops_and_restore_reop
             }
 
         monkeypatch.setattr(manager, "_request", expired_center_response)
+
+        shutdown_cancellations: list[int] = []
+        shutdown_business = srv._shutdown_business
+
+        async def observe_shutdown() -> None:
+            shutdown_cancellations.append(victim.cancelling())
+            await shutdown_business()
+
+        monkeypatch.setattr(srv, "_shutdown_business", observe_shutdown)
         # WS business now accepted.
         async with ws_connect(
             client._octop_app,  # type: ignore[attr-defined]
@@ -223,6 +232,7 @@ async def test_activation_starts_business_once_and_expiry_stops_and_restore_reop
         assert response.status_code == 423
         await asyncio.sleep(0)
         assert victim.cancelled()
+        assert shutdown_cancellations == [1]
 
         # ---- same-version replay and lower version cannot unlock a denial ----
         replay = license_center.offline(
@@ -262,6 +272,36 @@ async def test_activation_starts_business_once_and_expiry_stops_and_restore_reop
 
         await srv._on_license_change(True)
         assert srv.app_runtime.gateway is restored_gateway
+
+
+async def test_license_configuration_error_fails_closed_and_recovers(
+    license_center: CenterSigner, tmp_octop_home: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from octop.infra.knowledge.jobs import resume_pending_index_jobs
+    from octop.infra.licensing import current_license
+    from octop.infra.licensing import settings as license_settings
+
+    async with octop_client(tmp_octop_home) as (_, srv):
+        with monkeypatch.context() as patch:
+
+            def invalid_settings(*_args: Any, **_kwargs: Any) -> Any:
+                raise ValueError("broken config")
+
+            patch.setattr(license_settings, "load_license_settings", invalid_settings)
+            await srv.reload_license_config()
+            assert srv._license_config_error is True
+            assert srv.license_allows_business() is False
+            snapshot = current_license().snapshot()
+            assert snapshot["managed"] is True
+            assert snapshot["business_allowed"] is False
+            assert snapshot["reason"] == "configuration"
+            with pytest.raises(OctopError) as excinfo:
+                resume_pending_index_jobs(None)
+            assert excinfo.value.code == ErrorCode.INSTANCE_LICENSE_LOCKED
+
+        await srv.reload_license_config()
+        assert srv._license_config_error is False
+        assert current_license().snapshot()["reason"] != "configuration"
 
 
 async def test_direct_domain_entries_raise_when_locked(
