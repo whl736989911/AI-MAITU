@@ -460,21 +460,36 @@ def test_http_management_keeps_public_contract_with_integer_resource_keys(center
         customers = client.get("/api/v1/admin/customers")
         assert customers.status_code == 200, customers.text
         assert customers.json()[0]["id"] == "cus_test"
-        extended = client.post(
-            f"/api/v1/admin/licenses/{claims['license_id']}/extend",
+        updated = client.post(
+            f"/api/v1/admin/licenses/{claims['license_id']}/expiry",
             headers={"X-CSRF-Token": login.json()["csrf_token"]},
             json={
-                "reason": "Approved extension",
+                "reason": "Correct the selected deadline",
                 "version": 1,
-                "expires_at": claims["license_expires_at"] + 86400,
+                "expires_at": claims["license_expires_at"] - 86400,
             },
         )
-        assert extended.status_code == 200, extended.text
-        assert extended.json()["id"] == claims["license_id"]
-        assert extended.json()["instance_id"] == instance_id
-        assert extended.json()["revision"] == 2
-        assert extended.json()["expires_at"] == claims["license_expires_at"] + 86400
-        assert "pk" not in extended.json()
+        assert updated.status_code == 200, updated.text
+        assert updated.json()["id"] == claims["license_id"]
+        assert updated.json()["instance_id"] == instance_id
+        assert updated.json()["revision"] == 2
+        assert updated.json()["expires_at"] == claims["license_expires_at"] - 86400
+        assert "pk" not in updated.json()
+        missing_expiry = client.post(
+            f"/api/v1/admin/licenses/{claims['license_id']}/expiry",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+            json={"reason": "Incomplete correction", "version": 2},
+        )
+        assert missing_expiry.status_code == 400
+        assert missing_expiry.json()["error"]["code"] == "expiry_required"
+    with storage.connect() as conn:
+        change = conn.execute(
+            "SELECT * FROM audit_log WHERE action='license.expiry' AND object_id=?",
+            (claims["license_id"],),
+        ).fetchone()
+        assert json.loads(change["before_json"])["expires_at"] == claims["license_expires_at"]
+        assert json.loads(change["after_json"])["expires_at"] == updated.json()["expires_at"]
+        assert change["reason"] == "Correct the selected deadline"
 
 
 def test_admin_session_uses_user_id_and_rejects_totp_replay(center):
@@ -516,9 +531,220 @@ def test_remote_peer_cannot_spoof_loopback_https_exception(center, hostname):
 
     with TestClient(
         api.app,
-        base_url=f"http://{hostname}",
+        base_url="http://127.0.0.1",
         client=("198.51.100.25", 51000),
     ) as client:
-        response = client.get("/health")
+        response = client.get("/health", headers={"Host": hostname})
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "https_required"
+
+
+def _synced_license_claims(center, private_key, public_pem, instance_id):
+    challenge = api._create_challenge(
+        ChallengeRequest(instance_id=instance_id, operation="sync"), "127.0.0.1"
+    )
+    token = api._sync(
+        proof_request(private_key, challenge["challenge"], instance_id, public_pem, "sync")
+    )["token"]
+    return jwt.decode(
+        token,
+        serialization.load_pem_public_key(center[1].encode()),
+        algorithms=["EdDSA"],
+        audience="maitu-instance",
+        issuer="maitu-license-center",
+    )
+
+
+def test_expiry_can_be_shortened_and_extended(center):
+    private_key, public_pem, instance_id, _, _, original = activate(center)
+    current = api.now()
+    for version, deadline in ((1, current + 86400), (2, current + 86400 * 60)):
+        api._license_action(
+            original["license_id"],
+            "expiry",
+            LicenseAction(expires_at=deadline, reason="Correct selected date", version=version),
+            "test",
+        )
+        claims = _synced_license_claims(center, private_key, public_pem, instance_id)
+        assert claims["license_expires_at"] == deadline
+        assert claims["license_version"] == version + 1
+        assert claims["status"] == "active"
+        assert claims["valid_until"] <= deadline
+
+
+def test_expiry_can_be_set_to_now_and_corrected(center, monkeypatch):
+    current = storage.now()
+    monkeypatch.setattr(api, "now", lambda: current)
+    private_key, public_pem, instance_id, _, _, original = activate(center)
+    ended = api._license_action(
+        original["license_id"],
+        "expiry",
+        LicenseAction(expires_at=current, reason="End access now", version=1),
+        "test",
+    )
+    assert ended["expired"]
+    claims = _synced_license_claims(center, private_key, public_pem, instance_id)
+    assert claims["status"] == "expired"
+    assert claims["license_expires_at"] == current
+    assert claims["license_version"] == 2
+
+    corrected = api._license_action(
+        original["license_id"],
+        "expiry",
+        LicenseAction(expires_at=current + 3600, reason="Correct mistaken expiry", version=2),
+        "test",
+    )
+    assert not corrected["expired"]
+    claims = _synced_license_claims(center, private_key, public_pem, instance_id)
+    assert claims["status"] == "active"
+    assert claims["license_expires_at"] == current + 3600
+    assert claims["license_version"] == 3
+
+
+def test_expiry_change_preserves_revocation_and_rejects_stale_writes(center):
+    private_key, public_pem, instance_id, _, _, original = activate(center)
+    license_id = original["license_id"]
+    api._license_action(license_id, "revoke", LicenseAction(reason="Suspend", version=1), "test")
+    deadline = api.now() + 3600
+    corrected = api._license_action(
+        license_id,
+        "expiry",
+        LicenseAction(expires_at=deadline, reason="Correct without restoring", version=2),
+        "test",
+    )
+    assert corrected["revoked"]
+    with pytest.raises(api.HTTPException) as rejected:
+        api._license_action(
+            license_id,
+            "expiry",
+            LicenseAction(expires_at=deadline + 3600, reason="Stale correction", version=2),
+            "test",
+        )
+    assert rejected.value.status_code == 409
+    assert rejected.value.detail["error"]["code"] == "version_conflict"
+    claims = _synced_license_claims(center, private_key, public_pem, instance_id)
+    assert claims["status"] == "revoked"
+    assert claims["license_expires_at"] == deadline
+    assert claims["license_version"] == 3
+
+
+@pytest.mark.parametrize(
+    "invalid_fields",
+    [
+        {"expires_at": 2**63},
+        {"expires_at": 2**63 - 1},
+        {"reason": " \t\n "},
+    ],
+)
+def test_invalid_expiry_changes_are_rejected_without_mutation(center, invalid_fields):
+    from fastapi.testclient import TestClient
+
+    _, _, _, _, _, claims = activate(center)
+    secret = pyotp.random_base32()
+    with storage.transaction() as conn:
+        conn.execute(
+            "INSERT INTO admin_users(username,password_hash,role,totp_ciphertext,active,created_at) VALUES(?,?,?,?,1,?)",
+            (
+                "owner",
+                api.PASSWORDS.hash("valid password for test"),
+                "owner",
+                crypto.encrypt_secret(secret),
+                storage.now(),
+            ),
+        )
+    with TestClient(api.app, base_url="https://127.0.0.1", raise_server_exceptions=False) as client:
+        login = client.post(
+            "/api/v1/admin/login",
+            json={
+                "username": "owner",
+                "password": "valid password for test",
+                "totp": pyotp.TOTP(secret).now(),
+            },
+        )
+        assert login.status_code == 200, login.text
+        response = client.post(
+            f"/api/v1/admin/licenses/{claims['license_id']}/expiry",
+            headers={"X-CSRF-Token": login.json()["csrf_token"]},
+            json={
+                "expires_at": claims["license_expires_at"],
+                "reason": "Correct the deadline",
+                "version": 1,
+                **invalid_fields,
+            },
+        )
+    assert response.status_code == 400, response.text
+    assert response.json()["error"]["code"] == "validation_error"
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT expires_at,revision FROM licenses WHERE id=?", (claims["license_id"],)
+        ).fetchone()
+        assert row["expires_at"] == claims["license_expires_at"]
+        assert row["revision"] == 1
+        assert (
+            conn.execute("SELECT count(*) FROM audit_log WHERE action='license.expiry'").fetchone()[
+                0
+            ]
+            == 0
+        )
+
+
+@pytest.mark.parametrize(
+    ("guard", "status", "code"),
+    [
+        ("unauthenticated", 401, "unauthorized"),
+        ("reader", 403, "forbidden"),
+        ("csrf", 403, "csrf_failed"),
+        ("mfa", 403, "reauth_required"),
+    ],
+)
+def test_expiry_change_enforces_management_guards(center, guard, status, code):
+    from fastapi.testclient import TestClient
+
+    _, _, _, _, _, claims = activate(center)
+    secret = pyotp.random_base32()
+    with storage.transaction() as conn:
+        conn.execute(
+            "INSERT INTO admin_users(username,password_hash,role,totp_ciphertext,active,created_at) VALUES(?,?,?,?,1,?)",
+            (
+                "manager",
+                api.PASSWORDS.hash("valid password for test"),
+                "reader" if guard == "reader" else "operator",
+                crypto.encrypt_secret(secret),
+                storage.now(),
+            ),
+        )
+    with TestClient(api.app, base_url="https://127.0.0.1") as client:
+        login = client.post(
+            "/api/v1/admin/login",
+            json={
+                "username": "manager",
+                "password": "valid password for test",
+                "totp": pyotp.TOTP(secret).now(),
+            },
+        )
+        assert login.status_code == 200, login.text
+        headers = {"X-CSRF-Token": login.json()["csrf_token"]}
+        if guard == "unauthenticated":
+            client.cookies.clear()
+        elif guard == "csrf":
+            headers = {}
+        elif guard == "mfa":
+            with storage.transaction() as conn:
+                conn.execute("UPDATE admin_sessions SET recent_mfa_at=0")
+        response = client.post(
+            f"/api/v1/admin/licenses/{claims['license_id']}/expiry",
+            headers=headers,
+            json={
+                "expires_at": claims["license_expires_at"] - 3600,
+                "reason": "Unauthorized change",
+                "version": 1,
+            },
+        )
+    assert response.status_code == status, response.text
+    assert response.json()["error"]["code"] == code
+    with storage.connect() as conn:
+        row = conn.execute(
+            "SELECT expires_at,revision FROM licenses WHERE id=?", (claims["license_id"],)
+        ).fetchone()
+        assert row["expires_at"] == claims["license_expires_at"]
+        assert row["revision"] == 1

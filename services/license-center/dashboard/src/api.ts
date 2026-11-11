@@ -113,12 +113,19 @@ export interface ReleaseSigningKey {
 }
 const base = (import.meta.env.VITE_API_BASE_URL ?? "").replace(/\/$/, "");
 let csrfToken = "";
+let sessionVersion = 0;
+let sessionExpiredHandler: (() => void) | null = null;
+const clearSession = () => {
+  csrfToken = "";
+  sessionVersion += 1;
+};
 const json = (method: string, body?: unknown): RequestInit => ({
   method,
   ...(body === undefined ? {} : { body: JSON.stringify(body) }),
 });
 
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const version = sessionVersion;
   const method = (init.method ?? "GET").toUpperCase();
   const headers = new Headers(init.headers);
   if (init.body && !headers.has("Content-Type"))
@@ -137,12 +144,25 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     credentials: "include",
     cache: "no-store",
   });
+  if (version !== sessionVersion)
+    throw new DOMException("Session changed", "AbortError");
   if (response.status === 204) return undefined as T;
   const data: unknown = await response.json().catch(() => null);
+  if (version !== sessionVersion)
+    throw new DOMException("Session changed", "AbortError");
   if (!response.ok) {
     const envelope = data as {
       error?: { code?: string; message?: string };
     } | null;
+    if (
+      response.status === 401 &&
+      envelope?.error?.code === "unauthorized" &&
+      path !== "/api/v1/admin/login" &&
+      csrfToken
+    ) {
+      clearSession();
+      sessionExpiredHandler?.();
+    }
     const error = new Error(
       envelope?.error?.message || `${response.status} ${response.statusText}`,
     );
@@ -155,6 +175,12 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return data as T;
 }
 export const api = {
+  onSessionExpired: (handler: () => void) => {
+    sessionExpiredHandler = handler;
+    return () => {
+      if (sessionExpiredHandler === handler) sessionExpiredHandler = null;
+    };
+  },
   session: async () => {
     const s = await request<Session>("/api/v1/admin/session");
     csrfToken = s.csrf_token;
@@ -165,12 +191,13 @@ export const api = {
       "/api/v1/admin/login",
       json("POST", { username, password, totp }),
     );
+    sessionVersion += 1;
     csrfToken = s.csrf_token;
     return s;
   },
   logout: async () => {
     await request<void>("/api/v1/admin/logout", json("POST", {}));
-    csrfToken = "";
+    clearSession();
   },
   reauth: async (totp: string) => {
     const s = await request<Session>(
@@ -255,12 +282,12 @@ export const api = {
         beforeId === undefined ? "" : `&before_id=${beforeId}`
       }`,
     ),
-  extend: (
+  updateExpiry: (
     id: string,
-    input: { expires_at?: number; reason: string; version: number },
+    input: { expires_at: number; reason: string; version: number },
   ) =>
     request(
-      `/api/v1/admin/licenses/${encodeURIComponent(id)}/extend`,
+      `/api/v1/admin/licenses/${encodeURIComponent(id)}/expiry`,
       json("POST", input),
     ),
   revoke: (id: string, input: { reason: string; version: number }) =>
@@ -276,10 +303,7 @@ export const api = {
       `/api/v1/admin/licenses/${encodeURIComponent(id)}/restore`,
       json("POST", input),
     ),
-  replace: (
-    id: string,
-    input: { reason: string; expires_at?: number; version: number },
-  ) =>
+  replace: (id: string, input: { reason: string; version: number }) =>
     request<ActivationIssue>(
       `/api/v1/admin/instances/${encodeURIComponent(id)}/replace`,
       json("POST", input),

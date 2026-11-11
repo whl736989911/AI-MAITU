@@ -340,6 +340,7 @@ async def reauth(
 
 def _reauth(token_hash: str, user_id: int, code: str) -> tuple[str, str]:
     with transaction() as conn:
+        _rate(f"mfa:{user_id}", 8, 300)
         row = conn.execute(
             "SELECT totp_ciphertext,last_totp_counter,username FROM admin_users WHERE id=?",
             (user_id,),
@@ -382,7 +383,7 @@ def _create_challenge(body: ChallengeRequest, ip: str) -> dict[str, int | str]:
             if body.public_key_pem is not None:
                 raise HTTPException(400, detail="Sync challenge must not include public_key_pem")
             row = conn.execute(
-                "SELECT public_key,fingerprint FROM instances WHERE id=? AND status='active'",
+                "SELECT public_key,fingerprint FROM instances WHERE id=?",
                 (body.instance_id,),
             ).fetchone()
             if row is None:
@@ -526,7 +527,8 @@ def _prove(body: ProofRequest, op: str) -> tuple[str, dict[str, Any]]:
             algorithms=["EdDSA"],
             issuer=body.instance_id,
             audience="maitu-license-center",
-            options={"verify_exp": False},
+            # Freshness is enforced by the center's one-use challenge, not the client clock.
+            options={"verify_exp": False, "verify_iat": False},
         )
         payload = body.model_dump(exclude={"proof"}, exclude_none=True)
         canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
@@ -706,7 +708,8 @@ def _offline_grant(body: OfflineLicenseCreate, actor: str) -> dict[str, Any]:
             algorithms=["EdDSA"],
             audience="maitu-license-center",
             issuer=instance_id,
-            options={"verify_exp": False},
+            # The request proves key possession; the operator approves its actual deadlines.
+            options={"verify_exp": False, "verify_iat": False},
         )
     except Exception as exc:
         raise HTTPException(401, detail="Invalid offline request signature") from exc
@@ -741,7 +744,7 @@ def _offline_grant(body: OfflineLicenseCreate, actor: str) -> dict[str, Any]:
                 "INSERT INTO instances(id,customer_id,public_key,fingerprint,status,last_seen_at) VALUES(?,?,?,?,?,?)",
                 (instance_id, body.customer_id, public_pem, key_fingerprint, "active", current),
             )
-            license_id = public_id("lic")
+            license_id = secrets.token_hex(16)
             conn.execute(
                 "INSERT INTO licenses(id,instance_id,expires_at,revision,created_at) VALUES(?,?,?,1,?)",
                 (license_id, instance_id, body.license_expires_at, current),
@@ -759,7 +762,8 @@ def _offline_grant(body: OfflineLicenseCreate, actor: str) -> dict[str, Any]:
             if license_row is None:
                 raise HTTPException(409, detail="Instance has no license record")
             if (
-                license_row["revoked"]
+                instance["status"] != "active"
+                or license_row["revoked"]
                 or license_row["expired"]
                 or license_row["expires_at"] <= current
             ):
@@ -959,8 +963,8 @@ def _update_customer(cid: str, body: CustomerUpdate, actor: str) -> dict[str, An
         )
         if status_changed:
             conn.execute(
-                "UPDATE licenses SET revision=revision+1 WHERE instance_id IN (SELECT id FROM instances WHERE customer_id=?)",
-                (cid,),
+                "UPDATE licenses SET revision=revision+1,restored=CASE WHEN ?=1 AND revoked=0 THEN 1 ELSE restored END WHERE instance_id IN (SELECT id FROM instances WHERE customer_id=?)",
+                (int(body.active), cid),
             )
             for license_before in licenses:
                 license_after = conn.execute(
@@ -1001,7 +1005,7 @@ async def instances(_: dict[str, Any] = Depends(current_user)) -> list[dict[str,
             _dict(r)
             for r in connect()
             .execute(
-                "SELECT i.id,i.customer_id,i.fingerprint AS public_key_fingerprint,i.status,i.last_seen_at,l.id AS license_id,l.expires_at AS license_expires_at,CASE WHEN l.revoked THEN 'revoked' WHEN c.active=0 THEN 'customer_disabled' WHEN l.expires_at<=strftime('%s','now') THEN 'expired' ELSE 'active' END AS license_status,l.revision AS license_revision FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id ORDER BY i.last_seen_at DESC"
+                "SELECT i.id,i.customer_id,i.fingerprint AS public_key_fingerprint,i.status,i.last_seen_at,l.id AS license_id,l.expires_at AS license_expires_at,CASE WHEN l.revoked OR i.status<>'active' THEN 'revoked' WHEN c.active=0 THEN 'customer_disabled' WHEN l.expired OR l.expires_at<=strftime('%s','now') THEN 'expired' ELSE 'active' END AS license_status,l.revision AS license_revision FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id ORDER BY i.last_seen_at DESC"
             )
             .fetchall()
         ]
@@ -1019,7 +1023,7 @@ async def instance_detail(
     def query() -> dict[str, Any]:
         with connect() as conn:
             row = conn.execute(
-                "SELECT i.id,i.customer_id,i.fingerprint AS public_key_fingerprint,i.status,i.last_seen_at,l.id AS license_id,l.expires_at AS license_expires_at,CASE WHEN l.revoked THEN 'revoked' WHEN c.active=0 THEN 'customer_disabled' WHEN l.expires_at<=strftime('%s','now') THEN 'expired' ELSE 'active' END AS license_status,l.revision AS license_revision FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
+                "SELECT i.id,i.customer_id,i.fingerprint AS public_key_fingerprint,i.status,i.last_seen_at,l.id AS license_id,l.expires_at AS license_expires_at,CASE WHEN l.revoked OR i.status<>'active' THEN 'revoked' WHEN c.active=0 THEN 'customer_disabled' WHEN l.expired OR l.expires_at<=strftime('%s','now') THEN 'expired' ELSE 'active' END AS license_status,l.revision AS license_revision FROM instances i JOIN licenses l ON l.instance_id=i.id JOIN customers c ON c.id=i.customer_id WHERE i.id=?",
                 (instance_id,),
             ).fetchone()
         if row is None:
@@ -1217,7 +1221,13 @@ def _license_action(
             )
         exp = body.expires_at if body.expires_at is not None else old["expires_at"]
         revoked = 1 if action == "revoke" else 0 if action == "restore" else old["revoked"]
-        expired = 0 if action in {"extend", "restore"} else old["expired"]
+        expired = (
+            int(exp <= now())
+            if action == "expiry"
+            else 0
+            if action == "restore"
+            else old["expired"]
+        )
         restored = 1 if action == "restore" else old["restored"]
         if action == "restore" and not old["revoked"]:
             raise HTTPException(
@@ -1226,6 +1236,22 @@ def _license_action(
                     "error": {
                         "code": "license_not_revoked",
                         "message": "Only a revoked license can be restored",
+                    }
+                },
+            )
+        if (
+            action == "restore"
+            and conn.execute(
+                "SELECT 1 FROM instances WHERE id=? AND status='active'", (old["instance_id"],)
+            ).fetchone()
+            is None
+        ):
+            raise HTTPException(
+                409,
+                detail={
+                    "error": {
+                        "code": "instance_inactive",
+                        "message": "An inactive instance binding cannot be restored",
                     }
                 },
             )
@@ -1239,17 +1265,13 @@ def _license_action(
                     }
                 },
             )
-        if action == "extend" and (
-            body.expires_at is None
-            or body.expires_at <= old["expires_at"]
-            or body.expires_at <= now()
-        ):
+        if action == "expiry" and body.expires_at is None:
             raise HTTPException(
                 400,
                 detail={
                     "error": {
-                        "code": "invalid_extension",
-                        "message": "New expiry must be later and in the future",
+                        "code": "expiry_required",
+                        "message": "Changing a license expiry requires a deadline",
                     }
                 },
             )
@@ -1296,10 +1318,11 @@ def license_action(action: str):
 
 
 app.post(
-    "/api/v1/admin/licenses/{license_id}/extend",
-    summary="Extend a license",
+    "/api/v1/admin/licenses/{license_id}/expiry",
+    summary="Change a license expiry",
+    description="Choose an earlier or later deadline, including a past time. Requires a management role, CSRF token, recent MFA, reason and current revision. Revocation is preserved; clients receive the change on their next sync.",
     response_model=LicenseView,
-)(license_action("extend"))
+)(license_action("expiry"))
 app.post(
     "/api/v1/admin/licenses/{license_id}/revoke",
     summary="Revoke a license",
@@ -1457,16 +1480,18 @@ async def overview(_: dict[str, Any] = Depends(current_user)) -> dict[str, Any]:
                 ).fetchone()[0],
                 "instances": conn.execute("SELECT count(*) FROM instances").fetchone()[0],
                 "active_licenses": conn.execute(
-                    "SELECT count(*) FROM licenses WHERE revoked=0 AND expires_at>?", (now(),)
+                    "SELECT count(*) FROM licenses l JOIN instances i ON i.id=l.instance_id JOIN customers c ON c.id=i.customer_id WHERE l.revoked=0 AND l.expired=0 AND i.status='active' AND c.active=1 AND l.expires_at>?",
+                    (now(),),
                 ).fetchone()[0],
                 "expired_licenses": conn.execute(
-                    "SELECT count(*) FROM licenses WHERE revoked=0 AND expires_at<=?", (now(),)
+                    "SELECT count(*) FROM licenses l JOIN instances i ON i.id=l.instance_id JOIN customers c ON c.id=i.customer_id WHERE l.revoked=0 AND i.status='active' AND c.active=1 AND (l.expired=1 OR l.expires_at<=?)",
+                    (now(),),
                 ).fetchone()[0],
                 "revoked_licenses": conn.execute(
-                    "SELECT count(*) FROM licenses WHERE revoked=1"
+                    "SELECT count(*) FROM licenses l JOIN instances i ON i.id=l.instance_id WHERE l.revoked=1 OR i.status<>'active'"
                 ).fetchone()[0],
                 "expiring_soon": conn.execute(
-                    "SELECT count(*) FROM licenses WHERE revoked=0 AND expires_at>? AND expires_at<=?",
+                    "SELECT count(*) FROM licenses l JOIN instances i ON i.id=l.instance_id JOIN customers c ON c.id=i.customer_id WHERE l.revoked=0 AND l.expired=0 AND i.status='active' AND c.active=1 AND l.expires_at>? AND l.expires_at<=?",
                     (now(), now() + 30 * 86400),
                 ).fetchone()[0],
                 "recent_contacts": conn.execute(
@@ -1570,6 +1595,7 @@ async def enroll_admin(
     csrf: str | None = Header(default=None, alias="X-CSRF-Token"),
 ) -> dict[str, Any]:
     _csrf_check(user, csrf)
+    _recent_mfa(user)
     return await _db(_enroll_admin, user_id, body.totp, user["username"])
 
 
@@ -1580,16 +1606,17 @@ def _enroll_admin(user_id: int, code: str, actor: str) -> dict[str, Any]:
             raise HTTPException(
                 404, detail={"error": {"code": "not_found", "message": "Administrator not found"}}
             )
-        if row["active"]:
+        if row["active"] or row["last_totp_counter"] >= 0:
             raise HTTPException(
                 409,
                 detail={
                     "error": {
                         "code": "already_enrolled",
-                        "message": "Administrator is already active",
+                        "message": "Administrator has already completed enrollment",
                     }
                 },
             )
+        _rate(f"mfa:{user_id}", 8, 300)
         ok, counter = valid_totp(
             decrypt_secret(row["totp_ciphertext"]), code, row["last_totp_counter"]
         )
@@ -1677,6 +1704,7 @@ def _update_admin(user_id: int, body: AdminUserUpdate, actor: str) -> dict[str, 
                         }
                     },
                 )
+            _rate(f"mfa:{user_id}", 8, 300)
             ok, counter = valid_totp(
                 decrypt_secret(old["totp_ciphertext"]), body.totp, old["last_totp_counter"]
             )
@@ -1851,6 +1879,9 @@ def _database_health() -> None:
         row = conn.execute("SELECT MAX(version) FROM schema_migrations").fetchone()
         if row is None or row[0] is None or row[0] < 1:
             raise RuntimeError("Database migrations are not initialized")
+    from .crypto import validate_encryption_key
+
+    validate_encryption_key()
 
 
 app.include_router(
