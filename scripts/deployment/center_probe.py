@@ -19,9 +19,11 @@ try:
  result["certificate_sha256"]=hashlib.sha256(cert.read_bytes()).hexdigest()
  with sqlite3.connect(DB_PATH.resolve().as_uri()+"?mode=ro",uri=True) as conn:
   result["owners"]=conn.execute("SELECT count(*) FROM admin_users").fetchone()[0]
-  for kid,pem in conn.execute("SELECT kid,public_pem FROM signing_keys"):
-   key=serialization.load_pem_public_key(pem.encode())
-   result["fingerprints"][kid]=hashlib.sha256(key.public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)).hexdigest()
+  for table,domain in (("signing_keys","license"),("release_signing_keys","release")):
+   for kid,pem in conn.execute(f"SELECT kid,public_pem FROM {table}"):
+    key=serialization.load_pem_public_key(pem.encode())
+    fingerprint=hashlib.sha256(key.public_bytes(serialization.Encoding.DER,serialization.PublicFormat.SubjectPublicKeyInfo)).hexdigest()
+    result["fingerprints"][f"{domain}:{kid}"]=fingerprint
 except Exception as exc:
  result["error_class"]=type(exc).__name__
 print(json.dumps(result))

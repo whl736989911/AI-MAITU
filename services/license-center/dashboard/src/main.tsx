@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import i18n from "i18next";
 import { initReactI18next, useTranslation } from "react-i18next";
@@ -85,7 +85,7 @@ const en = {
   fingerprint: "Public key fingerprint",
   revision: "Revision",
   license: "License",
-  extend: "Extend",
+  updateExpiry: "Change expiry",
   revoke: "Revoke",
   restore: "Restore",
   replace: "Replace host",
@@ -212,7 +212,7 @@ const zh = {
   fingerprint: "公钥指纹",
   revision: "版本",
   license: "授权",
-  extend: "延期",
+  updateExpiry: "修改截止时间",
   revoke: "撤销",
   restore: "恢复",
   replace: "更换主机",
@@ -316,8 +316,9 @@ Object.assign(en, {
   enrollmentPending: "Enrollment pending or disabled",
   replaceWarning:
     "The replaced host is revoked at its next sync, but an offline host can continue using its cached license until that cache expires.",
-  expiryMustIncrease:
-    "Choose an expiry later than the current license deadline.",
+  expiryMustBeFuture: "Restoring a license requires a future expiry.",
+  expiryChangeHelp:
+    "Choose an earlier or later deadline. A past time expires the license. Changes reach the instance on its next sync; offline instances retain their existing valid credentials. Changing the date does not restore revoked access.",
   loadMore: "Load more",
   licenseEnded: "License ended",
   accessWithdrawn: "Access withdrawn",
@@ -348,7 +349,9 @@ Object.assign(zh, {
   enrollmentPending: "待注册或已停用",
   replaceWarning:
     "旧主机下次同步时会收到撤销结果；若其处于离线状态，仍可能在本地缓存授权到期前继续运行。",
-  expiryMustIncrease: "请选择晚于当前授权截止时间的新日期。",
+  expiryMustBeFuture: "恢复授权时请选择未来的截止时间。",
+  expiryChangeHelp:
+    "截止时间可提前或延后，选择过去的时间会使授权到期。修改在实例下次同步时生效；离线实例仍按已有有效凭据执行。修改日期不会解除撤销状态。",
   loadMore: "加载更多",
   licenseEnded: "授权已到期",
   accessWithdrawn: "访问已撤销",
@@ -411,15 +414,24 @@ Object.assign(zh, {
 });
 Object.assign(en, {
   invalidWallTime: "Enter a valid local date and time.",
+  invalidOfflineExpiry: "Offline access must expire in the future.",
+  serviceStatus: "Service status",
   dstGap:
     "That local time does not exist in the configured time zone because of a daylight-saving transition.",
   dstAmbiguous:
     "That local time is ambiguous in the configured time zone because of a daylight-saving transition.",
+  offlineExpiryWithinLicense:
+    "Offline access must expire on or before the license expiry.",
+  instanceUnavailable: "This instance or its license is not active.",
 });
 Object.assign(zh, {
   invalidWallTime: "请输入有效的本地日期和时间。",
+  invalidOfflineExpiry: "离线访问有效期必须晚于当前时间。",
+  serviceStatus: "服务状态",
   dstGap: "由于夏令时切换，该本地时间在授权中心配置的时区中不存在。",
   dstAmbiguous: "由于夏令时切换，该本地时间在授权中心配置的时区中存在歧义。",
+  offlineExpiryWithinLicense: "离线访问有效期必须不晚于授权到期时间。",
+  instanceUnavailable: "该实例或其授权当前未启用。",
 });
 Object.assign(en, {
   offline: "Offline licenses",
@@ -427,6 +439,8 @@ Object.assign(en, {
   offlineRequest: "Issue offline activation",
   offlineRequestHelp:
     "Paste the signed request JSON exported by the client. The customer and license expiry must match its identity and current entitlement.",
+  existingInstance: "Existing instance",
+  currentLicenseExpiry: "Current license expiry (exact)",
   requestJson: "Signed request JSON",
   licenseExpiry: "License expiry",
   offlineExpiry: "Offline access expiry",
@@ -479,6 +493,8 @@ Object.assign(zh, {
   offline: "离线授权",
   releases: "软件发行",
   offlineRequest: "签发离线激活授权",
+  existingInstance: "已有实例",
+  currentLicenseExpiry: "当前授权到期时间（精确值）",
   offlineRequestHelp:
     "粘贴客户端导出的已签名请求 JSON。客户及授权到期时间必须与请求身份和当前授权一致。",
   requestJson: "已签名请求 JSON",
@@ -626,7 +642,7 @@ function dateFormat(
   value: number | null | undefined,
   zone: string,
   locale: string,
-  style: "date" | "full" = "full",
+  style: "date" | "full" | "precise" = "full",
 ) {
   if (value == null) return "—";
   return new Intl.DateTimeFormat(
@@ -640,14 +656,33 @@ function dateFormat(
           day: "numeric",
           hour: "2-digit",
           minute: "2-digit",
+          ...(style === "precise" ? { second: "2-digit" } : {}),
           hourCycle: "h23",
         },
   ).format(new Date(value * 1000));
 }
-function App() {
+function SessionRoot() {
+  const [generation, setGeneration] = useState(0);
+  const endSession = () => setGeneration((current) => current + 1);
+  useEffect(() => api.onSessionExpired(endSession), []);
+  return (
+    <App
+      key={generation}
+      signedOut={generation > 0}
+      onSessionEnd={endSession}
+    />
+  );
+}
+function App({
+  signedOut,
+  onSessionEnd,
+}: {
+  signedOut: boolean;
+  onSessionEnd: () => void;
+}) {
   const { t, i18n: locale } = useTranslation();
   const [session, setSession] = useState<Session | null>(null);
-  const [checking, setChecking] = useState(true);
+  const [checking, setChecking] = useState(!signedOut);
   const [page, setPage] = useState<Page>("overview");
   const sectionTitle = t(page);
   const [error, setError] = useState("");
@@ -658,6 +693,7 @@ function App() {
   } | null>(null);
   const [search, setSearch] = useState("");
   const [busy, setBusy] = useState(false);
+  const sensitiveActionLock = useRef(false);
   const [overview, setOverview] = useState<Overview | null>(null);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [instances, setInstances] = useState<Instance[]>([]);
@@ -709,7 +745,11 @@ function App() {
         setCodes(a);
         setCustomers(c);
       }
-      if (target === "offline") setCustomers(await api.customers());
+      if (target === "offline") {
+        const [c, i] = await Promise.all([api.customers(), api.instances()]);
+        setCustomers(c);
+        setInstances(i);
+      }
       if (target === "releases") {
         const [items, keys] = await Promise.all([
           api.releases(),
@@ -747,6 +787,7 @@ function App() {
     }
   };
   useEffect(() => {
+    if (signedOut) return;
     api
       .session()
       .then(setSession)
@@ -767,9 +808,7 @@ function App() {
   const signout = async () => {
     try {
       await api.logout();
-      setSession(null);
-      setModal(null);
-      notify(t("logoutConfirm"));
+      onSessionEnd();
     } catch (e) {
       setError(e instanceof Error ? e.message : t("failed"));
     }
@@ -785,6 +824,7 @@ function App() {
     action: (reason: string) => Promise<unknown>,
     caution?: string,
   ) => {
+    setError("");
     let reason = "";
     let confirmed = false;
     let totp = "";
@@ -803,6 +843,8 @@ function App() {
                 render("reauth");
                 return;
               }
+              if (sensitiveActionLock.current) return;
+              sensitiveActionLock.current = true;
               setBusy(true);
               try {
                 await api.reauth(totp);
@@ -815,6 +857,7 @@ function App() {
                 setError(err instanceof Error ? err.message : t("failed"));
               } finally {
                 setBusy(false);
+                sensitiveActionLock.current = false;
               }
             }}
           >
@@ -1042,7 +1085,7 @@ function App() {
     });
   };
   const createActivation = () => {
-    let customerId = customers[0]?.id ?? "",
+    let customerId = customers.find((customer) => customer.active)?.id ?? "",
       expiry = localInZone(Date.now() + 365 * 86400000, zone),
       ttl = 1440;
     setModal({
@@ -1052,10 +1095,18 @@ function App() {
           className="modal-form"
           onSubmit={(e) => {
             e.preventDefault();
+            let expiresAt: number;
+            try {
+              expiresAt = zoneInputToEpoch(expiry, zone, t);
+            } catch (error) {
+              return setError(
+                error instanceof Error ? error.message : t("failed"),
+              );
+            }
             requireSensitive(t("createCode"), false, async () => {
               const created = await api.createActivation({
                 customer_id: customerId,
-                expires_at: zoneInputToEpoch(expiry, zone, t),
+                expires_at: expiresAt,
                 ttl_seconds: ttl * 60,
               });
               setModal({
@@ -1140,50 +1191,18 @@ function App() {
     });
   };
   const createOfflineLicense = () => {
-    let customerId = customers.find((customer) => customer.active)?.id ?? "";
-    let requestJson = "";
-    let licenseExpiry = localInZone(Date.now() + 365 * 86400000, zone);
-    let offlineExpiry = localInZone(Date.now() + 30 * 86400000, zone);
-    let reason = "";
     setModal({
       title: t("offlineRequest"),
       body: (
-        <form
-          className="modal-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            let request: Record<string, string>;
-            let licenseExpiresAt: number;
-            let offlineExpiresAt: number;
-            try {
-              const parsed: unknown = JSON.parse(requestJson);
-              if (
-                !parsed ||
-                typeof parsed !== "object" ||
-                Array.isArray(parsed) ||
-                !Object.values(parsed).every(
-                  (value) => typeof value === "string",
-                )
-              )
-                throw new Error(t("invalidRequest"));
-              request = parsed as Record<string, string>;
-              licenseExpiresAt = zoneInputToEpoch(licenseExpiry, zone, t);
-              offlineExpiresAt = zoneInputToEpoch(offlineExpiry, zone, t);
-            } catch (cause) {
-              return setError(
-                cause instanceof Error ? cause.message : t("invalidRequest"),
-              );
-            }
-            if (offlineExpiresAt <= Date.now() / 1000)
-              return setError(t("invalidWallTime"));
+        <OfflineLicenseForm
+          customers={customers}
+          instances={instances}
+          zone={zone}
+          canManage={canManage}
+          onCancel={() => setModal(null)}
+          onSubmit={(input) =>
             requireSensitive(t("issueOffline"), false, async () => {
-              const issued = await api.createOfflineLicense({
-                customer_id: customerId,
-                request,
-                license_expires_at: licenseExpiresAt,
-                offline_expires_at: offlineExpiresAt,
-                reason: reason.trim(),
-              });
+              const issued = await api.createOfflineLicense(input);
               const blob = new Blob([issued.token], {
                 type: "application/jwt",
               });
@@ -1211,79 +1230,9 @@ function App() {
                   </div>
                 ),
               });
-            });
-          }}
-        >
-          <p className="muted">{t("offlineRequestHelp")}</p>
-          {!customers.some((customer) => customer.active) && (
-            <div className="inline-error">{t("noCustomers")}</div>
-          )}
-          <label>
-            {t("customer")}
-            <select
-              defaultValue={customerId}
-              required
-              onChange={(event) => (customerId = event.target.value)}
-            >
-              {customers
-                .filter((customer) => customer.active)
-                .map((customer) => (
-                  <option key={customer.id} value={customer.id}>
-                    {customer.name}
-                  </option>
-                ))}
-            </select>
-          </label>
-          <label>
-            {t("requestJson")}
-            <textarea
-              required
-              rows={8}
-              spellCheck={false}
-              onChange={(event) => (requestJson = event.target.value)}
-            />
-          </label>
-          <label>
-            {t("licenseExpiry")} <small>({zone})</small>
-            <input
-              type="datetime-local"
-              defaultValue={licenseExpiry}
-              required
-              onChange={(event) => (licenseExpiry = event.target.value)}
-            />
-          </label>
-          <label>
-            {t("offlineExpiry")} <small>({zone})</small>
-            <input
-              type="datetime-local"
-              defaultValue={offlineExpiry}
-              onChange={(event) => (offlineExpiry = event.target.value)}
-            />
-          </label>
-          <label>
-            {t("reason")}
-            <textarea
-              required
-              rows={2}
-              onChange={(event) => (reason = event.target.value)}
-            />
-          </label>
-          <div className="modal-actions">
-            <button
-              type="button"
-              className="button ghost"
-              onClick={() => setModal(null)}
-            >
-              {t("cancel")}
-            </button>
-            <button
-              className="button primary"
-              disabled={!customerId || !canManage}
-            >
-              {t("issueOffline")}
-            </button>
-          </div>
-        </form>
+            })
+          }
+        />
       ),
     });
   };
@@ -1402,20 +1351,30 @@ function App() {
     );
   const licenseAction = (
     instance: Instance,
-    kind: "extend" | "revoke" | "restore" | "replace",
+    kind: "expiry" | "revoke" | "restore" | "replace",
   ) => {
+    setError("");
     const expired = instance.license_expires_at <= Date.now() / 1000;
-    let expiry = localInZone(
-      (kind === "restore" && expired
-        ? Date.now()
-        : Math.max(Date.now(), instance.license_expires_at * 1000)) +
-        365 * 86400000,
+    const originalExpiry = localInZone(
+      instance.license_expires_at * 1000,
       zone,
     );
+    let expiry =
+      kind === "expiry"
+        ? originalExpiry
+        : localInZone(
+            (kind === "restore" && expired
+              ? Date.now()
+              : Math.max(Date.now(), instance.license_expires_at * 1000)) +
+              365 * 86400000,
+            zone,
+          );
+    let selectedExpiry = instance.license_expires_at;
+    const restoreNeedsExpiry = kind === "restore" && expired;
     const perform = (reason: string) => {
-      if (kind === "extend")
-        return api.extend(instance.license_id, {
-          expires_at: zoneInputToEpoch(expiry, zone, t),
+      if (kind === "expiry")
+        return api.updateExpiry(instance.license_id, {
+          expires_at: selectedExpiry,
           reason,
           version: instance.license_revision,
         });
@@ -1424,18 +1383,23 @@ function App() {
           reason,
           version: instance.license_revision,
         });
-      if (kind === "restore")
+      if (kind === "restore") {
+        if (restoreNeedsExpiry && selectedExpiry <= Date.now() / 1000)
+          throw new Error(t("expiryMustBeFuture"));
+        if (
+          !restoreNeedsExpiry &&
+          instance.license_expires_at <= Date.now() / 1000
+        )
+          throw new Error(t("expiryMustBeFuture"));
         return api.restore(instance.license_id, {
-          ...(instance.license_expires_at <= Date.now() / 1000
-            ? { expires_at: zoneInputToEpoch(expiry, zone, t) }
-            : {}),
+          ...(restoreNeedsExpiry ? { expires_at: selectedExpiry } : {}),
           reason,
           version: instance.license_revision,
         });
+      }
       return api
         .replace(instance.id, {
           reason,
-          expires_at: instance.license_expires_at,
           version: instance.license_revision,
         })
         .then((activation) => {
@@ -1466,10 +1430,10 @@ function App() {
         });
     };
     if (
-      kind === "extend" ||
+      kind === "expiry" ||
       (kind === "restore" && instance.license_expires_at <= Date.now() / 1000)
     ) {
-      const title = kind === "extend" ? t("extend") : t("restore");
+      const title = kind === "expiry" ? t("updateExpiry") : t("restore");
       setModal({
         title: `${title} · ${instance.id}`,
         body: (
@@ -1479,20 +1443,24 @@ function App() {
               e.preventDefault();
               let newExpiry: number;
               try {
-                newExpiry = zoneInputToEpoch(expiry, zone, t);
+                newExpiry =
+                  kind === "expiry" && expiry === originalExpiry
+                    ? instance.license_expires_at
+                    : zoneInputToEpoch(expiry, zone, t);
               } catch (error) {
                 return setError(
                   error instanceof Error ? error.message : t("failed"),
                 );
               }
-              if (
-                newExpiry <= Date.now() / 1000 ||
-                (kind === "extend" && newExpiry <= instance.license_expires_at)
-              )
-                return setError(t("expiryMustIncrease"));
+              if (kind === "restore" && newExpiry <= Date.now() / 1000)
+                return setError(t("expiryMustBeFuture"));
+              selectedExpiry = newExpiry;
               requireSensitive(title, true, perform);
             }}
           >
+            {kind === "expiry" && (
+              <p className="muted">{t("expiryChangeHelp")}</p>
+            )}
             <div className="expiry-compare">
               <span>
                 {t("previous")}
@@ -1502,8 +1470,13 @@ function App() {
                 {t("expiryNew")}
                 <input
                   type="datetime-local"
-                  min={localInZone(Date.now(), zone)}
+                  min={
+                    kind === "restore"
+                      ? localInZone(Date.now(), zone)
+                      : undefined
+                  }
                   defaultValue={expiry}
+                  required
                   onChange={(e) => {
                     expiry = e.target.value;
                   }}
@@ -1849,6 +1822,7 @@ function App() {
               {page === "offline" && canManage && (
                 <button
                   className="button primary"
+                  disabled={busy}
                   onClick={createOfflineLicense}
                 >
                   <Plus size={16} />
@@ -2101,17 +2075,19 @@ function App() {
                             <div className="action-menu">
                               <button
                                 className="row-action"
-                                onClick={() => licenseAction(i, "extend")}
+                                onClick={() => licenseAction(i, "expiry")}
                               >
-                                {t("extend")}
+                                {t("updateExpiry")}
                               </button>
                               {i.license_status === "revoked" ? (
-                                <button
-                                  className="row-action positive"
-                                  onClick={() => licenseAction(i, "restore")}
-                                >
-                                  {t("restore")}
-                                </button>
+                                i.status === "active" && (
+                                  <button
+                                    className="row-action positive"
+                                    onClick={() => licenseAction(i, "restore")}
+                                  >
+                                    {t("restore")}
+                                  </button>
+                                )
                               ) : (
                                 <button
                                   className="row-action danger"
@@ -2449,7 +2425,7 @@ function App() {
               </section>
             </div>
           )}
-          {page === "operators" && (
+          {page === "operators" && isOwner && (
             <section className="panel">
               <div className="owner-banner">
                 <ShieldCheck size={19} />
@@ -2716,17 +2692,37 @@ function App() {
         <div
           className="modal-backdrop"
           onMouseDown={(e) => {
-            if (e.target === e.currentTarget) setModal(null);
+            if (
+              !busy &&
+              !sensitiveActionLock.current &&
+              e.target === e.currentTarget
+            )
+              setModal(null);
           }}
         >
           <section className="modal">
             <header>
               <h3>{modal.title}</h3>
-              <button className="icon-button" onClick={() => setModal(null)}>
+              <button
+                className="icon-button"
+                disabled={busy || sensitiveActionLock.current}
+                onClick={() => setModal(null)}
+              >
                 <X size={18} />
               </button>
             </header>
-            {modal.body}
+            {error && (
+              <div className="inline-error">
+                <CircleAlert size={16} />
+                {error}
+              </div>
+            )}
+            <fieldset
+              disabled={busy || sensitiveActionLock.current}
+              style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}
+            >
+              {modal.body}
+            </fieldset>
           </section>
         </div>
       )}
@@ -2796,7 +2792,7 @@ function InstancesTable({
   t: (key: string) => string;
   onAction: (
     i: Instance,
-    kind: "extend" | "revoke" | "restore" | "replace",
+    kind: "expiry" | "revoke" | "restore" | "replace",
   ) => void;
   manage: boolean;
 }) {
@@ -2830,10 +2826,18 @@ function InstancesTable({
                 <td>
                   <button
                     className="row-action"
-                    onClick={() => onAction(i, "extend")}
+                    onClick={() => onAction(i, "expiry")}
                   >
-                    {t("extend")}
+                    {t("updateExpiry")}
                   </button>
+                  {i.license_status === "revoked" && i.status === "active" && (
+                    <button
+                      className="row-action positive"
+                      onClick={() => onAction(i, "restore")}
+                    >
+                      {t("restore")}
+                    </button>
+                  )}
                 </td>
               )}
             </tr>
@@ -2876,6 +2880,230 @@ function AuditList({
     </div>
   );
 }
+function OfflineLicenseForm({
+  customers,
+  instances,
+  zone,
+  canManage,
+  onCancel,
+  onSubmit,
+}: {
+  customers: Customer[];
+  instances: Instance[];
+  zone: string;
+  canManage: boolean;
+  onCancel: () => void;
+  onSubmit: (input: Parameters<typeof api.createOfflineLicense>[0]) => void;
+}) {
+  const { t, i18n } = useTranslation();
+  const [customerId, setCustomerId] = useState(
+    customers.find((customer) => customer.active)?.id ?? "",
+  );
+  const [requestJson, setRequestJson] = useState("");
+  const [licenseExpiry, setLicenseExpiry] = useState(
+    localInZone(Date.now() + 365 * 86400000, zone),
+  );
+  const [offlineExpiry, setOfflineExpiry] = useState(
+    localInZone(Date.now() + 30 * 86400000, zone),
+  );
+  const [reason, setReason] = useState("");
+  const [error, setError] = useState("");
+  const instance = useMemo(() => {
+    try {
+      const parsed: unknown = JSON.parse(requestJson);
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+        return undefined;
+      const id = (parsed as Record<string, unknown>).instance_id;
+      return typeof id === "string"
+        ? instances.find((candidate) => candidate.id === id)
+        : undefined;
+    } catch {
+      return undefined;
+    }
+  }, [instances, requestJson]);
+  const customer = customers.find(
+    (candidate) => candidate.id === (instance?.customer_id ?? customerId),
+  );
+  const existingInstanceIsActive =
+    instance?.status === "active" &&
+    instance.license_status === "active" &&
+    customer?.active === true;
+  const selectedCustomerId = instance?.customer_id ?? customerId;
+
+  return (
+    <form
+      className="modal-form"
+      onSubmit={(event) => {
+        event.preventDefault();
+        setError("");
+        let request: Record<string, string>;
+        let licenseExpiresAt: number;
+        let offlineExpiresAt: number;
+        try {
+          const parsed: unknown = JSON.parse(requestJson);
+          if (
+            !parsed ||
+            typeof parsed !== "object" ||
+            Array.isArray(parsed) ||
+            !Object.values(parsed).every(
+              (value) => typeof value === "string",
+            ) ||
+            ![
+              "instance_id",
+              "public_key_pem",
+              "key_fingerprint",
+              "proof",
+            ].every(
+              (key) =>
+                typeof (parsed as Record<string, unknown>)[key] === "string" &&
+                (parsed as Record<string, string>)[key].trim().length > 0,
+            )
+          )
+            throw new Error(t("invalidRequest"));
+          request = parsed as Record<string, string>;
+          licenseExpiresAt = instance
+            ? instance.license_expires_at
+            : zoneInputToEpoch(licenseExpiry, zone, t);
+          offlineExpiresAt = zoneInputToEpoch(offlineExpiry, zone, t);
+        } catch (cause) {
+          setError(
+            cause instanceof Error ? cause.message : t("invalidRequest"),
+          );
+          return;
+        }
+        if (instance && !existingInstanceIsActive) {
+          setError(t("instanceUnavailable"));
+          return;
+        }
+        if (offlineExpiresAt <= Date.now() / 1000) {
+          setError(t("invalidOfflineExpiry"));
+          return;
+        }
+        if (offlineExpiresAt > licenseExpiresAt) {
+          setError(t("offlineExpiryWithinLicense"));
+          return;
+        }
+        if (!reason.trim()) {
+          setError(t("reasonRequired"));
+          return;
+        }
+        onSubmit({
+          customer_id: selectedCustomerId,
+          request,
+          license_expires_at: licenseExpiresAt,
+          offline_expires_at: offlineExpiresAt,
+          reason: reason.trim(),
+        });
+      }}
+    >
+      <p className="muted">{t("offlineRequestHelp")}</p>
+      <label>
+        {t("customer")}
+        <select
+          value={selectedCustomerId}
+          required
+          disabled={!!instance}
+          onChange={(event) => setCustomerId(event.target.value)}
+        >
+          {customers
+            .filter(
+              (candidate) =>
+                candidate.active || candidate.id === instance?.customer_id,
+            )
+            .map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.name}
+              </option>
+            ))}
+          {instance && !customer && (
+            <option value={instance.customer_id}>{instance.customer_id}</option>
+          )}
+        </select>
+      </label>
+      <label>
+        {t("requestJson")}
+        <textarea
+          required
+          rows={8}
+          spellCheck={false}
+          value={requestJson}
+          onChange={(event) => {
+            setRequestJson(event.target.value);
+            setError("");
+          }}
+        />
+      </label>
+      {instance ? (
+        <>
+          <div className="owner-banner">
+            <span>
+              <b>{t("existingInstance")}</b>
+              <small>
+                {instance.id} · {instance.status} / {instance.license_status}
+              </small>
+              <small>
+                {t("currentLicenseExpiry")} ({zone}):{" "}
+                {dateFormat(
+                  instance.license_expires_at,
+                  zone,
+                  i18n.language.startsWith("zh") ? "zh-CN" : "en-US",
+                  "precise",
+                )}
+              </small>
+            </span>
+          </div>
+          {!existingInstanceIsActive && (
+            <div className="inline-error">{t("instanceUnavailable")}</div>
+          )}
+        </>
+      ) : (
+        <label>
+          {t("licenseExpiry")} <small>({zone})</small>
+          <input
+            type="datetime-local"
+            value={licenseExpiry}
+            required
+            onChange={(event) => setLicenseExpiry(event.target.value)}
+          />
+        </label>
+      )}
+      <label>
+        {t("offlineExpiry")} <small>({zone})</small>
+        <input
+          type="datetime-local"
+          value={offlineExpiry}
+          onChange={(event) => setOfflineExpiry(event.target.value)}
+        />
+      </label>
+      <label>
+        {t("reason")}
+        <textarea
+          required
+          rows={2}
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+        />
+      </label>
+      {error && <div className="inline-error">{error}</div>}
+      <div className="modal-actions">
+        <button type="button" className="button ghost" onClick={onCancel}>
+          {t("cancel")}
+        </button>
+        <button
+          className="button primary"
+          disabled={
+            !canManage ||
+            !selectedCustomerId ||
+            (!!instance && !existingInstanceIsActive)
+          }
+        >
+          {t("issueOffline")}
+        </button>
+      </div>
+    </form>
+  );
+}
+
 function EnrollmentCard({
   enrollment,
   onConfirm,
@@ -2942,6 +3170,6 @@ function EnrollmentCard({
 
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
-    <App />
+    <SessionRoot />
   </React.StrictMode>,
 );

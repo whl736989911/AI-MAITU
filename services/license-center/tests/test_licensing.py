@@ -229,3 +229,66 @@ def test_offline_issue_and_online_revocation_share_license_revision(center):
         ).json()["revision"]
         == 3
     )
+
+
+def _replaced_binding(center):
+    client, csrf = center
+    customer, activation = customer_and_activation(client, csrf)
+    private_key = Ed25519PrivateKey.generate()
+    instance_id = crypto.fingerprint(_public_pem(private_key))[:32]
+    activated, _ = _activate(client, private_key, instance_id, activation["code"])
+    assert activated.status_code == 200, activated.text
+    online = _decode_token(
+        activated.json()["token"], active_license_public_pem(client), instance_id
+    )
+    replaced = client.post(
+        f"/api/v1/admin/instances/{instance_id}/replace",
+        headers=csrf,
+        json={"reason": "Move to a new host", "version": 1},
+    )
+    assert replaced.status_code == 200, replaced.text
+    return customer, private_key, instance_id, online
+
+
+def test_replaced_binding_cannot_be_restored(center):
+    client, csrf = center
+    _, _, instance_id, online = _replaced_binding(center)
+    restored = client.post(
+        f"/api/v1/admin/licenses/{online['license_id']}/restore",
+        headers=csrf,
+        json={"reason": "Attempt to restore old host", "version": 2},
+    )
+    assert restored.status_code == 409, restored.text
+    synced = client.get(f"/api/v1/admin/instances/{instance_id}").json()
+    assert synced["license_status"] == "revoked"
+    assert synced["license_revision"] == 2
+
+
+def test_legacy_replaced_binding_stays_denied_in_views_and_offline_issuance(center):
+    client, csrf = center
+    customer, private_key, instance_id, online = _replaced_binding(center)
+    # Older centers allowed clearing this license flag without restoring its binding.
+    with storage.transaction() as conn:
+        conn.execute("UPDATE licenses SET revoked=0,revision=3 WHERE id=?", (online["license_id"],))
+    offline = client.post(
+        "/api/v1/admin/offline-licenses",
+        headers=csrf,
+        json={
+            "customer_id": customer["id"],
+            "request": _offline_request(private_key, instance_id),
+            "license_expires_at": online["license_expires_at"],
+            "offline_expires_at": storage.now() + 86400,
+            "reason": "Old replaced host",
+        },
+    )
+    assert offline.status_code == 409, offline.text
+    detail = client.get(f"/api/v1/admin/instances/{instance_id}").json()
+    listed = next(
+        row for row in client.get("/api/v1/admin/instances").json() if row["id"] == instance_id
+    )
+    assert detail["license_status"] == listed["license_status"] == "revoked"
+    overview = client.get("/api/v1/admin/overview").json()
+    assert overview["active_licenses"] == 0
+    assert overview["expired_licenses"] == 0
+    assert overview["revoked_licenses"] == 1
+    assert overview["expiring_soon"] == 0

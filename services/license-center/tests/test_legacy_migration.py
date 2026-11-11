@@ -177,3 +177,51 @@ def test_legacy_license_ledger_import_preserves_bindings_revisions_and_signer(
         assert conn.execute("SELECT COUNT(*) FROM activation_codes").fetchone()[0] == 2
     assert (tmp_path / "licensing.sqlite3").is_file()
     assert (tmp_path / "release-signing-key.pem").is_file()
+
+
+def test_schema_four_offline_ids_are_repaired_without_losing_revocation(center):
+    current = storage.now()
+    old_id = "lic_" + "c" * 32
+    canonical_id = "c" * 32
+    key = Ed25519PrivateKey.generate()
+    public = (
+        key.public_key()
+        .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
+        .decode()
+    )
+    instance_id = crypto.fingerprint(public)[:32]
+    with storage.transaction() as conn:
+        conn.execute("DELETE FROM schema_migrations WHERE version>4")
+        conn.execute(
+            "INSERT INTO customers(id,name,created_at) VALUES('cus_repair','Offline customer',?)",
+            (current,),
+        )
+        conn.execute(
+            "INSERT INTO instances(id,customer_id,public_key,fingerprint,status) VALUES(?,?,?,?,?)",
+            (instance_id, "cus_repair", public, crypto.fingerprint(public), "active"),
+        )
+        conn.execute(
+            "INSERT INTO licenses(id,instance_id,expires_at,revoked,expired,restored,revision,created_at) VALUES(?,?,?,1,0,1,7,?)",
+            (old_id, instance_id, current + 86400, current),
+        )
+        storage.audit(conn, "owner", "license.revoke", "license", old_id, "{}", "{}")
+    storage.migrate()
+    with storage.connect() as conn:
+        row = conn.execute("SELECT * FROM licenses WHERE id=?", (canonical_id,)).fetchone()
+        assert row is not None
+        assert row["revoked"] == 1
+        assert row["restored"] == 1
+        assert row["expires_at"] == current + 86400
+        assert row["revision"] == 8
+        assert (
+            conn.execute(
+                "SELECT object_id FROM audit_log WHERE action='license.revoke'"
+            ).fetchone()[0]
+            == canonical_id
+        )
+    storage.migrate()
+    with storage.connect() as conn:
+        assert (
+            conn.execute("SELECT revision FROM licenses WHERE id=?", (canonical_id,)).fetchone()[0]
+            == 8
+        )

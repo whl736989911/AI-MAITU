@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict, deque
 
 import pyotp
 import pytest
@@ -9,6 +10,11 @@ from fastapi.testclient import TestClient
 os.environ["MAITU_CENTER_CLIENT_TOKEN"] = "client-token-that-is-long-enough-for-safe-testing-01"
 
 from license_center import api, crypto, releases, storage
+
+
+@pytest.fixture(autouse=True)
+def isolated_rate_limits(monkeypatch):
+    monkeypatch.setattr(api, "RATE", defaultdict(deque))
 
 
 @pytest.fixture

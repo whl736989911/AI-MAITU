@@ -35,7 +35,7 @@ def init(
     username: str = typer.Option(..., prompt=True),
     password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
 ) -> None:
-    """Initialize the center after verifying owner MFA and create its first signing key."""
+    """Initialize the center and create its first signing key if none is active."""
     if len(password) < 12:
         raise typer.BadParameter("Password must contain at least 12 characters")
     migrate()
@@ -64,10 +64,36 @@ def init(
         raise typer.BadParameter("TOTP verification failed; no owner or signing key was created")
 
     password_hash = PasswordHasher().hash(password)
-    kid = "license-" + secrets.token_hex(8)
-    private_path, public_pem = generate_signing_key(kid)
+    private_path: Path | None = None
+    created_signing_key = False
     try:
         with transaction() as conn:
+            if conn.execute("SELECT 1 FROM admin_users LIMIT 1").fetchone():
+                raise typer.BadParameter("An administrator already exists")
+            active_keys = conn.execute(
+                "SELECT kid FROM signing_keys WHERE state='active' ORDER BY created_at,kid"
+            ).fetchall()
+            if len(active_keys) > 1:
+                raise RuntimeError("Multiple active signing keys exist; refusing to initialize")
+            if active_keys:
+                kid = active_keys[0]["kid"]
+            else:
+                kid = "license-" + secrets.token_hex(8)
+                private_path, public_pem = generate_signing_key(kid)
+                created_signing_key = True
+                conn.execute(
+                    "INSERT INTO signing_keys(kid,private_path,public_pem,state,created_at) VALUES(?,?,?,'active',?)",
+                    (kid, private_path.name, public_pem, now()),
+                )
+                audit(
+                    conn,
+                    "local-cli",
+                    "signing_key.bootstrap",
+                    "signing_key",
+                    kid,
+                    "{}",
+                    json.dumps({"state": "active"}),
+                )
             cur = conn.execute(
                 "INSERT INTO admin_users(username,password_hash,role,totp_ciphertext,active,last_totp_counter,created_at) VALUES(?,?,'owner',?,1,?,?)",
                 (username, password_hash, encrypt_secret(secret), counter, now()),
@@ -82,21 +108,9 @@ def init(
                 "{}",
                 json.dumps({"username": username, "role": "owner"}),
             )
-            conn.execute(
-                "INSERT INTO signing_keys(kid,private_path,public_pem,state,created_at) VALUES(?,?,?,'active',?)",
-                (kid, private_path.name, public_pem, now()),
-            )
-            audit(
-                conn,
-                "local-cli",
-                "signing_key.bootstrap",
-                "signing_key",
-                kid,
-                "{}",
-                json.dumps({"state": "active"}),
-            )
     except BaseException:
-        private_path.unlink(missing_ok=True)
+        if created_signing_key and private_path is not None:
+            private_path.unlink(missing_ok=True)
         raise
     with transaction() as conn:
         audit(
@@ -109,7 +123,9 @@ def init(
             json.dumps({"active": True}),
         )
     typer.echo(f"Initialized center database at {DB_PATH}; active signing kid={kid}")
-    typer.echo("Public key is available using `license-center export-trust`.")
+    typer.echo(
+        "Public keys and connection settings are available using `license-center export-connection`."
+    )
 
 
 @app.command()
@@ -374,19 +390,34 @@ def recover(
     password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
     confirm: bool = typer.Option(False, "--confirm"),
 ) -> None:
-    """Locally replace a lost admin MFA factor, revoke sessions, and audit recovery."""
+    """Verify a replacement factor before atomically replacing credentials and sessions."""
     if not confirm:
         raise typer.BadParameter("Run this only on the center host; pass --confirm")
     if len(password) < 12:
         raise typer.BadParameter("Password must contain at least 12 characters")
+    with connect() as conn:
+        if (
+            conn.execute("SELECT 1 FROM admin_users WHERE username=?", (username,)).fetchone()
+            is None
+        ):
+            raise typer.BadParameter("Administrator not found")
     secret = new_totp_secret()
+    typer.echo(f"Recovery TOTP secret (shown once): {secret}")
+    code = typer.prompt("Enter current authenticator code to complete recovery")
+    ok, counter = valid_totp(secret, code)
+    if not ok:
+        raise typer.BadParameter("TOTP verification failed; existing credentials are unchanged")
+    password_hash = PasswordHasher().hash(password)
+    ciphertext = encrypt_secret(secret)
     with transaction() as conn:
-        user = conn.execute("SELECT id FROM admin_users WHERE username=?", (username,)).fetchone()
+        user = conn.execute(
+            "SELECT id,active FROM admin_users WHERE username=?", (username,)
+        ).fetchone()
         if user is None:
             raise typer.BadParameter("Administrator not found")
         conn.execute(
-            "UPDATE admin_users SET password_hash=?,totp_ciphertext=?,active=0,last_totp_counter=-1 WHERE id=?",
-            (PasswordHasher().hash(password), encrypt_secret(secret), user["id"]),
+            "UPDATE admin_users SET password_hash=?,totp_ciphertext=?,active=1,last_totp_counter=? WHERE id=?",
+            (password_hash, ciphertext, counter, user["id"]),
         )
         conn.execute("DELETE FROM admin_sessions WHERE user_id=?", (user["id"],))
         audit(
@@ -395,27 +426,8 @@ def recover(
             "admin.recovery",
             "admin_user",
             str(user["id"]),
-            "{}",
-            json.dumps({"active": False}),
-            "MFA and password reset",
-        )
-    typer.echo(f"Recovery TOTP secret (shown once): {secret}")
-    code = typer.prompt("Enter current authenticator code to complete recovery")
-    ok, counter = valid_totp(secret, code)
-    if not ok:
-        raise typer.BadParameter("TOTP verification failed; account remains inactive")
-    with transaction() as conn:
-        conn.execute(
-            "UPDATE admin_users SET active=1,last_totp_counter=? WHERE username=?",
-            (counter, username),
-        )
-        audit(
-            conn,
-            "local-cli",
-            "admin.recovery_enrolled",
-            "admin_user",
-            username,
-            "{}",
+            json.dumps({"active": bool(user["active"])}),
             json.dumps({"active": True}),
+            "MFA and password reset",
         )
     typer.echo("Account recovered; all prior sessions were invalidated.")

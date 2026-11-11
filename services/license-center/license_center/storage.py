@@ -86,6 +86,9 @@ def migrate() -> None:
         except BaseException:
             conn.rollback()
             raise
+    from .crypto import validate_encryption_key
+
+    validate_encryption_key()
     from .legacy import migrate_legacy_licensing
 
     migrate_legacy_licensing()

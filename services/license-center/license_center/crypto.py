@@ -7,7 +7,7 @@ from pathlib import Path
 
 import jwt
 import pyotp
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
 
@@ -28,8 +28,53 @@ def _private_mode(path: Path) -> None:
         path.chmod(0o600)
 
 
+def _has_encrypted_records() -> bool:
+    from .storage import DB_PATH, connect
+
+    if not DB_PATH.exists():
+        return False
+    with connect() as conn:
+        tables = {
+            row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        }
+        return any(
+            table in tables and conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone()
+            for table in ("admin_users", "signing_keys", "release_signing_keys")
+        )
+
+
+def validate_encryption_key() -> None:
+    """Reject incomplete or mismatched restores before writing new encrypted material."""
+    from .storage import connect
+
+    if not _has_encrypted_records():
+        return
+    try:
+        box = Fernet(ENC_KEY.read_bytes().strip())
+        with connect() as conn:
+            for row in conn.execute("SELECT totp_ciphertext FROM admin_users"):
+                box.decrypt(row["totp_ciphertext"])
+            for row in conn.execute(
+                "SELECT kid,private_path FROM signing_keys UNION ALL "
+                "SELECT kid,private_path FROM release_signing_keys"
+            ):
+                filename = f"{row['kid']}.ed25519.fernet"
+                if row["private_path"] != filename or Path(filename).name != filename:
+                    raise ValueError("Invalid signing key path metadata")
+                box.decrypt((KEY_DIR / filename).read_bytes())
+    except (OSError, ValueError, InvalidToken) as exc:
+        raise RuntimeError(
+            "Center encryption key or encrypted material is missing or inconsistent; "
+            "restore the database and keys from the same backup"
+        ) from exc
+
+
 def encryption_box() -> Fernet:
     if not ENC_KEY.exists():
+        if _has_encrypted_records():
+            raise RuntimeError(
+                "Center encryption key is missing; restore it from the matching backup"
+            )
         ENC_KEY.parent.mkdir(parents=True, exist_ok=True)
         key = Fernet.generate_key()
         with ENC_KEY.open("xb") as f:
@@ -39,6 +84,7 @@ def encryption_box() -> Fernet:
 
 
 def encrypt_secret(secret: str) -> bytes:
+    validate_encryption_key()
     return encryption_box().encrypt(secret.encode("utf-8"))
 
 
@@ -57,6 +103,7 @@ def fingerprint(public_key_pem: str) -> str:
 
 
 def generate_signing_key(kid: str) -> tuple[Path, str]:
+    validate_encryption_key()
     KEY_DIR.mkdir(parents=True, exist_ok=True)
     path = KEY_DIR / f"{kid}.ed25519.fernet"
     key = Ed25519PrivateKey.generate()
@@ -68,8 +115,9 @@ def generate_signing_key(kid: str) -> tuple[Path, str]:
         .public_bytes(serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo)
         .decode()
     )
+    box = encryption_box()
     with path.open("xb") as f:
-        f.write(encryption_box().encrypt(private_pem))
+        f.write(box.encrypt(private_pem))
     _private_mode(path)
     return path, public_pem
 
@@ -148,6 +196,7 @@ def valid_totp(secret: str, code: str, last_counter: int = -1) -> tuple[bool, in
 
 
 def _store_release_key(kid: str, key: Ed25519PrivateKey) -> tuple[Path, str]:
+    validate_encryption_key()
     if not kid or len(kid) > 128 or Path(kid).name != kid or kid in {".", ".."}:
         raise ValueError("Invalid release signing key ID")
     KEY_DIR.mkdir(parents=True, exist_ok=True)
@@ -166,8 +215,9 @@ def _store_release_key(kid: str, key: Ed25519PrivateKey) -> tuple[Path, str]:
         if encryption_box().decrypt(path.read_bytes()) != private_pem:
             raise ValueError("Signing key ID already belongs to a different private key")
         return path, public_pem
+    box = encryption_box()
     with path.open("xb") as stream:
-        stream.write(encryption_box().encrypt(private_pem))
+        stream.write(box.encrypt(private_pem))
     _private_mode(path)
     return path, public_pem
 

@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+MAX_LICENSE_TIMESTAMP = 253402300799  # 9999-12-31T23:59:59Z
+
 
 class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -66,7 +68,7 @@ class CustomerUpdate(StrictModel):
     notes: str = Field(default="", max_length=4000)
     active: bool
     version: int = Field(ge=1)
-    reason: str | None = Field(default=None, min_length=1, max_length=1000)
+    reason: str | None = Field(default=None, min_length=1, max_length=1000, pattern=r"\S")
 
 
 class CustomerView(StrictModel):
@@ -81,7 +83,7 @@ class CustomerView(StrictModel):
 
 class ActivationCreate(StrictModel):
     customer_id: str
-    expires_at: int = Field(gt=0)
+    expires_at: int = Field(gt=0, le=MAX_LICENSE_TIMESTAMP)
     ttl_seconds: int = Field(default=86400, ge=60, le=2592000)
 
 
@@ -98,19 +100,24 @@ class ActivationView(StrictModel):
 class OfflineLicenseCreate(StrictModel):
     customer_id: str = Field(min_length=1, max_length=128)
     request: dict[str, str]
-    license_expires_at: int = Field(gt=0)
-    offline_expires_at: int = Field(gt=0)
-    reason: str = Field(min_length=1, max_length=1000)
+    license_expires_at: int = Field(gt=0, le=MAX_LICENSE_TIMESTAMP)
+    offline_expires_at: int = Field(gt=0, le=MAX_LICENSE_TIMESTAMP)
+    reason: str = Field(min_length=1, max_length=1000, pattern=r"\S")
 
 
 class LicenseAction(StrictModel):
-    expires_at: int | None = Field(default=None, gt=0)
-    reason: str = Field(min_length=1, max_length=1000)
+    expires_at: int | None = Field(
+        default=None,
+        gt=0,
+        le=MAX_LICENSE_TIMESTAMP,
+        description="Positive Unix-seconds deadline through year 9999 UTC; required when changing expiry.",
+    )
+    reason: str = Field(min_length=1, max_length=1000, pattern=r"\S")
     version: int = Field(ge=1)
 
 
 class ReplaceRequest(StrictModel):
-    reason: str = Field(min_length=1, max_length=1000)
+    reason: str = Field(min_length=1, max_length=1000, pattern=r"\S")
     version: int = Field(ge=1)
 
 
@@ -229,7 +236,7 @@ class SystemView(StrictModel):
 
 
 class ActivationRevoke(StrictModel):
-    reason: str = Field(min_length=1, max_length=1000)
+    reason: str = Field(min_length=1, max_length=1000, pattern=r"\S")
 
 
 class HealthView(StrictModel):
