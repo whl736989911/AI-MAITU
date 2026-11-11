@@ -8,6 +8,9 @@ on a locked instance). No token, private key, or customer field is exposed.
 
 from __future__ import annotations
 
+import asyncio
+import json
+from functools import partial
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -258,7 +261,7 @@ class LicenseSettingsUpdate(BaseModel):
     )
     ca_pem: str | None = Field(
         default=None,
-        description="Optional private CA PEM. Omit to keep it; empty string clears it.",
+        description="Optional public root CA certificate PEM. Omit to keep it; empty clears it.",
     )
     allow_loopback: bool = Field(
         default=False, description="Testing only: allow HTTP on a loopback center URL"
@@ -266,7 +269,12 @@ class LicenseSettingsUpdate(BaseModel):
 
 
 def _license_settings_view(server: OctopServer) -> dict[str, Any]:
-    from octop.infra.licensing.settings import load_license_settings
+    from octop.infra.licensing.settings import (
+        load_license_settings,
+        normalize_center_url,
+        parse_trusted_keys,
+        validate_ca_pem,
+    )
 
     settings = load_license_settings(
         server.paths,
@@ -282,8 +290,17 @@ def _license_settings_view(server: OctopServer) -> dict[str, Any]:
         if settings.ca_file is not None and settings.ca_file.is_file()
         else None
     )
+    if keys_json is not None:
+        keys_json = json.dumps(parse_trusted_keys(keys_json), ensure_ascii=False, indent=2)
+    if ca_pem is not None:
+        validate_ca_pem(ca_pem)
+    center_url = (
+        normalize_center_url(settings.center_url, allow_loopback=settings.allow_loopback)
+        if settings.center_url is not None
+        else None
+    )
     return {
-        "center_url": settings.center_url,
+        "center_url": center_url,
         "trusted_keys_configured": settings.trusted_keys_file is not None
         and settings.trusted_keys_file.is_file(),
         "ca_configured": settings.ca_file is not None and settings.ca_file.is_file(),
@@ -304,7 +321,14 @@ async def license_settings(
     request: Request, _admin: Any = Depends(require_license_details_admin)
 ) -> dict[str, Any]:
     """Return public trust material only; the instance private key is never included."""
-    return _license_settings_view(get_server(request))
+    server = get_server(request)
+    async with server.license_settings_lock:
+        try:
+            return await asyncio.get_running_loop().run_in_executor(
+                None, _license_settings_view, server
+            )
+        except ValueError as exc:
+            raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
 
 
 @router.put(
@@ -321,20 +345,27 @@ async def update_license_settings(
     from octop.infra.licensing.settings import write_license_files
 
     server = get_server(request)
-    try:
-        write_license_files(
-            server.paths,
-            trusted_keys_json=body.trusted_keys_json,
-            ca_pem=body.ca_pem,
-            center_url=body.center_url,
-            allow_loopback=body.allow_loopback,
-        )
-        await server.reload_license_config()
-        if getattr(server, "_license_config_error", False):
-            raise OctopError(
-                ErrorCode.SLASH_BAD_ARGS,
-                "license configuration was written but could not be loaded",
+    async with server.license_settings_lock:
+        try:
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                partial(
+                    write_license_files,
+                    server.paths,
+                    trusted_keys_json=body.trusted_keys_json,
+                    ca_pem=body.ca_pem,
+                    center_url=body.center_url,
+                    allow_loopback=body.allow_loopback,
+                ),
             )
-    except ValueError as exc:
-        raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc
-    return _license_settings_view(server)
+            await server.reload_license_config()
+            if getattr(server, "_license_config_error", False):
+                raise OctopError(
+                    ErrorCode.SLASH_BAD_ARGS,
+                    "license configuration was written but could not be loaded",
+                )
+            return await asyncio.get_running_loop().run_in_executor(
+                None, _license_settings_view, server
+            )
+        except ValueError as exc:
+            raise OctopError(ErrorCode.SLASH_BAD_ARGS, str(exc)) from exc

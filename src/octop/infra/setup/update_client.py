@@ -371,7 +371,7 @@ class UpdateClient:
                     manifest = self._fetch_manifest()
                     self._cache.update({"checked_at": _now(), "error": None, "manifest": manifest})
                 except UpdateClientError as exc:
-                    self._cache.update({"checked_at": _now(), "error": str(exc)})
+                    self._cache.update({"checked_at": _now(), "error": str(exc), "manifest": None})
                 self._save_cache()
             return self.status_payload()
 

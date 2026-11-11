@@ -392,3 +392,28 @@ def test_center_failure_is_reported_without_claiming_latest(
     status = client.check(force=True)
     assert status["latest_version"] is None
     assert status["error"] is not None
+
+
+def test_center_failure_clears_previously_cached_release(
+    signed_center: tuple[UpdateClient, dict[str, Any], Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _, _ = signed_center
+    assert client.check(force=True)["has_update"] is True
+
+    def unavailable(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("center unavailable")
+
+    monkeypatch.setattr(client_module.urllib.request, "build_opener", unavailable)
+    status = client.check(force=True)
+
+    assert status["error"] is not None
+    assert status["latest_version"] is None
+    assert status["has_update"] is False
+    assert status["release_notes"] is None
+
+    restarted_status = UpdateClient().status_payload()
+    assert restarted_status["latest_version"] is None
+    assert restarted_status["has_update"] is False
+    assert restarted_status["error"] == status["error"]
+    assert restarted_status["release_notes"] is None
