@@ -529,11 +529,14 @@ class LicenseManager:
     def _persist_sync(self) -> None:
         _atomic_write(self._state_path, _canonical(self._state))
 
-    async def _persist(self) -> None:
+    async def _persist(self, new_state: dict[str, Any] | None = None) -> None:
         async with self._persist_lock:
             with self._lock:
-                payload = _canonical(dict(self._state))
+                payload = _canonical(dict(self._state if new_state is None else new_state))
             await asyncio.to_thread(_atomic_write, self._state_path, payload)
+            if new_state is not None:
+                with self._lock:
+                    self._state = new_state
 
     def _transition(self, claims: dict[str, Any], token: str, token_type: str) -> None:
         old = self._state
@@ -566,8 +569,10 @@ class LicenseManager:
             )
             if canonical != existing and not derived_expiry:
                 raise ValueError("equal-version canonical entitlement conflict")
-            if int(old.get("revocation_floor", 0)) >= ver and not (
-                claims["restored"] and claims["status"] == "active"
+            if (
+                claims["status"] == "active"
+                and int(old.get("revocation_floor", 0)) >= ver
+                and not claims["restored"]
             ):
                 raise ValueError("same-version credential cannot override revocation")
         if (
@@ -647,13 +652,17 @@ class LicenseManager:
                 if claims is None:
                     raise ValueError("invalid offline token")
                 with self._lock:
+                    previous_state = self._state
                     self._transition(claims, token, "offline")
                     self._state["trusted_time"] = max(
                         int(self._state.get("trusted_time", 0)), now, claims["issued_at"]
                     )
                     self._time_anchor = self._state["trusted_time"]
                     self._mono_anchor = time.monotonic()
-                await self._persist()
+                    pending_state = self._state if claims["status"] == "active" else None
+                    if pending_state is not None:
+                        self._state = previous_state
+                await self._persist(pending_state)
                 self._load_error = None
                 await self._notify_if_changed()
                 return self.snapshot()
@@ -770,33 +779,43 @@ class LicenseManager:
                 if calibrating and claims["issued_at"] < int(self._state.get("last_sync_at") or 0):
                     raise ValueError("license center signed time predates the last synchronization")
                 with self._lock:
+                    previous_state = self._state
                     self._transition(claims, token, "online")
                     self._state["last_sync_at"] = claims["issued_at"]
                     self._state["sync_error"] = None
                     if calibrating:
                         calibrated_time = claims["issued_at"] + token_rtt
                         self._state["trusted_time"] = calibrated_time
-                        self._time_anchor = calibrated_time
-                        self._observed_highwater = calibrated_time
                     else:
                         self._state["trusted_time"] = max(
                             self._state["trusted_time"], claims["issued_at"]
                         )
+                    mono_anchor = time.monotonic()
+                    pending_state = self._state if claims["status"] == "active" else None
+                    if pending_state is not None:
+                        self._state = previous_state
+                await self._persist(pending_state)
+                with self._lock:
+                    if calibrating:
+                        self._time_anchor = calibrated_time
+                        self._observed_highwater = calibrated_time
+                    else:
                         self._time_anchor = claims["issued_at"]
                         self._observed_highwater = max(
                             self._observed_highwater, claims["issued_at"], int(time.time())
                         )
-                    self._mono_anchor = time.monotonic()
+                    self._mono_anchor = mono_anchor
                     self._time_anomaly = False
-                await self._persist()
                 self._load_error = None
                 await self._notify_if_changed()
                 return self.snapshot()
             except Exception as exc:
                 with self._lock:
                     self._state["sync_error"] = str(exc)[:300]
-                await self._persist()
-                await self._notify_if_changed()
+                try:
+                    await self._persist()
+                finally:
+                    await self._notify_if_changed()
                 raise
 
     async def activate(self, code: str) -> dict[str, Any]:
@@ -821,16 +840,19 @@ class LicenseManager:
                 return
             if previous == after:
                 return
-            if not after and self.managed:
-                with self._lock:
-                    self._state["trusted_time"] = max(
-                        int(self._state.get("trusted_time", 0)), self._trusted_now()
-                    )
-                await self._persist()
-            self._last_allowed = after
-            callback = self._callback
-            if callback is not None:
-                await callback(after)
+            try:
+                if not after and self.managed:
+                    with self._lock:
+                        self._state["trusted_time"] = max(
+                            int(self._state.get("trusted_time", 0)), self._trusted_now()
+                        )
+                    await self._persist()
+            finally:
+                # A failed checkpoint must not keep revoked or expired work running.
+                self._last_allowed = after
+                callback = self._callback
+                if callback is not None:
+                    await callback(after)
 
     async def start(self, on_change: Callable[[bool], Awaitable[None]] | None = None) -> None:
         self._stopping = False
@@ -863,7 +885,10 @@ class LicenseManager:
     async def _deadline_loop(self) -> None:
         while True:
             await asyncio.sleep(1)
-            await self._notify_if_changed()
+            try:
+                await self._notify_if_changed()
+            except OSError:
+                logger.exception("Failed to checkpoint a license lock")
 
     async def _sync_loop(self) -> None:
         while True:
@@ -882,7 +907,10 @@ class LicenseManager:
                     self._state["trusted_time"] = max(
                         int(self._state.get("trusted_time", 0)), self._trusted_now()
                     )
-                await self._persist()
+                try:
+                    await self._persist()
+                except OSError:
+                    logger.exception("Failed to checkpoint trusted license time")
 
     async def claim_reminder(self, user_id: int, time_zone: str) -> dict[str, Any]:
         with self._lock:
@@ -920,14 +948,16 @@ class LicenseManager:
             return True, today
 
 
-def _unmanaged() -> LicenseManager:
-    """Create the import-time no-op accessor without environment or filesystem access."""
+def _initial_manager(*, configuration_error: bool = False) -> LicenseManager:
+    """Build an explicit unmanaged or configuration-error accessor without file I/O."""
     manager = LicenseManager.__new__(LicenseManager)
     manager.state_dir = Path()
     manager.trusted_keys_file = None
     manager.center_url = None
     manager.allow_loopback = False
-    manager._managed = False
+    manager.ca_file = None
+    manager._ssl_context = None
+    manager._managed = configuration_error
     manager._state_path = Path()
     manager._reminder_path = Path()
     manager._lock = threading.RLock()
@@ -949,7 +979,9 @@ def _unmanaged() -> LicenseManager:
         "last_sync_at": None,
         "sync_error": None,
     }
-    manager._load_error = None
+    manager._load_error = (
+        "configured licensing settings are invalid" if configuration_error else None
+    )
     manager._configured_keys = {}
     manager._private_key = None
     manager._identity = ""
@@ -959,12 +991,13 @@ def _unmanaged() -> LicenseManager:
     manager._time_anchor = int(time.time())
     manager._observed_highwater = manager._time_anchor
     manager._time_anomaly = False
-    manager._last_allowed = True
+    manager._last_allowed = not configuration_error
     manager._stopping = False
     return manager
 
 
-_DEFAULT = _unmanaged()
+_DEFAULT = _initial_manager()
+_CONFIGURATION_ERROR = _initial_manager(configuration_error=True)
 _CURRENT = _DEFAULT
 _CURRENT_LOCK = threading.Lock()
 
@@ -976,6 +1009,11 @@ def current_license() -> LicenseManager:
 def install_unmanaged_license_manager() -> None:
     """Restore the process-wide no-op manager after trust settings are cleared."""
     install_license_manager(_DEFAULT)
+
+
+def install_license_configuration_error() -> None:
+    """Keep domain-level entry points locked when configured trust cannot be loaded."""
+    install_license_manager(_CONFIGURATION_ERROR)
 
 
 def install_license_manager(manager: LicenseManager) -> None:

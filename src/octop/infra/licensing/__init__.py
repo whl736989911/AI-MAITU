@@ -3,6 +3,7 @@
 from .service import (
     LicenseManager,
     current_license,
+    install_license_configuration_error,
     install_license_manager,
     install_unmanaged_license_manager,
 )
@@ -16,6 +17,7 @@ __all__ = [
     "LicenseManager",
     "LicenseSettings",
     "current_license",
+    "install_license_configuration_error",
     "install_license_manager",
     "install_unmanaged_license_manager",
     "load_license_settings",
