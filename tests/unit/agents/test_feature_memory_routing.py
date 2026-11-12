@@ -274,6 +274,55 @@ def test_active_turn_captures_and_extracts_private_only(
     assert runtime.services[SHARED_NS].extracted == []
 
 
+@pytest.mark.parametrize("recall_enabled", [False, True])
+def test_feature_capture_switch_keeps_conversations_out_of_memory(
+    monkeypatch: pytest.MonkeyPatch, recall_enabled: bool
+) -> None:
+    _sync_daemon(monkeypatch)
+    runtime = FakeRuntime(SHARED_NS, USER_42_NS)
+    middleware = FeatureMemoryMiddleware(
+        agent_id=AGENT,
+        runtime=runtime,
+        capture_enabled=False,
+        recall_inject_enabled=recall_enabled,
+        idle_extract_seconds=0,
+    )
+    with stamped(ACTIVE_42, thread_id="t1", session_id="s1", user="42"):
+        update = middleware.before_model(_prompt_state(), None)
+        middleware.after_model(_turn_state(), None)
+    assert (update is not None) is recall_enabled
+    middleware.end_session("s1", background=False)
+    for service in runtime.services.values():
+        assert service.captured == []
+        assert service.extracted == []
+
+
+def test_feature_recall_switch_preserves_new_turn_capture_without_old_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _sync_daemon(monkeypatch)
+    runtime = FakeRuntime(SHARED_NS, USER_42_NS)
+    middleware = FeatureMemoryMiddleware(
+        agent_id=AGENT,
+        runtime=runtime,
+        recall_inject_enabled=False,
+        idle_extract_seconds=0,
+    )
+    messages = [
+        HumanMessage("old question"),
+        AIMessage("old answer"),
+        HumanMessage("remember metric units"),
+    ]
+    with stamped(ACTIVE_42, thread_id="t1", session_id="s1", user="42"):
+        assert middleware.before_model({"messages": messages}, None) is None
+        middleware.after_model({"messages": [*messages, AIMessage("noted")]}, None)
+    assert runtime.services[SHARED_NS].captured == []
+    captured = runtime.services[USER_42_NS].captured
+    assert len(captured) == 1
+    assert captured[0]["user"] == "remember metric units"
+    assert captured[0]["assistant"] == "noted"
+
+
 @pytest.mark.parametrize(
     "context",
     [

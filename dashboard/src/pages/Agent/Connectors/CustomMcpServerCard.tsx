@@ -1,16 +1,18 @@
 import type { CSSProperties } from "react";
-import { Alert, App, Button, Input, Select, Switch } from "antd";
+import { Alert, App, Button, Input, Select, Switch, Typography } from "antd";
 import {
   Activity,
   Cable,
   CheckCircle2,
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Trash2,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
 import type { CustomMcpTransport } from "../../../api/modules/connectors";
+import { publicUrl } from "../../../utils/publicUrl";
 import {
   accentForServerName,
   friendlyServerLabel,
@@ -23,6 +25,7 @@ interface CustomMcpServerCardProps {
   probing: boolean;
   authorizing?: boolean;
   oauthAvailable?: boolean;
+  oauthClientRequired?: boolean;
   probeTools?: { name: string; description: string }[];
   transportOptions: { value: string; label: string }[];
   onUpdate: (key: string, patch: Partial<ServerCardState>) => void;
@@ -39,7 +42,8 @@ export function CustomMcpServerCard({
   probing,
   authorizing = false,
   oauthAvailable = false,
-  probeTools,
+  oauthClientRequired = false,
+  probeTools = [],
   transportOptions,
   onUpdate,
   onToggleEnabled,
@@ -83,14 +87,20 @@ export function CustomMcpServerCard({
     });
   };
 
-  const authPending = isHttp && oauthAvailable && !card.oauthConfigured;
-  const effectiveEnabled = !authPending && card.enabled;
-  const showOAuthConnectLink =
-    isHttp && card.collapsed && authPending && onAuthorize;
+  const clientPending =
+    isHttp && oauthClientRequired && !oauthAvailable && !card.oauthConfigured;
+  const authPending =
+    isHttp && (oauthAvailable || clientPending) && !card.oauthConfigured;
+  const effectiveEnabled = card.enabled && !authPending;
+  const showOAuthConnectLink = authPending;
+  const oauthCallbackUrl = new URL(
+    publicUrl("api/connectors/oauth/callback"),
+    window.location.href,
+  ).href;
   const connectLabel = t("connectors.clickToConnect", "点击连接");
 
   const handleConnectClick = () => {
-    if (oauthAvailable && onAuthorize) {
+    if ((oauthAvailable || oauthClientRequired) && onAuthorize) {
       onAuthorize();
     }
   };
@@ -264,6 +274,116 @@ export function CustomMcpServerCard({
                   autoSize={{ minRows: 2, maxRows: 6 }}
                   placeholder={"Authorization: Bearer sk-..."}
                 />
+              </div>
+              <div className={styles.customMcpField}>
+                <button
+                  type="button"
+                  className={styles.customMcpSectionToggle}
+                  aria-expanded={card.oauthClientOpen}
+                  onClick={() =>
+                    onUpdate(card.key, {
+                      oauthClientOpen: !card.oauthClientOpen,
+                    })
+                  }
+                >
+                  {card.oauthClientOpen ? (
+                    <ChevronDown size={14} />
+                  ) : (
+                    <ChevronRight size={14} />
+                  )}
+                  {t(
+                    "connectors.customMcp.oauthClientTitle",
+                    "OAuth 应用凭证（可选）",
+                  )}
+                </button>
+                {card.oauthClientOpen ? (
+                  <div className={styles.customMcpSection}>
+                    <div className={styles.customMcpFieldHint}>
+                      {t(
+                        "connectors.customMcp.oauthClientHint",
+                        "自动注册不可用时填写预注册 OAuth 应用。登记以下回调地址：",
+                      )}{" "}
+                      <Typography.Text code copyable>
+                        {oauthCallbackUrl}
+                      </Typography.Text>
+                    </div>
+                    <label>Client ID</label>
+                    <Input
+                      value={card.oauthClientId}
+                      autoComplete="off"
+                      onChange={(e) =>
+                        onUpdate(card.key, { oauthClientId: e.target.value })
+                      }
+                    />
+                    <label>Client Secret</label>
+                    <Input.Password
+                      value={card.oauthClientSecret}
+                      autoComplete="new-password"
+                      placeholder={
+                        card.oauthClientSecretSaved
+                          ? t(
+                              "connectors.customMcp.oauthClientSecretSaved",
+                              "已保存，留空则保留",
+                            )
+                          : t(
+                              "connectors.customMcp.oauthClientSecretPlaceholder",
+                              "公开客户端可留空",
+                            )
+                      }
+                      onChange={(e) =>
+                        onUpdate(card.key, {
+                          oauthClientSecret: e.target.value,
+                        })
+                      }
+                    />
+                    <label>
+                      {t("connectors.customMcp.oauthScope", "Scope")}
+                    </label>
+                    <Input
+                      value={card.oauthScope}
+                      placeholder={t(
+                        "connectors.customMcp.oauthScopePlaceholder",
+                        "留空则使用服务器声明的范围，多个用空格分隔",
+                      )}
+                      onChange={(e) =>
+                        onUpdate(card.key, { oauthScope: e.target.value })
+                      }
+                    />
+                    <label>
+                      {t(
+                        "connectors.customMcp.oauthAuthorizationEndpoint",
+                        "授权端点",
+                      )}
+                    </label>
+                    <Input
+                      value={card.oauthAuthorizationEndpoint}
+                      placeholder="https://auth.example.com/authorize"
+                      onChange={(e) =>
+                        onUpdate(card.key, {
+                          oauthAuthorizationEndpoint: e.target.value,
+                        })
+                      }
+                    />
+                    <label>
+                      {t("connectors.customMcp.oauthTokenEndpoint", "令牌端点")}
+                    </label>
+                    <Input
+                      value={card.oauthTokenEndpoint}
+                      placeholder="https://auth.example.com/token"
+                      onChange={(e) =>
+                        onUpdate(card.key, {
+                          oauthTokenEndpoint: e.target.value,
+                        })
+                      }
+                    />
+                    <div className={styles.customMcpFieldHint}>
+                      {t(
+                        "connectors.customMcp.oauthEndpointsHint",
+                        "两个端点都留空时自动发现；没有发现信息时再填写。",
+                      )}
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </>
           ) : (
@@ -466,6 +586,32 @@ export function CustomMcpServerCard({
                 </ul>
               ) : null}
             </div>
+          ) : null}
+          {clientPending ? (
+            <Alert
+              type="warning"
+              showIcon
+              message={t(
+                "connectors.customMcp.probeNeedsOAuthClient",
+                "此 MCP 的授权服务器不支持自动注册客户端",
+              )}
+              description={t(
+                "connectors.customMcp.oauthClientRequiredHint",
+                "填写 Client ID 后点击保存并授权。",
+              )}
+              action={
+                onAuthorize ? (
+                  <Button
+                    size="small"
+                    disabled={!card.oauthClientId.trim()}
+                    loading={authorizing}
+                    onClick={onAuthorize}
+                  >
+                    {t("connectors.customMcp.saveAndAuthorize", "保存并授权")}
+                  </Button>
+                ) : undefined
+              }
+            />
           ) : null}
         </div>
       ) : null}

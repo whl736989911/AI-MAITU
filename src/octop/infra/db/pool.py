@@ -108,13 +108,17 @@ def _compat_row_factory(cursor: Any) -> Any:
 
 
 class _PgConnectionProxy:
-    """Expose sqlite-like ``execute`` / ``executescript`` on a psycopg connection."""
+    """Expose sqlite-like ``execute`` / ``executemany`` / ``executescript`` on a psycopg connection."""
 
     def __init__(self, conn: Any) -> None:
         self._conn = conn
 
     def execute(self, sql: str, params: Any = None) -> Any:
         return self._conn.execute(qmark_to_pyformat(sql), params)
+
+    def executemany(self, sql: str, seq_of_params: Any) -> None:
+        with self._conn.cursor() as cursor:
+            cursor.executemany(qmark_to_pyformat(sql), seq_of_params)
 
     def executescript(self, sql: str) -> None:
         # Used only if something still calls it; prefer migrate splitter.

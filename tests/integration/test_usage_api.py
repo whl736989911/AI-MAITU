@@ -872,3 +872,76 @@ def test_extract_usage_returns_none_when_absent() -> None:
     assert _extract_usage_from_chunk({"type": "token", "content": "hi"}) is None
     assert _extract_usage_from_chunk({"type": "state_snapshot", "data": {}}) is None
     assert _extract_usage_from_chunk(None) is None  # type: ignore[arg-type]
+
+
+async def test_by_user_groups_stable_ids_disambiguates_names_and_preserves_scope(
+    env: Any,
+) -> None:
+    from tests.support.auth import create_user, resolve_user_id
+
+    c, srv, admin_auth, alice_auth, ctx = env
+    bob_auth = await create_user(c, admin_auth, username="usage_same_name")
+    bob_id = await resolve_user_id(c, admin_auth, "usage_same_name")
+    alice_id = ctx["alice_id"]
+    srv.services.user_repo.set_display_name(alice_id, "同名用户")
+    srv.services.user_repo.set_display_name(bob_id, "同名用户")
+    srv.services.usage_repo.record(agent_id="x", user_id=alice_id, input_tokens=10, output_tokens=2)
+    srv.services.usage_repo.record(agent_id="y", user_id=alice_id, input_tokens=3, output_tokens=1)
+    srv.services.usage_repo.record(agent_id="x", user_id=bob_id, input_tokens=30, output_tokens=4)
+
+    response = await c.get(
+        "/api/admin/usage/summary?granularity=by_user&window=all",
+        headers=admin_auth,
+    )
+    assert response.status_code == 200
+    buckets = {bucket["key"]: bucket for bucket in response.json()["buckets"]}
+    assert buckets[str(alice_id)]["total_tokens"] == 16
+    assert buckets[str(bob_id)]["total_tokens"] == 34
+    assert buckets[str(alice_id)]["label"] == "同名用户 (alice)"
+    assert buckets[str(bob_id)]["label"] == "同名用户 (usage_same_name)"
+
+    own = await c.get(
+        "/api/usage/summary?granularity=by_user&window=all",
+        headers=alice_auth,
+    )
+    assert own.status_code == 200
+    assert [bucket["key"] for bucket in own.json()["buckets"]] == [str(alice_id)]
+    assert own.json()["buckets"][0]["label"] == "同名用户 (alice)"
+
+    forbidden = await c.get(
+        "/api/admin/usage/summary?granularity=by_user&window=all",
+        headers=bob_auth,
+    )
+    assert forbidden.status_code == 403
+
+
+async def test_by_user_bucket_uses_server_timezone_window(env: Any) -> None:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    _c, srv, _admin_auth, _alice_auth, ctx = env
+    repo = srv.services.usage_repo
+    timezone = ZoneInfo("Asia/Shanghai")
+    local_day = "2026-09-07"
+    repo.record(
+        agent_id="x",
+        user_id=ctx["alice_id"],
+        input_tokens=10,
+        output_tokens=1,
+        ts=int(datetime(2026, 9, 7, 0, 30, tzinfo=timezone).timestamp()),
+    )
+    repo.record(
+        agent_id="x",
+        user_id=ctx["alice_id"],
+        input_tokens=20,
+        output_tokens=2,
+        ts=int(datetime(2026, 9, 8, 0, 0, tzinfo=timezone).timestamp()),
+    )
+    result = repo.summary(
+        window=f"day:{local_day}",
+        granularity="by_user",
+        timezone="Asia/Shanghai",
+    )
+    assert len(result["buckets"]) == 1
+    assert result["buckets"][0]["key"] == str(ctx["alice_id"])
+    assert result["buckets"][0]["total_tokens"] == 11

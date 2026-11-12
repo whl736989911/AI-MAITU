@@ -12,9 +12,17 @@ import {
   invalidateHistory,
 } from "../pages/Chat/hooks/chatStore";
 import {
+  claimSystemPush,
   parseDashboardPushFrame,
+  pushDedupeKey,
+  readSystemNotifyPermission,
+  shouldShowSystemPush,
+  systemNotificationTag,
   truncatePushText,
+  type DashboardPushEvent,
 } from "../utils/dashboardPushToast";
+import { peekSystemNotifyRegistration } from "../sw-register";
+import { publicUrl } from "../utils/publicUrl";
 import styles from "./useDashboardPushToast.module.less";
 
 const PING_INTERVAL_MS = 25_000;
@@ -56,9 +64,82 @@ export function useDashboardPushToast(): void {
   refreshRef.current = refresh;
 
   useEffect(() => {
+    const tabId = Math.random().toString(36).slice(2);
     let ws: WebSocket | null = null;
+
+    const onNotifyOpen = (event: MessageEvent) => {
+      const data = event.data as { type?: string; path?: string } | null;
+      if (data?.type !== "octop-notify-open" || !data.path?.startsWith("/"))
+        return;
+      window.focus();
+      navigateRef.current(data.path);
+    };
+    navigator.serviceWorker?.addEventListener("message", onNotifyOpen);
     let closed = false;
     let retry = 0;
+    const storage = (): Storage | null => {
+      try {
+        const value = window.localStorage;
+        value.setItem("octop:push-probe", "1");
+        value.removeItem("octop:push-probe");
+        return value;
+      } catch {
+        return null;
+      }
+    };
+
+    const showSystemNotification = (
+      parsed: DashboardPushEvent,
+      title: string,
+    ) => {
+      const path = `/chat/${parsed.agent_id}/${parsed.thread_id}`;
+      const options: NotificationOptions & { renotify?: boolean } = {
+        body: truncatePushText(parsed.text),
+        tag: systemNotificationTag(parsed.thread_id),
+        icon: new URL(publicUrl("brand/pwa-192.png"), window.location.href)
+          .href,
+        renotify: true,
+        data: { path },
+      };
+      const registration = peekSystemNotifyRegistration();
+      if (registration) {
+        void registration.showNotification(title, options).catch(() => {
+          if (typeof Notification !== "undefined") {
+            const notice = new Notification(title, options);
+            notice.onclick = () => {
+              window.focus();
+              notice.close();
+              navigateRef.current(path);
+            };
+          }
+        });
+        return;
+      }
+      if ("serviceWorker" in navigator) {
+        void navigator.serviceWorker.ready
+          .then((ready) => ready.showNotification(title, options))
+          .catch(() => {
+            if (typeof Notification !== "undefined") {
+              const notice = new Notification(title, options);
+              notice.onclick = () => {
+                window.focus();
+                notice.close();
+                navigateRef.current(path);
+              };
+            }
+          });
+        return;
+      }
+      if (typeof Notification !== "undefined") {
+        const notice = new Notification(title, options);
+        notice.onclick = () => {
+          window.focus();
+          notice.close();
+          navigateRef.current(path);
+        };
+      }
+    };
+
     let reconnectTimer: number | null = null;
 
     const clearReconnect = () => {
@@ -164,6 +245,20 @@ export function useDashboardPushToast(): void {
             navigateRef.current(`/chat/${parsed.agent_id}/${parsed.thread_id}`);
           },
         });
+        const permission = readSystemNotifyPermission(
+          window.isSecureContext,
+          typeof Notification === "undefined" ? undefined : Notification,
+        );
+        const pushKey = pushDedupeKey(parsed);
+        if (
+          shouldShowSystemPush(
+            permission,
+            document.visibilityState === "visible",
+          ) &&
+          claimSystemPush(storage(), pushKey, tabId)
+        ) {
+          showSystemNotification(parsed, title);
+        }
       };
       socket.onclose = () => {
         if (ws !== socket) return;
@@ -185,6 +280,7 @@ export function useDashboardPushToast(): void {
 
     return () => {
       closed = true;
+      navigator.serviceWorker?.removeEventListener("message", onNotifyOpen);
       clearReconnect();
       window.clearInterval(pingTimer);
       if (ws) {

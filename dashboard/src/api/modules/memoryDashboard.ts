@@ -92,6 +92,8 @@ export type ExtractTriggerMode = "idle" | "interval";
 export interface ExtractConfig {
   /** Missing on older Octop API processes; absence keeps the historical enabled default. */
   memory_enabled?: boolean;
+  memory_capture_enabled: boolean;
+  memory_recall_inject_enabled: boolean;
   extract_on_session_end: boolean;
   extract_trigger_mode: ExtractTriggerMode;
   extract_idle_seconds: number;

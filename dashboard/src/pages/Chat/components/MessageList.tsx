@@ -180,6 +180,7 @@ function renderMessageGroup(
             messages={[msg]}
             agentId={ctx.agentId}
             isTurnInProgress={isTurnInProgress}
+            afterLatestUser={groupIndex > ctx.lastUserGroupIndex}
             onRegenerate={ctx.onRegenerate}
             onEditUserMessage={ctx.onEditUserMessage}
             onForkAssistantMessage={ctx.onForkAssistantMessage}
@@ -235,6 +236,7 @@ function renderMessageGroup(
         messages={group.messages}
         agentId={ctx.agentId}
         isTurnInProgress={isTurnInProgress}
+        afterLatestUser={groupIndex > ctx.lastUserGroupIndex}
         onRegenerate={ctx.onRegenerate}
         onEditUserMessage={ctx.onEditUserMessage}
         onForkAssistantMessage={ctx.onForkAssistantMessage}

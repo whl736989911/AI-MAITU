@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from octop.infra.knowledge import embed
 
 
@@ -26,7 +28,7 @@ def test_remote_embedding_routes_to_provider_embeddings_endpoint(monkeypatch) ->
             return None
 
         def json(self):
-            return {"data": [{"embedding": [1.0, 2.0]}]}
+            return {"data": [{"index": 0, "embedding": [1.0, 2.0]}]}
 
     class Client:
         def __enter__(self):
@@ -72,7 +74,7 @@ def test_remote_embedding_merges_provider_extra_headers(monkeypatch) -> None:
             return None
 
         def json(self):
-            return {"data": [{"embedding": [0.5]}]}
+            return {"data": [{"index": 0, "embedding": [0.5]}]}
 
     class Client:
         def __enter__(self):
@@ -111,7 +113,10 @@ def test_remote_embedding_batches_large_input(monkeypatch) -> None:
     class Response:
         def __init__(self, batch: list[str]) -> None:
             # One embedding per input, tagged with the input's global position.
-            self._data = [{"embedding": [float(t.split("-")[1])]} for t in batch]
+            self._data = [
+                {"index": index, "embedding": [float(t.split("-")[1])]}
+                for index, t in enumerate(batch)
+            ][::-1]
 
         def raise_for_status(self):
             return None
@@ -143,3 +148,30 @@ def test_remote_embedding_batches_large_input(monkeypatch) -> None:
     # Merged vectors stay aligned with input order.
     assert len(result) == 45
     assert result == [[float(i)] for i in range(45)]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        [{"index": 0, "embedding": [1.0]}],
+        [
+            {"index": 0, "embedding": [1.0]},
+            {"index": 0, "embedding": [2.0]},
+        ],
+        [
+            {"index": 0, "embedding": [1.0]},
+            {"index": 2, "embedding": [2.0]},
+        ],
+    ],
+    ids=["missing", "duplicate", "out-of-range"],
+)
+def test_remote_embedding_rejects_missing_duplicate_and_invalid_indices(data) -> None:
+    class Client:
+        def post(self, *_args, **_kwargs):
+            return SimpleNamespace(
+                raise_for_status=lambda: None,
+                json=lambda: {"data": data},
+            )
+
+    with pytest.raises(RuntimeError):
+        embed._embed_remote_batched(Client(), "https://example.test/v1", {}, "embed-1", ["a", "b"])

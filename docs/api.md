@@ -236,6 +236,12 @@ capability, independently of `enabled`. Filesystem-only backends do not provide
 execution; a composite must have an executable default backend. Ask/Plan policy,
 agent running state, and sandbox startup failures remain separate runtime limits.
 
+Expert and feature agents share the common configuration, editor and memory controls.
+Agent responses retain `mcp_servers` in the stored owner's namespace for editing;
+`composer_mcp_servers` contains caller-visible names for per-turn tool selection.
+Shared custom MCP names include the parent instance ID to avoid collisions.
+Do not persist composer aliases back into the owner's configuration.
+
 ## Skills and skill packages
 
 Skill copy operations create snapshots; they do not keep the source and
@@ -746,6 +752,7 @@ handover moves shared-record editing to the new responsible user.
 | `GET`    | `/agents/{aid}/heartbeat-config` | owner | read heartbeat YAML |
 | `PUT`    | `/agents/{aid}/heartbeat-config` | owner | write heartbeat YAML |
 | `GET`    | `/agents/{aid}/memory/access` | memory + agent access | `{stage, default_scope, shared_writable, private_writable, configuration_writable}` for the current caller |
+| `GET`/`PUT` | `/agents/{aid}/memory/extract-config` | owner; feature `configuration_writable` required for writes | extraction settings plus `memory_enabled`, `memory_capture_enabled`, `memory_recall_inject_enabled` |
 | `GET`    | `/agents/{aid}/memory/daily` | owner, or active-feature caller | list shared daily memory files |
 | `GET`    | `/agents/{aid}/memory/daily/{filename}` | owner, or active-feature caller | read one shared daily memory |
 | `DELETE` | `/agents/{aid}/memory/daily/{filename}` | owner, draft only for features | delete one daily memory |
@@ -777,6 +784,14 @@ is read-only to everyone. Each authenticated caller has a separate writable priv
 memory; automatic capture and extraction deposit only there, never into shared
 memory. Shared-feature callers can edit their private memory and overlay from
 Personalization without permission to manage the feature itself.
+
+The memory master switch and the independent capture/recall-injection switches
+apply to both experts and features. Disabling capture stops automatic writes;
+disabling recall injection stops automatic context injection. The master switch
+disables the feature memory route as well. These switches do not delete stored
+memory or grant permission to edit published shared memory. Feature configuration
+writes retain the existing draft-author policy and require
+`configuration_writable`; publication does not make configuration caller-writable.
 
 Manual documents are limited to 65536 UTF-8 bytes. They are snapshotted on a
 thread's first use and remain stable for that conversation; new threads read
@@ -842,6 +857,7 @@ Zed setup example.
 | `GET` | `/knowledge-bases/{kb}/metadata-schema` | reader | field definitions for this base (`{fields: [...]}`); values follow document ACLs |
 | `PUT` | `/knowledge-bases/{kb}/metadata-schema` | owner/admin | replace field definitions; existing document values are kept |
 | `PATCH` | `/knowledge-bases/{kb}/documents/{doc}/metadata` | writer | merge typed field values; `null`/empty clears a value |
+| `POST` | `/knowledge-bases/{kb}/documents/{doc}/move` | writer | `{target_folder: string}`; empty string selects the root |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/facts` | reader | located facts extracted from this document (dimension annotations, clause numbers, …) |
 | `GET` | `/knowledge-bases/{kb}/facts?q=…` | reader | search located facts across readable documents; optional `fact_type`, `limit` ≤ 200 |
 | `POST` | `/knowledge-bases/{kb}/documents/{doc}/enrich` | writer | bounded preview + metadata schema sent to the active chat model; returns a `pending` suggestion only if the document version is still current after generation |
@@ -858,6 +874,14 @@ Zed setup example.
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/file` | reader | authorized uploaded or connected original; optional `version` requires matching actual SHA-256 and returns 409 if changed; does not require a completed index |
 | `GET` | `/knowledge-bases/{kb}/documents/{doc}/render` | reader | authorized CAD PNG preview; cache keyed by the current original's actual SHA-256, even before the next source scan; 415 for non-CAD/unavailable conversion and 502 on conversion failure; response-owned snapshot survives cache eviction |
 | `GET` | `/knowledge-bases/processors` | user | available built-in processors and optional CAD CLI capability; unavailable formats remain archive-only |
+
+Moving a file or folder validates write access to the source, destination,
+ancestors and every affected descendant. A folder cannot move into itself or a
+descendant. The whole subtree changes path together, preserving document IDs,
+original bytes and indexes while refreshing collection associations.
+Invalid destinations return `KNOWLEDGE_NOT_FOUND` (404); cycles return
+`KNOWLEDGE_MOVE_INVALID` (400); name collisions return
+`KNOWLEDGE_MOVE_NAME_TAKEN` (409).
 
 Facts are produced by pluggable post-parse extractors (measurement annotations,
 clause numbers) and stored with the same page/paragraph locator as the source
@@ -1151,16 +1175,24 @@ for non-`/` paths.
 | `GET`    | `/connectors/oauth/callback` | public | OAuth redirect target |
 | `GET`    | `/connectors/oauth/pending/{state_id}` | user | poll the OAuth result |
 
-Custom MCP OAuth (streamable HTTP, public HTTPS URL only): 麦途 discovers the authorization
-server from the MCP URL (401 / RFC 9728 protected-resource metadata), requires dynamic client
-registration (DCR), stores encrypted tokens in the custom MCP spec, and injects `Authorization:
-Bearer` when loading tools. Loopback MCP URLs do not use remote OAuth discovery.
-Stored custom-server OAuth is preserved only when its URL is unchanged. Changing
-the URL requires fresh authorization for the new server. Header names are merged
-case-insensitively; stored OAuth replaces configured authorization regardless of
-header casing, and an existing Bearer header suppresses redundant discovery.
-Authorization URLs retain endpoint query parameters. Disabled custom servers cannot
-be default-open, whether configured by patch or full replacement.
+Custom MCP OAuth uses streamable HTTP and public HTTPS discovery. A server may
+specify `oauth_client` with `client_id`, optional `client_secret` and `scope`;
+`authorization_endpoint` and `token_endpoint` are optional but must be supplied
+together as public HTTPS URLs. Otherwise endpoints are discovered from the MCP
+URL (401 / RFC 9728 metadata). Dynamic client registration remains available
+when no preregistered client is configured. Loopback MCP URLs do not use remote
+OAuth discovery.
+
+Client secrets and tokens are encrypted and never returned in API responses.
+A blank secret preserves the saved secret only for the same client identity;
+changing server URL or OAuth client configuration invalidates saved authorization.
+Header names are merged case-insensitively; stored OAuth replaces configured
+authorization regardless of casing, and an existing Bearer header suppresses
+redundant discovery. Authorization URLs retain endpoint query parameters.
+Disabled custom servers cannot be default-open, whether configured by patch or
+full replacement. Shared tools resolve the current caller's credentials without
+falling back to the owner's private servers; existing administrator policy stays
+unchanged.
 
 ## Internal MCP (harness agents)
 
@@ -1231,10 +1263,14 @@ return a structured `400 SLASH_BAD_ARGS` without partial updates.
 | Method | Path | Auth | Notes |
 |--------|------|------|-------|
 | `GET`    | `/usage/summary` | user | token usage summary for the current user |
-| `GET`    | `/admin/usage` | admin | global token usage summary |
+| `GET`    | `/admin/usage/summary` | admin | global token usage summary; `granularity=by_user` groups by stable user ID with disambiguated display names |
 | `GET`    | `/admin/overview` | admin | `{user_count, agent_count, ...}` |
 | `GET`    | `/admin/audit-log` | admin | recent audit rows |
 | `GET`    | `/admin/metrics` | admin | `{messages_total, stream_errors_total, cron_runs_total, cron_errors_total, agent_active, ...}` |
+
+User grouping is administrator-only. Deleted-user rows retain an ID-based label;
+duplicate display names remain distinct. Existing `by_expert`, `by_feature`,
+filters and Excel export remain available. Time buckets use the server timezone.
 
 ## Envs
 
@@ -1290,4 +1326,7 @@ dashboard mirrors every code under `apiErrors.*` in
 | `CHECKPOINT_DELETE_FAILED` | 500 | Durable conversation cleanup failed; conversation metadata is retained for retry |
 | `MEMORY_DOCUMENT_CONFLICT` | 409 | Manual memory snapshot changed; reload and review before saving |
 | `HITL_APPROVAL_STALE` | 409 | Approval identity is missing, expired, resolved or invalidated by restore; reload the current approval card |
+| `KNOWLEDGE_NOT_FOUND` | 404 | Document or move destination is missing or not a valid folder |
+| `KNOWLEDGE_MOVE_INVALID` | 400 | A folder cannot move into itself or a descendant |
+| `KNOWLEDGE_MOVE_NAME_TAKEN` | 409 | A document with the same name already exists at the destination |
 | `MODEL_UNAVAILABLE` | 503 | No eligible healthy model, or streaming failed without safe replay |

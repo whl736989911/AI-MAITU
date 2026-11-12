@@ -3,6 +3,7 @@ import { defineConfig, loadEnv, type Plugin } from "vite";
 import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
+import { monacoSameOrigin } from "./vite/monaco";
 
 // serialize-javascript@7 (pulled in by vite-plugin-pwa → @rollup/plugin-terser)
 // expects Web Crypto globals during `vite build`. Node <19 does not define them.
@@ -180,6 +181,7 @@ export default defineConfig(({ mode }) => {
       MOBILE: false,
     },
     plugins: [
+      monacoSameOrigin(__dirname),
       suppressViteDisconnectReload(),
       react(),
       VitePWA({
@@ -202,6 +204,8 @@ export default defineConfig(({ mode }) => {
           "brand/apple-touch-icon.png",
         ],
         workbox: {
+          // Reuse the production worker for notification clicks.
+          importScripts: ["notify-sw.js"],
           // Precache hashed entry + vendor chunks. Do NOT precache index.html:
           // Cache-First on the shell pins a stale HTML that points at deleted
           // hashes after deploy (white screen until a hard refresh).

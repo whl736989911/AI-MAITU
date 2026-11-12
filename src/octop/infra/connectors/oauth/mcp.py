@@ -81,6 +81,29 @@ async def fetch_authorization_metadata(issuer: str) -> dict[str, Any]:
     return await _validate_metadata_endpoints(data, issuer=issuer)
 
 
+async def manual_client_metadata(client: dict[str, Any], *, issuer: str) -> dict[str, Any]:
+    """Build validated OAuth metadata for a pre-registered client."""
+    authorization_endpoint = str(client.get("authorization_endpoint") or "").strip()
+    token_endpoint = str(client.get("token_endpoint") or "").strip()
+    if not authorization_endpoint and not token_endpoint:
+        return await fetch_authorization_metadata(issuer)
+    if not authorization_endpoint or not token_endpoint:
+        raise ValueError("oauth client requires both authorization_endpoint and token_endpoint")
+    validated: dict[str, Any] = {}
+    for field, url in (
+        ("authorization_endpoint", authorization_endpoint),
+        ("token_endpoint", token_endpoint),
+    ):
+        try:
+            validate_https_url(url, field=f"oauth_client.{field}")
+            await validate_https_url_resolved(url, field=f"oauth_client.{field}")
+        except UnsafeOutboundUrl as exc:
+            raise ValueError(str(exc)) from exc
+        validated[field] = url
+    validated["_manual_client_metadata"] = True
+    return validated
+
+
 async def register_dynamic_client(
     metadata: dict[str, Any],
     *,
@@ -159,11 +182,17 @@ async def exchange_authorization_code(
     code_verifier: str,
     resource: str | None = None,
 ) -> dict[str, Any]:
-    token_url = await _ensure_mcp_oauth_url(
-        str(metadata["token_endpoint"]),
-        issuer=issuer,
-        field="token_endpoint",
-    )
+    token_endpoint = str(metadata["token_endpoint"])
+    if metadata.get("_manual_client_metadata"):
+        try:
+            validate_https_url(token_endpoint, field="token_endpoint")
+            await validate_https_url_resolved(token_endpoint, field="token_endpoint")
+        except UnsafeOutboundUrl as exc:
+            raise ValueError(str(exc)) from exc
+    else:
+        token_endpoint = await _ensure_mcp_oauth_url(
+            token_endpoint, issuer=issuer, field="token_endpoint"
+        )
     data = {
         "grant_type": "authorization_code",
         "code": code,
@@ -177,9 +206,12 @@ async def exchange_authorization_code(
         data["resource"] = resource
     r = await safe_request(
         "POST",
-        token_url,
+        token_endpoint,
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
         timeout=30.0,
     )
     try:
@@ -201,11 +233,17 @@ async def refresh_access_token(
     refresh_token: str,
     resource: str | None = None,
 ) -> dict[str, Any]:
-    token_url = await _ensure_mcp_oauth_url(
-        str(metadata["token_endpoint"]),
-        issuer=issuer,
-        field="token_endpoint",
-    )
+    token_endpoint = str(metadata["token_endpoint"])
+    if metadata.get("_manual_client_metadata"):
+        try:
+            validate_https_url(token_endpoint, field="token_endpoint")
+            await validate_https_url_resolved(token_endpoint, field="token_endpoint")
+        except UnsafeOutboundUrl as exc:
+            raise ValueError(str(exc)) from exc
+    else:
+        token_endpoint = await _ensure_mcp_oauth_url(
+            token_endpoint, issuer=issuer, field="token_endpoint"
+        )
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
@@ -217,9 +255,12 @@ async def refresh_access_token(
         data["resource"] = resource
     r = await safe_request(
         "POST",
-        token_url,
+        token_endpoint,
         data=data,
-        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        headers={
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "application/json",
+        },
         timeout=30.0,
     )
     try:

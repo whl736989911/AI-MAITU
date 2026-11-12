@@ -61,6 +61,25 @@ docker run -d \
   maitu:latest
 ```
 
+### Lite 与 full 镜像
+
+默认 `lite` 镜像保留现有浏览器能力和镜像行为。可显式构建 `full`，预装
+`desktop`、`local-embedding` 和 `knowledge-ocr` Python extras：
+
+```bash
+MAITU_IMAGE_VARIANT=full bash docker/docker_build.sh maitu:latest-full
+# 或使用 Compose（默认仍为 lite）：
+MAITU_IMAGE_VARIANT=full docker compose -f docker/docker-compose.yml up -d --build
+```
+
+直接执行 `docker build` 时传入 `--build-arg MAITU_IMAGE_VARIANT=full`；
+仅接受 `lite` 或 `full`。full 只预装依赖，不下载模型权重，也不会自动启用桌面、
+本地向量或 OCR 功能。现有 `/data/.octop` 数据挂载会持久化下载到
+`/data/.octop/embedding_models` 的本地向量模型；请与实例数据一起备份。
+发布镜像会额外提供 `:<version>-full` 和 `:latest-full`；既有版本标签及
+`:latest` 仍为默认 lite 镜像。
+
+
 ### 执行沙箱与浏览器（Linux）
 
 镜像以 UID/GID `1000:1000` 运行，Python 虚拟环境位于 `/usr/local/maitu-venv`，可被执行沙箱只读访问；预装 `python-docx`、PyMuPDF 与 Chromium。Compose 丢弃全部外层 capabilities，使用 `no-new-privileges` 和默认拒绝的 seccomp 策略，不使用 `privileged`、`SYS_ADMIN`、`seccomp=unconfined` 或浏览器 `--no-sandbox`。不要只换镜像而遗漏 Compose 策略。

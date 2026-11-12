@@ -7,28 +7,10 @@
 #
 # 用法（在仓库根目录执行，构建上下文为根目录）:
 #   docker build -f docker/Dockerfile -t maitu:latest .
-#   docker run -d --name maitu -p 8088:8088 -v maitu-data:/data/.octop -e HOME=/data maitu:latest
-#
-# 国内加速（可选，需 BuildKit，docker/docker_build.sh 默认已开启）:
-#   PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple \
-#   PIP_TRUSTED_HOST=mirrors.cloud.tencent.com \
-#   NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/ \
-#   APT_MIRROR=mirrors.cloud.tencent.com \
-#   bash docker/docker_build.sh
-#
-# 或直接传 build-arg:
-#   docker build \
-#     -f docker/Dockerfile \
-#     --build-arg PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple \
-#     --build-arg PIP_TRUSTED_HOST=mirrors.cloud.tencent.com \
-#     --build-arg NPM_REGISTRY=https://mirrors.cloud.tencent.com/npm/ \
-#     --build-arg APT_MIRROR=mirrors.cloud.tencent.com \
-#     --build-arg NODE_MAX_OLD_SPACE_SIZE=1024 \
-#     -t maitu:latest .
-#
-# 或使用 Compose:
+#   docker build -f docker/Dockerfile --build-arg MAITU_IMAGE_VARIANT=full -t maitu:latest-full .
 #   docker compose -f docker/docker-compose.yml up -d
 # =============================================================================
+
 
 # ---------------------------------------------------------------------------
 # 阶段 1 — 前端构建
@@ -107,14 +89,24 @@ COPY --from=ghcr.io/astral-sh/uv:0.7 /uv /uvx /bin/
 
 WORKDIR /app
 
-# 先安装锁定依赖，仅改源码时可复用此层缓存
+# 默认 lite 保持原有镜像依赖；full 仅预装 Python 组件，不下载模型或启用功能。
+ARG MAITU_IMAGE_VARIANT=lite
 COPY pyproject.toml uv.lock README.md LICENSE ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     if [ -n "$PIP_INDEX_URL" ]; then \
         export UV_INDEX_URL="$PIP_INDEX_URL"; \
         if [ -n "$PIP_TRUSTED_HOST" ]; then export UV_INSECURE_HOST="$PIP_TRUSTED_HOST"; fi; \
     fi \
-    && uv sync --frozen --no-install-project --no-dev --extra browser
+    && case "$MAITU_IMAGE_VARIANT" in \
+         lite|full) ;; \
+         *) echo "MAITU_IMAGE_VARIANT must be 'lite' or 'full', got '$MAITU_IMAGE_VARIANT'" >&2; exit 1 ;; \
+       esac \
+    && if [ "$MAITU_IMAGE_VARIANT" = "full" ]; then \
+         uv sync --frozen --no-install-project --no-dev --extra browser --extra desktop --extra local-embedding --extra knowledge-ocr; \
+       else \
+         uv sync --frozen --no-install-project --no-dev --extra browser; \
+       fi
+
 
 ENV PATH="/usr/local/maitu-venv/bin:$PATH" \
     PLAYWRIGHT_BROWSERS_PATH=/opt/maitu-browser \
@@ -135,7 +127,13 @@ RUN --mount=type=cache,target=/root/.cache/uv \
         export UV_INDEX_URL="$PIP_INDEX_URL"; \
         if [ -n "$PIP_TRUSTED_HOST" ]; then export UV_INSECURE_HOST="$PIP_TRUSTED_HOST"; fi; \
     fi \
-    && uv sync --frozen --no-dev --extra browser \
+    && if [ "$MAITU_IMAGE_VARIANT" = "full" ]; then \
+         apt-get update && apt-get install -y --no-install-recommends libgl1 libglib2.0-0 \
+         && uv sync --frozen --no-dev --extra browser --extra desktop --extra local-embedding --extra knowledge-ocr \
+         && python -c "import cv2, fastembed, huggingface_hub, mss, onnxruntime, pymupdf, rapidocr; import importlib.util; assert importlib.util.find_spec('pynput')"; \
+       else \
+         uv sync --frozen --no-dev --extra browser; \
+       fi \
     && apt-get update && apt-get install -y --no-install-recommends fonts-noto-cjk \
     && apt-get purge -y --auto-remove build-essential \
     && rm -rf /var/lib/apt/lists/* /tmp/*

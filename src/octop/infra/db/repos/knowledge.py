@@ -1002,59 +1002,54 @@ class KnowledgeRepo:
     def move_document(
         self, kb_id: str, doc_id: str, target_folder: str
     ) -> KnowledgeDocumentRow | None:
-        """Move a file or folder under ``target_folder`` (``""`` is the root).
-
-        A folder carries its descendants: the prefix is rewritten in one
-        statement, the same shape :meth:`rename_document` uses.
-        """
+        """Move a document or folder; descendants retain their relative paths."""
         document = self.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             return None
-        filename = path_basename(document.filename or document.path)
-        new_path = normalize_kb_path(f"{target_folder}/{filename}" if target_folder else filename)
-        ts = now_ts()
-        with self._db.transaction() as conn:
-            if document.is_dir:
-                prefix = f"{document.path}/"
-                conn.execute(
-                    "UPDATE knowledge_documents SET "
-                    "path = ? || substr(path, ?), updated_at = ? "
-                    "WHERE kb_id = ? AND substr(path, 1, ?) = ?",
-                    (new_path, len(document.path) + 1, ts, kb_id, len(prefix), prefix),
-                )
-            conn.execute(
-                "UPDATE knowledge_documents SET path = ?, updated_at = ? WHERE document_id = ?",
-                (new_path, ts, doc_id),
-            )
-        return self.get_document(doc_id)
+        name = path_basename(document.filename or document.path)
+        new_path = normalize_kb_path(f"{target_folder}/{name}" if target_folder else name)
+        return self._relocate_document(document, new_path)
 
     def rename_document(
         self, kb_id: str, doc_id: str, new_name: str
     ) -> KnowledgeDocumentRow | None:
-        """Rename a document (file or folder), rewriting descendant paths for folders."""
+        """Rename a document or folder, carrying descendant paths along."""
         document = self.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             return None
-        parent = path_parent(document.path)
-        new_path = normalize_kb_path(f"{parent}/{new_name}")
+        new_path = normalize_kb_path(f"{path_parent(document.path)}/{new_name}")
+        return self._relocate_document(document, new_path, filename=new_name)
+
+    def _relocate_document(
+        self,
+        document: KnowledgeDocumentRow,
+        new_path: str,
+        *,
+        filename: str | None = None,
+    ) -> KnowledgeDocumentRow | None:
+        """Update the row and, for directories, their complete path subtree."""
         ts = now_ts()
         with self._db.transaction() as conn:
             if document.is_dir:
-                # Rewrite the folder's own prefix once across all descendants.
                 prefix = f"{document.path}/"
                 conn.execute(
                     "UPDATE knowledge_documents SET "
                     "path = ? || substr(path, ?), updated_at = ? "
                     "WHERE kb_id = ? AND substr(path, 1, ?) = ?",
-                    (new_path, len(document.path) + 1, ts, kb_id, len(prefix), prefix),
+                    (new_path, len(document.path) + 1, ts, document.kb_id, len(prefix), prefix),
                 )
             conn.execute(
-                "UPDATE knowledge_documents SET "
-                "filename = ?, path = ?, updated_at = ? "
-                "WHERE document_id = ?",
-                (new_name, new_path, ts, doc_id),
+                "UPDATE knowledge_documents SET filename = ?, path = ?, updated_at = ? "
+                "WHERE document_id = ? AND kb_id = ?",
+                (
+                    filename if filename is not None else document.filename,
+                    new_path,
+                    ts,
+                    document.id,
+                    document.kb_id,
+                ),
             )
-        return self.get_document(doc_id)
+        return self.get_document(document.id)
 
     def resume_pending_documents(self) -> list[KnowledgeDocumentRow]:
         """Return pending work after resetting jobs interrupted while processing."""

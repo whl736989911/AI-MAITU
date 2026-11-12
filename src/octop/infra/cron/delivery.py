@@ -178,6 +178,7 @@ class CronDeliveryService:
         command: CronDeliveryCommand,
         session: SessionRow,
     ) -> dict[str, Any]:
+        row = self._agent_manager.get_row(command.agent_id)
         servers = [name.strip() for name in command.mcp_servers if name.strip()]
         extra_defaults = self._agent_manager.default_mcp_servers(command.agent_id)
         if servers:
@@ -187,6 +188,7 @@ class CronDeliveryService:
                     servers,
                     apply_defaults=False,
                     extra_defaults=extra_defaults,
+                    agent_owner_id=row.user_id if row is not None else None,
                 )
                 or []
             )
@@ -197,6 +199,7 @@ class CronDeliveryService:
                     None,
                     apply_defaults=True,
                     extra_defaults=extra_defaults,
+                    agent_owner_id=row.user_id if row is not None else None,
                 )
                 or []
             )
@@ -209,7 +212,6 @@ class CronDeliveryService:
             if failed:
                 raise RuntimeError(f"mcp load failed: {', '.join(failed)}")
 
-        row = self._agent_manager.get_row(command.agent_id)
         default_model = (row.default_model if row is not None else None) or None
         composer = build_composer_context(
             mcp_servers=servers or None,

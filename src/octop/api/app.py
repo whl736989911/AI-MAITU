@@ -49,6 +49,9 @@ def dashboard_cache_control(full_path: str) -> str | None:
     # Vite emits content-hashed files under assets/ — safe to pin forever.
     if full_path.startswith("assets/"):
         return "public, max-age=31536000, immutable"
+    # Monaco worker/module paths are unhashed; revalidate across editor upgrades.
+    if full_path.startswith("monaco/"):
+        return "no-cache"
     return None
 
 
@@ -61,8 +64,8 @@ def _dashboard_response(path: Path, full_path: str) -> FileResponse:
 
 
 def is_dashboard_asset_path(full_path: str) -> bool:
-    """True for hashed build artifacts that must 404 instead of falling back."""
-    return full_path.startswith("assets/")
+    """True for generated assets that must 404 rather than fall back to SPA."""
+    return full_path.startswith(("assets/", "monaco/"))
 
 
 def _dashboard_fallback(index_file: Path, full_path: str) -> FileResponse:

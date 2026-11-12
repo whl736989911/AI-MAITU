@@ -31,6 +31,7 @@ function mockRegistration(opts: {
     value: {
       register: vi.fn().mockResolvedValue(registration),
       getRegistrations: vi.fn().mockResolvedValue([]),
+      ready: Promise.resolve(registration),
       controller: opts.controller ?? null,
       addEventListener: (
         type: string,

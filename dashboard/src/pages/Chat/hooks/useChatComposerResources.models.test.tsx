@@ -140,6 +140,47 @@ describe("useChatComposerResources model catalog races", () => {
     expect(result.current.selectedModel).toBe("prov/expertB-model");
   });
 
+  it("keeps an account preferred model available but leaves Auto unselected", async () => {
+    vi.mocked(preferencesApi.get).mockResolvedValue({
+      locale: "zh",
+      remote_browser_bookmarks: [],
+      preferred_model: "prov/available",
+      model_reasoning: {},
+    } as never);
+    const { result } = renderHook(() =>
+      useChatComposerResources("expertA", null),
+    );
+    await waitFor(() => expect(result.current.modelsReady).toBe(true));
+    await waitFor(() =>
+      expect(result.current.preferredModel).toBe("prov/available"),
+    );
+    expect(result.current.selectedModel).toBeNull();
+  });
+
+  it("keeps the expert default selected independently of account preference", async () => {
+    agentState.agents = [
+      { agent_id: "expertA", default_model: "prov/expert-default" },
+    ];
+    vi.mocked(providerApi.listResolvedModels).mockResolvedValue([
+      model("expert-default"),
+      model("available"),
+    ]);
+    vi.mocked(preferencesApi.get).mockResolvedValue({
+      locale: "zh",
+      remote_browser_bookmarks: [],
+      preferred_model: "prov/available",
+      model_reasoning: {},
+    } as never);
+    const { result } = renderHook(() =>
+      useChatComposerResources("expertA", null),
+    );
+    await waitFor(() => expect(result.current.modelsReady).toBe(true));
+    await waitFor(() =>
+      expect(result.current.selectedModel).toBe("prov/expert-default"),
+    );
+    expect(result.current.preferredModel).toBe("prov/available");
+  });
+
   it("does not apply a local preferred model to a remote expert with Auto", async () => {
     agentState.agents = [{ agent_id: "bridge:cid:peer", default_model: null }];
     vi.mocked(preferencesApi.get).mockResolvedValue({

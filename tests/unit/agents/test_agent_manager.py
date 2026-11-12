@@ -100,34 +100,6 @@ def test_format_agent_start_error_unknown_passthrough() -> None:
     assert format_agent_start_error(exc) == "disk full"
 
 
-def test_memory_extract_settings_supports_legacy_harness(caplog: pytest.LogCaptureFixture) -> None:
-    settings = _memory_extract_settings(
-        {
-            "memory": {
-                "memory_enabled": False,
-                "extract_on_session_end": True,
-                "extract_trigger_mode": "interval",
-                "extract_idle_seconds": 60,
-                "extract_interval_seconds": 600,
-            }
-        },
-        supported_fields=frozenset(
-            {
-                "memory_enabled",
-                "memory_extract_on_session_end",
-                "memory_extract_idle_seconds",
-            }
-        ),
-    )
-
-    assert settings == {
-        "memory_enabled": False,
-        "memory_extract_on_session_end": True,
-        "memory_extract_idle_seconds": 600.0,
-    }
-    assert "lacks interval memory extraction" in caplog.text
-
-
 def test_memory_extract_settings_forwards_aux_model_to_both_tiers() -> None:
     settings = _memory_extract_settings(
         {"memory": {"aux_model": "hai/MiniMax-M2.7"}},

@@ -29,6 +29,7 @@ import {
   Switch,
   Tag,
   Tooltip,
+  TreeSelect,
   Typography,
 } from "antd";
 import type { MenuProps } from "antd";
@@ -128,6 +129,7 @@ import {
   knowledgeBasename,
   knowledgeBreadcrumb,
   knowledgePathParent,
+  normalizeKnowledgePath,
   shouldOpenKnowledgeFolder,
 } from "./knowledgeFolder";
 import { effectiveDocumentLimit } from "./documentLimit";
@@ -230,6 +232,16 @@ function formatKnowledgeOwner(
 }
 
 const FOLDER_ICON_COLOR = "#d97706";
+
+const MOVE_ROOT_VALUE = "\0knowledge-root";
+
+interface MoveDestinationNode {
+  title: string;
+  value: string;
+  key: string;
+  disabled?: boolean;
+  children?: MoveDestinationNode[];
+}
 
 function DocumentFormatIcon({
   filename,
@@ -357,7 +369,9 @@ export default function KnowledgeBasesPage() {
   );
   const [renameName, setRenameName] = useState("");
   const [moveTarget, setMoveTarget] = useState<KnowledgeDocument | null>(null);
-  const [moveFolder, setMoveFolder] = useState("");
+  const [moveFolder, setMoveFolder] = useState<string | null>(null);
+  const [movingDocument, setMovingDocument] = useState(false);
+  const movingDocumentRef = useRef(false);
   const [capability, setCapability] = useState<KnowledgeCapability | null>(
     null,
   );
@@ -810,6 +824,62 @@ export default function KnowledgeBasesPage() {
       ),
     [permissionsOverview],
   );
+
+  const moveTreeData = useMemo<MoveDestinationNode[]>(() => {
+    const sourcePath = normalizeKnowledgePath(
+      moveTarget?.path || moveTarget?.filename || "",
+    );
+    const currentParent = knowledgePathParent(sourcePath);
+    const root: MoveDestinationNode = {
+      title: t("knowledgeBases.rootFolder"),
+      value: MOVE_ROOT_VALUE,
+      key: MOVE_ROOT_VALUE,
+      disabled: !canWriteSelected || currentParent === "",
+      children: [],
+    };
+    if (!moveTarget) return [root];
+
+    const nodes = new Map<string, MoveDestinationNode>();
+    const ensureNode = (path: string): MoveDestinationNode => {
+      const existing = nodes.get(path);
+      if (existing) return existing;
+      const node: MoveDestinationNode = {
+        title: knowledgeBasename(path),
+        value: path,
+        key: `folder:${path}`,
+        disabled: true,
+        children: [],
+      };
+      nodes.set(path, node);
+      const parentPath = knowledgePathParent(path);
+      const parent = parentPath ? ensureNode(parentPath) : root;
+      parent.children?.push(node);
+      return node;
+    };
+
+    for (const document of documents) {
+      if (!document.is_dir) continue;
+      const path = normalizeKnowledgePath(document.path || document.filename);
+      if (!path) continue;
+      const targetPermission = permissionsByDocument.get(document.id);
+      const isCycle =
+        Boolean(moveTarget.is_dir) &&
+        (path === sourcePath || path.startsWith(`${sourcePath}/`));
+      const node = ensureNode(path);
+      node.disabled =
+        isCycle || path === currentParent || !targetPermission?.effective.write;
+    }
+
+    const sortChildren = (node: MoveDestinationNode) => {
+      node.children?.sort((left, right) =>
+        left.title.localeCompare(right.title),
+      );
+      node.children?.forEach(sortChildren);
+    };
+    sortChildren(root);
+    return [root];
+  }, [canWriteSelected, documents, moveTarget, permissionsByDocument, t]);
+
   const usable = Boolean(capability?.usable);
   const limits = capability?.limits ?? DEFAULT_KNOWLEDGE_LIMITS;
   const enterpriseBase = bases.find((base) => base.owner_user_id === null);
@@ -1884,11 +1954,19 @@ export default function KnowledgeBasesPage() {
 
   const openMoveTarget = (document: KnowledgeDocument) => {
     setMoveTarget(document);
-    setMoveFolder(knowledgePathParent(document.path || document.filename));
+    setMoveFolder(null);
   };
 
   const moveDocument = async () => {
-    if (!selected || !moveTarget) return;
+    if (
+      !selected ||
+      !moveTarget ||
+      moveFolder === null ||
+      movingDocumentRef.current
+    )
+      return;
+    movingDocumentRef.current = true;
+    setMovingDocument(true);
     try {
       await knowledgeBasesApi.moveDocument(
         selected.id,
@@ -1902,6 +1980,9 @@ export default function KnowledgeBasesPage() {
       message.error(
         apiErrorMessage(error, t("knowledgeBases.moveDocumentFailed"), t),
       );
+    } finally {
+      movingDocumentRef.current = false;
+      setMovingDocument(false);
     }
   };
 
@@ -4252,10 +4333,20 @@ export default function KnowledgeBasesPage() {
       <Modal
         title={t("knowledgeBases.moveDocument")}
         open={moveTarget !== null}
-        onCancel={() => setMoveTarget(null)}
+        onCancel={() => {
+          if (!movingDocument) setMoveTarget(null);
+        }}
         onOk={() => void moveDocument()}
         okText={t("knowledgeBases.moveHere")}
+        okButtonProps={{
+          disabled: moveFolder === null || movingDocument,
+        }}
+        confirmLoading={movingDocument}
+        cancelButtonProps={{ disabled: movingDocument }}
         cancelText={t("common.cancel")}
+        closable={!movingDocument}
+        maskClosable={!movingDocument}
+        keyboard={!movingDocument}
         destroyOnHidden
       >
         <Space direction="vertical" style={{ width: "100%" }} size={8}>
@@ -4266,27 +4357,32 @@ export default function KnowledgeBasesPage() {
                 : "",
             })}
           </span>
-          <Select
+          <TreeSelect
             style={{ width: "100%" }}
-            value={moveFolder}
-            onChange={setMoveFolder}
-            options={[
-              { value: "", label: t("knowledgeBases.rootFolder") },
-              ...documents
-                .filter(
-                  (row) =>
-                    row.is_dir &&
-                    row.id !== moveTarget?.id &&
-                    !(
-                      moveTarget?.is_dir &&
-                      (row.path ?? "").startsWith((moveTarget.path || "") + "/")
-                    ),
-                )
-                .map((row) => ({
-                  value: row.path ?? "",
-                  label: row.path ?? "",
-                })),
-            ]}
+            value={
+              moveFolder === null
+                ? undefined
+                : moveFolder === ""
+                ? MOVE_ROOT_VALUE
+                : moveFolder
+            }
+            placeholder={t("knowledgeBases.moveHere")}
+            onChange={(value) =>
+              setMoveFolder(
+                value === MOVE_ROOT_VALUE
+                  ? ""
+                  : typeof value === "string"
+                  ? value
+                  : null,
+              )
+            }
+            disabled={movingDocument}
+            treeData={moveTreeData}
+            treeDefaultExpandAll
+            treeLine
+            showSearch
+            treeNodeFilterProp="title"
+            allowClear={false}
           />
         </Space>
       </Modal>

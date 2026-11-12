@@ -4,11 +4,14 @@ import { octopThreadsApi } from "../../../api/modules/octopThreads";
 import * as chatStore from "./chatStore";
 import { useChat } from "./useChat";
 
+import type { OctopThreadHistory } from "../../../api/modules/octopThreads";
 const thread = "versioned-history-test";
+const otherThread = "versioned-history-other-thread";
 
 afterEach(() => {
   vi.restoreAllMocks();
   chatStore.removeSession(thread);
+  chatStore.removeSession(otherThread);
 });
 
 describe("history failures", () => {
@@ -164,5 +167,73 @@ describe("history failures", () => {
     expect(
       chatStore.getSnapshot(thread).messages.map((m) => m.content),
     ).toEqual(["older", "latest"]);
+  });
+
+  it("discards an older thread response after the hook switches threads", async () => {
+    let resolveFirst!: (value: OctopThreadHistory) => void;
+    const first = new Promise<OctopThreadHistory>((resolve) => {
+      resolveFirst = resolve;
+    });
+    vi.spyOn(octopThreadsApi, "history").mockImplementation(
+      (_agentId, targetThreadId) =>
+        targetThreadId === thread
+          ? first
+          : Promise.resolve({
+              thread_id: otherThread,
+              messages: [{ id: "new-thread", role: "user", content: "new" }],
+              has_more: false,
+            }),
+    );
+
+    const { result, rerender } = renderHook(
+      ({ threadId }) => useChat(threadId, "agent"),
+      { initialProps: { threadId: thread } },
+    );
+    let oldLoad!: Promise<void>;
+    await act(async () => {
+      oldLoad = result.current.loadHistory(thread);
+      await Promise.resolve();
+    });
+    rerender({ threadId: otherThread });
+    await act(async () => {
+      await result.current.loadHistory(otherThread);
+    });
+    resolveFirst({
+      thread_id: thread,
+      messages: [{ id: "old-thread", role: "user", content: "old" }],
+      has_more: false,
+    });
+    await act(async () => {
+      await oldLoad;
+    });
+
+    expect(chatStore.getSnapshot(thread).messages).toEqual([]);
+    expect(chatStore.getSnapshot(otherThread).messages[0]?.id).toBe(
+      "new-thread",
+    );
+  });
+
+  it("rejects a history page owned by a different thread", async () => {
+    chatStore.setHistoryPage(
+      thread,
+      [{ id: "keep", role: "user", content: "existing" }],
+      { hasMore: false, nextOffset: 1 },
+    );
+    chatStore.invalidateHistory(thread);
+    vi.spyOn(octopThreadsApi, "history").mockResolvedValue({
+      thread_id: otherThread,
+      messages: [{ id: "foreign", role: "user", content: "wrong thread" }],
+      has_more: false,
+    });
+    const { result } = renderHook(() => useChat(thread, "agent"));
+
+    await act(async () => {
+      await result.current.loadHistory(thread);
+    });
+
+    expect(result.current.historyError).toBe(true);
+    expect(
+      chatStore.getSnapshot(thread).messages.map((message) => message.id),
+    ).toEqual(["keep"]);
   });
 });

@@ -289,12 +289,16 @@ class FeatureMemoryMiddleware(AgentMiddleware[Any, Any]):
         runtime: FeatureMemoryRuntime,
         recall_limit: int = 5,
         idle_extract_seconds: float = 300.0,
+        capture_enabled: bool = True,
+        recall_inject_enabled: bool = True,
     ) -> None:
         super().__init__()
         self._agent_id = agent_id
         self._runtime = runtime
         self._recall_limit = recall_limit
         self._idle_extract_seconds = idle_extract_seconds
+        self._capture_enabled = capture_enabled
+        self._recall_inject_enabled = recall_inject_enabled
         # Per-thread message count at before_model time, mirroring the harness
         # middleware's cursor discipline for after_model capture.
         self._cursors: dict[int, int] = {}
@@ -315,6 +319,8 @@ class FeatureMemoryMiddleware(AgentMiddleware[Any, Any]):
         try:
             messages = _extract_messages(state)
             self._cursors[threading.get_ident()] = len(messages)
+            if not self._recall_inject_enabled:
+                return None
             if (
                 messages
                 and isinstance(messages[-1], HumanMessage)
@@ -402,8 +408,10 @@ class FeatureMemoryMiddleware(AgentMiddleware[Any, Any]):
         the shared corpus.
         """
         try:
-            messages = _extract_messages(state)
             cursor = self._cursors.pop(threading.get_ident(), 0)
+            if not self._capture_enabled:
+                return
+            messages = _extract_messages(state)
             new_messages: list[Any] = list(messages[cursor:]) if cursor <= len(messages) else []
             if not new_messages:
                 return

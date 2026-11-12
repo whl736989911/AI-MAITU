@@ -10,6 +10,7 @@ import {
   turnUsedBrowserTool,
   turnUsedFileTool,
 } from "../utils/messageContent";
+import { isAssistantProcessLive } from "./liveAssistantTurn";
 import { isWriteToolName } from "../constants";
 import { collectChatFilePaths } from "../hooks/useChatFileDetection";
 import { layoutAssistantTurnHitl } from "../utils/layoutAssistantTurnHitl";
@@ -39,9 +40,10 @@ import styles from "../index.module.less";
 interface AssistantTurnViewProps {
   messages: ChatMessage[];
   agentId?: string | null;
-  isStreaming?: boolean;
   /** True while this assistant turn is still being generated (incl. between tool calls). */
   isTurnInProgress?: boolean;
+  /** True when this assistant group follows the latest user message. */
+  afterLatestUser?: boolean;
   onRegenerate?: (messageId: string) => void;
   onEditUserMessage?: (messageId: string, newText: string) => void;
   onForkAssistantMessage?: (messageId: string) => void;
@@ -76,8 +78,8 @@ function hasProcessContent(
 export default function AssistantTurnView({
   messages,
   agentId: agentIdProp,
-  isStreaming = false,
   isTurnInProgress = false,
+  afterLatestUser = false,
   onRegenerate,
   onEditUserMessage,
   onForkAssistantMessage,
@@ -147,9 +149,12 @@ export default function AssistantTurnView({
     [navigate],
   );
 
-  const turnStreaming =
-    isTurnInProgress ||
-    (isStreaming && messages.some((m) => m.status === "streaming"));
+  const turnStreaming = isTurnInProgress;
+  const processLive = isAssistantProcessLive({
+    isTurnInProgress,
+    afterLatestUser,
+    hasAnswerText: trailingSplit.answerMessage !== null,
+  });
   const usedBrowser = turnUsedBrowserTool(fullSplit);
   const showOpenBrowser = usedBrowser && !!onOpenBrowser;
   const usedFileTool = turnUsedFileTool(fullSplit);
@@ -215,7 +220,7 @@ export default function AssistantTurnView({
           const showProcess = !compactProcess && hasProcessContent(split);
           // Freeze process spinner while a pending approval card is open.
           const processStreaming =
-            turnStreaming &&
+            processLive &&
             !hasPendingHitl &&
             idx === segmentProcess.length - 1 &&
             hitlLayout.trailingMessages.length === 0;
@@ -249,7 +254,7 @@ export default function AssistantTurnView({
           <>
             <TurnProcessBlocks
               split={trailingSplit}
-              isStreaming={turnStreaming && !hasPendingHitl}
+              isStreaming={processLive && !hasPendingHitl}
               onAcpPermissionSelect={onAcpPermissionSelect}
               hideToolMedia={hasToolMedia}
               agentId={agentId}

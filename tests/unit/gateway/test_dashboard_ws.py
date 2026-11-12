@@ -623,6 +623,158 @@ async def test_global_processor_iter_turn_chunks_registers_hitl() -> None:
 
 
 @pytest.mark.asyncio
+async def test_processor_routes_ask_answer_only_to_matching_dashboard_thread() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from octop.infra.gateway.hitl.coordinator import HitlChannelCoordinator
+    from octop.infra.gateway.process.processor import GlobalProcessor
+    from octop.infra.gateway.slash.dispatcher import SlashDispatcher
+
+    async def stream(*_args: object, **_kwargs: object):
+        yield {"type": "token", "content": "new thread response"}
+
+    agent_manager = MagicMock()
+    agent_manager.stream = stream
+    agent_manager.resume_hitl = MagicMock()
+    agent_manager.merge_turn_mcp_servers = MagicMock(return_value=None)
+    agent_manager.prepare_chat_mcp = AsyncMock(return_value=[])
+    thread_registry = fake_thread_registry(agent_id="agent-1", user_id=1)
+    thread_registry.get_or_create_by_key = AsyncMock(return_value="thr-new")
+
+    hitl = HitlChannelCoordinator()
+    pending = hitl.store.register(
+        thread_id="thr-quiz",
+        agent_id="agent-1",
+        user_id=1,
+        session_key="dashboard:agent-1:1",
+        channel_type="dashboard",
+        action_requests=[
+            {
+                "name": "ask_user_question",
+                "args": {
+                    "questions": [
+                        {
+                            "header": "Q1",
+                            "question": "1+1=?",
+                            "options": [{"label": "2"}, {"label": "3"}],
+                        }
+                    ]
+                },
+            }
+        ],
+        review_configs=None,
+    )
+    processor = GlobalProcessor(
+        agent_manager=agent_manager,
+        thread_registry=thread_registry,
+        audit_repo=MagicMock(),
+        agent_repo=MagicMock(),
+        user_repo=MagicMock(),
+        connector_repo=MagicMock(),
+        dispatcher=SlashDispatcher(),
+        usage_repo=None,
+        gateway=None,
+        hitl=hitl,
+    )
+    message = InboundMessage(
+        channel_id=WS_CHANNEL_ID,
+        channel_type="dashboard",
+        tenant_id="agent-1",
+        channel_subject=ChannelSubject(subject_id="1"),
+        content=[TextContent(text="new conversation")],
+        metadata={
+            "session_key": "dashboard:agent-1:1",
+            "thread_id": "thr-new",
+        },
+    )
+
+    events = [event async for event in processor(message)]
+
+    assert "new thread response" in [
+        part.text for event in events for part in event.content if isinstance(part, TextContent)
+    ]
+    assert pending.status == "pending"
+    assert pending.thread_id == "thr-quiz"
+
+
+@pytest.mark.asyncio
+async def test_processor_still_answers_ask_on_its_dashboard_thread() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from octop.infra.gateway.hitl.coordinator import HitlChannelCoordinator
+    from octop.infra.gateway.process.processor import GlobalProcessor
+    from octop.infra.gateway.slash.dispatcher import SlashDispatcher
+
+    async def stream(*_args: object, **_kwargs: object):
+        yield {"type": "token", "content": "unexpected new turn"}
+
+    async def resume(*_args: object, **_kwargs: object):
+        yield {"type": "token", "content": "answer resumed"}
+
+    agent_manager = MagicMock()
+    agent_manager.stream = stream
+    agent_manager.resume_hitl = resume
+    agent_manager.merge_turn_mcp_servers = MagicMock(return_value=None)
+    agent_manager.prepare_chat_mcp = AsyncMock(return_value=[])
+    thread_registry = fake_thread_registry(agent_id="agent-1", user_id=1)
+    thread_registry.get_or_create_by_key = AsyncMock(return_value="thr-quiz")
+
+    hitl = HitlChannelCoordinator()
+    pending = hitl.store.register(
+        thread_id="thr-quiz",
+        agent_id="agent-1",
+        user_id=1,
+        session_key="dashboard:agent-1:1",
+        channel_type="dashboard",
+        action_requests=[
+            {
+                "name": "ask_user_question",
+                "args": {
+                    "questions": [
+                        {
+                            "header": "Q1",
+                            "question": "1+1=?",
+                            "options": [{"label": "2"}, {"label": "3"}],
+                        }
+                    ]
+                },
+            }
+        ],
+        review_configs=None,
+    )
+    processor = GlobalProcessor(
+        agent_manager=agent_manager,
+        thread_registry=thread_registry,
+        audit_repo=MagicMock(),
+        agent_repo=MagicMock(),
+        user_repo=MagicMock(),
+        connector_repo=MagicMock(),
+        dispatcher=SlashDispatcher(),
+        usage_repo=None,
+        gateway=None,
+        hitl=hitl,
+    )
+    message = InboundMessage(
+        channel_id=WS_CHANNEL_ID,
+        channel_type="dashboard",
+        tenant_id="agent-1",
+        channel_subject=ChannelSubject(subject_id="1"),
+        content=[TextContent(text="2")],
+        metadata={
+            "session_key": "dashboard:agent-1:1",
+            "thread_id": "thr-quiz",
+        },
+    )
+
+    events = [event async for event in processor(message)]
+
+    assert "answer resumed" in [
+        part.text for event in events for part in event.content if isinstance(part, TextContent)
+    ]
+    assert pending.status != "pending"
+
+
+@pytest.mark.asyncio
 async def test_global_processor_iter_turn_chunks_slash(tmp_path: Path) -> None:
     from unittest.mock import AsyncMock, MagicMock
 

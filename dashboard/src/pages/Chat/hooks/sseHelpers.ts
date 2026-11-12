@@ -75,6 +75,8 @@ export interface ChatMessage {
   errorInfo?: ProcessErrorInfo;
   status?: "streaming" | "done" | "error";
   timestamp: number;
+  /** Optimistic user turn not yet confirmed by canonical history. */
+  localPending?: boolean;
 }
 
 /** Per-session state held in the chat store's module-scoped Map. */
@@ -106,6 +108,8 @@ export interface SessionStreamState {
   historyLoadingMore: boolean;
   /** True after the first history fetch finished (even if empty). */
   historyHydrated: boolean;
+  /** Invalidates history reads started before destructive local changes. */
+  historyEpoch: number;
   /** Server-side messages changed outside this client — refetch on next load. */
   historyStale: boolean;
   listeners: Set<() => void>;

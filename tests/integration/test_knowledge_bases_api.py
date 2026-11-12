@@ -304,3 +304,60 @@ counter.write_text(str(int(counter.read_text()) + 1) if counter.exists() else "1
     assert repeated.content == second.content
     assert converter.with_suffix(".calls").read_text() == "2"
     assert services.knowledge_repo.get_document(document.id).content_hash == stored_hash
+
+
+async def test_move_endpoint_relocates_folder_subtree_and_maps_move_errors(env: Any) -> None:
+    client, server, auth = env
+    services = server.services
+    services.settings_repo.set("knowledge_bases_enabled", "true")
+    actor = await resolve_user_id(client, auth, "admin")
+    knowledge = KnowledgeService(services)
+    base_id = knowledge.enterprise_space().id
+    source = knowledge.create_folder(
+        base_id, actor_user_id=actor, path="move-api-source", is_admin=True
+    )
+    target = knowledge.create_folder(
+        base_id, actor_user_id=actor, path="move-api-target", is_admin=True
+    )
+    nested = knowledge.create_folder(
+        base_id, actor_user_id=actor, path="move-api-source/nested", is_admin=True
+    )
+    file = services.knowledge_repo.create_document(
+        kb_id=base_id,
+        filename="item.txt",
+        path="move-api-source/nested/item.txt",
+        content_type="text/plain",
+        byte_size=13,
+        status="pending",
+    )
+
+    moved = await client.post(
+        f"/api/knowledge-bases/{base_id}/documents/{source.id}/move",
+        headers=auth,
+        json={"target_folder": target.path},
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["path"] == "move-api-target/move-api-source"
+    assert services.knowledge_repo.get_document(nested.id).path == (
+        "move-api-target/move-api-source/nested"
+    )
+    assert services.knowledge_repo.get_document(file.id).path == (
+        "move-api-target/move-api-source/nested/item.txt"
+    )
+
+    cycle = await client.post(
+        f"/api/knowledge-bases/{base_id}/documents/{source.id}/move",
+        headers=auth,
+        json={"target_folder": moved.json()["path"]},
+    )
+    assert cycle.status_code == 400, cycle.text
+    assert cycle.json()["error"]["code"] == "KNOWLEDGE_MOVE_INVALID"
+
+    current_file = services.knowledge_repo.get_document(file.id)
+    invalid = await client.post(
+        f"/api/knowledge-bases/{base_id}/documents/{file.id}/move",
+        headers=auth,
+        json={"target_folder": current_file.path},
+    )
+    assert invalid.status_code == 404, invalid.text
+    assert invalid.json()["error"]["code"] == "KNOWLEDGE_NOT_FOUND"

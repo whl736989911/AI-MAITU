@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import i18n from "../i18n";
 import { probeHealth } from "../api/probeHealth";
 import { updateApi } from "../api/modules/update";
+import { bustServiceWorkerAndReload } from "../utils/reloadOnStaleChunk";
 
 import { message } from "@/utils/antdMessage";
 
@@ -137,10 +138,10 @@ export function useServiceRestart() {
         ) {
           setRestartPhase("success");
           restartInFlightRef.current = false;
-          restartTimerRef.current = setTimeout(
-            () => window.location.reload(),
-            RELOAD_DELAY_MS,
-          );
+          // Remove the previous worker and caches before loading the restarted app.
+          restartTimerRef.current = setTimeout(() => {
+            void bustServiceWorkerAndReload();
+          }, RELOAD_DELAY_MS);
           return;
         }
 

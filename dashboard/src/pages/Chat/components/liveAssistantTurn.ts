@@ -24,3 +24,12 @@ export function isLiveAssistantTurn(opts: {
     groupIndex > lastUserGroupIndex
   );
 }
+
+/** Keep live process state on the selected current assistant group only. */
+export function isAssistantProcessLive(opts: {
+  isTurnInProgress: boolean;
+  afterLatestUser: boolean;
+  hasAnswerText: boolean;
+}): boolean {
+  return opts.isTurnInProgress && opts.afterLatestUser && !opts.hasAnswerText;
+}

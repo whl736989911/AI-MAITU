@@ -7,7 +7,7 @@ import { message } from "@/utils/antdMessage";
 import { request } from "../../../api/request";
 import { withFromWorkspace } from "../../../utils/fromWorkspace";
 
-const MonacoEditor = lazy(() => import("@monaco-editor/react"));
+const MonacoEditor = lazy(() => import("@/components/monaco"));
 
 interface FileEditModalProps {
   open: boolean;
@@ -172,14 +172,14 @@ export default function FileEditModal({
                 minHeight: 240,
               }}
             >
-              <Spin tip="Loading editor…" />
+              <Spin />
             </div>
           }
         >
           <div style={{ flex: 1, minHeight: 0, height: "100%" }}>
             <MonacoEditor
               height="100%"
-              language="markdown"
+              loading={t("common.loading")}
               value={value}
               onChange={(v) => setValue(v ?? "")}
               options={{

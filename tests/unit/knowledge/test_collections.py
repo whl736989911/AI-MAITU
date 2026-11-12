@@ -429,6 +429,24 @@ def test_shared_reader_sees_source_derived_collections_and_rename_resyncs(
     assert [item["id"] for item in required] == [collection["id"]]
 
 
+def test_moving_a_document_refreshes_its_collection_path(setup) -> None:
+    state = setup
+    collection = state.api.create(
+        state.kb.id, [state.child.id], prompt="payment", actor_user_id=state.owner
+    )[0]
+
+    moved = KnowledgeService(state.services).move_document(
+        state.kb.id,
+        state.child.id,
+        target_folder="reports",
+        actor_user_id=state.owner,
+    )
+
+    refreshed = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)
+    assert moved.path == "reports/match.md"
+    assert refreshed["collection"]["target_path"] == "reports/match.md"
+
+
 def test_prompt_change_during_generation_never_presents_old_results_current(
     setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:

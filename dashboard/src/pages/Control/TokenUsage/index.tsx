@@ -579,14 +579,17 @@ function DonutCard({
 
 function SummaryView({
   totals,
+  byUser,
   byExpert,
   byFeature,
   byModel,
   byDay,
   kinds,
   isMobile,
+  showUsers,
 }: {
   totals: UsageSummary;
+  byUser: UsageBucket[];
   byExpert: UsageBucket[];
   byFeature: UsageBucket[];
   byModel: UsageBucket[];
@@ -594,6 +597,7 @@ function SummaryView({
   /** Which kinds this deployment holds — which breakdowns there are to draw. */
   kinds: AgentKindPresence;
   isMobile: boolean;
+  showUsers: boolean;
 }) {
   const { t } = useTranslation();
 
@@ -605,12 +609,16 @@ function SummaryView({
     [totals.input_tokens, totals.output_tokens, t],
   );
 
+  const userPie = useMemo(() => toPieData(byUser), [byUser]);
   const expertPie = useMemo(() => toPieData(byExpert), [byExpert]);
   const featurePie = useMemo(() => toPieData(byFeature), [byFeature]);
   const modelPie = useMemo(() => toPieData(byModel), [byModel]);
   const dayBars = useMemo(() => [...byDay].reverse().slice(-14), [byDay]);
-  /** Input/output, then one donut per kind that exists, then models. */
-  const donutCount = 2 + (kinds.experts ? 1 : 0) + (kinds.features ? 1 : 0);
+  const donutCount =
+    2 +
+    (showUsers ? 1 : 0) +
+    (kinds.experts ? 1 : 0) +
+    (kinds.features ? 1 : 0);
 
   return (
     <div className={styles.summaryBody}>
@@ -636,6 +644,13 @@ function SummaryView({
             [t("tokenUsage.output")]: IO_COLORS.output,
           }}
         />
+        {showUsers && (
+          <DonutCard
+            title={t("tokenUsage.userBreakdown")}
+            data={userPie}
+            emptyText={t("tokenUsage.noRecordsInRange")}
+          />
+        )}
         {kinds.experts && (
           <DonutCard
             title={t("tokenUsage.expertBreakdown")}
@@ -885,6 +900,7 @@ export default function TokenUsagePage() {
   const [userFilter, setUserFilter] = useState<number | "all">("all");
   const [users, setUsers] = useState<UsageUserOption[]>([]);
   const [exporting, setExporting] = useState(false);
+  const [summaryUser, setSummaryUser] = useState<UsageBucket[]>([]);
 
   const [totals, setTotals] = useState<UsageSummary | null>(null);
   const [dimBuckets, setDimBuckets] = useState<UsageBucket[]>([]);
@@ -1040,21 +1056,33 @@ export default function TokenUsagePage() {
         // roll-up is the same number whichever granularity carries it, so it is
         // read off whichever one was asked for — and a kind that does not exist
         // is not asked about at all.
-        const [expertRes, featureRes, modelRes, dayRes] = await Promise.all([
-          kinds.experts
-            ? fetchSummary(windowKey, "by_expert", agentFilter, adminUserFilter)
-            : Promise.resolve(null),
-          kinds.features
-            ? fetchSummary(
-                windowKey,
-                "by_feature",
-                agentFilter,
-                adminUserFilter,
-              )
-            : Promise.resolve(null),
-          fetchSummary(windowKey, "by_model", agentFilter, adminUserFilter),
-          fetchSummary(windowKey, "by_day", agentFilter, adminUserFilter),
-        ]);
+        const userPromise =
+          adminUserFilter !== null
+            ? fetchSummary(windowKey, "by_user", agentFilter, adminUserFilter)
+            : Promise.resolve(null);
+        const [userRes, expertRes, featureRes, modelRes, dayRes] =
+          await Promise.all([
+            userPromise,
+            kinds.experts
+              ? fetchSummary(
+                  windowKey,
+                  "by_expert",
+                  agentFilter,
+                  adminUserFilter,
+                )
+              : Promise.resolve(null),
+            kinds.features
+              ? fetchSummary(
+                  windowKey,
+                  "by_feature",
+                  agentFilter,
+                  adminUserFilter,
+                )
+              : Promise.resolve(null),
+            fetchSummary(windowKey, "by_model", agentFilter, adminUserFilter),
+            fetchSummary(windowKey, "by_day", agentFilter, adminUserFilter),
+          ]);
+        setSummaryUser(userRes?.buckets ?? []);
         setTotals(expertRes ?? featureRes ?? dayRes);
         setSummaryExpert(
           expertRes ? resolveAgentLabels(expertRes.buckets, agentNameById) : [],
@@ -1217,6 +1245,8 @@ export default function TokenUsagePage() {
           ) : totals ? (
             view === "summary" ? (
               <SummaryView
+                byUser={summaryUser}
+                showUsers={isAdmin}
                 totals={totals}
                 byExpert={summaryExpert}
                 byFeature={summaryFeature}

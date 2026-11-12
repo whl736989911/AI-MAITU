@@ -230,6 +230,40 @@ class ConnectorService:
             return {}
         return extract_servers(self.decrypt(row.instance_id))
 
+    def shared_custom_harness_aliases(self, owner_user_id: int) -> dict[str, str]:
+        """Map viewer collision-safe names to the owner's short harness names."""
+        parent = self._repo.get_by_user_kind(owner_user_id, CUSTOM_MCP_KIND)
+        if parent is None or not parent.has_credentials:
+            return {}
+        aliases: dict[str, str] = {}
+        for name, spec in extract_servers(self.decrypt(parent.instance_id)).items():
+            if isinstance(spec, dict) and spec.get("shared") is True and server_enabled(spec):
+                aliases[shared_mcp_server_name(parent.instance_id, name)] = name
+        return aliases
+
+    def present_mcp_names_for_viewer(
+        self,
+        *,
+        owner_user_id: int | None,
+        viewer_user_id: int,
+        names: list[str],
+    ) -> list[str]:
+        """Translate owner harness names to visible viewer catalog names."""
+        if owner_user_id is None or owner_user_id == viewer_user_id:
+            return list(names)
+        aliases = self.shared_custom_harness_aliases(owner_user_id)
+        reverse = {short: long for long, short in aliases.items()}
+        owner_custom = self.get_custom_servers(owner_user_id)
+        allowed = set(self.list_active_mcp_server_names(viewer_user_id))
+        result: list[str] = []
+        for name in names:
+            if name in owner_custom and name not in reverse:
+                continue
+            shown = reverse.get(name, name)
+            if shown in allowed and shown not in result:
+                result.append(shown)
+        return result
+
     def get_custom_servers_for_api(self, user_id: int) -> dict[str, Any]:
         return redact_servers_for_api(self.get_custom_servers(user_id))
 
@@ -490,21 +524,39 @@ class ConnectorService:
         *,
         apply_defaults: bool | None = None,
         extra_defaults: list[str] | None = None,
+        agent_owner_id: int | None = None,
     ) -> list[str] | None:
         """Resolve turn MCP servers vs the user's default_open set.
 
         Dashboard passes an explicit list (``apply_defaults=False``) so users can
         opt out for a turn. IM uses ``explicit is None`` + defaults. Cron follows
-        defaults when the job has no picks; explicit Cron picks win as-is.
         ``extra_defaults`` (expert composer picks) are unioned with default_open
-        when defaults apply, but only names still available to *user_id*.
+        when defaults apply. Shared owner short names are translated to this
+        user's collision-safe catalog names before selection.
         """
+        aliases = (
+            self.shared_custom_harness_aliases(agent_owner_id)
+            if agent_owner_id is not None and agent_owner_id != user_id
+            else {}
+        )
+        owner_custom = (
+            self.get_custom_servers(agent_owner_id)
+            if agent_owner_id is not None and agent_owner_id != user_id
+            else {}
+        )
         defaults = list(self.list_default_open_mcp_server_names(user_id))
         if extra_defaults:
             allowed = set(self.list_active_mcp_server_names(user_id))
+            short_to_long = {short: long for long, short in aliases.items()}
             for name in extra_defaults:
                 text = str(name).strip()
-                if text and text in allowed and text not in defaults:
+                if not text:
+                    continue
+                viewer_name = short_to_long.get(text)
+                if viewer_name is not None and viewer_name in allowed:
+                    if viewer_name not in defaults:
+                        defaults.append(viewer_name)
+                elif text not in owner_custom and text in allowed and text not in defaults:
                     defaults.append(text)
         return merge_mcp_servers_with_defaults(
             explicit,

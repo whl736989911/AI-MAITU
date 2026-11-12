@@ -12,7 +12,7 @@ Query params:
                 | day:YYYY-MM-DD | month:YYYY-MM
                 | range:YYYY-MM-DD:YYYY-MM-DD   (default last_30d)
   granularity = total | by_day | by_agent | by_expert | by_model | by_feature
-                (default by_day)
+                | by_user (default by_day)
 
 ``by_agent`` groups every agent; ``by_expert`` and ``by_feature`` are that same
 grouping narrowed to one kind — the ordinary agents and the agents a feature runs
@@ -104,6 +104,56 @@ def _assert_agent_exists(server: Any, agent_id: str | None) -> None:
 def _agent_name_map(server: Any) -> dict[str, str]:
     rows = server.services.agent_repo.list_all(include_disabled=True)
     return {str(row.agent_id): str(row.name or row.agent_id) for row in rows}
+
+
+def _user_chart_labels(server: Any) -> dict[int, str]:
+    rows: list[tuple[int, str, str]] = []
+    for account in server.user_manager.list_all(include_disabled=True):
+        uid = getattr(account, "id", None)
+        if uid is None:
+            continue
+        username = str(getattr(account, "username", None) or uid).strip() or str(uid)
+        display_name = getattr(account, "display_name", None)
+        preferred = (
+            display_name.strip()
+            if isinstance(display_name, str) and display_name.strip()
+            else username
+        )
+        rows.append((int(uid), preferred, username))
+
+    counts: dict[str, int] = {}
+    for _uid, preferred, _username in rows:
+        counts[preferred] = counts.get(preferred, 0) + 1
+
+    return {
+        uid: f"{preferred} ({username})"
+        if counts[preferred] > 1 and preferred != username
+        else preferred
+        for uid, preferred, username in rows
+    }
+
+
+def _present_summary(server: Any, payload: dict[str, Any]) -> dict[str, Any]:
+    if str(payload.get("granularity") or "") != "by_user":
+        return payload
+    names = _user_chart_labels(server)
+    labeled: list[Any] = []
+    for bucket in payload.get("buckets") or []:
+        if not isinstance(bucket, dict):
+            labeled.append(bucket)
+            continue
+        raw_key = bucket.get("key")
+        if isinstance(raw_key, bool) or not isinstance(raw_key, (int, str)):
+            labeled.append(bucket)
+            continue
+        try:
+            uid = int(raw_key)
+        except ValueError:
+            labeled.append(bucket)
+            continue
+        bucket = {**bucket, "label": names.get(uid, str(uid))}
+        labeled.append(bucket)
+    return {**payload, "buckets": labeled}
 
 
 def _username_map(server: Any) -> dict[int, str]:
@@ -205,7 +255,7 @@ def _export_response(
     )
 
 
-@router.get("/usage/summary")
+@router.get("/usage/summary", summary="Get the caller's token usage summary")
 async def user_summary(
     window: str = "last_30d",
     granularity: str = "by_day",
@@ -216,12 +266,15 @@ async def user_summary(
 ) -> dict[str, Any]:
     user_id = _resolve_user_scope(user=user, as_user=as_user, server=server)
     _assert_agent_exists(server, agent_id)
-    return _summary_or_raise(
-        server=server,
-        user_id=user_id,
-        agent_id=agent_id,
-        window=window,
-        granularity=granularity,
+    return _present_summary(
+        server,
+        _summary_or_raise(
+            server=server,
+            user_id=user_id,
+            agent_id=agent_id,
+            window=window,
+            granularity=granularity,
+        ),
     )
 
 
@@ -254,7 +307,11 @@ async def user_export(
 admin_router = APIRouter()
 
 
-@admin_router.get("/usage/summary")
+@admin_router.get(
+    "/usage/summary",
+    summary="Get token usage across users",
+    description="Administrator-only totals grouped by day, user, expert, feature, or model.",
+)
 async def admin_summary(
     window: str = "last_30d",
     granularity: str = "by_day",
@@ -267,12 +324,15 @@ async def admin_summary(
     the scope; absent both fields mean *all rows*. Admin only."""
     if not user.is_admin:
         raise OctopError(ErrorCode.FORBIDDEN, "admin required")
-    return _summary_or_raise(
-        server=server,
-        user_id=user_id,
-        agent_id=agent_id,
-        window=window,
-        granularity=granularity,
+    return _present_summary(
+        server,
+        _summary_or_raise(
+            server=server,
+            user_id=user_id,
+            agent_id=agent_id,
+            window=window,
+            granularity=granularity,
+        ),
     )
 
 
