@@ -64,8 +64,10 @@ export interface OctopAgent {
   config: Record<string, unknown>;
   /** Knowledge bases opened by default in new chats with this expert. */
   knowledge_base_ids?: string[];
-  /** Connectors opened by default in new chats with this expert. */
+  /** Stored connector defaults in the expert owner's namespace. */
   mcp_servers?: string[];
+  /** Expert defaults translated for the current viewer's connector catalog. */
+  composer_mcp_servers?: string[];
   /**
    * What a conversation with this agent opens with, if anything — the greeting
    * shown before the first message. ``null`` when none is set.

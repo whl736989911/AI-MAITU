@@ -44,9 +44,9 @@ _VISION_BLOCK_TYPES = frozenset({"image", "image_url", "input_image"})
 # Vision materialize limits — oversized / excess images become path hints.
 VISION_MAX_BYTES = 2 * 1024 * 1024
 VISION_MAX_COUNT = 4
-# Re-encode target: vision models commonly resize to ~1568 px on the longest
-# edge. JPEG at that size keeps even a worst-case (noisy) image under
-# VISION_MAX_BYTES.
+# Provider-safe longest edge. Long images are re-encoded down to 8000 px while
+# staying under the existing byte cap; larger payloads use the 1568 px fallback.
+VISION_SAFE_MAX_SIDE = 8000
 VISION_MAX_SIDE = 1568
 VISION_JPEG_QUALITY = 85
 
@@ -349,52 +349,153 @@ def _image_as_path_hint(
     )
 
 
-def _encoded_image_fits(img: Any, fmt: str, *, ref: bytes, **save_kwargs: Any) -> bytes | None:
-    """Encode ``img``; return the bytes only when smaller than ``ref`` and under the limit."""
+def _encoded_image_fits(
+    img: Any,
+    fmt: str,
+    *,
+    ref: bytes,
+    allow_not_smaller: bool = False,
+    **save_kwargs: Any,
+) -> bytes | None:
+    """Encode ``img`` and return bytes that stay within :data:`VISION_MAX_BYTES`.
+
+    Byte-budget encodes must also be smaller than ``ref``. A long-edge fit may
+    grow a highly compressed source as long as the result is still under the cap.
+    """
     buf = BytesIO()
     img.save(buf, format=fmt, **save_kwargs)
     out = buf.getvalue()
-    return out if out and len(out) < len(ref) and len(out) <= VISION_MAX_BYTES else None
+    if not out or len(out) > VISION_MAX_BYTES:
+        return None
+    if allow_not_smaller or len(out) < len(ref):
+        return out
+    return None
+
+
+def _image_long_side(data: bytes) -> int | None:
+    """Return the longest pixel edge, or ``None`` when the bytes cannot be read."""
+    try:
+        from PIL import Image  # noqa: PLC0415
+    except ImportError:
+        return None
+    try:
+        with Image.open(BytesIO(data)) as img:
+            width, height = img.size
+    except Exception:
+        return None
+    if width <= 0 or height <= 0:
+        return None
+    return max(width, height)
+
+
+def _vision_image_needs_fit(data: bytes) -> bool:
+    """True when ``data`` exceeds either the byte cap or provider-safe edge."""
+    if len(data) > VISION_MAX_BYTES:
+        return True
+    side = _image_long_side(data)
+    return side is not None and side > VISION_SAFE_MAX_SIDE
+
+
+def _image_url_from_block(block: dict[str, Any]) -> str:
+    url_field = block.get("image_url")
+    if isinstance(url_field, dict):
+        return str(url_field.get("url") or "")
+    if isinstance(url_field, str):
+        return url_field
+    return ""
+
+
+def _decode_data_url(url: str) -> bytes | None:
+    if not url.startswith("data:"):
+        return None
+    comma = url.find(",")
+    if comma < 0 or ";base64" not in url[:comma].lower():
+        return None
+    try:
+        return base64.b64decode(url[comma + 1 :], validate=False)
+    except Exception:
+        return None
+
+
+def _encode_vision_image(
+    img: Any,
+    *,
+    ref: bytes,
+    allow_not_smaller: bool,
+) -> tuple[bytes, str] | None:
+    """Encode to PNG when alpha fits, otherwise JPEG under the byte cap."""
+    from PIL import Image  # noqa: PLC0415
+
+    has_alpha = img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info)
+    if has_alpha:
+        rgba = img.convert("RGBA")
+        png = _encoded_image_fits(
+            rgba, "PNG", ref=ref, allow_not_smaller=allow_not_smaller, optimize=True
+        )
+        if png is not None:
+            return png, "image/png"
+        canvas = Image.new("RGB", rgba.size, (255, 255, 255))
+        canvas.paste(rgba, mask=rgba.getchannel("A"))
+        img = canvas
+    elif img.mode not in ("RGB", "L"):
+        img = img.convert("RGB")
+    jpeg = _encoded_image_fits(
+        img,
+        "JPEG",
+        ref=ref,
+        allow_not_smaller=allow_not_smaller,
+        quality=VISION_JPEG_QUALITY,
+        optimize=True,
+    )
+    if jpeg is not None:
+        return jpeg, "image/jpeg"
+    return None
 
 
 def _reencode_image_to_fit(data: bytes) -> tuple[bytes, str] | None:
-    """Downscale and re-encode ``data`` to fit :data:`VISION_MAX_BYTES`.
-
-    Returns ``(bytes, mime_type)`` for the re-encoded image, or ``None`` when
-    Pillow is unavailable, the bytes are not decodable, or re-encoding cannot
-    shrink them under the limit (the caller keeps the path-hint fallback).
-    """
+    """Fit provider-safe dimensions, then apply the existing byte-budget fallback."""
     try:
         from PIL import Image, ImageOps  # noqa: PLC0415
-    except ImportError:  # Pillow not installed — keep legacy path-hint behaviour.
+    except ImportError:
         return None
     try:
         with Image.open(BytesIO(data)) as src:
             img = ImageOps.exif_transpose(src)
-            img.thumbnail((VISION_MAX_SIDE, VISION_MAX_SIDE), Image.Resampling.LANCZOS)
-            has_alpha = img.mode in ("RGBA", "LA") or (
-                img.mode == "P" and "transparency" in img.info
-            )
-            if has_alpha:
-                rgba = img.convert("RGBA")
-                # Keep alpha when it fits (transparent PNG / WebP / GIF).
-                png = _encoded_image_fits(rgba, "PNG", ref=data, optimize=True)
-                if png is not None:
-                    return png, "image/png"
-                # PNG too large — flatten alpha onto white and fall through to JPEG.
-                canvas = Image.new("RGB", rgba.size, (255, 255, 255))
-                canvas.paste(rgba, mask=rgba.getchannel("A"))
-                img = canvas
-            elif img.mode not in ("RGB", "L"):
-                img = img.convert("RGB")
-            jpeg = _encoded_image_fits(
-                img, "JPEG", ref=data, quality=VISION_JPEG_QUALITY, optimize=True
-            )
-            if jpeg is not None:
-                return jpeg, "image/jpeg"
+            side_too_long = max(img.size) > VISION_SAFE_MAX_SIDE
+            if side_too_long:
+                img.thumbnail(
+                    (VISION_SAFE_MAX_SIDE, VISION_SAFE_MAX_SIDE),
+                    Image.Resampling.LANCZOS,
+                )
+                fitted = _encode_vision_image(img, ref=data, allow_not_smaller=True)
+                if fitted is not None:
+                    return fitted
+            if max(img.size) > VISION_MAX_SIDE:
+                img.thumbnail((VISION_MAX_SIDE, VISION_MAX_SIDE), Image.Resampling.LANCZOS)
+            return _encode_vision_image(img, ref=data, allow_not_smaller=side_too_long)
     except Exception:
         logger.warning("vision image re-encode failed for %d bytes", len(data), exc_info=True)
     return None
+
+
+def fit_inline_image_block(block: dict[str, Any]) -> dict[str, Any]:
+    """Fit an inline image on a copied request block; leave history unchanged."""
+    if str(block.get("type") or "") not in _VISION_BLOCK_TYPES:
+        return block
+    raw = _decode_data_url(_image_url_from_block(block))
+    if raw is None or not _vision_image_needs_fit(raw):
+        return block
+    logger.info("vision data-url image %d bytes exceeds vision limits, re-encoding", len(raw))
+    reencoded = _reencode_image_to_fit(raw)
+    if reencoded is None:
+        return _image_unavailable_block()
+    url = f"data:{reencoded[1]};base64,{base64.b64encode(reencoded[0]).decode()}"
+    url_field = block.get("image_url")
+    if isinstance(url_field, dict):
+        fitted = dict(block)
+        fitted["image_url"] = {**url_field, "url": url}
+        return fitted
+    return make_image_url_block(base64.b64encode(reencoded[0]).decode(), reencoded[1])
 
 
 def offload_image_rel_path(raw: bytes, mime: str) -> str:
@@ -625,12 +726,9 @@ def _finalize_rematerialized_image(
             locale=locale,
         )
     mime = mime_type or mimetypes.guess_type(path)[0] or "image/png"
-    if len(data) > VISION_MAX_BYTES:
+    if _vision_image_needs_fit(data):
         logger.info(
-            "vision rematerialize %s: %d bytes > %d, re-encoding",
-            path,
-            len(data),
-            VISION_MAX_BYTES,
+            "vision rematerialize %s: %d bytes exceeds vision limits, re-encoding", path, len(data)
         )
         reencoded = _reencode_image_to_fit(data)
         if reencoded is not None:
@@ -676,11 +774,13 @@ __all__ = [
     "VISION_MAX_BYTES",
     "VISION_MAX_COUNT",
     "VISION_MAX_SIDE",
+    "VISION_SAFE_MAX_SIDE",
     "WORKSPACE_IMAGE_SCHEME",
     "InboundAttachmentMeta",
     "content_blocks_need_vision",
     "expand_workspace_image_ref",
     "expand_workspace_image_ref_sync",
+    "fit_inline_image_block",
     "format_attachment_path_hint",
     "hints_from_content_parts",
     "inbound_attachments_from_parts",

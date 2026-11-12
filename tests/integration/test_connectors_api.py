@@ -553,6 +553,42 @@ async def test_patch_custom_mcp_server_default_open_only(env):
     assert "default_open" not in patch_off.json()["servers"]["linear"]
 
 
+async def test_custom_mcp_oauth_client_secret_is_write_only_and_retained(env):
+    c, _, auth, _ = env
+    url = "/api/connectors/custom-mcp"
+    server = {
+        "transport": "streamable_http",
+        "url": "https://mcp.example.com/mcp",
+        "oauth_client": {
+            "client_id": "registered-client",
+            "client_secret": "do-not-return-this-secret",
+            "scope": "read write",
+        },
+    }
+    first = await c.put(url, headers=auth, json={"servers": {"oauth-mcp": server}})
+    assert first.status_code == 200
+    preview = first.json()["servers"]["oauth-mcp"]["oauth_client"]
+    assert preview == {
+        "client_id": "registered-client",
+        "scope": "read write",
+        "has_client_secret": True,
+    }
+    assert "do-not-return-this-secret" not in first.text
+
+    unchanged = {
+        **server,
+        "oauth_client": {
+            "client_id": "registered-client",
+            "client_secret": "",
+            "scope": "read write",
+            "has_client_secret": True,
+        },
+    }
+    second = await c.put(url, headers=auth, json={"servers": {"oauth-mcp": unchanged}})
+    assert second.status_code == 200
+    assert second.json()["servers"]["oauth-mcp"]["oauth_client"]["has_client_secret"] is True
+
+
 async def test_shared_custom_mcp_is_visible_with_collision_safe_name(env):
     c, _, admin_auth, _ = env
     put = await c.put(
@@ -625,6 +661,7 @@ async def test_custom_mcp_oauth_callback_applies_tokens(env):
             "client_id": "cid",
             "client_secret": None,
             "redirect_uri": "http://testserver/api/connectors/oauth/callback",
+            "token_endpoint": "https://auth.example.com/token",
             "metadata": {
                 "authorization_endpoint": "https://auth.example.com/authorize",
                 "token_endpoint": "https://auth.example.com/token",
@@ -652,6 +689,14 @@ async def test_custom_mcp_oauth_callback_applies_tokens(env):
     assert stored.status_code == 200
     assert stored.json()["servers"]["my-oauth-mcp"]["oauth"]["configured"] is True
 
+    from octop.api.routers.connectors import _connector_service
+
+    stored_config = _connector_service(srv).get_custom_servers(user_id)
+    assert (
+        stored_config["my-oauth-mcp"]["oauth"]["oauth_token_endpoint"]
+        == "https://auth.example.com/token"
+    )
+
     pending = await c.get(f"/api/connectors/oauth/pending/{state_id}", headers=auth)
     assert pending.status_code == 200
     body = pending.json()
@@ -669,8 +714,12 @@ async def test_custom_mcp_oauth_start_unified(env):
                 "oauth-srv": {
                     "transport": "streamable_http",
                     "url": "https://mcp.example.com/mcp",
-                }
-            }
+                    "oauth_client": {
+                        "client_id": "registered-client",
+                        "client_secret": "stored-secret",
+                    },
+                },
+            },
         },
     )
     assert put.status_code == 200
@@ -702,6 +751,10 @@ async def test_custom_mcp_oauth_start_unified(env):
     call_kwargs = mocked_start.await_args.kwargs
     assert call_kwargs["target"] == {"type": "custom_mcp", "server_name": "oauth-srv"}
     assert call_kwargs["mcp_url"] == "https://mcp.example.com/mcp"
+    assert call_kwargs["oauth_client"] == {
+        "client_id": "registered-client",
+        "client_secret": "stored-secret",
+    }
 
 
 async def test_oauth_callback_rejects_redirect_injection_and_preserves_safe_query(env):

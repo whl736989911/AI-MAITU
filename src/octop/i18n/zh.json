@@ -616,6 +616,8 @@
     "KNOWLEDGE_PASSWORD_REQUIRED": "此文档已加密，需要密码才能读取。",
     "KNOWLEDGE_CONVERSION_FAILED": "无法转换此文档以供读取:{reason}",
     "KNOWLEDGE_NAME_TAKEN": "同名知识库或文件已存在。",
+    "KNOWLEDGE_MOVE_INVALID": "不能将文件夹移动到自身或其子文件夹。",
+    "KNOWLEDGE_MOVE_NAME_TAKEN": "目标文件夹中已存在同名文件或文件夹。",
     "KNOWLEDGE_NAME_INVALID": "名称无效。",
     "DATA_SOURCE_INVALID": "数据源无效：请检查其类型与配置。",
     "DATA_SOURCE_SYNC_UNSUPPORTED": "该类型的数据源暂不支持同步，本次未导入任何内容。",

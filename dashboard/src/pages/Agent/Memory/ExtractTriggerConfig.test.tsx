@@ -26,6 +26,8 @@ const providers = vi.mocked(providerApi, true);
 
 const idleConfig = {
   memory_enabled: true,
+  memory_capture_enabled: true,
+  memory_recall_inject_enabled: true,
   extract_on_session_end: true,
   extract_trigger_mode: "idle" as const,
   extract_idle_seconds: 300,
@@ -115,6 +117,36 @@ describe("<MemorySettings />", () => {
       expect(api.putExtractConfig).toHaveBeenCalledWith(
         "ZYWZTD",
         expect.objectContaining({ extract_idle_seconds: 60 }),
+      ),
+    );
+  });
+
+  it("loads and saves capture and recall switches independently", async () => {
+    api.getExtractConfig.mockResolvedValue(idleConfig);
+    api.putExtractConfig.mockResolvedValue({
+      ...idleConfig,
+      memory_capture_enabled: false,
+      memory_recall_inject_enabled: false,
+    });
+    const user = userEvent.setup({ delay: null });
+    render(<MemorySettings agentId="ZYWZTD" />);
+
+    await screen.findByText("存储记忆");
+    const capture = screen.getByRole("switch", { name: "自动捕获对话" });
+    const recall = screen.getByRole("switch", { name: "自动注入召回记忆" });
+    expect(capture).toBeChecked();
+    expect(recall).toBeChecked();
+    await user.click(capture);
+    await user.click(recall);
+    await user.click(screen.getByText("保存设置"));
+
+    await waitFor(() =>
+      expect(api.putExtractConfig).toHaveBeenCalledWith(
+        "ZYWZTD",
+        expect.objectContaining({
+          memory_capture_enabled: false,
+          memory_recall_inject_enabled: false,
+        }),
       ),
     );
   });

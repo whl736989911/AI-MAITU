@@ -527,6 +527,7 @@ function ChatPageInner() {
     chatKnowledgeBases,
     availableModels,
     activeModelRef,
+    preferredModel,
     reasoningMode,
     reasoningEffort,
     handleReasoningChange,
@@ -546,7 +547,7 @@ function ChatPageInner() {
     selectedModel,
     availableModels,
     activeAgent?.default_model,
-    activeModelRef,
+    preferredModel || activeModelRef,
     activeAgent,
   );
 

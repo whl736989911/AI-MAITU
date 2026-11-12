@@ -45,6 +45,8 @@ export default function MemorySettings({ agentId }: Props) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [memoryEnabled, setMemoryEnabled] = useState(true);
+  const [captureEnabled, setCaptureEnabled] = useState(true);
+  const [recallInjectEnabled, setRecallInjectEnabled] = useState(true);
   const [mode, setMode] = useState<ExtractTriggerMode>("idle");
   const [idleMinutes, setIdleMinutes] = useState<number | null>(5);
   const [intervalHours, setIntervalHours] = useState<number | null>(6);
@@ -77,6 +79,8 @@ export default function MemorySettings({ agentId }: Props) {
 
   const applyConfig = useCallback((cfg: ExtractConfig) => {
     setMemoryEnabled(cfg.memory_enabled ?? true);
+    setCaptureEnabled(cfg.memory_capture_enabled);
+    setRecallInjectEnabled(cfg.memory_recall_inject_enabled);
     setMode(cfg.extract_trigger_mode);
     setAuxModel(defaultModelToForm(cfg.aux_model));
     setIdleMinutes(
@@ -136,6 +140,8 @@ export default function MemorySettings({ agentId }: Props) {
     try {
       const cfg = await memoryDashboardApi.putExtractConfig(agentId, {
         memory_enabled: memoryEnabled,
+        memory_capture_enabled: captureEnabled,
+        memory_recall_inject_enabled: recallInjectEnabled,
         extract_on_session_end: true,
         extract_trigger_mode: mode,
         extract_idle_seconds: Math.round(
@@ -230,6 +236,49 @@ export default function MemorySettings({ agentId }: Props) {
             )}
           />
         ) : null}
+      </Card>
+
+      <Card className={styles.settingCard}>
+        <div className={styles.settingRow}>
+          <div className={styles.settingIdentity}>
+            <div>
+              <div className={styles.settingTitle}>
+                {t("memory.settings.captureTitle", "自动捕获对话")}
+              </div>
+              <div className={styles.settingDescription}>
+                {t(
+                  "memory.settings.captureDescription",
+                  "允许 Agent 将新的对话事件记录到记忆中。",
+                )}
+              </div>
+            </div>
+          </div>
+          <Switch
+            aria-label={t("memory.settings.captureTitle", "自动捕获对话")}
+            checked={captureEnabled}
+            onChange={setCaptureEnabled}
+          />
+        </div>
+        <div className={styles.settingRow}>
+          <div className={styles.settingIdentity}>
+            <div>
+              <div className={styles.settingTitle}>
+                {t("memory.settings.recallTitle", "自动注入召回记忆")}
+              </div>
+              <div className={styles.settingDescription}>
+                {t(
+                  "memory.settings.recallDescription",
+                  "允许 Agent 在对话时自动将相关记忆注入上下文。",
+                )}
+              </div>
+            </div>
+          </div>
+          <Switch
+            aria-label={t("memory.settings.recallTitle", "自动注入召回记忆")}
+            checked={recallInjectEnabled}
+            onChange={setRecallInjectEnabled}
+          />
+        </div>
       </Card>
 
       <Card

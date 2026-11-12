@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { isLiveAssistantTurn } from "./liveAssistantTurn";
+import {
+  isAssistantProcessLive,
+  isLiveAssistantTurn,
+} from "./liveAssistantTurn";
 
 describe("isLiveAssistantTurn", () => {
   it("is true for the assistant group after the latest user message", () => {
@@ -45,5 +48,37 @@ describe("isLiveAssistantTurn", () => {
         lastUserGroupIndex: 2,
       }),
     ).toBe(false);
+  });
+});
+
+describe("isAssistantProcessLive", () => {
+  it("does not treat a non-current group after the latest user as live", () => {
+    expect(
+      isAssistantProcessLive({
+        isTurnInProgress: false,
+        afterLatestUser: true,
+        hasAnswerText: false,
+      }),
+    ).toBe(false);
+  });
+
+  it("stops the organizing hint when answer text appears", () => {
+    expect(
+      isAssistantProcessLive({
+        isTurnInProgress: true,
+        afterLatestUser: true,
+        hasAnswerText: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps the current turn live before answer text appears", () => {
+    expect(
+      isAssistantProcessLive({
+        isTurnInProgress: true,
+        afterLatestUser: true,
+        hasAnswerText: false,
+      }),
+    ).toBe(true);
   });
 });

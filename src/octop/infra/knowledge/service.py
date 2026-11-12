@@ -1266,38 +1266,54 @@ class KnowledgeService:
         document = self._repo.get_document(doc_id)
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
-        self.require_document_writable(document, actor_user_id=actor_user_id)
-        if document.is_dir:
-            for descendant in self._repo.list_documents(kb_id):
-                if descendant.path.startswith(document.path + "/"):
-                    self.require_document_writable(descendant, actor_user_id=actor_user_id)
-        normalized_target = normalize_kb_path(target_folder or "")
+        try:
+            normalized_target = normalize_kb_path(target_folder or "")
+        except ValueError as exc:
+            raise LookupError("knowledge folder not found") from exc
+        documents = self._repo.list_documents(kb_id)
+        writable_ids = self.document_access_scope(actor_user_id)[2]
+        subtree = [
+            row
+            for row in documents
+            if row.id == doc_id or (document.is_dir and row.path.startswith(document.path + "/"))
+        ]
+        if any(row.id not in writable_ids for row in subtree):
+            raise KnowledgeAccessDenied(
+                "knowledge document write access is required", access=ACCESS_WRITE
+            )
+        folder = None
         if normalized_target:
             folder = self._repo.get_document_by_path(kb_id, normalized_target)
             if folder is None or not folder.is_dir:
-                raise ValueError("target folder not found")
-            self.require_document_writable(folder, actor_user_id=actor_user_id)
+                raise LookupError("knowledge folder not found")
+            if folder.id not in writable_ids:
+                raise KnowledgeAccessDenied(
+                    "knowledge document write access is required", access=ACCESS_WRITE
+                )
         if document.is_dir and (
             normalized_target == document.path or normalized_target.startswith(document.path + "/")
         ):
-            raise ValueError("cannot move a folder into itself")
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_MOVE_INVALID,
+                "a folder cannot be moved into itself or one of its subfolders",
+            )
+        if normalized_target == path_parent(document.path):
+            return cast(KnowledgeDocumentRow, document)
         filename = path_basename(document.filename or document.path)
         new_path = normalize_kb_path(
             f"{normalized_target}/{filename}" if normalized_target else filename
         )
-        if new_path == document.path:
-            return cast(KnowledgeDocumentRow, document)
         if self._repo.get_document_by_path(kb_id, new_path) is not None:
-            raise ValueError("a knowledge document with this name already exists")
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_MOVE_NAME_TAKEN,
+                "the target folder already has an item with this name",
+            )
         result = self._repo.move_document(kb_id, doc_id, normalized_target)
         if result is None:
             raise LookupError("knowledge document not found")
-        if document.is_dir:
-            for row in self._repo.list_documents(kb_id):
-                if row.path.startswith(new_path + "/") and not row.is_dir:
-                    self._refresh_collections(kb_id, row.id)
-        else:
-            self._refresh_collections(kb_id, doc_id)
+        for row in subtree:
+            if not row.is_dir:
+                self._refresh_collections(kb_id, row.id)
         return cast(KnowledgeDocumentRow, result)
 
     def delete_base(self, kb_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:

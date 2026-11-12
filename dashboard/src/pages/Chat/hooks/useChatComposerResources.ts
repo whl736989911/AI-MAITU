@@ -40,7 +40,7 @@ export function useChatComposerResources(
   const currentUserId = user?.id ?? null;
   const { agents } = useAgent();
   const expert = agents.find((item) => item.agent_id === resolvedAgentId);
-  const expertMcpServers = expert?.mcp_servers;
+  const expertMcpServers = expert?.composer_mcp_servers;
   const expertKnowledgeBaseIds = expert?.knowledge_base_ids;
   const expertMcpKey = (expertMcpServers ?? []).join("\0");
   const expertKbKey = (expertKnowledgeBaseIds ?? []).join("\0");
@@ -104,7 +104,6 @@ export function useChatComposerResources(
   }, [isNewSession]);
 
   // Auto = omit turn model; backend applies the expert default.
-  const remoteBridge = resolvedAgentId?.startsWith("bridge:") ?? false;
   const expertDefaultModel = expert?.default_model || null;
   useEffect(() => {
     const local = activeThreadId
@@ -112,13 +111,11 @@ export function useChatComposerResources(
       : undefined;
     const model = local
       ? local.model
-      : stickyModel ||
-        expertDefaultModel ||
-        (!remoteBridge ? preferredModel : null) ||
-        null;
+      : stickyModel || expertDefaultModel || null;
     setSelectedModel(
       modelsReady &&
         model &&
+        model !== expertDefaultModel &&
         !availableModels.some(
           (item) => `${item.provider_name}/${item.model}` === model,
         )
@@ -130,8 +127,6 @@ export function useChatComposerResources(
     activeThreadId,
     stickyModel,
     expertDefaultModel,
-    remoteBridge,
-    preferredModel,
     conversationOverrides,
     modelsReady,
     availableModels,
@@ -441,23 +436,21 @@ export function useChatComposerResources(
     [activeThreadId, availableModels, modelReasoning, resolvedAgentId],
   );
 
-  // A successful expert catalog is the only authority to invalidate a choice.
-  // Persist Auto so reopening the thread cannot restore the disabled model.
+  // Clear a saved thread override that this catalog no longer contains, and
+  // persist Auto so reopening the thread cannot restore that disabled model.
+  // Keep the expert's own default selected even when the viewer's catalog
+  // omits it — shared and peer experts must still show that default.
   useEffect(() => {
     if (!modelsReady) return;
     const local = activeThreadId
       ? conversationOverrides[activeThreadId]
       : undefined;
-    const model = local
-      ? local.model
-      : stickyModel ||
-        expertDefaultModel ||
-        (!remoteBridge ? preferredModel : null) ||
-        null;
+    const override = local ? local.model : stickyModel || null;
     if (
-      model &&
+      override &&
+      override !== expertDefaultModel &&
       !availableModels.some(
-        (item) => `${item.provider_name}/${item.model}` === model,
+        (item) => `${item.provider_name}/${item.model}` === override,
       )
     ) {
       handleModelChange(null);
@@ -466,8 +459,6 @@ export function useChatComposerResources(
     activeThreadId,
     stickyModel,
     expertDefaultModel,
-    remoteBridge,
-    preferredModel,
     conversationOverrides,
     availableModels,
     modelsReady,
@@ -515,6 +506,7 @@ export function useChatComposerResources(
     availableModels,
     modelsReady,
     activeModelRef,
+    preferredModel,
     handleConnectorsChange: canUseConnectors
       ? handleConnectorsChange
       : undefined,

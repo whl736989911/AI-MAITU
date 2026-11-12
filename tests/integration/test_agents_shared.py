@@ -90,6 +90,93 @@ async def test_shared_agent_appears_for_other_user(env) -> None:
     assert response.json()["is_owner"] is False
 
 
+@pytest.mark.parametrize("agent_kind", ["agent", "feature"])
+async def test_shared_agent_keeps_owner_defaults_and_exposes_viewer_aliases(
+    env, agent_kind: str
+) -> None:
+    from octop.infra.users.permissions import BASELINE_PERMISSIONS
+
+    client, _server, admin_auth = env
+    permissions = sorted(set(BASELINE_PERMISSIONS) | {"connectors"})
+    owner_auth = await create_user(
+        client, admin_auth, username="mcp_owner", permissions=permissions
+    )
+    peer_auth = await create_user(client, admin_auth, username="mcp_peer", permissions=permissions)
+    owner_id = await resolve_user_id(client, admin_auth, "mcp_owner")
+    response = await client.put(
+        "/api/connectors/custom-mcp",
+        headers=owner_auth,
+        json={
+            "servers": {
+                "linear": {
+                    "transport": "streamable_http",
+                    "url": "https://mcp.example.com/team",
+                    "display_name": "Shared Linear",
+                    "shared": True,
+                },
+                "private": {
+                    "transport": "streamable_http",
+                    "url": "https://mcp.example.com/private",
+                },
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+    response = await client.put(
+        "/api/connectors/custom-mcp",
+        headers=peer_auth,
+        json={
+            "servers": {
+                "linear": {
+                    "transport": "streamable_http",
+                    "url": "https://mcp.example.com/personal",
+                    "display_name": "Personal Linear",
+                },
+                "private": {
+                    "transport": "streamable_http",
+                    "url": "https://mcp.example.com/personal-private",
+                    "display_name": "Personal private",
+                },
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+    if agent_kind == "feature":
+        response = await client.post(
+            "/api/features",
+            headers=owner_auth,
+            json={"feature_id": "mcp-parity", "name": "MCP feature"},
+        )
+    else:
+        response = await client.post(
+            "/api/agents/from-expert/default", headers=owner_auth, json={"name": "mcp-shared"}
+        )
+    assert response.status_code == 201, response.text
+    agent_id = response.json()["agent_id"]
+    stored_names = ["linear", "private"]
+    response = await client.patch(
+        f"/api/agents/{agent_id}",
+        headers=owner_auth,
+        json={"is_shared": True, "mcp_servers": stored_names},
+    )
+    assert response.status_code == 200, response.text
+
+    instances = (await client.get("/api/connector-instances", headers=peer_auth)).json()
+    shared_name = next(
+        item["mcp_server_name"]
+        for item in instances
+        if item["owner_user_id"] == owner_id and item["display_name"] == "Shared Linear"
+    )
+    for headers, expected in ((owner_auth, stored_names), (peer_auth, [shared_name])):
+        response = await client.get(f"/api/agents/{agent_id}", headers=headers)
+        assert response.status_code == 200, response.text
+        assert response.json()["mcp_servers"] == stored_names
+        assert response.json()["composer_mcp_servers"] == expected
+        response = await client.get("/api/agents", headers=headers)
+        row = next(item for item in response.json() if item["agent_id"] == agent_id)
+        assert row["composer_mcp_servers"] == expected
+
+
 async def test_create_agent_can_be_shared(env) -> None:
     client, _srv, admin_auth = env
     owner_auth = await create_user(client, admin_auth, username="shared_create_owner")

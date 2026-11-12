@@ -59,7 +59,20 @@ def _embed_remote_batched(
         data = response.json().get("data")
         if not isinstance(data, list):
             raise RuntimeError("knowledge embedding response has no data")
-        out.extend(list(item["embedding"]) for item in data)
-    if len(out) != len(texts):
-        raise RuntimeError("knowledge embedding count mismatch")
+        ordered: list[list[float] | None] = [None] * len(batch)
+        for item in data:
+            if not isinstance(item, dict):
+                raise RuntimeError("knowledge embedding response has invalid data")
+            index = item.get("index")
+            if not isinstance(index, int) or isinstance(index, bool) or not 0 <= index < len(batch):
+                raise RuntimeError("knowledge embedding response has invalid index")
+            if ordered[index] is not None:
+                raise RuntimeError("knowledge embedding response has duplicate index")
+            embedding = item.get("embedding")
+            if not isinstance(embedding, list):
+                raise RuntimeError("knowledge embedding response has invalid embedding")
+            ordered[index] = embedding
+        if any(embedding is None for embedding in ordered):
+            raise RuntimeError("knowledge embedding response index mismatch")
+        out.extend(embedding for embedding in ordered if embedding is not None)
     return out

@@ -38,6 +38,10 @@ import type {
   ChatMessage,
   UserComposerContext,
 } from "./sseHelpers";
+import {
+  mergeHistoryWithLocalTail,
+  retainedHistoryPrefix,
+} from "../utils/mergeHistoryTail";
 
 export type {
   ToolCallData,
@@ -741,6 +745,9 @@ async function loadThreadHistory(
     offset,
     cursor: params.cursor,
   });
+  if (history.thread_id !== threadId) {
+    throw new Error("History response belongs to another thread");
+  }
   const artifacts: ThreadArtifact[] = Array.isArray(history.artifacts)
     ? history.artifacts.filter(
         (artifact): artifact is ThreadArtifact =>
@@ -838,9 +845,20 @@ export function useChat(
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyRefreshing, setHistoryRefreshing] = useState(false);
   const loadGenRef = useRef(0);
-  const loadMoreInFlightRef = useRef(false);
-  const refreshInFlightRef = useRef(false);
-
+  const loadMoreInFlightRef = useRef<number | null>(null);
+  const refreshInFlightRef = useRef<number | null>(null);
+  useEffect(() => {
+    ++loadGenRef.current;
+    loadMoreInFlightRef.current = null;
+    refreshInFlightRef.current = null;
+    setHistoryLoading(false);
+    setHistoryRefreshing(false);
+    return () => {
+      ++loadGenRef.current;
+      loadMoreInFlightRef.current = null;
+      refreshInFlightRef.current = null;
+    };
+  }, [stableSessionId, agentId]);
   const attachAfterHistory = useCallback(
     (key: string, targetThreadId: string) => {
       if (!agentId || !targetThreadId) return;
@@ -942,6 +960,7 @@ export function useChat(
       // Never cancelStream here — load/hydrate must not stop a live server turn.
       // (Weak resume: only the Stop control / cancelStream may send `cancel`.)
 
+      const epoch = chatStore.beginHistoryRead(key);
       const gen = ++loadGenRef.current;
       setHistoryLoading(true);
       const historyBaseline = chatStore.captureHistoryBaseline(key);
@@ -950,26 +969,58 @@ export function useChat(
         let loaded = await loadThreadHistory(agentId, targetThreadId, {
           offset: 0,
         });
-        while (loaded.projectionLoading && loadGenRef.current === gen) {
+        while (
+          loaded.projectionLoading &&
+          loadGenRef.current === gen &&
+          chatStore.isHistoryReadCurrent(key, epoch)
+        ) {
           await new Promise((resolve) =>
             window.setTimeout(
               resolve,
               Math.max(500, Math.min(loaded.retryAfterMs, 5000)),
             ),
           );
-          if (loadGenRef.current !== gen) return;
+          if (
+            loadGenRef.current !== gen ||
+            !chatStore.isHistoryReadCurrent(key, epoch)
+          )
+            return;
           loaded = await loadThreadHistory(agentId, targetThreadId, {
             offset: 0,
           });
         }
-        if (loadGenRef.current !== gen) return;
-        chatStore.setHistoryPage(key, loaded.messages, {
-          hasMore: loaded.hasMore,
-          nextOffset: loaded.nextOffset,
-          nextCursor: loaded.nextCursor,
-          baseline: historyBaseline,
-          turnActive: loaded.turnActive,
-        });
+        if (
+          loadGenRef.current !== gen ||
+          !chatStore.isHistoryReadCurrent(key, epoch)
+        )
+          return;
+        const current = chatStore.getSnapshot(key);
+        const olderPrefix = retainedHistoryPrefix(
+          loaded.messages,
+          current.messages,
+        );
+        chatStore.setHistoryPage(
+          key,
+          mergeHistoryWithLocalTail(
+            loaded.messages,
+            current.messages,
+            current.isStreaming,
+          ),
+          {
+            hasMore:
+              olderPrefix.length > 0 ? current.historyHasMore : loaded.hasMore,
+            nextOffset:
+              olderPrefix.length > 0
+                ? current.historyNextOffset
+                : loaded.nextOffset,
+            nextCursor:
+              olderPrefix.length > 0
+                ? current.historyNextCursor
+                : loaded.nextCursor,
+            baseline: historyBaseline,
+            turnActive: loaded.turnActive,
+          },
+        );
         setHistoryError(false);
         if (
           shouldProbeActiveTurn({
@@ -980,7 +1031,10 @@ export function useChat(
           attachAfterHistory(key, targetThreadId);
         }
       } catch {
-        if (loadGenRef.current === gen) {
+        if (
+          loadGenRef.current === gen &&
+          chatStore.isHistoryReadCurrent(key, epoch)
+        ) {
           failedHistoryOperation.current = "initial";
           setHistoryError(true);
         }
@@ -997,7 +1051,7 @@ export function useChat(
     const key = stableSessionId;
     const snap = chatStore.getSnapshot(key);
     if (
-      loadMoreInFlightRef.current ||
+      loadMoreInFlightRef.current !== null ||
       snap.historyLoadingMore ||
       !snap.historyHasMore ||
       !agentId ||
@@ -1006,10 +1060,11 @@ export function useChat(
       return false;
     }
 
-    loadMoreInFlightRef.current = true;
     chatStore.setHistoryLoadingMore(key, true);
     const offset = snap.historyNextOffset;
     const gen = loadGenRef.current;
+    const epoch = chatStore.beginHistoryRead(key);
+    loadMoreInFlightRef.current = gen;
 
     try {
       const {
@@ -1021,6 +1076,11 @@ export function useChat(
         offset,
         cursor: snap.historyNextCursor,
       });
+      if (
+        loadGenRef.current !== gen ||
+        !chatStore.isHistoryReadCurrent(key, epoch)
+      )
+        return false;
       chatStore.prependHistoryMessages(key, older, {
         hasMore,
         nextOffset,
@@ -1029,14 +1089,21 @@ export function useChat(
       if (loadGenRef.current === gen) setHistoryError(false);
       return true;
     } catch {
-      if (loadGenRef.current === gen) {
+      if (
+        loadGenRef.current === gen &&
+        chatStore.isHistoryReadCurrent(key, epoch)
+      ) {
         failedHistoryOperation.current = "older";
         setHistoryError(true);
       }
       return false;
     } finally {
-      loadMoreInFlightRef.current = false;
-      chatStore.setHistoryLoadingMore(key, false);
+      if (loadMoreInFlightRef.current === gen) {
+        loadMoreInFlightRef.current = null;
+        if (chatStore.isHistoryReadCurrent(key, epoch)) {
+          chatStore.setHistoryLoadingMore(key, false);
+        }
+      }
     }
   }, [agentId, stableSessionId]);
 
@@ -1051,7 +1118,7 @@ export function useChat(
       const key = targetSessionId || stableSessionId;
       const snap = chatStore.getSnapshot(key);
       if (
-        refreshInFlightRef.current ||
+        refreshInFlightRef.current !== null ||
         historyRefreshing ||
         historyLoading ||
         shouldBlockHistoryRefresh({
@@ -1064,10 +1131,10 @@ export function useChat(
         return;
       }
 
-      refreshInFlightRef.current = true;
       // Separate from loadGenRef: loadHistory may bump loadGen while we fetch.
-      // Always clear the refreshing flag in finally so the footer cannot stick.
       const gen = ++loadGenRef.current;
+      const epoch = chatStore.beginHistoryRead(key);
+      refreshInFlightRef.current = gen;
       setHistoryRefreshing(true);
       const historyBaseline = chatStore.captureHistoryBaseline(key);
 
@@ -1079,35 +1146,44 @@ export function useChat(
           nextCursor,
           turnActive,
         } = await loadThreadHistory(agentId, key, { offset: 0 });
-        // Stale after a concurrent loadHistory / newer refresh — drop apply only.
-        if (loadGenRef.current !== gen) return;
+        if (
+          loadGenRef.current !== gen ||
+          !chatStore.isHistoryReadCurrent(key, epoch)
+        )
+          return;
 
-        // Keep older pages the user already scrolled in; replace the overlapping
-        // latest-page window with the server copy so truncated WS turns heal.
-        const latestIds = new Set(latest.map((m) => m.id));
-        const firstOverlap = snap.messages.findIndex((m) =>
-          latestIds.has(m.id),
+        const current = chatStore.getSnapshot(key);
+        const olderPrefix = retainedHistoryPrefix(latest, current.messages);
+        chatStore.setHistoryPage(
+          key,
+          mergeHistoryWithLocalTail(
+            latest,
+            current.messages,
+            current.isStreaming,
+          ),
+          {
+            hasMore: olderPrefix.length > 0 ? current.historyHasMore : hasMore,
+            nextOffset:
+              olderPrefix.length > 0 ? current.historyNextOffset : nextOffset,
+            nextCursor:
+              olderPrefix.length > 0 ? current.historyNextCursor : nextCursor,
+            baseline: historyBaseline,
+            turnActive,
+          },
         );
-        const olderPrefix =
-          firstOverlap > 0 ? snap.messages.slice(0, firstOverlap) : [];
-        chatStore.setHistoryPage(key, [...olderPrefix, ...latest], {
-          hasMore: olderPrefix.length > 0 ? snap.historyHasMore : hasMore,
-          nextOffset:
-            olderPrefix.length > 0 ? snap.historyNextOffset : nextOffset,
-          nextCursor:
-            olderPrefix.length > 0 ? snap.historyNextCursor : nextCursor,
-          baseline: historyBaseline,
-          turnActive,
-        });
-        setHistoryError(false);
       } catch {
-        if (loadGenRef.current === gen) {
+        if (
+          loadGenRef.current === gen &&
+          chatStore.isHistoryReadCurrent(key, epoch)
+        ) {
           failedHistoryOperation.current = "latest";
           setHistoryError(true);
         }
       } finally {
-        refreshInFlightRef.current = false;
-        setHistoryRefreshing(false);
+        if (refreshInFlightRef.current === gen) {
+          refreshInFlightRef.current = null;
+          setHistoryRefreshing(false);
+        }
       }
     },
     [agentId, stableSessionId, historyRefreshing, historyLoading],

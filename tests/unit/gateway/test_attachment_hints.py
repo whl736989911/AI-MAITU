@@ -22,6 +22,7 @@ from octop.api.routers.chat.turn import (
 )
 from octop.infra.gateway.media.attachment_hints import (
     VISION_MAX_BYTES,
+    VISION_SAFE_MAX_SIDE,
     format_attachment_path_hint,
     hints_from_content_parts,
     inbound_attachments_from_parts,
@@ -53,6 +54,13 @@ def _big_noise_png() -> bytes:
 def _tiny_png() -> bytes:
     """A small solid-color PNG (compression must leave it byte-identical)."""
     img = Image.new("RGB", (64, 64), (200, 40, 90))
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _long_png() -> bytes:
+    img = Image.new("RGB", (VISION_SAFE_MAX_SIDE + 100, 80), (200, 40, 90))
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
@@ -254,6 +262,30 @@ async def test_oversized_image_in_data_branch_is_compressed() -> None:
     url = block["image_url"]["url"]
     assert url.startswith("data:image/jpeg;base64,")
     assert len(base64.b64decode(url.split(",", 1)[1])) <= VISION_MAX_BYTES
+
+
+@pytest.mark.asyncio
+async def test_long_image_under_byte_budget_is_fitted_only_for_model_request() -> None:
+    with tempfile.TemporaryDirectory() as ws_dir:
+        workspace = _workspace(ws_dir)
+        raw = _long_png()
+        assert len(raw) <= VISION_MAX_BYTES
+        stored = await write_inbound(
+            workspace,
+            raw,
+            filename="long.png",
+            media_type="image/png",
+        )
+        backend = AgentBackedMediaBackend(workspace)
+        part = ImageContent(local_path=stored.path, mime_type="image/png", size=len(raw))
+        block = await materialize_image_part(part, media_backend=backend, workspace=workspace)
+        from octop.infra.gateway.media.attachment_hints import expand_workspace_image_ref
+
+        expanded = await expand_workspace_image_ref(block, workspace=workspace)
+        encoded = base64.b64decode(expanded["image_url"]["url"].split(",", 1)[1])
+        with Image.open(io.BytesIO(encoded)) as fitted:
+            assert max(fitted.size) <= VISION_SAFE_MAX_SIDE
+        assert await workspace.adownload_bytes(stored.path) == raw
 
 
 @pytest.mark.asyncio

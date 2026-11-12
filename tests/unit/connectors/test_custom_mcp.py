@@ -103,6 +103,7 @@ def test_shared_custom_server_uses_collision_safe_name_for_viewer(
             "linear": {
                 "transport": "streamable_http",
                 "url": "https://mcp.linear.app/mcp",
+                "display_name": "Team Linear",
                 "shared": True,
             },
             "private": {
@@ -113,13 +114,139 @@ def test_shared_custom_server_uses_collision_safe_name_for_viewer(
     )
 
     visible = svc.list_instances_for_api(viewer_id)
-    assert [row["display_name"] for row in visible] == ["linear"]
+    assert [row["display_name"] for row in visible] == ["Team Linear"]
     shared_name = str(visible[0]["mcp_server_name"])
     assert shared_name.startswith("custom__")
     assert shared_name.endswith("__linear")
     assert svc.list_active_mcp_server_names(viewer_id) == [shared_name]
     assert list(svc.custom_harness_configs(viewer_id)) == [shared_name]
+    svc.put_custom_servers(
+        viewer_id,
+        {
+            "private": {
+                "transport": "streamable_http",
+                "url": "https://personal.example.com/mcp",
+            }
+        },
+    )
+    assert svc.merge_turn_mcp_servers(
+        viewer_id,
+        None,
+        apply_defaults=True,
+        extra_defaults=["linear", "private"],
+        agent_owner_id=owner_id,
+    ) == [shared_name]
     assert svc.list_default_open_mcp_server_names(viewer_id) == []
+
+
+def test_shared_mcp_names_resolve_owner_short_names_to_viewer_aliases(
+    svc: ConnectorService,
+    db: SqlitePool,
+) -> None:
+    owner_id = _ensure_user(db)
+    viewer_id = _ensure_second_user(db)
+    svc.put_custom_servers(
+        owner_id,
+        {
+            "linear": {
+                "transport": "streamable_http",
+                "url": "https://mcp.linear.app/mcp",
+                "display_name": "Team Linear",
+                "shared": True,
+            }
+        },
+    )
+    alias = svc.list_active_mcp_server_names(viewer_id)[0]
+    assert svc.shared_custom_harness_aliases(owner_id) == {alias: "linear"}
+    assert svc.present_mcp_names_for_viewer(
+        owner_user_id=owner_id, viewer_user_id=viewer_id, names=["linear"]
+    ) == [alias]
+
+
+def test_oauth_client_is_redacted_and_preserved_without_revealing_secret():
+    from octop.infra.connectors.custom_mcp import (
+        merge_preserved_oauth,
+        redact_server_for_api,
+    )
+
+    original = normalize_server_spec(
+        "server",
+        {
+            "transport": "streamable_http",
+            "url": "https://mcp.example.com/mcp",
+            "oauth_client": {
+                "client_id": "client-a",
+                "client_secret": "private-secret",
+                "scope": "read write",
+            },
+            "oauth": {"access_token": "token-a", "oauth_issuer": "https://auth.example.com"},
+        },
+    )
+    redacted = redact_server_for_api(original)
+    assert redacted["oauth_client"] == {
+        "client_id": "client-a",
+        "scope": "read write",
+        "has_client_secret": True,
+    }
+    assert "private-secret" not in repr(redacted)
+
+    edited = merge_preserved_oauth(
+        {
+            "server": {
+                "transport": "streamable_http",
+                "url": "https://mcp.example.com/mcp",
+                "oauth_client": {"client_id": "client-a", "scope": "read write"},
+            }
+        },
+        {"server": original},
+    )["server"]
+    assert edited["oauth_client"]["client_secret"] == "private-secret"
+    assert edited["oauth"]["access_token"] == "token-a"
+
+    changed = merge_preserved_oauth(
+        {
+            "server": {
+                "transport": "streamable_http",
+                "url": "https://mcp.example.com/mcp",
+                "oauth_client": {"client_id": "client-b"},
+            }
+        },
+        {"server": original},
+    )["server"]
+    assert changed["oauth"] == {"required": True}
+    assert changed["oauth_client"]["client_id"] == "client-b"
+    assert "client_secret" not in changed["oauth_client"]
+
+
+def test_oauth_client_endpoints_require_https_and_both_endpoints():
+    base = {
+        "transport": "streamable_http",
+        "url": "https://mcp.example.com/mcp",
+        "oauth_client": {"client_id": "client-a"},
+    }
+    with pytest.raises(ValueError, match="both authorization_endpoint"):
+        normalize_server_spec(
+            "server",
+            {
+                **base,
+                "oauth_client": {
+                    **base["oauth_client"],
+                    "authorization_endpoint": "https://auth.example.com/authorize",
+                },
+            },
+        )
+    with pytest.raises(ValueError, match="https"):
+        normalize_server_spec(
+            "server",
+            {
+                **base,
+                "oauth_client": {
+                    **base["oauth_client"],
+                    "authorization_endpoint": "http://auth.example.com/authorize",
+                    "token_endpoint": "http://auth.example.com/token",
+                },
+            },
+        )
 
 
 def test_rejects_http_scheme_and_private_host():

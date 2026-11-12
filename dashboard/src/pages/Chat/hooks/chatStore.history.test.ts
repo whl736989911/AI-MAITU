@@ -157,6 +157,50 @@ describe("setHistoryPage live-tail merge", () => {
       "send-2",
     ]);
   });
+
+  it("preserves a pending optimistic user turn already in the read baseline", () => {
+    const pending = {
+      ...makeMessage("pending-user"),
+      role: "user" as const,
+      localPending: true,
+    };
+    setHistoryPage(SESSION, [pending], { hasMore: false, nextOffset: 1 });
+    const baseline = captureHistoryBaseline(SESSION);
+
+    setHistoryPage(SESSION, [], {
+      hasMore: false,
+      nextOffset: 0,
+      baseline,
+    });
+
+    expect(getSnapshot(SESSION).messages.map((message) => message.id)).toEqual([
+      "pending-user",
+    ]);
+    expect(getSnapshot(SESSION).messages[0].localPending).toBe(true);
+  });
+
+  it("marks optimistic user messages as pending and deduplicates their ids", () => {
+    const pending = makeMessage("optimistic");
+    appendUserMessage(SESSION, pending);
+    appendUserMessage(SESSION, pending);
+
+    expect(getSnapshot(SESSION).messages).toHaveLength(1);
+    expect(getSnapshot(SESSION).messages[0].localPending).toBe(true);
+  });
+
+  it("clears localPending once canonical history contains the user id", () => {
+    appendUserMessage(SESSION, {
+      ...makeMessage("persisted-pending"),
+      role: "user",
+    });
+
+    setHistoryPage(SESSION, [makeMessage("persisted-pending")], {
+      hasMore: false,
+      nextOffset: 1,
+    });
+
+    expect(getSnapshot(SESSION).messages[0].localPending).toBeUndefined();
+  });
 });
 
 describe("invalidateHistory", () => {

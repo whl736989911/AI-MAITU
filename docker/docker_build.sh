@@ -2,12 +2,7 @@
 # =============================================================================
 # 构建麦途智造 Docker 镜像
 #
-# 用法:
-#   bash docker/docker_build.sh [镜像标签] [额外 docker build 参数...]
-#
-# 示例:
-#   bash docker/docker_build.sh
-#   bash docker/docker_build.sh myreg/maitu:v1
+#   MAITU_IMAGE_VARIANT=full bash docker/docker_build.sh maitu:latest-full
 #   bash docker/docker_build.sh maitu:dev --no-cache
 #
 # 国内加速（可选，需 BuildKit，本脚本默认已开启）:
@@ -24,6 +19,16 @@ cd "$REPO_ROOT"
 
 IMAGE_TAG="${1:-maitu:latest}"
 shift 2>/dev/null || true
+
+IMAGE_VARIANT="${MAITU_IMAGE_VARIANT:-lite}"
+case "$IMAGE_VARIANT" in
+    lite|full) ;;
+    *)
+        echo "MAITU_IMAGE_VARIANT must be 'lite' or 'full', got '$IMAGE_VARIANT'" >&2
+        exit 2
+        ;;
+esac
+
 
 # BuildKit 启用 Dockerfile 缓存挂载，加速 npm / pip / apt 下载
 export DOCKER_BUILDKIT=1
@@ -44,10 +49,11 @@ fi
 if [ -n "${APT_MIRROR:-}" ]; then
     BUILD_ARGS+=(--build-arg "APT_MIRROR=${APT_MIRROR}")
 fi
+BUILD_ARGS+=(--build-arg "MAITU_IMAGE_VARIANT=${IMAGE_VARIANT}")
 
 echo "╔══════════════════════════════════════════════════╗"
-echo "║  正在构建麦途智造 Docker 镜像                    ║"
 echo "║  标签: ${IMAGE_TAG}"
+echo "║  变体: ${IMAGE_VARIANT}"
 echo "╚══════════════════════════════════════════════════╝"
 echo ""
 

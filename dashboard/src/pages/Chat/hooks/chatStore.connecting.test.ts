@@ -3,6 +3,7 @@ import {
   appendUserMessage,
   attachThread,
   getSnapshot,
+  hasLiveSocket,
   removeSession,
   sendTurn,
   setHistoryPage,
@@ -98,5 +99,48 @@ describe("history attachment while a first turn is connecting", () => {
       { role: "assistant", content: "replacement answer" },
     ]);
     expect(getSnapshot(SESSION).isStreaming).toBe(false);
+  });
+
+  it("ignores frames and close events from a replaced socket", async () => {
+    vi.stubGlobal("WebSocket", PendingWebSocket);
+    const firstAttach = attachThread(SESSION, "agent-1", "thread-one");
+    const first = PendingWebSocket.instances[0];
+    first.send = () => {};
+    first.readyState = PendingWebSocket.OPEN;
+    first.onopen?.();
+    await firstAttach;
+
+    const secondAttach = attachThread(SESSION, "agent-1", "thread-two");
+    const second = PendingWebSocket.instances[1];
+    second.send = () => {};
+    second.readyState = PendingWebSocket.OPEN;
+    second.onopen?.();
+    await secondAttach;
+    await Promise.resolve();
+
+    first.onmessage?.({
+      data: JSON.stringify({ type: "token", content: "stale frame" }),
+    });
+
+    expect(getSnapshot(SESSION).messages).toEqual([]);
+    expect(hasLiveSocket(SESSION)).toBe(true);
+  });
+
+  it("ignores turn completion from an older logical turn", async () => {
+    vi.stubGlobal("WebSocket", PendingWebSocket);
+    const attach = attachThread(SESSION, "agent-1", "thread-one");
+    const socket = PendingWebSocket.instances[0];
+    socket.send = () => {};
+    socket.readyState = PendingWebSocket.OPEN;
+    socket.onopen?.();
+    await attach;
+    socket.onmessage?.({
+      data: JSON.stringify({ type: "turn.started", turn_id: "current-turn" }),
+    });
+    socket.onmessage?.({
+      data: JSON.stringify({ type: "turn.ended", turn_id: "old-turn" }),
+    });
+
+    expect(getSnapshot(SESSION).activeTurnId).toBe("current-turn");
   });
 });

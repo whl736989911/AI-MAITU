@@ -220,15 +220,17 @@ async def test_saving_trust_does_not_block_public_license_status(env, monkeypatc
     from octop.infra.licensing import settings
 
     client, _srv, auth = env
-    entered = threading.Event()
+    loop = asyncio.get_running_loop()
+    loop_thread_id = threading.get_ident()
+    entered = asyncio.Event()
     release = threading.Event()
-    stalled = threading.Event()
     write = settings._atomic_write
 
     def slow_write(path: Path, text: str) -> None:
-        entered.set()
-        if not release.wait(timeout=5):
-            stalled.set()
+        loop.call_soon_threadsafe(entered.set)
+        # Fail fast instead of deadlocking if persistence moves onto the event loop.
+        assert threading.get_ident() != loop_thread_id
+        release.wait()
         write(path, text)
 
     monkeypatch.setattr(settings, "_atomic_write", slow_write)
@@ -240,10 +242,10 @@ async def test_saving_trust_does_not_block_public_license_status(env, monkeypatc
         )
     )
     try:
-        assert await asyncio.to_thread(entered.wait, 5)
-        status = await client.get("/api/license/status")
+        await asyncio.wait_for(entered.wait(), timeout=60)
+        status = await asyncio.wait_for(client.get("/api/license/status"), timeout=60)
         assert status.status_code == 200
-        assert not stalled.is_set()
+        assert not saving.done()
     finally:
         release.set()
         result = await saving

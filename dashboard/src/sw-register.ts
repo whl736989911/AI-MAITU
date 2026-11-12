@@ -10,12 +10,27 @@ import { publicUrl } from "./utils/publicUrl";
  *     when the user clicks the banner → `applyUpdate()`.
  *
  * Dev:
- *   - Do not register. Clear any leftover production SW on the same origin
- *     so Vite HMR and an old worker do not fight over navigations.
+ *   - Clear any leftover production worker/cache and register notify-sw.js,
+ *     which has no fetch handler, so Vite keeps serving the app normally.
  */
 
 let pendingRegistration: ServiceWorkerRegistration | null = null;
+let notifyRegistration: ServiceWorkerRegistration | null = null;
 let applyingUpdate = false;
+
+/** Active worker registration for synchronous background notification delivery. */
+export function peekSystemNotifyRegistration(): ServiceWorkerRegistration | null {
+  return notifyRegistration;
+}
+
+function trackNotifyRegistration(): void {
+  if (!("serviceWorker" in navigator)) return;
+  const ready = navigator.serviceWorker.ready;
+  if (!ready) return;
+  void ready.then((registration) => {
+    notifyRegistration = registration;
+  });
+}
 
 function notifyUpdateReady(): void {
   window.dispatchEvent(new CustomEvent("pwa:update-ready"));
@@ -113,6 +128,16 @@ export async function registerProductionSW(): Promise<void> {
     },
     60 * 60 * 1000,
   );
+  trackNotifyRegistration();
+}
+
+async function registerNotifySW(): Promise<void> {
+  const scope = import.meta.env.BASE_URL || "/";
+  await navigator.serviceWorker.register(publicUrl("notify-sw.js"), {
+    scope,
+    updateViaCache: "none",
+  });
+  trackNotifyRegistration();
 }
 
 export async function registerSW(): Promise<void> {
@@ -123,6 +148,11 @@ export async function registerSW(): Promise<void> {
       await unregisterAllServiceWorkers();
     } catch (err) {
       console.warn("[SW] Dev cleanup failed:", err);
+    }
+    try {
+      await registerNotifySW();
+    } catch (err) {
+      console.error("[SW] Notification worker failed:", err);
     }
     return;
   }

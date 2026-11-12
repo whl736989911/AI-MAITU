@@ -150,6 +150,49 @@ def test_pg_control_plane_repo_smoke() -> None:
 
 @requires_postgresql
 @pytest.mark.postgresql
+def test_pg_care_push_batch_preserves_recent_episode_dedup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from octop.infra.db.migrate import run_migrations
+    from octop.infra.db.pool import PostgresPool
+    from octop.infra.db.repos import care_push
+
+    pool = PostgresPool(_conninfo())
+    try:
+        _reset_public_schema(pool)
+        run_migrations(pool)
+        now = 1_800_000_000
+        monkeypatch.setattr(care_push, "time", SimpleNamespace(time=lambda: now))
+        repo = care_push.CarePushRepo(pool)
+        repo.insert(
+            agent_id="care-agent",
+            session_key="care-session",
+            episode_ids=["recent", "at-cutoff"],
+            pushed_at=now - 30 * 86400,
+        )
+        repo.insert(
+            agent_id="care-agent",
+            session_key="care-session",
+            episode_ids=["expired"],
+            pushed_at=now - 30 * 86400 - 1,
+        )
+        repo.insert(
+            agent_id="another-agent",
+            session_key="another-session",
+            episode_ids=["not-this-agent"],
+            pushed_at=now,
+        )
+
+        assert repo.list_pushed_episode_ids("care-agent") == {"recent", "at-cutoff"}
+        assert repo.list_pushed_episode_ids("another-agent") == {"not-this-agent"}
+    finally:
+        pool.close()
+
+
+@requires_postgresql
+@pytest.mark.postgresql
 def test_pg_probe_ok() -> None:
     from octop.config import DatabaseConfig
     from octop.infra.db.probe import probe_database

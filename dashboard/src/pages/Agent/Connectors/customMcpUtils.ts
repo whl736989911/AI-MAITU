@@ -1,4 +1,5 @@
 import type {
+  CustomMcpOAuthClient,
   CustomMcpServerSpec,
   CustomMcpServers,
   CustomMcpTransport,
@@ -22,6 +23,13 @@ export interface ServerCardState {
   collapsed: boolean;
   oauthConfigured: boolean;
   oauthExpiresAt?: number;
+  oauthClientId: string;
+  oauthClientSecret: string;
+  oauthClientSecretSaved: boolean;
+  oauthScope: string;
+  oauthAuthorizationEndpoint: string;
+  oauthTokenEndpoint: string;
+  oauthClientOpen: boolean;
 }
 
 export const PROBE_ON_SAVE_KEY = "octop.customMcp.probeOnSave";
@@ -113,6 +121,22 @@ export function parseEnvText(text: string): Record<string, string> {
   return out;
 }
 
+export function oauthClientFromCard(
+  card: ServerCardState,
+): CustomMcpOAuthClient | undefined {
+  const client: CustomMcpOAuthClient = { client_id: card.oauthClientId.trim() };
+  const secret = card.oauthClientSecret;
+  if (secret) client.client_secret = secret;
+  if (card.oauthScope.trim()) client.scope = card.oauthScope.trim();
+  if (card.oauthAuthorizationEndpoint.trim()) {
+    client.authorization_endpoint = card.oauthAuthorizationEndpoint.trim();
+  }
+  if (card.oauthTokenEndpoint.trim()) {
+    client.token_endpoint = card.oauthTokenEndpoint.trim();
+  }
+  return client.client_id ? client : undefined;
+}
+
 export function serversToCards(servers: CustomMcpServers): ServerCardState[] {
   return Object.entries(servers).map(([name, spec], index) => ({
     key: `${name}-${index}`,
@@ -130,6 +154,13 @@ export function serversToCards(servers: CustomMcpServers): ServerCardState[] {
     collapsed: true,
     oauthConfigured: spec.oauth?.configured === true,
     oauthExpiresAt: spec.oauth?.expires_at,
+    oauthClientId: spec.oauth_client?.client_id ?? "",
+    oauthClientSecret: "",
+    oauthClientSecretSaved: spec.oauth_client?.has_client_secret === true,
+    oauthScope: spec.oauth_client?.scope ?? "",
+    oauthAuthorizationEndpoint: spec.oauth_client?.authorization_endpoint ?? "",
+    oauthTokenEndpoint: spec.oauth_client?.token_endpoint ?? "",
+    oauthClientOpen: Boolean(spec.oauth_client),
   }));
 }
 
@@ -177,6 +208,10 @@ export function cardsToServers(cards: ServerCardState[]): CustomMcpServers {
         spec.env = env;
       }
     }
+    const oauthClient = oauthClientFromCard(card);
+    if (oauthClient) {
+      spec.oauth_client = oauthClient;
+    }
     servers[name] = spec;
   }
   return servers;
@@ -208,6 +243,7 @@ export function mergeCustomMcpCards(
       ...card,
       key: prev.key,
       collapsed: prev.collapsed,
+      oauthClientOpen: prev.oauthClientOpen || card.oauthClientOpen,
     };
   });
 }
@@ -251,6 +287,13 @@ export function newCard(
     shared: false,
     collapsed: false,
     oauthConfigured: false,
+    oauthClientId: "",
+    oauthClientSecret: "",
+    oauthClientSecretSaved: false,
+    oauthScope: "",
+    oauthAuthorizationEndpoint: "",
+    oauthTokenEndpoint: "",
+    oauthClientOpen: false,
   };
 }
 

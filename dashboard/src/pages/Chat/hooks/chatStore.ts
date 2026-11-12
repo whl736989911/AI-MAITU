@@ -217,6 +217,7 @@ const EMPTY_SNAPSHOT: SessionSnapshot = Object.freeze({
   activeTurnId: null,
 });
 
+let nextHistoryEpoch = 0;
 const sessionStates = new Map<string, SessionStreamState>();
 
 export interface SteeringReceipt {
@@ -392,6 +393,7 @@ function getOrCreate(sessionId: string): SessionStreamState {
   let state = sessionStates.get(sessionId);
   if (!state) {
     state = {
+      historyEpoch: ++nextHistoryEpoch,
       messages: [],
       isStreaming: false,
       thinkingStartedAt: null,
@@ -652,6 +654,18 @@ export function getSnapshot(sessionId: string): SessionSnapshot {
   return state._snapshot;
 }
 
+/** Capture the session epoch before an asynchronous history read. */
+export function beginHistoryRead(sessionId: string): number {
+  return getOrCreate(sessionId).historyEpoch;
+}
+
+export function isHistoryReadCurrent(
+  sessionId: string,
+  epoch: number,
+): boolean {
+  return sessionStates.get(sessionId)?.historyEpoch === epoch;
+}
+
 export function getPendingHitlId(sessionId: string): string | null {
   const messages = sessionStates.get(sessionId)?.messages ?? [];
   for (let index = messages.length - 1; index >= 0; index -= 1) {
@@ -665,6 +679,7 @@ export function getPendingHitlId(sessionId: string): string | null {
 export function setMessages(sessionId: string, messages: ChatMessage[]) {
   const state = getOrCreate(sessionId);
   state.messages = messages;
+  state.historyEpoch = ++nextHistoryEpoch;
   state.runUsage = null;
   usageSamplesByState.delete(state);
   notify(state);
@@ -708,6 +723,7 @@ export function setHistoryPage(
   const changedSinceBaseline = (message: ChatMessage): boolean => {
     if (message.status === "streaming") return true;
     if (!opts.baseline) return false;
+    if (message.localPending) return true;
     const baselineValue = opts.baseline.get(message.id);
     return (
       baselineValue === undefined || baselineValue !== JSON.stringify(message)
@@ -735,7 +751,10 @@ export function setHistoryPage(
   const liveUpdates = new Map(
     state.messages
       .filter(
-        (message) => loadedIds.has(message.id) && changedSinceBaseline(message),
+        (message) =>
+          loadedIds.has(message.id) &&
+          changedSinceBaseline(message) &&
+          !message.localPending,
       )
       .map((message) => [message.id, message]),
   );
@@ -807,10 +826,13 @@ export function setHistoryLoadingMore(sessionId: string, loading: boolean) {
 /** Append a user message to a session. */
 export function appendUserMessage(sessionId: string, msg: ChatMessage) {
   const state = getOrCreate(sessionId);
-  state.messages = [...state.messages, msg];
+  if (state.messages.some((message) => message.id === msg.id)) return;
+  state.messages = [
+    ...state.messages,
+    msg.role === "user" ? { ...msg, localPending: true } : msg,
+  ];
   notify(state);
 }
-
 /** Append a push (proactive/cron) assistant message to all active sessions. */
 export function appendPushMessage(text: string) {
   const msg: ChatMessage = {
@@ -835,6 +857,7 @@ export function clearMessages(sessionId: string) {
   // Leaving a thread (agent switch, page change) must not seal a live turn:
   // the socket keeps streaming into this state and the UI needs it on return.
   if (state.isStreaming || isLiveSocketOpen(sessionId)) return;
+  state.historyEpoch = ++nextHistoryEpoch;
   const alreadyEmpty =
     state.messages.length === 0 &&
     !state.isStreaming &&
@@ -900,7 +923,7 @@ function closeLiveSocket(
   } catch {
     // ignore
   }
-  clearLiveSocket(sessionId);
+  clearLiveSocket(sessionId, live.ws);
 }
 
 /** Cancel any in-flight stream for a session (user stop). */
@@ -1938,6 +1961,7 @@ export async function attachThread(
     controller.signal.addEventListener("abort", onAbort, { once: true });
 
     ws.onopen = () => {
+      if (liveSockets.get(sessionId)?.ws !== ws) return;
       touchStreamActivity(sessionId);
       try {
         ws.send(JSON.stringify({ type: "subscribe", thread_id: threadId }));
@@ -1948,10 +1972,19 @@ export async function attachThread(
     };
 
     ws.onmessage = (event) => {
+      if (liveSockets.get(sessionId)?.ws !== ws) return;
       try {
         const data = JSON.parse(String(event.data)) as Record<string, unknown>;
         if (!data || typeof data !== "object") return;
         if (!frameBelongsToThread(data, live.threadId)) return;
+        const frameTurnId = data.turn_id;
+        if (
+          data.type === "turn.ended" &&
+          typeof frameTurnId === "string" &&
+          state.activeTurnId &&
+          frameTurnId !== state.activeTurnId
+        )
+          return;
 
         if (data.type === "turn_status") {
           if (turnStatusAction(Boolean(data.active)) === "expect_stream") {
@@ -2023,6 +2056,10 @@ export async function attachThread(
     };
 
     ws.onclose = () => {
+      if (liveSockets.has(sessionId) && liveSockets.get(sessionId)?.ws !== ws) {
+        settleOpen();
+        return;
+      }
       controller.signal.removeEventListener("abort", onAbort);
       const wasIntentional = live.intentionalClose;
       const userCancelled = live.userCancelled;
@@ -2066,6 +2103,7 @@ export async function attachThread(
         })
       ) {
         setTimeout(() => {
+          if (sessionStates.get(sessionId) !== state) return;
           void attachThread(
             sessionId,
             agentId,
@@ -2168,6 +2206,7 @@ async function sendTurnWebSocket(
     controller.signal.addEventListener("abort", onAbort, { once: true });
 
     ws.onopen = () => {
+      if (liveSockets.get(sessionId)?.ws !== ws) return;
       openedForTurn = true;
       const payload: Record<string, unknown> = {
         type: "user_turn",
@@ -2209,6 +2248,7 @@ async function sendTurnWebSocket(
     };
 
     ws.onmessage = (event) => {
+      if (liveSockets.get(sessionId)?.ws !== ws) return;
       try {
         const data = JSON.parse(String(event.data)) as HarnessChunk;
         if (!data || typeof data !== "object") return;
@@ -2221,7 +2261,16 @@ async function sendTurnWebSocket(
           return;
         }
         if (!frameBelongsToThread(data, live.threadId)) return;
-        if ((data as { type?: string }).type === "turn_status") return;
+        const frameType: string = data.type;
+        const frameTurnId = "turn_id" in data ? data.turn_id : undefined;
+        if (
+          frameType === "turn.ended" &&
+          typeof frameTurnId === "string" &&
+          state.activeTurnId &&
+          frameTurnId !== state.activeTurnId
+        )
+          return;
+        if (frameType === "turn_status") return;
         handleHarnessChunk(state, data, sessionId);
         if (
           data.type === "done" ||
@@ -2249,6 +2298,10 @@ async function sendTurnWebSocket(
     };
 
     ws.onclose = () => {
+      if (liveSockets.has(sessionId) && liveSockets.get(sessionId)?.ws !== ws) {
+        settle(true);
+        return;
+      }
       const wasIntentional = live.intentionalClose;
       const userCancelled = live.userCancelled;
       // Capture before any finish() clears streaming flags.
@@ -2278,6 +2331,7 @@ async function sendTurnWebSocket(
         touchStreamActivity(sessionId);
         if (!settled) settle(true);
         setTimeout(() => {
+          if (sessionStates.get(sessionId) !== state) return;
           void attachThread(
             sessionId,
             agentId,

@@ -7,6 +7,7 @@ base64 never lands in LangGraph state or the dashboard history payload.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -24,6 +25,7 @@ from octop.infra.gateway.media.attachment_hints import (
     content_blocks_need_vision,
     expand_workspace_image_ref,
     expand_workspace_image_ref_sync,
+    fit_inline_image_block,
     is_workspace_image_ref,
 )
 
@@ -38,6 +40,18 @@ _PROTOCOL_FAILURES = (
     anthropic.APIStatusError,
     anthropic.APIConnectionError,
 )
+
+
+def _same_blocks(prepared: Sequence[Any], original: Sequence[Any]) -> bool:
+    return all(new is old for new, old in zip(prepared, original, strict=True))
+
+
+def _is_inline_data_image(block: object) -> bool:
+    if not isinstance(block, dict) or str(block.get("type") or "") not in _TOOL_IMAGE_TYPES:
+        return False
+    url_field = block.get("image_url")
+    url = url_field.get("url") if isinstance(url_field, dict) else url_field
+    return isinstance(url, str) and url.startswith("data:")
 
 
 def _request_locale() -> str:
@@ -64,7 +78,7 @@ def _protocols_failed(first_error: BaseException, second_error: BaseException) -
 
 
 class WorkspaceImageMaterializeMiddleware(AgentMiddleware[Any, Any]):
-    """Materialize workspace images and route image-bearing requests to vision models."""
+    """Materialize workspace images and fit request copies before model calls."""
 
     def __init__(
         self,
@@ -169,23 +183,31 @@ class WorkspaceImageMaterializeMiddleware(AgentMiddleware[Any, Any]):
     def _messages_need_vision(messages: Sequence[Any]) -> bool:
         return any(content_blocks_need_vision(getattr(msg, "content", None)) for msg in messages)
 
+    def _prepare_block_sync(self, block: Any) -> Any:
+        if isinstance(block, dict) and is_workspace_image_ref(block):
+            return expand_workspace_image_ref_sync(block, workspace=self._workspace)
+        if isinstance(block, dict):
+            return fit_inline_image_block(block)
+        return block
+
+    async def _prepare_block(self, block: Any) -> Any:
+        if isinstance(block, dict) and is_workspace_image_ref(block):
+            return await expand_workspace_image_ref(block, workspace=self._workspace)
+        if _is_inline_data_image(block):
+            return await asyncio.to_thread(fit_inline_image_block, block)
+        return block
+
     def _expand_messages_sync(self, messages: Sequence[Any]) -> list[Any]:
         out: list[Any] = []
         for msg in messages:
             content = getattr(msg, "content", None)
-            if not isinstance(content, list) or not any(
-                is_workspace_image_ref(block) for block in content if isinstance(block, dict)
-            ):
+            if not isinstance(content, list):
                 out.append(msg)
                 continue
-            new_blocks: list[Any] = [
-                (
-                    expand_workspace_image_ref_sync(block, workspace=self._workspace)
-                    if isinstance(block, dict) and is_workspace_image_ref(block)
-                    else block
-                )
-                for block in content
-            ]
+            new_blocks = [self._prepare_block_sync(block) for block in content]
+            if _same_blocks(new_blocks, content):
+                out.append(msg)
+                continue
             out.append(msg.model_copy(update={"content": new_blocks}))
         return self._prepare_model_messages(out)
 
@@ -193,19 +215,13 @@ class WorkspaceImageMaterializeMiddleware(AgentMiddleware[Any, Any]):
         out: list[Any] = []
         for msg in messages:
             content = getattr(msg, "content", None)
-            if not isinstance(content, list) or not any(
-                is_workspace_image_ref(block) for block in content if isinstance(block, dict)
-            ):
+            if not isinstance(content, list):
                 out.append(msg)
                 continue
-            new_blocks: list[Any] = []
-            for block in content:
-                if isinstance(block, dict) and is_workspace_image_ref(block):
-                    new_blocks.append(
-                        await expand_workspace_image_ref(block, workspace=self._workspace)
-                    )
-                else:
-                    new_blocks.append(block)
+            new_blocks = [await self._prepare_block(block) for block in content]
+            if _same_blocks(new_blocks, content):
+                out.append(msg)
+                continue
             out.append(msg.model_copy(update={"content": new_blocks}))
         return self._prepare_model_messages(out)
 

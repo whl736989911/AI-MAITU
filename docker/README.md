@@ -69,6 +69,27 @@ docker run -d \
   maitu:latest
 ```
 
+### Lite and full images
+
+The default `lite` image keeps the existing browser support and image behavior.
+Build the optional `full` variant to preinstall the `desktop`, `local-embedding`,
+and `knowledge-ocr` Python extras:
+
+```bash
+MAITU_IMAGE_VARIANT=full bash docker/docker_build.sh maitu:latest-full
+# Or use Compose (the default remains lite):
+MAITU_IMAGE_VARIANT=full docker compose -f docker/docker-compose.yml up -d --build
+```
+
+For a direct build, pass `--build-arg MAITU_IMAGE_VARIANT=full`; only `lite` and
+`full` are accepted. Full only installs dependencies: it does not download model
+weights or enable desktop/local-embedding/OCR features. The existing
+`/data/.octop` data mount also persists downloaded embedding models under
+`/data/.octop/embedding_models`; back up that directory with the rest of the
+instance data. Registry releases publish `:<version>-full` and `:latest-full`;
+the existing version and `:latest` tags remain the default lite image.
+
+
 ### Linux execution and browser sandboxes
 
 The image runs as UID/GID `1000:1000`. Python lives under `/usr/local/maitu-venv`,

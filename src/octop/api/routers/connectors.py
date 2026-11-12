@@ -31,6 +31,7 @@ from octop.infra.connectors.catalog import (
 from octop.infra.connectors.custom_mcp import (
     CUSTOM_MCP_KIND,
     is_custom_mcp_kind,
+    oauth_client_from_spec,
     oauth_configured,
     parse_synthetic_instance_id,
     redact_servers_for_api,
@@ -198,7 +199,10 @@ def _oauth_callback_html(
     return HTMLResponse(f"<html><body>{escape(message)}</body></html>", status_code=status_code)
 
 
-def _resolve_custom_mcp_url(svc: ConnectorService, user_id: int, server_name: str) -> str:
+def _resolve_custom_mcp_oauth_target(
+    svc: ConnectorService, user_id: int, server_name: str
+) -> tuple[str, dict[str, Any]]:
+    """Return the saved MCP URL and optional pre-registered OAuth client."""
     saved = svc.get_custom_servers(user_id)
     raw = saved.get(server_name)
     if not isinstance(raw, dict):
@@ -214,7 +218,7 @@ def _resolve_custom_mcp_url(svc: ConnectorService, user_id: int, server_name: st
     mcp_url = str(raw.get("url") or "").strip()
     if not mcp_url:
         raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "server url is required")
-    return mcp_url
+    return mcp_url, oauth_client_from_spec(raw)
 
 
 async def _begin_oauth_flow(
@@ -248,6 +252,7 @@ async def _begin_oauth_flow(
         )
 
     mcp_url: str | None = None
+    oauth_client: dict[str, Any] | None = None
     if target_type == "custom_mcp":
         server_name = str(target.get("server_name") or "").strip()
         if not server_name:
@@ -255,7 +260,9 @@ async def _begin_oauth_flow(
                 ErrorCode.CONNECTOR_INVALID_CREDENTIALS,
                 "custom_mcp target requires server_name",
             )
-        mcp_url = _resolve_custom_mcp_url(_connector_service(server), user.id, server_name)
+        mcp_url, oauth_client = _resolve_custom_mcp_oauth_target(
+            _connector_service(server), user.id, server_name
+        )
 
     try:
         authorize_url, verifier, ctx = await start_oauth_for_target(
@@ -264,6 +271,7 @@ async def _begin_oauth_flow(
             state=state,
             settings_repo=server.services.settings_repo,
             mcp_url=mcp_url,
+            oauth_client=oauth_client,
         )
     except ValueError as exc:
         raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, str(exc)) from exc
@@ -1353,6 +1361,8 @@ async def oauth_callback(
             tokens["oauth_client_id"] = ctx["client_id"]
         if ctx.get("client_secret"):
             tokens["oauth_client_secret"] = ctx["client_secret"]
+        if ctx.get("token_endpoint"):
+            tokens["oauth_token_endpoint"] = ctx["token_endpoint"]
         delete_oauth_ctx(server.services.settings_repo, row.state_id)
     except Exception as exc:
         logger.exception("oauth callback failed for %s", row.kind)

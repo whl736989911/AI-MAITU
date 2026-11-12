@@ -158,3 +158,151 @@ async def test_discover_oauth_from_mcp_url_uses_cache(monkeypatch: pytest.Monkey
     bypass = await discover_oauth_from_mcp_url("https://example.com/mcp", use_cache=False)
     assert bypass == cached_result
     assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_discovery_reports_pre_registered_client_requirement(monkeypatch):
+    import octop.infra.connectors.oauth.discovery as discovery
+
+    async def prm(_candidate):
+        return {
+            "resource": "https://mcp.example.com/mcp",
+            "authorization_servers": ["https://auth.example.com"],
+        }
+
+    async def metadata(_issuer):
+        return {
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+            "scopes_supported": ["read"],
+        }
+
+    async def probe(_url):
+        return None
+
+    monkeypatch.setattr(discovery, "_probe_401_resource_metadata", probe)
+    monkeypatch.setattr(discovery, "_fetch_prm_document", prm)
+    monkeypatch.setattr(discovery, "fetch_authorization_metadata", metadata)
+    found = await discovery._discover_oauth_from_mcp_url_uncached("https://mcp.example.com/mcp")
+    assert found["available"] is False
+    assert found["client_required"] is True
+    assert found["metadata"]["token_endpoint"] == "https://auth.example.com/token"
+
+
+@pytest.mark.asyncio
+async def test_custom_oauth_uses_saved_client_without_dynamic_registration(monkeypatch):
+    from urllib.parse import parse_qs, urlsplit
+
+    import octop.infra.connectors.oauth.registry as registry
+
+    async def manual_metadata(client, *, issuer):
+        assert issuer == "https://auth.example.com"
+        assert client["client_id"] == "registered-client"
+        return {
+            "authorization_endpoint": client["authorization_endpoint"],
+            "token_endpoint": client["token_endpoint"],
+            "_manual_client_metadata": True,
+        }
+
+    async def fail_dynamic_registration(*_args, **_kwargs):
+        raise AssertionError("dynamic registration must not be called")
+
+    monkeypatch.setattr(registry, "manual_client_metadata", manual_metadata)
+    monkeypatch.setattr(registry, "register_dynamic_client", fail_dynamic_registration)
+    authorize_url, _verifier, ctx = await registry.start_custom_mcp_oauth(
+        server_name="custom",
+        mcp_url="https://mcp.example.com/mcp",
+        redirect_uri="https://octop.example.com/api/connectors/oauth/callback",
+        state="state",
+        oauth_client={
+            "client_id": "registered-client",
+            "client_secret": "secret",
+            "scope": "read",
+            "authorization_endpoint": "https://auth.example.com/authorize",
+            "token_endpoint": "https://auth.example.com/token",
+        },
+    )
+    params = parse_qs(urlsplit(authorize_url).query)
+    assert params["client_id"] == ["registered-client"]
+    assert params["scope"] == ["read"]
+    assert ctx["token_endpoint"] == "https://auth.example.com/token"
+
+
+def test_custom_oauth_storage_keeps_manual_token_endpoint():
+    stored = build_oauth_storage(
+        {
+            "access_token": "token",
+            "oauth_client_id": "client",
+            "oauth_token_endpoint": "https://auth.example.com/token",
+        },
+        issuer="https://auth.example.com",
+        resource=None,
+    )
+    assert stored["oauth_token_endpoint"] == "https://auth.example.com/token"
+
+
+@pytest.mark.asyncio
+async def test_manual_oauth_refresh_uses_saved_token_endpoint(monkeypatch):
+    import octop.infra.connectors.oauth.registry as registry
+
+    async def refresh(metadata, **kwargs):
+        assert metadata == {
+            "token_endpoint": "https://auth.example.com/token",
+            "_manual_client_metadata": True,
+        }
+        assert kwargs["client_id"] == "client"
+        return {"access_token": "next-token"}
+
+    async def fail_discovery(_issuer):
+        raise AssertionError("manual token endpoint must not be rediscovered")
+
+    monkeypatch.setattr(registry, "refresh_access_token", refresh)
+    monkeypatch.setattr(registry, "fetch_authorization_metadata", fail_discovery)
+    result = await registry.refresh_custom_mcp_oauth(
+        {
+            "oauth_issuer": "https://auth.example.com",
+            "oauth_token_endpoint": "https://auth.example.com/token",
+            "oauth_client_id": "client",
+            "refresh_token": "refresh",
+        }
+    )
+    assert result["access_token"] == "next-token"
+
+
+@pytest.mark.asyncio
+async def test_oauth_token_exchange_requests_json_and_uses_pre_registered_client(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from octop.infra.connectors.oauth.mcp import exchange_authorization_code
+
+    response = type(
+        "Response",
+        (),
+        {
+            "raise_for_status": lambda self: None,
+            "json": lambda self: {"access_token": "access", "expires_in": 60},
+        },
+    )()
+    request = AsyncMock(return_value=response)
+
+    async def resolved(_url, *, field):
+        assert field == "token_endpoint"
+
+    monkeypatch.setattr("octop.infra.connectors.oauth.mcp.safe_request", request)
+    monkeypatch.setattr("octop.infra.connectors.oauth.mcp.validate_https_url_resolved", resolved)
+    result = await exchange_authorization_code(
+        {
+            "token_endpoint": "https://auth.example.com/token",
+            "_manual_client_metadata": True,
+        },
+        issuer="https://auth.example.com",
+        client_id="registered-client",
+        client_secret="client-secret",
+        code="authorization-code",
+        redirect_uri="https://octop.example.com/callback",
+        code_verifier="verifier",
+    )
+    assert result["access_token"] == "access"
+    request.assert_awaited_once()
+    assert request.await_args.kwargs["headers"]["Accept"] == "application/json"
+    assert request.await_args.kwargs["data"]["client_id"] == "registered-client"

@@ -51,6 +51,9 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
     {},
   );
   const [authorizingKey, setAuthorizingKey] = useState<string | null>(null);
+  const [oauthClientRequired, setOauthClientRequired] = useState<
+    Record<string, boolean>
+  >({});
   const [persistedNames, setPersistedNames] = useState<Set<string>>(
     () => new Set(),
   );
@@ -269,6 +272,12 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
       delete next[key];
       return next;
     });
+    setOauthClientRequired((prev) => {
+      if (!(key in prev)) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
   };
 
   const applyProbeResult = (
@@ -300,6 +309,27 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
       delete next[card.key];
       return next;
     });
+    if (result.oauth?.client_required) {
+      setOauthAvailable((prev) => ({
+        ...prev,
+        [card.key]: result.oauth?.available === true,
+      }));
+      setOauthClientRequired((prev) => ({ ...prev, [card.key]: true }));
+      updateCard(card.key, {
+        oauthClientOpen: true,
+        enabled: false,
+        defaultOpen: false,
+      });
+      if (!fromSave) {
+        message.warning(
+          t(
+            "connectors.customMcp.probeNeedsOAuthClient",
+            "此 MCP 的授权服务器不支持自动注册客户端",
+          ),
+        );
+      }
+      return;
+    }
     if (result.oauth?.available) {
       setOauthAvailable((prev) => ({ ...prev, [card.key]: true }));
       if (fromSave) {
@@ -736,6 +766,9 @@ export function CustomMcpTab({ focusServerName }: CustomMcpTabProps) {
                       authorizing={authorizingKey === card.key}
                       oauthAvailable={oauthAvailable[card.key] === true}
                       probeTools={probeResults[card.key]}
+                      oauthClientRequired={
+                        oauthClientRequired[card.key] === true
+                      }
                       transportOptions={transportOptions}
                       onUpdate={updateCard}
                       onToggleEnabled={(enabled) => {

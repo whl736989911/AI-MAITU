@@ -87,3 +87,19 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Build and push full variant
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/Dockerfile
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            MAITU_IMAGE_VARIANT=full
+          tags: |
+            ${{ steps.image.outputs.ghcr }}:${{ steps.ver.outputs.version }}-full
+            ${{ steps.image.outputs.ghcr }}:latest-full
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha,scope=full
+          cache-to: type=gha,scope=full,mode=max

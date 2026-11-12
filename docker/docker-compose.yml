@@ -26,6 +26,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        MAITU_IMAGE_VARIANT: ${MAITU_IMAGE_VARIANT:-lite}
     image: maitu:latest
     container_name: maitu
     restart: unless-stopped

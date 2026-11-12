@@ -206,6 +206,9 @@ def _memory_extract_settings(
     out: dict[str, Any] = _memory_aux_model_settings(mem, supported_fields, is_ref_usable)
     if "memory_enabled" in supported_fields and isinstance(mem.get("memory_enabled"), bool):
         out["memory_enabled"] = mem["memory_enabled"]
+    for key in ("memory_capture_enabled", "memory_recall_inject_enabled"):
+        if key in supported_fields and isinstance(mem.get(key), bool):
+            out[key] = mem[key]
     if "memory_extract_on_session_end" in supported_fields and isinstance(
         mem.get("extract_on_session_end"), bool
     ):
@@ -226,21 +229,6 @@ def _memory_extract_settings(
         ):
             out[dst] = float(val)
 
-    # orcakit-harness-agent 0.9.5 predates the interval trigger fields. Keep
-    # hot reload working against that release and approximate interval mode
-    # with its per-session idle watchdog until a newer harness is installed.
-    if (
-        mode == "interval"
-        and "memory_extract_trigger_mode" not in supported_fields
-        and "memory_extract_idle_seconds" in supported_fields
-    ):
-        interval = mem.get("extract_interval_seconds")
-        if isinstance(interval, int | float) and not isinstance(interval, bool) and interval > 0:
-            out["memory_extract_idle_seconds"] = float(interval)
-        logger.warning(
-            "Installed harness-agent lacks interval memory extraction; "
-            "falling back to the idle watchdog for this agent"
-        )
     return out
 
 
@@ -1962,6 +1950,7 @@ class AgentManager:
         *,
         apply_defaults: bool | None = None,
         extra_defaults: list[str] | None = None,
+        agent_owner_id: int | None = None,
     ) -> list[str] | None:
         """Resolve turn MCP servers vs default_open plus optional expert defaults."""
         return self._connector_svc.merge_turn_mcp_servers(
@@ -1969,14 +1958,22 @@ class AgentManager:
             explicit,
             apply_defaults=apply_defaults,
             extra_defaults=extra_defaults,
+            agent_owner_id=agent_owner_id,
         )
 
-    def default_mcp_servers(self, agent_id: str) -> list[str]:
-        """Composer connector defaults, empty for team hosts."""
+    def default_mcp_servers(self, agent_id: str, *, viewer_user_id: int | None = None) -> list[str]:
+        """Stored defaults, or caller-visible composer names when a viewer is supplied."""
         row = self._repos.agent_repo.get(agent_id)
         if row is None or is_team_agent(row):
             return []
-        return id_list_from_row(row, "mcp_servers")
+        names = id_list_from_row(row, "mcp_servers")
+        if viewer_user_id is None:
+            return names
+        return self._connector_svc.present_mcp_names_for_viewer(
+            owner_user_id=row.user_id,
+            viewer_user_id=viewer_user_id,
+            names=names,
+        )
 
     def default_knowledge_base_ids(self, agent_id: str) -> list[str]:
         """Composer knowledge-base defaults, empty for team hosts."""
@@ -3843,14 +3840,19 @@ class AgentManager:
             build_feature_memory_tools,
         )
 
+        extract_settings = _memory_extract_settings(
+            cfg, is_ref_usable=self._providers.is_model_ref_usable
+        )
+        if not extract_settings.get("memory_enabled", True):
+            previous = self._feature_memory_routings.pop(row.agent_id, None)
+            if previous is not None:
+                previous.close()
+            return None
         _ns, backend_type, backend_config = open_memory_kwargs(
             agent_id=row.agent_id,
             cfg=cfg,
             octop_config=self._config,
             workspace_dir=workspace_dir,
-        )
-        extract_settings = _memory_extract_settings(
-            cfg, is_ref_usable=self._providers.is_model_ref_usable
         )
         idle_seconds = float(
             extract_settings.get("memory_extract_idle_seconds")
@@ -3867,6 +3869,8 @@ class AgentManager:
             agent_id=row.agent_id,
             runtime=runtime,
             idle_extract_seconds=idle_seconds,
+            capture_enabled=extract_settings.get("memory_capture_enabled", True),
+            recall_inject_enabled=extract_settings.get("memory_recall_inject_enabled", True),
         )
         tools = build_feature_memory_tools(runtime, agent_id=row.agent_id)
         previous = self._feature_memory_routings.get(row.agent_id)

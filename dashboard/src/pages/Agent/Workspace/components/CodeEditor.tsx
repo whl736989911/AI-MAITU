@@ -1,9 +1,10 @@
 /**
  * CodeEditor — Monaco-based IDE editor for workspace text/code files.
  *
- * Lazy-loads ``@monaco-editor/react`` so the heavy editor bundle only
- * ships when a user actually edits a file. Language is derived from the
- * file extension via ``getEditorLanguage``.
+ * Lazy-loads the editor so Monaco is fetched only when a user edits a
+ * file. The full ``min/vs`` tree, including workers, is served from this
+ * origin under the configured public base. Language comes from
+ * ``getEditorLanguage``.
  *
  * While an ancestor dock panel has ``data-dock-resizing``, automaticLayout
  * is paused so popup/right-panel resize stays smooth; layout() runs once
@@ -11,12 +12,13 @@
  */
 
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 import { Spin } from "antd";
 import type { OnMount } from "@monaco-editor/react";
 import { getEditorLanguage } from "../utils/editorLanguage";
 import styles from "../index.module.less";
 
-const MonacoEditor = lazy(() => import("@monaco-editor/react"));
+const MonacoEditor = lazy(() => import("@/components/monaco"));
 
 function useIsDark(): boolean {
   const [dark, setDark] = useState(
@@ -49,8 +51,9 @@ export default function CodeEditor({
   readOnly = false,
   language,
 }: CodeEditorProps) {
-  const resolvedLanguage = language ?? getEditorLanguage(path);
+  const { t } = useTranslation();
   const isDark = useIsDark();
+  const resolvedLanguage = language ?? getEditorLanguage(path);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const editorRef = useRef<{
     updateOptions: (opts: { automaticLayout?: boolean }) => void;
@@ -99,6 +102,7 @@ export default function CodeEditor({
       <Suspense fallback={fallback}>
         <MonacoEditor
           height="100%"
+          loading={t("common.loading")}
           language={resolvedLanguage}
           theme={isDark ? "vs-dark" : "light"}
           value={value}

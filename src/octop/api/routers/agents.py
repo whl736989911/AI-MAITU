@@ -186,6 +186,7 @@ def _owner_username(server: Any, row: Any) -> str | None:
 def _row_dict(
     row: Any,
     *,
+    composer_mcp_servers: list[str],
     viewer_user_id: int | None = None,
     owner_username: str | None = None,
     bootstrap_pending: bool | None = None,
@@ -232,6 +233,7 @@ def _row_dict(
         "skill_package_ids": packages,
         "knowledge_base_ids": id_list_from_row(row, "knowledge_base_ids"),
         "mcp_servers": id_list_from_row(row, "mcp_servers"),
+        "composer_mcp_servers": composer_mcp_servers,
         "published_expert_id": row.published_expert_id,
         "welcome_message": welcome_from_row(row),
         "is_shared": is_shared,
@@ -294,6 +296,9 @@ async def list_agents(
             _row_dict(
                 r,
                 viewer_user_id=user.id,
+                composer_mcp_servers=server.app_runtime.agent_registry.default_mcp_servers(
+                    r.agent_id, viewer_user_id=user.id
+                ),
                 owner_username=username_by_id.get(r.user_id) if r.user_id is not None else None,
                 bootstrap_pending=_bootstrap_pending_for(server, r.agent_id),
                 is_shared=r.agent_id in public_ids,
@@ -345,6 +350,9 @@ async def list_agents(
             _row_dict(
                 r,
                 viewer_user_id=user.id,
+                composer_mcp_servers=server.app_runtime.agent_registry.default_mcp_servers(
+                    r.agent_id, viewer_user_id=user.id
+                ),
                 owner_username=(
                     shared_owner_username_by_id.get(r.user_id) if r.user_id is not None else None
                 ),
@@ -452,6 +460,9 @@ async def create_agent(
     return _row_dict(
         row,
         viewer_user_id=user.id,
+        composer_mcp_servers=server.app_runtime.agent_registry.default_mcp_servers(
+            row.agent_id, viewer_user_id=user.id
+        ),
         owner_username=user.username,
         bootstrap_pending=_bootstrap_pending_for(server, row.agent_id),
         is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
@@ -488,6 +499,9 @@ async def get_agent(
     return _row_dict(
         row,
         viewer_user_id=user.id,
+        composer_mcp_servers=server.app_runtime.agent_registry.default_mcp_servers(
+            row.agent_id, viewer_user_id=user.id
+        ),
         owner_username=_owner_username(server, row),
         bootstrap_pending=_bootstrap_pending_for(server, agent_id),
         is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),
@@ -595,6 +609,9 @@ async def patch_agent(
     return _row_dict(
         row,
         viewer_user_id=user.id,
+        composer_mcp_servers=server.app_runtime.agent_registry.default_mcp_servers(
+            row.agent_id, viewer_user_id=user.id
+        ),
         owner_username=_owner_username(server, row),
         bootstrap_pending=_bootstrap_pending_for(server, agent_id),
         is_shared=row.agent_id in server.services.agent_repo.public_agent_ids([row.agent_id]),

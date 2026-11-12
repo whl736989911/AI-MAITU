@@ -813,10 +813,12 @@ class GlobalProcessor:
         # An open ``ask_user_question`` pause turns the user's next message into
         # the answer for that paused turn instead of starting a new one.
         if cmd is None and msg.text.strip():
+            thread_hint = (msg.metadata or {}).get("thread_id")
             ask_record = self._hitl.resolve_ask_pending(
                 session_key,
                 agent_id=agent_id,
                 user_id=user_id,
+                thread_id=thread_hint if isinstance(thread_hint, str) else None,
             )
             if ask_record is not None:
                 usage_tracker = UsageTracker()
@@ -1792,11 +1794,13 @@ class GlobalProcessor:
         """
         from octop.infra.errors import ErrorCode, OctopError  # noqa: PLC0415
 
+        agent_row = self._agent_manager.get_row(agent_id)
         merged = self._agent_manager.merge_turn_mcp_servers(
             user_id,
             explicit,
             apply_defaults=apply_defaults,
             extra_defaults=self._agent_manager.default_mcp_servers(agent_id),
+            agent_owner_id=agent_row.user_id if agent_row is not None else None,
         )
         if not merged:
             return None

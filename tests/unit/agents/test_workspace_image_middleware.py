@@ -24,11 +24,56 @@ from octop.infra import errors as infra_errors
 from octop.infra.agents.middleware import workspace_image as workspace_image_middleware
 from octop.infra.agents.middleware.binary_read_guard import BinaryReadGuardMiddleware
 from octop.infra.agents.middleware.workspace_image import WorkspaceImageMaterializeMiddleware
-from octop.infra.gateway.media.attachment_hints import make_workspace_image_ref
+from octop.infra.gateway.media.attachment_hints import (
+    VISION_SAFE_MAX_SIDE,
+    make_workspace_image_ref,
+)
 
 _PNG_BUFFER = io.BytesIO()
 Image.new("RGB", (2, 2), (20, 90, 200)).save(_PNG_BUFFER, format="PNG")
 _PNG = _PNG_BUFFER.getvalue()
+
+
+def _long_png() -> bytes:
+    buffer = io.BytesIO()
+    Image.new("RGB", (8100, 80), (20, 90, 200)).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+@pytest.mark.asyncio
+async def test_inline_long_image_is_fitted_on_request_without_mutating_history() -> None:
+    with tempfile.TemporaryDirectory() as ws_dir:
+        workspace = BackendWorkspace(
+            LocalShellBackend(root_dir=ws_dir, virtual_mode=False),
+            ws_dir,
+        )
+        raw = _long_png()
+        original_block = {
+            "type": "image_url",
+            "image_url": {
+                "url": f"data:image/png;base64,{base64.b64encode(raw).decode()}",
+            },
+        }
+        human = HumanMessage(content=[original_block])
+        captured: dict[str, Any] = {}
+
+        async def handler(request: Any) -> Any:
+            captured["messages"] = request.messages
+            return MagicMock()
+
+        request = MagicMock()
+        request.messages = [human]
+        request.override = lambda **kw: MagicMock(**kw)
+        await WorkspaceImageMaterializeMiddleware(
+            workspace=workspace,
+            model_for_images=MagicMock(return_value=MagicMock()),
+        ).awrap_model_call(request, handler)
+
+        fitted_block = captured["messages"][0].content[0]
+        fitted = base64.b64decode(fitted_block["image_url"]["url"].split(",", 1)[1])
+        with Image.open(io.BytesIO(fitted)) as image:
+            assert max(image.size) <= VISION_SAFE_MAX_SIDE
+        assert base64.b64decode(original_block["image_url"]["url"].split(",", 1)[1]) == raw
 
 
 @pytest.mark.asyncio

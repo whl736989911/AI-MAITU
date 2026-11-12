@@ -158,8 +158,9 @@ async def _maybe_attach_oauth_discovery(
     *,
     url: str,
     headers: dict[str, str],
+    oauth_client: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """When auth fails without a bearer token, try MCP OAuth discovery."""
+    """Attach OAuth availability and any pre-registered-client requirement."""
     if result.get("ok") is not False or result.get("error_type") != "auth":
         return result
     auth_header = next(
@@ -168,10 +169,21 @@ async def _maybe_attach_oauth_discovery(
     )
     if auth_header.lower().startswith("bearer ") and len(auth_header) > 7:
         return result
+    has_client = bool(oauth_client and oauth_client.get("client_id"))
+    if has_client and oauth_client and oauth_client.get("token_endpoint"):
+        result["oauth"] = {"available": True}
+        return result
     discovery = await discover_oauth_from_mcp_url(url)
     if discovery.get("available"):
         result["oauth"] = {
             "available": True,
+            "issuer": discovery.get("issuer"),
+            "resource": discovery.get("resource"),
+        }
+    elif discovery.get("client_required"):
+        result["oauth"] = {
+            "available": has_client,
+            "client_required": True,
             "issuer": discovery.get("issuer"),
             "resource": discovery.get("resource"),
         }
@@ -540,4 +552,9 @@ async def probe_custom_mcp_server(spec: dict[str, Any]) -> dict[str, Any]:
     headers = {str(k): str(v) for k, v in dict(connection.get("headers") or {}).items()}
     headers.setdefault("Accept", "application/json, text/event-stream")
     result = await probe_streamable_http_mcp(url, headers, kind="custom-mcp")
-    return await _maybe_attach_oauth_discovery(result, url=url, headers=headers)
+    return await _maybe_attach_oauth_discovery(
+        result,
+        url=url,
+        headers=headers,
+        oauth_client=dict(spec.get("oauth_client") or {}),
+    )

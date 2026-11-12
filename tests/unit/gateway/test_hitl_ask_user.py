@@ -222,6 +222,31 @@ class TestCoordinatorRouting:
         assert record is not None
         assert record.thread_id == "thr1"
 
+    def test_same_thread_id_resolves(self) -> None:
+        coordinator = HitlChannelCoordinator(HitlPendingStore())
+        self._register(coordinator.store, SINGLE_CHOICE)
+        record = coordinator.resolve_ask_pending(
+            "sk1",
+            agent_id="agent1",
+            user_id=7,
+            thread_id="thr1",
+        )
+        assert record is not None
+        assert record.thread_id == "thr1"
+
+    def test_other_thread_id_does_not_resolve(self) -> None:
+        coordinator = HitlChannelCoordinator(HitlPendingStore())
+        self._register(coordinator.store, SINGLE_CHOICE)
+        assert (
+            coordinator.resolve_ask_pending(
+                "sk1",
+                agent_id="agent1",
+                user_id=7,
+                thread_id="thr-other",
+            )
+            is None
+        )
+
     def test_approval_pending_not_routed(self) -> None:
         coordinator = HitlChannelCoordinator(HitlPendingStore())
         self._register(coordinator.store, APPROVAL)
