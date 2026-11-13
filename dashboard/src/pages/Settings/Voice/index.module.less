@@ -12,9 +12,9 @@
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  row-gap: 14px;
-  column-gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  row-gap: 10px;
+  column-gap: 10px;
   margin-bottom: 8px;
 
   @media (max-width: 767px) {
@@ -27,22 +27,18 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 168px;
-  padding: 16px;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
   background: var(--fn-bg-primary);
   border: 1px solid var(--fn-card-border-normal);
-  border-radius: var(--fn-card-radius, var(--fn-radius-lg));
-  box-shadow: var(--fn-card-shadow-normal);
-  transition:
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    transform 0.18s ease;
+  border-radius: var(--fn-radius-md, 8px);
+  transition: border-color 0.18s ease;
 
   &:hover {
     border-color: var(--fn-border-input);
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
-    transform: translateY(-1px);
+    box-shadow: var(--fn-card-shadow-normal);
+    transform: none;
   }
 
   @media (max-width: 767px) {
@@ -167,9 +163,12 @@
 }
 
 .badgeFree {
-  color: #047857;
-  background: var(--fn-bg-success-light, #ecfdf5);
-  border-color: color-mix(in srgb, #10b981 22%, transparent);
+  color: var(--fn-color-success);
+  background: var(
+    --fn-bg-success-light,
+    color-mix(in srgb, var(--fn-color-success) 12%, transparent)
+  );
+  border-color: color-mix(in srgb, var(--fn-color-success) 22%, transparent);
 }
 
 .badgeActive {

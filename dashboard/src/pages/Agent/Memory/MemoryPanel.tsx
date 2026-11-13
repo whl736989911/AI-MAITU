@@ -1,6 +1,6 @@
 /**
- * Embeddable memory dashboard (tabs + content). Used by the Memory page,
- * Experts MemoryCatalogDrawer, and Personalization.
+ * Embeddable memory dashboard (tabs + content). Used by the Memory page
+ * and resource personalization.
  */
 
 import { useEffect, useMemo, useState, type ReactNode } from "react";

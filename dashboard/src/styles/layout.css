@@ -112,7 +112,7 @@ html[data-theme="dark"] .ant-table-thead > tr > th,
 html[data-theme="dark"] .octop-ant-table-thead > tr > th,
 html[data-theme="dark"] .ant-table-thead > tr > td,
 html[data-theme="dark"] .octop-ant-table-thead > tr > td {
-  background-color: var(--fn-bg-tertiary) !important;
+  background-color: transparent !important;
   border-color: var(--fn-border-primary) !important;
   color: var(--fn-text-secondary) !important;
 }
@@ -422,4 +422,159 @@ html[data-theme="dark"] ::-webkit-scrollbar-thumb {
 }
 html[data-theme="dark"] ::-webkit-scrollbar-thumb:hover {
   background: rgba(255, 255, 255, 0.18);
+}
+
+/* Signed-in density overrides; colors and component identity remain theme-driven. */
+html[data-density="compact"] {
+  .octop-card-head {
+    min-height: 38px;
+    padding-inline: 12px;
+  }
+  .octop-card-body {
+    padding-block: 8px;
+  }
+  .octop-modal-content {
+    padding: 16px;
+  }
+  .octop-modal-header {
+    margin-bottom: 8px;
+  }
+  .octop-modal-footer {
+    margin-top: 8px;
+  }
+  .octop-drawer-header {
+    padding: 10px 16px;
+  }
+  .octop-drawer-body {
+    padding: 12px 16px;
+  }
+  .octop-drawer-footer {
+    padding: 6px 16px;
+  }
+  .octop-tabs-top > .octop-tabs-nav {
+    margin-bottom: 8px;
+  }
+  .octop-empty {
+    margin-block: 8px;
+  }
+}
+
+/* Workspace navigation groups real modules; route and resource guards remain unchanged. */
+.workspace-frame,
+.workspace-main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+.workspace-modules {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 18px;
+  padding: 0 24px;
+  min-height: 46px;
+  border-bottom: 1px solid var(--fn-border-primary);
+  background: var(--fn-bg-primary);
+}
+.workspace-modules-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fn-text-primary);
+  white-space: nowrap;
+}
+.workspace-module-links {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  overflow-x: auto;
+  min-width: 0;
+}
+.workspace-module-links > a {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex: none;
+  min-height: 32px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  text-decoration: none;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--fn-text-secondary);
+  white-space: nowrap;
+  transition:
+    background var(--fn-transition-fast),
+    color var(--fn-transition-fast);
+}
+.workspace-module-links > a:hover {
+  background: var(--fn-bg-hover);
+  color: var(--fn-text-primary);
+}
+.workspace-module-links > a[aria-current="page"] {
+  background: var(--fn-bg-selected);
+  color: var(--fn-text-brand);
+  font-weight: 600;
+}
+.workspace-module-links > a:focus-visible {
+  outline: 2px solid var(--fn-border-focus);
+  outline-offset: -2px;
+}
+.workspace-module-icon {
+  display: flex;
+  flex: none;
+  color: currentColor;
+}
+.workspace-frame[data-workspace="system"] {
+  flex-direction: row;
+}
+.workspace-frame[data-workspace="system"] > .workspace-modules {
+  width: 164px;
+  padding: 20px 10px;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 12px;
+  border-bottom: 0;
+  border-right: 1px solid var(--fn-border-primary);
+}
+.workspace-frame[data-workspace="system"] .workspace-modules-title {
+  padding: 0 10px;
+}
+.workspace-frame[data-workspace="system"] .workspace-module-links {
+  align-items: stretch;
+  flex-direction: column;
+  overflow-y: auto;
+}
+
+/* Density only: preserve Ant Design's original card/table/tab decoration. */
+@media (max-width: 767px) {
+  .workspace-modules {
+    min-height: 42px;
+    padding: 4px 12px;
+    gap: 10px;
+  }
+  .workspace-modules-title {
+    display: none;
+  }
+  .workspace-frame[data-workspace="system"] {
+    flex-direction: column;
+  }
+  .workspace-frame[data-workspace="system"] > .workspace-modules {
+    width: auto;
+    flex-direction: row;
+    padding: 4px 12px;
+    border-right: 0;
+    border-bottom: 1px solid var(--fn-border-primary);
+  }
+  .workspace-frame[data-workspace="system"] .workspace-module-links {
+    flex-direction: row;
+    align-items: center;
+    overflow-y: hidden;
+    overflow-x: auto;
+  }
+  .workspace-module-links > a {
+    min-height: 34px;
+  }
 }

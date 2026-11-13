@@ -4,11 +4,11 @@ import { request } from "../request";
  * Org-unit directory (``/api/org-units``) — the hierarchy an account's resource
  * scope hangs off.
  *
- * Reads sit behind the ``users`` module and every write behind ``require_admin``.
- * A refused write still answers with the usual error envelope, and
- * ``details.reason`` / ``details.children`` / ``details.users`` carry the actual
- * cause — the reused error code names the wrong kind of object, so the page
- * prefers those detail fields over the code's localized text.
+ * Reads require the ``users`` module. Writes additionally require an
+ * administrator scope covering the target unit; root operations have extra
+ * restrictions enforced by the server.
+ * Refusals use the normal error envelope, with ``details`` explaining
+ * hierarchy, membership, and scope constraints.
  */
 
 /** Bilingual unit name — both columns are NOT NULL server-side. */

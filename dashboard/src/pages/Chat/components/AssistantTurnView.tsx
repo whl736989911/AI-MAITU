@@ -22,11 +22,7 @@ import {
 import MessageBubble from "./MessageBubble";
 import { ToolMediaStrip } from "./ToolMediaStrip";
 import ArtifactFilesCard from "./ArtifactFilesCard";
-import {
-  TurnProcessBlocks,
-  turnHasProcessSummary,
-  turnHasVisibleProcess,
-} from "./TurnProcessBlocks";
+import { TurnProcessBlocks, turnHasVisibleProcess } from "./TurnProcessBlocks";
 import { collectTurnToolMedia } from "../../../utils/collectTurnToolMedia";
 import { ChatKnowledgeCitationsProvider } from "../ChatKnowledgeCitationsContext";
 import { collectTurnKnowledgeCitations } from "../../../utils/collectTurnKnowledgeCitations";
@@ -188,13 +184,8 @@ export default function AssistantTurnView({
   const firstProcessSegmentIdx = compactProcess
     ? -1
     : segmentProcess.findIndex(({ split }) => hasProcessContent(split));
-  const firstSummaryIdx = compactProcess
-    ? -1
-    : segmentProcess.findIndex(({ split }) => turnHasProcessSummary(split));
   const showTrailingProcess =
     !compactProcess && hasProcessContent(trailingSplit);
-  const trailingHasSummary =
-    !compactProcess && turnHasProcessSummary(trailingSplit);
   const anyProcessShown = firstProcessSegmentIdx >= 0 || showTrailingProcess;
 
   const todoPanel =
@@ -229,7 +220,7 @@ export default function AssistantTurnView({
                     onAcpPermissionSelect={onAcpPermissionSelect}
                     hideToolMedia={hasToolMedia}
                     agentId={agentId}
-                    showAvatar={idx === firstSummaryIdx}
+                    showIdentity={idx === firstProcessSegmentIdx}
                   />
                   {todoPanel && idx === firstProcessSegmentIdx ? (
                     <div className={styles.turnInset}>{todoPanel}</div>
@@ -253,7 +244,7 @@ export default function AssistantTurnView({
               onAcpPermissionSelect={onAcpPermissionSelect}
               hideToolMedia={hasToolMedia}
               agentId={agentId}
-              showAvatar={firstSummaryIdx < 0 && trailingHasSummary}
+              showIdentity={firstProcessSegmentIdx < 0}
             />
             {todoPanel && firstProcessSegmentIdx < 0 ? (
               <div className={styles.turnInset}>{todoPanel}</div>
@@ -275,7 +266,7 @@ export default function AssistantTurnView({
             <MessageBubble
               message={toAnswerOnlyMessage(trailingSplit.answerMessage)}
               agentId={agentId}
-              showAvatar={firstSummaryIdx < 0 && !trailingHasSummary}
+              showIdentity={firstProcessSegmentIdx < 0 && !showTrailingProcess}
               onRegenerate={onRegenerate}
               onEditUserMessage={onEditUserMessage}
               onForkAssistantMessage={onForkAssistantMessage}

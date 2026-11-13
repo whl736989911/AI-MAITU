@@ -1,5 +1,6 @@
 import { useCallback } from "react";
 import { useTranslation } from "react-i18next";
+import { X } from "lucide-react";
 import type { RefObject } from "react";
 import SessionList from "./SessionList";
 import MinimalAgentSessionNav from "./MinimalAgentSessionNav";
@@ -150,6 +151,18 @@ export default function ChatSidebarPanel({
             : undefined
         }
       >
+        {isMobile && (
+          <div className={styles.sidebarMobileHeader}>
+            <button
+              type="button"
+              className={styles.menuBtn}
+              aria-label={t("chat.collapseHistorySidebar")}
+              onClick={() => onSidebarOpenChange(false)}
+            >
+              <X size={18} />
+            </button>
+          </div>
+        )}
         {sessionList}
         {!isMobile && sidebarOpen && (
           <div

@@ -46,7 +46,6 @@ import {
 import { MessageFileCard } from "./MessageFileCard";
 import AskQuestionCard from "./AskQuestionCard";
 import HitlApprovalCard from "./HitlApprovalCard";
-import MessageSender, { ExpertMessageAvatar } from "./MessageSender";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useAgent } from "../../../context/AgentContext";
 import {
@@ -55,6 +54,8 @@ import {
 } from "../utils/accountDisplayName";
 import { extractAskQuestions, isAskHitl } from "../../../api/types/hitl";
 import styles from "../index.module.less";
+import { useChatAgentProfile } from "../ChatAgentProfileContext";
+import MessageSender, { ExpertMessageAvatar } from "./MessageSender";
 import {
   DefaultToolRenderer,
   builtinPluginHost,
@@ -90,8 +91,8 @@ interface MessageBubbleProps {
   compact?: boolean;
   /** Position within an assistant group — controls border-radius & meta visibility. */
   groupPosition?: "first" | "middle" | "last" | "only";
-  /** Assistant avatar. Hide when the turn already shows one on the process row. */
-  showAvatar?: boolean;
+  /** Assistant identity; hidden when the turn already identifies its speaker. */
+  showIdentity?: boolean;
   onRunShellCommand?: (code: string) => void;
   shellCommandDisabled?: boolean;
   shellCommandDisabledTitle?: string;
@@ -542,7 +543,7 @@ function MessageBubble({
   onHitlDecision,
   compact,
   groupPosition = "only",
-  showAvatar = true,
+  showIdentity = true,
   onRunShellCommand,
   shellCommandDisabled,
   shellCommandDisabledTitle,
@@ -566,6 +567,7 @@ function MessageBubble({
   const expertName = message.speakerName || expert?.name;
   const userName = accountDisplayName(user);
 
+  const agentProfile = useChatAgentProfile();
   const [isEditing, setIsEditing] = useState(false);
   const [editText, setEditText] = useState(message.content);
   const editTextareaRef = useRef<HTMLTextAreaElement>(null);
@@ -739,25 +741,11 @@ function MessageBubble({
       : "";
 
   const showSender =
-    (isUser || groupPosition === "first" || groupPosition === "only") &&
-    (isUser || showAvatar);
-  const senderAvatar = !showSender ? null : isUser ? (
-    <MessageSender
-      name={userName}
-      avatar={
-        <span className={styles.msgUserAvatar}>
-          {accountInitials(userName)}
-        </span>
-      }
-    />
-  ) : expert ? (
-    <ExpertMessageAvatar
-      name={expertName}
-      color={expert.color}
-      iconName={expert.icon_name}
-      iconUrl={expert.icon_url}
-    />
-  ) : null;
+    isUser ||
+    ((groupPosition === "first" || groupPosition === "only") && showIdentity);
+  const senderName = isUser
+    ? userName
+    : expertName || t("chat.assistant", "Assistant");
 
   return (
     <div
@@ -767,9 +755,6 @@ function MessageBubble({
         isError ? styles.errorBubble : ""
       } ${compact ? styles.compactBubble : ""}`}
     >
-      {!isUser && senderAvatar ? (
-        <div className={styles.avatarCol}>{senderAvatar}</div>
-      ) : null}
       {showUserComposerTags ? (
         <UserMessageComposerTags
           context={message.composerContext}
@@ -777,6 +762,25 @@ function MessageBubble({
         />
       ) : null}
       <div className={styles.bubbleContent}>
+        {showSender ? (
+          agentProfile?.canOpen && !isUser ? (
+            <button
+              type="button"
+              className={`${styles.messageIdentity} ${styles.messageIdentityButton}`}
+              onClick={() => agentProfile.openAgentProfile()}
+            >
+              {senderName}
+            </button>
+          ) : (
+            <div
+              className={`${styles.messageIdentity} ${
+                isUser ? styles.messageIdentityUser : ""
+              }`}
+            >
+              {senderName}
+            </div>
+          )
+        ) : null}
         {isUser ? (
           <div className={styles.userMsgRow}>
             <div className={styles.userMsgColumn}>
@@ -951,6 +955,7 @@ function MessageBubble({
                 )}
                 {textContent && (
                   <Markdown
+                    style={{ fontSize: "inherit", lineHeight: "inherit" }}
                     content={linkifyKnowledgeCitations(
                       textContent,
                       turnCitations,
@@ -1063,8 +1068,26 @@ function MessageBubble({
             </div>
           )}
       </div>
-      {isUser && senderAvatar ? (
-        <div className={styles.avatarCol}>{senderAvatar}</div>
+      {isUser ? (
+        <div className={styles.avatarCol}>
+          <MessageSender
+            name={userName}
+            avatar={
+              <span className={styles.msgUserAvatar}>
+                {accountInitials(userName)}
+              </span>
+            }
+          />
+        </div>
+      ) : showSender ? (
+        <div className={styles.avatarCol}>
+          <ExpertMessageAvatar
+            name={senderName}
+            color={expert?.color}
+            iconName={expert?.icon_name}
+            iconUrl={expert?.icon_url}
+          />
+        </div>
       ) : null}
     </div>
   );

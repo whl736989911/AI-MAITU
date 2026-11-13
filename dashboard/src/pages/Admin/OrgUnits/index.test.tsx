@@ -16,6 +16,7 @@ import userEventLibrary, {
   type UserEvent,
 } from "@testing-library/user-event";
 import type { OctopUser } from "../../../api/modules/auth";
+import type { OrgUnit } from "../../../api/modules/orgUnits";
 import type * as I18nModule from "react-i18next";
 import type * as RequestModule from "../../../api/request";
 import zh from "../../../locales/zh.json";
@@ -126,6 +127,7 @@ const CATALOG = [
 
 let stored: string[] = [];
 let saved: { url: string; method: string; body: unknown }[] = [];
+let visibleUnits: OrgUnit[] = UNITS;
 let userEvent: UserEvent;
 
 beforeEach(() => {
@@ -136,9 +138,10 @@ beforeEach(() => {
   requestMock.mockReset();
   stored = [];
   saved = [];
+  visibleUnits = UNITS;
   requestMock.mockImplementation(
     async (url: string, init?: { method?: string; body?: string }) => {
-      if (url === "/org-units") return { units: UNITS };
+      if (url === "/org-units") return { units: visibleUnits };
       if (url === "/users") return [];
       if (url === "/users/permissions") return CATALOG;
       if (url === "/org-units/acme-sales/permissions") {
@@ -283,7 +286,7 @@ describe("Admin → Org units: department module grants", () => {
       role: "enterprise_admin",
     };
     renderPage(enterpriseAdmin);
-    await screen.findByText("销售部");
+    expect(await screen.findByText("销售部")).toBeVisible();
 
     for (const name of ["新建部门", "编辑", "模块授权", "删除"]) {
       const button = findButtonByText(document.body, name);
@@ -292,11 +295,19 @@ describe("Admin → Org units: department module grants", () => {
     }
   });
 
+  it("does not present a scoped department as a root when its parent is outside the directory", async () => {
+    visibleUnits = [{ ...UNITS[0], parent_key: "acme" }];
+    renderPage({ ...EMPLOYEE, role: "unit_admin" });
+
+    expect(await screen.findByText("acme")).toBeVisible();
+    expect(screen.queryByText(zh.orgUnits.parentRoot)).not.toBeInTheDocument();
+  });
+
   it("shows no grants control to an actor with no department to authorize", async () => {
     renderPage(EMPLOYEE);
 
-    // The tree still renders — reads are the ``users`` key, not a role.
-    expect(await screen.findByText("销售部")).toBeTruthy();
+    // Reads are the ``users`` key, not a role.
+    expect(await screen.findByText("销售部")).toBeVisible();
     expect(findButtonByText(document.body, "模块授权")).toBeUndefined();
   });
 });

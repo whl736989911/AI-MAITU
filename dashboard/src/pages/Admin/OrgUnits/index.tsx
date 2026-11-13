@@ -2,9 +2,9 @@
  * Admin → Org Units page — /admin/org-units
  *
  * The directory behind every account's resource scope. Reads are part of the
- * users module (the backend mounts ``/api/org-units`` behind ``"users"``) and
- * every write is admin-only, so a non-administrator gets the tree without the
- * edit controls.
+ * users module; system, enterprise and department administrators may manage the
+ * units returned within their server-validated scope. Employees can inspect
+ * the directory but cannot change it.
  *
  * The two preconditions the server enforces on a delete are mirrored here
  * instead of being left to the refusal: a unit that still has children, or that
@@ -14,7 +14,7 @@
  * between two loads) is shown with the ``details`` the server sent.
  */
 
-import { useCallback, useEffect, useMemo, useState, type Key } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Button,
@@ -190,26 +190,12 @@ function describeRefusal(
 export default function AdminOrgUnitsPage() {
   const { t, i18n } = useTranslation();
   const currentUser = useCurrentUser();
-  /**
-   * Who may edit the tree. The backend bounds the *branch* an actor may write
-   * (design §2.1: 企业管理员 本企业, 部门管理员 本部门及子部门) and the API only
-   * lists the units in that branch, so the page shows the controls to an actor
-   * that has any reach at all — a system administrator, an enterprise
-   * administrator or a department administrator. A plain employee with the
-   * ``users`` key administers no department and is still refused server-side.
-   */
-  const canManage = useMemo(() => {
-    const role = currentUser?.role;
-    return (
-      isSystemAdmin(currentUser) ||
-      role === "enterprise_admin" ||
-      role === "unit_admin"
-    );
-  }, [currentUser]);
-
-  const mayCreateRoot =
+  const canManage =
     isSystemAdmin(currentUser) ||
-    (currentUser?.role === "enterprise_admin" && !currentUser.org_unit);
+    currentUser?.role === "enterprise_admin" ||
+    currentUser?.role === "unit_admin";
+
+  const mayCreateRoot = isSystemAdmin(currentUser);
   const lang = normalizeUiLocale(i18n.language);
   const [form] = Form.useForm<OrgUnitFormValues>();
 
@@ -225,10 +211,6 @@ export default function AdminOrgUnitsPage() {
   const [modalOpen, setModalOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [deletingKey, setDeletingKey] = useState<string | null>(null);
-  /** Collapsed parents; anything absent renders expanded (the tree default). */
-  const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(
-    new Set(),
-  );
 
   /**
    * Units and their members load together: the delete preconditions need both,
@@ -264,20 +246,6 @@ export default function AdminOrgUnitsPage() {
         units.flatMap((unit) => (unit.parent_key ? [unit.parent_key] : [])),
       ),
     [units],
-  );
-  const expandableKeys = useMemo(
-    () => [...parentKeys].filter((key) => !collapsedKeys.has(key)),
-    [parentKeys, collapsedKeys],
-  );
-
-  const handleExpandedRowsChange = useCallback(
-    (keys: readonly Key[]) => {
-      const expanded = new Set(keys.map(String));
-      setCollapsedKeys(
-        new Set([...parentKeys].filter((key) => !expanded.has(key))),
-      );
-    },
-    [parentKeys],
   );
 
   const parentOptions = useMemo(() => {
@@ -401,8 +369,6 @@ export default function AdminOrgUnitsPage() {
     } catch (err) {
       setRefusal(describeRefusal(err, t("orgUnits.actionFailed"), t));
     } finally {
-      // Both paths resync: a refusal means this view is stale (a child or a
-      // member appeared after the last load), a success means a row is gone.
       setDeletingKey(null);
       await load();
     }
@@ -484,6 +450,11 @@ export default function AdminOrgUnitsPage() {
     }
   };
 
+  const unitByKey = useMemo(
+    () => new Map(units.map((unit) => [unit.key, unit])),
+    [units],
+  );
+
   const columns = useMemo<ColumnsType<OrgUnitNode>>(() => {
     const cols: ColumnsType<OrgUnitNode> = [
       {
@@ -510,6 +481,18 @@ export default function AdminOrgUnitsPage() {
         ),
       },
       {
+        key: "parent",
+        title: t("orgUnits.fieldParent"),
+        width: 180,
+        render: (_, row) => {
+          if (!row.parent_key) return t("orgUnits.parentRoot");
+          const parent = unitByKey.get(row.parent_key);
+          return parent
+            ? pickLocale(parent.label, lang) || parent.key
+            : row.parent_key;
+        },
+      },
+      {
         key: "members",
         title: t("orgUnits.colMembers"),
         width: 220,
@@ -533,9 +516,6 @@ export default function AdminOrgUnitsPage() {
       width: 150,
       align: "right",
       render: (_, row) => {
-        // The server's delete preconditions, mirrored: a unit with children and
-        // a unit with members are both refused, so the action is disabled here
-        // with that reason instead of failing after the click.
         let blocker = "";
         if (parentKeys.has(row.key)) {
           blocker = t("orgUnits.deleteBlockedChildren");
@@ -563,8 +543,6 @@ export default function AdminOrgUnitsPage() {
               onClick={() => openEdit(row)}
             />
             {blocker ? (
-              // A native disabled control emits no pointer events, so the
-              // tooltip needs an anchor element of its own.
               <Tooltip title={blocker}>
                 <span className={styles.disabledAction}>
                   <Button
@@ -611,6 +589,7 @@ export default function AdminOrgUnitsPage() {
     deletingKey,
     openEdit,
     openGrants,
+    unitByKey,
   ]);
 
   // One element, placed in the pane below — or inside the modal while it is
@@ -707,15 +686,14 @@ export default function AdminOrgUnitsPage() {
             <ResizableTable
               storageKey="admin-org-units"
               rowKey="key"
-              size="middle"
+              size="small"
               loading={loading}
               columns={columns}
               dataSource={tree}
               pagination={false}
               scroll={{ x: "max-content" }}
               expandable={{
-                expandedRowKeys: expandableKeys,
-                onExpandedRowsChange: handleExpandedRowsChange,
+                defaultExpandAllRows: true,
                 indentSize: 20,
               }}
             />

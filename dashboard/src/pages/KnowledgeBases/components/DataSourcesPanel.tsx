@@ -573,6 +573,7 @@ export default function DataSourcesPanel({
 
   return (
     <section
+      id="knowledge-data-sources"
       className={styles.panel}
       aria-label={t("knowledgeBases.dataSources.title")}
     >

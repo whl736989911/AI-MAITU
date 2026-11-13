@@ -31,7 +31,6 @@ vi.mock("../context/LayoutModeContext", () => ({
   }),
 }));
 vi.mock("../components/AvatarDropdown", () => ({ default: () => null }));
-vi.mock("../components/CurrentVersionBadge", () => ({ default: () => null }));
 vi.mock("./MinimalRecordsHost", () => ({ default: () => null }));
 
 const user: OctopUser = {
@@ -57,13 +56,11 @@ const storedPreferences = {
     "chat",
     "features",
     "connectors",
-    "channels",
     "knowledge-bases",
-    "personalization",
     "acp",
     "admin-users",
   ],
-  hidden: ["features", "personalization", "acp"],
+  hidden: ["features", "acp"],
 };
 
 function renderSidebar(
@@ -118,9 +115,6 @@ describe("Sidebar persisted navigation preferences", () => {
         expect(
           screen.queryByRole("button", { name: /nav\.features/ }),
         ).toBeNull();
-        expect(
-          screen.queryByRole("button", { name: /nav\.personalization/ }),
-        ).toBeNull();
         expect(screen.queryByRole("button", { name: /nav\.acp/ })).toBeNull();
       });
       expect(chat).toBeInTheDocument();
@@ -140,9 +134,8 @@ describe("Sidebar persisted navigation preferences", () => {
           visibleNavigation.indexOf("nav.chat"),
         );
       } else {
-        expect(visibleNavigation.indexOf("nav.connectors")).toBeLessThan(
-          visibleNavigation.indexOf("nav.channels"),
-        );
+        expect(visibleNavigation).toContain("nav.capabilities");
+        expect(visibleNavigation).not.toContain("nav.execution");
       }
     },
   );

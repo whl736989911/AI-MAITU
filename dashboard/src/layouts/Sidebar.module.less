@@ -1,5 +1,5 @@
 .navGroup {
-  margin-bottom: 6px;
+  margin-bottom: 2px;
 
   &:last-child {
     margin-bottom: 0;
@@ -12,7 +12,8 @@
   justify-content: space-between;
   gap: 6px;
   width: 100%;
-  padding: 8px 10px;
+  margin-top: 4px;
+  padding: 4px 8px 3px;
   border: none;
   background: transparent;
   cursor: pointer;
@@ -33,7 +34,7 @@
 .navGroupLabel {
   flex: 1;
   min-width: 0;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
   color: var(--fn-sidebar-group-text);
   letter-spacing: 0.06em;
@@ -59,22 +60,29 @@
 }
 
 .navItemRow {
+  position: relative;
   display: flex;
   align-items: stretch;
   width: 100%;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
   border-radius: var(--fn-radius-md);
   transition: background var(--fn-transition-fast);
+}
+
+.navItemActive {
+  .navItemMain {
+    font-weight: 600;
+  }
 }
 
 .navItemMain {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex: 1;
   min-width: 0;
-  padding: 0 12px;
-  height: 40px;
+  padding: 0 10px;
+  height: 34px;
   border: none;
   border-radius: var(--fn-radius-md);
   background: transparent;
@@ -88,9 +96,9 @@
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 28px;
-  height: 28px;
-  margin: 6px 6px 6px 0;
+  width: 24px;
+  height: 24px;
+  margin: 4px 4px 4px 0;
   border: none;
   border-radius: var(--fn-radius-md);
   background: transparent;
@@ -109,6 +117,14 @@
 @media (max-width: 767px) {
   .navGroupLabel {
     font-size: 12px;
+  }
+  .navItemMain {
+    height: 44px;
+  }
+  .chatRailExpandBtn,
+  .minimalPaneIconBtn {
+    width: 44px;
+    height: 44px;
   }
 }
 
@@ -131,7 +147,7 @@
   gap: 6px;
   box-sizing: border-box;
   margin: 0 12px;
-  padding: 12px 10px 5px;
+  padding: 8px 8px 4px;
 }
 
 .minimalPaneSwitchBtn {
@@ -173,8 +189,8 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 40px;
-  height: 40px;
+  width: 36px;
+  height: 36px;
   border: none;
   border-radius: var(--fn-radius-md);
   background: transparent;

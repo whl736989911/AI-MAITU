@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  SIDEBAR_GROUPED_NAV_KEYS,
-  buildNavSections,
-  isGroupedNavKey,
-} from "./sidebarNav";
+import { buildNavSections, findWorkspaceItem } from "./sidebarNav";
 import type { OctopUser } from "../api/modules/auth";
 
 const adminUser = {
@@ -32,35 +28,6 @@ const defaultUser = {
 } as OctopUser;
 
 describe("sidebarNav", () => {
-  it("marks catalog keys as grouped", () => {
-    for (const key of SIDEBAR_GROUPED_NAV_KEYS) {
-      expect(isGroupedNavKey(key)).toBe(true);
-    }
-    expect(isGroupedNavKey("chat")).toBe(false);
-    expect(isGroupedNavKey("experts")).toBe(false);
-  });
-
-  it("places grouped keys only under sections with groupKey", () => {
-    const sections = buildNavSections(adminUser, { mobileEnabled: true });
-    const flatKeys = new Set(
-      sections
-        .filter((s) => !s.groupKey)
-        .flatMap((s) => s.items.map((i) => i.key)),
-    );
-    const groupedKeys = new Set(
-      sections
-        .filter((s) => s.groupKey)
-        .flatMap((s) => s.items.map((i) => i.key)),
-    );
-    for (const key of groupedKeys) {
-      expect(isGroupedNavKey(key)).toBe(true);
-      expect(flatKeys.has(key)).toBe(false);
-    }
-    for (const key of flatKeys) {
-      expect(isGroupedNavKey(key)).toBe(false);
-    }
-  });
-
   it("shows the two module entries to the default account", () => {
     // Both keys are baseline (design §2.2): an upgrade must not take the entries
     // away from an account nobody edited, and the two are not one entry.
@@ -107,11 +74,68 @@ describe("sidebarNav", () => {
     // gets it whatever the role; an account without the key gets neither the
     // entry nor, per the route guard, the page behind it.
     const keys = (u: OctopUser) =>
-      buildNavSections(u, { mobileEnabled: true }).flatMap((s) =>
-        s.items.map((i) => i.key),
+      buildNavSections(u, { mobileEnabled: true }).flatMap((section) =>
+        section.items
+          .flatMap((item) => [item, ...(item.children ?? [])])
+          .map((item) => item.key),
       );
     expect(keys({ ...defaultUser, permissions: ["acp"] })).toContain("acp");
     expect(keys(defaultUser)).not.toContain("acp");
     expect(keys(adminUser)).toContain("acp");
+  });
+
+  it("does not expose independent resource settings navigation", () => {
+    const keys = buildNavSections({
+      ...defaultUser,
+      permissions: ["skills", "channels"],
+    }).flatMap((section) =>
+      section.items
+        .flatMap((item) => [item, ...(item.children ?? [])])
+        .map((item) => item.key),
+    );
+    expect(keys).not.toContain("personalization");
+    expect(keys).not.toContain("channels");
+  });
+
+  it("offers identity configuration to SSO delegates without offering user administration", () => {
+    const sections = buildNavSections({ ...defaultUser, permissions: ["sso"] });
+    const items = sections.flatMap((section) => section.items);
+    expect(items.some((item) => item.key === "admin-users")).toBe(false);
+    expect(
+      items
+        .find((item) => item.key === "system")
+        ?.children?.some((item) => item.key === "identity"),
+    ).toBe(true);
+    expect(findWorkspaceItem(sections, "admin-users", "?tab=oidc")?.key).toBe(
+      "system",
+    );
+  });
+
+  it("does not turn a model grant into storage or host access", () => {
+    const items = buildNavSections({
+      ...defaultUser,
+      permissions: ["providers"],
+    }).flatMap((section) => section.items);
+    expect(items.some((item) => item.key === "execution")).toBe(false);
+    const settings =
+      items.find((item) => item.key === "system")?.children ?? [];
+    expect(settings.some((item) => item.key === "models")).toBe(true);
+    expect(
+      settings.some(
+        (item) => item.key === "admin-storage" || item.key === "admin-plugins",
+      ),
+    ).toBe(false);
+  });
+
+  it("does not implicitly enable host tools for administrators", () => {
+    const sections = buildNavSections(
+      { ...adminUser, permissions: [] },
+      { mobileEnabled: true },
+    );
+    expect(
+      sections
+        .flatMap((section) => section.items)
+        .some((item) => item.key === "execution"),
+    ).toBe(false);
   });
 });

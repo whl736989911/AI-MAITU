@@ -9,7 +9,6 @@ import {
 import {
   App,
   Button,
-  Drawer,
   Empty,
   Input,
   Modal,
@@ -19,7 +18,7 @@ import {
   Typography,
 } from "antd";
 import type { TreeDataNode } from "antd";
-import { File, Folder, Layers, RefreshCw, Trash2 } from "lucide-react";
+import { File, Folder, RefreshCw, Trash2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import {
   knowledgeBasesApi,
@@ -38,6 +37,7 @@ type Props = {
   onOpenTarget: (documentId: string) => void;
   permissionsByDocument: ReadonlyMap<string, KnowledgePermissionMetadata>;
   onOpenCitation: (href: string) => void;
+  isVisible?: boolean;
 };
 
 type DocumentTreeNode = TreeDataNode & {
@@ -51,10 +51,10 @@ export default function KnowledgeCollections({
   onOpenTarget,
   permissionsByDocument,
   onOpenCitation,
+  isVisible = true,
 }: Props) {
   const { t } = useTranslation();
   const { message, modal } = App.useApp();
-  const [open, setOpen] = useState(false);
   const [collections, setCollections] = useState<KnowledgeCollection[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
@@ -192,8 +192,8 @@ export default function KnowledgeCollections({
   }, [documents]);
 
   useEffect(() => {
-    if (open) void loadCollections();
-  }, [open, loadCollections]);
+    if (isVisible) void loadCollections();
+  }, [isVisible, loadCollections]);
 
   const create = async () => {
     const requestBaseId = baseId;
@@ -375,217 +375,211 @@ export default function KnowledgeCollections({
     onOpenCitation(url.href);
   };
 
-  return (
+  const collectionContent = (
     <>
-      <Button icon={<Layers size={14} />} onClick={() => setOpen(true)}>
-        {t("knowledgeBases.collections.open")}
-      </Button>
-      <Drawer
-        title={t("knowledgeBases.collections.title")}
-        open={open}
-        onClose={() => setOpen(false)}
-        width={640}
-        destroyOnHidden
-      >
-        <section className={styles.section}>
-          <Typography.Text strong>
-            {t("knowledgeBases.collections.selectTitle")}
-          </Typography.Text>
-          <Typography.Text type="secondary">
-            {t("knowledgeBases.collections.selectHint")}
-          </Typography.Text>
-          <Input.Search
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder={t("knowledgeBases.collections.searchPlaceholder")}
-            allowClear
-          />
-          <div className={styles.selectionList}>
-            {selectionTree.nodes.length ? (
-              <Tree
-                className={styles.selectionTree}
-                treeData={selectionTree.nodes}
-                checkable
-                checkStrictly
-                selectable={false}
-                blockNode
-                height={240}
-                expandedKeys={expandedKeys}
-                autoExpandParent={false}
-                onExpand={(keys) => setExpandedKeys(keys.map(String))}
-                checkedKeys={selectedIds}
-                onCheck={(_keys, info) => {
-                  const id = String(info.node.key);
-                  setSelectedIds((current) =>
-                    info.checked
-                      ? [...current, id]
-                      : current.filter((selectedId) => selectedId !== id),
-                  );
-                }}
-              />
-            ) : (
-              <Empty
-                image={Empty.PRESENTED_IMAGE_SIMPLE}
-                description={t("knowledgeBases.collections.noDocuments")}
-              />
-            )}
-          </div>
-          <Input.TextArea
-            aria-label={t("knowledgeBases.collections.prompt")}
-            value={createPrompt}
-            onChange={(event) => setCreatePrompt(event.target.value)}
-            placeholder={t("knowledgeBases.collections.promptPlaceholder")}
-            maxLength={2000}
-            showCount
-            autoSize={{ minRows: 3, maxRows: 6 }}
-          />
-          <Button
-            type="primary"
-            loading={creating}
-            disabled={!selectedIds.length}
-            onClick={() => void create()}
-          >
-            {t("knowledgeBases.collections.create", {
-              count: selectedIds.length,
-            })}
-          </Button>
-        </section>
-        <section className={styles.section}>
-          <div className={styles.heading}>
-            <Typography.Text strong>
-              {t("knowledgeBases.collections.manageTitle")}
-            </Typography.Text>
-            <Button
-              icon={<RefreshCw size={14} />}
-              onClick={() => void loadCollections()}
-              loading={loading}
-            >
-              {t("common.refresh")}
-            </Button>
-          </div>
-          {loading ? (
-            <Spin />
-          ) : loadError ? (
-            <Typography.Text type="danger">
-              {t("knowledgeBases.collections.loadFailed")}
-            </Typography.Text>
-          ) : collections.length === 0 ? (
-            <Empty
-              image={Empty.PRESENTED_IMAGE_SIMPLE}
-              description={t("knowledgeBases.collections.empty")}
+      <section className={styles.section}>
+        <Typography.Text strong>
+          {t("knowledgeBases.collections.selectTitle")}
+        </Typography.Text>
+        <Typography.Text type="secondary">
+          {t("knowledgeBases.collections.selectHint")}
+        </Typography.Text>
+        <Input.Search
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder={t("knowledgeBases.collections.searchPlaceholder")}
+          allowClear
+        />
+        <div className={styles.selectionList}>
+          {selectionTree.nodes.length ? (
+            <Tree
+              className={styles.selectionTree}
+              treeData={selectionTree.nodes}
+              checkable
+              checkStrictly
+              selectable={false}
+              blockNode
+              height={240}
+              expandedKeys={expandedKeys}
+              autoExpandParent={false}
+              onExpand={(keys) => setExpandedKeys(keys.map(String))}
+              checkedKeys={selectedIds}
+              onCheck={(_keys, info) => {
+                const id = String(info.node.key);
+                setSelectedIds((current) =>
+                  info.checked
+                    ? [...current, id]
+                    : current.filter((selectedId) => selectedId !== id),
+                );
+              }}
             />
           ) : (
-            collections.map((row) => {
-              const draft = drafts[row.id] ?? {
-                name: row.name,
-                prompt: row.prompt,
-              };
-              const canEdit = Boolean(
-                permissionsByDocument.get(row.target_document_id)?.effective
-                  .write,
-              );
-              return (
-                <article className={styles.collection} key={row.id}>
-                  <div className={styles.heading}>
-                    <Typography.Text strong>{row.target_path}</Typography.Text>
-                    <Typography.Text type="secondary">
-                      {t(`knowledgeBases.collections.status.${row.status}`)} ·{" "}
-                      {t(
-                        `knowledgeBases.collections.generation.${row.generation.state}`,
-                      )}{" "}
-                      · {t("knowledgeBases.collections.coverage", row.coverage)}
-                    </Typography.Text>
-                  </div>
-                  {row.generation.error ? (
-                    <Typography.Text type="danger">
-                      {row.generation.error}
-                    </Typography.Text>
-                  ) : null}
+            <Empty
+              image={Empty.PRESENTED_IMAGE_SIMPLE}
+              description={t("knowledgeBases.collections.noDocuments")}
+            />
+          )}
+        </div>
+        <Input.TextArea
+          aria-label={t("knowledgeBases.collections.prompt")}
+          value={createPrompt}
+          onChange={(event) => setCreatePrompt(event.target.value)}
+          placeholder={t("knowledgeBases.collections.promptPlaceholder")}
+          maxLength={2000}
+          showCount
+          autoSize={{ minRows: 3, maxRows: 6 }}
+        />
+        <Button
+          type="primary"
+          loading={creating}
+          disabled={!selectedIds.length}
+          onClick={() => void create()}
+        >
+          {t("knowledgeBases.collections.create", {
+            count: selectedIds.length,
+          })}
+        </Button>
+      </section>
+      <section className={styles.section}>
+        <div className={styles.heading}>
+          <Typography.Text strong>
+            {t("knowledgeBases.collections.manageTitle")}
+          </Typography.Text>
+          <Button
+            icon={<RefreshCw size={14} />}
+            onClick={() => void loadCollections()}
+            loading={loading}
+          >
+            {t("common.refresh")}
+          </Button>
+        </div>
+        {loading ? (
+          <Spin />
+        ) : loadError ? (
+          <Typography.Text type="danger">
+            {t("knowledgeBases.collections.loadFailed")}
+          </Typography.Text>
+        ) : collections.length === 0 ? (
+          <Empty
+            image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={t("knowledgeBases.collections.empty")}
+          />
+        ) : (
+          collections.map((row) => {
+            const draft = drafts[row.id] ?? {
+              name: row.name,
+              prompt: row.prompt,
+            };
+            const canEdit = Boolean(
+              permissionsByDocument.get(row.target_document_id)?.effective
+                .write,
+            );
+            return (
+              <article className={styles.collection} key={row.id}>
+                <div className={styles.heading}>
+                  <Typography.Text strong>{row.target_path}</Typography.Text>
+                  <Typography.Text type="secondary">
+                    {t(`knowledgeBases.collections.status.${row.status}`)} ·{" "}
+                    {t(
+                      `knowledgeBases.collections.generation.${row.generation.state}`,
+                    )}{" "}
+                    · {t("knowledgeBases.collections.coverage", row.coverage)}
+                  </Typography.Text>
+                </div>
+                {row.generation.error ? (
+                  <Typography.Text type="danger">
+                    {row.generation.error}
+                  </Typography.Text>
+                ) : null}
+                {canEdit ? (
+                  <>
+                    <Input
+                      aria-label={t("knowledgeBases.collections.name")}
+                      value={draft.name}
+                      onChange={(event) =>
+                        setDrafts((current) => ({
+                          ...current,
+                          [row.id]: { ...draft, name: event.target.value },
+                        }))
+                      }
+                      placeholder={t("knowledgeBases.collections.name")}
+                    />
+                    <Input.TextArea
+                      aria-label={t("knowledgeBases.collections.prompt")}
+                      value={draft.prompt}
+                      onChange={(event) =>
+                        setDrafts((current) => ({
+                          ...current,
+                          [row.id]: { ...draft, prompt: event.target.value },
+                        }))
+                      }
+                      placeholder={t(
+                        "knowledgeBases.collections.promptPlaceholder",
+                      )}
+                      autoSize={{ minRows: 3, maxRows: 8 }}
+                    />
+                  </>
+                ) : null}
+                <div className={styles.actions}>
                   {canEdit ? (
                     <>
-                      <Input
-                        aria-label={t("knowledgeBases.collections.name")}
-                        value={draft.name}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [row.id]: { ...draft, name: event.target.value },
-                          }))
+                      <Button
+                        loading={busyId === row.id}
+                        onClick={() => void save(row)}
+                      >
+                        {t("common.save")}
+                      </Button>
+                      <Button
+                        type="primary"
+                        icon={<RefreshCw size={14} />}
+                        loading={
+                          busyId === row.id ||
+                          row.generation.state === "running"
                         }
-                        placeholder={t("knowledgeBases.collections.name")}
-                      />
-                      <Input.TextArea
-                        aria-label={t("knowledgeBases.collections.prompt")}
-                        value={draft.prompt}
-                        onChange={(event) =>
-                          setDrafts((current) => ({
-                            ...current,
-                            [row.id]: { ...draft, prompt: event.target.value },
-                          }))
+                        disabled={
+                          row.generation.state === "running" ||
+                          !draft.prompt.trim()
                         }
-                        placeholder={t(
-                          "knowledgeBases.collections.promptPlaceholder",
-                        )}
-                        autoSize={{ minRows: 3, maxRows: 8 }}
-                      />
+                        onClick={() => void generate(row)}
+                      >
+                        {t("knowledgeBases.collections.organize")}
+                      </Button>
+                      <Button
+                        icon={<Trash2 size={14} />}
+                        danger
+                        loading={busyId === row.id}
+                        onClick={() => remove(row)}
+                      >
+                        {t("common.delete")}
+                      </Button>
                     </>
                   ) : null}
-                  <div className={styles.actions}>
-                    {canEdit ? (
-                      <>
-                        <Button
-                          loading={busyId === row.id}
-                          onClick={() => void save(row)}
-                        >
-                          {t("common.save")}
-                        </Button>
-                        <Button
-                          type="primary"
-                          icon={<RefreshCw size={14} />}
-                          loading={
-                            busyId === row.id ||
-                            row.generation.state === "running"
-                          }
-                          disabled={
-                            row.generation.state === "running" ||
-                            !draft.prompt.trim()
-                          }
-                          onClick={() => void generate(row)}
-                        >
-                          {t("knowledgeBases.collections.organize")}
-                        </Button>
-                        <Button
-                          icon={<Trash2 size={14} />}
-                          danger
-                          loading={busyId === row.id}
-                          onClick={() => remove(row)}
-                        >
-                          {t("common.delete")}
-                        </Button>
-                      </>
-                    ) : null}
-                    <Button
-                      loading={inspectLoading}
-                      onClick={() => void inspect(row)}
-                    >
-                      {t("knowledgeBases.collections.inspect")}
-                    </Button>
-                    <Button
-                      type="link"
-                      onClick={() => onOpenTarget(row.target_document_id)}
-                    >
-                      {t("knowledgeBases.collections.openOriginal")}
-                    </Button>
-                  </div>
-                </article>
-              );
-            })
-          )}
-        </section>
-        <Typography.Text type="secondary">
-          {t("knowledgeBases.collections.storageHint")}
-        </Typography.Text>
-      </Drawer>
+                  <Button
+                    loading={inspectLoading}
+                    onClick={() => void inspect(row)}
+                  >
+                    {t("knowledgeBases.collections.inspect")}
+                  </Button>
+                  <Button
+                    type="link"
+                    onClick={() => onOpenTarget(row.target_document_id)}
+                  >
+                    {t("knowledgeBases.collections.openOriginal")}
+                  </Button>
+                </div>
+              </article>
+            );
+          })
+        )}
+      </section>
+      <Typography.Text type="secondary">
+        {t("knowledgeBases.collections.storageHint")}
+      </Typography.Text>
+    </>
+  );
+  return (
+    <>
+      <div className={styles.embeddedContent}>{collectionContent}</div>
       <Modal
         title={
           inspecting?.collection.name || t("knowledgeBases.collections.inspect")

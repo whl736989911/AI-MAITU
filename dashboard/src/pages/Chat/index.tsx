@@ -25,11 +25,7 @@ import {
   isPendingThread,
 } from "./hooks/useSessions";
 import * as chatStore from "./hooks/chatStore";
-import {
-  formatRunUsage,
-  assistantTurnsFromEnd,
-  userTurnsFromEnd,
-} from "./utils/chatMessages";
+import { assistantTurnsFromEnd, userTurnsFromEnd } from "./utils/chatMessages";
 import { useChatSidebarState } from "./hooks/useChatSidebarState";
 import { useChatHistoryRail } from "./hooks/useChatHistoryRail";
 import { useChatDockPanel } from "./hooks/useChatDockPanel";
@@ -55,7 +51,6 @@ import {
 import { isFileToolName } from "./constants";
 import { browserApi } from "../../api/modules/browser";
 import { octopThreadsApi } from "../../api/modules/octopThreads";
-import type { TokenUsage } from "../../api/types";
 import type { HitlSessionPolicy } from "../../api/modules/octopThreads";
 import type { ChatAttachment } from "./hooks/useChat";
 import MessageList from "./components/MessageList";
@@ -92,7 +87,6 @@ import {
 } from "./ChatToolDockContext";
 import ChatSidebarPanel from "./components/ChatSidebarPanel";
 import ChatTitleBar from "./components/ChatTitleBar";
-import ChatComposerChrome from "./components/ChatComposerChrome";
 import WorkflowRunCards from "./components/WorkflowRunCards";
 import AskQuestionCard from "./components/AskQuestionCard";
 import { findPendingAsk, hasPendingHitl } from "./utils/pendingHitl";
@@ -549,37 +543,6 @@ function ChatPageInner() {
     activeModelRef,
     activeAgent,
   );
-
-  const sessionUsage = useMemo(() => {
-    const acc: TokenUsage = {};
-    for (const msg of messages) {
-      const u = msg.usage;
-      if (!u) continue;
-      if (typeof u.input_tokens === "number") {
-        acc.input_tokens = (acc.input_tokens || 0) + u.input_tokens;
-      }
-      if (typeof u.cache_read_tokens === "number") {
-        acc.cache_read_tokens =
-          (acc.cache_read_tokens || 0) + u.cache_read_tokens;
-      }
-      if (typeof u.output_tokens === "number") {
-        acc.output_tokens = (acc.output_tokens || 0) + u.output_tokens;
-      }
-      if (typeof u.total_tokens === "number") {
-        acc.total_tokens = (acc.total_tokens || 0) + u.total_tokens;
-      }
-    }
-    if (!acc.input_tokens && !acc.output_tokens && !acc.total_tokens) {
-      return null;
-    }
-    return acc;
-  }, [messages]);
-  const sessionUsageLabel = formatRunUsage(sessionUsage, {
-    input: t("chatUsage.input"),
-    output: t("chatUsage.output"),
-    total: t("chatUsage.total"),
-    cacheHit: t("chatUsage.cacheHit"),
-  });
 
   const { resetNavForAgentSwitch, markInitialNavDone } = useChatNavigation({
     routeAgentId,
@@ -1280,114 +1243,118 @@ function ChatPageInner() {
               .filter(Boolean)
               .join(" ")}
           >
-            {/* Mobile toolbar — session list + optional title + agent profile */}
-            {isMobile && (
-              <div className={styles.mobileToolbar}>
-                <button
-                  className={styles.menuBtn}
-                  onClick={() => {
-                    if (isMinimalLayout) {
-                      window.dispatchEvent(new Event(OPEN_NAV_RECORDS_EVENT));
-                      return;
-                    }
-                    setSidebarOpen(!sidebarOpen);
-                  }}
-                  title={t(
-                    sidebarOpen
-                      ? "chat.collapseHistorySidebar"
-                      : "chat.expandHistorySidebar",
-                  )}
-                  aria-label={t(
-                    sidebarOpen
-                      ? "chat.collapseHistorySidebar"
-                      : "chat.expandHistorySidebar",
-                  )}
-                >
-                  <PanelLeftOpen size={18} strokeWidth={1.8} />
-                </button>
-                {activeSessionTitle && (
-                  <div
-                    className={styles.mobileTitle}
-                    title={activeSessionTitle}
-                  >
-                    {activeSessionTitle}
-                  </div>
-                )}
-                {resolvedAgentId && !sharedExpertViewer && (
-                  <div className={styles.mobileToolbarRight}>
-                    <button
-                      className={styles.menuBtn}
-                      onClick={() => setAgentProfileOpen(true)}
-                      title={t("chat.agentProfile.open")}
-                      aria-label={t("chat.agentProfile.open")}
-                    >
-                      <GraduationCap size={18} strokeWidth={1.8} />
-                    </button>
-                    <button
-                      className={styles.menuBtn}
-                      onClick={() => setWorkspaceDrawerOpen(true)}
-                      disabled={!agentChatReady}
-                      title={
-                        agentChatReady
-                          ? t("chat.openWorkspace", "工作区")
-                          : t("workspace.requiresRunning")
+            <header className={styles.chatWorkspaceHeader}>
+              {/* Mobile toolbar — session list + optional title + agent profile */}
+              {isMobile && (
+                <div className={styles.mobileToolbar}>
+                  <button
+                    className={styles.menuBtn}
+                    onClick={() => {
+                      if (isMinimalLayout) {
+                        window.dispatchEvent(new Event(OPEN_NAV_RECORDS_EVENT));
+                        return;
                       }
-                      aria-label={t("chat.openWorkspace", "工作区")}
-                    >
-                      <FolderOpen size={18} strokeWidth={1.8} />
-                    </button>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {!isMobile && activeSession && activeSessionTitle && (
-              <ChatTitleBar
-                session={activeSession}
-                title={activeSessionTitle}
-                onRename={handleRenameSession}
-                onPin={handlePinSession}
-                onFork={handleForkSession}
-                onDelete={handleDeleteSession}
-                forkDisabled={sessionForkDisabled}
-                forkDisabledHint={sessionForkDisabledHint}
-              />
-            )}
-
-            {memoryMaintVisible && memoryMaint && (
-              <MemoryMaintenanceBanner
-                status={memoryMaint}
-                blocking={memoryMaintBlocking}
-              />
-            )}
-
-            {historyMigration.visible && historyMigration.status && (
-              <HistoryMigrationBanner
-                status={historyMigration.status}
-                starting={historyMigration.starting}
-                startFailed={historyMigration.startFailed}
-                onStart={() => void historyMigration.start()}
-              />
-            )}
-
-            {historyError && (
-              <Alert
-                type="error"
-                showIcon
-                message={t("chat.historyLoadFailed")}
-                action={
-                  <Button
-                    size="small"
-                    loading={
-                      historyLoading || historyRefreshing || historyLoadingMore
-                    }
-                    onClick={() => void retryHistory()}
+                      setSidebarOpen(!sidebarOpen);
+                    }}
+                    title={t(
+                      sidebarOpen
+                        ? "chat.collapseHistorySidebar"
+                        : "chat.expandHistorySidebar",
+                    )}
+                    aria-label={t(
+                      sidebarOpen
+                        ? "chat.collapseHistorySidebar"
+                        : "chat.expandHistorySidebar",
+                    )}
                   >
-                    {t("chat.historyRetry")}
-                  </Button>
-                }
-              />
-            )}
+                    <PanelLeftOpen size={18} strokeWidth={1.8} />
+                  </button>
+                  {activeSessionTitle && (
+                    <div
+                      className={styles.mobileTitle}
+                      title={activeSessionTitle}
+                    >
+                      {activeSessionTitle}
+                    </div>
+                  )}
+                  {resolvedAgentId && !sharedExpertViewer && (
+                    <div className={styles.mobileToolbarRight}>
+                      <button
+                        className={styles.menuBtn}
+                        onClick={() => setAgentProfileOpen(true)}
+                        title={t("chat.agentProfile.open")}
+                        aria-label={t("chat.agentProfile.open")}
+                      >
+                        <GraduationCap size={18} strokeWidth={1.8} />
+                      </button>
+                      <button
+                        className={styles.menuBtn}
+                        onClick={() => setWorkspaceDrawerOpen(true)}
+                        disabled={!agentChatReady}
+                        title={
+                          agentChatReady
+                            ? t("chat.openWorkspace", "工作区")
+                            : t("workspace.requiresRunning")
+                        }
+                        aria-label={t("chat.openWorkspace", "工作区")}
+                      >
+                        <FolderOpen size={18} strokeWidth={1.8} />
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {!isMobile && activeSession && activeSessionTitle && (
+                <ChatTitleBar
+                  session={activeSession}
+                  title={activeSessionTitle}
+                  onRename={handleRenameSession}
+                  onPin={handlePinSession}
+                  onFork={handleForkSession}
+                  onDelete={handleDeleteSession}
+                  forkDisabled={sessionForkDisabled}
+                  forkDisabledHint={sessionForkDisabledHint}
+                />
+              )}
+
+              {memoryMaintVisible && memoryMaint && (
+                <MemoryMaintenanceBanner
+                  status={memoryMaint}
+                  blocking={memoryMaintBlocking}
+                />
+              )}
+
+              {historyMigration.visible && historyMigration.status && (
+                <HistoryMigrationBanner
+                  status={historyMigration.status}
+                  starting={historyMigration.starting}
+                  startFailed={historyMigration.startFailed}
+                  onStart={() => void historyMigration.start()}
+                />
+              )}
+
+              {historyError && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message={t("chat.historyLoadFailed")}
+                  action={
+                    <Button
+                      size="small"
+                      loading={
+                        historyLoading ||
+                        historyRefreshing ||
+                        historyLoadingMore
+                      }
+                      onClick={() => void retryHistory()}
+                    >
+                      {t("chat.historyRetry")}
+                    </Button>
+                  }
+                />
+              )}
+            </header>
             <div className={styles.chatContent}>
               {!agentChatReady || noAgents ? (
                 <AgentNotReadyScreen
@@ -1630,109 +1597,110 @@ function ChatPageInner() {
                 </div>
               )}
 
-            <ChatComposerChrome sessionUsageLabel={sessionUsageLabel} />
-            {pendingAsk ? (
-              <div className={styles.askQuestionDock}>
-                <div className={styles.askQuestionDockInner}>
-                  <AskQuestionCard
-                    key={pendingAsk.messageId}
-                    questions={pendingAsk.questions}
-                    status="pending"
-                    onSubmit={(answer) =>
-                      handleHitlDecision(
-                        pendingAsk.actions.map(() => ({
-                          type: "respond",
-                          message: answer,
-                        })),
-                      )
-                    }
-                    onDismiss={() => handleAskDismiss(pendingAsk.actions)}
-                  />
+            <div className={styles.chatComposerDock}>
+              {pendingAsk ? (
+                <div className={styles.askQuestionDock}>
+                  <div className={styles.askQuestionDockInner}>
+                    <AskQuestionCard
+                      key={pendingAsk.messageId}
+                      questions={pendingAsk.questions}
+                      status="pending"
+                      onSubmit={(answer) =>
+                        handleHitlDecision(
+                          pendingAsk.actions.map(() => ({
+                            type: "respond",
+                            message: answer,
+                          })),
+                        )
+                      }
+                      onDismiss={() => handleAskDismiss(pendingAsk.actions)}
+                    />
+                  </div>
                 </div>
-              </div>
-            ) : null}
-            {/* A feature's declared inputs, and what its run produced. Nothing
+              ) : null}
+              {/* A feature's declared inputs, and what its run produced. Nothing
                 renders for an expert or for a feature without a workflow. */}
-            <WorkflowRunCards
-              agentId={resolvedAgentId}
-              agentKind={activeAgent?.kind}
-              threadId={activeThreadId}
-              featureName={activeAgent?.name}
-              busy={
-                isStreaming ||
-                !agentChatReady ||
-                isPendingThread(activeThreadId ?? "") ||
-                hasPendingHitlPause
-              }
-              isStreaming={isStreaming}
-              onRun={(text, attachments, payload) => {
-                setConversationMode("craft");
-                return wrappedHandleSend(text, attachments, {
-                  featureRun: payload,
-                  conversationMode: "craft",
-                });
-              }}
-            />
-            {conversationMode === "plan" &&
-              composerSession?.pendingPlanPath &&
-              !isStreaming && (
-                <PlanReadyCard
-                  path={composerSession.pendingPlanPath}
-                  onExecute={() => {
-                    const path = composerSession.pendingPlanPath;
-                    setConversationMode("craft");
-                    wrappedHandleSend(`Please execute ${path}`, undefined, {
-                      conversationMode: "craft",
-                    });
-                  }}
-                  onKeepEditing={() => handleConversationModeChange("plan")}
-                />
-              )}
-            <ChatInput
-              ref={chatInputRef}
-              onSend={wrappedHandleSend}
-              onQueue={enqueueQueued}
-              queuedItems={queuedItems}
-              onRemoveQueued={removeQueuedItem}
-              onReclaimQueued={reclaimQueued}
-              onSteerQueued={steerQueuedItem}
-              onFollowUpQueued={followUpQueuedItem}
-              onWithdrawQueued={withdrawQueuedItem}
-              onCancel={cancelStream}
-              onNewChat={handleNewChat}
-              isStreaming={isStreaming}
-              disabled={!agentChatReady || noAgents || memoryMaintBlocking}
-              initialText={prefillInputRef.current}
-              onComposerCleared={() => {
-                prefillInputRef.current = "";
-              }}
-              availableModels={availableModels}
-              selectedModel={selectedModel}
-              onModelChange={setSelectedModel}
-              reasoningMode={reasoningMode}
-              reasoningEffort={reasoningEffort}
-              onReasoningChange={handleReasoningChange}
-              availableConnectors={chatConnectors}
-              selectedConnectors={selectedConnectors}
-              onConnectorsChange={handleConnectorsChange}
-              availableKnowledgeBases={chatKnowledgeBases}
-              selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
-              onKnowledgeBaseIdsChange={handleKnowledgeBaseIdsChange}
-              availableSkills={chatSkills}
-              availableAgents={chatAgentOptions}
-              availableExperts={chatAgentOptionsPickable}
-              availableSubagents={chatSubagents}
-              agentId={resolvedAgentId}
-              threadId={activeThreadId}
-              defaultModel={activeAgent?.default_model ?? null}
-              contextUsedTokens={contextUsedTokens}
-              contextMaxTokens={contextMaxTokens}
-              conversationMode={conversationMode}
-              onConversationModeChange={handleConversationModeChange}
-              hitlPolicy={hitlPolicy}
-              onHitlPolicyChange={handleHitlPolicyChange}
-              hitlEnabled={hitlEnabled}
-            />
+              <WorkflowRunCards
+                agentId={resolvedAgentId}
+                agentKind={activeAgent?.kind}
+                threadId={activeThreadId}
+                featureName={activeAgent?.name}
+                busy={
+                  isStreaming ||
+                  !agentChatReady ||
+                  isPendingThread(activeThreadId ?? "") ||
+                  hasPendingHitlPause
+                }
+                isStreaming={isStreaming}
+                onRun={(text, attachments, payload) => {
+                  setConversationMode("craft");
+                  return wrappedHandleSend(text, attachments, {
+                    featureRun: payload,
+                    conversationMode: "craft",
+                  });
+                }}
+              />
+              {conversationMode === "plan" &&
+                composerSession?.pendingPlanPath &&
+                !isStreaming && (
+                  <PlanReadyCard
+                    path={composerSession.pendingPlanPath}
+                    onExecute={() => {
+                      const path = composerSession.pendingPlanPath;
+                      setConversationMode("craft");
+                      wrappedHandleSend(`Please execute ${path}`, undefined, {
+                        conversationMode: "craft",
+                      });
+                    }}
+                    onKeepEditing={() => handleConversationModeChange("plan")}
+                  />
+                )}
+              <ChatInput
+                ref={chatInputRef}
+                onSend={wrappedHandleSend}
+                onQueue={enqueueQueued}
+                queuedItems={queuedItems}
+                onRemoveQueued={removeQueuedItem}
+                onReclaimQueued={reclaimQueued}
+                onSteerQueued={steerQueuedItem}
+                onFollowUpQueued={followUpQueuedItem}
+                onWithdrawQueued={withdrawQueuedItem}
+                onCancel={cancelStream}
+                onNewChat={handleNewChat}
+                isStreaming={isStreaming}
+                disabled={!agentChatReady || noAgents || memoryMaintBlocking}
+                initialText={prefillInputRef.current}
+                onComposerCleared={() => {
+                  prefillInputRef.current = "";
+                }}
+                availableModels={availableModels}
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
+                reasoningMode={reasoningMode}
+                reasoningEffort={reasoningEffort}
+                onReasoningChange={handleReasoningChange}
+                availableConnectors={chatConnectors}
+                selectedConnectors={selectedConnectors}
+                onConnectorsChange={handleConnectorsChange}
+                availableKnowledgeBases={chatKnowledgeBases}
+                selectedKnowledgeBaseIds={selectedKnowledgeBaseIds}
+                onKnowledgeBaseIdsChange={handleKnowledgeBaseIdsChange}
+                availableSkills={chatSkills}
+                availableAgents={chatAgentOptions}
+                availableExperts={chatAgentOptionsPickable}
+                availableSubagents={chatSubagents}
+                agentId={resolvedAgentId}
+                threadId={activeThreadId}
+                defaultModel={activeAgent?.default_model ?? null}
+                contextUsedTokens={contextUsedTokens}
+                contextMaxTokens={contextMaxTokens}
+                conversationMode={conversationMode}
+                onConversationModeChange={handleConversationModeChange}
+                hitlPolicy={hitlPolicy}
+                onHitlPolicyChange={handleHitlPolicyChange}
+                hitlEnabled={hitlEnabled}
+              />
+            </div>
           </div>
 
           <ChatDockPanels

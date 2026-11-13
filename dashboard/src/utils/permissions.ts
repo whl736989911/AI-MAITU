@@ -55,7 +55,6 @@ export const NAV_PERMISSIONS = {
   features: PERM.features,
   experts: PERM.experts,
   teams: PERM.teams,
-  channels: PERM.channels,
   connectors: PERM.connectors,
   "skill-packages": PERM.skillPackages,
   "knowledge-bases": PERM.knowledgeBasesPage,
@@ -70,15 +69,6 @@ export const NAV_PERMISSIONS = {
   "admin-plugins": PERM.plugins,
   "admin-security": PERM.securityPage,
   "admin-advanced": PERM.advancedPage,
-  personalization: [
-    "skills",
-    "subagents",
-    "tools",
-    "agent_plugins",
-    "mbti",
-    "memory",
-    "channels",
-  ],
 } as const satisfies Record<string, PermissionKeys>;
 
 export type NavPermissionKey = keyof typeof NAV_PERMISSIONS;
@@ -294,20 +284,6 @@ export function pathPermissionKeys(pathname: string): PermissionKeys | null {
   if (pathname.startsWith("/admin/")) {
     return "admin";
   }
-  if (pathname.startsWith("/personalization/")) {
-    const tab = pathname.slice("/personalization/".length).split("/")[0];
-    const tabKeys = (
-      PERSONALIZATION_TAB_PERMISSIONS as Record<string, readonly string[]>
-    )[tab];
-    if (tabKeys) return tabKeys;
-  }
-  if (
-    pathname === "/personalization/channels" ||
-    pathname === "/channels" ||
-    pathname.startsWith("/personalization/channels/")
-  ) {
-    return PERM.channels;
-  }
   if (pathname === "/connectors" || pathname.startsWith("/connectors/")) {
     return PERM.connectors;
   }
@@ -362,9 +338,6 @@ export function pathPermissionKeys(pathname: string): PermissionKeys | null {
 export function routeNeedsPermission(routePath: string): boolean {
   const probe = routePath.replace(/\/\*$/, "").replace(/\/:[^/]+/g, "");
   if (pathPermissionKeys(probe) !== null) return true;
-  if (probe === "/personalization" || probe.startsWith("/personalization/")) {
-    return true;
-  }
   if (probe === "/workbench" || probe.startsWith("/workbench/")) return true;
   if (probe.startsWith("/admin")) return true;
   return false;

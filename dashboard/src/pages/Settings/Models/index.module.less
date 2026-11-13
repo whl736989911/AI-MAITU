@@ -1,5 +1,5 @@
 .page {
-  padding: 24px;
+  padding: 16px;
 
   @media (max-width: 767px) {
     padding: 16px 12px;
@@ -30,7 +30,7 @@
 /* ---- Sections ---- */
 
 .section {
-  margin-bottom: 32px;
+  margin-bottom: 20px;
 
   @media (max-width: 767px) {
     margin-bottom: 20px;
@@ -43,9 +43,9 @@
 
 .sectionTitle {
   margin-bottom: 4px;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.02em;
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
 
   @media (max-width: 767px) {
     font-size: 19px;
@@ -53,10 +53,9 @@
 }
 
 .sectionDesc {
-  margin: 0 0 16px;
+  margin: 0 0 12px;
   color: var(--fn-text-tertiary);
-  font-size: 14px;
-  line-height: 1.5;
+  font-size: 13px;
 
   @media (max-width: 767px) {
     font-size: 14px;
@@ -67,7 +66,7 @@
 /* ---- Providers Block ---- */
 
 .providersBlock {
-  margin-top: 36px;
+  margin-top: 24px;
 
   @media (max-width: 767px) {
     margin-top: 24px;
@@ -77,7 +76,7 @@
 /* ---- Provider Groups ---- */
 
 .providerGroup {
-  margin-bottom: 24px;
+  margin-bottom: 16px;
 
   &:last-of-type {
     margin-bottom: 0;
@@ -106,10 +105,10 @@
 
 .providerCards {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
-  row-gap: 16px;
-  column-gap: 12px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  row-gap: 10px;
+  column-gap: 10px;
+  margin-bottom: 12px;
 
   @media (max-width: 767px) {
     grid-template-columns: 1fr;
@@ -124,7 +123,7 @@
 }
 
 .providerCard {
-  border-radius: var(--fn-radius-lg);
+  border-radius: var(--fn-radius-md, 8px);
   transition:
     transform 0.2s cubic-bezier(0.34, 1.56, 0.64, 1),
     box-shadow 0.2s ease,
@@ -136,10 +135,8 @@
   flex-direction: column;
 
   &.hover {
-    transform: translateY(-3px);
-    box-shadow:
-      var(--fn-shadow-brand-lg),
-      0 2px 8px -2px rgba(0, 0, 0, 0.06);
+    transform: none;
+    box-shadow: var(--fn-card-shadow-normal);
 
     @media (max-width: 767px) {
       transform: none;
@@ -180,7 +177,7 @@
     flex-direction: column;
     flex: 1;
     height: 100%;
-    padding: 20px !important;
+    padding: 14px !important;
 
     @media (max-width: 767px) {
       padding: 16px !important;
@@ -237,7 +234,7 @@
 }
 
 .cardHeader {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -804,12 +801,12 @@
 }
 
 .poolSection {
-  padding: 24px;
+  padding: 16px;
   background: var(--fn-bg-primary);
-  border-radius: var(--fn-radius-lg);
+  border-radius: var(--fn-radius-md, 8px);
   border: 1px solid var(--fn-border-primary);
-  box-shadow: var(--fn-shadow-sm);
-  margin-bottom: 32px;
+  box-shadow: var(--fn-card-shadow-normal);
+  margin-bottom: 20px;
 
   @media (max-width: 767px) {
     padding: 16px;

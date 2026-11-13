@@ -26,6 +26,7 @@ import { useMathPlugins } from "./mathPlugins";
 import { stabilizeStreamingMarkdown } from "./stabilizeStreamingMarkdown";
 import { FileText } from "lucide-react";
 import { KNOWLEDGE_LINK_PREFIX } from "../../utils/linkifyKnowledgeCitations";
+import { useTheme } from "../../context/ThemeContext";
 import styles from "./index.module.less";
 
 /* ---- Mermaid block component ---- */
@@ -241,19 +242,6 @@ function CodeCopyButton({ code }: { code: string }) {
   );
 }
 
-/* ---- Detect dark mode ---- */
-function useIsDark() {
-  const [dark, setDark] = useState(false);
-  useEffect(() => {
-    const mql = window.matchMedia("(prefers-color-scheme: dark)");
-    setDark(mql.matches);
-    const handler = (e: MediaQueryListEvent) => setDark(e.matches);
-    mql.addEventListener("change", handler);
-    return () => mql.removeEventListener("change", handler);
-  }, []);
-  return dark;
-}
-
 /* ---- Main Markdown component ---- */
 export interface MarkdownProps {
   content: string;
@@ -284,7 +272,7 @@ const Markdown = memo(function Markdown({
   shellCommandLabel,
   onKnowledgeLink,
 }: MarkdownProps) {
-  const isDark = useIsDark();
+  const { isDark } = useTheme();
   const { t } = useTranslation();
   const runLabel = shellCommandLabel ?? t("terminal.ai.execBtn");
   const renderContent = useMemo(
