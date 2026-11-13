@@ -1,7 +1,6 @@
 /**
  * The persona files of a *feature's* own agent — the workspace ``.md`` documents
- * a feature's behaviour and voice are written in, edited on the Personalization
- * page while that feature is the page's scope.
+ * a feature's behaviour and voice are edited in that feature's own configuration.
  *
  * Four files, and the rest are absences with reasons (design 2.2 / 7.1):
  *   - ``IDENTITY.md`` / ``SOUL.md`` / ``AGENTS.md`` are the persona proper, and

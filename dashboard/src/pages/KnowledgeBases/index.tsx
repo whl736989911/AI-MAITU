@@ -34,6 +34,7 @@ import {
 import type { MenuProps } from "antd";
 import type { InputRef } from "antd/es/input";
 import { TextAssistBar } from "../../components/TextAssistBar";
+import KnowledgeAccessNotifications from "../../components/KnowledgeAccessNotifications";
 import { ResizableTable } from "@/components/ResizableTable";
 import {
   Check,
@@ -43,10 +44,12 @@ import {
   Eye,
   FilePlus,
   FileUp,
+  FileText,
   Folder,
   FolderPlus,
   FolderInput,
   LayoutGrid,
+  Layers,
   List as ListIcon,
   ListTree,
   Maximize2,
@@ -330,6 +333,18 @@ export default function KnowledgeBasesPage() {
   const { viewMode, setViewMode, showCardView } = useCardTableView(
     loadDocsViewMode(),
   );
+  type WorkspaceArea = "documents" | "sources" | "collections";
+  const [workspaceArea, setWorkspaceArea] =
+    useState<WorkspaceArea>("documents");
+  const [mountedAreas, setMountedAreas] = useState<ReadonlySet<WorkspaceArea>>(
+    () => new Set<WorkspaceArea>(["documents"]),
+  );
+  const selectWorkspaceArea = (area: WorkspaceArea) => {
+    setWorkspaceArea(area);
+    setMountedAreas((current) =>
+      current.has(area) ? current : new Set([...current, area]),
+    );
+  };
   const [bases, setBases] = useState<KnowledgeBase[]>([]);
   const [selected, setSelected] = useState<KnowledgeBase | null>(null);
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
@@ -2497,6 +2512,7 @@ export default function KnowledgeBasesPage() {
       fill
       actions={
         <>
+          <KnowledgeAccessNotifications />
           {canConfigureKb ? (
             <Button icon={<Settings size={15} />} onClick={openSettings}>
               {t("knowledgeBases.settingsTitle")}
@@ -2873,11 +2889,64 @@ export default function KnowledgeBasesPage() {
                     className={`${styles.detailBody}${
                       dragActive ? ` ${styles.detailBodyDropActive}` : ""
                     }`}
+                    data-workspace-area={workspaceArea}
                     onDragEnter={handleDocsDragEnter}
                     onDragLeave={handleDocsDragLeave}
                     onDragOver={handleDocsDragOver}
                     onDrop={handleDocsDrop}
                   >
+                    <nav
+                      className={styles.workspaceAreas}
+                      aria-label={t("knowledgeBases.title")}
+                    >
+                      <button
+                        type="button"
+                        className={
+                          workspaceArea === "documents"
+                            ? styles.workspaceAreaActive
+                            : ""
+                        }
+                        aria-current={
+                          workspaceArea === "documents" ? "page" : undefined
+                        }
+                        onClick={() => selectWorkspaceArea("documents")}
+                      >
+                        <FileText size={15} />{" "}
+                        {t("knowledgeBases.documentCount", {
+                          count: fileCount,
+                        })}
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          workspaceArea === "sources"
+                            ? styles.workspaceAreaActive
+                            : ""
+                        }
+                        aria-current={
+                          workspaceArea === "sources" ? "page" : undefined
+                        }
+                        onClick={() => selectWorkspaceArea("sources")}
+                      >
+                        <FolderInput size={15} />{" "}
+                        {t("knowledgeBases.dataSources.title")}
+                      </button>
+                      <button
+                        type="button"
+                        className={
+                          workspaceArea === "collections"
+                            ? styles.workspaceAreaActive
+                            : ""
+                        }
+                        aria-current={
+                          workspaceArea === "collections" ? "page" : undefined
+                        }
+                        onClick={() => selectWorkspaceArea("collections")}
+                      >
+                        <Layers size={15} />{" "}
+                        {t("knowledgeBases.collections.title")}
+                      </button>
+                    </nav>
                     {dragActive && canDropUpload ? (
                       <div className={styles.dropOverlay} aria-hidden>
                         <FileUp size={36} strokeWidth={1.75} />
@@ -3039,24 +3108,6 @@ export default function KnowledgeBasesPage() {
                             {t("knowledgeBases.upload")}
                           </Button>
                         ) : null}
-                        <KnowledgeCollections
-                          key={selected.id}
-                          baseId={selected.id}
-                          documents={documents}
-                          permissionsByDocument={permissionsByDocument}
-                          onOpenTarget={(documentId) => {
-                            const target = documents.find(
-                              (document) => document.id === documentId,
-                            );
-                            if (!target) return;
-                            if (target.is_dir)
-                              setCurrentFolder(target.path || target.filename);
-                            else void openDocumentPreview(target);
-                          }}
-                          onOpenCitation={(href) =>
-                            setSearchParams(new URL(href).searchParams)
-                          }
-                        />
                       </div>
                     </div>
                     <div className={styles.docsPathRow}>
@@ -3286,6 +3337,7 @@ export default function KnowledgeBasesPage() {
                               key={document.id}
                               className={`${styles.docCard} ${scopeClass}`}
                               role={document.is_dir ? "button" : undefined}
+                              tabIndex={document.is_dir ? 0 : undefined}
                               onClick={(event) => {
                                 if (
                                   !shouldOpenKnowledgeFolder(
@@ -3299,13 +3351,44 @@ export default function KnowledgeBasesPage() {
                                   document.path || document.filename,
                                 );
                               }}
+                              onKeyDown={(event) => {
+                                if (
+                                  !document.is_dir ||
+                                  event.target !== event.currentTarget ||
+                                  (event.key !== "Enter" && event.key !== " ")
+                                ) {
+                                  return;
+                                }
+                                event.preventDefault();
+                                setCurrentFolder(
+                                  document.path || document.filename,
+                                );
+                              }}
                             >
-                              <div
-                                className={styles.docCardName}
-                                title={hideAbsolutePath(document.path || name)}
-                              >
-                                {name}
-                              </div>
+                              {document.is_dir ||
+                              !canPreviewKnowledgeDocument(document) ? (
+                                <div
+                                  className={styles.docCardName}
+                                  title={hideAbsolutePath(
+                                    document.path || name,
+                                  )}
+                                >
+                                  {name}
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  className={styles.docCardName}
+                                  title={hideAbsolutePath(
+                                    document.path || name,
+                                  )}
+                                  onClick={() =>
+                                    void openDocumentPreview(document)
+                                  }
+                                >
+                                  {name}
+                                </button>
+                              )}
                               <div className={styles.docCardHeader}>
                                 <DocumentFormatIcon
                                   filename={name}
@@ -3418,20 +3501,28 @@ export default function KnowledgeBasesPage() {
                         storageKey="kb-documents"
                         size="small"
                         rowKey="id"
+                        dataSource={folderEntries}
                         pagination={false}
                         scroll={{ x: 720 }}
-                        dataSource={folderEntries}
                         onRow={(document) => ({
-                          onClick: document.is_dir
-                            ? (event) => {
-                                if (!shouldOpenKnowledgeFolder(true, event)) {
-                                  return;
-                                }
-                                setCurrentFolder(
-                                  document.path || document.filename,
-                                );
+                          onClick: (event) => {
+                            if (
+                              event.target instanceof Element &&
+                              event.target.closest("[data-kb-doc-actions]")
+                            ) {
+                              return;
+                            }
+                            if (document.is_dir) {
+                              if (!shouldOpenKnowledgeFolder(true, event)) {
+                                return;
                               }
-                            : undefined,
+                              setCurrentFolder(
+                                document.path || document.filename,
+                              );
+                            } else if (canPreviewKnowledgeDocument(document)) {
+                              void openDocumentPreview(document);
+                            }
+                          },
                         })}
                         locale={{
                           emptyText: t("knowledgeBases.emptyDocuments"),
@@ -3606,17 +3697,44 @@ export default function KnowledgeBasesPage() {
                         ]}
                       />
                     )}
-                    <DataSourcesPanel
-                      key={selected.id}
-                      baseId={selected.id}
-                      canWriteBase={canWriteSelected}
-                      canManageBase={canManageSelected}
-                      onDocumentsChanged={() => {
-                        void loadDetail(selected.id, { silent: true });
-                        void loadCoverage(selected.id, true);
-                        void loadBases();
-                      }}
-                    />
+                    {mountedAreas.has("sources") ? (
+                      <DataSourcesPanel
+                        key={selected.id}
+                        baseId={selected.id}
+                        canWriteBase={canWriteSelected}
+                        canManageBase={canManageSelected}
+                        onDocumentsChanged={() => {
+                          void loadDetail(selected.id, { silent: true });
+                          void loadCoverage(selected.id, true);
+                          void loadBases();
+                        }}
+                      />
+                    ) : null}
+                    {mountedAreas.has("collections") ? (
+                      <div className={styles.collectionWorkspace}>
+                        <KnowledgeCollections
+                          key={selected.id}
+                          baseId={selected.id}
+                          documents={documents}
+                          permissionsByDocument={permissionsByDocument}
+                          isVisible={workspaceArea === "collections"}
+                          onOpenTarget={(documentId) => {
+                            selectWorkspaceArea("documents");
+                            const target = documents.find(
+                              (item) => item.id === documentId,
+                            );
+                            if (!target) return;
+                            if (target.is_dir)
+                              setCurrentFolder(target.path || target.filename);
+                            else void openDocumentPreview(target);
+                          }}
+                          onOpenCitation={(href) => {
+                            selectWorkspaceArea("documents");
+                            setSearchParams(new URL(href).searchParams);
+                          }}
+                        />
+                      </div>
+                    ) : null}
                   </div>
                 </>
               )}

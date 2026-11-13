@@ -1,9 +1,9 @@
 /* Active agent card + session row highlights */
 /* ── Session sidebar: bordered active agent block + session row highlights ─ */
 .agentCardActive {
-  margin: 0 0 10px;
-  padding: 6px 6px 8px;
-  border-radius: 14px;
+  margin: 0 0 6px;
+  padding: 4px 4px 6px;
+  border-radius: 10px;
   border: 1px solid transparent;
   box-shadow: none;
 }
@@ -12,8 +12,8 @@
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  margin-bottom: 4px;
-  padding: 4px 4px 2px;
+  margin-bottom: 2px;
+  padding: 2px 4px 0;
 }
 
 .agentCardAvatar {
@@ -82,7 +82,7 @@
   line-height: 1.35;
   color: var(--fn-text-tertiary);
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
 }
@@ -113,12 +113,12 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 10px;
-  border-radius: 10px;
+  padding: 6px 8px;
+  border-radius: 6px;
   cursor: pointer;
   color: var(--fn-text-secondary);
   transition: background 0.15s;
-  min-height: 0;
+  min-height: 30px;
 
   &:hover {
     background: color-mix(in srgb, var(--fn-text-primary) 4%, transparent);
@@ -138,8 +138,8 @@
 }
 
 .sessionRowActive {
-  background: color-mix(in srgb, var(--fn-text-primary) 6%, transparent);
-  color: var(--fn-text-primary);
+  background: var(--fn-sidebar-item-active-bg);
+  color: var(--fn-sidebar-item-active-text);
 }
 
 .sessionRowPinIndicator {
@@ -190,11 +190,11 @@
 
 .sessionRowActive .sessionRowIcon {
   opacity: 0.68;
-  color: var(--fn-text-tertiary);
+  color: var(--fn-sidebar-item-active-text);
 }
 
 .sessionRowActive:hover {
-  background: color-mix(in srgb, var(--fn-text-primary) 6%, transparent);
+  background: var(--fn-bg-active);
 }
 
 .sessionRowTitle {
@@ -209,8 +209,7 @@
 }
 
 .sessionRowActive .sessionRowTitle {
-  font-size: 13px;
-  font-weight: 400;
+  font-weight: 500;
 }
 
 .sessionLoadMore {

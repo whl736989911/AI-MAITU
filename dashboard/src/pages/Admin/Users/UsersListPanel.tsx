@@ -62,7 +62,6 @@ import {
 } from "antd";
 import { message } from "@/utils/antdMessage";
 import { ResizableTable } from "@/components/ResizableTable";
-import type { ColumnsType } from "antd/es/table";
 import dayjs from "dayjs";
 import utc from "dayjs/plugin/utc";
 import timezone from "dayjs/plugin/timezone";
@@ -112,7 +111,6 @@ import { pickLocale } from "../../../utils/localizedText";
 import { isSystemAdmin } from "../../../utils/permissions";
 import { useCurrentUser } from "../../../hooks/useCurrentUser";
 import { useCardTableView } from "../../../hooks/useCardTableView";
-import { useIsMobile } from "../../../hooks/useIsMobile";
 import { useServerTimezone } from "../../../hooks/useServerTimezone";
 import { formatServerDateTime } from "../../../utils/formatMessageTime";
 import type { OctopAgent } from "../../../context/AgentContext";
@@ -331,10 +329,11 @@ interface UserCardGridProps {
     patch: Partial<Pick<UserRow, "role" | "disabled" | "permissions">>,
   ) => Promise<boolean>;
   onEdit: (row: UserRow) => void;
+  onDetails: (row: UserRow) => void;
   onShowAgents: (row: UserRow) => void;
   onResetPassword: (row: UserRow) => void;
   onDelete: (row: UserRow) => Promise<void>;
-  onUnlockLogin: (row: UserRow) => Promise<void>;
+  onUnlockLogin: (row: UserRow) => void;
   /** Admin-only affordances (enable toggle, reset, delete) are hidden without it. */
   admin: boolean;
   nowSec: number;
@@ -719,6 +718,11 @@ function PermissionSummary({
   );
 }
 
+/**
+ * One kind's tally on a user card — the card view's half of the table's agent
+ * columns. Drawn once per kind the deployment holds; the button is the way
+ * into the drawer listing that user's agents, both kinds of them.
+ */
 function RoleLegend() {
   const { t } = useTranslation();
   return (
@@ -731,11 +735,6 @@ function RoleLegend() {
   );
 }
 
-/**
- * One kind's tally on a user card — the card view's half of the table's agent
- * columns. Drawn once per kind the deployment holds; the button is the way
- * into the drawer listing that user's agents, both kinds of them.
- */
 function AgentStatButton({
   label,
   count,
@@ -782,6 +781,7 @@ function AgentCountCell({
       onClick={onClick}
     >
       <Bot size={13} />
+      <span>{label}</span>
       {loading ? "…" : count}
     </button>
   );
@@ -797,6 +797,7 @@ function UserCardGrid({
   orgUnitLabelByKey,
   onTogglePatch,
   onEdit,
+  onDetails,
   onShowAgents,
   onResetPassword,
   onDelete,
@@ -989,6 +990,16 @@ function UserCardGrid({
               )}
 
               <div className={styles.userCardFooter}>
+                <Tooltip title={t("common.viewDetail")} mouseEnterDelay={0.5}>
+                  <button
+                    type="button"
+                    className={styles.userCardIconBtn}
+                    onClick={() => onDetails(row)}
+                    aria-label={t("common.viewDetail")}
+                  >
+                    <IdCard size={15} />
+                  </button>
+                </Tooltip>
                 <Tooltip title={t("common.edit")} mouseEnterDelay={0.5}>
                   <button
                     type="button"
@@ -1116,7 +1127,7 @@ function UserLoginLock({
 export default function UsersListPanel() {
   const { t, i18n } = useTranslation();
   const timeZone = useServerTimezone();
-  const isMobile = useIsMobile();
+  const { viewMode, setViewMode, showCardView } = useCardTableView();
   const currentUser = useCurrentUser();
   const admin = isSystemAdmin(currentUser);
   /**
@@ -1144,9 +1155,9 @@ export default function UsersListPanel() {
   const [resetForm] = Form.useForm<ResetValues>();
   const [currentUserId, setCurrentUserId] = useState<number | null>(null);
   const [agentDrawerUser, setAgentDrawerUser] = useState<UserRow | null>(null);
+  const [detailTarget, setDetailTarget] = useState<UserRow | null>(null);
   const [editAgent, setEditAgent] = useState<OctopAgent | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
-  const { viewMode, setViewMode, showCardView } = useCardTableView("table");
   const [permCatalog, setPermCatalog] = useState<PermissionCatalogItem[]>([]);
   /** Module keys the department in the edit drawer grants its members. */
   const [editUnitGrants, setEditUnitGrants] = useState<string[]>([]);
@@ -1729,49 +1740,6 @@ export default function UsersListPanel() {
     }
   };
 
-  /**
-   * The agent columns, one per kind this deployment holds. A kind nobody holds
-   * anywhere draws no column: its header would name agents that do not exist
-   * over a column of zeroes. Whether a kind is held is read off the instance
-   * (``agentKindIndex``), never off the rows on screen — paging must not make
-   * a column come and go.
-   */
-  const agentColumns: ColumnsType<UserRow> = [];
-  if (agentKindIndex.held.experts) {
-    agentColumns.push({
-      title: t("adminUsers.colAgents"),
-      width: 80,
-      render: (_, row) => (
-        <AgentCountCell
-          label={t("adminUsers.colAgents")}
-          count={
-            (agentKindIndex.countsByUserId.get(row.id) ?? NO_AGENT_KIND_COUNTS)
-              .experts
-          }
-          loading={agentsLoading}
-          onClick={() => setAgentDrawerUser(row)}
-        />
-      ),
-    });
-  }
-  if (agentKindIndex.held.features) {
-    agentColumns.push({
-      title: t("adminUsers.colFeatures"),
-      width: 80,
-      render: (_, row) => (
-        <AgentCountCell
-          label={t("adminUsers.colFeatures")}
-          count={
-            (agentKindIndex.countsByUserId.get(row.id) ?? NO_AGENT_KIND_COUNTS)
-              .features
-          }
-          loading={agentsLoading}
-          onClick={() => setAgentDrawerUser(row)}
-        />
-      ),
-    });
-  }
-
   return (
     <>
       <div className={styles.pageTop}>
@@ -1817,19 +1785,23 @@ export default function UsersListPanel() {
             >
               {t("common.refresh")}
             </Button>
-            <Button
-              icon={<Link2 size={14} />}
-              onClick={() => setInviteOpen(true)}
-            >
-              {t("adminUsers.inviteUsers")}
-            </Button>
-            <Button
-              type="primary"
-              icon={<Plus size={14} />}
-              onClick={openCreate}
-            >
-              {t("adminUsers.newUser")}
-            </Button>
+            {(admin || scopedActor) && (
+              <>
+                <Button
+                  icon={<Link2 size={14} />}
+                  onClick={() => setInviteOpen(true)}
+                >
+                  {t("adminUsers.inviteUsers")}
+                </Button>
+                <Button
+                  type="primary"
+                  icon={<Plus size={14} />}
+                  onClick={openCreate}
+                >
+                  {t("adminUsers.newUser")}
+                </Button>
+              </>
+            )}
           </div>
         </div>
       </div>
@@ -1843,6 +1815,7 @@ export default function UsersListPanel() {
           currentUserId={currentUserId}
           permLabelByKey={permLabelByKey}
           orgUnitLabelByKey={orgUnitLabelByKey}
+          onDetails={setDetailTarget}
           onTogglePatch={togglePatch}
           onEdit={openEdit}
           onShowAgents={setAgentDrawerUser}
@@ -1859,12 +1832,12 @@ export default function UsersListPanel() {
         <ResizableTable
           storageKey="admin-users"
           rowKey="id"
-          size="middle"
+          size="small"
           className={styles.userTable}
           loading={loading}
           dataSource={filteredRows}
           pagination={false}
-          scroll={{ x: 1360 }}
+          scroll={{ x: 1700 }}
           rowClassName={(row) =>
             [
               row.disabled ? styles.userTableRowDisabled : "",
@@ -1876,8 +1849,7 @@ export default function UsersListPanel() {
           columns={[
             {
               title: t("adminUsers.colUsername"),
-              width: 240,
-              fixed: isMobile ? undefined : "left",
+              width: 230,
               render: (_, row) => {
                 const displayName = row.display_name?.trim() || row.username;
                 return (
@@ -1931,14 +1903,57 @@ export default function UsersListPanel() {
                 );
               },
             },
-            ...agentColumns,
+            ...(agentKindIndex.held.experts
+              ? [
+                  {
+                    title: t("adminUsers.colAgents"),
+                    width: 80,
+                    render: (_: unknown, row: UserRow) => (
+                      <AgentCountCell
+                        label={t("adminUsers.colAgents")}
+                        count={
+                          (
+                            agentKindIndex.countsByUserId.get(row.id) ??
+                            NO_AGENT_KIND_COUNTS
+                          ).experts
+                        }
+                        loading={agentsLoading}
+                        onClick={() => setAgentDrawerUser(row)}
+                      />
+                    ),
+                  },
+                ]
+              : []),
+            ...(agentKindIndex.held.features
+              ? [
+                  {
+                    title: t("adminUsers.colFeatures"),
+                    width: 80,
+                    render: (_: unknown, row: UserRow) => (
+                      <AgentCountCell
+                        label={t("adminUsers.colFeatures")}
+                        count={
+                          (
+                            agentKindIndex.countsByUserId.get(row.id) ??
+                            NO_AGENT_KIND_COUNTS
+                          ).features
+                        }
+                        loading={agentsLoading}
+                        onClick={() => setAgentDrawerUser(row)}
+                      />
+                    ),
+                  },
+                ]
+              : []),
             {
               title: t("adminUsers.colRole"),
-              width: 112,
+              width: 150,
               render: (_, row) => {
-                const unitLabel = row.org_unit
-                  ? orgUnitLabelByKey.get(row.org_unit)
-                  : undefined;
+                const unitKeys = row.org_units?.length
+                  ? row.org_units
+                  : row.org_unit
+                  ? [row.org_unit]
+                  : [];
                 return (
                   <div className={styles.userRoleCell}>
                     <span
@@ -1948,9 +1963,11 @@ export default function UsersListPanel() {
                     >
                       {t(ROLE_LABEL_KEYS[row.role])}
                     </span>
-                    {unitLabel && (
-                      <span className={styles.userRoleUnit}>{unitLabel}</span>
-                    )}
+                    {unitKeys.map((key) => (
+                      <span key={key} className={styles.userRoleUnit}>
+                        {orgUnitLabelByKey.get(key) ?? key}
+                      </span>
+                    ))}
                   </div>
                 );
               },
@@ -1964,8 +1981,7 @@ export default function UsersListPanel() {
             },
             {
               title: t("common.enabled"),
-              width: 72,
-              // Admin-only toggle: everyone else reads the state, no control.
+              width: 80,
               render: (_, row) =>
                 admin ? (
                   <Switch
@@ -1982,6 +1998,17 @@ export default function UsersListPanel() {
                       : t("adminUsers.statusEnabled")}
                   </span>
                 ),
+            },
+            {
+              title: t("adminUsers.accessExpiresAt"),
+              width: 160,
+              render: (_, row) => (
+                <span className={styles.userCellMuted}>
+                  {row.access_expires_at
+                    ? formatUserTs(row.access_expires_at, timeZone)
+                    : "—"}
+                </span>
+              ),
             },
             {
               title: t("adminUsers.colCreatedAt"),
@@ -2006,10 +2033,20 @@ export default function UsersListPanel() {
             },
             {
               title: t("adminUsers.colActions"),
-              width: 120,
-              fixed: isMobile ? undefined : "right",
+              width: 144,
+              align: "right",
               render: (_, row) => (
                 <Space size={4}>
+                  <Tooltip title={t("common.viewDetail")}>
+                    <button
+                      type="button"
+                      className={styles.userCardIconBtn}
+                      onClick={() => setDetailTarget(row)}
+                      aria-label={t("common.viewDetail")}
+                    >
+                      <IdCard size={14} />
+                    </button>
+                  </Tooltip>
                   <Tooltip title={t("common.edit")}>
                     <button
                       type="button"
@@ -2021,34 +2058,26 @@ export default function UsersListPanel() {
                     </button>
                   </Tooltip>
                   {admin && (
-                    <Tooltip title={t("adminUsers.resetPassword")}>
-                      <button
-                        type="button"
-                        className={styles.userCardIconBtn}
-                        onClick={() => {
-                          setResetTarget(row);
-                          resetForm.resetFields();
-                        }}
-                        aria-label={t("adminUsers.resetPassword")}
-                      >
-                        <KeyRound size={14} />
-                      </button>
-                    </Tooltip>
-                  )}
-                  {admin && (
-                    <Popconfirm
-                      title={t("adminUsers.deleteConfirm", {
-                        username: row.username,
-                      })}
-                      onConfirm={() => onDelete(row)}
-                      disabled={row.id === currentUserId}
-                    >
-                      <Tooltip
-                        title={
-                          row.id === currentUserId
-                            ? t("adminUsers.deleteSelf")
-                            : t("common.delete")
-                        }
+                    <>
+                      <Tooltip title={t("adminUsers.resetPassword")}>
+                        <button
+                          type="button"
+                          className={styles.userCardIconBtn}
+                          onClick={() => {
+                            setResetTarget(row);
+                            resetForm.resetFields();
+                          }}
+                          aria-label={t("adminUsers.resetPassword")}
+                        >
+                          <KeyRound size={14} />
+                        </button>
+                      </Tooltip>
+                      <Popconfirm
+                        title={t("adminUsers.deleteConfirm", {
+                          username: row.username,
+                        })}
+                        onConfirm={() => onDelete(row)}
+                        disabled={row.id === currentUserId}
                       >
                         <button
                           type="button"
@@ -2058,8 +2087,8 @@ export default function UsersListPanel() {
                         >
                           <Trash2 size={14} />
                         </button>
-                      </Tooltip>
-                    </Popconfirm>
+                      </Popconfirm>
+                    </>
                   )}
                 </Space>
               ),
@@ -2067,6 +2096,202 @@ export default function UsersListPanel() {
           ]}
         />
       )}
+
+      <Drawer
+        title={
+          detailTarget
+            ? detailTarget.display_name?.trim() || detailTarget.username
+            : ""
+        }
+        open={detailTarget !== null}
+        onClose={() => setDetailTarget(null)}
+        width={Math.min(
+          440,
+          typeof window !== "undefined" ? window.innerWidth - 24 : 440,
+        )}
+        destroyOnHidden
+      >
+        {detailTarget && (
+          <div className={styles.userDetail}>
+            <div className={styles.userDetailIdentity}>
+              <span
+                className={`${styles.userCellAvatar} ${roleToneClass(
+                  detailTarget.role,
+                )}`}
+              >
+                {userInitials(
+                  detailTarget.display_name?.trim() || detailTarget.username,
+                  detailTarget.username,
+                )}
+              </span>
+              <div className={styles.userCellText}>
+                <span className={styles.userCellName}>
+                  {detailTarget.display_name?.trim() || detailTarget.username}
+                </span>
+                <span className={styles.userCellHandle}>
+                  @{detailTarget.username} · #{detailTarget.id}
+                </span>
+              </div>
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.colRole")}
+              </span>
+              <span
+                className={`${styles.userCardPill} ${roleToneClass(
+                  detailTarget.role,
+                )}`}
+              >
+                {t(ROLE_LABEL_KEYS[detailTarget.role])}
+              </span>
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.orgUnit")}
+              </span>
+              <div className={styles.userDetailTags}>
+                {(detailTarget.org_units?.length
+                  ? detailTarget.org_units
+                  : detailTarget.org_unit
+                  ? [detailTarget.org_unit]
+                  : []
+                ).map((unitKey) => (
+                  <Tag key={unitKey}>
+                    {orgUnitLabelByKey.get(unitKey) ?? unitKey}
+                  </Tag>
+                ))}
+                {!detailTarget.org_unit &&
+                  (detailTarget.org_units?.length ?? 0) === 0 && (
+                    <span className={styles.userCellMuted}>—</span>
+                  )}
+              </div>
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.colEmail")}
+              </span>
+              <span className={styles.userDetailValue}>
+                {detailTarget.email?.trim() || "—"}
+              </span>
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.colAuth")}
+              </span>
+              <div className={styles.userDetailTags}>
+                {detailTarget.sso_linked && (
+                  <Tag>{t("adminUsers.ssoBadge")}</Tag>
+                )}
+                {detailTarget.has_password && (
+                  <Tag>{t("adminUsers.passwordBadge")}</Tag>
+                )}
+                {!detailTarget.sso_linked && !detailTarget.has_password && (
+                  <span className={styles.userCellMuted}>—</span>
+                )}
+              </div>
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.colPermissions")}
+              </span>
+              <PermissionSummary
+                row={detailTarget}
+                permLabelByKey={permLabelByKey}
+              />
+              {(detailTarget.permissions?.length ?? 0) > 0 && (
+                <div className={styles.userDetailTags}>
+                  {detailTarget.permissions?.map((key) => (
+                    <Tag key={key}>{permLabelByKey.get(key) ?? key}</Tag>
+                  ))}
+                </div>
+              )}
+              {(detailTarget.denied_permissions?.length ?? 0) > 0 && (
+                <div className={styles.userDetailTags}>
+                  {detailTarget.denied_permissions?.map((key) => (
+                    <Tag key={key} color="red">
+                      {permLabelByKey.get(key) ?? key}
+                    </Tag>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("common.enabled")}
+              </span>
+              <span className={styles.userDetailValue}>
+                {detailTarget.disabled
+                  ? t("adminUsers.statusDisabled")
+                  : t("adminUsers.statusEnabled")}
+              </span>
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.colCreatedAt")}
+              </span>
+              <span className={styles.userDetailValue}>
+                {formatUserTs(detailTarget.created_at, timeZone)}
+              </span>
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.colLoginLock")}
+              </span>
+              <UserLoginLock
+                row={detailTarget}
+                nowSec={nowSec}
+                onUnlock={() => void onUnlockLogin(detailTarget)}
+              />
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.accessExpiresAt")}
+              </span>
+              <span className={styles.userDetailValue}>
+                {detailTarget.access_expires_at
+                  ? formatUserTs(detailTarget.access_expires_at, timeZone)
+                  : "—"}
+              </span>
+              {detailTarget.access_notice && (
+                <span className={styles.userDetailValue}>
+                  {t("adminUsers.accessNotice")}: {detailTarget.access_notice}
+                </span>
+              )}
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.policyWorkspaceRoot")}
+              </span>
+              <span className={styles.userDetailValue}>
+                {detailTarget.workspace_root_dir || "—"}
+              </span>
+            </div>
+            <div className={styles.userDetailSection}>
+              <span className={styles.userDetailLabel}>
+                {t("adminUsers.policyTokenQuota")}
+              </span>
+              <span className={styles.userDetailValue}>
+                {detailTarget.token_quota == null
+                  ? "—"
+                  : detailTarget.token_quota.toLocaleString()}
+              </span>
+            </div>
+            <div className={styles.userDetailFooter}>
+              <Button
+                type="primary"
+                icon={<Pencil size={14} />}
+                onClick={() => {
+                  const target = detailTarget;
+                  setDetailTarget(null);
+                  openEdit(target);
+                }}
+              >
+                {t("common.edit")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Drawer>
 
       <Drawer
         title={

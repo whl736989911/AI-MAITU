@@ -1,9 +1,8 @@
 /**
- * The feature drawer's tab shell.
+ * The feature workspace shell.
  *
- * Both tabs are full panels that own their scrolling; Tabs only has to hand them
- * the whole body and keep the tab strip at the top, so the pane is the flex
- * column the workflow's ``flex: 1`` already expects.
+ * Both workflow and data panels own their scrolling; the surrounding workspace
+ * gives them a flexible content column.
  */
 
 .tabs {
@@ -15,4 +14,45 @@
   flex-direction: column;
   min-height: 0;
   flex: 1;
+}
+
+.resourceWorkspace {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 10px;
+  background: var(--fn-bg-primary);
+}
+
+.resourceHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  h2 {
+    margin: 8px 0 4px;
+    color: var(--fn-text-primary);
+    font-size: 18px;
+  }
+
+  p,
+  > span {
+    color: var(--fn-text-tertiary);
+    font-size: 12px;
+  }
+
+  p {
+    margin: 0;
+  }
+}
+
+@media (max-width: 767px) {
+  .resourceWorkspace {
+    padding: 14px;
+  }
+  .resourceHeader {
+    flex-direction: column;
+  }
 }

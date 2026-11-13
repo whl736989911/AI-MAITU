@@ -311,3 +311,49 @@
     opacity: 0.9;
   }
 }
+
+:global(html[data-density="compact"]) {
+  .markdownBody {
+    line-height: 1.5;
+
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6 {
+      margin: 6px 0 3px;
+    }
+
+    p,
+    ul,
+    ol {
+      margin: 3px 0;
+    }
+
+    li {
+      margin-block: 1px;
+    }
+
+    blockquote {
+      margin-block: 4px;
+      padding-block: 2px;
+    }
+
+    hr {
+      margin-block: 6px;
+    }
+  }
+
+  .codeBlockWrapper,
+  .codeBlock,
+  .mermaidBlock,
+  .tableWrapper {
+    margin-block: 4px;
+  }
+
+  .codeBlock,
+  .mermaidBlock {
+    padding-block: 6px;
+  }
+}

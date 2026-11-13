@@ -284,8 +284,8 @@
 .pageTop {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 6px;
+  margin-bottom: 8px;
 }
 
 .userSearch {
@@ -297,9 +297,9 @@
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
   align-items: baseline;
-  column-gap: 12px;
+  column-gap: 8px;
   row-gap: 4px;
-  padding: 9px 12px 9px 11px;
+  padding: 5px 8px;
   border: 1px solid var(--fn-border-secondary);
   border-left: 3px solid
     color-mix(in srgb, var(--fn-color-brand) 55%, var(--fn-border-primary));
@@ -706,7 +706,6 @@
 .userCardIconBtnDanger {
   &:hover:not(:disabled) {
     color: #ff4d4f;
-    border-color: rgba(255, 77, 79, 0.45);
     background: rgba(255, 77, 79, 0.06);
   }
 }
@@ -742,11 +741,11 @@
     color: var(--fn-text-tertiary);
     font-size: 12px;
     font-weight: 600;
-    padding: 10px 12px;
+    padding: 4px 8px;
   }
 
   :global(.ant-table-tbody > tr > td) {
-    padding: 10px 12px;
+    padding: 4px 8px;
     vertical-align: middle;
   }
 }
@@ -762,7 +761,7 @@
 .userCell {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 6px;
   min-width: 0;
 }
 
@@ -1538,4 +1537,49 @@
     flex-direction: column;
     align-items: stretch;
   }
+}
+.userDetail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.userDetailIdentity {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--fn-border-primary);
+}
+
+.userDetailSection {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.userDetailLabel {
+  color: var(--fn-text-tertiary);
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.userDetailValue {
+  color: var(--fn-text-primary);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.userDetailTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.userDetailFooter {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 6px;
+  border-top: 1px solid var(--fn-border-primary);
 }

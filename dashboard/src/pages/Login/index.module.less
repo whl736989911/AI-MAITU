@@ -1,0 +1,70 @@
+.loginShell {
+  box-sizing: border-box;
+  min-height: 100dvh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: max(24px, env(safe-area-inset-top, 0px))
+    max(16px, env(safe-area-inset-right, 0px))
+    max(24px, env(safe-area-inset-bottom, 0px))
+    max(16px, env(safe-area-inset-left, 0px));
+  background: var(--fn-bg-layout);
+  transition: background var(--fn-transition);
+}
+
+.loginCard {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 400px;
+  margin: 0;
+  padding: 36px 30px 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 14px;
+  background: var(--fn-bg-elevated);
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 12px;
+  box-shadow: var(--fn-shadow-sm);
+}
+
+.brandLogo {
+  align-self: center;
+  width: auto;
+  height: 40px;
+  max-width: 100%;
+  margin-bottom: 2px;
+  object-fit: contain;
+}
+
+.loginTitle {
+  margin: 0 0 6px;
+  color: var(--fn-text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.35;
+  text-align: center;
+}
+
+.loginCard :global(.ant-input-affix-wrapper),
+.loginCard :global(.ant-input),
+.loginCard :global(.ant-btn) {
+  border-radius: 8px !important;
+}
+
+@media (max-width: 480px) {
+  .loginShell {
+    align-items: flex-start;
+    padding-top: max(32px, env(safe-area-inset-top, 0px));
+  }
+
+  .loginCard {
+    max-width: 420px;
+    padding: 28px 20px 22px;
+    gap: 12px;
+  }
+
+  .brandLogo {
+    height: 36px;
+  }
+}

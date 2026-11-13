@@ -1,0 +1,94 @@
+.page {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 760px;
+  min-height: 0;
+  flex: 1 1 auto;
+  margin: 0 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 24px 20px calc(36px + env(safe-area-inset-bottom, 0px));
+  color: var(--fn-text-primary);
+  font-family: system-ui, sans-serif;
+}
+
+.title {
+  margin: 0 0 4px;
+  color: var(--fn-text-primary);
+  font-size: 20px;
+  font-weight: 650;
+}
+
+.subtitle {
+  margin: 0 0 18px;
+  color: var(--fn-text-tertiary);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.checkList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.checkItem {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--fn-border-secondary);
+  border-radius: 8px;
+  background: var(--fn-bg-secondary);
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 20px;
+}
+
+.actionButton {
+  min-height: 34px;
+  padding: 7px 12px !important;
+  border-radius: 7px !important;
+  border-color: var(--fn-border-primary) !important;
+  font: inherit;
+  font-size: 13px !important;
+  line-height: 1.3;
+}
+
+.instructions {
+  padding: 14px;
+  border: 1px solid
+    color-mix(in srgb, var(--fn-color-brand) 24%, var(--fn-border-secondary));
+  border-radius: 8px;
+  background: color-mix(
+    in srgb,
+    var(--fn-color-brand) 6%,
+    var(--fn-bg-secondary)
+  );
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .page {
+    padding: 16px 12px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .actionButton {
+    min-width: 0;
+    white-space: normal;
+  }
+}

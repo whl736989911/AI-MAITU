@@ -22,6 +22,7 @@ import Markdown from "../../../components/Markdown/LazyMarkdown";
 import { apiErrorMessage } from "../../../utils/apiError";
 import { pickLocale } from "../../../utils/localizedText";
 import { pastelIconBackground } from "../../../utils/pastelIconBackground";
+import { useIsMobile } from "../../../hooks/useIsMobile";
 import {
   parseWorkflowFrontmatterMeta,
   splitMarkdownFrontmatter,
@@ -81,6 +82,7 @@ export default function ExpertMarketTab({
   onRequestCreate,
 }: ExpertMarketTabProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [items, setItems] = useState<MarketExpert[]>([]);
   const [scenes, setScenes] = useState<string[]>([]);
   const [activeScene, setActiveScene] = useState(SCENE_ALL);
@@ -230,7 +232,7 @@ export default function ExpertMarketTab({
         <div className={styles.marketSceneTabsWrap}>
           <Segmented
             block
-            size="large"
+            size="small"
             value={activeScene}
             onChange={(v) => setActiveScene(String(v))}
             options={sceneOptions}
@@ -299,7 +301,16 @@ export default function ExpertMarketTab({
                     )}
                   </div>
                   <div className={styles.agentCardTitleBlock}>
-                    <div className={styles.agentCardName}>{label}</div>
+                    <button
+                      type="button"
+                      className={`${styles.agentCardName} ${styles.catalogTitleButton}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void openDetail(expert);
+                      }}
+                    >
+                      {label}
+                    </button>
                   </div>
                 </div>
                 <div className={styles.agentCardDesc}>
@@ -343,7 +354,7 @@ export default function ExpertMarketTab({
 
       <Drawer
         open={!!selected}
-        width={560}
+        width={isMobile ? "100%" : 560}
         destroyOnHidden
         onClose={() => setSelected(null)}
         title={selected ? labelOf(selected, lang) : ""}

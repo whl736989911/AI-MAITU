@@ -1,17 +1,24 @@
 .status {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
-  padding: 14px 16px;
-  margin-bottom: 20px;
-  border-radius: var(--fn-radius-lg, 10px);
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  border-radius: var(--fn-radius-md, 8px);
   border: 1px solid var(--fn-border-secondary, var(--fn-card-border-normal));
   background: var(--fn-bg-secondary);
 }
 
 .statusOk {
-  border-color: color-mix(in srgb, #10b981 28%, var(--fn-card-border-normal));
-  background: var(--fn-bg-success-light, #ecfdf5);
+  border-color: color-mix(
+    in srgb,
+    var(--fn-color-success) 28%,
+    var(--fn-card-border-normal)
+  );
+  background: var(
+    --fn-bg-success-light,
+    color-mix(in srgb, var(--fn-color-success) 12%, transparent)
+  );
 }
 
 .statusIcon {
@@ -22,7 +29,7 @@
 }
 
 .statusOk .statusIcon {
-  color: #047857;
+  color: var(--fn-color-success);
 }
 
 .statusBody {
@@ -39,7 +46,7 @@
 }
 
 .statusOk .statusTitle {
-  color: #065f46;
+  color: var(--fn-color-success);
 }
 
 .statusDesc {
@@ -50,15 +57,19 @@
 }
 
 .statusOk .statusDesc {
-  color: color-mix(in srgb, #065f46 78%, var(--fn-text-secondary));
+  color: color-mix(
+    in srgb,
+    var(--fn-color-success) 78%,
+    var(--fn-text-secondary)
+  );
 }
 
 .grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
-  row-gap: 14px;
-  column-gap: 12px;
-  margin-bottom: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(min(260px, 100%), 1fr));
+  row-gap: 10px;
+  column-gap: 10px;
+  margin-bottom: 12px;
 
   @media (max-width: 767px) {
     grid-template-columns: 1fr;
@@ -70,22 +81,18 @@
   position: relative;
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  min-height: 168px;
-  padding: 16px;
+  gap: 10px;
+  min-height: 0;
+  padding: 12px;
   background: var(--fn-bg-primary);
   border: 1px solid var(--fn-card-border-normal);
-  border-radius: var(--fn-card-radius, var(--fn-radius-lg));
-  box-shadow: var(--fn-card-shadow-normal);
-  transition:
-    border-color 0.18s ease,
-    box-shadow 0.18s ease,
-    transform 0.18s ease;
+  border-radius: var(--fn-radius-md, 8px);
+  transition: border-color 0.18s ease;
 
   &:hover {
     border-color: var(--fn-border-input);
-    box-shadow: 0 6px 18px rgba(0, 0, 0, 0.06);
-    transform: translateY(-1px);
+    box-shadow: var(--fn-card-shadow-normal);
+    transform: none;
   }
 
   @media (max-width: 767px) {
@@ -208,9 +215,12 @@
 }
 
 .badgeOk {
-  color: #047857;
-  background: var(--fn-bg-success-light, #ecfdf5);
-  border-color: color-mix(in srgb, #10b981 22%, transparent);
+  color: var(--fn-color-success);
+  background: var(
+    --fn-bg-success-light,
+    color-mix(in srgb, var(--fn-color-success) 12%, transparent)
+  );
+  border-color: color-mix(in srgb, var(--fn-color-success) 22%, transparent);
 }
 
 .badgeSetup {

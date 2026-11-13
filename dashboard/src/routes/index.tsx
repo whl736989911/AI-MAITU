@@ -9,9 +9,6 @@ const CronJobsPage = lazy(() => import("../pages/Control/CronJobs"));
 const ConnectorsPage = lazy(() => import("../pages/Agent/Connectors"));
 const SkillPackagesPage = lazy(() => import("../pages/SkillPackages"));
 const KnowledgeBasesPage = lazy(() => import("../pages/KnowledgeBases"));
-const PersonalizationPage = lazy(
-  () => import("../pages/Agent/Personalization"),
-);
 const ACPPage = lazy(() => import("../pages/Agent/ACP"));
 const TokenUsagePage = lazy(() => import("../pages/Control/TokenUsage"));
 
@@ -59,20 +56,10 @@ export const pathToKey: Record<string, string> = {
   "/connectors": "connectors",
   "/skill-packages": "skill-packages",
   "/knowledge-bases": "knowledge-bases",
-  "/personalization": "personalization",
-  "/personalization/skills": "personalization",
-  "/personalization/tools": "personalization",
-  "/personalization/plugins": "personalization",
-  "/personalization/subagents": "personalization",
-  "/personalization/channels": "channels",
-  "/personalization/mbti": "personalization",
-  "/personalization/memory": "personalization",
-  "/skills": "personalization",
   "/token-usage": "token-usage",
   "/agent-config": "agent-config",
   // Control
   "/acp": "acp",
-  "/channels": "channels",
   "/workbench": "workbench",
   "/workbench/terminal": "workbench",
   "/workbench/browser": "workbench",
@@ -85,9 +72,6 @@ export const pathToKey: Record<string, string> = {
   "/remote-desktop/phone/shell": "remote-desktop",
   "/remote-phone": "remote-desktop",
   "/remote-android": "remote-desktop",
-  "/subagents": "personalization",
-  "/mbti": "personalization",
-  "/memory": "personalization",
   // Admin
   "/admin/models": "models",
   // Admin
@@ -98,6 +82,7 @@ export const pathToKey: Record<string, string> = {
   "/admin/security": "admin-security",
   "/admin/org-units": "admin-org-units",
   "/sharing": "sharing",
+  "/pwa-debug": "pwa-debug",
 };
 
 /**
@@ -134,19 +119,11 @@ export function isRemoteDesktopPath(pathname: string): boolean {
   );
 }
 
-export function isPersonalizationPath(pathname: string): boolean {
-  return (
-    pathname === "/personalization" || pathname.startsWith("/personalization/")
-  );
-}
-
 export function resolveSelectedKey(pathname: string): string {
   if (pathToKey[pathname]) return pathToKey[pathname];
   if (pathname.startsWith("/chat/")) return "chat";
   if (pathname.startsWith("/features/")) return "features";
   if (pathname.startsWith("/workbench/")) return "workbench";
-  if (pathname.startsWith("/remote-desktop/")) return "remote-desktop";
-  if (pathname.startsWith("/personalization/")) return "personalization";
   return "";
 }
 
@@ -164,23 +141,10 @@ export const routeConfigs: RouteConfig[] = [
   { path: "/connectors", element: <ConnectorsPage /> },
   { path: "/skill-packages", element: <SkillPackagesPage /> },
   { path: "/knowledge-bases", element: <KnowledgeBasesPage /> },
-  {
-    path: "/personalization/acp",
-    element: <RedirectPreserveSearch to="/acp" />,
-  },
-  { path: "/personalization/*", element: <PersonalizationPage /> },
-  {
-    path: "/skills",
-    element: <RedirectPreserveSearch to="/personalization/skills" />,
-  },
   { path: "/token-usage", element: <TokenUsagePage /> },
 
   // Control (RequirePermission via pathPermissionKeys in MainLayout)
   { path: "/acp", element: <ACPPage /> },
-  {
-    path: "/channels",
-    element: <RedirectPreserveSearch to="/personalization/channels" />,
-  },
   // Workbench (terminal + browser) is keep-alive mounted in MainLayout.
   { path: "/workbench", element: null },
   { path: "/workbench/terminal", element: null },
@@ -205,18 +169,6 @@ export const routeConfigs: RouteConfig[] = [
   {
     path: "/remote-android",
     element: <Navigate to="/remote-desktop/phone" replace />,
-  },
-  {
-    path: "/subagents",
-    element: <RedirectPreserveSearch to="/personalization/subagents" />,
-  },
-  {
-    path: "/mbti",
-    element: <RedirectPreserveSearch to="/personalization/mbti" />,
-  },
-  {
-    path: "/memory",
-    element: <RedirectPreserveSearch to="/personalization/memory" />,
   },
   { path: "/workspace", element: <Navigate to="/experts" replace /> },
 
@@ -256,7 +208,6 @@ export const routeConfigs: RouteConfig[] = [
   // Legacy redirects — keeps old bookmarks working
   { path: "/admin/storage", element: <Navigate to="/admin/backend" replace /> },
   { path: "/orca/cron", element: <Navigate to="/tasks" replace /> },
-  { path: "/orca/channels", element: <Navigate to="/channels" replace /> },
   {
     path: "/orca/admin/users",
     element: <Navigate to="/admin/users" replace />,
@@ -266,7 +217,6 @@ export const routeConfigs: RouteConfig[] = [
     element: <Navigate to="/admin/security?tab=audit" replace />,
   },
   { path: "/octop/cron", element: <Navigate to="/tasks" replace /> },
-  { path: "/octop/channels", element: <Navigate to="/channels" replace /> },
   {
     path: "/octop/admin/users",
     element: <Navigate to="/admin/users" replace />,

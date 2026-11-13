@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Button, Input, List, Segmented, Spin, Typography } from "antd";
+import { Alert, Button, Input, Segmented, Spin, Typography } from "antd";
 import { RefreshCw, Search, Share2 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import type { SharingResourceType } from "../../../api/modules/sharing";
@@ -114,6 +114,7 @@ export default function SharingResourcesPanel() {
 
       <div className={styles.panelToolbar}>
         <Segmented
+          size="small"
           value={resourceType}
           onChange={(value) => {
             setQuery("");
@@ -159,30 +160,32 @@ export default function SharingResourcesPanel() {
             description={t("sharing.settings.emptyHint")}
           />
         ) : (
-          <List
-            className={styles.resourceList}
-            dataSource={filtered}
-            renderItem={(option) => (
-              <List.Item
-                key={option.id}
-                actions={[
-                  <Button
-                    key="sharing"
-                    size="small"
-                    icon={<Share2 size={14} />}
-                    onClick={() => setSelected(option)}
-                  >
-                    {t("sharing.settings.open")}
-                  </Button>,
-                ]}
-              >
-                <List.Item.Meta
-                  title={option.name}
-                  description={option.hint ?? t("sharing.settings.noOwner")}
-                />
-              </List.Item>
-            )}
-          />
+          <div className={styles.resourceRows}>
+            {filtered.map((option) => (
+              <article className={styles.resourceRow} key={option.id}>
+                <div className={styles.resourceIdentity}>
+                  <span className={styles.resourceIcon}>
+                    <Share2 size={16} />
+                  </span>
+                  <div className={styles.resourceNameBlock}>
+                    <Text strong className={styles.resourceName}>
+                      {option.name}
+                    </Text>
+                    <Text type="secondary" className={styles.resourceHint}>
+                      {option.hint ?? t("sharing.settings.noOwner")}
+                    </Text>
+                  </div>
+                </div>
+                <Button
+                  size="small"
+                  icon={<Share2 size={14} />}
+                  onClick={() => setSelected(option)}
+                >
+                  {t("sharing.settings.open")}
+                </Button>
+              </article>
+            ))}
+          </div>
         )}
       </Spin>
 

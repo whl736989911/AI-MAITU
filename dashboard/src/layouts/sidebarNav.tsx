@@ -4,14 +4,12 @@ import {
   MessageSquareText,
   Timer,
   SlidersHorizontal,
-  Waypoints,
   Link2,
   Database,
   Cpu,
   Users as UsersIcon,
   Activity,
   Share2,
-  Sparkles,
   Puzzle,
   Package,
   HardDrive,
@@ -21,14 +19,15 @@ import {
   Shield,
   PanelsTopLeft,
   ShieldCheck,
+  Boxes,
+  Settings2,
 } from "lucide-react";
 import type { OctopUser } from "../api/modules/auth";
 import { navAllowed, userCan } from "../utils/permissions";
 
-export const EXPANDED_WIDTH = 220;
 export const COLLAPSED_WIDTH = 56;
 
-const iconSize = 16;
+const iconSize = 15;
 const iconStroke = 1.8;
 
 export interface NavItem {
@@ -37,6 +36,8 @@ export interface NavItem {
   icon: ReactNode;
   labelKey: string;
   badge?: string;
+  /** Authorized destinations inside a workspace. Each retains its own route guard. */
+  children?: NavItem[];
 }
 
 export interface NavSection {
@@ -45,38 +46,7 @@ export interface NavSection {
   items: NavItem[];
 }
 
-/**
- * Catalog of nav item keys that live under settings / control / admin groups.
- * Permission-independent — used for pane/route helpers; visibility still
- * comes from {@link buildNavSections}.
- */
-export const SIDEBAR_GROUPED_NAV_KEYS = [
-  "personalization",
-  "channels",
-  "connectors",
-  "skill-packages",
-  "knowledge-bases",
-  "workbench",
-  "remote-desktop",
-  "acp",
-  "admin-users",
-  "admin-org-units",
-  "models",
-  "admin-storage",
-  "admin-plugins",
-  "admin-security",
-  "admin-advanced",
-  "agent-config",
-  "sharing",
-] as const;
-
-const GROUPED_NAV_KEY_SET = new Set<string>(SIDEBAR_GROUPED_NAV_KEYS);
-
-export function isGroupedNavKey(key: string): boolean {
-  return GROUPED_NAV_KEY_SET.has(key);
-}
-
-export function buildNavSections(
+function buildModuleNavSections(
   user: OctopUser | null,
   opts?: { mobileEnabled?: boolean },
 ): NavSection[] {
@@ -116,38 +86,34 @@ export function buildNavSections(
       labelKey: "nav.teams",
     });
   }
-  primaryItems.push(
-    {
-      key: "tasks",
-      path: "/tasks",
-      icon: <Timer size={iconSize} strokeWidth={iconStroke} />,
-      labelKey: "nav.tasks",
-    },
-    {
-      key: "token-usage",
-      path: "/token-usage",
-      icon: <Activity size={iconSize} strokeWidth={iconStroke} />,
-      labelKey: "nav.tokenUsage",
-    },
-  );
+  primaryItems.push({
+    key: "tasks",
+    path: "/tasks",
+    icon: <Timer size={iconSize} strokeWidth={iconStroke} />,
+    labelKey: "nav.tasks",
+  });
+  primaryItems.push({
+    key: "token-usage",
+    path: "/token-usage",
+    icon: <Activity size={iconSize} strokeWidth={iconStroke} />,
+    labelKey: "nav.tokenUsage",
+  });
   sections.push({ items: primaryItems });
 
-  const settingsItems: NavItem[] = [
-    {
-      key: "personalization",
-      path: "/personalization/skills",
-      icon: <Sparkles size={iconSize} strokeWidth={iconStroke} />,
-      labelKey: "nav.personalization",
-    },
-  ];
-  if (navAllowed(user, "channels")) {
-    settingsItems.push({
-      key: "channels",
-      path: "/personalization/channels",
-      icon: <Waypoints size={iconSize} strokeWidth={iconStroke} />,
-      labelKey: "nav.channels",
+  const knowledgeItems: NavItem[] = [];
+  if (navAllowed(user, "knowledge-bases")) {
+    knowledgeItems.push({
+      key: "knowledge-bases",
+      path: "/knowledge-bases",
+      icon: <Database size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.knowledgeBases",
     });
   }
+  if (knowledgeItems.length > 0) {
+    sections.push({ groupKey: "nav.knowledge", items: knowledgeItems });
+  }
+
+  const settingsItems: NavItem[] = [];
   if (navAllowed(user, "connectors")) {
     settingsItems.push({
       key: "connectors",
@@ -162,14 +128,6 @@ export function buildNavSections(
       path: "/skill-packages",
       icon: <Package size={iconSize} strokeWidth={iconStroke} />,
       labelKey: "nav.skillPackages",
-    });
-  }
-  if (navAllowed(user, "knowledge-bases")) {
-    settingsItems.push({
-      key: "knowledge-bases",
-      path: "/knowledge-bases",
-      icon: <Database size={iconSize} strokeWidth={iconStroke} />,
-      labelKey: "nav.knowledgeBases",
     });
   }
   if (settingsItems.length > 0) {
@@ -282,4 +240,126 @@ export function buildNavSections(
     sections.push({ groupKey: "nav.admin", items: adminItems });
   }
   return sections;
+}
+
+/** Group real module destinations without broadening their existing permissions. */
+export function buildNavSections(
+  user: OctopUser | null,
+  opts?: { mobileEnabled?: boolean },
+): NavSection[] {
+  const modules = buildModuleNavSections(user, opts).flatMap(
+    (section) => section.items,
+  );
+  const byKey = new Map(modules.map((item) => [item.key, item]));
+  const select = (keys: string[]) =>
+    keys.flatMap((key) => {
+      const item = byKey.get(key);
+      return item ? [item] : [];
+    });
+  const primary = select([
+    "chat",
+    "features",
+    "knowledge-bases",
+    "experts",
+    "teams",
+    "tasks",
+    "token-usage",
+  ]);
+  const collaboration = select(["admin-users", "admin-org-units", "sharing"])
+    .filter((item) => item.key !== "admin-users" || userCan(user, "users"))
+    .map((item) =>
+      item.key === "admin-users"
+        ? { ...item, path: "/admin/users?tab=local" }
+        : item,
+    );
+  const capabilities = select(["connectors", "skill-packages"]);
+  const execution = select(["workbench", "remote-desktop", "acp"]);
+  const system = select([
+    "models",
+    "admin-storage",
+    "admin-plugins",
+    "admin-security",
+    "admin-advanced",
+  ]);
+  if (userCan(user, "sso")) {
+    system.push({
+      key: "identity",
+      path: "/admin/users?tab=feishu",
+      icon: <UsersIcon size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.identity",
+    });
+  }
+  if (system.length) {
+    system.push({
+      key: "pwa-debug",
+      path: "/pwa-debug",
+      icon: <Activity size={iconSize} strokeWidth={iconStroke} />,
+      labelKey: "nav.diagnostics",
+    });
+  }
+  const operations: NavItem[] = [];
+  const workspace = (
+    key: string,
+    labelKey: string,
+    icon: ReactNode,
+    children: NavItem[],
+  ) => {
+    if (children.length)
+      operations.push({
+        key,
+        labelKey,
+        icon,
+        path: children[0].path,
+        children,
+      });
+  };
+  workspace(
+    "capabilities",
+    "nav.capabilities",
+    <Boxes size={iconSize} strokeWidth={iconStroke} />,
+    capabilities,
+  );
+  workspace(
+    "execution",
+    "nav.execution",
+    <PanelsTopLeft size={iconSize} strokeWidth={iconStroke} />,
+    execution,
+  );
+  workspace(
+    "system",
+    "nav.system",
+    <Settings2 size={iconSize} strokeWidth={iconStroke} />,
+    system,
+  );
+  return [
+    { items: primary },
+    ...(collaboration.length
+      ? [{ groupKey: "nav.collaboration", items: collaboration }]
+      : []),
+    ...(operations.length
+      ? [{ groupKey: "nav.operations", items: operations }]
+      : []),
+  ];
+}
+
+/** Resolve a module route to its parent workspace; SSO remains separate from user administration. */
+export function findWorkspaceItem(
+  sections: NavSection[],
+  moduleKey: string,
+  search = "",
+): NavItem | undefined {
+  const items = sections.flatMap((section) => section.items);
+  let key = moduleKey;
+  if (moduleKey === "admin-users") {
+    const tab = new URLSearchParams(search).get("tab");
+    if (
+      (tab && tab !== "local") ||
+      !items.some((item) => item.key === "admin-users")
+    )
+      key = "identity";
+  }
+  return items.find(
+    (item) =>
+      item.key === key || item.children?.some((child) => child.key === key),
+  );
 }

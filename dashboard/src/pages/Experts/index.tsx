@@ -19,14 +19,16 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
-import { Spin, Tabs, Segmented, Tooltip } from "antd";
+import { Button, Spin, Tabs, Segmented, Tooltip } from "antd";
+import { useSearchParams } from "react-router-dom";
 import { message } from "@/utils/antdMessage";
 
 import {
+  ArrowLeft,
   BookOpen,
   GraduationCap,
-  LayoutGrid,
   List,
+  Table2,
   RefreshCw,
   Store,
 } from "lucide-react";
@@ -53,6 +55,9 @@ import AgentExpertsTable from "./components/AgentExpertsTable";
 import ExpertMarketTab from "./components/ExpertMarketTab";
 import { EmptyStateIcon } from "../../components/EmptyState";
 import { ownedExperts } from "../../utils/sharedExpert";
+import { canManageExpert } from "../../utils/sharedExpert";
+import { useUserRole } from "../../hooks/useUserRole";
+import ResourceSettings from "../Agent/Personalization/components/ResourceSettings";
 import styles from "./index.module.less";
 
 type TabKey = "my" | "library" | "market";
@@ -95,7 +100,33 @@ export default function ExpertsPage() {
   const lang: "zh" | "en" = i18n.language?.startsWith("zh") ? "zh" : "en";
   const { agents, refresh: refreshAgents } = useAgent();
   const currentUser = useCurrentUser();
-
+  const role = useUserRole();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedExpertId = searchParams.get("expert");
+  const selectedExpert = selectedExpertId
+    ? agents.find(
+        (agent) =>
+          agent.agent_id === selectedExpertId &&
+          agent.kind !== "feature" &&
+          agent.kind !== "team" &&
+          canManageExpert(agent, role),
+      ) ?? null
+    : null;
+  const openSettings = useCallback(
+    (agentId: string, tab = "skills") => {
+      const next = new URLSearchParams(searchParams);
+      next.set("expert", agentId);
+      next.set("settings", tab);
+      setSearchParams(next);
+    },
+    [searchParams, setSearchParams],
+  );
+  const closeSettings = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("expert");
+    next.delete("settings");
+    setSearchParams(next);
+  }, [searchParams, setSearchParams]);
   const canManagePublished = useCallback(
     (expert: PublishedExpert) =>
       currentUser?.role === "admin" ||
@@ -210,9 +241,9 @@ export default function ExpertsPage() {
 
   const handleDeleted = (agentId: string) => {
     setLocalAgents((prev) => prev.filter((a) => a.agent_id !== agentId));
+    if (selectedExpertId === agentId) closeSettings();
     void refreshAgents();
   };
-
   // ── Edit Drawer ────────────────────────────────────────────────
   const [editAgent, setEditAgent] = useState<OctopAgent | null>(null);
 
@@ -331,8 +362,8 @@ export default function ExpertsPage() {
                   value: "card",
                   label: (
                     <span className={styles.viewModeLabel}>
-                      <LayoutGrid size={14} />
-                      {t("experts.viewCard", "卡片")}
+                      <List size={14} />
+                      {t("experts.viewList")}
                     </span>
                   ),
                 },
@@ -340,7 +371,7 @@ export default function ExpertsPage() {
                   value: "table",
                   label: (
                     <span className={styles.viewModeLabel}>
-                      <List size={14} />
+                      <Table2 size={14} />
                       {t("experts.viewTable", "表格")}
                     </span>
                   ),
@@ -348,9 +379,9 @@ export default function ExpertsPage() {
               ]}
             />
             {refreshButton}
-            <button className={styles.toolbarBtn} onClick={openExpertLibrary}>
+            <Button onClick={openExpertLibrary}>
               {t("experts.addFromLibrary")}
-            </button>
+            </Button>
           </div>
         </div>
         {showCardView ? (
@@ -378,6 +409,7 @@ export default function ExpertsPage() {
                       localAgents.find((a) => a.agent_id === id) ?? null,
                     )
                   }
+                  onConfigure={(id) => openSettings(id)}
                   onDeleted={handleDeleted}
                   onStateChange={handleStateChange}
                 />
@@ -394,6 +426,7 @@ export default function ExpertsPage() {
             onEdit={(id) =>
               setEditAgent(localAgents.find((a) => a.agent_id === id) ?? null)
             }
+            onConfigure={(id) => openSettings(id)}
             onDeleted={handleDeleted}
             onStateChange={handleStateChange}
           />
@@ -410,6 +443,7 @@ export default function ExpertsPage() {
     refreshPublishedExperts,
     showCardView,
     t,
+    openSettings,
   ]);
 
   const libraryContent = useMemo(() => {
@@ -528,34 +562,70 @@ export default function ExpertsPage() {
       title={t("pageShell.experts.title")}
       subtitle={t("pageShell.experts.subtitle")}
     >
-      <Tabs
-        activeKey={activeTab}
-        onChange={(k) => setActiveTab(k as TabKey)}
-        items={[
-          {
-            key: "my",
-            label: (
-              <TabLabel icon={GraduationCap}>{t("experts.myExperts")}</TabLabel>
-            ),
-            children: myExpertsContent,
-          },
-          {
-            key: "library",
-            label: (
-              <TabLabel icon={BookOpen}>{t("experts.expertLibrary")}</TabLabel>
-            ),
-            children: libraryContent,
-          },
-          {
-            key: "market",
-            label: (
-              <TabLabel icon={Store}>{t("experts.expertMarket")}</TabLabel>
-            ),
-            children: marketContent,
-          },
-        ]}
-      />
-
+      {!selectedExpert && (
+        <Tabs
+          activeKey={activeTab}
+          onChange={(k) => setActiveTab(k as TabKey)}
+          items={[
+            {
+              key: "my",
+              label: (
+                <TabLabel icon={GraduationCap}>
+                  {t("experts.myExperts")}
+                </TabLabel>
+              ),
+              children: myExpertsContent,
+            },
+            {
+              key: "library",
+              label: (
+                <TabLabel icon={BookOpen}>
+                  {t("experts.expertLibrary")}
+                </TabLabel>
+              ),
+              children: libraryContent,
+            },
+            {
+              key: "market",
+              label: (
+                <TabLabel icon={Store}>{t("experts.expertMarket")}</TabLabel>
+              ),
+              children: marketContent,
+            },
+          ]}
+        />
+      )}
+      {selectedExpert && (
+        <section className={styles.resourceWorkspace}>
+          <div className={styles.resourceWorkspaceHeader}>
+            <div>
+              <Button
+                type="text"
+                icon={<ArrowLeft size={15} />}
+                onClick={closeSettings}
+              >
+                {t("common.back")}
+              </Button>
+              <h2>{selectedExpert.name}</h2>
+              {selectedExpert.description && (
+                <p>{selectedExpert.description}</p>
+              )}
+            </div>
+            <span>
+              {t("experts.agentId")}: {selectedExpert.agent_id}
+            </span>
+          </div>
+          <ResourceSettings
+            key={selectedExpert.agent_id}
+            agentId={selectedExpert.agent_id}
+            agentState={selectedExpert.state}
+            scope="expert"
+            canWrite={canManageExpert(selectedExpert, role)}
+            activeTab={searchParams.get("settings")}
+            onTabChange={(tab) => openSettings(selectedExpert.agent_id, tab)}
+          />
+        </section>
+      )}
       <EditAgentDrawer
         open={!!editAgent}
         agent={editAgent}
