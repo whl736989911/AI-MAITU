@@ -21,7 +21,6 @@ import ChatSidebarPanel from "../../../Chat/components/ChatSidebarPanel";
 import ChatTitleBar from "../../../Chat/components/ChatTitleBar";
 import MessageList from "../../../Chat/components/MessageList";
 import ChatInput from "../../../Chat/components/ChatInput";
-import ChatComposerChrome from "../../../Chat/components/ChatComposerChrome";
 import { useChatDetailStyles } from "./useChatDetailStyles";
 import styles from "./ChatFlowPreview.module.less";
 import FileChangesPreview from "./FileChangesPreview";
@@ -2140,7 +2139,6 @@ export default function ChatFlowPreview(_props: DemoPageProps) {
               selectedConnectors={selectedConnectors}
               onConnectorsChange={setSelectedConnectors}
             />
-            <ChatComposerChrome sessionUsageLabel="2,142 tokens · local fixture" />
             {notice && (
               <div className="chatFlowNotice" role="status">
                 {notice}

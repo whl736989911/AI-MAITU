@@ -5,7 +5,7 @@ export const CHAT_SIDEBAR_KEY = "octop:chat-sidebar:open";
 export const CHAT_SIDEBAR_WIDTH_KEY = "octop:chat-sidebar:width";
 export const SIDEBAR_WIDTH_MIN = 200;
 export const SIDEBAR_WIDTH_MAX = 360;
-export const SIDEBAR_WIDTH_DEFAULT = 248;
+export const SIDEBAR_WIDTH_DEFAULT = 232;
 /** Viewport width at/above which the chat history rail defaults open. */
 export const CHAT_SIDEBAR_WIDE_BREAKPOINT = 1200;
 
@@ -115,15 +115,28 @@ function applySidebarWidth(el: HTMLElement | null, width: number) {
  * main source of jank. React state + localStorage commit only on pointerup.
  */
 export function useChatSidebarState(isMobile: boolean) {
-  const [sidebarOpen, setSidebarOpen] = useChatSidebarOpen();
   const [sidebarWidth, setSidebarWidth] = useState(loadSidebarWidth);
   const [isSidebarResizing, setIsSidebarResizing] = useState(false);
   const sidebarWidthRef = useRef(sidebarWidth);
+  const resizeStartRef = useRef({ x: 0, width: sidebarWidth });
+  const pendingWidthRef = useRef<number | null>(null);
   sidebarWidthRef.current = sidebarWidth;
   const sidebarElRef = useRef<HTMLDivElement>(null);
-  const resizeStartRef = useRef({ x: 0, width: 0 });
-  const pendingWidthRef = useRef<number | null>(null);
-
+  const [storedSidebarOpen, setStoredSidebarOpen] = useChatSidebarOpen();
+  // Keep the desktop preference without letting its overlay obscure a mobile
+  // conversation on entry. Mobile history opens only after an explicit action.
+  const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const setSidebarOpen = useCallback(
+    (value: boolean | ((previous: boolean) => boolean)) => {
+      if (isMobile) {
+        setMobileSidebarOpen(value);
+      } else {
+        setStoredSidebarOpen(value);
+      }
+    },
+    [isMobile, setStoredSidebarOpen],
+  );
+  const sidebarOpen = isMobile ? mobileSidebarOpen : storedSidebarOpen;
   const handleSidebarResizeStart = useCallback(
     (e: React.PointerEvent) => {
       if (isMobile || e.button !== 0) return;

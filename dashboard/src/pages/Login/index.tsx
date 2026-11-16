@@ -25,7 +25,8 @@ import dingtalkIcon from "../../assets/channels/dingtalk.svg";
 import wecomIcon from "../../assets/channels/wecom.svg";
 import googleIcon from "../../assets/providers/google.svg";
 import CaptchaField, { type CaptchaFieldHandle } from "./CaptchaField";
-import { type PublicCaptchaConfig } from "./captchaAdapters";
+import type { PublicCaptchaConfig } from "./captchaAdapters";
+import styles from "./index.module.less";
 
 function providerLabel(
   provider: OauthProviderStatus,
@@ -269,60 +270,17 @@ export default function LoginPage() {
           {accessExpiredNotice}
         </div>
       </Modal>
-      <div
-        style={{
-          minHeight: "100dvh",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          background: "var(--fn-bg-layout)",
-          transition: "background var(--fn-transition)",
-          boxSizing: "border-box",
-          padding:
-            "max(24px, env(safe-area-inset-top, 0px)) max(16px, env(safe-area-inset-right, 0px)) max(24px, env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-left, 0px))",
-        }}
-      >
-        <div
-          style={{
-            width: "100%",
-            maxWidth: 360,
-            padding: "48px 32px 40px",
-            background: "var(--fn-bg-elevated)",
-            borderRadius: 16,
-            boxShadow: "0 8px 32px rgba(0,0,0,0.08)",
-            border: "1px solid var(--fn-border-primary)",
-            display: "flex",
-            flexDirection: "column",
-            alignItems: "center",
-            gap: 20,
-            margin: "0 16px",
-          }}
-        >
+      <div className={styles.loginShell}>
+        <div className={styles.loginCard}>
           <img
+            className={styles.brandLogo}
             src={
               isDark ? brand.logos.wordmark_dark : brand.logos.wordmark_light
             }
             alt={brand.name.en}
-            style={{
-              height: 48,
-              width: "auto",
-              maxWidth: 260,
-              objectFit: "contain",
-              display: "block",
-            }}
           />
 
-          <h2
-            style={{
-              fontSize: 20,
-              fontWeight: 600,
-              color: "var(--fn-text-primary)",
-              margin: 0,
-              textAlign: "center",
-            }}
-          >
-            {t("login.title")}
-          </h2>
+          <h2 className={styles.loginTitle}>{t("login.title")}</h2>
 
           <Input
             prefix={

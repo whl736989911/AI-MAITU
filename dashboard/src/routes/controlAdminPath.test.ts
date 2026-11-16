@@ -68,67 +68,6 @@ describe("pathPermissionKeys", () => {
     expect(pathPermissionKeys("/token-usage")).toBeNull();
   });
 
-  it("gates personalization tabs with their own module permissions", () => {
-    expect(pathPermissionKeys("/personalization/skills")).toEqual([
-      ...PERM.skills,
-    ]);
-    expect(pathPermissionKeys("/personalization/subagents")).toEqual([
-      ...PERM.subagents,
-    ]);
-    expect(pathPermissionKeys("/personalization/tools")).toEqual([
-      ...PERM.tools,
-    ]);
-    expect(pathPermissionKeys("/personalization/plugins")).toEqual([
-      ...PERM.agentPlugins,
-    ]);
-    expect(pathPermissionKeys("/personalization/memory")).toEqual([
-      ...PERM.memory,
-    ]);
-
-    expect(
-      canAccessPath(
-        { role: "user", permissions: ["skills"] },
-        "/personalization/skills",
-      ),
-    ).toBe(true);
-    expect(
-      canAccessPath(
-        { role: "user", permissions: ["tools"] },
-        "/personalization/skills",
-      ),
-    ).toBe(false);
-    expect(
-      canAccessPath(
-        { role: "user", permissions: ["subagents"] },
-        "/personalization/subagents",
-      ),
-    ).toBe(true);
-    expect(
-      canAccessPath(
-        { role: "user", permissions: ["skills"] },
-        "/personalization/subagents",
-      ),
-    ).toBe(false);
-    expect(
-      canAccessPath(
-        { role: "user", permissions: ["tools"] },
-        "/personalization/tools",
-      ),
-    ).toBe(true);
-    expect(
-      canAccessPath(
-        { role: "user", permissions: ["agent_plugins"] },
-        "/personalization/plugins",
-      ),
-    ).toBe(true);
-    expect(
-      canAccessPath(
-        { role: "user", permissions: ["memory"] },
-        "/personalization/memory",
-      ),
-    ).toBe(true);
-  });
-
   it("gates experts and teams independently, with experts required by teams", () => {
     expect(pathPermissionKeys("/features")).toEqual([...PERM.features]);
     expect(pathPermissionKeys("/experts")).toEqual([...PERM.experts]);
@@ -198,9 +137,7 @@ describe("pathPermissionKeys", () => {
     expect(pathPermissionKeys("/skill-packages")).toEqual([
       ...PERM.skillPackages,
     ]);
-    expect(pathPermissionKeys("/personalization/channels")).toEqual([
-      ...PERM.channels,
-    ]);
+
     expect(pathPermissionKeys("/knowledge-bases")).toEqual([
       ...PERM.knowledgeBasesPage,
     ]);
@@ -298,18 +235,5 @@ describe("unknown dashboard paths", () => {
 
   it("are caught by the not-found route", () => {
     expect(routeConfigs.some((rc) => rc.path === "*")).toBe(true);
-  });
-});
-
-describe("personalization nav key", () => {
-  it("comes from the section prefix, tabs listed in the map or not", () => {
-    // ``/personalization/files`` is a feature's tab; the experts' page has no
-    // such tab, and the path still highlights the section it is under.
-    expect(resolveSelectedKey("/personalization/files")).toBe(
-      "personalization",
-    );
-    expect(resolveSelectedKey("/personalization/skills")).toBe(
-      "personalization",
-    );
   });
 });

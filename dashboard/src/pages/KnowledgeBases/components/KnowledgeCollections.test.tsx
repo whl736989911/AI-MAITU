@@ -156,9 +156,6 @@ describe("<KnowledgeCollections />", () => {
     const user = userEvent.setup();
     render(<Scenario />);
 
-    await user.click(
-      screen.getByRole("button", { name: "knowledgeBases.collections.open" }),
-    );
     await waitFor(() => expect(api.listCollections).toHaveBeenCalledWith("A"));
     await user.click(screen.getByRole("button", { name: "Switch base" }));
     await waitFor(() => expect(api.listCollections).toHaveBeenCalledWith("B"));
@@ -181,9 +178,6 @@ describe("<KnowledgeCollections />", () => {
     const user = userEvent.setup();
     render(<SelectionScenario />);
 
-    await user.click(
-      screen.getByRole("button", { name: "knowledgeBases.collections.open" }),
-    );
     const checkbox = await screen.findByRole("checkbox", {
       name: "Select tree node",
     });
@@ -205,9 +199,6 @@ describe("<KnowledgeCollections />", () => {
     render(<SelectionScenario />);
 
     await user.click(
-      screen.getByRole("button", { name: "knowledgeBases.collections.open" }),
-    );
-    await user.click(
       await screen.findByRole("checkbox", { name: "Select tree node" }),
     );
     expect(
@@ -225,9 +216,6 @@ describe("<KnowledgeCollections />", () => {
     const user = userEvent.setup();
     render(<SelectionScenario />);
 
-    await user.click(
-      screen.getByRole("button", { name: "knowledgeBases.collections.open" }),
-    );
     const prompt = screen.getByRole("textbox", {
       name: "knowledgeBases.collections.prompt",
     });
@@ -246,9 +234,6 @@ describe("<KnowledgeCollections />", () => {
     const user = userEvent.setup();
     render(<Scenario />);
 
-    await user.click(
-      screen.getByRole("button", { name: "knowledgeBases.collections.open" }),
-    );
     await user.click(
       await screen.findByRole("button", {
         name: "knowledgeBases.collections.inspect",
@@ -279,9 +264,6 @@ describe("<KnowledgeCollections />", () => {
     const user = userEvent.setup();
     render(<CreateScenario />);
 
-    await user.click(
-      screen.getByRole("button", { name: "knowledgeBases.collections.open" }),
-    );
     await user.click(
       await screen.findByRole("checkbox", { name: "Select tree node" }),
     );

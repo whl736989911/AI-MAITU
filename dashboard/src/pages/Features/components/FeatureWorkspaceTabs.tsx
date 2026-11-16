@@ -1,7 +1,7 @@
 /**
- * The two views every feature-management surface shows: its workflow and its
- * business data. Kept in one component so the Features page, the card's
- * workflow drawer and the Personalization page cannot drift apart again.
+ * The two views every feature-management surface shows: its workflow and
+ * business data. The resource workspace and personalization surface share
+ * these panels so their configuration behavior cannot drift apart.
  */
 
 import { Tabs } from "antd";
@@ -19,6 +19,8 @@ export interface FeatureWorkspaceTabsProps {
   enterpriseManaged?: boolean;
   onSaved?: () => void;
   defaultTab?: "workflow" | "data";
+  activeTab?: "workflow" | "data";
+  onTabChange?: (tab: "workflow" | "data") => void;
   className?: string;
 }
 
@@ -29,6 +31,8 @@ export default function FeatureWorkspaceTabs({
   enterpriseManaged = false,
   onSaved,
   defaultTab = "workflow",
+  activeTab,
+  onTabChange,
   className,
 }: FeatureWorkspaceTabsProps) {
   const { t } = useTranslation();
@@ -36,6 +40,8 @@ export default function FeatureWorkspaceTabs({
     <Tabs
       className={className}
       defaultActiveKey={defaultTab}
+      activeKey={activeTab}
+      onChange={(key) => onTabChange?.(key as "workflow" | "data")}
       items={[
         {
           key: "workflow",

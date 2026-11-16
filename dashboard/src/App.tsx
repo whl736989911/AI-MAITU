@@ -4,9 +4,9 @@ import zhCN from "antd/locale/zh_CN";
 import enUS from "antd/locale/en_US";
 import dayjs from "dayjs";
 import "dayjs/locale/zh-cn";
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { routerBasename } from "./utils/publicUrl";
-import { BrowserRouter, Routes, Route } from "react-router-dom";
+import { BrowserRouter, Routes, Route, useLocation } from "react-router-dom";
 import { useTranslation } from "react-i18next";
 import MainLayout from "./layouts/MainLayout";
 import LoginPage from "./pages/Login";
@@ -42,6 +42,11 @@ const GlobalStyle = createGlobalStyle`
 function ThemedApp() {
   const { isDark, palette, customColor } = useTheme();
   const { i18n } = useTranslation();
+  const { pathname } = useLocation();
+  const isPublicChrome =
+    pathname.startsWith("/login") ||
+    pathname.startsWith("/setup") ||
+    pathname.startsWith("/invite");
   const isMobile = useIsMobile();
   const brand = useBranding();
   const brandTokens = brandTokensFor(
@@ -61,12 +66,24 @@ function ThemedApp() {
 
   useEffect(() => installDesktopExternalLinks(), []);
 
+  // Mark only authenticated chrome for CSS rules that also need to reach portals.
+  useLayoutEffect(() => {
+    if (isPublicChrome) {
+      delete document.documentElement.dataset.density;
+    } else {
+      document.documentElement.dataset.density = "compact";
+    }
+    return () => {
+      delete document.documentElement.dataset.density;
+    };
+  }, [isPublicChrome]);
+
   useEffect(() => {
     document.title =
       brand.name[i18n.language?.toLowerCase().startsWith("zh") ? "zh" : "en"];
   }, [brand, i18n.language]);
 
-  const themeConfig = {
+  const baseThemeConfig = {
     algorithm: isDark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
     token: {
       borderRadius: 10,
@@ -121,6 +138,43 @@ function ThemedApp() {
         }
       : {},
   };
+
+  // Keep the original palette, typography, radii and component appearance.
+  const compactThemeConfig = {
+    ...baseThemeConfig,
+    token: {
+      ...baseThemeConfig.token,
+      controlHeight: isMobile ? 36 : 32,
+      controlHeightSM: isMobile ? 30 : 28,
+      controlHeightLG: isMobile ? 42 : 38,
+    },
+    components: {
+      ...baseThemeConfig.components,
+      Card: {
+        ...(isDark ? { colorBgContainer: "#161822" } : {}),
+        headerHeight: 38,
+        headerHeightSM: 34,
+      },
+      Table: {
+        cellPaddingBlock: 4,
+        cellPaddingBlockSM: 4,
+        cellPaddingBlockMD: 4,
+        cellPaddingBlockLG: 6,
+      },
+      Tabs: {
+        ...(isDark ? { itemSelectedBg: "#1a1c28" } : {}),
+        horizontalItemPadding: "6px 0",
+        cardPadding: "6px 10px",
+      },
+      Form: { itemMarginBottom: 8, verticalLabelPadding: "0 0 2px" },
+      Descriptions: { itemPaddingBottom: 4 },
+      Collapse: { headerPadding: "6px 10px", contentPadding: "6px 10px" },
+      List: { itemPadding: "4px 0" },
+      Alert: { defaultPadding: "6px 10px" },
+    },
+  };
+
+  const themeConfig = isPublicChrome ? baseThemeConfig : compactThemeConfig;
 
   return (
     <ConfigProvider

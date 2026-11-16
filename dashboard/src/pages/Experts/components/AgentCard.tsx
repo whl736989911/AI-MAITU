@@ -2,7 +2,7 @@
 import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { Popconfirm, Switch, Tag, Tooltip } from "antd";
+import { Popconfirm, Tag, Tooltip } from "antd";
 import { message } from "@/utils/antdMessage";
 import { copyText } from "@/utils/copyText";
 
@@ -16,15 +16,10 @@ import {
   RefreshCw,
   MessageSquare,
   SlidersHorizontal,
+  Power,
+  Play,
 } from "lucide-react";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
-import SubagentCatalogDrawer from "./SubagentCatalogDrawer";
-import SkillCatalogDrawer from "./SkillCatalogDrawer";
-import ChannelCatalogDrawer from "./ChannelCatalogDrawer";
-import MemoryCatalogDrawer from "./MemoryCatalogDrawer";
-import MbtiCatalogDrawer from "./MbtiCatalogDrawer";
-import ToolCatalogDrawer from "./ToolCatalogDrawer";
-import PluginCatalogDrawer from "./PluginCatalogDrawer";
 import { request } from "../../../api/request";
 import type { OctopAgent } from "../../../context/AgentContext";
 import { useAgent } from "../../../context/AgentContext";
@@ -45,7 +40,6 @@ import { isFeatureAgent } from "../../../utils/agentKind";
 import { useUserRole } from "../../../hooks/useUserRole";
 import type { PublishedExpert } from "../../../api/modules/publishedExperts";
 import PublishTemplateButton from "./PublishTemplateButton";
-import AgentMoreActions from "./AgentMoreActions";
 
 const STATE_META: Record<
   string,
@@ -105,18 +99,10 @@ export interface AgentCardProps {
   publishedExpert?: PublishedExpert | null;
   onPublishedChange?: () => void;
   onEdit: (agentId: string) => void;
-  onWorkflow?: (agentId: string) => void;
-  onPersonalization?: (agentId: string) => void;
+  onConfigure?: (agentId: string) => void;
   onDeleted: (agentId: string) => void;
   onStateChange: (agentId: string, newState: string) => void;
-  /** Called when a start/stop poll settles (e.g. admin views another user's agents). */
   onPollSettled?: () => void;
-  /**
-   * The i18n key the id row's label is read from. Defaults to the experts' own
-   * (``experts.agentId``), which is what every expert surface shows; a caller that
-   * shows the card for an agent that is not an expert names it itself, so the row
-   * does not label a feature's agent as an expert's.
-   */
   idLabelKey?: string;
 }
 
@@ -128,8 +114,7 @@ export const AgentCard = memo(function AgentCard({
   publishedExpert = null,
   onPublishedChange,
   onEdit,
-  onWorkflow,
-  onPersonalization,
+  onConfigure,
   onDeleted,
   onStateChange,
   onPollSettled,
@@ -149,16 +134,6 @@ export const AgentCard = memo(function AgentCard({
   const [localError, setLocalError] = useState(agent.last_error);
   const [actionLoading, setActionLoading] = useState(false);
   const [workspaceDrawerOpen, setWorkspaceDrawerOpen] = useState(false);
-  const [subagentCatalogOpen, setSubagentCatalogOpen] = useState(false);
-  const [skillCatalogOpen, setSkillCatalogOpen] = useState(false);
-  const [toolSettingsOpen, setToolSettingsOpen] = useState(false);
-  const [pluginCatalogOpen, setPluginCatalogOpen] = useState(false);
-  const [channelCatalogOpen, setChannelCatalogOpen] = useState(false);
-  const [memoryCatalogOpen, setMemoryCatalogOpen] = useState(false);
-  const [mbtiCatalogOpen, setMbtiCatalogOpen] = useState(false);
-  const [installedSubagentSlugs, setInstalledSubagentSlugs] = useState<
-    Set<string>
-  >(() => new Set());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [memoryMaintenancePhase, setMemoryMaintenancePhase] = useState<
     string | null
@@ -273,7 +248,6 @@ export const AgentCard = memo(function AgentCard({
   }, [localState, agent.agent_id]);
 
   const isTransient = TRANSIENT.has(localState);
-  const switchChecked = localState === "running" || localState === "starting";
 
   const handleToggle = useCallback(
     async (checked: boolean) => {
@@ -336,35 +310,25 @@ export const AgentCard = memo(function AgentCard({
     else message.error(t("common.copyFailed"));
   }, [agent.agent_id, t]);
 
-  const reloadInstalledSubagents = useCallback(async () => {
-    if (!isAgentChatReady(localState)) {
-      setInstalledSubagentSlugs(new Set());
-      return;
-    }
-    try {
-      const rows = await request<{ slug: string }[]>(
-        `/agents/${agent.agent_id}/subagents`,
-      );
-      setInstalledSubagentSlugs(new Set(rows.map((r) => r.slug)));
-    } catch {
-      setInstalledSubagentSlugs(new Set());
-    }
-  }, [agent.agent_id, localState]);
-
-  const openSubagentCatalog = useCallback(() => {
-    setSubagentCatalogOpen(true);
-    void reloadInstalledSubagents();
-  }, [reloadInstalledSubagents]);
-
   const accent = accentColor || "#6366f1";
   const meta = getStateMeta(localState);
   const friendlyError = formatAgentError(localError, t);
   const chatReady = isAgentChatReady(localState);
-  const sharedViewer = isSharedExpertViewer(agent);
-  // Who may write it is the server's rule — the owner, or an administrator — and
-  // not this card's guess from ownership alone. See ``canManageExpert``.
   const role = useUserRole();
   const canManage = canManageExpert(agent, role);
+  const sharedViewer = isSharedExpertViewer(agent);
+  const handleConfigure = useCallback(() => {
+    if (onConfigure) {
+      onConfigure(agent.agent_id);
+      return;
+    }
+    const isFeature = isFeatureAgent(agent);
+    const params = new URLSearchParams({
+      [isFeature ? "feature" : "expert"]: agent.agent_id,
+      settings: isFeature ? "memory" : "skills",
+    });
+    navigate(`${isFeature ? "/features" : "/experts"}?${params.toString()}`);
+  }, [agent, navigate, onConfigure]);
 
   return (
     <>
@@ -451,28 +415,38 @@ export const AgentCard = memo(function AgentCard({
                   })}
                 </Tag>
               )}
-              <MbtiPersonaTag
-                value={agent.persona_mbti}
-                onClick={canManage ? () => setMbtiCatalogOpen(true) : undefined}
-              />
+              <MbtiPersonaTag value={agent.persona_mbti} />
             </div>
           </div>
 
-          {canManage && (
+          {role === "admin" && (
             <div className={styles.agentCard2HeaderActions}>
-              <Switch
-                size="small"
-                checked={switchChecked}
-                loading={isTransient || actionLoading}
-                onChange={(checked) => void handleToggle(checked)}
-                className={styles.agentCard2Switch}
-              />
+              <Tooltip
+                title={
+                  chatReady
+                    ? t("pageShell.workspace.title")
+                    : t("workspace.requiresRunning")
+                }
+                mouseEnterDelay={0.5}
+              >
+                <button
+                  type="button"
+                  className={styles.agentCard2EditBtn}
+                  disabled={!chatReady}
+                  onClick={() => setWorkspaceDrawerOpen(true)}
+                  aria-label={t("pageShell.workspace.title")}
+                >
+                  <FolderOpen size={13} />
+                </button>
+              </Tooltip>
             </div>
           )}
         </div>
 
         {/* Description */}
-        <p className={styles.agentCard2Desc}>{agent.description || "\u00a0"}</p>
+        {agent.description && (
+          <p className={styles.agentCard2Desc}>{agent.description}</p>
+        )}
 
         {/* Error */}
         {localState === "failed" && friendlyError && (
@@ -503,51 +477,44 @@ export const AgentCard = memo(function AgentCard({
 
         {/* Footer actions */}
         <div className={styles.agentCard2Footer}>
-          {role === "admin" && (
-            <Tooltip
-              title={
-                chatReady
-                  ? t("pageShell.workspace.title")
-                  : t("workspace.requiresRunning")
-              }
-              mouseEnterDelay={0.5}
-            >
+          {canManage && (
+            <>
               <button
                 type="button"
                 className={styles.agentCard2EditBtn}
-                disabled={!chatReady}
-                onClick={() => setWorkspaceDrawerOpen(true)}
-                aria-label={t("pageShell.workspace.title")}
+                disabled={isTransient || actionLoading}
+                onClick={() => void handleToggle(localState !== "running")}
               >
-                <FolderOpen size={13} />
+                {localState === "running" ? (
+                  <Power size={14} />
+                ) : (
+                  <Play size={14} />
+                )}
+                {localState === "running"
+                  ? t("experts.stopAgent")
+                  : localState === "failed"
+                  ? t("experts.retryStart", "重试启动")
+                  : t("experts.startAgent")}
               </button>
-            </Tooltip>
-          )}
-          {canManage && (
-            <>
-              <Tooltip title={t("experts.reloadAgent")} mouseEnterDelay={0.5}>
-                <button
-                  type="button"
-                  className={styles.agentCard2EditBtn}
-                  disabled={isTransient || actionLoading}
-                  onClick={() => void handleReload()}
-                  aria-label={t("experts.reloadAgent")}
-                >
-                  <RefreshCw size={13} />
-                </button>
-              </Tooltip>
-
-              <Tooltip title={t("common.edit", "Edit")} mouseEnterDelay={0.5}>
-                <button
-                  type="button"
-                  className={styles.agentCard2EditBtn}
-                  onClick={() => onEdit(agent.agent_id)}
-                  aria-label={t("common.edit", "Edit")}
-                >
-                  <Pencil size={13} />
-                </button>
-              </Tooltip>
-
+              <button
+                type="button"
+                className={styles.agentCard2EditBtn}
+                disabled={isTransient || actionLoading}
+                onClick={() => void handleReload()}
+                aria-label={t("experts.reloadAgent")}
+              >
+                <RefreshCw size={13} />
+                {t("experts.reloadAgent")}
+              </button>
+              <button
+                type="button"
+                className={styles.agentCard2EditBtn}
+                onClick={() => onEdit(agent.agent_id)}
+                aria-label={t("common.edit", "Edit")}
+              >
+                <Pencil size={13} />
+                {t("common.edit", "Edit")}
+              </button>
               <Popconfirm
                 title={t("experts.confirmDelete", { name: agent.name })}
                 description={t("experts.confirmDeleteHint")}
@@ -556,20 +523,15 @@ export const AgentCard = memo(function AgentCard({
                 cancelText={t("common.cancel")}
                 okButtonProps={{ danger: true }}
               >
-                <Tooltip
-                  title={t("common.delete", "Delete")}
-                  mouseEnterDelay={0.5}
+                <button
+                  type="button"
+                  className={styles.agentCard2DelBtn}
+                  aria-label={t("common.delete", "Delete")}
                 >
-                  <button
-                    type="button"
-                    className={styles.agentCard2DelBtn}
-                    aria-label={t("common.delete", "Delete")}
-                  >
-                    <Trash2 size={13} />
-                  </button>
-                </Tooltip>
+                  <Trash2 size={13} />
+                  {t("common.delete", "Delete")}
+                </button>
               </Popconfirm>
-
               {onPublishedChange && (
                 <PublishTemplateButton
                   agent={agent}
@@ -578,53 +540,17 @@ export const AgentCard = memo(function AgentCard({
                   buttonClassName={styles.agentCard2EditBtn}
                 />
               )}
-
-              <AgentMoreActions
-                buttonClassName={styles.agentCard2EditBtn}
-                onWorkflow={
-                  onWorkflow ? () => onWorkflow(agent.agent_id) : undefined
-                }
-                onSkills={() => setSkillCatalogOpen(true)}
-                onSubagents={openSubagentCatalog}
-                onTools={() => setToolSettingsOpen(true)}
-                onPlugins={() => setPluginCatalogOpen(true)}
-                onMbti={() => setMbtiCatalogOpen(true)}
-                onMemory={
-                  isFeatureAgent(agent)
-                    ? undefined
-                    : () => setMemoryCatalogOpen(true)
-                }
-                onChannels={() => setChannelCatalogOpen(true)}
-                onFiles={
-                  isFeatureAgent(agent)
-                    ? () => onEdit(agent.agent_id)
-                    : undefined
-                }
-              />
             </>
           )}
-          {onPersonalization && isFeatureAgent(agent) && (
-            <Tooltip
-              title={t(
-                "personalization.myPersonalization",
-                "My personalization",
-              )}
-              mouseEnterDelay={0.5}
-            >
-              <button
-                type="button"
-                className={styles.agentCard2EditBtn}
-                onClick={() => onPersonalization(agent.agent_id)}
-                aria-label={t(
-                  "personalization.myPersonalization",
-                  "My personalization",
-                )}
-              >
-                <SlidersHorizontal size={13} />
-              </button>
-            </Tooltip>
-          )}
-
+          <button
+            type="button"
+            className={styles.agentCard2EditBtn}
+            onClick={handleConfigure}
+            aria-label={t("common.configure")}
+          >
+            <SlidersHorizontal size={14} />
+            {t("common.configure")}
+          </button>
           {chatReady ? (
             <button
               className={styles.agentCard2ChatBtn}
@@ -634,21 +560,6 @@ export const AgentCard = memo(function AgentCard({
               <MessageSquare size={13} />
               {t("experts.openChat", "对话")}
               <ChevronRight size={13} />
-            </button>
-          ) : canManage &&
-            (localState === "failed" ||
-              localState === "stopped" ||
-              localState === "created") ? (
-            <button
-              type="button"
-              className={styles.agentCard2ChatBtn}
-              style={{ color: accent, borderColor: `${accent}55` }}
-              disabled={isTransient || actionLoading}
-              onClick={() => void handleToggle(true)}
-            >
-              {localState === "failed"
-                ? t("experts.retryStart", "重试启动")
-                : t("experts.startAgent", "启动")}
             </button>
           ) : null}
         </div>
@@ -660,53 +571,6 @@ export const AgentCard = memo(function AgentCard({
           onClose={() => setWorkspaceDrawerOpen(false)}
         />
       )}
-      <SubagentCatalogDrawer
-        agentId={agent.agent_id}
-        agentState={localState}
-        open={subagentCatalogOpen}
-        installedSlugs={installedSubagentSlugs}
-        onClose={() => setSubagentCatalogOpen(false)}
-        onInstalled={() => {
-          void reloadInstalledSubagents();
-        }}
-      />
-      <SkillCatalogDrawer
-        agentId={agent.agent_id}
-        open={skillCatalogOpen}
-        onClose={() => setSkillCatalogOpen(false)}
-      />
-      <ToolCatalogDrawer
-        agentId={agent.agent_id}
-        open={toolSettingsOpen}
-        onClose={() => setToolSettingsOpen(false)}
-      />
-      <PluginCatalogDrawer
-        agentId={agent.agent_id}
-        open={pluginCatalogOpen}
-        onClose={() => setPluginCatalogOpen(false)}
-      />
-      <ChannelCatalogDrawer
-        agentId={agent.agent_id}
-        open={channelCatalogOpen}
-        onClose={() => setChannelCatalogOpen(false)}
-      />
-      <MemoryCatalogDrawer
-        agentId={agent.agent_id}
-        open={memoryCatalogOpen}
-        onClose={() => setMemoryCatalogOpen(false)}
-        // A feature's memory is written by nobody, so over one the panel is
-        // shown read-only rather than offered and refused.
-        readOnly={isFeatureAgent(agent)}
-      />
-      <MbtiCatalogDrawer
-        open={mbtiCatalogOpen}
-        agentId={agent.agent_id}
-        onClose={() => setMbtiCatalogOpen(false)}
-        onApplied={() => {
-          setMbtiCatalogOpen(false);
-          void refreshAgents({ silent: true, force: true });
-        }}
-      />
     </>
   );
 });

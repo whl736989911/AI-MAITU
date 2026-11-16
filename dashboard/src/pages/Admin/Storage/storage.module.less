@@ -8,10 +8,10 @@
 
 .cardGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  row-gap: 16px;
-  column-gap: 12px;
-  padding: 20px 0 40px;
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
+  row-gap: 10px;
+  column-gap: 10px;
+  padding: 12px 0 24px;
 
   @media (max-width: 767px) {
     grid-template-columns: 1fr;
@@ -72,9 +72,9 @@
 
 .backendCard {
   background: var(--fn-bg-primary);
-  border: 2px solid var(--fn-card-border-normal);
-  border-radius: var(--fn-radius-lg);
-  padding: 16px;
+  border: 1px solid var(--fn-card-border-normal);
+  border-radius: var(--fn-radius-md, 8px);
+  padding: 12px;
   display: flex;
   flex-direction: column;
   gap: 10px;
@@ -92,8 +92,8 @@
       var(--catalog-accent, var(--fn-color-brand)) 4%,
       var(--fn-bg-primary)
     );
-    transform: translateY(-2px);
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+    transform: none;
+    box-shadow: var(--fn-card-shadow-normal);
   }
 
   @media (max-width: 640px) {

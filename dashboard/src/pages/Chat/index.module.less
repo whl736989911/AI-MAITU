@@ -16,11 +16,11 @@
 /* ---------- Page shell ---------- */
 .chatPage {
   /* Shared column metrics: title bar + composer alignment. */
-  --chat-column-max: 960px;
-  --chat-column-pad-x: 24px;
-  --chat-column-pad-x-narrow: 12px;
+  --chat-column-max: 1080px;
+  --chat-column-pad-x: 10px;
+  --chat-column-pad-x-narrow: 8px;
   /* Avatar hangs outside the message column and must not shrink bubbles. */
-  --chat-msg-avatar-slot: 44px;
+  --chat-msg-avatar-slot: 36px;
   /* Chat title, leading icon, and right-dock selected chrome share this ink. */
   --chat-title-color: var(--fn-text-primary);
 
@@ -50,7 +50,7 @@
 
 /* Turn timeline rail visible: align title, message column, and composer gutters. */
 .chatMainWithTurnRail {
-  --chat-turn-rail-gutter: 48px;
+  --chat-turn-rail-gutter: 40px;
 
   .chatTitleBar {
     padding-inline: var(--chat-turn-rail-gutter) var(--chat-column-pad-x, 24px);
@@ -76,28 +76,64 @@
     padding-inline-end: var(--chat-column-pad-x, 24px);
   }
 
-  .runUsageBar {
-    width: 100%;
-    max-width: var(--chat-column-max, 960px);
-    padding-inline: var(--chat-turn-rail-gutter) var(--chat-column-pad-x, 24px);
-    box-sizing: border-box;
-  }
-
   @media (max-width: 863px) {
     --chat-turn-rail-gutter: var(--chat-column-pad-x, 24px);
   }
 }
 
+.chatWorkspaceHeader {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 var(--chat-column-pad-x);
+  background: var(--fn-bg-primary);
+  border-bottom: 1px solid var(--fn-border-primary);
+
+  .chatTitleBar {
+    padding-inline: 0;
+  }
+
+  @media (max-width: 767px) {
+    padding-inline: var(--chat-column-pad-x-narrow);
+  }
+}
+
+.chatComposerDock {
+  flex: 0 0 auto;
+  width: 100%;
+  background: var(--fn-bg-primary);
+  border-top: 1px solid var(--fn-border-primary);
+
+  .chatInput {
+    padding-top: 6px;
+    padding-bottom: 6px;
+
+    @media (max-width: 767px) {
+      padding-bottom: calc(
+        10px + env(safe-area-inset-bottom, 0px) + var(--keyboard-offset, 0px)
+      );
+    }
+  }
+}
+
+.chatMainWithTurnRail .chatWorkspaceHeader {
+  padding-inline-start: var(--chat-turn-rail-gutter);
+
+  .chatTitleBar {
+    padding-inline-start: 0;
+  }
+}
 .chatTitleBar {
   display: flex;
   align-items: center;
   gap: 8px;
   box-sizing: border-box;
   position: relative;
-  flex: 0 0 48px;
-  height: 48px;
-  min-height: 48px;
-  max-height: 48px;
+  flex: 0 0 40px;
+  height: 40px;
+  min-height: 40px;
+  max-height: 40px;
   /* Match .chatInput gutters on the left; the right pad mirrors the title pad. */
   --chat-title-pad-x: var(--chat-column-pad-x);
   padding: 0 var(--chat-title-pad-x);

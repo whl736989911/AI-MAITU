@@ -25,6 +25,8 @@ import RequirePermission from "../../components/RequirePermission";
 import { routeNeedsPermission } from "../../utils/permissions";
 import { useLayoutMode } from "../../context/LayoutModeContext";
 import { useDashboardPushToast } from "../../hooks/useDashboardPushToast";
+import WorkspaceSectionNav from "../WorkspaceSectionNav";
+import { findWorkspaceItem, type NavSection } from "../sidebarNav";
 
 const Chat = lazy(() => import("../../pages/Chat"));
 const WorkbenchPage = lazy(() => import("../../pages/Control/Workbench"));
@@ -68,6 +70,12 @@ export default function MainLayout() {
 
   const [collapsed, setCollapsed] = useState(() => getSavedCollapsed());
   const [, setChatSidebarOpen] = useChatSidebarOpen();
+  const [navSections, setNavSections] = useState<NavSection[]>([]);
+  const workspace = findWorkspaceItem(
+    navSections,
+    selectedKey,
+    location.search,
+  );
   const [workbenchMounted, setWorkbenchMounted] = useState(() => onWorkbench);
 
   useEffect(() => {
@@ -186,6 +194,7 @@ export default function MainLayout() {
               collapsed={collapsed}
               onToggle={toggleCollapsed}
               isMobile={isMobile}
+              onSectionsChange={setNavSections}
             />
             {!isMobile && (
               <RailEdgeControl
@@ -259,53 +268,64 @@ export default function MainLayout() {
                   minHeight: 0,
                 }}
               >
-                <PwaUpdatePrompt />
-                <PwaAutoPrompt />
-
-                {workbenchMounted && (
-                  <div
-                    style={{
-                      flex: 1,
-                      minHeight: 0,
-                      overflow: "hidden",
-                      display: onWorkbench ? "flex" : "none",
-                      flexDirection: "column",
-                    }}
-                  >
-                    <RequirePermission>
-                      <Suspense fallback={<PageLoading />}>
-                        <WorkbenchPage isVisible={onWorkbench} />
-                      </Suspense>
-                    </RequirePermission>
-                  </div>
-                )}
-
-                {/* Keep Routes mounted when visiting Workbench so leaving/re-entering
-                  does not remount every lazy page (lag + lost UI state). */}
                 <div
-                  style={{
-                    flex: 1,
-                    minHeight: 0,
-                    overflow: "hidden",
-                    display: onWorkbench ? "none" : "flex",
-                    flexDirection: "column",
-                  }}
+                  className="workspace-frame"
+                  data-workspace={workspace?.key}
                 >
-                  {isFullscreen ? (
+                  <WorkspaceSectionNav
+                    workspace={workspace}
+                    moduleKey={selectedKey}
+                  />
+                  <div className="workspace-main">
+                    <PwaUpdatePrompt />
+                    <PwaAutoPrompt />
+
+                    {workbenchMounted && (
+                      <div
+                        style={{
+                          flex: 1,
+                          minHeight: 0,
+                          overflow: "hidden",
+                          display: onWorkbench ? "flex" : "none",
+                          flexDirection: "column",
+                        }}
+                      >
+                        <RequirePermission>
+                          <Suspense fallback={<PageLoading />}>
+                            <WorkbenchPage isVisible={onWorkbench} />
+                          </Suspense>
+                        </RequirePermission>
+                      </div>
+                    )}
+
+                    {/* Keep Routes mounted when visiting Workbench so leaving/re-entering
+                  does not remount every lazy page (lag + lost UI state). */}
                     <div
                       style={{
                         flex: 1,
                         minHeight: 0,
                         overflow: "hidden",
-                        display: "flex",
+                        display: onWorkbench ? "none" : "flex",
                         flexDirection: "column",
                       }}
                     >
-                      {routes}
+                      {isFullscreen ? (
+                        <div
+                          style={{
+                            flex: 1,
+                            minHeight: 0,
+                            overflow: "hidden",
+                            display: "flex",
+                            flexDirection: "column",
+                          }}
+                        >
+                          {routes}
+                        </div>
+                      ) : (
+                        <div className="page-content">{routes}</div>
+                      )}
                     </div>
-                  ) : (
-                    <div className="page-content">{routes}</div>
-                  )}
+                  </div>
                 </div>
               </Content>
             </Layout>

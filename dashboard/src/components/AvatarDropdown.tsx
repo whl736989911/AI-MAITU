@@ -38,6 +38,7 @@ import {
   passwordPolicyIssue,
 } from "../utils/passwordPolicy";
 import { useUserRole } from "../hooks/useUserRole";
+import { useUpdateStatus } from "../hooks/useUpdateStatus";
 import { useIsMobile } from "../hooks/useIsMobile";
 import ThemeSwitcher from "./ThemeSwitcher";
 import PaletteSwitcher from "./PaletteSwitcher";
@@ -72,7 +73,7 @@ interface AvatarDropdownProps {
   user: OctopUser | null;
   onUserChange?: (u: OctopUser) => void;
   /**
-   * ``sidebar`` — brand-rail footer trigger (avatar [+ name when expanded]).
+   * ``sidebar`` — navigation account trigger (avatar [+ name when expanded]).
    * Default keeps a plain avatar button (legacy header style).
    */
   placement?: "default" | "sidebar";
@@ -94,6 +95,7 @@ export default function AvatarDropdown({
   const role = useUserRole();
   const isMobile = useIsMobile();
   const { layoutMode, setLayoutMode } = useLayoutMode();
+  const { status: updateStatus } = useUpdateStatus();
   const [menuOpen, setMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [passwordOpen, setPasswordOpen] = useState(false);
@@ -418,6 +420,18 @@ export default function AvatarDropdown({
         >
           <RefreshCw size={16} strokeWidth={1.8} />
           <span>{t("account.checkUpdates")}</span>
+          {(updateStatus?.current_version || updateStatus?.has_update) && (
+            <span className={styles.menuItemTrailing}>
+              {updateStatus?.current_version && (
+                <span className={styles.menuItemMeta}>
+                  v{updateStatus.current_version}
+                </span>
+              )}
+              {updateStatus?.has_update && (
+                <span className={styles.menuUpdateDot} aria-hidden="true" />
+              )}
+            </span>
+          )}
         </button>
       )}
 
@@ -761,7 +775,7 @@ export default function AvatarDropdown({
         trigger="click"
         open={menuOpen}
         onOpenChange={setMenuOpen}
-        placement="topLeft"
+        placement={placement === "sidebar" ? "topLeft" : "bottomRight"}
         arrow={false}
         overlayClassName={styles.menuPopover}
         destroyOnHidden

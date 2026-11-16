@@ -8,7 +8,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
-import { Popconfirm, Switch, Tag, Tooltip } from "antd";
+import { Popconfirm, Tag, Tooltip } from "antd";
 import { message } from "@/utils/antdMessage";
 import { copyText } from "@/utils/copyText";
 import { ResizableTable } from "@/components/ResizableTable";
@@ -23,20 +23,16 @@ import {
   FolderOpen,
   RefreshCw,
   MessageSquare,
+  SlidersHorizontal,
+  Power,
+  Play,
 } from "lucide-react";
 import WorkspaceDrawer from "../../Agent/Workspace/components/WorkspaceDrawer";
-import SubagentCatalogDrawer from "./SubagentCatalogDrawer";
-import SkillCatalogDrawer from "./SkillCatalogDrawer";
-import ChannelCatalogDrawer from "./ChannelCatalogDrawer";
-import MemoryCatalogDrawer from "./MemoryCatalogDrawer";
-import ToolCatalogDrawer from "./ToolCatalogDrawer";
-import PluginCatalogDrawer from "./PluginCatalogDrawer";
 import { request } from "../../../api/request";
 import type { OctopAgent } from "../../../context/AgentContext";
 import { useAgent } from "../../../context/AgentContext";
 import { useIsMobile } from "../../../hooks/useIsMobile";
 import MbtiPersonaTag from "../../../components/MbtiPersonaTag";
-import MbtiCatalogDrawer from "./MbtiCatalogDrawer";
 import { ExpertIcon } from "./iconForName";
 import {
   isAgentChatReady,
@@ -52,7 +48,6 @@ import {
 import { useUserRole } from "../../../hooks/useUserRole";
 import type { PublishedExpert } from "../../../api/modules/publishedExperts";
 import PublishTemplateButton from "./PublishTemplateButton";
-import AgentMoreActions from "./AgentMoreActions";
 
 const STATE_COLORS: Record<string, string> = {
   running: "success",
@@ -70,6 +65,7 @@ interface AgentExpertsTableProps {
   publishedByAgentId?: Record<string, PublishedExpert>;
   onPublishedChange?: () => void;
   onEdit: (agentId: string) => void;
+  onConfigure: (agentId: string) => void;
   onDeleted: (agentId: string) => void;
   onStateChange: (agentId: string, newState: string) => void;
 }
@@ -79,6 +75,7 @@ export default function AgentExpertsTable({
   publishedByAgentId = {},
   onPublishedChange,
   onEdit,
+  onConfigure,
   onDeleted,
   onStateChange,
 }: AgentExpertsTableProps) {
@@ -92,29 +89,6 @@ export default function AgentExpertsTable({
   const [localStates, setLocalStates] = useState<Record<string, string>>({});
   const [actionLoadingId, setActionLoadingId] = useState<string | null>(null);
   const [workspaceAgentId, setWorkspaceAgentId] = useState<string | null>(null);
-  const [skillCatalogAgentId, setSkillCatalogAgentId] = useState<string | null>(
-    null,
-  );
-  const [toolSettingsAgentId, setToolSettingsAgentId] = useState<string | null>(
-    null,
-  );
-  const [pluginCatalogAgentId, setPluginCatalogAgentId] = useState<
-    string | null
-  >(null);
-  const [channelCatalogAgentId, setChannelCatalogAgentId] = useState<
-    string | null
-  >(null);
-  const [memoryCatalogAgentId, setMemoryCatalogAgentId] = useState<
-    string | null
-  >(null);
-  const [subagentCatalogAgentId, setSubagentCatalogAgentId] = useState<
-    string | null
-  >(null);
-  const [installedSubagentSlugs, setInstalledSubagentSlugs] = useState<
-    Set<string>
-  >(() => new Set());
-  const [mbtiCatalogOpen, setMbtiCatalogOpen] = useState(false);
-  const [mbtiAgentId, setMbtiAgentId] = useState<string | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const tableWrapRef = useRef<HTMLDivElement>(null);
   /** Keep pagination in view: body scrolls inside remaining viewport height. */
@@ -162,11 +136,6 @@ export default function AgentExpertsTable({
       window.removeEventListener("resize", update);
     };
   }, [agents.length, isMobile]);
-
-  const openMbtiCatalog = useCallback((agentId: string) => {
-    setMbtiAgentId(agentId);
-    setMbtiCatalogOpen(true);
-  }, []);
 
   useEffect(() => {
     const next: Record<string, string> = {};
@@ -280,19 +249,6 @@ export default function AgentExpertsTable({
     [t],
   );
 
-  const openSubagentCatalog = useCallback((agentId: string) => {
-    setSubagentCatalogAgentId(agentId);
-    request<{ slug: string }[]>(`/agents/${agentId}/subagents`)
-      .then((rows) =>
-        setInstalledSubagentSlugs(new Set(rows.map((r) => r.slug))),
-      )
-      .catch(() => setInstalledSubagentSlugs(new Set()));
-  }, []);
-
-  const closeSubagentCatalog = useCallback(() => {
-    setSubagentCatalogAgentId(null);
-  }, []);
-
   const columns: ColumnsType<OctopAgent> = [
     {
       title: t("experts.table.name", "名称"),
@@ -352,9 +308,6 @@ export default function AgentExpertsTable({
       align: "center",
       render: (_state, row) => {
         const state = localStates[row.agent_id] ?? row.state;
-        const isTransient = TRANSIENT.has(state);
-        const switchChecked = state === "running" || state === "starting";
-        const canManage = canManageExpert(row, role);
         const friendlyError =
           state === "failed" && row.last_error
             ? formatAgentError(row.last_error, t)
@@ -368,14 +321,6 @@ export default function AgentExpertsTable({
               >
                 {formatAgentState(state, t)}
               </Tag>
-              {canManage && (
-                <Switch
-                  size="small"
-                  checked={switchChecked}
-                  loading={isTransient || actionLoadingId === row.agent_id}
-                  onChange={(checked) => void handleToggle(row, checked)}
-                />
-              )}
             </div>
             {friendlyError ? (
               <div className={styles.tableErrorWrap}>
@@ -417,27 +362,24 @@ export default function AgentExpertsTable({
       title: t("experts.table.persona", "人格"),
       dataIndex: "persona_mbti",
       width: 120,
-      render: (value: string | null, row) => (
-        <MbtiPersonaTag
-          value={value}
-          onClick={
-            canManageExpert(row, role)
-              ? () => openMbtiCatalog(row.agent_id)
-              : undefined
-          }
-        />
-      ),
+      render: (value: string | null) => <MbtiPersonaTag value={value} />,
     },
     {
       title: t("experts.table.actions", "操作"),
       key: "actions",
-      width: 280,
+      width: 420,
       fixed: isMobile ? undefined : "right",
       render: (_v, row) => {
         const state = localStates[row.agent_id] ?? row.state;
         const isTransient = TRANSIENT.has(state);
         const chatReady = isAgentChatReady(state);
         const canManage = canManageExpert(row, role);
+        const isRunning = state === "running";
+        const lifecycleLabel = isRunning
+          ? t("experts.stopAgent")
+          : state === "failed"
+          ? t("experts.retryStart", "重试启动")
+          : t("experts.startAgent");
         return (
           <div className={styles.tableActions}>
             {role === "admin" && (
@@ -462,27 +404,34 @@ export default function AgentExpertsTable({
             )}
             {canManage && (
               <>
-                <Tooltip title={t("experts.reloadAgent")}>
-                  <button
-                    type="button"
-                    className={styles.tableActionBtn}
-                    disabled={isTransient || actionLoadingId === row.agent_id}
-                    onClick={() => void handleReload(row)}
-                    aria-label={t("experts.reloadAgent")}
-                  >
-                    <RefreshCw size={13} />
-                  </button>
-                </Tooltip>
-                <Tooltip title={t("common.edit", "Edit")} mouseEnterDelay={0.5}>
-                  <button
-                    type="button"
-                    className={styles.tableActionBtn}
-                    onClick={() => onEdit(row.agent_id)}
-                    aria-label={t("common.edit", "Edit")}
-                  >
-                    <Pencil size={13} />
-                  </button>
-                </Tooltip>
+                <button
+                  type="button"
+                  className={styles.tableActionBtn}
+                  disabled={isTransient || actionLoadingId === row.agent_id}
+                  onClick={() => void handleToggle(row, !isRunning)}
+                >
+                  {isRunning ? <Power size={13} /> : <Play size={13} />}
+                  {lifecycleLabel}
+                </button>
+                <button
+                  type="button"
+                  className={styles.tableActionBtn}
+                  disabled={isTransient || actionLoadingId === row.agent_id}
+                  onClick={() => void handleReload(row)}
+                  aria-label={t("experts.reloadAgent")}
+                >
+                  <RefreshCw size={13} />
+                  {t("experts.reloadAgent")}
+                </button>
+                <button
+                  type="button"
+                  className={styles.tableActionBtn}
+                  onClick={() => onEdit(row.agent_id)}
+                  aria-label={t("common.edit", "Edit")}
+                >
+                  <Pencil size={13} />
+                  {t("common.edit", "Edit")}
+                </button>
                 <Popconfirm
                   title={t("experts.confirmDelete", { name: row.name })}
                   description={t("experts.confirmDeleteHint")}
@@ -491,18 +440,14 @@ export default function AgentExpertsTable({
                   cancelText={t("common.cancel")}
                   okButtonProps={{ danger: true }}
                 >
-                  <Tooltip
-                    title={t("common.delete", "Delete")}
-                    mouseEnterDelay={0.5}
+                  <button
+                    type="button"
+                    className={styles.tableActionBtn}
+                    aria-label={t("common.delete", "Delete")}
                   >
-                    <button
-                      type="button"
-                      className={styles.tableActionBtn}
-                      aria-label={t("common.delete", "Delete")}
-                    >
-                      <Trash2 size={13} />
-                    </button>
-                  </Tooltip>
+                    <Trash2 size={13} />
+                    {t("common.delete", "Delete")}
+                  </button>
                 </Popconfirm>
                 {onPublishedChange && (
                   <PublishTemplateButton
@@ -512,19 +457,18 @@ export default function AgentExpertsTable({
                     buttonClassName={styles.tableActionBtn}
                   />
                 )}
-                <AgentMoreActions
-                  buttonClassName={styles.tableActionBtn}
-                  onSkills={() => setSkillCatalogAgentId(row.agent_id)}
-                  onSubagents={() => openSubagentCatalog(row.agent_id)}
-                  onTools={() => setToolSettingsAgentId(row.agent_id)}
-                  onPlugins={() => setPluginCatalogAgentId(row.agent_id)}
-                  onMbti={() => openMbtiCatalog(row.agent_id)}
-                  onMemory={() => setMemoryCatalogAgentId(row.agent_id)}
-                  onChannels={() => setChannelCatalogAgentId(row.agent_id)}
-                />
               </>
             )}
-            {chatReady ? (
+            <button
+              type="button"
+              className={styles.tableActionBtn}
+              onClick={() => onConfigure(row.agent_id)}
+              aria-label={t("common.configure")}
+            >
+              <SlidersHorizontal size={13} />
+              {t("common.configure")}
+            </button>
+            {chatReady && (
               <button
                 type="button"
                 className={styles.tableChatBtn}
@@ -534,21 +478,7 @@ export default function AgentExpertsTable({
                 {t("experts.openChat", "对话")}
                 <ChevronRight size={13} />
               </button>
-            ) : canManage &&
-              (state === "failed" ||
-                state === "stopped" ||
-                state === "created") ? (
-              <button
-                type="button"
-                className={styles.tableChatBtn}
-                disabled={isTransient || actionLoadingId === row.agent_id}
-                onClick={() => void handleToggle(row, true)}
-              >
-                {state === "failed"
-                  ? t("experts.retryStart", "重试启动")
-                  : t("experts.startAgent", "启动")}
-              </button>
-            ) : null}
+            )}
           </div>
         );
       },
@@ -579,66 +509,6 @@ export default function AgentExpertsTable({
           onClose={() => setWorkspaceAgentId(null)}
         />
       )}
-      <SkillCatalogDrawer
-        agentId={skillCatalogAgentId ?? ""}
-        open={skillCatalogAgentId !== null}
-        onClose={() => setSkillCatalogAgentId(null)}
-      />
-      <ToolCatalogDrawer
-        agentId={toolSettingsAgentId ?? ""}
-        open={toolSettingsAgentId !== null}
-        onClose={() => setToolSettingsAgentId(null)}
-      />
-      <PluginCatalogDrawer
-        agentId={pluginCatalogAgentId ?? ""}
-        open={pluginCatalogAgentId !== null}
-        onClose={() => setPluginCatalogAgentId(null)}
-      />
-      <ChannelCatalogDrawer
-        agentId={channelCatalogAgentId ?? ""}
-        open={channelCatalogAgentId !== null}
-        onClose={() => setChannelCatalogAgentId(null)}
-      />
-      <MemoryCatalogDrawer
-        agentId={memoryCatalogAgentId ?? ""}
-        open={memoryCatalogAgentId !== null}
-        onClose={() => setMemoryCatalogAgentId(null)}
-      />
-      <SubagentCatalogDrawer
-        agentId={subagentCatalogAgentId ?? ""}
-        agentState={
-          subagentCatalogAgentId
-            ? localStates[subagentCatalogAgentId] ?? "stopped"
-            : "stopped"
-        }
-        open={subagentCatalogAgentId !== null}
-        installedSlugs={installedSubagentSlugs}
-        onClose={closeSubagentCatalog}
-        onInstalled={() => {
-          if (subagentCatalogAgentId) {
-            request<{ slug: string }[]>(
-              `/agents/${subagentCatalogAgentId}/subagents`,
-            )
-              .then((rows) =>
-                setInstalledSubagentSlugs(new Set(rows.map((r) => r.slug))),
-              )
-              .catch(() => setInstalledSubagentSlugs(new Set()));
-          }
-        }}
-      />
-      <MbtiCatalogDrawer
-        open={mbtiCatalogOpen}
-        agentId={mbtiAgentId}
-        onClose={() => {
-          setMbtiCatalogOpen(false);
-          setMbtiAgentId(null);
-        }}
-        onApplied={() => {
-          setMbtiCatalogOpen(false);
-          setMbtiAgentId(null);
-          void refreshAgents({ silent: true, force: true });
-        }}
-      />
     </>
   );
 }

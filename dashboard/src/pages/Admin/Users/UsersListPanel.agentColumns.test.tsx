@@ -1,17 +1,7 @@
 /**
- * Admin → Users draws the agent counts as **two** columns — 「专家」 and
- * 「功能」 — one per ``kind``, and only for the kinds this deployment holds at
- * all. A kind nobody holds anywhere is not a column of zeroes under a header
- * promising agents that do not exist; it is no column.
- *
- * The rule is deliberately read off the instance rather than off the rows on
- * screen: the table is paged, and a column that came and went with the page
- * would be a different table on every page.
- *
- * The assertions are about the copy a Chinese-locale admin reads, so ``t`` is
- * answered from the shipped ``zh.json`` — the bundle imported below, before the
- * panel that looks its headers up through it. The other side of the same
- * decision is pinned in ``tests/unit/i18n/test_admin_users_expert_naming.py``.
+ * Resource counts stay distinct by kind and account in either directory view.
+ * Only kinds present in the deployment are offered; an account with no
+ * resources of an available kind still reports zero.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -193,26 +183,6 @@ function normalizedText(element: HTMLElement): string {
   return element.textContent?.replace(/\s+/g, " ").trim() ?? "";
 }
 
-async function findVisibleColumnHeader(
-  table: HTMLElement,
-  name: string,
-): Promise<HTMLElement> {
-  let header: HTMLElement | undefined;
-  await waitFor(() => {
-    header = within(table)
-      .getAllByRole("columnheader", { hidden: true })
-      .find(
-        (candidate) =>
-          candidate.closest('[aria-hidden="true"]') === null &&
-          normalizedText(candidate) === name,
-      );
-    expect(header).toBeDefined();
-  });
-  expect(header).toBeVisible();
-  expect(header).toHaveAccessibleName(name);
-  return header!;
-}
-
 function findButtonByAccessibleLabel(
   root: HTMLElement,
   name: string,
@@ -270,59 +240,55 @@ function findRadioByText(
       );
     });
 }
-describe("Admin → Users agent columns", () => {
-  it("draws only the experts column when the deployment has no features", async () => {
+describe("Admin → Users resource counts", () => {
+  it("keeps directory access without offering account creation to an employee", async () => {
+    agents = [];
+    render(
+      <CurrentUserProvider
+        user={{ ...ADMIN, id: 1, username: "alice", role: "user" }}
+        setUser={() => undefined}
+      >
+        <UsersListPanel />
+      </CurrentUserProvider>,
+    );
+
+    expect(await screen.findByText("Alice")).toBeVisible();
+    expect(
+      screen.queryByRole("button", { name: zh.adminUsers.newUser }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: zh.adminUsers.inviteUsers }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("offers expert counts without feature counts when only experts exist", async () => {
     agents = [EXPERT, agent("reviewer", "agent", 1)];
     renderPanel();
 
     const tableElement = await screen.findByRole("table", { hidden: true });
     expect(tableElement).toBeVisible();
-    await findVisibleColumnHeader(tableElement, "专家");
-    // Bob owns nothing, but the column is about the deployment — his row reads
-    // 0 rather than the column dropping out from under alice.
     await expectCountButton(tableElement, "专家 2");
     await expectCountButton(tableElement, "专家 0");
-    expect(
-      within(tableElement)
-        .getAllByRole("columnheader", { hidden: true })
-        .some(
-          (header) =>
-            header.closest('[aria-hidden="true"]') === null &&
-            normalizedText(header) === "功能",
-        ),
-    ).toBe(false);
     expect(findButtonByAccessibleLabel(tableElement, "功能 0")).toBeUndefined();
   });
 
-  it("draws only the features column when the deployment has no experts", async () => {
+  it("offers feature counts without expert counts when only features exist", async () => {
     agents = [FEATURE];
     renderPanel();
 
     const tableElement = await screen.findByRole("table", { hidden: true });
     expect(tableElement).toBeVisible();
-    expect(await findVisibleColumnHeader(tableElement, "功能")).toBeVisible();
     await expectCountButton(tableElement, "功能 1");
     await expectCountButton(tableElement, "功能 0");
-    expect(
-      within(tableElement)
-        .getAllByRole("columnheader", { hidden: true })
-        .some(
-          (header) =>
-            header.closest('[aria-hidden="true"]') === null &&
-            normalizedText(header) === "专家",
-        ),
-    ).toBe(false);
     expect(findButtonByAccessibleLabel(tableElement, "专家 0")).toBeUndefined();
   });
 
-  it("draws both columns, each counting its own kind, when both exist", async () => {
+  it("counts experts and features independently for each account", async () => {
     agents = [EXPERT, FEATURE, agent("second-feature", "feature", 1)];
     renderPanel();
 
     const tableElement = await screen.findByRole("table", { hidden: true });
     expect(tableElement).toBeVisible();
-    expect(await findVisibleColumnHeader(tableElement, "专家")).toBeVisible();
-    expect(await findVisibleColumnHeader(tableElement, "功能")).toBeVisible();
     // Alice's two kinds are told apart inside one row.
     await expectCountButton(tableElement, "专家 1");
     await expectCountButton(tableElement, "功能 2");
@@ -336,7 +302,6 @@ describe("Admin → Users agent columns", () => {
     renderPanel();
     const tableElement = await screen.findByRole("table", { hidden: true });
     expect(tableElement).toBeVisible();
-    await findVisibleColumnHeader(tableElement, "专家");
 
     await userEvent.click(screen.getByText("卡片"));
 
@@ -353,7 +318,6 @@ describe("Admin → Users agent columns", () => {
     renderPanel();
     const tableElement = await screen.findByRole("table", { hidden: true });
     expect(tableElement).toBeVisible();
-    await findVisibleColumnHeader(tableElement, "专家");
 
     await userEvent.click(screen.getByText("卡片"));
 

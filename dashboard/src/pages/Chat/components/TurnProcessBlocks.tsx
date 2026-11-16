@@ -7,8 +7,8 @@ import { useToolRendererVersion } from "../../../plugins/toolRenderers";
 import AssistantProcessSummary from "./AssistantProcessSummary";
 import { ToolDetailsInline } from "./MessageBubble";
 import { ExpertMessageAvatar } from "./MessageSender";
-import { useAgent } from "../../../context/AgentContext";
 import styles from "../index.module.less";
+import { useAgent } from "../../../context/AgentContext";
 
 interface TurnProcessBlocksProps {
   split: AssistantTurnSplit;
@@ -16,8 +16,8 @@ interface TurnProcessBlocksProps {
   onAcpPermissionSelect?: (message: string) => void;
   hideToolMedia: boolean;
   agentId: string | null;
-  /** One expert avatar per turn — only the first process row should show it. */
-  showAvatar?: boolean;
+  /** Show the turn's one assistant avatar on this process block. */
+  showIdentity?: boolean;
 }
 
 function hasFoldContent(split: AssistantTurnSplit): boolean {
@@ -32,11 +32,16 @@ export function TurnProcessBlocks({
   onAcpPermissionSelect,
   hideToolMedia,
   agentId,
-  showAvatar = false,
+  showIdentity = false,
 }: TurnProcessBlocksProps) {
   const { agents, activeAgent } = useAgent();
+  const speakerAgentId =
+    split.answerMessage?.speakerAgentId ||
+    split.tools.find((message) => message.speakerAgentId)?.speakerAgentId ||
+    agentId;
   const expert =
-    (agentId && agents.find((item) => item.agent_id === agentId)) ||
+    (speakerAgentId &&
+      agents.find((item) => item.agent_id === speakerAgentId)) ||
     activeAgent;
   const rendererVersion = useToolRendererVersion();
   const { pinned, folded } = useMemo(
@@ -52,7 +57,7 @@ export function TurnProcessBlocks({
     <>
       {showFold ? (
         <div className={styles.processSummaryRow}>
-          {showAvatar && expert ? (
+          {showIdentity && expert ? (
             <div className={styles.avatarCol}>
               <ExpertMessageAvatar
                 name={expert.name}
@@ -70,6 +75,17 @@ export function TurnProcessBlocks({
             hideToolMedia={hideToolMedia}
             agentId={agentId}
           />
+        </div>
+      ) : showIdentity && expert ? (
+        <div className={styles.processSummaryRow}>
+          <div className={styles.avatarCol}>
+            <ExpertMessageAvatar
+              name={expert.name}
+              color={expert.color}
+              iconName={expert.icon_name}
+              iconUrl={expert.icon_url}
+            />
+          </div>
         </div>
       ) : null}
       {pinned.length > 0 ? (
@@ -98,9 +114,4 @@ export function TurnProcessBlocks({
 export function turnHasVisibleProcess(split: AssistantTurnSplit): boolean {
   const { pinned, folded } = partitionPinnedTools(split);
   return hasFoldContent(folded) || pinned.length > 0;
-}
-
-/** True when the foldable「已调用 N 次工具 / 深度思考」row will render. */
-export function turnHasProcessSummary(split: AssistantTurnSplit): boolean {
-  return hasFoldContent(partitionPinnedTools(split).folded);
 }

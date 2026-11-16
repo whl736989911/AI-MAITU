@@ -51,6 +51,17 @@ describe("<SharingSettingsDrawer />", () => {
     listOrgUnits.mockResolvedValue([]);
   });
 
+  it("does not offer ACL mutations when the current authorization state cannot be read", async () => {
+    getAcl.mockRejectedValue(new Error("ACL unavailable"));
+    renderDrawer();
+    await screen.findByRole("alert");
+    expect(screen.queryByRole("radio")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "sharing.settings.submit" }),
+    ).not.toBeInTheDocument();
+    expect(changeAcl).not.toHaveBeenCalled();
+  });
+
   it("offers upload only where files can be added", async () => {
     getAcl.mockResolvedValue({
       resource_type: "knowledge_base",

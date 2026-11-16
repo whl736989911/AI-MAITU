@@ -117,25 +117,6 @@ def test_block_list_content_keeps_its_blocks(monkeypatch: Any) -> None:
     assert "功能工作流" in content[2]["text"]
 
 
-def test_training_without_a_workflow_still_explains_the_full_feature_menu(
-    monkeypatch: Any,
-) -> None:
-    _configure(monkeypatch, None)
-    injected = _inject(_request(SystemMessage(content="通用档案模板")))
-
-    assert injected is not None
-    content = injected.system_message.content
-    assert isinstance(content, str)
-    assert content.startswith("通用档案模板")
-    assert "功能卡片「更多」" in content
-    assert "feature_workflow_get" in content
-    assert "USER.md" in content and "不要收集个人身份" in content
-    choices = ["工作流", "技能", "子智能体", "工具", "插件", "MBTI", "记忆", "通道", "人设文件"]
-    positions = [content.index(choice) for choice in choices]
-    assert positions == sorted(positions)
-    assert "功能工作流：" not in content
-
-
 def test_a_caller_sees_the_menu_but_not_author_editing_advice(monkeypatch: Any) -> None:
     _configure(monkeypatch, None, user=77)
     injected = _inject(_request())

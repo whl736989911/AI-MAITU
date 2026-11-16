@@ -1,6 +1,6 @@
 /**
  * Embeddable per-agent channels grid (preset cards + ChannelDrawer).
- * Lives under Agent/Channels — shared by Personalization tab and Experts drawer.
+ * Lives under Agent/Channels and is shared by resource configuration panels.
  */
 import { useCallback, useMemo, useState } from "react";
 import { Form, Button, Empty } from "antd";

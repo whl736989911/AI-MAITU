@@ -9,8 +9,8 @@
 }
 
 .sidebar {
-  width: 248px;
-  min-width: 248px;
+  width: 232px;
+  min-width: 232px;
   height: 100%;
   display: flex;
   flex-direction: column;
@@ -100,6 +100,13 @@
   /* overlay is now inside sidebarWrapper — pointer-events must not block sidebar */
 }
 
+.sidebarMobileHeader {
+  display: flex;
+  flex-shrink: 0;
+  justify-content: flex-end;
+  padding: 4px 8px 0;
+}
+
 /* -- Session list -- */
 .sessionList {
   display: flex;
@@ -110,8 +117,8 @@
 .sessionHeader {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  padding: 16px 16px 12px;
+  gap: 8px;
+  padding: 12px 12px 10px;
   flex-shrink: 0;
 }
 
@@ -167,8 +174,8 @@
 .sessionItem {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 12px;
+  gap: 8px;
+  padding: 8px 10px;
   border-radius: var(--fn-radius-md);
   cursor: pointer;
   color: var(--fn-text-secondary);

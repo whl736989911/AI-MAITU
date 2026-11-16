@@ -12,6 +12,7 @@ interface SubagentPickerPopoverProps {
   subagents: AgentSubagentSummary[];
   selectedSlugs: string[];
   onSelect: (subagent: AgentSubagentSummary) => void;
+  managePath: string;
   onNavigateAway?: () => void;
 }
 
@@ -19,6 +20,7 @@ export default function SubagentPickerPopover({
   subagents,
   selectedSlugs,
   onSelect,
+  managePath,
   onNavigateAway,
 }: SubagentPickerPopoverProps) {
   const { t } = useTranslation();
@@ -43,7 +45,7 @@ export default function SubagentPickerPopover({
       footerLabel={t("chat.subagentPickerManage")}
       onFooterClick={() => {
         onNavigateAway?.();
-        navigate("/personalization/subagents");
+        navigate(managePath);
       }}
       renderItem={(subagent) => {
         const active = selectedSlugs.includes(subagent.slug);

@@ -412,7 +412,7 @@
 
 .sessionSearchIcon {
   position: absolute;
-  left: 10px;
+  left: 9px;
   top: 50%;
   transform: translateY(-50%);
   color: var(--fn-text-tertiary);
@@ -422,11 +422,11 @@
 .sessionSearchInput {
   width: 100%;
   box-sizing: border-box;
-  height: 36px;
-  padding: 0 12px 0 34px;
+  height: 32px;
+  padding: 0 10px 0 30px;
   border: 1px solid var(--fn-border-secondary, rgba(0, 0, 0, 0.06));
-  border-radius: 10px;
-  background: var(--fn-bg-elevated, #fff);
+  border-radius: 8px;
+  background: var(--fn-bg-primary);
   color: var(--fn-text-primary);
   font-size: 13px;
   outline: none;
@@ -450,7 +450,7 @@
 }
 
 .sessionHeader {
-  padding: 0 0 12px;
+  padding: 0 0 8px;
   align-items: flex-start;
   background: transparent;
   border: none;
@@ -502,7 +502,7 @@
   padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 2px;
   scrollbar-gutter: stable;
 }
 
@@ -691,7 +691,7 @@
 
 .messageList {
   position: relative;
-  padding: 8px 0 14px;
+  padding: 2px 0 6px;
   /* Restore flex + scroll so messages fill available space */
   flex: 1;
   overflow-y: auto;
@@ -715,76 +715,65 @@
 .chatInput {
   position: relative;
   z-index: 1;
-  padding: 10px 20px 18px;
+  padding: 4px 12px 6px;
   background: var(--fn-bg-elevated, #fff);
 
   @media (max-width: 767px) {
-    padding: 6px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+    padding: 3px 10px calc(5px + env(safe-area-inset-bottom, 0px));
   }
 }
 
-.runUsageBar {
-  position: relative;
-  z-index: 1;
-  max-width: 960px;
-  width: calc(100% - 48px);
-  margin: 0 auto 8px;
-  font-size: 12px;
-  box-sizing: border-box;
-}
-
 .inputWrapper {
-  max-width: 960px;
+  max-width: 1080px;
   min-width: 280px;
   margin: 0 auto;
   width: 100%;
   box-sizing: border-box;
-  border-radius: 24px;
-  padding: 10px 12px 10px 16px;
+  border-radius: 12px;
+  padding: 5px 8px 5px 10px;
   background: var(--fn-bg-primary);
-  border: 1px solid var(--fn-assistant-bubble-border);
-  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.05);
+  border: 1px solid var(--fn-border-input);
+  box-shadow: none;
 
   @media (max-width: 767px) {
-    padding: 6px 10px 6px 14px;
-    border-radius: 20px;
+    padding: 5px 8px 5px 10px;
+    border-radius: 12px;
   }
 }
 
 .inputWrapper:focus-within {
   border-color: color-mix(in srgb, var(--fn-color-brand) 30%, transparent);
-  box-shadow:
-    0 0 0 4px var(--fn-color-brand-glow),
-    0 22px 46px var(--fn-color-brand-shadow);
+  box-shadow: 0 0 0 2px var(--fn-color-brand-glow);
 }
 
 .textarea {
-  min-height: 64px;
+  min-height: 38px;
   font-size: 14px;
-  line-height: 1.6;
+  line-height: 1.5;
 
   @media (max-width: 767px) {
-    min-height: 40px;
+    min-height: 42px;
   }
 }
 
 .actionsRow {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px solid var(--fn-color-brand-glow);
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid var(--fn-border-secondary);
 
   @media (max-width: 767px) {
-    margin-top: 4px;
-    padding-top: 4px;
+    margin-top: 2px;
+    padding-top: 2px;
   }
 }
 
 .secondaryBtn,
 .newChatBtn {
-  width: 36px;
-  height: 36px;
-  border: 1px solid var(--fn-color-brand-glow);
-  background: var(--fn-bg-secondary);
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
 }
 
 .secondaryBtn:hover,
@@ -793,29 +782,39 @@
 }
 
 .sendBtn {
-  width: 38px;
-  height: 38px;
-  border-radius: 12px;
-  box-shadow: var(--fn-shadow-brand);
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+@media (max-width: 767px) {
+  .secondaryBtn,
+  .newChatBtn,
+  .sendBtn,
+  .contextRingBtn {
+    width: 36px;
+    height: 36px;
+  }
 }
 
 .shortcutPopover {
-  padding: 8px;
-  border-radius: 16px;
+  padding: 6px;
+  border-radius: 10px;
   background: var(--fn-bg-primary);
   border: 1px solid var(--fn-assistant-bubble-border);
-  box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
 }
 
 .aiDisclaimer {
-  max-width: 960px;
-  margin: 8px auto 0;
-  width: calc(100% - 48px);
+  max-width: 1080px;
+  margin: 2px auto 0;
+  width: calc(100% - 24px);
 }
 
 .messageImages,
 .messageFiles {
-  gap: 10px;
+  gap: 8px;
 }
 
 .messageImage {
@@ -826,10 +825,6 @@
 @media (max-width: 767px) {
   .chatTopbar {
     display: none;
-  }
-
-  .runUsageBar {
-    width: calc(100% - 24px);
   }
 
   .aiDisclaimer {
@@ -854,7 +849,6 @@
   /* Minimum font size uplift: 10px → 12px on mobile */
   .msgTime,
   .msgUsage,
-  .runUsageBar,
   .aiDisclaimer,
   .shortcutCmd,
   .slashMenuCmd,

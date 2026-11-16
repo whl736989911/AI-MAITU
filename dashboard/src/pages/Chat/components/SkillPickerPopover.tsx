@@ -16,6 +16,7 @@ interface SkillPickerPopoverProps {
   skills: SkillSpec[];
   /** Skill ``/slug`` tokens currently in the composer. */
   activeSlugs?: readonly string[] | null;
+  managePath: string;
   onSelectSkill: (slug: string) => void;
   onNavigateAway?: () => void;
 }
@@ -43,6 +44,7 @@ export default function SkillPickerPopover({
   skills,
   activeSlugs = null,
   onSelectSkill,
+  managePath,
   onNavigateAway,
 }: SkillPickerPopoverProps) {
   const { t } = useTranslation();
@@ -87,7 +89,7 @@ export default function SkillPickerPopover({
       footerLabel={t("skills.importSkills")}
       onFooterClick={() => {
         onNavigateAway?.();
-        navigate("/personalization/skills");
+        navigate(managePath);
       }}
       renderItem={(skill) => {
         const label = skillDisplayName(skill);

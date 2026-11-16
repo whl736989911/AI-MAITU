@@ -79,6 +79,30 @@
   }
 }
 
+.menuItemTrailing {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+.menuItemMeta {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--fn-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.menuUpdateDot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fn-color-brand);
+  box-shadow: 0 0 0 2px
+    color-mix(in srgb, var(--fn-color-brand) 16%, transparent);
+}
+
 .menuItemDanger {
   color: var(--fn-text-primary);
 

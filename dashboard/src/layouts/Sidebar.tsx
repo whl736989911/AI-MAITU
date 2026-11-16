@@ -4,8 +4,6 @@ import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { Button, Checkbox, Drawer, message } from "antd";
 import AvatarDropdown from "../components/AvatarDropdown";
-import CurrentVersionBadge from "../components/CurrentVersionBadge";
-import KnowledgeAccessNotifications from "../components/KnowledgeAccessNotifications";
 import {
   ArrowRightLeft,
   X,
@@ -37,8 +35,8 @@ import SidebarCollapsedIconNav from "./SidebarCollapsedIconNav";
 import SidebarMinimalPaneToggle from "./SidebarMinimalPaneToggle";
 import {
   COLLAPSED_WIDTH,
-  EXPANDED_WIDTH,
   buildNavSections,
+  findWorkspaceItem,
   type NavItem,
   type NavSection,
 } from "./sidebarNav";
@@ -55,18 +53,34 @@ function orderSidebarSections(
 ): NavSection[] {
   const hidden = new Set(preferences.hidden.filter((key) => key !== "chat"));
   const rank = new Map(preferences.order.map((key, index) => [key, index]));
+  const position = (item: NavItem) =>
+    rank.get(item.key) ??
+    Math.min(
+      ...(item.children?.map(
+        (child) => rank.get(child.key) ?? Number.MAX_SAFE_INTEGER,
+      ) ?? [Number.MAX_SAFE_INTEGER]),
+    );
   return sections
     .map((section) => ({
       ...section,
       items: section.items
         .filter((item) => !hidden.has(item.key))
-        .sort(
-          (a, b) =>
-            (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) -
-            (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
-        ),
+        .flatMap((item) => {
+          if (!item.children) return [item];
+          const children = item.children
+            .filter((child) => !hidden.has(child.key))
+            .sort(
+              (a, b) =>
+                (rank.get(a.key) ?? Number.MAX_SAFE_INTEGER) -
+                (rank.get(b.key) ?? Number.MAX_SAFE_INTEGER),
+            );
+          return children.length
+            ? [{ ...item, children, path: children[0].path }]
+            : [];
+        })
+        .sort((a, b) => position(a) - position(b)),
     }))
-    .filter((section) => section.items.length > 0);
+    .filter((section) => section.items.length);
 }
 const NAV_GROUPS_STORAGE_KEY = "octop:sidebar-nav-groups";
 /** Minimal settings pane: skip the "设置" group header (duplicates the pane title). */
@@ -141,6 +155,7 @@ interface SidebarProps {
   collapsed: boolean;
   onToggle: () => void;
   isMobile?: boolean;
+  onSectionsChange?: (sections: NavSection[]) => void;
 }
 
 function NavItemButton({
@@ -166,7 +181,7 @@ function NavItemButton({
 
   return (
     <div
-      className={styles.navItemRow}
+      className={`${styles.navItemRow} ${active ? styles.navItemActive : ""}`}
       style={{
         background: active ? "var(--fn-sidebar-item-active-bg)" : "transparent",
       }}
@@ -190,9 +205,10 @@ function NavItemButton({
           color: active
             ? "var(--fn-sidebar-item-active-text)"
             : "var(--fn-text-secondary)",
-          fontSize: typeSize(14, isMobile),
+          fontSize: typeSize(13, isMobile),
           fontWeight: active ? 500 : 400,
-          paddingRight: showExpand ? 4 : 12,
+          height: isMobile ? 44 : 32,
+          paddingRight: showExpand ? 4 : 8,
         }}
       >
         <span
@@ -298,10 +314,10 @@ function NavList({
       style={{
         padding:
           sectionFilter === "grouped"
-            ? "0 12px 8px"
+            ? "0 8px 6px"
             : sectionFilter === "primary"
-            ? "8px 12px 0"
-            : "8px 12px",
+            ? "6px 8px 0"
+            : "6px 8px",
       }}
     >
       {navSections.map((section, sectionIndex) => {
@@ -385,10 +401,11 @@ function NavList({
 }
 
 export default function Sidebar({
-  selectedKey,
+  selectedKey: moduleKey,
   collapsed,
   onToggle,
   isMobile,
+  onSectionsChange,
 }: SidebarProps) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -421,8 +438,18 @@ export default function Sidebar({
     () => orderSidebarSections(availableSections, effectiveSidebarPreferences),
     [availableSections, effectiveSidebarPreferences],
   );
+  const selectedKey =
+    findWorkspaceItem(navSections, moduleKey, location.search)?.key ??
+    moduleKey;
+  useEffect(
+    () => onSectionsChange?.(navSections),
+    [navSections, onSectionsChange],
+  );
   const allNavItems = useMemo(
-    () => availableSections.flatMap((section) => section.items),
+    () =>
+      availableSections.flatMap((section) =>
+        section.items.flatMap((item) => [item, ...(item.children ?? [])]),
+      ),
     [availableSections],
   );
   const { toggleGroup, isGroupCollapsed } = useNavGroupCollapse(
@@ -478,7 +505,12 @@ export default function Sidebar({
 
   const navSectionByItem = new Map(
     availableSections.flatMap((section, index) =>
-      section.items.map((item) => [item.key, index] as const),
+      section.items.flatMap((item) => [
+        [item.key, `section:${index}`] as const,
+        ...(item.children?.map(
+          (child) => [child.key, `workspace:${item.key}`] as const,
+        ) ?? []),
+      ]),
     ),
   );
   const canMoveNavSetting = (index: number, offset: -1 | 1) => {
@@ -594,31 +626,35 @@ export default function Sidebar({
         src={isRailCollapsed ? brand.logos.mark : wordmarkSrc}
         alt={brand.name.en}
         style={{
-          height: isRailCollapsed ? 32 : isMobile ? 38 : 36,
-          width: isRailCollapsed ? 32 : "auto",
-          maxWidth: isRailCollapsed ? 32 : isMobile ? 190 : 160,
+          height: isRailCollapsed ? 28 : isMobile ? 32 : 28,
+          width: isRailCollapsed ? 28 : "auto",
+          maxWidth: isRailCollapsed ? 28 : isMobile ? 170 : 148,
           objectFit: "contain",
           display: "block",
           flexShrink: 0,
-          borderRadius: isRailCollapsed ? 8 : undefined,
+          borderRadius: isRailCollapsed ? 6 : undefined,
         }}
       />
-      {!isRailCollapsed && !isMobile && (
-        <CurrentVersionBadge isMobile={isMobile} />
-      )}
     </>
   );
 
-  const userFooter = (
+  const accountControls = (
     <div
       className={styles.sidebarUser}
       style={{
         flexShrink: 0,
-        padding: isRailCollapsed ? "10px 0" : "10px 12px",
+        padding: isRailCollapsed ? "6px 0" : "6px 8px",
+        margin: isRailCollapsed
+          ? "8px 4px 12px"
+          : "8px 10px max(12px, env(safe-area-inset-bottom, 0px))",
         display: "flex",
+        flexDirection: isRailCollapsed ? "column-reverse" : "row",
         justifyContent: isRailCollapsed ? "center" : "stretch",
         alignItems: "center",
         gap: 6,
+        border: "1px solid var(--fn-border-primary)",
+        borderRadius: 8,
+        background: "var(--fn-bg-primary)",
       }}
     >
       <button
@@ -829,7 +865,9 @@ export default function Sidebar({
           bottom: 0,
           left: 0,
           height: "auto",
-          width: EXPANDED_WIDTH,
+          width: "max-content",
+          minWidth: 200,
+          maxWidth: "min(280px, calc(100vw - 32px))",
           boxSizing: "border-box",
           paddingLeft: "env(safe-area-inset-left, 0px)",
           background: "var(--fn-sidebar-bg)",
@@ -844,11 +882,11 @@ export default function Sidebar({
       >
         <div
           style={{
-            height: "calc(56px + env(safe-area-inset-top, 0px))",
+            height: "calc(48px + env(safe-area-inset-top, 0px))",
             display: "flex",
             alignItems: "center",
             justifyContent: "space-between",
-            padding: "env(safe-area-inset-top, 0px) 12px 0 16px",
+            padding: "env(safe-area-inset-top, 0px) 8px 0 12px",
             boxSizing: "border-box",
             flexShrink: 0,
             gap: 8,
@@ -899,14 +937,7 @@ export default function Sidebar({
         >
           {navScrollBody}
         </div>
-
-        <div
-          style={{
-            paddingBottom: "calc(8px + env(safe-area-inset-bottom, 0px))",
-          }}
-        >
-          {userFooter}
-        </div>
+        {accountControls}
       </div>
     );
   }
@@ -916,9 +947,10 @@ export default function Sidebar({
   return (
     <div
       style={{
-        width: isRailCollapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH,
-        minWidth: isRailCollapsed ? COLLAPSED_WIDTH : EXPANDED_WIDTH,
-        background: "var(--fn-sidebar-bg)",
+        width: isRailCollapsed ? COLLAPSED_WIDTH : 216,
+        minWidth: isRailCollapsed ? COLLAPSED_WIDTH : 216,
+        maxWidth: isRailCollapsed ? COLLAPSED_WIDTH : 216,
+        background: "var(--fn-bg-secondary)",
         borderRight: "none",
         transition:
           "width 0.25s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
@@ -937,19 +969,13 @@ export default function Sidebar({
           alignItems: "center",
           gap: 6,
           minWidth: 0,
-          padding: isRailCollapsed ? "12px 0" : "14px 14px 10px",
+          padding: isRailCollapsed ? "16px 0" : "18px 16px",
           justifyContent: isRailCollapsed ? "center" : "flex-start",
           flexShrink: 0,
+          minHeight: 62,
         }}
       >
         {brandInner}
-        {/* Global knowledge-access bell: it belongs to the always-present
-            chrome, not to the page content, so every route shows it once. */}
-        {isRailCollapsed ? null : (
-          <div style={{ marginLeft: "auto", flexShrink: 0 }}>
-            <KnowledgeAccessNotifications />
-          </div>
-        )}
       </div>
 
       <div
@@ -964,8 +990,7 @@ export default function Sidebar({
       >
         {navScrollBody}
       </div>
-
-      {userFooter}
+      {accountControls}
     </div>
   );
 }

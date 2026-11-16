@@ -1,10 +1,33 @@
+.pageShell {
+  min-width: 0;
+}
+.heading {
+  min-width: 0;
+}
+.headingIdentity {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+}
+.headingActions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.body {
+  position: relative;
+}
+
 .agentBar {
   flex-shrink: 0;
-  margin-bottom: 12px;
-  padding: 10px 16px;
+  margin-bottom: 6px;
+  padding: 6px 10px;
   background: var(--fn-bg-container, var(--fn-bg-elevated));
   border: 1px solid var(--fn-border-secondary);
-  border-radius: 8px;
+  border-radius: var(--fn-radius-md);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 
   /**
@@ -19,7 +42,7 @@
   }
 
   @media (max-width: 767px) {
-    padding: 8px 12px;
+    padding: 6px 10px;
   }
 }
 
@@ -36,7 +59,7 @@
  */
 .pathTabsMobile {
   flex-shrink: 0;
-  margin: -4px 0 12px;
+  margin: -2px 0 6px;
 }
 
 .pathTabsMobileSegmented {
@@ -71,7 +94,7 @@
 
   :global(.octop-tabs-nav),
   :global(.ant-tabs-nav) {
-    margin-bottom: 12px;
+    margin-bottom: 6px;
     flex-shrink: 0;
   }
 
@@ -137,9 +160,9 @@
   overflow: auto;
   /* Keep card tops / hover translateY inside the scrollport (margin on
      the tab bar sits outside this box and cannot prevent clipping). */
-  padding-top: 8px;
+  padding-top: 4px;
   /* Keep rightmost cards clear of the vertical scrollbar. */
-  padding-right: 12px;
+  padding-right: 8px;
 
   @media (max-width: 767px) {
     flex: none;

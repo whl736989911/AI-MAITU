@@ -11,8 +11,8 @@ import {
 } from "../../components/PwaInstallPrompt";
 import { getApiUrl } from "../../api/config";
 import { publicUrl, routerBasename } from "../../utils/publicUrl";
-
 import { copyText } from "../../utils/copyText";
+import styles from "./index.module.less";
 
 interface CheckItem {
   id: string;
@@ -496,63 +496,16 @@ export default function PwaDebugPage() {
   };
 
   return (
-    <div
-      style={{
-        flex: "1 1 auto",
-        minHeight: 0,
-        overflowY: "auto",
-        WebkitOverflowScrolling: "touch",
-        padding: "20px 16px calc(40px + env(safe-area-inset-bottom, 0px))",
-        maxWidth: 640,
-        width: "100%",
-        margin: "0 auto",
-        boxSizing: "border-box",
-        fontFamily: "system-ui, sans-serif",
-      }}
-    >
-      <h2
-        style={{
-          margin: "0 0 4px",
-          fontSize: 20,
-          fontWeight: 700,
-          color: "var(--fn-text-primary)",
-        }}
-      >
-        PWA 诊断
-      </h2>
-      <p
-        style={{
-          margin: "0 0 20px",
-          fontSize: 13,
-          color: "var(--fn-text-tertiary)",
-        }}
-      >
+    <div className={styles.page}>
+      <h2 className={styles.title}>PWA 诊断</h2>
+      <p className={styles.subtitle}>
         在手机上访问此页面，查看 PWA 安装条件是否满足
       </p>
 
       {/* Check list */}
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "column",
-          gap: 10,
-          marginBottom: 24,
-        }}
-      >
+      <div className={styles.checkList}>
         {allChecks.map((c) => (
-          <div
-            key={c.id}
-            style={{
-              display: "flex",
-              gap: 12,
-              alignItems: "flex-start",
-              padding: "10px 12px",
-              borderRadius: 10,
-              background: "var(--fn-bg-secondary, rgba(255,255,255,0.04))",
-              border:
-                "1px solid var(--fn-border-primary, rgba(255,255,255,0.07))",
-            }}
-          >
+          <div key={c.id} className={styles.checkItem}>
             <StatusDot status={c.status} />
             <div style={{ minWidth: 0 }}>
               <div
@@ -581,10 +534,9 @@ export default function PwaDebugPage() {
       </div>
 
       {/* Actions */}
-      <div
-        style={{ display: "flex", flexWrap: "wrap", gap: 10, marginBottom: 24 }}
-      >
+      <div className={styles.actions}>
         <button
+          className={styles.actionButton}
           type="button"
           onClick={() => void handleForceInstall()}
           disabled={forceInstalling}
@@ -602,6 +554,7 @@ export default function PwaDebugPage() {
           {forceInstalling ? "安装尝试中…" : "强制尝试安装"}
         </button>
         <button
+          className={styles.actionButton}
           onClick={handleCopyLog}
           style={{
             padding: "8px 16px",
@@ -616,6 +569,7 @@ export default function PwaDebugPage() {
           {copied ? "已复制 ✓" : "复制诊断报告"}
         </button>
         <button
+          className={styles.actionButton}
           onClick={handleClearDismissed}
           style={{
             padding: "8px 16px",
@@ -630,6 +584,7 @@ export default function PwaDebugPage() {
           清除「不安装」标记
         </button>
         <button
+          className={styles.actionButton}
           onClick={() => void handleWaitPrompt()}
           style={{
             padding: "8px 16px",
@@ -644,6 +599,7 @@ export default function PwaDebugPage() {
           等待安装事件（8s）
         </button>
         <button
+          className={styles.actionButton}
           onClick={() => void handleResetPwa()}
           style={{
             padding: "8px 16px",
@@ -659,6 +615,7 @@ export default function PwaDebugPage() {
         </button>
         {installSnap.prompt && (
           <button
+            className={styles.actionButton}
             type="button"
             onClick={() => void handleInstall()}
             style={{
@@ -683,17 +640,7 @@ export default function PwaDebugPage() {
       {showIosGuide && <IosGuide onClose={() => setShowIosGuide(false)} />}
 
       {/* Instructions */}
-      <div
-        style={{
-          padding: "14px 14px",
-          borderRadius: 10,
-          fontSize: 12,
-          background: "rgba(96,165,250,0.08)",
-          border: "1px solid rgba(96,165,250,0.2)",
-          color: "var(--fn-text-secondary)",
-          lineHeight: 1.7,
-        }}
-      >
+      <div className={styles.instructions}>
         <strong>说明：</strong>
         <br />• <strong>SW 未控制当前页面</strong>：正常，首次访问后刷新即可
         <br />• <strong>beforeinstallprompt 未捕获</strong>：Chrome

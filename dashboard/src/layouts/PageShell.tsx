@@ -83,12 +83,10 @@ export function PathTabsSegmented({
 /**
  * Universal page wrapper for every non-fullscreen, non-Chat page.
  *
- * Visual contract (master spec §5 / sub-project ② spec §6.2):
- *  - Title row: 20px / 600 weight, fixed (does not scroll with content)
- *  - Subtitle: 13px / secondary colour, 4px below title
+ * Visual contract:
+ *  - Title and visible subtitle in a fixed compact header row
  *  - Optional agent bar (`agentScoped`): below title, outside content card
- *  - Gap between title row and content: 24px (12px + agent bar when scoped)
- *  - Content: colorBgContainer background, 24px padding, 8px radius
+ *  - Content: original container surface with compact padding and internal scrolling
  *  - Only the content area scrolls internally
  *  - `actions` slot: right-aligned in the title row
  *  - `pathTabs`: desktop in title row; mobile full-width bar in content
@@ -108,8 +106,7 @@ function PageShell({
 }: PageShellProps) {
   const isMobile = useIsMobile();
   const outerPad = isMobile ? 12 : 32;
-  const outerPadTop = isMobile ? 12 : 24;
-  const contentPad = isMobile ? 12 : 24;
+  const outerPadTop = 6;
   /** Fill layout, or mobile path-tabs that must stay pinned above the body. */
   const pinBody = Boolean(fill || (isMobile && pathTabs));
 
@@ -125,27 +122,29 @@ function PageShell({
 
   return (
     <div
+      className={styles.pageShell}
       style={{
         display: "flex",
         flexDirection: "column",
         height: "100%",
-        padding: `${outerPadTop}px ${outerPad}px ${outerPad}px`,
+        padding: `${outerPadTop}px ${outerPad}px 6px`,
         boxSizing: "border-box",
         overflow: "hidden",
       }}
     >
       {/* Title row — fixed, never scrolls */}
-      <div
+      <header
+        className={styles.heading}
         style={{
           display: "flex",
           alignItems: "flex-start",
-          justifyContent: "space-between",
-          gap: 12,
+          flexWrap: isMobile ? "wrap" : undefined,
+          gap: 6,
           flexShrink: 0,
-          marginBottom: agentScoped ? 12 : 24,
+          marginBottom: agentScoped ? 6 : 4,
         }}
       >
-        <div style={{ minWidth: isMobile ? 0 : 180 }}>
+        <div className={styles.headingIdentity}>
           <Title
             level={4}
             style={{
@@ -160,7 +159,7 @@ function PageShell({
           {subtitle && (
             <Text
               type="secondary"
-              style={{ fontSize: 13, marginTop: 4, display: "block" }}
+              style={{ fontSize: 13, marginTop: 2, display: "block" }}
             >
               {subtitle}
             </Text>
@@ -168,17 +167,19 @@ function PageShell({
         </div>
         {titleActions && (
           <div
+            className={styles.headingActions}
             style={{
-              flexShrink: pathTabs ? 1 : 0,
+              flexShrink: isMobile || pathTabs ? 1 : 0,
               minWidth: 0,
               overflowX: pathTabs ? "auto" : undefined,
-              paddingTop: 2,
+              maxWidth: "100%",
+              paddingTop: 0,
             }}
           >
             {titleActions}
           </div>
         )}
-      </div>
+      </header>
 
       {agentScoped && (
         <div className={styles.agentBar}>{agentBar ?? <AgentSelector />}</div>
@@ -188,11 +189,11 @@ function PageShell({
          tabbed pages get more usable horizontal space. Path tabs on mobile
          pin above the body (same chrome as Workbench / Personalization). */}
       <div
+        className={styles.body}
         style={{
-          flex: 1,
           background: "var(--fn-bg-container, var(--fn-bg-elevated))",
           borderRadius: 8,
-          padding: contentPad,
+          padding: 8,
           // Mobile: never create a page-level horizontal scrollbar; wide
           // tables scroll via antd scroll.x inside their own wrapper.
           overflowX: pinBody || isMobile ? "hidden" : "auto",

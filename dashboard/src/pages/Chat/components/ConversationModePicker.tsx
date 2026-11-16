@@ -15,13 +15,11 @@ const OPTIONS: ReadonlyArray<{
 ];
 
 interface Props {
-  compact?: boolean;
   conversationMode: ConversationMode;
   onChange: (mode: ConversationMode) => void;
 }
 
 export default function ConversationModePicker({
-  compact = false,
   conversationMode,
   onChange,
 }: Props) {
@@ -30,23 +28,19 @@ export default function ConversationModePicker({
   const selected =
     OPTIONS.find((item) => item.mode === conversationMode) ?? OPTIONS[0];
   const Icon = selected.Icon;
+  const label = t(`chat.conversationMode.${conversationMode}`);
   const trigger = (
     <button
       className={`${styles.secondaryBtn} ${
-        compact ? "" : styles.modelPickerBtn
-      } ${conversationMode !== "craft" ? styles.secondaryBtnModelActive : ""}`}
+        conversationMode !== "craft" ? styles.secondaryBtnModelActive : ""
+      }`}
       type="button"
       data-testid="conversation-mode-picker"
-      aria-label={t(`chat.conversationMode.${conversationMode}`)}
+      aria-label={label}
       aria-haspopup="menu"
       aria-expanded={open}
     >
       <Icon size={16} />
-      {!compact && (
-        <span className={styles.modelPickerLabel}>
-          {t(`chat.conversationMode.${conversationMode}`)}
-        </span>
-      )}
     </button>
   );
   return (
@@ -84,11 +78,12 @@ export default function ConversationModePicker({
         </div>
       }
     >
-      {compact ? (
-        trigger
-      ) : (
-        <Tooltip title={t("chat.conversationMode.picker")}>{trigger}</Tooltip>
-      )}
+      <Tooltip
+        title={`${t("chat.conversationMode.picker")} · ${label}`}
+        mouseEnterDelay={0.3}
+      >
+        {trigger}
+      </Tooltip>
     </Popover>
   );
 }

@@ -3,11 +3,10 @@
  * parameterised on a single agent id — and the one place that says what a
  * capability *is* in the scope showing it.
  *
- * One stack, two pages. The Personalization page configures the caller's own
- * active expert; a feature's own page has its scope fixed by the route and shows
- * the same stack. Neither page owns a panel of its own, so what a feature
- * configures cannot drift from what an expert configures: the components, their
- * order, their icons and their keep-alive are all this list.
+ * The resource configuration pages use one shared stack, scoped to the selected
+ * agent id. Neither page owns a panel of its own, so what a feature configures
+ * cannot drift from what an expert configures: components, order, icons and
+ * keep-alive are all defined here.
  *
  * What *does* differ between the two is declared in ``CAPABILITY_POLICY`` below
  * rather than branched into the panels: a capability whose writing rule, or
@@ -208,13 +207,10 @@ export interface PersonalizationPanelsProps {
   isMounted: (tab: PersonalizationTab) => boolean;
   /** Whether this is the caller's own expert, or a feature's agent. */
   scope: PersonalizationScope;
-  /**
-   * Whether the caller may write through these panels at all — for a feature,
-   * whether they are the one configuring it. What it does not decide is whether
-   * the panels write *in principle*: that is the table's ``writer``, and a
-   * capability marked ``nobody`` is read-only for an author too.
-   */
+  /** Whether the caller may write through these panels at all. */
   canWrite: boolean;
+  featureWorkspaceTab?: "workflow" | "data";
+  onFeatureWorkspaceTabChange?: (tab: "workflow" | "data") => void;
 }
 
 export default function PersonalizationPanels({
@@ -225,6 +221,8 @@ export default function PersonalizationPanels({
   isMounted,
   scope,
   canWrite,
+  featureWorkspaceTab,
+  onFeatureWorkspaceTabChange,
 }: PersonalizationPanelsProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -263,6 +261,8 @@ export default function PersonalizationPanels({
                 agentId={agentId}
                 canWrite={writesFor(policy.workflow)}
                 canEditRecords
+                activeTab={featureWorkspaceTab}
+                onTabChange={onFeatureWorkspaceTabChange}
               />
             </div>
           </div>

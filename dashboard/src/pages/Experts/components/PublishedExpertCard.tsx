@@ -107,9 +107,16 @@ export const PublishedExpertCard = memo(function PublishedExpertCard({
         {expert.description || "\u00a0"}
       </div>
       <div className={styles.expertCardFooter}>
-        <div className={styles.expertCardHint}>
+        <button
+          type="button"
+          className={styles.expertCardHint}
+          onClick={(event) => {
+            event.stopPropagation();
+            onInstall(expert);
+          }}
+        >
           {t("experts.published.install")}
-        </div>
+        </button>
         {expert.creator_username && (
           <div className={styles.expertInstalledLabel}>
             {t("experts.published.by", { name: expert.creator_username })}

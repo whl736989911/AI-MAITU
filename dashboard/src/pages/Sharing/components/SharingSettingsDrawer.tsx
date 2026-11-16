@@ -240,205 +240,216 @@ export default function SharingSettingsDrawer({
           </div>
         </div>
 
-        <div className={styles.drawerSection}>
-          <Text type="secondary">
-            {t("sharing.settings.currentVisibility")}
-          </Text>
-          <div className={styles.currentRow}>
-            {entry ? (
-              <>
-                <VisibilityTag visibility={entry.visibility} />
-                <PermissionTag permission={entry.permission} />
-                <Text type="secondary" className={styles.metaText}>
-                  {t("sharing.settings.version", { version: entry.version })}
-                </Text>
-                {entry.unit_key && (
+        {entryError === null && (
+          <div
+            className={`${styles.drawerSection} ${styles.effectiveSnapshot}`}
+          >
+            <Text type="secondary">
+              {t("sharing.settings.currentVisibility")}
+            </Text>
+            <div className={styles.snapshotValues}>
+              {entry ? (
+                <>
+                  <VisibilityTag visibility={entry.visibility} />
+                  <PermissionTag permission={entry.permission} />
                   <Text type="secondary" className={styles.metaText}>
-                    {t("sharing.settings.unitSnapshot", {
-                      unit: entry.unit_key,
-                    })}
+                    {t("sharing.settings.version", { version: entry.version })}
                   </Text>
-                )}
-              </>
-            ) : (
-              <Text type="secondary">
+                  {entry.unit_key && (
+                    <Text type="secondary" className={styles.metaText}>
+                      {t("sharing.settings.unitSnapshot", {
+                        unit: entry.unit_key,
+                      })}
+                    </Text>
+                  )}
+                </>
+              ) : (
+                <Text type="secondary">
+                  {t(
+                    resourceType === "knowledge_document"
+                      ? "sharing.settings.knowledgeInherited"
+                      : "sharing.settings.notShared",
+                  )}
+                </Text>
+              )}
+            </div>
+          </div>
+        )}
+
+        {entryError === null && (
+          <>
+            <Divider className={styles.drawerDivider} />
+
+            {orgReach && (
+              <Alert
+                type="warning"
+                showIcon
+                icon={<Globe2 size={16} />}
+                className={styles.orgNotice}
+                message={t("sharing.settings.orgNoticeTitle")}
+                description={t("sharing.settings.orgNotice")}
+              />
+            )}
+
+            <div className={styles.drawerSection}>
+              <Text strong>{t("sharing.settings.visibilityLabel")}</Text>
+              <Radio.Group
+                className={styles.visibilityGroup}
+                value={visibility}
+                onChange={(event) =>
+                  setVisibility(event.target.value as SharingVisibility)
+                }
+              >
+                {VISIBILITIES.map((option) => (
+                  <Radio
+                    key={option}
+                    value={option}
+                    className={styles.visibilityOption}
+                  >
+                    <span className={styles.visibilityOptionTitle}>
+                      {t(VISIBILITY_LABEL_KEYS[option])}
+                    </span>
+                    <span className={styles.visibilityOptionHint}>
+                      {t(VISIBILITY_HINT_KEYS[option])}
+                    </span>
+                  </Radio>
+                ))}
+              </Radio.Group>
+            </div>
+
+            <div className={styles.drawerSection}>
+              <Text strong>{t("sharing.settings.permissionLabel")}</Text>
+              <Radio.Group
+                className={styles.visibilityGroup}
+                value={permission}
+                onChange={(event) =>
+                  setPermission(event.target.value as SharingPermission)
+                }
+              >
+                {permissionChoices.map((option) => (
+                  <Radio
+                    key={option}
+                    value={option}
+                    className={styles.visibilityOption}
+                  >
+                    <span className={styles.visibilityOptionTitle}>
+                      {t(PERMISSION_LABEL_KEYS[option])}
+                    </span>
+                    <span className={styles.visibilityOptionHint}>
+                      {t(PERMISSION_HINT_KEYS[option])}
+                    </span>
+                  </Radio>
+                ))}
+              </Radio.Group>
+              <Text type="secondary" className={styles.metaText}>
                 {t(
                   resourceType === "knowledge_document"
-                    ? "sharing.settings.knowledgeInherited"
-                    : "sharing.settings.notShared",
+                    ? "sharing.settings.knowledgePermissionHint"
+                    : "sharing.settings.permissionHint",
                 )}
               </Text>
-            )}
-          </div>
-        </div>
+            </div>
 
-        <Divider className={styles.drawerDivider} />
-
-        {orgReach && (
-          <Alert
-            type="warning"
-            showIcon
-            icon={<Globe2 size={16} />}
-            className={styles.orgNotice}
-            message={t("sharing.settings.orgNoticeTitle")}
-            description={t("sharing.settings.orgNotice")}
-          />
-        )}
-
-        <div className={styles.drawerSection}>
-          <Text strong>{t("sharing.settings.visibilityLabel")}</Text>
-          <Radio.Group
-            className={styles.visibilityGroup}
-            value={visibility}
-            onChange={(event) =>
-              setVisibility(event.target.value as SharingVisibility)
-            }
-          >
-            {VISIBILITIES.map((option) => (
-              <Radio
-                key={option}
-                value={option}
-                className={styles.visibilityOption}
-              >
-                <span className={styles.visibilityOptionTitle}>
-                  {t(VISIBILITY_LABEL_KEYS[option])}
-                </span>
-                <span className={styles.visibilityOptionHint}>
-                  {t(VISIBILITY_HINT_KEYS[option])}
-                </span>
-              </Radio>
-            ))}
-          </Radio.Group>
-        </div>
-
-        <div className={styles.drawerSection}>
-          <Text strong>{t("sharing.settings.permissionLabel")}</Text>
-          <Radio.Group
-            className={styles.visibilityGroup}
-            value={permission}
-            onChange={(event) =>
-              setPermission(event.target.value as SharingPermission)
-            }
-          >
-            {permissionChoices.map((option) => (
-              <Radio
-                key={option}
-                value={option}
-                className={styles.visibilityOption}
-              >
-                <span className={styles.visibilityOptionTitle}>
-                  {t(PERMISSION_LABEL_KEYS[option])}
-                </span>
-                <span className={styles.visibilityOptionHint}>
-                  {t(PERMISSION_HINT_KEYS[option])}
-                </span>
-              </Radio>
-            ))}
-          </Radio.Group>
-          <Text type="secondary" className={styles.metaText}>
-            {t(
-              resourceType === "knowledge_document"
-                ? "sharing.settings.knowledgePermissionHint"
-                : "sharing.settings.permissionHint",
-            )}
-          </Text>
-        </div>
-
-        {visibility === "unit" && (
-          <div className={styles.drawerSection}>
-            <Text strong>{t("sharing.settings.unitLabel")}</Text>
-            <Select
-              allowClear
-              value={unitKey ?? undefined}
-              onChange={(value) => setUnitKey(value ?? null)}
-              options={unitOptions}
-              placeholder={t("sharing.settings.unitPlaceholder")}
-              notFoundContent={t("sharing.settings.noUnits")}
-              className={styles.fullWidth}
-            />
-            <Text type="secondary" className={styles.metaText}>
-              {t("sharing.settings.unitHint")}
-            </Text>
-          </div>
-        )}
-
-        <div className={styles.drawerSection}>
-          <Text strong>{t("sharing.settings.grantsTitle")}</Text>
-          <Text type="secondary" className={styles.metaText}>
-            {t(
-              resourceType === "knowledge_document"
-                ? "sharing.settings.knowledgeGrantsHint"
-                : "sharing.settings.grantsHint",
-            )}
-          </Text>
-          {grants.map((grant, index) => (
-            <Space.Compact key={index} block className={styles.grantRow}>
-              <Select
-                value={grant.grantee_type}
-                onChange={(value) =>
-                  setGrants((current) =>
-                    current.map((item, i) =>
-                      i === index
-                        ? { ...item, grantee_type: value as SharingGranteeType }
-                        : item,
-                    ),
-                  )
-                }
-                options={GRANTEE_TYPES.map((kind) => ({
-                  value: kind,
-                  label: t(GRANTEE_TYPE_LABEL_KEYS[kind]),
-                }))}
-                className={styles.grantType}
-              />
-              <Input
-                value={grant.grantee_id}
-                onChange={(event) =>
-                  setGrants((current) =>
-                    current.map((item, i) =>
-                      i === index
-                        ? { ...item, grantee_id: event.target.value }
-                        : item,
-                    ),
-                  )
-                }
-                placeholder={t("sharing.settings.granteePlaceholder")}
-              />
-              <Tooltip title={t("sharing.settings.removeGrant")}>
-                <Button
-                  icon={<Trash2 size={14} />}
-                  onClick={() =>
-                    setGrants((current) =>
-                      current.filter((_, i) => i !== index),
-                    )
-                  }
+            {visibility === "unit" && (
+              <div className={styles.drawerSection}>
+                <Text strong>{t("sharing.settings.unitLabel")}</Text>
+                <Select
+                  allowClear
+                  value={unitKey ?? undefined}
+                  onChange={(value) => setUnitKey(value ?? null)}
+                  options={unitOptions}
+                  placeholder={t("sharing.settings.unitPlaceholder")}
+                  notFoundContent={t("sharing.settings.noUnits")}
+                  className={styles.fullWidth}
                 />
-              </Tooltip>
-            </Space.Compact>
-          ))}
-          <Button
-            icon={<Plus size={14} />}
-            onClick={() =>
-              setGrants((current) => [
-                ...current,
-                { grantee_type: "user", grantee_id: "" },
-              ])
-            }
-          >
-            {t("sharing.settings.addGrant")}
-          </Button>
-        </div>
+                <Text type="secondary" className={styles.metaText}>
+                  {t("sharing.settings.unitHint")}
+                </Text>
+              </div>
+            )}
 
-        <div className={styles.drawerSection}>
-          <Text strong>{t("sharing.settings.reasonLabel")}</Text>
-          <Input.TextArea
-            value={reason}
-            onChange={(event) => setReason(event.target.value)}
-            placeholder={t("sharing.settings.reasonPlaceholder")}
-            maxLength={200}
-            showCount
-            autoSize={{ minRows: 2, maxRows: 4 }}
-          />
-        </div>
+            <div className={styles.drawerSection}>
+              <Text strong>{t("sharing.settings.grantsTitle")}</Text>
+              <Text type="secondary" className={styles.metaText}>
+                {t(
+                  resourceType === "knowledge_document"
+                    ? "sharing.settings.knowledgeGrantsHint"
+                    : "sharing.settings.grantsHint",
+                )}
+              </Text>
+              {grants.map((grant, index) => (
+                <Space.Compact key={index} block className={styles.grantRow}>
+                  <Select
+                    value={grant.grantee_type}
+                    onChange={(value) =>
+                      setGrants((current) =>
+                        current.map((item, i) =>
+                          i === index
+                            ? {
+                                ...item,
+                                grantee_type: value as SharingGranteeType,
+                              }
+                            : item,
+                        ),
+                      )
+                    }
+                    options={GRANTEE_TYPES.map((kind) => ({
+                      value: kind,
+                      label: t(GRANTEE_TYPE_LABEL_KEYS[kind]),
+                    }))}
+                    className={styles.grantType}
+                  />
+                  <Input
+                    value={grant.grantee_id}
+                    onChange={(event) =>
+                      setGrants((current) =>
+                        current.map((item, i) =>
+                          i === index
+                            ? { ...item, grantee_id: event.target.value }
+                            : item,
+                        ),
+                      )
+                    }
+                    placeholder={t("sharing.settings.granteePlaceholder")}
+                  />
+                  <Tooltip title={t("sharing.settings.removeGrant")}>
+                    <Button
+                      icon={<Trash2 size={14} />}
+                      onClick={() =>
+                        setGrants((current) =>
+                          current.filter((_, i) => i !== index),
+                        )
+                      }
+                    />
+                  </Tooltip>
+                </Space.Compact>
+              ))}
+              <Button
+                icon={<Plus size={14} />}
+                onClick={() =>
+                  setGrants((current) => [
+                    ...current,
+                    { grantee_type: "user", grantee_id: "" },
+                  ])
+                }
+              >
+                {t("sharing.settings.addGrant")}
+              </Button>
+            </div>
+
+            <div className={styles.drawerSection}>
+              <Text strong>{t("sharing.settings.reasonLabel")}</Text>
+              <Input.TextArea
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+                placeholder={t("sharing.settings.reasonPlaceholder")}
+                maxLength={200}
+                showCount
+                autoSize={{ minRows: 2, maxRows: 4 }}
+              />
+            </div>
+          </>
+        )}
 
         {result && (
           <Alert
@@ -471,18 +482,20 @@ export default function SharingSettingsDrawer({
 
       <div className={styles.drawerFooter}>
         <Button onClick={onClose}>{t("common.cancel")}</Button>
-        <Button
-          type="primary"
-          loading={saving}
-          disabled={loading}
-          style={{
-            background: BRAND.color.accent,
-            borderColor: BRAND.color.accent,
-          }}
-          onClick={() => void submit()}
-        >
-          {t("sharing.settings.submit")}
-        </Button>
+        {entryError === null && (
+          <Button
+            type="primary"
+            loading={saving}
+            disabled={loading}
+            style={{
+              background: BRAND.color.accent,
+              borderColor: BRAND.color.accent,
+            }}
+            onClick={() => void submit()}
+          >
+            {t("sharing.settings.submit")}
+          </Button>
+        )}
       </div>
     </Drawer>
   );

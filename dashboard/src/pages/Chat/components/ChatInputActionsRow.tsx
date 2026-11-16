@@ -35,9 +35,11 @@ import {
   modelOptionValue,
   modelShortLabel,
 } from "../../../utils/modelOptions";
+import { useAgent } from "../../../context/AgentContext";
+import { isFeatureAgent } from "../../../utils/agentKind";
 import { indexAgentsByKind } from "../../../utils/agentKindCounts";
-import ConversationModePicker from "./ConversationModePicker";
 import type { ConversationMode } from "../utils/conversationMode";
+import ConversationModePicker from "./ConversationModePicker";
 import HitlPolicyPicker from "./HitlPolicyPicker";
 import type { HitlSessionPolicy } from "../../../api/modules/octopThreads";
 import ContextWindowRing from "./ContextWindowRing";
@@ -190,8 +192,21 @@ export default function ChatInputActionsRow({
   onSubmit,
 }: ChatInputActionsRowProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const skillDisplayName = useSkillDisplayName();
+  const navigate = useNavigate();
+  const { agents } = useAgent();
+  const resourceSettingsPath = (tab: "skills" | "subagents") => {
+    const resource = agentId
+      ? agents.find((item) => item.agent_id === agentId)
+      : null;
+    if (!resource) return "/experts";
+    const isFeature = isFeatureAgent(resource);
+    const search = new URLSearchParams({
+      [isFeature ? "feature" : "expert"]: resource.agent_id,
+      settings: tab,
+    });
+    return `${isFeature ? "/features" : "/experts"}?${search.toString()}`;
+  };
   const actionsRowRef = useRef<HTMLDivElement | null>(null);
   const [isCompact, setIsCompact] = useState(false);
   const [skillPickerOpen, setSkillPickerOpen] = useState(false);
@@ -711,6 +726,7 @@ export default function ChatInputActionsRow({
         return (
           <SkillPickerPopover
             skills={availableSkills ?? []}
+            managePath={resourceSettingsPath("skills")}
             activeSlugs={activeSkillSlugs}
             onSelectSkill={(slug) => {
               onInsertSkillCommand?.(slug);
@@ -734,6 +750,7 @@ export default function ChatInputActionsRow({
             subagents={availableSubagents ?? []}
             selectedSlugs={mentionedSubagents}
             onSelect={handleSubagentSelect}
+            managePath={resourceSettingsPath("subagents")}
             onNavigateAway={closeCompactPicker}
           />
         );
@@ -813,7 +830,6 @@ export default function ChatInputActionsRow({
             ))}
           {onConversationModeChange && (
             <ConversationModePicker
-              compact
               conversationMode={conversationMode}
               onChange={onConversationModeChange}
             />
@@ -1034,6 +1050,7 @@ export default function ChatInputActionsRow({
               <SkillPickerPopover
                 skills={availableSkills!}
                 activeSlugs={activeSkillSlugs}
+                managePath={resourceSettingsPath("skills")}
                 onSelectSkill={(slug) => {
                   onInsertSkillCommand?.(slug);
                   setSkillPickerOpen(false);
@@ -1107,6 +1124,7 @@ export default function ChatInputActionsRow({
               <SubagentPickerPopover
                 subagents={availableSubagents!}
                 selectedSlugs={mentionedSubagents}
+                managePath={resourceSettingsPath("subagents")}
                 onSelect={handleSubagentSelect}
                 onNavigateAway={() => setSubagentPickerOpen(false)}
               />
@@ -1307,43 +1325,53 @@ export default function ChatInputActionsRow({
             </button>
           </Tooltip>
         )}
-        {isStreaming ? (
-          canSend ? (
-            <Tooltip title={t("chat.queue.action")} mouseEnterDelay={0.4}>
-              <button
-                className={styles.sendBtn}
-                onClick={onSubmit}
-                title={t("chat.queue.action")}
-                type="button"
-                aria-label={t("chat.queue.action")}
-              >
-                <Send size={18} />
-              </button>
-            </Tooltip>
+        <div
+          className={styles.primaryAction}
+          role="group"
+          aria-label={t("common.actions")}
+        >
+          {isStreaming ? (
+            canSend ? (
+              <Tooltip title={t("chat.queue.action")} mouseEnterDelay={0.4}>
+                <button
+                  className={styles.sendBtn}
+                  onClick={onSubmit}
+                  title={t("chat.queue.action")}
+                  type="button"
+                  aria-label={t("chat.queue.action")}
+                >
+                  <Send size={18} />
+                  <span>{t("chat.queue.action")}</span>
+                </button>
+              </Tooltip>
+            ) : (
+              <Tooltip title={t("chat.stop", "Stop")} mouseEnterDelay={0.4}>
+                <button
+                  className={`${styles.sendBtn} ${styles.cancelBtn}`}
+                  onClick={onCancel}
+                  title={t("chat.stop", "Stop")}
+                  type="button"
+                  aria-label={t("chat.stop", "Stop")}
+                >
+                  <Square size={18} />
+                  <span>{t("chat.stop", "Stop")}</span>
+                </button>
+              </Tooltip>
+            )
           ) : (
-            <Tooltip title={t("chat.stop", "Stop")} mouseEnterDelay={0.4}>
-              <button
-                className={`${styles.sendBtn} ${styles.cancelBtn}`}
-                onClick={onCancel}
-                title={t("chat.stop", "Stop")}
-                type="button"
-                aria-label={t("chat.stop", "Stop")}
-              >
-                <Square size={18} />
-              </button>
-            </Tooltip>
-          )
-        ) : (
-          <button
-            className={styles.sendBtn}
-            onClick={onSubmit}
-            disabled={!canSend}
-            title={t("chat.send", "Send")}
-            type="button"
-          >
-            <Send size={18} />
-          </button>
-        )}
+            <button
+              className={styles.sendBtn}
+              onClick={onSubmit}
+              disabled={!canSend}
+              title={t("chat.send", "Send")}
+              aria-label={t("chat.send", "Send")}
+              type="button"
+            >
+              <Send size={18} />
+              <span>{t("chat.send", "Send")}</span>
+            </button>
+          )}
+        </div>
       </div>
     </div>
   );

@@ -69,13 +69,19 @@ interface UserRow {
 function ChangeSide({
   label,
   entry,
+  requested,
 }: {
   label: string;
   entry: SharingAclEntry;
+  requested: boolean;
 }) {
   const { t } = useTranslation();
   return (
-    <div className={styles.side}>
+    <div
+      className={`${styles.side} ${
+        requested ? styles.sideRequested : styles.sideCurrent
+      }`}
+    >
       <Text type="secondary" className={styles.sideLabel}>
         {label}
       </Text>
@@ -236,6 +242,7 @@ export default function ApprovalQueue() {
     <div className={styles.panel}>
       <div className={styles.panelToolbar}>
         <Segmented
+          size="small"
           value={status}
           onChange={(value) => setStatus(value as SharingChangeStatus)}
           options={STATUS_ORDER.map((option) => ({
@@ -324,11 +331,13 @@ export default function ApprovalQueue() {
                     <ChangeSide
                       label={t("sharing.queue.before")}
                       entry={change.before}
+                      requested={false}
                     />
                     <ArrowRight size={16} className={styles.diffArrow} />
                     <ChangeSide
                       label={t("sharing.queue.after")}
                       entry={change.after}
+                      requested
                     />
                   </div>
 

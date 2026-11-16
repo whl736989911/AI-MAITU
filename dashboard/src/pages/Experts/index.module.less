@@ -1,21 +1,20 @@
 /* ================================================================
    Experts page — redesigned as Agents Management Centre.
-   Three-tab layout: 我的专家 (agent grid) + 内置专家 (template grid)
-   + 专家市场 (SkillHub skillset grid).
+   Resource list / table + built-in templates + expert market.
    ================================================================ */
 
 /* ── Card Grid ─────────────────────────────────────────────────── */
 
 .cardGrid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
-  row-gap: 16px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr));
   column-gap: 12px;
-  padding: 20px 0 40px;
+  row-gap: 6px;
+  padding: 4px 0 6px;
 
   @media (max-width: 640px) {
     grid-template-columns: 1fr;
-    gap: 12px;
+    row-gap: 6px;
   }
 }
 
@@ -27,7 +26,7 @@
   flex-direction: column;
   overflow: hidden;
   min-width: 320px;
-  min-height: 196px;
+  min-height: 0;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
   transition:
     box-shadow 0.2s,
@@ -52,7 +51,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 14px 16px 10px;
+  padding: 6px 16px 4px;
 }
 
 .agentCard2Icon {
@@ -208,7 +207,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 5px;
+  margin-top: 3px;
 }
 
 .agentCard2State {
@@ -246,7 +245,7 @@
   color: var(--fn-text-secondary);
   line-height: 1.55;
   margin: 0 16px 2px;
-  min-height: 2.4em;
+  min-height: 0;
   display: -webkit-box;
   -webkit-line-clamp: 2;
   -webkit-box-orient: vertical;
@@ -256,11 +255,11 @@
 .agentCard2Footer {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
-  padding: 10px 16px 14px;
+  padding: 4px 16px 6px;
   margin-top: auto;
 }
-
 .agentCard2EditBtn {
   display: inline-flex;
   align-items: center;
@@ -638,20 +637,18 @@
 
 .expertTemplateCard {
   background: var(--fn-bg-primary);
-  border: 2px solid var(--fn-card-border-normal);
-  border-radius: var(--fn-radius-lg);
-  padding: 20px;
+  min-width: 0;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 8px;
+  padding: 12px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  min-height: 168px;
+  gap: 8px;
   cursor: pointer;
   position: relative;
   transition:
-    border-color 0.2s,
-    background 0.2s,
-    transform 0.2s,
-    box-shadow 0.2s;
+    border-color 0.15s,
+    background 0.15s;
 
   /* The cards are ``<button>``s (keyboard-operable); peel off the browser's
      control styling so they lay out exactly like the ``<div>`` ones that share
@@ -663,26 +660,15 @@
     text-align: start;
   }
 
-  &:hover {
-    border-color: var(--expert-accent, var(--fn-color-brand));
-    background: color-mix(
-      in srgb,
-      var(--expert-accent, var(--fn-color-brand)) 4%,
-      var(--fn-bg-primary)
-    );
-    transform: translateY(-2px);
-    box-shadow: var(--fn-shadow-brand-lg, 0 8px 24px rgba(0, 0, 0, 0.12));
+  &:hover,
+  &:focus-within {
+    border-color: var(--fn-color-brand);
+    background: var(--fn-bg-secondary);
   }
 
-  &:active {
-    transform: translateY(0);
-    transition-duration: 0.05s;
-  }
-
-  @media (max-width: 640px) {
-    &:hover {
-      transform: none;
-    }
+  &:focus-visible {
+    outline: 2px solid var(--fn-color-brand);
+    outline-offset: 2px;
   }
 }
 
@@ -692,6 +678,9 @@
   justify-content: space-between;
   gap: 8px;
   margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--fn-border-secondary);
+  flex-wrap: wrap;
 }
 
 .expertInstalledLabel {
@@ -706,13 +695,37 @@
 }
 
 .expertCardHint {
-  font-size: 12px;
-  color: var(--fn-text-quaternary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   min-width: 0;
-  transition: color 0.2s;
+  padding: 3px 7px;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 5px;
+  background: var(--fn-bg-secondary);
+  color: var(--fn-color-brand);
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  cursor: pointer;
 
   .expertTemplateCard:hover & {
     color: var(--expert-accent, var(--fn-color-brand));
+  }
+}
+
+.catalogTitleButton {
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  text-align: start;
+  cursor: pointer;
+
+  &:focus-visible {
+    outline: 2px solid var(--fn-color-brand);
+    outline-offset: 2px;
   }
 }
 
@@ -724,8 +737,8 @@
 
 .marketSceneTabsWrap {
   width: 100%;
-  margin-top: 16px;
-  margin-bottom: 16px;
+  margin-top: 12px;
+  margin-bottom: 12px;
   overflow-x: auto;
   -webkit-overflow-scrolling: touch;
   padding-bottom: 2px;
@@ -787,6 +800,8 @@
   gap: 10px;
   margin-top: auto;
   min-width: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--fn-border-secondary);
 
   @media (max-width: 640px) {
     align-items: stretch;
@@ -1066,15 +1081,16 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 4px 0 0;
+  padding: 10px 0;
   gap: 12px;
   flex-wrap: wrap;
+  border-bottom: 1px solid var(--fn-border-primary);
 }
 
 .gridToolbarRight {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   flex-wrap: wrap;
 }
 
@@ -1870,10 +1886,9 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  flex-wrap: nowrap;
-  white-space: nowrap;
+  flex-wrap: wrap;
+  white-space: normal;
 }
-
 .tableActionBtn {
   display: inline-flex;
   align-items: center;
@@ -2203,4 +2218,45 @@
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+
+.resourceWorkspace {
+  margin: 0;
+  padding: 16px;
+  border: 1px solid var(--fn-border-primary);
+  border-radius: 10px;
+  background: var(--fn-bg-primary);
+}
+
+.resourceWorkspaceHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+
+  h2 {
+    margin: 8px 0 4px;
+    color: var(--fn-text-primary);
+    font-size: 18px;
+  }
+
+  p,
+  > span {
+    color: var(--fn-text-tertiary);
+    font-size: 12px;
+  }
+
+  p {
+    margin: 0;
+  }
+}
+
+@media (max-width: 767px) {
+  .resourceWorkspace {
+    padding: 14px;
+  }
+  .resourceWorkspaceHeader {
+    flex-direction: column;
+  }
 }

@@ -46,7 +46,7 @@ describe("effective permission profile precedence", () => {
   });
 });
 
-describe("personalization module grants", () => {
+describe("resource configuration module grants", () => {
   it.each([
     ["skills", "skills"],
     ["subagents", "subagents"],
@@ -54,27 +54,13 @@ describe("personalization module grants", () => {
     ["plugins", "agent_plugins"],
     ["mbti", "mbti"],
     ["memory", "memory"],
-  ])("gates %s independently on %s", (tab, key) => {
-    const user = { role: "user", permissions: [key] };
-    expect(personalizationTabAllowed(user, tab)).toBe(true);
+    ["channels", "channels"],
+  ])("allows the %s panel only with its own module grant", (tab, key) => {
     expect(
-      personalizationTabAllowed({ role: "user", permissions: [] }, tab),
-    ).toBe(false);
-    expect(canAccessPath(user, `/personalization/${tab}`)).toBe(true);
-    expect(
-      canAccessPath(
-        { role: "user", permissions: [] },
-        `/personalization/${tab}`,
-      ),
-    ).toBe(false);
-  });
-
-  it("shows the personalization navigation when any independent tab is granted", () => {
-    expect(
-      navAllowed({ role: "user", permissions: ["memory"] }, "personalization"),
+      personalizationTabAllowed({ role: "user", permissions: [key] }, tab),
     ).toBe(true);
     expect(
-      navAllowed({ role: "user", permissions: [] }, "personalization"),
+      personalizationTabAllowed({ role: "user", permissions: [] }, tab),
     ).toBe(false);
   });
 });

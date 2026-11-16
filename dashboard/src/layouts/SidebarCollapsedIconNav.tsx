@@ -37,17 +37,21 @@ export default function SidebarCollapsedIconNav({
                 alignItems: "center",
                 justifyContent: "center",
                 width: COLLAPSED_WIDTH,
-                height: 40,
+                height: 32,
                 border: "none",
                 background: active
                   ? "var(--fn-sidebar-item-active-bg)"
                   : "transparent",
+                boxSizing: "border-box",
+                borderLeft: active
+                  ? "2px solid var(--fn-color-brand)"
+                  : "2px solid transparent",
                 color: active
                   ? "var(--fn-sidebar-item-active-text)"
                   : "var(--fn-text-tertiary)",
                 cursor: "pointer",
                 transition: "all var(--fn-transition-fast)",
-                marginBottom: 2,
+                marginBottom: 1,
                 position: "relative",
               }}
               onMouseEnter={(e) => {

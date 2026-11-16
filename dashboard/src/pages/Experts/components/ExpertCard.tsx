@@ -1,7 +1,7 @@
 // dashboard/src/pages/Experts/components/ExpertCard.tsx
 import { memo, type CSSProperties, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
-import { CheckCircle } from "lucide-react";
+import { ArrowUpRight, CheckCircle } from "lucide-react";
 import { pickLocale } from "../../../utils/localizedText";
 import { ExpertIcon, resolveExpertAvatarUrl } from "./iconForName";
 import styles from "../index.module.less";
@@ -154,6 +154,7 @@ export const ExpertCard = memo(function ExpertCard({
         <>
           <span className={styles.expertCardHint}>
             {t("experts.createFromTemplate")}
+            <ArrowUpRight size={12} />
           </span>
           {isInstalled && (
             <span className={styles.expertInstalledLabel}>

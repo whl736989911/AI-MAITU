@@ -5,10 +5,74 @@
   justify-content: center;
 }
 
+.resourceRows {
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--fn-border-secondary);
+}
+
+.resourceRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 48px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--fn-border-secondary);
+}
+
+.resourceIdentity {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 12px;
+}
+
+.resourceIcon {
+  display: grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  color: var(--fn-color-brand);
+}
+
+.resourceNameBlock {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+
+.resourceName,
+.resourceHint {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.resourceHint {
+  font-size: 12px;
+}
+
+.effectiveSnapshot {
+  gap: 4px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.snapshotValues {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+}
+
 .panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
 }
 
 .panelIntro {
@@ -36,11 +100,11 @@
 .changeList {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 6px;
 }
 
 .changeCard {
-  border-radius: 8px;
+  border-radius: 0;
 }
 
 .changeHeader {
@@ -58,8 +122,8 @@
 .diffRow {
   display: flex;
   align-items: stretch;
-  gap: 12px;
-  margin-top: 12px;
+  gap: 6px;
+  margin-top: 6px;
   flex-wrap: wrap;
 }
 
@@ -70,7 +134,6 @@
 }
 
 .side {
-  flex: 1 1 200px;
   min-width: 0;
   display: flex;
   flex-direction: column;
@@ -78,6 +141,22 @@
   padding: 8px 10px;
   border-radius: 6px;
   background: var(--fn-bg-secondary, rgba(0, 0, 0, 0.02));
+}
+
+.sideCurrent {
+  border: 1px solid var(--fn-border-primary);
+}
+
+.sideRequested {
+  border: 1px solid
+    var(
+      --fn-color-brand-border,
+      color-mix(in srgb, var(--fn-color-brand) 32%, transparent)
+    );
+  background: var(
+    --fn-color-brand-bg,
+    color-mix(in srgb, var(--fn-color-brand) 7%, transparent)
+  );
 }
 
 .sideLabel {
@@ -95,7 +174,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px 20px;
-  margin-top: 12px;
+  margin-top: 8px;
   font-size: 13px;
 }
 
@@ -123,7 +202,7 @@
   display: flex;
   flex-direction: column;
   gap: 6px;
-  margin-bottom: 16px;
+  margin-bottom: 8px;
 }
 
 .drawerDivider {
@@ -140,16 +219,14 @@
 .visibilityGroup {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .visibilityOption {
   display: flex;
   align-items: flex-start;
   gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--fn-border-secondary, rgba(0, 0, 0, 0.08));
-  border-radius: 6px;
+  padding: 0;
   margin-inline-end: 0;
 }
 

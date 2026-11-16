@@ -1,8 +1,6 @@
 import { Layout } from "antd";
 import { Menu as MenuIcon } from "lucide-react";
 import PwaInstallPrompt from "../components/PwaInstallPrompt";
-import KnowledgeAccessNotifications from "../components/KnowledgeAccessNotifications";
-import CurrentVersionBadge from "../components/CurrentVersionBadge";
 import { useTheme } from "../context/ThemeContext";
 import { useBranding } from "../context/BrandingContext";
 import { typeSize } from "../utils/mobileTypeScale";
@@ -60,8 +58,8 @@ export default function Header({ onToggle, isMobile }: HeaderProps) {
               display: "flex",
               alignItems: "center",
               justifyContent: "center",
-              width: typeSize(34, true),
-              height: typeSize(34, true),
+              width: typeSize(30, true),
+              height: typeSize(30, true),
               border: "none",
               borderRadius: "var(--fn-radius-md)",
               background: "transparent",
@@ -78,25 +76,14 @@ export default function Header({ onToggle, isMobile }: HeaderProps) {
           src={mobileLogoSrc}
           alt={brand.name.en}
           style={{
-            height: 36,
+            height: 28,
             width: "auto",
-            maxWidth: 160,
+            maxWidth: 150,
             objectFit: "contain",
             flexShrink: 0,
             display: "block",
           }}
         />
-        <div
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: 4,
-            minWidth: 0,
-            flexShrink: 1,
-          }}
-        >
-          <CurrentVersionBadge isMobile />
-        </div>
       </div>
 
       <div
@@ -108,7 +95,6 @@ export default function Header({ onToggle, isMobile }: HeaderProps) {
         }}
       >
         <PwaInstallPrompt compact />
-        <KnowledgeAccessNotifications />
       </div>
     </AntHeader>
   );
