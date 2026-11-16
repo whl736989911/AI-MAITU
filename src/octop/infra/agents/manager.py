@@ -1053,6 +1053,7 @@ class AgentManager:
             logger.warning("not deleting unmanaged workspace for agent %s", agent_id)
             workspace_dir = self._paths.agent_workspace(agent_id)
         async with self._lock:
+            self._teams.assert_can_delete_agent(agent_id)
             if not is_team_agent(row):
                 affected_teams = await self._teams.adrop_member(agent_id)
             await asyncio.to_thread(self._quiesce_octop_memory, agent_id)

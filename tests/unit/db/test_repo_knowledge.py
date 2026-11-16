@@ -9,6 +9,7 @@ import pytest
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos.data_sources import DataSourceRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
@@ -258,6 +259,52 @@ def test_delete_folder_only_removes_exact_case_sensitive_prefix(
     assert {row.path for row in removed} == {folder_name, f"{folder_name}/inside.txt"}
     assert repo.get_document(survivor.id) is not None
     assert repo.count_documents(kb.id) == 1
+
+
+def test_prune_empty_source_folders_preserves_files_and_other_sources(
+    repo: KnowledgeRepo, db: SqlitePool, owner_id: int
+) -> None:
+    kb = repo.create_base(owner_user_id=owner_id, name="Source cleanup")
+    sources = DataSourceRepo(db)
+    source_id = sources.create(knowledge_base_id=kb.id, name="Source one", kind="local").id
+    other_source_id = sources.create(knowledge_base_id=kb.id, name="Source two", kind="local").id
+    root = repo.ensure_folder(kb.id, f"{source_id}/policy", data_source_id=source_id)
+    nested = repo.ensure_folder(kb.id, f"{source_id}/policy/nested", data_source_id=source_id)
+    owned = repo.create_document(
+        kb_id=kb.id,
+        filename="old.md",
+        path=f"{source_id}/policy/nested/old.md",
+        content_type="text/markdown",
+        byte_size=3,
+        data_source_id=source_id,
+        source_path="policy/nested/old.md",
+    )
+    unrelated = repo.create_document(
+        kb_id=kb.id,
+        filename="manual.md",
+        path=f"{source_id}/policy/manual.md",
+        content_type="text/markdown",
+        byte_size=3,
+        data_source_id=other_source_id,
+    )
+
+    assert repo.delete_empty_source_folders(source_id, [f"{source_id}/policy"]) == []
+    assert repo.get_document(root.id) is not None
+    assert repo.get_document(nested.id) is not None
+    assert repo.get_document(owned.id) is not None
+
+    repo.delete_document(owned.id)
+    removed_nested = repo.delete_empty_source_folders(source_id, [f"{source_id}/policy"])
+    assert [row.path for row in removed_nested] == [f"{source_id}/policy/nested"]
+    assert repo.get_document(nested.id) is None
+    assert repo.get_document(root.id) is not None
+    assert repo.get_document(unrelated.id) is not None
+
+    repo.delete_document(unrelated.id)
+    removed = repo.delete_empty_source_folders(source_id, [f"{source_id}/policy"])
+    assert [row.path for row in removed] == [f"{source_id}/policy"]
+    assert repo.get_document(root.id) is None
+    assert repo.get_document(nested.id) is None
 
 
 def test_knowledge_document_crud(repo: KnowledgeRepo, owner_id: int) -> None:

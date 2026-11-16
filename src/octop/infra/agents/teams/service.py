@@ -66,7 +66,7 @@ def _normalize_member_ids(raw: Any) -> list[str]:
 
 
 def _manifest_members(data: dict[str, Any]) -> list[str]:
-    return _normalize_member_ids(data.get("members") or data.get("member"))
+    return _normalize_member_ids(data.get("members", data.get("member")))
 
 
 class TeamService:
@@ -123,6 +123,7 @@ class TeamService:
         data = await self._read_manifest(team_agent_id, active)
         data["kind"] = TEAM_KIND
         data["members"] = list(member_ids)
+        data.pop("member", None)
         payload = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
         await active.awrite_text(TEAM_MANIFEST_WORKSPACE, payload, force=True)
         mirror = self._mirror_workspace_for(team_agent_id) if self._mirror_workspace_for else None

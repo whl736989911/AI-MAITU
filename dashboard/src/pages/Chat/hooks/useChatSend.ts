@@ -102,6 +102,7 @@ export function useChatSend({
       attachments?: ChatAttachment[],
       overrides?: ChatSendOverrides,
     ): boolean => {
+      const identityGeneration = chatStore.getAuthIdentityGeneration();
       const agent = overrides?.agentId ?? resolvedAgentId;
       if (!agent) {
         message.warning(t("chat.pickAgent", "请先选择一个 Agent"));
@@ -200,6 +201,8 @@ export function useChatSend({
       navigate(`/chat/${agent}/${PENDING_THREAD_ID}`);
 
       void resolvedId.then((tid) => {
+        if (chatStore.getAuthIdentityGeneration() !== identityGeneration)
+          return;
         if (!tid) {
           chatStore.clearMessages(PENDING_THREAD_ID);
           navigate(`/chat/${agent}`, { replace: true });
@@ -258,6 +261,7 @@ export function useChatSend({
 
   useEffect(() => {
     const consumePending = () => {
+      const identityGeneration = chatStore.getAuthIdentityGeneration();
       const raw = localStorage.getItem("octop.pendingChatMessage");
       if (!raw) return;
       localStorage.removeItem("octop.pendingChatMessage");
@@ -276,18 +280,30 @@ export function useChatSend({
         // Not JSON — treat as plain text (legacy format)
       }
 
-      setTimeout(() => handleSend(textToSend), 500);
+      setTimeout(() => {
+        if (chatStore.getAuthIdentityGeneration() === identityGeneration) {
+          handleSend(textToSend);
+        }
+      }, 500);
 
       // If autoRecord flag is set, start browser recording after sending the message
       if (autoRecord) {
         setTimeout(async () => {
+          if (chatStore.getAuthIdentityGeneration() !== identityGeneration) {
+            return;
+          }
           try {
             const { browserApi } = await import("../../../api/modules/browser");
+            if (chatStore.getAuthIdentityGeneration() !== identityGeneration) {
+              return;
+            }
             const data = await browserApi.startRecording({
               name: activeThreadId
                 ? `chat-${activeThreadId}`
                 : "skill-recording",
             });
+            if (chatStore.getAuthIdentityGeneration() !== identityGeneration)
+              return;
             if (data.ok) {
               // Notify the chat page that recording has started (update UI state)
               if (data.recordingId && onAutoRecordingStarted) {
@@ -297,6 +313,11 @@ export function useChatSend({
               const { generateId } = await import(
                 "../../../utils/messageParser"
               );
+              if (
+                chatStore.getAuthIdentityGeneration() !== identityGeneration
+              ) {
+                return;
+              }
               const pushMsg = {
                 id: generateId(),
                 role: "assistant" as const,
@@ -306,6 +327,11 @@ export function useChatSend({
               };
               // Append directly to chat store
               const { appendPushMessage } = await import("./chatStore");
+              if (
+                chatStore.getAuthIdentityGeneration() !== identityGeneration
+              ) {
+                return;
+              }
               appendPushMessage(pushMsg.content);
             }
           } catch {

@@ -6,8 +6,10 @@ real async tasks or LLM calls are made.
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -634,6 +636,55 @@ async def test_enabling_completed_date_returns_the_persisted_disabled_state(tmp_
         assert returned.last_status == stored.last_status == "ok"
         assert returned.last_run_at == stored.last_run_at == 123
     finally:
+        services.db.close()
+
+
+@pytest.mark.asyncio
+async def test_rescheduling_date_during_delivery_cannot_finish_replacement_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    services = _make_services(tmp_path)
+    aid, uid = _make_agent(services)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def deliver(_command) -> None:
+        entered.set()
+        await release.wait()
+
+    mgr = _make_manager(services)
+    mgr._delivery_service = SimpleNamespace(deliver=deliver)
+    cid = _cron_id()
+    try:
+        await mgr.create(
+            cron_id=cid,
+            agent_id=aid,
+            user_id=uid,
+            trigger="date:2031-01-01T09:00:00",
+            prompt="one-shot",
+        )
+        monkeypatch.setattr("octop.infra.users.permissions.license_managed_install", lambda: False)
+        job = mgr._make_job(mgr.get(cid))
+        running = asyncio.create_task(job.run())
+        await entered.wait()
+
+        old_ts = mgr.get(cid).last_run_at
+        assert old_ts is not None
+        await mgr.update(cid, trigger="date:2032-01-01T09:00:00", enabled=1)
+        await mgr.update(cid, trigger="date:2031-01-01T09:00:00", enabled=1)
+        assert services.repos.cron_repo.claim_date_run(cid, ts=old_ts)
+        release.set()
+        await running
+
+        row = mgr.get(cid)
+        assert row.trigger == "date:2031-01-01T09:00:00"
+        assert row.enabled == 1
+        assert row.last_run_at == old_ts
+        assert row.last_status == "running"
+        assert row.last_error is None
+    finally:
+        release.set()
         services.db.close()
 
 

@@ -4,21 +4,25 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
+import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from sqlite3 import IntegrityError as SqliteIntegrityError
 from typing import Any, cast
+from uuid import uuid4
 
 from psycopg import IntegrityError as PsycopgIntegrityError
 
 from octop.infra.agents.avatar import bind_workspace_avatar_icon_url
 from octop.infra.agents.experts.catalog import (
     MANIFEST_FILENAME,
+    collect_expert_seed_files,
     parse_task_examples,
     read_workspace_manifest_task_examples,
     read_workspace_manifest_welcome,
-    seed_expert_directory,
 )
 from octop.infra.agents.experts.publish import (
     PublishedExpertSnapshotMeta,
@@ -55,8 +59,75 @@ class PublishedExpertInstallOptions:
     composer_report: Any = None
 
 
+_PUBLISHED_REFRESH_COMMIT_LOCK = threading.Lock()
+
+
+def _commit_refreshed_snapshot(
+    *,
+    staging_dir: Path,
+    snapshot_dir: Path,
+    repo: Any,
+    expert_id: str,
+    icon_name: str,
+    color: str,
+    name: str,
+    description: str,
+) -> PublishedExpertRow:
+    """Swap a staged snapshot and its repo metadata as one serialized commit."""
+    with _PUBLISHED_REFRESH_COMMIT_LOCK:
+        if repo.get(expert_id) is None:
+            raise OctopError.localized(ErrorCode.NOT_FOUND)
+        backup_dir = snapshot_dir.with_name(f".{snapshot_dir.name}.previous-{uuid4().hex}")
+        moved_existing = snapshot_dir.exists()
+        if moved_existing:
+            os.replace(snapshot_dir, backup_dir)
+        try:
+            os.replace(staging_dir, snapshot_dir)
+        except BaseException:
+            if moved_existing and not snapshot_dir.exists():
+                os.replace(backup_dir, snapshot_dir)
+            raise
+        try:
+            updated = repo.update_snapshot_meta(
+                expert_id,
+                icon_name=icon_name,
+                color=color,
+                name=name,
+                description=description,
+            )
+        except BaseException:
+            if moved_existing:
+                failed_dir = snapshot_dir.with_name(f".{snapshot_dir.name}.failed-{uuid4().hex}")
+                os.replace(snapshot_dir, failed_dir)
+                os.replace(backup_dir, snapshot_dir)
+                shutil.rmtree(failed_dir, ignore_errors=True)
+            else:
+                shutil.rmtree(snapshot_dir, ignore_errors=True)
+            raise
+        if moved_existing:
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        return cast(PublishedExpertRow, updated)
+
+
+def _remove_published_snapshot(*, repo: Any, expert_id: str, snapshot_dir: Path) -> None:
+    with _PUBLISHED_REFRESH_COMMIT_LOCK:
+        repo.delete(expert_id)
+        shutil.rmtree(snapshot_dir, ignore_errors=True)
+
+
 def _snapshot_dir(services: Any, expert_id: str) -> Path:
     return Path(services.paths.published_experts_dir) / expert_id
+
+
+def _read_published_seed(
+    *, services: Any, expert_id: str
+) -> tuple[PublishedExpertRow, list[tuple[str, bytes]]]:
+    with _PUBLISHED_REFRESH_COMMIT_LOCK:
+        row = require_published_expert(services, expert_id)
+        snapshot_dir = _snapshot_dir(services, row.id)
+        if not snapshot_dir.is_dir():
+            raise OctopError.localized(ErrorCode.NOT_FOUND)
+        return row, collect_expert_seed_files(expert_dir=snapshot_dir)
 
 
 def _read_snapshot_manifest(snapshot_dir: Path) -> dict[str, Any]:
@@ -277,39 +348,56 @@ async def refresh_published_expert(
         resolved_task_examples = (
             workspace_examples if workspace_examples is not None else existing_task_examples
         )
-    await export_agent_workspace_to_dir(
-        workspace=workspace,
-        dest=snapshot_dir,
-        metadata=_snapshot_meta(
-            source,
-            name=resolved_name,
-            description=resolved_description,
-            color=color or None,
-            welcome_message_zh=resolved_welcome_zh,
-            welcome_message_en=resolved_welcome_en,
-            quick_prompts=resolved_quick_prompts,
-            task_examples=resolved_task_examples,
-        ),
-        manifest_id=row.slug,
+    await asyncio.to_thread(snapshot_dir.parent.mkdir, parents=True, exist_ok=True)
+    staging_dir = Path(
+        await asyncio.to_thread(
+            tempfile.mkdtemp,
+            prefix=f".{snapshot_dir.name}.refresh-",
+            dir=snapshot_dir.parent,
+        )
     )
-    return cast(
-        PublishedExpertRow,
-        services.published_expert_repo.update_snapshot_meta(
-            row.id,
+    await asyncio.to_thread(staging_dir.rmdir)
+    try:
+        await export_agent_workspace_to_dir(
+            workspace=workspace,
+            dest=staging_dir,
+            metadata=_snapshot_meta(
+                source,
+                name=resolved_name,
+                description=resolved_description,
+                color=color or None,
+                welcome_message_zh=resolved_welcome_zh,
+                welcome_message_en=resolved_welcome_en,
+                quick_prompts=resolved_quick_prompts,
+                task_examples=resolved_task_examples,
+            ),
+            manifest_id=row.slug,
+        )
+        return await asyncio.to_thread(
+            _commit_refreshed_snapshot,
+            staging_dir=staging_dir,
+            snapshot_dir=snapshot_dir,
+            repo=services.published_expert_repo,
+            expert_id=row.id,
             icon_name=icon_name,
             color=color,
             name=resolved_name,
             description=resolved_description,
-        ),
-    )
+        )
+    finally:
+        await asyncio.to_thread(shutil.rmtree, staging_dir, ignore_errors=True)
 
 
 async def unpublish_expert(*, services: Any, user: User, expert_id: str) -> None:
     """Remove a published expert's listing and snapshot without deleting installed forks."""
     row = require_published_expert(services, expert_id)
     assert_can_mutate_published(row, user)
-    services.published_expert_repo.delete(row.id)
-    await asyncio.to_thread(shutil.rmtree, _snapshot_dir(services, row.id), ignore_errors=True)
+    await asyncio.to_thread(
+        _remove_published_snapshot,
+        repo=services.published_expert_repo,
+        expert_id=row.id,
+        snapshot_dir=_snapshot_dir(services, row.id),
+    )
 
 
 async def install_published_expert(
@@ -326,10 +414,6 @@ async def install_published_expert(
     snapshot does not copy them from the publisher's source agent. The installer
     may pass their own lists on this request.
     """
-    row = require_published_expert(services, expert_id)
-    snapshot_dir = _snapshot_dir(services, row.id)
-    if not snapshot_dir.is_dir():
-        raise OctopError(ErrorCode.NOT_FOUND, f"published expert {expert_id!r} snapshot not found")
 
     package_ids = (
         registry.validate_skill_package_ids(options.skill_package_ids)
@@ -338,6 +422,10 @@ async def install_published_expert(
     )
     if package_ids:
         registry.assert_backend_supports_skill_packages(options.backend)
+
+    row, seed_files = await asyncio.to_thread(
+        _read_published_seed, services=services, expert_id=expert_id
+    )
 
     config_extra: dict[str, Any] = {}
     if options.conversation_mode:
@@ -348,7 +436,8 @@ async def install_published_expert(
         config_extra["backend"] = options.backend
 
     async def seed_snapshot(created_row: Any, workspace: Any) -> None:
-        await seed_expert_directory(expert_dir=snapshot_dir, workspace=workspace)
+        if seed_files:
+            await workspace.aupload_many(seed_files)
         await bind_workspace_avatar_icon_url(registry, created_row.agent_id, workspace)
         if options.workspace_patch is not None:
             from octop.infra.agents.experts.composer_files import (

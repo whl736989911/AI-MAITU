@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import errno
 from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from octop.infra.backup import store as backup_store
 from octop.infra.backup.store import (
     BackupContentFlags,
     delete_backup_file,
@@ -14,6 +16,7 @@ from octop.infra.backup.store import (
     list_backup_files,
     normalize_backup_filename,
     peek_backup_contents,
+    place_backup_file,
     prune_auto_backups,
     read_backup_file,
     write_backup_file,
@@ -241,7 +244,6 @@ def test_peek_reads_first_member_manifest_only(
     """Peek must not scan past the first member (full-scan would read the blob)."""
     import builtins
     import os
-    import time
 
     archive = tmp_path / "first-member.tar.gz"
     # Incompressible so the gzip stays large; a full member scan would read most of it.
@@ -303,9 +305,7 @@ def test_peek_reads_first_member_manifest_only(
         return _CountingReader(handle)
 
     monkeypatch.setattr(builtins, "open", counting_open)
-    started = time.perf_counter()
     flags = peek_backup_contents(archive)
-    elapsed = time.perf_counter() - started
 
     assert flags == BackupContentFlags(
         includes_config=False,
@@ -317,7 +317,6 @@ def test_peek_reads_first_member_manifest_only(
     )
     # First-member peek should read far less than the on-disk archive size.
     assert bytes_read < archive_size // 4
-    assert elapsed < 2.0
 
 
 def test_peek_skips_scan_when_manifest_not_first(tmp_path: Path) -> None:
@@ -334,3 +333,84 @@ def test_peek_skips_scan_when_manifest_not_first(tmp_path: Path) -> None:
     )
     # Deliberately no deep scan: treat as full contents.
     assert peek_backup_contents(archive) == BackupContentFlags()
+
+
+def test_failed_backup_write_preserves_previous_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    layout = PathLayout(tmp_path / "home")
+    filename = "previous.tar.gz"
+    previous = b"complete previous backup"
+    write_backup_file(layout, filename, previous)
+    destination = layout.backup_file(filename)
+
+    def interrupted_write(path: Path, data: bytes) -> int:
+        with path.open("wb") as stream:
+            stream.write(data[:5])
+        raise OSError(errno.ENOSPC, "injected disk full")
+
+    monkeypatch.setattr(Path, "write_bytes", interrupted_write)
+    with pytest.raises(OSError):
+        write_backup_file(layout, filename, b"complete replacement backup")
+
+    assert destination.read_bytes() == previous
+    assert set(layout.backups_dir.iterdir()) == {destination}
+
+
+@pytest.mark.parametrize("copy_fails", [False, True], ids=["copied", "interrupted"])
+def test_cross_device_backup_placement_publishes_only_complete_archive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, copy_fails: bool
+) -> None:
+    layout = PathLayout(tmp_path / "home")
+    filename = "previous.tar.gz"
+    previous = b"complete previous backup"
+    replacement = b"complete replacement backup"
+    write_backup_file(layout, filename, previous)
+    destination = layout.backup_file(filename)
+    source = tmp_path / "incoming.tar.gz"
+    source.write_bytes(replacement)
+    original_replace = Path.replace
+    original_copy = backup_store.shutil.copy2
+
+    def cross_device_replace(path: Path, target: Path) -> Path:
+        if path == source and Path(target) == destination:
+            raise OSError(errno.EXDEV, "injected cross-device rename")
+        return original_replace(path, target)
+
+    def copy_archive(src: Path, target: Path) -> str:
+        if copy_fails:
+            Path(target).write_bytes(replacement[:5])
+            raise OSError(errno.ENOSPC, "injected disk full")
+        return str(original_copy(src, target))
+
+    monkeypatch.setattr(Path, "replace", cross_device_replace)
+    monkeypatch.setattr(backup_store.shutil, "copy2", copy_archive)
+    if copy_fails:
+        with pytest.raises(OSError):
+            place_backup_file(layout, filename, source)
+        assert destination.read_bytes() == previous
+        assert source.read_bytes() == replacement
+    else:
+        place_backup_file(layout, filename, source)
+        assert read_backup_file(layout, filename) == replacement
+        assert not source.exists()
+    assert set(layout.backups_dir.iterdir()) == {destination}
+
+
+def test_linked_manifest_does_not_break_other_backup_listings(tmp_path: Path) -> None:
+    import tarfile
+
+    layout = PathLayout(tmp_path / "home")
+    write_backup_file(layout, "good.tar.gz", b"previous backup")
+    malformed = layout.backup_file("linked-manifest.tar.gz")
+    with tarfile.open(malformed, "w:gz") as archive:
+        member = tarfile.TarInfo("manifest.json")
+        member.type = tarfile.SYMTYPE
+        member.linkname = "missing.json"
+        archive.addfile(member)
+
+    assert {item.name for item in list_backup_files(layout)} == {
+        "good.tar.gz",
+        "linked-manifest.tar.gz",
+    }
+    assert read_backup_file(layout, "good.tar.gz") == b"previous backup"

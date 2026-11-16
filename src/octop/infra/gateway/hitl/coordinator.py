@@ -463,6 +463,8 @@ class HitlChannelCoordinator:
             )
             if record is None:
                 return MessageEvent.text(tr("hitl.invalid_pending_id", lang, pending_id=arg))
+            if record.user_id != ctx.user_id:
+                return MessageEvent.text(tr("hitl.not_owner", lang))
             return record
 
         record = self._store.resolve_for_session(

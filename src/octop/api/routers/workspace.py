@@ -18,6 +18,7 @@ from octop.api.common.agent import AgentCapability, user_owns_agent
 from octop.api.common.agent_workspace import resolve_agent_workspace_dir
 from octop.api.common.content_disposition import content_disposition
 from octop.api.common.memory_client import feature_memory_reason
+from octop.api.common.upload_limit import read_upload_capped
 from octop.api.common.workspace import (
     coerce_read_content,
     file_info_to_dict,
@@ -666,8 +667,15 @@ async def write_doc(
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
     """Convert Markdown *content* back to the document format and overwrite *path*."""
-    ws = await require_running_workspace(agent_id, user=user, as_user=as_user, server=server)
+    ws = await require_running_workspace(
+        agent_id,
+        user=user,
+        as_user=as_user,
+        server=server,
+        capability=AgentCapability.PERSONA_FILES,
+    )
     rel = _assert_workspace_mutable(path, workspace_dir=ws.workspace_dir)
+    await _protect_published_memory(ws, agent_id, server, rel, user=user)
     converter = _ensure_editable_doc(path)
     try:
         data = converter.from_markdown(body.content)
@@ -833,10 +841,11 @@ async def import_workspace_archive(
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
 ) -> dict[str, Any]:
-    """Import a zip archive into the workspace (merge or replace)."""
-    raw = await file.read()
-    if len(raw) > _MAX_WORKSPACE_ARCHIVE_BYTES:
-        raise OctopError(ErrorCode.SLASH_BAD_ARGS, "workspace archive too large (max 200MB)")
+    """Import a zip archive into the workspace (merge or replace).
+
+    Uploaded archives are limited to 200 MiB; larger archives return HTTP 413.
+    """
+    raw = await read_upload_capped(file, max_bytes=_MAX_WORKSPACE_ARCHIVE_BYTES)
     if not raw:
         raise OctopError(ErrorCode.SLASH_BAD_ARGS, "empty archive")
 

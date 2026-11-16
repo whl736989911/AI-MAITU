@@ -13,6 +13,7 @@ from octop_harness.backends.utils import materialize_storage_path
 from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.infra.agents.builtin_skills import OCTOP_BUILTIN_SKILLS_ROOT
+from octop.infra.errors import ErrorCode, OctopError
 
 WorkspaceImportMode = Literal["merge", "replace"]
 
@@ -168,14 +169,18 @@ def _read_entry_bytes(workspace: BackendWorkspace, rel: str) -> bytes | None:
         except ValueError:
             return None
         if local.is_file():
-            blob = workspace.download_bytes(str(local))
-            if blob is not None:
-                return blob
-    if local_mount is None:
-        # Archive entries are literal workspace paths, not logical system names.
-        materialized = workspace.materialize_local(f"./{rel}", map_system_paths=False)
-        return materialized.read_bytes() if materialized is not None else None
-    return workspace.download_bytes(rel)
+            return workspace.download_bytes(str(local))
+        return None
+    # Archive entries are literal workspace paths, not logical system names.
+    materialized = workspace.materialize_local(f"./{rel}", map_system_paths=False)
+    return materialized.read_bytes() if materialized is not None else None
+
+
+def _validate_import_targets(workspace: BackendWorkspace, pairs: list[tuple[str, bytes]]) -> None:
+    root = workspace.workspace_dir.resolve()
+    for rel, _blob in pairs:
+        if not (root / rel).resolve().is_relative_to(root):
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
 
 
 async def export_workspace_zip(workspace: BackendWorkspace) -> bytes:
@@ -201,6 +206,14 @@ async def import_workspace_zip(
     """Import a zip archive into the workspace."""
     entries = _iter_zip_entries(data)
     warnings: list[str] = []
+    # Validate every writable destination before a replacement removes files.
+    # Names owned by the platform are not written and must not affect validation.
+    pairs = [
+        (f"./{rel}", blob)
+        for rel, blob in entries
+        if rel != OCTOP_BUILTIN_SKILLS_ROOT and not rel.startswith(f"{OCTOP_BUILTIN_SKILLS_ROOT}/")
+    ]
+    await asyncio.to_thread(_validate_import_targets, workspace, pairs)
 
     if mode == "replace" and local_workspace_dir is not None:
         _clear_local_workspace(local_workspace_dir)
@@ -209,12 +222,6 @@ async def import_workspace_zip(
             "replace mode cleared only the local harness workspace; remote-only files may remain"
         )
 
-    # BackendWorkspace strips path boundaries; "./" keeps filename-leading spaces internal.
-    pairs = [
-        (f"./{rel}", blob)
-        for rel, blob in entries
-        if rel != OCTOP_BUILTIN_SKILLS_ROOT and not rel.startswith(f"{OCTOP_BUILTIN_SKILLS_ROOT}/")
-    ]
     skipped = len(entries) - len(pairs)
     if skipped:
         warnings.append(

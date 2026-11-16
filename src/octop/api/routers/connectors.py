@@ -1321,7 +1321,12 @@ async def oauth_callback(
     ``/connectors/oauth/start`` minted, and that route is gated — so a caller the
     key refuses can never produce a valid state, and the entry point is the gate.
     """
+    repo = server.services.repos.connector_repo
     if error:
+        if state:
+            row = repo.consume_oauth_state(state)
+            if row is not None:
+                delete_oauth_ctx(server.services.settings_repo, row.state_id)
         return _oauth_callback_html(
             request,
             "callback_auth_failed",
@@ -1335,7 +1340,6 @@ async def oauth_callback(
             status_code=400,
         )
 
-    repo = server.services.repos.connector_repo
     row = repo.consume_oauth_state(state)
     if row is None:
         return _oauth_callback_html(
@@ -1365,6 +1369,7 @@ async def oauth_callback(
             tokens["oauth_token_endpoint"] = ctx["token_endpoint"]
         delete_oauth_ctx(server.services.settings_repo, row.state_id)
     except Exception as exc:
+        delete_oauth_ctx(server.services.settings_repo, row.state_id)
         logger.exception("oauth callback failed for %s", row.kind)
         return _oauth_callback_html(
             request,

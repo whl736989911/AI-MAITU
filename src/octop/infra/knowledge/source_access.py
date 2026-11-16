@@ -290,15 +290,24 @@ class KnowledgeSourceService:
             evidence_blocks: list[dict[str, Any]] = []
             budget = _MAX_TEXT
             truncated = False
-            for block in blocks:
+            next_position: int | None = None
+            for index, block in enumerate(blocks):
                 if budget <= 0:
                     truncated = True
+                    next_position = start + index
+                    break
+                if evidence_blocks and len(block.text) > budget:
+                    truncated = True
+                    next_position = start + index
                     break
                 text = block.text[:budget]
                 locator = dict(block.locator)
                 if len(text) != len(block.text):
                     locator["excerpt_characters"] = len(text)
                     truncated = True
+                    next_position = (
+                        start + index + 1 if total is None or start + index < total else None
+                    )
                 if block.heading:
                     locator["heading"] = block.heading
                 evidence_blocks.append(
@@ -310,10 +319,11 @@ class KnowledgeSourceService:
                 )
                 budget -= len(text)
             text = "\n\n".join(str(block["text"]) for block in evidence_blocks)
+            actual_stop = start + len(evidence_blocks) - 1
             locator = {
                 "kind": "image" if images else ("page" if suffix == ".pdf" else "range"),
                 "start": start,
-                "end": stop,
+                "end": stop if images else actual_stop,
                 "positions": (
                     [image["locator"] for image in images]
                     if images
@@ -339,7 +349,11 @@ class KnowledgeSourceService:
                 "complete": bool(
                     total is not None and start == 1 and stop >= total and not truncated
                 ),
-                "next_start": stop + 1 if total is None or stop < total else None,
+                "next_start": (
+                    next_position
+                    if next_position is not None
+                    else (stop + 1 if total is None or stop < total else None)
+                ),
                 "verified": bool(text.strip()),
             }
         from octop.infra.knowledge.collections import KnowledgeCollectionService

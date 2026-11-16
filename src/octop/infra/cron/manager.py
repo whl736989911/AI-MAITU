@@ -68,12 +68,15 @@ class CronManager:
         self._lock = asyncio.Lock()
         # Process-level jobs (e.g. auto-backup) that must survive reload_from_db.
         self._system_job_ids: set[str] = set()
+        self._job_generations: dict[str, int] = {}
 
     def replace_repos(self, repos: RepoBundle) -> None:
         """Point cron persistence at a rebound control-plane pool."""
         self._repos = repos
         self._capability_policy.replace_repos(repos)
         self._delivery_service.replace_repos(repos)
+        for cron_id in tuple(self._job_generations):
+            self._bump_job_generation(cron_id)
 
     async def boot(self) -> None:
         # Direct-entry license gate: cron scheduling is business execution.
@@ -94,6 +97,8 @@ class CronManager:
         :meth:`schedule_system_job` are left in place.
         """
         async with self._lock:
+            for cron_id in tuple(self._job_generations):
+                self._bump_job_generation(cron_id)
             for job in list(self._scheduler.get_jobs()):
                 job_id = getattr(job, "id", None)
                 if job_id is None or job_id in self._system_job_ids:
@@ -106,6 +111,8 @@ class CronManager:
 
     async def shutdown(self) -> None:
         if self._scheduler.running:
+            for cron_id in tuple(self._job_generations):
+                self._bump_job_generation(cron_id)
             self._scheduler.shutdown(wait=False)
             logger.info("CronManager shut down")
 
@@ -213,10 +220,15 @@ class CronManager:
                 repo_kwargs["mcp_servers"] = (
                     list(mcp_servers) if isinstance(mcp_servers, list) else []
                 )
+            trigger_changed = trigger is not None and trigger != existing.trigger
             repo_kwargs["reset_run_state"] = (
-                trigger is not None and trigger != existing.trigger and trigger.startswith("date:")
+                trigger is not None
+                and trigger_changed
+                and (trigger.startswith("date:") or existing.trigger.startswith("date:"))
             )
             self._repos.cron_repo.update(cron_id, **repo_kwargs)
+            if trigger_changed:
+                self._bump_job_generation(cron_id)
             row = self._repos.cron_repo.get(cron_id)
             if row is None:
                 raise OctopError(ErrorCode.NOT_FOUND, f"cron job {cron_id!r} not found")
@@ -240,6 +252,7 @@ class CronManager:
 
     async def delete(self, cron_id: str) -> None:
         async with self._lock:
+            self._bump_job_generation(cron_id)
             self._unschedule(cron_id)
             self._repos.cron_repo.delete(cron_id)
             self._repos.audit_repo.write(actor=ACTOR_SYSTEM, action="cron.delete", target=cron_id)
@@ -260,12 +273,14 @@ class CronManager:
         logger.info("CronJob %s triggered manually", cron_id)
 
     def _make_job(self, row: Any) -> CronJob:
+        generation = self._job_generations.setdefault(row.cron_id, 0)
         return CronJob.from_row(
             row,
             delivery_service=self._delivery_service,
             cron_repo=self._repos.cron_repo,
             audit_repo=self._repos.audit_repo,
             user_policy=self._capability_policy,
+            is_current=lambda: self._job_generations.get(row.cron_id, 0) == generation,
         )
 
     def _schedule(self, row: Any) -> None:
@@ -293,6 +308,7 @@ class CronManager:
                 row.trigger,
             )
             return
+        self._bump_job_generation(row.cron_id)
         job = self._make_job(row)
         if self._scheduler.get_job(row.cron_id):
             self._scheduler.remove_job(row.cron_id)
@@ -336,6 +352,9 @@ class CronManager:
             channel_type=channel_type,
             channel_chat_type=chat_type,
         )
+
+    def _bump_job_generation(self, cron_id: str) -> None:
+        self._job_generations[cron_id] = self._job_generations.get(cron_id, 0) + 1
 
     def schedule_system_job(self, job_id: str, *, trigger: str, func: Any) -> None:
         """Register a process-level job that is not stored in the cron DB."""

@@ -14,9 +14,11 @@ import json
 import os
 import shutil
 import sqlite3
+from contextlib import contextmanager
 from dataclasses import asdict, replace
 from pathlib import Path
-from threading import Event, Thread
+from queue import Queue
+from threading import Event, Thread, current_thread
 from types import SimpleNamespace
 
 import pytest
@@ -605,6 +607,58 @@ def _local_source(env: SimpleNamespace, owner_id: int, root: Path, *, name: str 
     return base, source
 
 
+@pytest.mark.parametrize("read_only", [True, False], ids=["read-only", "uploads-enabled"])
+@pytest.mark.parametrize("operation", ["read-editable", "edit", "replace"])
+def test_source_original_cannot_be_shadowed_by_platform_content_operations(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    read_only: bool,
+    operation: str,
+) -> None:
+    root = _local_root(tmp_path)
+    base = _base(env, people.owner)
+    source = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Source originals",
+        kind="local",
+        folder=FolderSettings(root_path=str(root), read_only=read_only),
+    )
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    document = next(
+        row for row in env.services.knowledge_repo.list_source_files(source.id) if not row.is_dir
+    )
+    original = (root / "policy.md").read_bytes()
+    platform_copy = document_path(base.id, document.id, document.filename)
+    assert not platform_copy.exists()
+
+    with pytest.raises(OctopError) as raised:
+        if operation == "read-editable":
+            env.knowledge.read_text_document(base.id, document.id, actor_user_id=people.owner)
+        elif operation == "edit":
+            env.knowledge.update_text_document(
+                base.id, document.id, actor_user_id=people.owner, content="shadow content"
+            )
+        else:
+            env.knowledge.replace_document_content(
+                base.id,
+                document.id,
+                actor_user_id=people.owner,
+                path=document.path,
+                content_type="text/markdown",
+                content=b"shadow content",
+            )
+    assert raised.value.code == ErrorCode.FORBIDDEN
+    assert env.services.knowledge_repo.get_document(document.id) == document
+    assert (root / "policy.md").read_bytes() == original
+    assert not platform_copy.exists()
+    readable = KnowledgeSourceService(env.services).read_document(
+        base.id, document.id, actor_user_id=people.owner
+    )
+    assert readable["text"] == original.decode()
+
+
 def test_versioned_original_uses_verified_stable_bytes_for_local_source(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
 ) -> None:
@@ -741,6 +795,78 @@ def test_test_connection_reports_the_source_and_audits_it(
     audits = env.services.audit_repo.query(action="knowledge.source.test")
     assert [entry.target for entry in audits] == [source.id]
     assert audits[0].actor == "owner"
+
+
+def test_connection_verdict_cannot_overwrite_a_concurrent_source_update(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    old_root = _local_root(tmp_path / "old")
+    new_root = _local_root(tmp_path / "new")
+    _base_row, source = _local_source(env, people.owner, old_root)
+    connection_started = Event()
+    finish_connection = Event()
+    update_progress: Queue[None] = Queue()
+    errors: list[BaseException] = []
+    original_lock = data_sources_module._source_lock
+
+    @contextmanager
+    def observed_lock(source_id):
+        lock = original_lock(source_id)
+        acquired = lock.acquire(blocking=False)
+        if not acquired:
+            if current_thread().name == "source-update":
+                update_progress.put(None)
+            lock.acquire()
+        try:
+            yield
+        finally:
+            lock.release()
+
+    class BlockingConnector:
+        def test(self) -> str:
+            connection_started.set()
+            if not finish_connection.wait(5):
+                raise TimeoutError("connection test was not released")
+            return "old endpoint reachable"
+
+    monkeypatch.setattr(env.sources, "connector", lambda _source: BlockingConnector())
+    monkeypatch.setattr(data_sources_module, "_source_lock", observed_lock)
+
+    def test_source() -> None:
+        try:
+            env.sources.test_connection(source.id, actor_user_id=people.owner)
+        except BaseException as exc:
+            errors.append(exc)
+
+    def update_source() -> None:
+        try:
+            env.sources.update_source(
+                source.id,
+                actor_user_id=people.owner,
+                folder=FolderSettings(root_path=str(new_root)),
+            )
+        except BaseException as exc:
+            errors.append(exc)
+        finally:
+            update_progress.put(None)
+
+    tester = Thread(target=test_source)
+    tester.start()
+    assert connection_started.wait(5)
+    updater = Thread(target=update_source, name="source-update")
+    updater.start()
+    try:
+        update_progress.get(timeout=5)
+    finally:
+        finish_connection.set()
+        tester.join(5)
+        updater.join(5)
+
+    assert not tester.is_alive() and not updater.is_alive()
+    assert not errors
+    updated = env.services.data_sources_repo.get(source.id)
+    assert updated.root_path == str(new_root)
+    assert updated.connection_status == "unknown"
 
 
 def test_test_connection_records_a_failure(
@@ -1138,6 +1264,136 @@ def test_scan_removes_a_deleted_file_only_after_the_confirmation_window(
     assert _indexed_text(base.id) == ""
 
 
+@pytest.mark.parametrize("with_child", [False, True], ids=["empty-folder", "nonempty-folder"])
+def test_scan_removes_a_file_replaced_by_a_folder_after_confirmation(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, with_child: bool
+) -> None:
+    root = _local_root(tmp_path)
+    path = _source_file(root, "policy.md", _DOC_BODY)
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert document is not None
+
+    path.unlink()
+    path.mkdir()
+    if with_child:
+        _source_file(root, "policy.md/child.txt", "Replacement child document.")
+    env.sources.sync(source.id, actor_user_id=people.owner)
+
+    held = env.services.knowledge_repo.get_document(document.id)
+    assert held is not None
+    assert held.delete_pending_since is not None
+    assert _last_run(env, source.id).removed == 0
+    assert _indexed_text(base.id) != ""
+
+    env.services.knowledge_repo.mark_delete_pending(
+        document.id, since=now_ts() - DELETE_CONFIRM_SECONDS
+    )
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
+
+    assert _last_run(env, source.id).removed == 1
+    assert env.services.knowledge_repo.get_document(document.id) is None
+    if with_child:
+        env.sources.sync(source.id, actor_user_id=people.owner)
+        _settle(env, source.id)
+        env.sources.sync(source.id, actor_user_id=people.owner)
+        _finish_pending(env, source.id)
+        assert "Replacement child document." in _indexed_text(base.id)
+        assert _DOC_BODY not in _indexed_text(base.id)
+    else:
+        assert _indexed_text(base.id) == ""
+
+
+@pytest.mark.parametrize("with_child", [False, True], ids=["empty-folder", "nested-files"])
+def test_scan_replaces_a_directory_with_a_file_after_confirmation(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_child: bool,
+) -> None:
+    root = tmp_path / "source"
+    root.mkdir()
+    base, source = _scanned_source(env, people.owner, root)
+    if with_child:
+        (root / "policy.md" / "nested").mkdir(parents=True)
+        _source_file(root, "policy.md/nested/old.md", _DOC_BODY)
+        env.sources.sync(source.id, actor_user_id=people.owner)
+        _settle(env, source.id)
+        env.sources.sync(source.id, actor_user_id=people.owner)
+        _finish_pending(env, source.id)
+        old_document = env.services.knowledge_repo.get_document_by_path(
+            base.id, f"{source.id}/policy.md/nested/old.md"
+        )
+        assert old_document is not None and old_document.status == "ready"
+    else:
+        (root / "policy.md").mkdir()
+        env.services.knowledge_repo.ensure_folder(
+            base.id,
+            f"{source.id}/policy.md/empty/nested",
+            data_source_id=source.id,
+        )
+
+    directory = root / "policy.md"
+    shutil.rmtree(directory)
+    replacement = _source_file(root, "policy.md", "replacement policy searchable")
+    before_rows = env.services.knowledge_repo.list_source_files(source.id)
+    before_index = _indexed_text(base.id)
+
+    original_walk = LocalFolderConnector.walk
+
+    def _drop_connection(*_args: object, **_kwargs: object) -> object:
+        raise SourceError("cannot list the source root: connection reset")
+
+    monkeypatch.setattr(LocalFolderConnector, "walk", _drop_connection)
+    with pytest.raises(DataSourceSyncFailed):
+        env.sources.sync(source.id, actor_user_id=people.owner)
+    assert _last_run(env, source.id).status == "failed"
+    assert env.services.knowledge_repo.list_source_files(source.id) == before_rows
+    assert _indexed_text(base.id) == before_index
+    monkeypatch.setattr(LocalFolderConnector, "walk", original_walk)
+
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    assert _last_run(env, source.id).status == "ok"
+    assert _last_run(env, source.id).removed == 0
+    assert _last_run(env, source.id).deferred == 1
+    if with_child:
+        held = env.services.knowledge_repo.get_document(old_document.id)
+        assert held is not None and held.delete_pending_since is not None
+        assert _DOC_BODY in _indexed_text(base.id)
+        env.services.knowledge_repo.mark_delete_pending(
+            old_document.id, since=now_ts() - DELETE_CONFIRM_SECONDS
+        )
+        env.sources.sync(source.id, actor_user_id=people.owner)
+        assert _last_run(env, source.id).status == "ok"
+        assert _last_run(env, source.id).removed == 1
+        assert env.services.knowledge_repo.get_document(old_document.id) is None
+        assert _indexed_text(base.id) == ""
+
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
+
+    run = _last_run(env, source.id)
+    assert run.status == "ok"
+    assert (run.added, run.deferred, run.failed) == (1, 0, 0)
+    rows = env.services.knowledge_repo.list_source_files(source.id)
+    documents = [row for row in rows if not row.is_dir]
+    assert len(documents) == 1
+    assert documents[0].source_path == "policy.md"
+    assert documents[0].status == "ready"
+    assert replacement.read_text(encoding="utf-8") == "replacement policy searchable"
+    assert "replacement policy searchable" in _indexed_text(base.id)
+    assert _DOC_BODY not in _indexed_text(base.id)
+    assert {row.path for row in rows if row.is_dir} == {source.id}
+
+
 def test_scan_keeps_everything_when_the_walk_fails(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1457,6 +1713,150 @@ async def test_malformed_source_document_does_not_block_other_indexing(
         kb_id=base.id, actor_user_id=people.owner, query="Recovered searchable evidence"
     )
     assert {hit.document_id for hit in hits} == {healthy.id}
+
+
+@pytest.mark.parametrize("stage", ["parse", "connector", "published"])
+def test_superseded_source_completion_preserves_newer_index(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    stage: str,
+) -> None:
+    root = _local_root(tmp_path)
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert document is not None
+    entered = Event()
+    release = Event()
+    outcomes: Queue[object] = Queue()
+    original_process = jobs_module._process
+    original_parse = jobs_module.parse_document
+    original_connector = DataSourceService.connector
+
+    def delayed_failure(*args, **kwargs):
+        try:
+            result = original_process(*args, **kwargs)
+            if stage == "published" and current_thread() is worker:
+                entered.set()
+                assert release.wait(10)
+            return result
+        except ValueError:
+            if current_thread() is worker:
+                entered.set()
+                assert release.wait(10)
+            raise
+
+    def parse(*args, **kwargs):
+        if stage == "parse" and current_thread() is worker:
+            raise ValueError("obsolete source parse failed")
+        return original_parse(*args, **kwargs)
+
+    def connector(service, row):
+        if stage == "connector" and current_thread() is worker:
+            entered.set()
+            assert release.wait(10)
+            raise ValueError("obsolete source connection failed")
+        return original_connector(service, row)
+
+    def run() -> None:
+        try:
+            outcomes.put(jobs_module._process_current_document(env.services, base.id, document.id))
+        except BaseException as exc:
+            outcomes.put(exc)
+
+    monkeypatch.setattr(jobs_module, "_process", delayed_failure)
+    monkeypatch.setattr(jobs_module, "parse_document", parse)
+    monkeypatch.setattr(DataSourceService, "connector", connector)
+    worker = Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(10)
+        if stage == "connector":
+            root = _local_root(tmp_path / "replacement")
+            env.sources.update_source(
+                source.id, actor_user_id=people.owner, folder=FolderSettings(root_path=str(root))
+            )
+        latest_text = "New source evidence survives an obsolete worker failure."
+        path = root / "policy.md"
+        path.write_text(latest_text, encoding="utf-8")
+        os.utime(path, (now_ts() + 5, now_ts() + 5))
+        env.sources.sync(source.id, actor_user_id=people.owner)
+        _settle(env, source.id)
+        env.sources.sync(source.id, actor_user_id=people.owner)
+        _finish_pending(env, source.id)
+        latest = env.services.knowledge_repo.get_document(document.id)
+        assert latest is not None and latest.status == "ready"
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive()
+        current = env.services.knowledge_repo.get_document(document.id)
+        assert current == latest
+        assert current.content_hash == document_digest(latest_text.encode())
+        assert KnowledgeIndex(base.id).document_preview(document.id, max_chars=100) == latest_text
+        outcome = outcomes.get_nowait()
+        if stage == "parse":
+            assert isinstance(outcome, ValueError)
+        elif stage == "connector":
+            assert outcome is True
+        else:
+            assert outcome is False
+    finally:
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive()
+
+
+def test_completed_source_worker_does_not_recreate_deleted_base(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base, source = _scanned_source(env, people.owner, _local_root(tmp_path))
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert document is not None
+    processed = Event()
+    release = Event()
+    outcomes: Queue[object] = Queue()
+    original_process = jobs_module._process
+
+    def pause_after_publish(*args, **kwargs):
+        result = original_process(*args, **kwargs)
+        processed.set()
+        assert release.wait(10)
+        return result
+
+    def run() -> None:
+        try:
+            outcomes.put(jobs_module._process_current_document(env.services, base.id, document.id))
+        except BaseException as exc:
+            outcomes.put(exc)
+
+    monkeypatch.setattr(jobs_module, "_process", pause_after_publish)
+    worker = Thread(target=run)
+    worker.start()
+    try:
+        assert processed.wait(10)
+        base_dir = env.services.paths.knowledge_dir / base.id
+        env.knowledge.delete_base(base.id, actor_user_id=people.owner)
+        assert not base_dir.exists()
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive()
+        assert env.services.knowledge_repo.get_base(base.id) is None
+        assert not base_dir.exists()
+        assert outcomes.get_nowait() is False
+    finally:
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive()
 
 
 def test_deleting_a_folder_source_waits_for_an_active_scan(

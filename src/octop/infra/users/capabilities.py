@@ -39,15 +39,16 @@ class UserCapabilityPolicy:
         expires_at = getattr(user, "access_expires_at", None)
         return expires_at is not None and int(time.time()) >= int(expires_at)
 
+    @classmethod
+    def user_is_active(cls, user: Any | None) -> bool:
+        """Whether a persisted account row is currently allowed to act."""
+        return user is not None and not bool(user.disabled) and not cls._expired(user)
+
     def _active_user(self, user_id: int | None) -> Any | None:
         if isinstance(user_id, bool) or not isinstance(user_id, int) or user_id <= 0:
             return None
         user = self._user_repo.get(user_id)
-        return (
-            user
-            if user is not None and not bool(user.disabled) and not self._expired(user)
-            else None
-        )
+        return user if self.user_is_active(user) else None
 
     def require_permissions(self, user_id: int | None, keys: Iterable[str]) -> None:
         user = self._active_user(user_id)

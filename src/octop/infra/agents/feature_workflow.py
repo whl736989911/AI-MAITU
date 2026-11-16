@@ -37,9 +37,11 @@ feature's definition, so they cannot be edited, weakened or dropped from here.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
+import weakref
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -56,6 +58,26 @@ if TYPE_CHECKING:
     from octop_harness.backends.workspace import BackendWorkspace
 
 logger = logging.getLogger(__name__)
+
+_workflow_read_write_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
+    weakref.WeakValueDictionary()
+)
+
+
+def workflow_read_write_lock(workspace: BackendWorkspace | Any) -> asyncio.Lock:
+    """Serialize workflow reads with a save/publish sequence for this workspace."""
+    directory = getattr(workspace, "workspace_dir", None)
+    key = (
+        f"{directory}\0{getattr(workspace, 'system_files_path', '')}"
+        if directory is not None
+        else f"workspace-object:{id(workspace)}"
+    )
+    lock = _workflow_read_write_locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _workflow_read_write_locks[key] = lock
+    return lock
+
 
 WORKFLOW_FILENAME = "workflow.json"
 """The definition's filename inside the workspace system directory."""
@@ -529,14 +551,13 @@ class WorkflowLoad:
 
 
 async def load_workflow(workspace: BackendWorkspace) -> WorkflowLoad:
-    """Read ``.maitu/workflow.json`` (legacy ``.octop/workflow.json`` until migrated).
+    """Read a workflow without observing a partially applied save or publish."""
+    async with workflow_read_write_lock(workspace):
+        return await _load_workflow_unlocked(workspace)
 
-    Absent is normal — a feature need not declare a workflow — and answers
-    ``WorkflowLoad()``. A file that exists but cannot be read as a definition
-    answers ``error``: the *run* path logs it and carries on without the block
-    (a broken definition must not take the conversation down), while the editor
-    surfaces it so its author can fix it.
-    """
+
+async def _load_workflow_unlocked(workspace: BackendWorkspace) -> WorkflowLoad:
+    """Read the definition; caller holds :func:`workflow_read_write_lock`."""
     text: Any = None
     read_path = WORKSPACE_WORKFLOW_PATH
     for rel in system_dir_relpaths(WORKFLOW_FILENAME):
@@ -574,7 +595,12 @@ async def feature_memory_stage(workspace: BackendWorkspace) -> str:
 
 
 async def save_workflow(workspace: BackendWorkspace, raw: Any) -> dict[str, Any]:
-    """Validate *raw* and write it as the definition; returns what was stored."""
+    """Validate and write a definition while readers are excluded."""
+    async with workflow_read_write_lock(workspace):
+        return await _save_workflow_unlocked(workspace, raw)
+
+
+async def _save_workflow_unlocked(workspace: BackendWorkspace, raw: Any) -> dict[str, Any]:
     definition = parse_workflow(raw)
     payload = json.dumps(definition, ensure_ascii=False, indent=2, sort_keys=False)
     await workspace.awrite_text(WORKSPACE_WORKFLOW_PATH, f"{payload}\n", force=True)
@@ -582,12 +608,13 @@ async def save_workflow(workspace: BackendWorkspace, raw: Any) -> dict[str, Any]
 
 
 async def clear_workflow(workspace: BackendWorkspace) -> None:
-    """Remove the definition. A feature without one is a plain conversational agent.
+    """Remove both supported workflow paths while readers are excluded."""
+    async with workflow_read_write_lock(workspace):
+        await _clear_workflow_unlocked(workspace)
 
-    Both possible locations are removed: a workspace whose layout has not been
-    migrated keeps the document in the legacy system directory, and leaving that
-    behind would make an explicitly deleted workflow reappear on the next read.
-    """
+
+async def _clear_workflow_unlocked(workspace: BackendWorkspace) -> None:
+    """Remove both supported paths; caller holds the workflow lock."""
     await workspace.adelete(WORKSPACE_WORKFLOW_PATH)
     for legacy_rel in system_dir_relpaths(WORKFLOW_FILENAME)[1:]:
         if legacy_rel != WORKSPACE_WORKFLOW_PATH and workspace.exists(legacy_rel):
@@ -931,5 +958,6 @@ __all__ = [
     "save_workflow",
     "slugify_step_id",
     "validate_workflow",
+    "workflow_read_write_lock",
     "workflow_status",
 ]

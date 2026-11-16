@@ -348,11 +348,10 @@ class SsoService:
         consumed = self._services.sso_repo.consume_login_code(code)
         if consumed is None:
             raise ValueError("invalid or expired SSO login code")
-        user = self._user_manager.get_by_id(consumed["user_id"])
+        user = await asyncio.to_thread(self._user_manager.resolve_active_by_id, consumed["user_id"])
         if user is None:
             raise ValueError("SSO user is unavailable")
-        row = self._services.user_repo.get(user.id)
-        self._user_manager.raise_if_access_expired(row or user)
+        self._user_manager.raise_if_access_expired(user)
         self._services.audit_repo.write(
             actor=user.username, action="auth.oidc_login", target=user.username
         )

@@ -12,8 +12,10 @@ from fastapi.responses import FileResponse
 logger = logging.getLogger(__name__)
 
 
-async def wait_owned_worker[T](worker: asyncio.Future[T], *, dispose: Callable[[T], Any]) -> T:
-    """Finish file preparation before cancelling, then dispose any unclaimed result."""
+async def wait_owned_worker[T](
+    worker: asyncio.Future[T], *, dispose: Callable[[T], Any] | None = None
+) -> T:
+    """Join an owned worker before cancellation; optionally dispose its unclaimed result."""
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
@@ -24,7 +26,7 @@ async def wait_owned_worker[T](worker: asyncio.Future[T], *, dispose: Callable[[
                 continue
             except Exception:
                 break
-        if not worker.cancelled() and worker.exception() is None:
+        if dispose is not None and not worker.cancelled() and worker.exception() is None:
             cleanup = asyncio.get_running_loop().run_in_executor(None, dispose, worker.result())
             while not cleanup.done():
                 try:

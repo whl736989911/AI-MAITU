@@ -368,3 +368,20 @@ def test_file_grant_bypasses_restricted_ancestors_but_not_library_acl(
     )
     with pytest.raises(PermissionError, match="knowledge base read"):
         env.knowledge.preview_document(private_base.id, private_file.id, actor_user_id=people.other)
+
+
+def test_legacy_search_keeps_distinct_matching_chunk_positions(
+    env: SimpleNamespace, people: SimpleNamespace
+) -> None:
+    base, document = _indexed(env, people.owner, filename="history.md", body=_POLICY)
+    index = KnowledgeIndex(base.id)
+    index.delete_doc(document.id)
+    texts = ["Refunds take five days.", "Refunds return to the original card."]
+    index.replace_doc_chunks(document.id, texts, _fake_embeddings(env.services, texts))
+
+    hits = env.knowledge.search(actor_user_id=people.owner, kb_id=base.id, query="refunds", limit=2)
+
+    assert [(hit.document_id, hit.ordinal, hit.snippet, hit.segment_id) for hit in hits] == [
+        (document.id, 0, texts[0], ""),
+        (document.id, 1, texts[1], ""),
+    ]

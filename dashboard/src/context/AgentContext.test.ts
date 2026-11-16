@@ -1,6 +1,65 @@
-import { describe, expect, it } from "vitest";
-import type { OctopAgent } from "./AgentContext";
-import { projectChatAgentOption, selectEnabledExperts } from "./AgentContext";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
+import { agentApi } from "../api/modules/agent";
+import {
+  AgentProvider,
+  projectChatAgentOption,
+  selectEnabledExperts,
+  useAgent,
+  type OctopAgent,
+} from "./AgentContext";
+const mockedAgentApi = agentApi as unknown as {
+  list: Mock<() => Promise<OctopAgent[]>>;
+};
+
+beforeEach(() => {
+  localStorage.clear();
+  mockedAgentApi.list.mockReset();
+});
+
+describe("AgentProvider refresh ordering", () => {
+  it("does not let an older agent refresh overwrite a newer response", async () => {
+    let resolveOlder!: (agents: OctopAgent[]) => void;
+    const olderRequest = new Promise<OctopAgent[]>((resolve) => {
+      resolveOlder = resolve;
+    });
+    let resolveNewer!: (agents: OctopAgent[]) => void;
+    const newerRequest = new Promise<OctopAgent[]>((resolve) => {
+      resolveNewer = resolve;
+    });
+    mockedAgentApi.list
+      .mockReturnValueOnce(olderRequest)
+      .mockReturnValueOnce(newerRequest);
+
+    const { result } = renderHook(() => useAgent(), { wrapper: AgentProvider });
+    await waitFor(() => expect(mockedAgentApi.list).toHaveBeenCalledTimes(1));
+
+    let newerRefresh!: Promise<void>;
+    act(() => {
+      newerRefresh = result.current.refresh({ silent: true });
+    });
+    await waitFor(() => expect(mockedAgentApi.list).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      resolveNewer([agent("new-agent", "running")]);
+      await newerRefresh;
+    });
+    await act(async () => {
+      resolveOlder([agent("old-agent", "running")]);
+      await olderRequest;
+    });
+
+    expect(result.current.agents.map((item) => item.agent_id)).toEqual([
+      "new-agent",
+    ]);
+    expect(result.current.activeAgentId).toBe("new-agent");
+  });
+});
+
+vi.mock("../api/modules/agent", () => ({
+  agentApi: { list: vi.fn() },
+}));
+
 import { isFeatureAgent, KIND_FEATURE } from "../utils/agentKind";
 
 function agent(

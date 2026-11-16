@@ -85,7 +85,7 @@ def _safe_member_path(raw: str) -> str:
     parts = normalized.split("/")
     if normalized.endswith("/"):
         parts = parts[:-1]
-    if not parts or any(part in ("", ".", "..") for part in parts):
+    if not parts or any(part in ("", ".", "..") or ":" in part for part in parts):
         raise ValueError(f"ZIP entry has an unsafe path: {raw!r}")
     path = PurePosixPath(*parts)
     if path.is_absolute():
@@ -136,7 +136,7 @@ def _safe_workspace_relative(path: str, *, what: str) -> str:
     if not raw or raw.startswith("/") or re.match(r"^[A-Za-z]:", raw):
         raise ValueError(f"{what} must be a workspace-relative path, such as inbound/archive.zip.")
     parts = raw.split("/")
-    if any(part in ("", ".", "..") for part in parts):
+    if any(part in ("", ".", "..") or ":" in part for part in parts):
         raise ValueError(f"{what} contains an unsafe path component.")
     return PurePosixPath(*parts).as_posix()
 

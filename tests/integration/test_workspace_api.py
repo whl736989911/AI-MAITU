@@ -10,6 +10,7 @@ import tempfile
 from io import BytesIO
 from pathlib import Path
 from typing import Any
+from zipfile import ZipFile
 
 import pytest
 from docx import Document
@@ -124,6 +125,7 @@ async def test_write_then_read_roundtrip(env: Any) -> None:
     body = r.json()
     assert body["path"] == "/notes.md"
     assert body["content"] == payload
+
 
 
 async def test_read_missing_file_404(env: Any) -> None:
@@ -661,3 +663,50 @@ async def test_workspace_routes_reject_symlink_escape(env: Any, tmp_path: Path) 
     )
     assert upload.status_code == 403
     assert outside.read_text(encoding="utf-8") == "secret"
+
+
+@pytest.mark.parametrize("oversize", [False, True], ids=["exact-limit", "too-large"])
+async def test_workspace_archive_upload_limit(
+    env: Any, monkeypatch: pytest.MonkeyPatch, oversize: bool
+) -> None:
+    from octop.api.routers import workspace
+
+    c, _srv, auth, aid = env
+    original = await c.put(
+        f"/api/agents/{aid}/workspace/file",
+        params={**FROM_WORKSPACE, "path": "/untouched.txt"},
+        headers=auth,
+        json={"content": "original"},
+    )
+    assert original.status_code == 200, original.text
+
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as archive:
+        archive.writestr("incoming.txt", "archive content")
+    data = buffer.getvalue()
+    monkeypatch.setattr(workspace, "_MAX_WORKSPACE_ARCHIVE_BYTES", len(data) - int(oversize))
+    response = await c.post(
+        f"/api/agents/{aid}/workspace/archive",
+        params={"mode": "merge"},
+        headers=auth,
+        files={"file": ("workspace.zip", data, "application/zip")},
+    )
+    assert response.status_code == (413 if oversize else 200), response.text
+    if oversize:
+        assert response.json()["error"]["code"] == "ATTACHMENT_TOO_LARGE"
+
+    original = await c.get(
+        f"/api/agents/{aid}/workspace/file",
+        params={**FROM_WORKSPACE, "path": "/untouched.txt"},
+        headers=auth,
+    )
+    assert original.status_code == 200, original.text
+    assert original.json()["content"] == "original"
+    imported = await c.get(
+        f"/api/agents/{aid}/workspace/file",
+        params={**FROM_WORKSPACE, "path": "/incoming.txt"},
+        headers=auth,
+    )
+    assert imported.status_code == (404 if oversize else 200), imported.text
+    if not oversize:
+        assert imported.json()["content"] == "archive content"

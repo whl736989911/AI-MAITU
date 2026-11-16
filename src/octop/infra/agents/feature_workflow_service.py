@@ -18,10 +18,8 @@ workspace and user, and refuses only what is wrong about the *change*.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import uuid
-import weakref
 from collections.abc import Mapping, Sequence
 from typing import Any, cast
 
@@ -35,18 +33,6 @@ from octop.infra.db.repos.feature_workflow_changes import (
     FeatureChangeRow,
 )
 from octop.infra.errors import ErrorCode, OctopError
-
-_definition_save_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = (
-    weakref.WeakValueDictionary()
-)
-
-
-def _definition_save_lock(agent_id: str) -> asyncio.Lock:
-    lock = _definition_save_locks.get(agent_id)
-    if lock is None:
-        lock = asyncio.Lock()
-        _definition_save_locks[agent_id] = lock
-    return lock
 
 
 def _invalid(reason: str) -> OctopError:
@@ -119,7 +105,7 @@ async def apply_change(
     """
     if target == TARGET_DEFINITION:
         resolved_agent_id = agent_id or feature_agent_id_for(feature_id)
-        async with _definition_save_lock(resolved_agent_id):
+        async with wf.workflow_read_write_lock(workspace):
             applied = await _apply_to_definition(
                 workspace, items, repos=repos, agent_id=resolved_agent_id
             )
@@ -155,15 +141,14 @@ async def save_definition(
     agent_id: str,
 ) -> dict[str, Any]:
     """Serialize workflow mutations and publish without exposing staged content."""
-    lock = _definition_save_lock(agent_id)
-    async with lock:
+    async with wf.workflow_read_write_lock(workspace):
         return await _save_definition_locked(workspace, raw, repos=repos, agent_id=agent_id)
 
 
 async def clear_definition(workspace: Any, *, agent_id: str) -> None:
-    """Remove both supported workflow paths under the same per-agent save lock."""
-    async with _definition_save_lock(agent_id):
-        await wf.clear_workflow(workspace)
+    """Remove both supported workflow paths while readers are excluded."""
+    async with wf.workflow_read_write_lock(workspace):
+        await wf._clear_workflow_unlocked(workspace)
 
 
 async def _save_definition_locked(
@@ -175,7 +160,7 @@ async def _save_definition_locked(
 ) -> dict[str, Any]:
     definition = wf.parse_workflow(raw)
     if wf.workflow_status(definition) != wf.STATUS_ACTIVE:
-        return await wf.save_workflow(workspace, definition)
+        return await wf._save_workflow_unlocked(workspace, definition)
 
     capabilities = await wf.read_capabilities(workspace)
     problems = wf.validate_references(definition, capabilities)
@@ -243,7 +228,7 @@ async def _apply_to_definition(
     """Apply the diff to the definition and store the validated result."""
     if workspace is None:
         raise _invalid("this feature's workspace is not reachable")
-    loaded = await wf.load_workflow(workspace)
+    loaded = await wf._load_workflow_unlocked(workspace)
     if loaded.definition is None:
         raise _invalid(loaded.error or "this feature has no workflow to change")
     resolved, updated = _apply(loaded.definition, items)
@@ -301,7 +286,7 @@ async def revert_change(
         raise OctopError(ErrorCode.NOT_FOUND, f"change {change_id!r} not found")
     if row.target == TARGET_DEFINITION:
         resolved_agent_id = agent_id or feature_agent_id_for(feature_id)
-        async with _definition_save_lock(resolved_agent_id):
+        async with wf.workflow_read_write_lock(workspace):
             row = repo.get(change_id)
             if row is None or row.feature_id != feature_id:
                 raise OctopError(ErrorCode.NOT_FOUND, f"change {change_id!r} not found")
@@ -329,7 +314,7 @@ async def _revert_definition(
 ) -> None:
     if workspace is None:
         raise _invalid("this feature's workspace is not reachable")
-    loaded = await wf.load_workflow(workspace)
+    loaded = await wf._load_workflow_unlocked(workspace)
     if loaded.definition is None:
         raise _invalid(loaded.error or "this feature has no workflow to undo against")
     try:

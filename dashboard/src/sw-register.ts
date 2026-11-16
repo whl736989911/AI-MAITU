@@ -1,4 +1,5 @@
 import { publicUrl } from "./utils/publicUrl";
+import { clearScopedApiRuntimeCacheEntries } from "./utils/pwaCacheBoundary";
 
 /**
  * Service Worker registration and lifecycle management.
@@ -82,6 +83,16 @@ export async function applyUpdate(): Promise<void> {
 /** Production registration. Exported for unit tests (vitest always sets DEV). */
 export async function registerProductionSW(): Promise<void> {
   const scope = import.meta.env.BASE_URL || "/";
+  if ("caches" in window) {
+    try {
+      await clearScopedApiRuntimeCacheEntries<Request>(
+        window.caches,
+        new URL(scope, window.location.href).href,
+      );
+    } catch (err) {
+      console.warn("[SW] Private API cache cleanup failed:", err);
+    }
+  }
   const registration = await navigator.serviceWorker.register(
     publicUrl("sw.js"),
     {

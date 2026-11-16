@@ -1,7 +1,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Spin } from "antd";
-import { clearAuthToken, getAuthToken, serverNowMs } from "../api/request";
+import {
+  AUTH_IDENTITY_CHANGED_EVENT,
+  clearAuthToken,
+  getAuthToken,
+  isSameAuthIdentity,
+  serverNowMs,
+} from "../api/request";
 import { authApi, type OctopUser } from "../api/modules/auth";
 import { applyUserLocale } from "../utils/locale";
 import { isNetworkFetchError } from "../utils/networkError";
@@ -36,17 +42,39 @@ export default function AuthGuard({ children }: AuthGuardProps) {
   const [offline, setOffline] = useState(false);
   const [retryKey, setRetryKey] = useState(0);
 
+  const authGeneration = useRef(0);
+
+  useEffect(() => {
+    const handleIdentityChanged = () => {
+      authGeneration.current += 1;
+      setUser(null);
+      setAuthed(false);
+      setOffline(false);
+      setChecking(true);
+      setRetryKey((key) => key + 1);
+    };
+    window.addEventListener(AUTH_IDENTITY_CHANGED_EVENT, handleIdentityChanged);
+    return () =>
+      window.removeEventListener(
+        AUTH_IDENTITY_CHANGED_EVENT,
+        handleIdentityChanged,
+      );
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
+    const generation = authGeneration.current;
+    const isCurrent = () => !cancelled && generation === authGeneration.current;
 
     const check = async () => {
       try {
         const status = await authApi.getAuthStatus();
+        if (!isCurrent()) return;
 
         // No admin yet → push to setup wizard; drop any leftover JWT from a
         // previous install so background prefetch cannot stampede lockdown.
         if (status.setup_required) {
-          clearAuthToken();
+          if (getAuthToken()) clearAuthToken();
           if (!cancelled) navigateRef.current("/setup", { replace: true });
           return;
         }
@@ -54,7 +82,7 @@ export default function AuthGuard({ children }: AuthGuardProps) {
         // Setup done. Need a token.
         const token = getAuthToken();
         if (!token) {
-          if (!cancelled) {
+          if (isCurrent()) {
             setAuthed(false);
             // Stay on the spinner until navigation away completes — do not
             // flip ``checking`` off or children would mount and 401→/login.
@@ -63,19 +91,30 @@ export default function AuthGuard({ children }: AuthGuardProps) {
           return;
         }
 
-        // Validate the token by hitting /auth/me. On 401 the request.ts
-        // interceptor already kicks the user back to /login, so we just
-        // need to swallow the throw here.
+        // Validate /auth/me. A current-token 401 is handled below; stale-token
+        // failures are retried against the currently stored same-account token.
         try {
           const me = await authApi.me();
+          if (!isCurrent() || !isSameAuthIdentity(token, getAuthToken()))
+            return;
           await applyUserLocale(me.locale);
-          if (!cancelled) {
+          if (isCurrent() && isSameAuthIdentity(token, getAuthToken())) {
             setUser(me);
             setAuthed(true);
             setChecking(false);
           }
         } catch (err) {
-          if (cancelled) return;
+          if (!isCurrent()) return;
+          const currentToken = getAuthToken();
+          if (!isSameAuthIdentity(token, currentToken)) return;
+          if (token !== currentToken) {
+            setUser(null);
+            setAuthed(false);
+            setOffline(false);
+            setChecking(true);
+            setRetryKey((key) => key + 1);
+            return;
+          }
           if (isNetworkFetchError(err)) {
             setOffline(true);
             setChecking(false);
@@ -85,7 +124,7 @@ export default function AuthGuard({ children }: AuthGuardProps) {
           navigateRef.current("/login", { replace: true });
         }
       } catch {
-        if (cancelled) return;
+        if (!isCurrent()) return;
         setOffline(true);
         setChecking(false);
       }
@@ -102,11 +141,20 @@ export default function AuthGuard({ children }: AuthGuardProps) {
   useEffect(() => {
     if (!authed) return;
     let cancelled = false;
+    const generation = authGeneration.current;
     const refreshUser = () => {
+      const token = getAuthToken();
+      if (!token) return;
       void authApi
         .me()
         .then((me) => {
-          if (!cancelled) setUser(me);
+          if (
+            !cancelled &&
+            generation === authGeneration.current &&
+            isSameAuthIdentity(token, getAuthToken())
+          ) {
+            setUser(me);
+          }
         })
         .catch(() => undefined);
     };
@@ -120,6 +168,8 @@ export default function AuthGuard({ children }: AuthGuardProps) {
   useEffect(() => {
     if (!authed || user?.access_expires_at == null) return;
     let cancelled = false;
+    const generation = authGeneration.current;
+    const token = getAuthToken();
     let timer: number;
     const schedule = () => {
       const delay = Math.max(0, user.access_expires_at! * 1000 - serverNowMs());
@@ -132,7 +182,13 @@ export default function AuthGuard({ children }: AuthGuardProps) {
           void authApi
             .me()
             .then((me) => {
-              if (!cancelled) setUser(me);
+              if (
+                !cancelled &&
+                generation === authGeneration.current &&
+                isSameAuthIdentity(token, getAuthToken())
+              ) {
+                setUser(me);
+              }
             })
             .catch(() => undefined);
         },

@@ -1,5 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AUTH_IDENTITY_CHANGED_EVENT } from "../../../api/request";
 import {
   resetSessionStoreForTests,
   sortSessions,
@@ -123,6 +124,26 @@ describe("useSessions agent switch", () => {
     expect(result.current.sessions.some((s) => s.id === "thr_from_a")).toBe(
       false,
     );
+  });
+
+  it("clears cached threads and refetches when the auth identity changes", async () => {
+    listMock
+      .mockResolvedValueOnce([threadRow("thr_from_a")])
+      .mockImplementationOnce(() => new Promise(() => {}));
+    const { result } = renderHook(() => useSessions("shared-agent"));
+
+    await waitFor(() => {
+      expect(result.current.sessions.map((session) => session.id)).toEqual([
+        "thr_from_a",
+      ]);
+    });
+
+    act(() => {
+      window.dispatchEvent(new Event(AUTH_IDENTITY_CHANGED_EVENT));
+    });
+
+    expect(result.current.sessions).toEqual([]);
+    expect(listMock).toHaveBeenCalledTimes(2);
   });
 
   it("ensureThreadInList returns unknown on probe network errors", async () => {

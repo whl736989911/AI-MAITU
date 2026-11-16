@@ -35,7 +35,7 @@ def resolve_reminder_recipients(
         responsible_id = creator_id
     recipients: set[int] = set()
     if policy.get("creator", False):
-        recipients.add(int(responsible_id))
+        recipients.add(creator_id)
     if policy.get("owner", False):
         owner_id = getattr(agent, "user_id", None)
         if owner_id is not None:

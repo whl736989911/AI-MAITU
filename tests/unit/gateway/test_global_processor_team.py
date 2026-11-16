@@ -73,7 +73,13 @@ def processor_env(tmp_path: Path) -> dict[str, object]:
         dispatcher=SlashDispatcher(),
         gateway=gw,
     )
-    return {"processor": processor, "gateway": gw, "parent_sk": parent_sk}
+    return {
+        "processor": processor,
+        "gateway": gw,
+        "parent_sk": parent_sk,
+        "repos": repos,
+        "db": db,
+    }
 
 
 def test_compose_followup_uses_peer_display_name(processor_env: dict) -> None:
@@ -139,6 +145,174 @@ async def test_prepare_peer_session_creates_callee_thread_without_rebind(
     assert row is not None
     assert row.agent_id == "child"
     assert registry.get_bound_thread_id(str(parent_sk)) == "thr_parent"
+
+
+@pytest.mark.asyncio
+async def test_reply_for_different_pair_does_not_release_active_team_job(
+    processor_env: dict,
+) -> None:
+    from octop_harness.teams.util import PeerCall
+
+    from octop.infra.agents.teams.jobs import TeamJobTracker
+
+    processor = processor_env["processor"]
+    tracker = TeamJobTracker()
+    processor._agent_manager._team_jobs = tracker  # type: ignore[attr-defined]
+    tracker.begin("parent", "child", job_id="job-1")
+
+    await processor.on_reply(
+        ReplyEvent(
+            inbox_id="job-1",
+            status="done",
+            source_agent_id="parent",
+            source_thread_id="thr_parent",
+            target_agent_id="different-child",
+            user_id=1,
+            reply_text="unrelated reply",
+        )
+    )
+
+    assert tracker.is_busy("parent", "child")
+    processor._agent_manager.get_row.side_effect = lambda _agent_id: None  # type: ignore[attr-defined]
+    processor.teams._track_job(
+        PeerCall(
+            from_agent_id="parent",
+            to_agent_id="child",
+            user_id=1,
+            message="work",
+            source_thread_id="thr_parent",
+            source_session_key=None,
+            job_id="job-1",
+        ),
+        begin=False,
+    )
+    assert not tracker.is_busy("parent", "child")
+
+
+@pytest.mark.asyncio
+async def test_peer_dispatch_rechecks_current_member_access(
+    processor_env: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from dataclasses import replace
+    from unittest.mock import AsyncMock
+
+    from octop_harness.teams.util import PeerCall
+
+    from octop.infra.agents.kinds import KIND_TEAM
+    from octop.infra.agents.teams.jobs import TeamJobTracker
+    from octop.infra.db.repos.resource_acl import ResourceAclRepo
+    from octop.infra.sharing import AclEntry
+
+    processor = processor_env["processor"]
+    manager = processor._agent_manager
+    repos = processor_env["repos"]
+    owner = repos.user_repo.create(username="member-owner", password_hash="h", role="user")
+    repos.agent_repo.create(agent_id="foreign-child", user_id=owner, name="Foreign researcher")
+    acl = ResourceAclRepo(processor_env["db"])
+    acl.upsert(AclEntry("agent", "foreign-child", owner, "public", None, owner))
+    original_get_row = manager.get_row.side_effect
+    parent_row = replace(original_get_row("parent"), kind=KIND_TEAM)
+    manager.get_row.side_effect = lambda agent_id: (
+        parent_row if agent_id == "parent" else original_get_row(agent_id)
+    )
+    manager._repos = repos
+    manager.teams.visible_member_ids = AsyncMock(return_value=["foreign-child"])
+    manager.teams.member_ids = AsyncMock(return_value=["foreign-child"])
+    monkeypatch.setattr(processor.teams, "_dispatch_message", AsyncMock(return_value="work"))
+    tracker = TeamJobTracker()
+    manager._team_jobs = tracker
+    call = PeerCall(
+        from_agent_id="parent",
+        to_agent_id="foreign-child",
+        user_id=1,
+        message="work",
+        source_thread_id="thr_parent",
+        source_session_key=str(processor_env["parent_sk"]),
+        job_id="job-shared",
+    )
+    await processor.prepare_peer_session(call)
+    assert tracker.is_busy("parent", "foreign-child")
+    await processor.on_reply(
+        ReplyEvent(
+            inbox_id="job-shared",
+            status="done",
+            source_agent_id="parent",
+            source_thread_id="thr_parent",
+            target_agent_id="foreign-child",
+            user_id=1,
+            reply_text="completed",
+        )
+    )
+    assert not tracker.is_busy("parent", "foreign-child")
+
+    acl.upsert(AclEntry("agent", "foreign-child", owner, "private", None, owner))
+    with pytest.raises(OctopError) as exc_info:
+        await processor.prepare_peer_session(replace(call, job_id="job-revoked"))
+
+    assert exc_info.value.code is ErrorCode.FORBIDDEN
+    assert not tracker.is_busy("parent", "foreign-child")
+
+
+@pytest.mark.parametrize("terminal_status", ["failed", "cancelled"])
+@pytest.mark.asyncio
+async def test_failed_peer_session_preparation_never_leaves_job_busy(
+    processor_env: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    terminal_status: str,
+) -> None:
+    from dataclasses import replace
+    from unittest.mock import AsyncMock
+
+    from octop_harness.teams.util import PeerCall
+
+    from octop.infra.agents.kinds import KIND_TEAM
+    from octop.infra.agents.teams.jobs import TeamJobTracker
+
+    processor = processor_env["processor"]
+    manager = processor._agent_manager
+    original_get_row = manager.get_row.side_effect
+    parent_row = replace(original_get_row("parent"), kind=KIND_TEAM)
+    manager.get_row.side_effect = lambda agent_id: (
+        parent_row if agent_id == "parent" else original_get_row(agent_id)
+    )
+    manager._repos = MagicMock()
+    manager._repos.agent_repo = MagicMock()
+    manager._repos.agent_repo.list_visible.return_value = [parent_row, original_get_row("child")]
+    manager.teams.visible_member_ids = AsyncMock(return_value=["child"])
+    manager.teams.member_ids = AsyncMock(return_value=["child"])
+    tracker = TeamJobTracker()
+    manager._team_jobs = tracker
+
+    def fail_ensure_thread(**_kwargs: object) -> None:
+        raise RuntimeError("thread storage unavailable")
+
+    monkeypatch.setattr(processor.teams._thread_registry, "ensure_thread", fail_ensure_thread)
+    with pytest.raises(RuntimeError, match="thread storage unavailable"):
+        await processor.prepare_peer_session(
+            PeerCall(
+                from_agent_id="parent",
+                to_agent_id="child",
+                user_id=1,
+                message="work",
+                source_thread_id="thr_parent",
+                source_session_key=str(processor_env["parent_sk"]),
+                job_id="job-preparation-failure",
+            )
+        )
+
+    assert tracker.is_busy("parent", "child")
+    await processor.on_reply(
+        ReplyEvent(
+            inbox_id="job-preparation-failure",
+            status=terminal_status,
+            source_agent_id="parent",
+            source_thread_id="thr_parent",
+            target_agent_id="child",
+            user_id=1,
+            error_text="thread storage unavailable",
+        )
+    )
+    assert not tracker.is_busy("parent", "child")
 
 
 def test_resolve_harness_model_rejects_multimodal_turn_without_configured_model() -> None:

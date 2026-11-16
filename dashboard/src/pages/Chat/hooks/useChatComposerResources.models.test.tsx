@@ -22,6 +22,9 @@ vi.mock("../../../api/modules/knowledgeBases", () => ({
     list: vi.fn().mockResolvedValue([]),
   },
 }));
+vi.mock("../../../utils/antdMessage", () => ({
+  message: { error: vi.fn() },
+}));
 vi.mock("../../../hooks/useCurrentUser", () => ({
   useCurrentUser: () => ({
     id: 7,

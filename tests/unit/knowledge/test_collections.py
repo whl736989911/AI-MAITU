@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 from types import SimpleNamespace
 
 import pytest
@@ -390,6 +392,48 @@ def test_deleted_source_prunes_evidence_and_topic_state(setup) -> None:
     assert "needle source body" not in result["reading_document"]
 
 
+def test_delayed_read_cannot_restore_evidence_after_source_deletion(
+    setup, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from octop.infra.knowledge import collections as collection_module
+
+    state = setup
+    state.api.create(state.kb.id, [state.child.id], prompt="", actor_user_id=state.owner)
+    entered_rows = Event()
+    resume_read = Event()
+    original_rows = collection_module.KnowledgeCollectionService._evidence_rows
+
+    def pause_after_initial_source_check(evidence):
+        entered_rows.set()
+        assert resume_read.wait(timeout=5)
+        return original_rows(evidence)
+
+    monkeypatch.setattr(
+        collection_module.KnowledgeCollectionService,
+        "_evidence_rows",
+        staticmethod(pause_after_initial_source_check),
+    )
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(
+            state.api.record_source_read,
+            state.kb.id,
+            state.child.id,
+            _read_evidence("v1", "deleted source body"),
+            actor_user_id=state.owner,
+        )
+        assert entered_rows.wait(timeout=5)
+        state.knowledge.delete_document(state.child.id)
+        state.api.refresh_for_document(state.kb.id, state.child.id)
+        resume_read.set()
+        outcome = pending.result(timeout=5)
+
+    assert outcome["reason"] == "document_missing"
+    assert (
+        state.services.knowledge_collections_repo.reads_for_documents(state.kb.id, [state.child.id])
+        == []
+    )
+
+
 def test_shared_reader_sees_source_derived_collections_and_rename_resyncs(
     setup, monkeypatch
 ) -> None:
@@ -509,6 +553,134 @@ def test_generate_marks_missing_registered_source_failed(setup: SimpleNamespace)
     payload = state.api.generate(state.kb.id, collection["id"], actor_user_id=state.owner)
     assert payload["generation"]["state"] == "error", payload
     assert payload["status"] == "error", payload
+
+
+@pytest.mark.parametrize("blank_prefix", [False, True], ids=["with-evidence", "blank-prefix"])
+def test_generation_marks_round_capped_source_as_partial(
+    setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, blank_prefix: bool
+) -> None:
+    from octop.infra.knowledge.files import document_digest, write_document
+
+    state = setup
+    content = (
+        b"\n" * 1600 + b"unread source tail\n"
+        if blank_prefix
+        else "".join(f"source line {index:04d}\n" for index in range(1, 1602)).encode()
+    )
+    document = state.knowledge.create_document(
+        kb_id=state.kb.id,
+        filename="long.txt",
+        path="long.txt",
+        content_type="text/plain",
+        byte_size=len(content),
+        content_hash=document_digest(content),
+        status="discovered",
+    )
+    write_document(state.kb.id, document.id, document.filename, content)
+    collection = state.api.create(
+        state.kb.id, [document.id], prompt="source lines", actor_user_id=state.owner
+    )[0]
+    observed_evidence: list[dict] = []
+
+    def fixed_model(self, coll, source, version, evidence, **kwargs):
+        observed_evidence.extend(evidence)
+        return {
+            "summary": "Read source lines",
+            "content": "The first source lines were read.",
+            "citations": [{"index": 1, "quote": str(evidence[0]["text"])}],
+            "coverage": "complete",
+            "conflicts": [],
+            "omissions": [],
+        }
+
+    monkeypatch.setattr(
+        KnowledgeCollectionService, "_resolve_llm", lambda self: (object(), "test/model")
+    )
+    monkeypatch.setattr(KnowledgeCollectionService, "_topic_llm_json", fixed_model)
+
+    payload = state.api.generate(state.kb.id, collection["id"], actor_user_id=state.owner)
+
+    topic = state.services.knowledge_collections_repo.topics(collection["id"])[0]
+    stored_reads = state.services.knowledge_collections_repo.reads_for_documents(
+        state.kb.id, [document.id]
+    )
+    assert all("source line 1601" not in item["text"] for item in observed_evidence)
+    assert topic["status"] == "partial"
+    if blank_prefix:
+        assert topic["citations"] == []
+        assert topic["evidence_ids"] == []
+    else:
+        assert topic["citations"][0]["evidence_id"] in {
+            item["evidence_id"] for item in stored_reads
+        }
+    assert payload["generation"]["state"] == "partial"
+    assert payload["coverage"]["pending"] == 1
+    rendered = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)
+    if not blank_prefix:
+        assert topic["citations"][0]["quote"] in rendered["topic_document"]
+
+
+@pytest.mark.parametrize("oversized", [False, True], ids=["recoverable-pages", "clipped-block"])
+def test_generation_preserves_completeness_across_character_budget(
+    setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, oversized: bool
+) -> None:
+    from octop.infra.knowledge import source_access
+    from octop.infra.knowledge.files import document_digest, write_document
+
+    state = setup
+    monkeypatch.setattr(source_access, "_MAX_TEXT", 100)
+    first_line = "x" * (101 if oversized else 60)
+    second_line = "y" * 60
+    content = (first_line + "\n" + second_line + "\n").encode()
+    document = state.knowledge.create_document(
+        kb_id=state.kb.id,
+        filename="oversized.txt",
+        path="oversized.txt",
+        content_type="text/plain",
+        byte_size=len(content),
+        content_hash=document_digest(content),
+        status="discovered",
+    )
+    write_document(state.kb.id, document.id, document.filename, content)
+    collection = state.api.create(
+        state.kb.id, [document.id], prompt="Inspect the source", actor_user_id=state.owner
+    )[0]
+    observed_evidence: list[dict] = []
+
+    def fixed_model(self, coll, source, version, evidence, **kwargs):
+        observed_evidence.extend(evidence)
+        return {
+            "summary": "Source excerpt",
+            "content": "A source excerpt was reviewed.",
+            "citations": [{"index": 1, "quote": "x" * 20}],
+            "coverage": "complete",
+            "conflicts": [],
+            "omissions": [],
+        }
+
+    monkeypatch.setattr(
+        KnowledgeCollectionService, "_resolve_llm", lambda self: (object(), "test/model")
+    )
+    monkeypatch.setattr(KnowledgeCollectionService, "_topic_llm_json", fixed_model)
+    payload = state.api.generate(state.kb.id, collection["id"], actor_user_id=state.owner)
+
+    topic = state.services.knowledge_collections_repo.topics(collection["id"])[0]
+    reads = state.services.knowledge_collections_repo.reads_for_documents(
+        state.kb.id, [document.id]
+    )
+    assert topic["status"] == ("partial" if oversized else "ready")
+    assert [item["text"] for item in observed_evidence] == [first_line[:100], second_line]
+    assert observed_evidence[0]["locator"] == (
+        {"line": 1, "excerpt_characters": 100} if oversized else {"line": 1}
+    )
+    assert observed_evidence[1]["locator"] == {"line": 2}
+    assert {item["evidence_id"] for item in observed_evidence}.issubset(
+        {item["evidence_id"] for item in reads}
+    )
+    assert payload["generation"]["state"] == ("partial" if oversized else "ready")
+    assert payload["coverage"]["pending"] == int(oversized)
+    rendered = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)
+    assert topic["citations"][0]["quote"] in rendered["topic_document"]
 
 
 def test_generate_skips_unsupported_formats_without_hiding_originals(

@@ -84,11 +84,11 @@ def _job(
         task_type=task_type,
         mcp_servers=mcp_servers,
         user_id=1,
+        trigger="interval:60",
         delivery_service=delivery_service,
         user_policy=user_policy,
         cron_repo=cron_repo,
         audit_repo=audit,
-        date_trigger=False,
     )
 
 

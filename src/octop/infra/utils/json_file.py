@@ -19,25 +19,11 @@ import contextlib
 import json
 import os
 import stat
-import tempfile
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 __all__ = ["JsonFileCorruptError", "read_json_object", "write_json_atomic"]
-
-
-def _default_file_mode() -> int:
-    """The mode a plain ``write_text`` would produce (``0o666 & ~umask``).
-
-    POSIX has no get-only umask call, so read it by set-and-restore. Matches the
-    two pre-existing config.json writers (``db/rebind.py``, ``backup/auto.py``)
-    instead of leaving ``mkstemp``'s 0600, which would make a root-created
-    config.json unreadable to the service user after
-    ``octop service start --scope system``.
-    """
-    mask = os.umask(0o022)
-    os.umask(mask)
-    return 0o666 & ~mask
 
 
 class JsonFileCorruptError(ValueError):
@@ -82,8 +68,7 @@ def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
 
     Readers never observe a partially written file, so an interrupted write
     cannot leave the truncated JSON that :func:`read_json_object` then refuses
-    to merge. The temp file is unique per call (``mkstemp``), so concurrent
-    writers cannot share one ``.tmp`` name.
+    to merge. Each call creates its temporary file exclusively under a unique name.
 
     Permissions follow the file being replaced, or the process umask for a new
     file — a config write must never silently tighten or loosen the mode of a
@@ -94,14 +79,21 @@ def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     existing_mode: int | None = None
     if os.name == "posix" and path.exists():
         existing_mode = stat.S_IMODE(path.stat().st_mode)
-    fd, tmp_name = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    tmp_name = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+    fd = os.open(tmp_name, flags, 0o666 if existing_mode is None else existing_mode)
     try:
         try:
-            os.write(fd, payload)
+            remaining = memoryview(payload)
+            while remaining:
+                written = os.write(fd, remaining)
+                if written <= 0:
+                    raise OSError("short write while saving JSON")
+                remaining = remaining[written:]
         finally:
             os.close(fd)
-        if os.name == "posix":
-            os.chmod(tmp_name, _default_file_mode() if existing_mode is None else existing_mode)
+        if existing_mode is not None:
+            os.chmod(tmp_name, existing_mode)
         os.replace(tmp_name, path)
     except BaseException:  # also covers KeyboardInterrupt / SystemExit
         with contextlib.suppress(OSError):

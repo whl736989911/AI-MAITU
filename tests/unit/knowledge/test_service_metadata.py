@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -166,3 +170,68 @@ def test_removed_schema_values_are_preserved_but_hidden_from_reads_and_filters(
 
     service.update_metadata_schema(kb.id, actor_user_id=owner, schema=schema)
     assert service.list_documents(kb.id, actor_user_id=owner)[0].metadata == stored
+
+
+def test_concurrent_metadata_edits_preserve_both_reviewers_fields(
+    service: KnowledgeService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner = service._services.user_repo.create(username="owner", password_hash="h", role="user")
+    kb = service._services.knowledge_repo.create_base(owner_user_id=owner, name="Metadata")
+    document = _upload(service, kb.id, owner)
+    service.update_metadata_schema(kb.id, actor_user_id=owner, schema=SCHEMA)
+    service.update_document_metadata(
+        kb.id, document.id, actor_user_id=owner, metadata={"drawing_no": "OLD"}
+    )
+    writing = threading.Event()
+    release = threading.Event()
+    second_progress: queue.Queue[None] = queue.Queue()
+    original_write = KnowledgeRepo.set_document_metadata
+    original_lock = service_module._knowledge_mutation_lock
+
+    def paused_write(repo, document_id, metadata_json):
+        if threading.current_thread().name.startswith("metadata-first"):
+            writing.set()
+            if not release.wait(5):
+                raise TimeoutError("metadata write was not released")
+        return original_write(repo, document_id, metadata_json)
+
+    @contextmanager
+    def observed_lock(kb_id):
+        if threading.current_thread().name.startswith("metadata-second"):
+            second_progress.put(None)
+        with original_lock(kb_id):
+            yield
+
+    def second_edit():
+        try:
+            return KnowledgeService(service._services).update_document_metadata(
+                kb.id, document.id, actor_user_id=owner, metadata={"sheet": "A0"}
+            )
+        finally:
+            second_progress.put(None)
+
+    monkeypatch.setattr(KnowledgeRepo, "set_document_metadata", paused_write)
+    monkeypatch.setattr(service_module, "_knowledge_mutation_lock", observed_lock)
+    with (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="metadata-first") as first_pool,
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="metadata-second") as second_pool,
+    ):
+        first = first_pool.submit(
+            service.update_document_metadata,
+            kb.id,
+            document.id,
+            actor_user_id=owner,
+            metadata={"drawing_no": "NEW"},
+        )
+        try:
+            assert writing.wait(5)
+            second = second_pool.submit(second_edit)
+            second_progress.get(timeout=5)
+        finally:
+            release.set()
+        first.result(timeout=5)
+        second.result(timeout=5)
+    assert service._services.knowledge_repo.get_document(document.id).metadata == {
+        "drawing_no": "NEW",
+        "sheet": "A0",
+    }

@@ -14,9 +14,12 @@ vi.mock("../api/modules/auth", () => ({
   },
 }));
 vi.mock("../api/request", () => ({
+  AUTH_IDENTITY_CHANGED_EVENT: "octop:auth-identity-changed",
   getAuthToken: () => "token",
   clearAuthToken: vi.fn(),
+  isSameAuthIdentity: (previous: string, next: string) => previous === next,
 }));
+
 vi.mock("../utils/locale", () => ({ applyUserLocale: async () => undefined }));
 
 const account = (permissions: string[]): OctopUser => ({

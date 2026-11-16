@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from octop_harness.plugins import PluginRegistry
 
+from octop.infra.agents.plugins import manager as manager_module
 from octop.infra.agents.plugins.manager import (
     PluginManager,
     parse_plugin_group,
@@ -283,3 +284,115 @@ def test_set_enabled_preserves_unrelated_keys(tmp_path: Path) -> None:
     assert data["bind_host"] == "0.0.0.0"
     assert data["database"] == {"driver": "postgresql", "host": "db.internal"}
     assert data["plugins"]["weather"]["enabled"] is False
+
+
+@pytest.mark.parametrize("registered_before_failure", [False, True])
+def test_failed_enable_keeps_previous_config_and_removes_new_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registered_before_failure: bool
+) -> None:
+    config = tmp_path / "config.json"
+    config.write_text('{"unrelated": "preserved"}', encoding="utf-8")
+    manager = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config)
+    manager.install_bundled("weather")
+    manager.set_enabled("weather", False)
+    previous = config.read_bytes()
+    original_load = manager_module.load_plugin_dir
+
+    def fail_load(*args, **kwargs):
+        if registered_before_failure:
+            original_load(*args, **kwargs)
+        raise RuntimeError("activation failed")
+
+    monkeypatch.setattr(manager_module, "load_plugin_dir", fail_load)
+    with pytest.raises(RuntimeError, match="activation failed"):
+        manager.set_enabled("weather", True)
+    assert config.read_bytes() == previous
+    assert manager.global_enabled_map()["weather"] is False
+    assert PluginRegistry().get("weather") is None
+
+
+@pytest.mark.parametrize("already_loaded", [False, True])
+def test_enable_config_failure_restores_previous_runtime_registration(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, already_loaded: bool
+) -> None:
+    config = tmp_path / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    manager = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config)
+    manager.install_bundled("weather")
+    if not already_loaded:
+        manager.set_enabled("weather", False)
+    previous_config = config.read_bytes()
+    previous_plugin = PluginRegistry().get("weather")
+
+    def fail_save(*_args, **_kwargs):
+        raise OSError("configuration save failed")
+
+    monkeypatch.setattr(manager_module, "write_json_atomic", fail_save)
+    with pytest.raises(OSError, match="configuration save failed"):
+        manager.set_enabled("weather", True)
+    assert config.read_bytes() == previous_config
+    assert PluginRegistry().get("weather") is previous_plugin
+
+
+@pytest.mark.parametrize("failure", ["copy", "publish"])
+def test_forced_install_preserves_previous_files_and_runtime_when_publication_fails(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    from octop.infra.agents.plugins.catalog import get_catalog_plugin
+
+    config = tmp_path / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    manager = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config)
+    manager.install_bundled("weather")
+    source = get_catalog_plugin("weather").source_dir
+    destination = manager.plugins_dir / "weather"
+    previous_entry = (destination / "main.py").read_bytes()
+    previous_config = config.read_bytes()
+    previous_plugin = PluginRegistry().get("weather")
+    if failure == "copy":
+        original_copy = manager_module.shutil.copytree
+
+        def fail_copy(src, dst, *args, **kwargs):
+            if Path(src) == source:
+                Path(dst).mkdir(parents=True)
+                (Path(dst) / "plugin.yaml").write_bytes((source / "plugin.yaml").read_bytes())
+                raise OSError("copy failed")
+            return original_copy(src, dst, *args, **kwargs)
+
+        monkeypatch.setattr(manager_module.shutil, "copytree", fail_copy)
+    else:
+        original_replace = manager_module.os.replace
+        failed = False
+
+        def fail_publish(src, dst):
+            nonlocal failed
+            if Path(dst) == destination and not failed:
+                failed = True
+                raise OSError("publish failed")
+            return original_replace(src, dst)
+
+        monkeypatch.setattr(manager_module.os, "replace", fail_publish)
+    with pytest.raises(OSError):
+        manager.install_path(source, force=True)
+    assert (destination / "main.py").read_bytes() == previous_entry
+    assert config.read_bytes() == previous_config
+    assert PluginRegistry().get("weather") is previous_plugin
+
+
+@pytest.mark.parametrize("load_method", ["load_installed", "load_missing"])
+def test_corrupt_config_does_not_activate_a_disabled_plugin(
+    tmp_path: Path, load_method: str
+) -> None:
+    config = tmp_path / "config.json"
+    config.write_text("{}", encoding="utf-8")
+    manager = PluginManager(plugins_dir=tmp_path / "plugins", config_path=config)
+    manager.install_bundled("weather")
+    manager.set_enabled("weather", False)
+    corrupt = b'{"plugins":'
+    config.write_bytes(corrupt)
+
+    with pytest.raises(OctopError) as raised:
+        getattr(manager, load_method)(install_deps=False)
+    assert raised.value.code is ErrorCode.CONFIG_FILE_CORRUPT
+    assert PluginRegistry().get("weather") is None
+    assert config.read_bytes() == corrupt

@@ -39,32 +39,52 @@ def resolve_storage_backend(row: BackendRow) -> Any:
 async def _close_backend(backend: Any) -> None:
     """Best-effort close and remove temporary resources owned by a browse backend."""
     owner = getattr(backend, "_octop_browse_owner", None)
+    cancelled = False
     try:
         aclose = getattr(backend, "aclose", None)
         if callable(aclose):
             with contextlib.suppress(Exception):
-                await aclose()
+                close_result = aclose()
+                if inspect.isawaitable(close_result):
+                    close_task = asyncio.ensure_future(close_result)
+                    while not close_task.done():
+                        try:
+                            await asyncio.shield(close_task)
+                        except asyncio.CancelledError:
+                            cancelled = True
+                        except Exception:
+                            break
+                    with contextlib.suppress(Exception, asyncio.CancelledError):
+                        close_task.result()
         else:
             close = getattr(backend, "close", None)
             if callable(close):
                 with contextlib.suppress(Exception):
                     result = close()
                     if inspect.isawaitable(result):
-                        await result
+                        close_task = asyncio.ensure_future(result)
+                        while not close_task.done():
+                            try:
+                                await asyncio.shield(close_task)
+                            except asyncio.CancelledError:
+                                cancelled = True
+                            except Exception:
+                                break
+                        with contextlib.suppress(Exception, asyncio.CancelledError):
+                            close_task.result()
     finally:
         if owner is not None:
             cleanup = asyncio.get_running_loop().run_in_executor(
                 None, owner.__exit__, None, None, None
             )
-            cancelled = False
             while not cleanup.done():
                 try:
                     await asyncio.shield(cleanup)
                 except asyncio.CancelledError:
                     cancelled = True
             cleanup.result()
-            if cancelled:
-                raise asyncio.CancelledError
+    if cancelled:
+        raise asyncio.CancelledError
 
 
 async def list_storage_backend_tree(row: BackendRow, path: str = "/") -> list[dict[str, Any]]:

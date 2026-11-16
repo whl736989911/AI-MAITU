@@ -15,7 +15,6 @@ from octop.infra.auth.sso.service import SsoService
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.services import build_shared_services
-from octop.infra.users.identity import Role, User
 from octop.infra.users.manager import UserManager
 from octop.infra.utils.paths import PathLayout
 
@@ -328,18 +327,19 @@ async def test_callback_verifies_id_token_against_discovery_issuer(
 
 @pytest.mark.asyncio
 async def test_exchange_login_code_is_one_shot_and_writes_audit(service: SsoService) -> None:
-    user = User(id=42, username="member", role=Role.USER, display_name=None)
+    user_id = service._services.user_repo.create(username="member", role="user")
+    user = service._user_manager.resolve_active_by_id(user_id)
+    assert user is not None
     provider = configure_provider(service)
     add_login_state(service, provider.id)
     service._services.sso_repo.attach_login_code(
         "valid-state", login_code="one-shot", user_id=user.id, expires_at=int(time.time()) + 60
     )
-    with patch.object(service._user_manager, "get_by_id", return_value=user):
-        assert await service.exchange_login_code("one-shot") == user
-        with pytest.raises(ValueError, match="invalid or expired"):
-            await service.exchange_login_code("one-shot")
-        with pytest.raises(ValueError, match="invalid or expired"):
-            await service.exchange_login_code("unknown")
+    assert await service.exchange_login_code("one-shot") == user
+    with pytest.raises(ValueError, match="invalid or expired"):
+        await service.exchange_login_code("one-shot")
+    with pytest.raises(ValueError, match="invalid or expired"):
+        await service.exchange_login_code("unknown")
 
     audit = service._services.audit_repo.query(action="auth.oidc_login")
     assert [(row.actor, row.target) for row in audit] == [("member", "member")]
@@ -353,10 +353,30 @@ async def test_exchange_login_code_rejects_unavailable_user(service: SsoService)
         "valid-state", login_code="unavailable", user_id=42, expires_at=int(time.time()) + 60
     )
     with (
-        patch.object(service._user_manager, "get_by_id", return_value=None),
+        patch.object(service._user_manager, "resolve_active_by_id", return_value=None),
         pytest.raises(ValueError, match="unavailable"),
     ):
         await service.exchange_login_code("unavailable")
+
+
+@pytest.mark.asyncio
+async def test_exchange_login_code_rejects_account_disabled_after_issue(
+    service: SsoService,
+) -> None:
+    user_id = service._services.user_repo.create(username="disabled-member", role="user")
+    provider = configure_provider(service)
+    add_login_state(service, provider.id)
+    service._services.sso_repo.attach_login_code(
+        "valid-state", login_code="disabled", user_id=user_id, expires_at=int(time.time()) + 60
+    )
+    user = service._user_manager.resolve_active_by_id(user_id)
+    assert user is not None
+    service._user_manager.register_cached_user(user)
+    with service._services.db.transaction() as conn:
+        service._services.user_repo.update_account(user_id, {"disabled": True}, conn=conn)
+
+    with pytest.raises(ValueError, match="unavailable"):
+        await service.exchange_login_code("disabled")
 
 
 def test_oidc_status_ignores_feishu_row(service: SsoService) -> None:

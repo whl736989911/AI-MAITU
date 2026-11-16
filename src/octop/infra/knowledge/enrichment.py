@@ -17,7 +17,11 @@ from typing import Any, cast
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.files import file_digest
 from octop.infra.knowledge.metadata import validate_suggested_values
-from octop.infra.knowledge.service import KnowledgeService
+from octop.infra.knowledge.service import (
+    KnowledgeService,
+    _knowledge_mutation_lock,
+    _serialize_document_operation,
+)
 from octop.infra.utils.ulid import new_ulid
 
 logger = logging.getLogger(__name__)
@@ -76,61 +80,62 @@ class KnowledgeEnrichmentService:
                 ErrorCode.MODEL_UNAVAILABLE, "no chat model is configured for enrichment"
             )
         payload = self._call_model(llm, preview, schema)
-        current = self._repo.get_document(doc_id)
-        if (
-            current is None
-            or current.kb_id != kb_id
-            or current.content_hash != document.content_hash
-            or current.status != document.status
-        ):
-            raise OctopError(
-                ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
-                "the document changed while the suggestion was being generated",
-            )
-        knowledge.require_document_writable(current, actor_user_id=actor_user_id)
-        if document.content_hash:
-            from octop.infra.knowledge.source_access import KnowledgeSourceService
-            from octop.infra.knowledge.sources import SourceError
-
-            try:
-                with KnowledgeSourceService(self._services).open_original(
-                    kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
-                ) as original:
-                    current_digest = file_digest(original)
-            except (OSError, SourceError) as exc:
+        with _knowledge_mutation_lock(kb_id):
+            current = self._repo.get_document(doc_id)
+            if (
+                current is None
+                or current.kb_id != kb_id
+                or current.content_hash != document.content_hash
+                or current.status != document.status
+            ):
                 raise OctopError(
                     ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
-                    "the document source changed or became unavailable while the suggestion was generated",
-                ) from exc
-            if current_digest != document.content_hash:
-                raise OctopError(
-                    ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
-                    "the document source changed while the suggestion was being generated",
+                    "the document changed while the suggestion was being generated",
                 )
-        summary = str(payload.get("summary") or "").strip()[:_MAX_SUMMARY_CHARS]
-        raw_keywords = payload.get("keywords")
-        keywords = []
-        if isinstance(raw_keywords, list):
-            for item in raw_keywords:
-                keyword = str(item).strip()[:_MAX_KEYWORD_CHARS]
-                if keyword and keyword not in keywords:
-                    keywords.append(keyword)
-                if len(keywords) >= _MAX_KEYWORDS:
-                    break
-        fields = validate_suggested_values(schema, payload.get("fields"))
-        return cast(
-            dict[str, Any],
-            self._repo.create_suggestion(
-                suggestion_id=new_ulid(),
-                document_id=doc_id,
-                kb_id=kb_id,
-                content_hash=document.content_hash,
-                summary=summary,
-                keywords=keywords,
-                fields=fields,
-                model=model_ref,
-            ),
-        )
+            knowledge.require_document_writable(current, actor_user_id=actor_user_id)
+            if document.content_hash:
+                from octop.infra.knowledge.source_access import KnowledgeSourceService
+                from octop.infra.knowledge.sources import SourceError
+
+                try:
+                    with KnowledgeSourceService(self._services).open_original(
+                        kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
+                    ) as original:
+                        current_digest = file_digest(original)
+                except (OSError, SourceError) as exc:
+                    raise OctopError(
+                        ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                        "the document source changed or became unavailable while the suggestion was generated",
+                    ) from exc
+                if current_digest != document.content_hash:
+                    raise OctopError(
+                        ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                        "the document source changed while the suggestion was being generated",
+                    )
+            summary = str(payload.get("summary") or "").strip()[:_MAX_SUMMARY_CHARS]
+            raw_keywords = payload.get("keywords")
+            keywords = []
+            if isinstance(raw_keywords, list):
+                for item in raw_keywords:
+                    keyword = str(item).strip()[:_MAX_KEYWORD_CHARS]
+                    if keyword and keyword not in keywords:
+                        keywords.append(keyword)
+                    if len(keywords) >= _MAX_KEYWORDS:
+                        break
+            fields = validate_suggested_values(schema, payload.get("fields"))
+            return cast(
+                dict[str, Any],
+                self._repo.create_suggestion(
+                    suggestion_id=new_ulid(),
+                    document_id=doc_id,
+                    kb_id=kb_id,
+                    content_hash=document.content_hash,
+                    summary=summary,
+                    keywords=keywords,
+                    fields=fields,
+                    model=model_ref,
+                ),
+            )
 
     def list_suggestions(
         self,
@@ -157,6 +162,7 @@ class KnowledgeEnrichmentService:
             ),
         )
 
+    @_serialize_document_operation
     def apply_suggestion(
         self,
         kb_id: str,
@@ -241,6 +247,7 @@ class KnowledgeEnrichmentService:
         updated = self._repo.get_suggestion(suggestion_id)
         return cast(dict[str, Any], updated or suggestion)
 
+    @_serialize_document_operation
     def reject_suggestion(
         self,
         kb_id: str,

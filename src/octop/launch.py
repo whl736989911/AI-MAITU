@@ -61,7 +61,8 @@ async def _serve(server: Any) -> None:
     await server.serve()
 
 
-async def run_foreground(
+async def _serve_started_server(
+    srv: Any,
     *,
     host: str | None,
     port: int | None,
@@ -71,26 +72,20 @@ async def run_foreground(
     ssl_certfile: str | None,
     ssl_keyfile: str | None,
 ) -> None:
-    """Boot the domain server, serve the HTTP API, then shut down cleanly."""
+    """Configure listeners and serve an already-started domain server."""
+    # The outer entry point stops the server even if listener setup fails.
     import uvicorn
 
     from octop.api.app import build_app
     from octop.infra.setup.tls.http_companion import build_http_companion_app
     from octop.infra.setup.tls.listeners import build_listen_plan
     from octop.infra.setup.tls.store import resolve_tls_paths
-    from octop.infra.utils.paths import migrate_legacy_home
 
-    # Desktop/service entry points construct the server directly; upgrade the
-    # legacy data home before the server resolves its paths.
-    migrate_legacy_home()
-    srv = OctopServer()
-    await srv.start()
-    bwrap_task = _schedule_linux_bubblewrap_diagnosis()
     # Greenfield deferral leaves services unset until /setup/database binds.
     cfg = srv.services.config if srv.services is not None else srv.config
     assert cfg is not None
-    bind_host = host or cfg.bind_host
-    bind_port = port or cfg.port
+    bind_host = host if host is not None else cfg.bind_host
+    bind_port = port if port is not None else cfg.port
     if ssl_certfile is None and ssl_keyfile is None:
         ssl_certfile, ssl_keyfile = resolve_tls_paths(srv.paths.root, cfg.tls)
 
@@ -164,6 +159,39 @@ async def run_foreground(
         await asyncio.gather(*(_serve(s) for s in servers))
     finally:
         await memory_control.close()
+
+
+async def run_foreground(
+    *,
+    host: str | None,
+    port: int | None,
+    reload: bool,
+    workers: int,
+    log_level: str | None,
+    ssl_certfile: str | None,
+    ssl_keyfile: str | None,
+) -> None:
+    """Boot the domain server, serve the HTTP API, then shut down cleanly."""
+    from octop.infra.utils.paths import migrate_legacy_home
+
+    # Upgrade the legacy home before the server resolves its paths.
+    migrate_legacy_home()
+    srv = OctopServer()
+    await srv.start()
+    bwrap_task: asyncio.Task[None] | None = None
+    try:
+        bwrap_task = _schedule_linux_bubblewrap_diagnosis()
+        await _serve_started_server(
+            srv,
+            host=host,
+            port=port,
+            reload=reload,
+            workers=workers,
+            log_level=log_level,
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile=ssl_keyfile,
+        )
+    finally:
         await _cancel_background_task(bwrap_task)
         await srv.stop()
 

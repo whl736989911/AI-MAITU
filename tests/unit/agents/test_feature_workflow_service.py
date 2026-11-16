@@ -8,6 +8,7 @@ of that line each write path lands on.
 
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from typing import Any
 
@@ -130,6 +131,45 @@ async def test_publishing_with_an_installed_skill_is_accepted(
     grants = _ownership_and_acl(repos)[2]
     assert ("agent", FEATURE_AGENT, "user", "991") in grants
     assert ("feature", FEATURE_ID, "user", "992") in grants
+
+
+@pytest.mark.asyncio
+async def test_workflow_stage_read_waits_for_in_progress_publish(
+    tmp_path: Path, repos: RepoBundle, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = _workspace(tmp_path / "ws")
+    await service.save_definition(
+        workspace, _definition(status="active"), repos=repos, agent_id=FEATURE_AGENT
+    )
+    original_move = workspace.amove
+    gap_reached = asyncio.Event()
+    continue_save = asyncio.Event()
+    paused = False
+
+    async def pause_after_old_definition_move(src: str, dest: str) -> None:
+        nonlocal paused
+        await original_move(src, dest)
+        if not paused and ".backup-" in dest:
+            paused = True
+            gap_reached.set()
+            await continue_save.wait()
+
+    monkeypatch.setattr(workspace, "amove", pause_after_old_definition_move)
+    saving = asyncio.create_task(
+        service.save_definition(
+            workspace, _definition(status="active"), repos=repos, agent_id=FEATURE_AGENT
+        )
+    )
+    await asyncio.wait_for(gap_reached.wait(), timeout=1)
+
+    reading_stage = asyncio.create_task(wf.feature_memory_stage(workspace))
+    try:
+        await asyncio.sleep(0)
+        assert not reading_stage.done()
+    finally:
+        continue_save.set()
+        await saving
+    assert await reading_stage == wf.STATUS_ACTIVE
 
 
 def _ownership_and_acl(repos: RepoBundle) -> tuple[Any, Any, Any]:

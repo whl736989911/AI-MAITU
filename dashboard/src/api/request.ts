@@ -22,9 +22,22 @@ export const UNAUTHORIZED_EVENT = "octop:unauthorized";
 export const FORBIDDEN_EVENT = "octop:forbidden";
 /** Fired when the server denies a business request because the instance is locked. */
 export const INSTANCE_LICENSE_LOCKED_EVENT = "octop:instance-license-locked";
+export const AUTH_IDENTITY_CHANGED_EVENT = "octop:auth-identity-changed";
 let _redirectingForAccessExpiry = false;
+let authIdentityGeneration = 0;
 
-export function handleAccessExpired(noticeValue?: unknown): void {
+export function handleAccessExpired(
+  noticeValue?: unknown,
+  requestToken?: string,
+  requestGeneration?: number,
+): void {
+  if (
+    requestGeneration !== undefined &&
+    (requestGeneration !== authIdentityGeneration ||
+      !isSameAuthIdentity(requestToken ?? "", getAuthToken()))
+  ) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
   const notice = typeof noticeValue === "string" ? noticeValue : "";
   clearAuthToken();
   const path = appPathname(window.location.pathname);
@@ -37,7 +50,23 @@ export function handleAccessExpired(noticeValue?: unknown): void {
   );
 }
 
-async function throwIfAccessExpired(response: Response): Promise<void> {
+function assertResponseIdentity(
+  requestToken: string,
+  requestGeneration: number,
+): void {
+  if (
+    requestGeneration !== authIdentityGeneration ||
+    !isSameAuthIdentity(requestToken, getAuthToken())
+  ) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
+}
+
+async function throwIfAccessExpired(
+  response: Response,
+  requestToken: string,
+  requestGeneration: number,
+): Promise<void> {
   if (response.status !== 403) return;
   const body = (await response
     .clone()
@@ -48,8 +77,13 @@ async function throwIfAccessExpired(response: Response): Promise<void> {
       details?: { notice?: unknown; expires_at?: unknown };
     };
   } | null;
+  assertResponseIdentity(requestToken, requestGeneration);
   if (body?.error?.code !== "ACCESS_EXPIRED") return;
-  handleAccessExpired(body.error.details?.notice);
+  handleAccessExpired(
+    body.error.details?.notice,
+    requestToken,
+    requestGeneration,
+  );
 }
 export class InstanceLicenseLockedError extends Error {
   constructor() {
@@ -125,10 +159,80 @@ export function isSetupRequiredKnown(): boolean {
   return _setupRequiredKnown;
 }
 
+function tokenSubject(token: string): string | null {
+  const payload = token.split(".")[1];
+  if (!payload) return null;
+  try {
+    const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64.padEnd(Math.ceil(base64.length / 4) * 4, "=");
+    const binary = atob(padded);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    const claims = JSON.parse(new TextDecoder().decode(bytes)) as {
+      sub?: unknown;
+    };
+    return typeof claims.sub === "string" && claims.sub.length > 0
+      ? claims.sub
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function authIdentityChanged(
+  previous: string | null,
+  next: string | null,
+): boolean {
+  if (previous === next) return false;
+  if (!previous || !next) return Boolean(previous || next);
+  const previousSubject = tokenSubject(previous);
+  const nextSubject = tokenSubject(next);
+  return (
+    previousSubject === null ||
+    nextSubject === null ||
+    previousSubject !== nextSubject
+  );
+}
+
+/** Compare token identities for stale-response guards; same-sub renewals match. */
+export function isSameAuthIdentity(previous: string, next: string): boolean {
+  return !authIdentityChanged(previous, next);
+}
+
+function dispatchAuthIdentityChanged(): void {
+  authIdentityGeneration += 1;
+  window.dispatchEvent(new Event(AUTH_IDENTITY_CHANGED_EVENT));
+}
+
+let lastObservedAuthToken = "";
+if (typeof window !== "undefined") {
+  lastObservedAuthToken = localStorage.getItem(AUTH_TOKEN_KEY) || "";
+  window.addEventListener("storage", (event) => {
+    if (event.storageArea && event.storageArea !== localStorage) return;
+    if (event.key === AUTH_TOKEN_KEY) {
+      if (authIdentityChanged(event.oldValue, event.newValue)) {
+        dispatchAuthIdentityChanged();
+      }
+      lastObservedAuthToken = event.newValue || "";
+      return;
+    }
+    if (event.key === null) {
+      const currentToken = localStorage.getItem(AUTH_TOKEN_KEY);
+      if (lastObservedAuthToken || currentToken) {
+        dispatchAuthIdentityChanged();
+      }
+      lastObservedAuthToken = currentToken || "";
+    }
+  });
+}
+
 /** Save JWT token to localStorage */
 export function setAuthToken(token: string) {
+  const previous = getAuthToken();
+  const identityChanged = authIdentityChanged(previous, token);
   localStorage.setItem(AUTH_TOKEN_KEY, token);
+  lastObservedAuthToken = token;
   clearSetupRequired();
+  if (identityChanged) dispatchAuthIdentityChanged();
 }
 
 /** Get JWT token from localStorage */
@@ -139,14 +243,27 @@ export function getAuthToken(): string {
 /** Remove JWT token from localStorage */
 export function clearAuthToken() {
   localStorage.removeItem(AUTH_TOKEN_KEY);
+  lastObservedAuthToken = "";
   localStorage.removeItem("octop:active-agent");
   setActiveAgentId(null);
+  dispatchAuthIdentityChanged();
 }
 
-/** Persist a sliding-renewed access token from an API response, if present. */
-export function applyRenewedAccessToken(response: Response): void {
+/** Persist sliding renewal only while the original account is still active. */
+export function applyRenewedAccessToken(
+  response: Response,
+  requestToken: string,
+  requestGeneration: number,
+): void {
+  assertResponseIdentity(requestToken, requestGeneration);
   const renewed = response.headers.get(ACCESS_TOKEN_RESPONSE_HEADER);
-  if (renewed) {
+  const current = getAuthToken();
+  if (
+    renewed &&
+    current &&
+    isSameAuthIdentity(requestToken, current) &&
+    isSameAuthIdentity(current, renewed)
+  ) {
     setAuthToken(renewed);
   }
 }
@@ -202,6 +319,8 @@ function assertNotSetupLocked(path: string): void {
 async function check503ForSetupRequired(
   path: string,
   response: Response,
+  requestToken: string,
+  requestGeneration: number,
 ): Promise<boolean> {
   if (response.status !== 503) return false;
   let body: unknown = null;
@@ -209,8 +328,10 @@ async function check503ForSetupRequired(
     body = await response.clone().json();
   } catch {
     /* not JSON — fall through to the standard error path. */
+    assertResponseIdentity(requestToken, requestGeneration);
     return false;
   }
+  assertResponseIdentity(requestToken, requestGeneration);
   if (
     body &&
     typeof body === "object" &&
@@ -356,12 +477,15 @@ function handleUnauthorized(): void {
 async function throwIfUnauthorized(
   path: string,
   response: Response,
+  requestToken: string,
+  requestGeneration: number,
 ): Promise<void> {
-  if (response.status !== 401 || path.startsWith("/auth/")) {
-    return;
+  if (response.status !== 401) return;
+  assertResponseIdentity(requestToken, requestGeneration);
+  if (getAuthToken() !== requestToken) {
+    throw new DOMException("The operation was aborted.", "AbortError");
   }
-  clearAuthToken();
-  handleUnauthorized();
+  if (path.startsWith("/auth/")) return;
   let message = "Unauthorized";
   if (path.startsWith("/setup/")) {
     try {
@@ -375,16 +499,28 @@ async function throwIfUnauthorized(
       /* keep generic message */
     }
   }
+  assertResponseIdentity(requestToken, requestGeneration);
+  if (getAuthToken() !== requestToken) {
+    throw new DOMException("The operation was aborted.", "AbortError");
+  }
+  clearAuthToken();
+  handleUnauthorized();
   throw new Error(message);
 }
-async function throwIfLicenseLocked(response: Response): Promise<void> {
+async function throwIfLicenseLocked(
+  response: Response,
+  requestToken: string,
+  requestGeneration: number,
+): Promise<void> {
   if (response.status !== 403) return;
   let body: unknown;
   try {
     body = await response.clone().json();
   } catch {
+    assertResponseIdentity(requestToken, requestGeneration);
     return;
   }
+  assertResponseIdentity(requestToken, requestGeneration);
   if (!body || typeof body !== "object" || !("error" in body)) return;
   const error = body.error;
   if (
@@ -404,35 +540,48 @@ export async function request<T = unknown>(
 ): Promise<T> {
   assertNotSetupLocked(path);
 
+  const requestToken = getAuthToken();
+  const requestGeneration = authIdentityGeneration;
   const url = getApiUrl(path);
-
   const headers = buildHeaders(path, options.headers);
-
   const response = await fetch(url, {
     ...options,
     headers,
   });
+  assertResponseIdentity(requestToken, requestGeneration);
   const serverTime = Date.parse(response.headers.get("Date") ?? "");
   if (Number.isFinite(serverTime)) {
     serverTimeOffsetMs = serverTime - Date.now();
   }
-  await throwIfAccessExpired(response);
+  await throwIfAccessExpired(response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
 
-  if (await check503ForSetupRequired(path, response)) {
+  if (
+    await check503ForSetupRequired(
+      path,
+      response,
+      requestToken,
+      requestGeneration,
+    )
+  ) {
     throw new SetupRequiredError();
   }
 
-  await throwIfUnauthorized(path, response);
-  await throwIfLicenseLocked(response);
-  applyRenewedAccessToken(response);
+  await throwIfUnauthorized(path, response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
+  await throwIfLicenseLocked(response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
+  applyRenewedAccessToken(response, requestToken, requestGeneration);
 
   if (!response.ok) {
     if (response.status === 403 && isAgentScopedPath(path)) {
+      assertResponseIdentity(requestToken, requestGeneration);
       window.dispatchEvent(
         new CustomEvent(FORBIDDEN_EVENT, { detail: { path } }),
       );
     }
     const text = await response.text().catch(() => "");
+    assertResponseIdentity(requestToken, requestGeneration);
     notifyLicenseLocked(path, response.status, text);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
@@ -447,10 +596,14 @@ export async function request<T = unknown>(
 
   const contentType = response.headers.get("content-type") || "";
   if (!contentType.includes("application/json")) {
-    return (await response.text()) as unknown as T;
+    const text = await response.text();
+    assertResponseIdentity(requestToken, requestGeneration);
+    return text as unknown as T;
   }
 
-  return (await response.json()) as T;
+  const result = (await response.json()) as T;
+  assertResponseIdentity(requestToken, requestGeneration);
+  return result;
 }
 
 /**
@@ -467,24 +620,38 @@ export async function requestBlob(
 ): Promise<Blob> {
   assertNotSetupLocked(path);
 
+  const requestToken = getAuthToken();
+  const requestGeneration = authIdentityGeneration;
   const url = getApiUrl(path);
   const headers = buildAuthHeaders(path);
   const response = await fetch(url, {
     ...options,
     headers: { ...headers, ...(options.headers as Record<string, string>) },
   });
-  await throwIfAccessExpired(response);
+  assertResponseIdentity(requestToken, requestGeneration);
+  await throwIfAccessExpired(response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
 
-  if (await check503ForSetupRequired(path, response)) {
+  if (
+    await check503ForSetupRequired(
+      path,
+      response,
+      requestToken,
+      requestGeneration,
+    )
+  ) {
     throw new SetupRequiredError();
   }
 
-  await throwIfUnauthorized(path, response);
-  await throwIfLicenseLocked(response);
-  applyRenewedAccessToken(response);
+  await throwIfUnauthorized(path, response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
+  await throwIfLicenseLocked(response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
+  applyRenewedAccessToken(response, requestToken, requestGeneration);
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    assertResponseIdentity(requestToken, requestGeneration);
     notifyLicenseLocked(path, response.status, text);
     throw new HttpStatusError(
       response.status,
@@ -501,6 +668,7 @@ export async function requestBlob(
     let loaded = 0;
     for (;;) {
       const { done, value } = await reader.read();
+      assertResponseIdentity(requestToken, requestGeneration);
       if (done) break;
       if (value) {
         chunks.push(value as unknown as BlobPart);
@@ -511,7 +679,9 @@ export async function requestBlob(
     return new Blob(chunks);
   }
 
-  return response.blob();
+  const blob = await response.blob();
+  assertResponseIdentity(requestToken, requestGeneration);
+  return blob;
 }
 
 /**
@@ -524,24 +694,38 @@ export async function probeAuthResource(
 ): Promise<void> {
   assertNotSetupLocked(path);
 
+  const requestToken = getAuthToken();
+  const requestGeneration = authIdentityGeneration;
   const url = getApiUrl(path);
   const headers = buildAuthHeaders(path);
   const response = await fetch(url, {
     ...options,
     headers: { ...headers, ...(options.headers as Record<string, string>) },
   });
+  assertResponseIdentity(requestToken, requestGeneration);
 
-  if (await check503ForSetupRequired(path, response)) {
+  if (
+    await check503ForSetupRequired(
+      path,
+      response,
+      requestToken,
+      requestGeneration,
+    )
+  ) {
     throw new SetupRequiredError();
   }
-  await throwIfAccessExpired(response);
+  await throwIfAccessExpired(response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
 
-  await throwIfUnauthorized(path, response);
-  await throwIfLicenseLocked(response);
-  applyRenewedAccessToken(response);
+  await throwIfUnauthorized(path, response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
+  await throwIfLicenseLocked(response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
+  applyRenewedAccessToken(response, requestToken, requestGeneration);
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    assertResponseIdentity(requestToken, requestGeneration);
     notifyLicenseLocked(path, response.status, text);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
@@ -555,6 +739,7 @@ export async function probeAuthResource(
   } catch {
     /* ignore cancel failures */
   }
+  assertResponseIdentity(requestToken, requestGeneration);
 }
 
 /**
@@ -567,24 +752,38 @@ export async function requestStream(
 ): Promise<{ contentType: string; body: ReadableStream<Uint8Array> }> {
   assertNotSetupLocked(path);
 
+  const requestToken = getAuthToken();
+  const requestGeneration = authIdentityGeneration;
   const url = getApiUrl(path);
   const headers = buildAuthHeaders(path);
   const response = await fetch(url, {
     ...options,
     headers: { ...headers, ...(options.headers as Record<string, string>) },
   });
+  assertResponseIdentity(requestToken, requestGeneration);
 
-  if (await check503ForSetupRequired(path, response)) {
+  if (
+    await check503ForSetupRequired(
+      path,
+      response,
+      requestToken,
+      requestGeneration,
+    )
+  ) {
     throw new SetupRequiredError();
   }
-  await throwIfAccessExpired(response);
+  await throwIfAccessExpired(response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
 
-  await throwIfUnauthorized(path, response);
-  await throwIfLicenseLocked(response);
-  applyRenewedAccessToken(response);
+  await throwIfUnauthorized(path, response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
+  await throwIfLicenseLocked(response, requestToken, requestGeneration);
+  assertResponseIdentity(requestToken, requestGeneration);
+  applyRenewedAccessToken(response, requestToken, requestGeneration);
 
   if (!response.ok) {
     const text = await response.text().catch(() => "");
+    assertResponseIdentity(requestToken, requestGeneration);
     notifyLicenseLocked(path, response.status, text);
     throw new Error(
       `Request failed: ${response.status} ${response.statusText}${
@@ -597,6 +796,7 @@ export async function requestStream(
     throw new Error("Empty stream from server");
   }
 
+  assertResponseIdentity(requestToken, requestGeneration);
   return {
     contentType: response.headers.get("content-type") || "",
     body: response.body,
@@ -617,6 +817,8 @@ export async function requestUpload<T = unknown>(
 ): Promise<T> {
   assertNotSetupLocked(path);
 
+  const requestToken = getAuthToken();
+  const requestGeneration = authIdentityGeneration;
   const url = getApiUrl(path);
   const headers = buildAuthHeaders(path);
   const method = options.method ?? "POST";
@@ -664,50 +866,69 @@ export async function requestUpload<T = unknown>(
 
     xhr.onload = () => {
       void (async () => {
-        const status = xhr.status;
-        const responseText = xhr.responseText;
-        const responseHeaders = new Headers();
-        const renewed = xhr.getResponseHeader(ACCESS_TOKEN_RESPONSE_HEADER);
-        if (renewed) {
-          responseHeaders.set(ACCESS_TOKEN_RESPONSE_HEADER, renewed);
-        }
-        const response = new Response(responseText, {
-          status,
-          headers: responseHeaders,
-        });
-        await throwIfAccessExpired(response);
-
-        if (await check503ForSetupRequired(path, response)) {
-          reject(new SetupRequiredError());
-          return;
-        }
-
         try {
-          await throwIfUnauthorized(path, response);
+          const status = xhr.status;
+          const responseText = xhr.responseText;
+          const responseHeaders = new Headers();
+          const renewed = xhr.getResponseHeader(ACCESS_TOKEN_RESPONSE_HEADER);
+          if (renewed) {
+            responseHeaders.set(ACCESS_TOKEN_RESPONSE_HEADER, renewed);
+          }
+          const response = new Response(responseText, {
+            status,
+            headers: responseHeaders,
+          });
+          assertResponseIdentity(requestToken, requestGeneration);
+          await throwIfAccessExpired(response, requestToken, requestGeneration);
+          assertResponseIdentity(requestToken, requestGeneration);
+
+          if (
+            await check503ForSetupRequired(
+              path,
+              response,
+              requestToken,
+              requestGeneration,
+            )
+          ) {
+            reject(new SetupRequiredError());
+            return;
+          }
+
+          await throwIfUnauthorized(
+            path,
+            response,
+            requestToken,
+            requestGeneration,
+          );
+          assertResponseIdentity(requestToken, requestGeneration);
+          applyRenewedAccessToken(response, requestToken, requestGeneration);
+
+          if (!response.ok) {
+            assertResponseIdentity(requestToken, requestGeneration);
+            notifyLicenseLocked(path, status, responseText);
+            // Same shape as request() so parseApiError() can read the error envelope.
+            reject(
+              new Error(
+                `Upload failed: ${status}${
+                  responseText ? ` - ${responseText}` : ""
+                }`,
+              ),
+            );
+            return;
+          }
+
+          let result: T;
+          try {
+            result = (await response.json()) as T;
+          } catch {
+            assertResponseIdentity(requestToken, requestGeneration);
+            reject(new Error("Upload failed: invalid JSON response"));
+            return;
+          }
+          assertResponseIdentity(requestToken, requestGeneration);
+          resolve(result);
         } catch (err) {
           reject(err);
-          return;
-        }
-
-        applyRenewedAccessToken(response);
-
-        if (!response.ok) {
-          notifyLicenseLocked(path, status, responseText);
-          // Same shape as request() so parseApiError() can read the error envelope.
-          reject(
-            new Error(
-              `Upload failed: ${status}${
-                responseText ? ` - ${responseText}` : ""
-              }`,
-            ),
-          );
-          return;
-        }
-
-        try {
-          resolve((await response.json()) as T);
-        } catch {
-          reject(new Error("Upload failed: invalid JSON response"));
         }
       })();
     };

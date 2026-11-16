@@ -7,8 +7,12 @@
  * any in-flight streaming content) are still available.
  */
 
+import {
+  AUTH_IDENTITY_CHANGED_EVENT,
+  getAuthToken,
+  handleAccessExpired,
+} from "../../../api/request";
 import { getApiUrl } from "../../../api/config";
-import { getAuthToken, handleAccessExpired } from "../../../api/request";
 import type { TokenUsage } from "../../../api/types";
 import { buildDashboardChatWsUrl } from "../../../api/modules/wsChat";
 import {
@@ -217,8 +221,20 @@ const EMPTY_SNAPSHOT: SessionSnapshot = Object.freeze({
   activeTurnId: null,
 });
 
+let authIdentityGeneration = 0;
+let authIdentityAbortController = new AbortController();
 let nextHistoryEpoch = 0;
 const sessionStates = new Map<string, SessionStreamState>();
+
+/** Snapshot the identity generation before starting an asynchronous chat task. */
+export function getAuthIdentityGeneration(): number {
+  return authIdentityGeneration;
+}
+
+/** Signal used to abort requests started for the previous authenticated user. */
+export function getAuthIdentitySignal(): AbortSignal {
+  return authIdentityAbortController.signal;
+}
 
 export interface SteeringReceipt {
   type: string;
@@ -967,6 +983,61 @@ export function removeSession(sessionId: string) {
   clearStreamActivity(sessionId);
   clearStreamWatchdog(sessionId);
   closeLiveSocket(sessionId, { intentional: true, userCancelled: true });
+}
+
+/** Discard browser chat state before another account can mount the same thread. */
+export function clearChatStateForAuthChange(): void {
+  authIdentityGeneration += 1;
+  authIdentityAbortController.abort();
+  authIdentityAbortController = new AbortController();
+  const sessionIds = new Set([
+    ...sessionStates.keys(),
+    ...liveSockets.keys(),
+    ...pendingResumeBySession.keys(),
+    ...streamActivityAt.keys(),
+    ...streamWatchdogs.keys(),
+  ]);
+  const states = new Set(sessionStates.values());
+  for (const sessionId of sessionIds) {
+    sessionStates.delete(sessionId);
+  }
+  for (const state of states) {
+    state.messages = [];
+    state.abortController?.abort();
+    state.abortController = null;
+  }
+  for (const sessionId of sessionIds) {
+    removeSession(sessionId);
+  }
+
+  _pendingPrefillText = "";
+  _pendingPrefillAttachments = [];
+  focusedChatSessionId = null;
+  steeringReceiptListeners.clear();
+
+  try {
+    for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+      const key = sessionStorage.key(index);
+      if (key?.startsWith(DRAFT_STORAGE_PREFIX)) {
+        sessionStorage.removeItem(key);
+      }
+    }
+  } catch {
+    // Storage may be unavailable in restricted browser contexts.
+  }
+
+  try {
+    localStorage.removeItem("octop.pendingChatMessage");
+  } catch {
+    // Storage may be unavailable in restricted browser contexts.
+  }
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    AUTH_IDENTITY_CHANGED_EVENT,
+    clearChatStateForAuthChange,
+  );
 }
 
 /** Drop a session map key without destroying the underlying state object.
@@ -2309,9 +2380,15 @@ async function sendTurnWebSocket(
       clearLiveSocket(sessionId, ws);
       controller.signal.removeEventListener("abort", onAbort);
 
-      // Failed to open (unit tests / offline) — seal without resume thrash.
+      // A connection that never opened cannot deliver a server error frame.
+      // Surface the failure instead of leaving the optimistic user turn unanswered.
       if (!openedForTurn && !userCancelled) {
         if (!settled) {
+          appendErrorBubble(
+            state,
+            "WebSocket connection failed. Check network or server logs.",
+            "ws_error",
+          );
           finish();
           settle(true);
         }

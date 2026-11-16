@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import queue
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -332,3 +336,62 @@ def test_apply_checks_actual_original_bytes_not_only_the_cached_hash(env: Simple
         env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"]
         == "pending"
     )
+
+
+def test_concurrent_reject_cannot_succeed_after_review_is_applied(
+    env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    owner, kb, document, _knowledge = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    writing = threading.Event()
+    release = threading.Event()
+    reject_progress: queue.Queue[None] = queue.Queue()
+    original_update = KnowledgeService.update_document_metadata
+    original_lock = service_module._knowledge_mutation_lock
+
+    def paused_update(knowledge, *args, **kwargs):
+        writing.set()
+        if not release.wait(5):
+            raise TimeoutError("reviewed metadata write was not released")
+        return original_update(knowledge, *args, **kwargs)
+
+    @contextmanager
+    def observed_lock(kb_id):
+        if threading.current_thread().name.startswith("review-reject"):
+            reject_progress.put(None)
+        with original_lock(kb_id):
+            yield
+
+    def reject():
+        try:
+            return enrichment.reject_suggestion(
+                kb.id, suggestion["suggestion_id"], actor_user_id=owner
+            )
+        finally:
+            reject_progress.put(None)
+
+    monkeypatch.setattr(KnowledgeService, "update_document_metadata", paused_update)
+    monkeypatch.setattr(service_module, "_knowledge_mutation_lock", observed_lock)
+    with (
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="review-apply") as apply_pool,
+        ThreadPoolExecutor(max_workers=1, thread_name_prefix="review-reject") as reject_pool,
+    ):
+        applying = apply_pool.submit(
+            enrichment.apply_suggestion, kb.id, suggestion["suggestion_id"], actor_user_id=owner
+        )
+        try:
+            assert writing.wait(5)
+            rejecting = reject_pool.submit(reject)
+            reject_progress.get(timeout=5)
+        finally:
+            release.set()
+        assert applying.result(timeout=5)["status"] == "applied"
+        with pytest.raises(OctopError) as conflict:
+            rejecting.result(timeout=5)
+    assert conflict.value.code is ErrorCode.KNOWLEDGE_REQUEST_INVALID
+    assert (
+        env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"]
+        == "applied"
+    )
+    assert env.services.knowledge_repo.get_document(document.id).metadata == {"drawing_no": "A-102"}

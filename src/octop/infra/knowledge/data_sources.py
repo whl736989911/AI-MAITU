@@ -542,19 +542,20 @@ class DataSourceService:
         against another system (design §4). The returned text is shown to the
         administrator and carries no secret.
         """
-        data_source = self._require(ds_id)
-        self._knowledge.get_writable_base(
-            data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
-        )
-        try:
-            detail = self.connector(data_source).test()
-        except SourceError as exc:
-            self._repo.set_connection(ds_id, status=CONNECTION_FAILED, error=str(exc))
-            self._audit(actor_user_id, "knowledge.source.test.failed", ds_id, str(exc))
-            raise
-        self._repo.set_connection(ds_id, status=CONNECTION_OK, error=None)
-        self._audit(actor_user_id, "knowledge.source.test", ds_id, detail)
-        return detail
+        with _source_lock(ds_id):
+            data_source = self._require(ds_id)
+            self._knowledge.get_writable_base(
+                data_source.knowledge_base_id, actor_user_id=actor_user_id, is_admin=is_admin
+            )
+            try:
+                detail = self.connector(data_source).test()
+            except SourceError as exc:
+                self._repo.set_connection(ds_id, status=CONNECTION_FAILED, error=str(exc))
+                self._audit(actor_user_id, "knowledge.source.test.failed", ds_id, str(exc))
+                raise
+            self._repo.set_connection(ds_id, status=CONNECTION_OK, error=None)
+            self._audit(actor_user_id, "knowledge.source.test", ds_id, detail)
+            return detail
 
     def delete(self, ds_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:
         with _source_lock(ds_id):
@@ -955,16 +956,30 @@ class DataSourceService:
         """Carry out a plan and return the counters the run records."""
         counts = dict(plan.counts)
         counts["failed"] = 0
+
+        # Remove files only after the planner's confirmation window. Their empty
+        # source-owned folders can then be pruned before same-path file discovery.
+        for doc_id in plan.removed:
+            self._remove_source_file(base.id, doc_id)
+        replacement_paths = {
+            normalize_kb_path(f"{data_source.id}/{entry.path}") for entry in plan.added
+        }
+        replacement_paths.update(
+            normalize_kb_path(f"{data_source.id}/{path}") for path in plan.observations
+        )
+        self._knowledge_repo.delete_empty_source_folders(data_source.id, replacement_paths)
         by_path = {row.source_path: row for row in indexed}
 
-        # 1. Observations first. A file still moving is remembered here so the
-        #    next scan can tell that it stopped — this is the debounce's state.
+        # 1. Observations first. A same-source directory may still contain files
+        #    whose deletion is pending; retain it and retry discovery afterward.
         for path, (size, modified_at) in plan.observations.items():
             row = by_path.get(path)
             if row is not None:
                 self._knowledge_repo.record_observation(
                     row.id, size=size, modified_at=modified_at, at=now
                 )
+                continue
+            if self._source_path_blocked_by_replacement(data_source, path):
                 continue
             created = self._create_source_row(
                 base,
@@ -976,8 +991,6 @@ class DataSourceService:
             if created is None:
                 counts["failed"] += 1
                 continue
-            # The observation has to land on the row this scan just made, or the
-            # next scan finds nothing to compare against and defers it forever.
             self._knowledge_repo.record_observation(
                 created.id, size=size, modified_at=modified_at, at=now
             )
@@ -992,6 +1005,8 @@ class DataSourceService:
         # 3. Index what settled.
         for entry in (*plan.added, *plan.updated):
             row = by_path.get(entry.path)
+            if row is None and self._source_path_blocked_by_replacement(data_source, entry.path):
+                continue
             if row is None:
                 row = self._create_source_row(
                     base,
@@ -1054,13 +1069,25 @@ class DataSourceService:
                     byte_size=entry.size,
                 )
 
-        # 4. Missing files: start the window, then act on the ones that ran out.
+        # 4. Missing files start their confirmation window only after this scan's
+        #    confirmed removals have been applied.
         for missing in plan.absent:
             self._knowledge_repo.mark_delete_pending(missing.document_id, since=now)
-        for doc_id in plan.removed:
-            self._remove_source_file(base.id, doc_id)
-
         return counts
+
+    def _source_path_blocked_by_replacement(
+        self, data_source: DataSourceRow, source_path: str
+    ) -> bool:
+        """Whether a same-source opposite-kind row still occupies this path."""
+        full_path = normalize_kb_path(f"{data_source.id}/{source_path}")
+        exact = self._knowledge_repo.get_document_by_path(data_source.knowledge_base_id, full_path)
+        if exact is not None and exact.is_dir and exact.data_source_id == data_source.id:
+            return True
+        for ancestor in ancestor_dirs(full_path):
+            row = self._knowledge_repo.get_document_by_path(data_source.knowledge_base_id, ancestor)
+            if row is not None and not row.is_dir and row.data_source_id == data_source.id:
+                return True
+        return False
 
     def _create_source_row(
         self,

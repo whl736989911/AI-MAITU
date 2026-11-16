@@ -403,7 +403,7 @@ async def browser_stream_ws(
         await websocket.close(code=4001, reason="missing token")
         return
     try:
-        user = resolve_user_from_token(server, token)
+        user = await resolve_user_from_token(server, token)
     except Exception as exc:
         await websocket.close(code=4001, reason=f"auth failed: {exc}")
         return

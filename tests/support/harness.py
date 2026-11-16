@@ -138,11 +138,18 @@ def build_harness_manager_mock(
     async def _aremove(agent_id: str) -> None:
         _remove(agent_id)
 
+    async def _aclose() -> None:
+        for entry in entries.values():
+            if isinstance(entry.agent, FakeHarnessAgent):
+                entry.agent.close()
+        entries.clear()
+
     mock_manager = MagicMock()
     mock_manager.create_agent.side_effect = _create
     mock_manager.acreate_agent = AsyncMock(side_effect=_acreate)
     mock_manager.arebuild_agent = AsyncMock(side_effect=_arebuild)
     mock_manager.aremove_agent = AsyncMock(side_effect=_aremove)
+    mock_manager.aclose = AsyncMock(side_effect=_aclose)
     mock_manager.get_agent.side_effect = _get_agent
     mock_manager.remove_agent.side_effect = _remove
 

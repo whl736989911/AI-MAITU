@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { octopThreadsApi } from "../../../api/modules/octopThreads";
+import { AUTH_IDENTITY_CHANGED_EVENT } from "../../../api/request";
 import * as chatStore from "./chatStore";
 import { useChat } from "./useChat";
 
@@ -235,5 +235,40 @@ describe("history failures", () => {
     expect(
       chatStore.getSnapshot(thread).messages.map((message) => message.id),
     ).toEqual(["keep"]);
+  });
+});
+
+describe("chat identity changes", () => {
+  it("does not let an old history response repopulate a reused thread id", async () => {
+    let resolveAccountA!: (value: OctopThreadHistory) => void;
+    const accountAResponse = new Promise<OctopThreadHistory>((resolve) => {
+      resolveAccountA = resolve;
+    });
+    vi.spyOn(octopThreadsApi, "history").mockReturnValue(accountAResponse);
+    const { result } = renderHook(() => useChat(thread, "agent"));
+    let oldLoad!: Promise<void>;
+    await act(async () => {
+      oldLoad = result.current.loadHistory(thread);
+      await Promise.resolve();
+    });
+
+    window.dispatchEvent(new Event(AUTH_IDENTITY_CHANGED_EVENT));
+    chatStore.setHistoryPage(
+      thread,
+      [{ id: "account-b", role: "user", content: "B history" }],
+      { hasMore: false, nextOffset: 1 },
+    );
+    resolveAccountA({
+      thread_id: thread,
+      messages: [{ id: "account-a", role: "user", content: "A history" }],
+      has_more: false,
+    });
+    await act(async () => {
+      await oldLoad;
+    });
+
+    expect(
+      chatStore.getSnapshot(thread).messages.map((message) => message.id),
+    ).toEqual(["account-b"]);
   });
 });

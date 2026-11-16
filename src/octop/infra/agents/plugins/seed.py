@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -77,40 +79,69 @@ def seed_bundled_plugins(
 
     copied: list[str] = []
     plugins_dir.mkdir(parents=True, exist_ok=True)
-    for child in sorted(bundled_root.iterdir(), key=lambda p: p.name):
-        if not child.is_dir() or child.name.startswith("_"):
-            continue
-        if not (child / "plugin.yaml").is_file():
-            continue
-        plugin_id = child.name
-        dest = plugins_dir / plugin_id
-        if dest.exists():
-            if _plugin_version(child) > _plugin_version(dest):
-                enabled_entry = plugins_cfg.get(plugin_id)
-                shutil.rmtree(dest)
-                shutil.copytree(child, dest)
-                copied.append(plugin_id)
-                if isinstance(enabled_entry, dict):
-                    plugins_cfg[plugin_id] = dict(enabled_entry)
-            if plugin_id not in seeded_set:
+    work_dir = Path(tempfile.mkdtemp(prefix=".bundled-seed-", dir=plugins_dir))
+    staged: list[tuple[Path, Path]] = []
+    published: list[tuple[Path, Path | None]] = []
+    clean_work_dir = True
+    try:
+        incoming = work_dir / "incoming"
+        previous = work_dir / "previous"
+        incoming.mkdir()
+        previous.mkdir()
+        for child in sorted(bundled_root.iterdir(), key=lambda p: p.name):
+            if not child.is_dir() or child.name.startswith("_"):
+                continue
+            if not (child / "plugin.yaml").is_file():
+                continue
+            plugin_id = child.name
+            dest = plugins_dir / plugin_id
+            if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+                raise NotADirectoryError(dest)
+            if dest.exists():
+                should_copy = _plugin_version(child) > _plugin_version(dest)
+                if plugin_id not in seeded_set:
+                    seeded.append(plugin_id)
+                    seeded_set.add(plugin_id)
+                    entry = plugins_cfg.get(plugin_id)
+                    if not isinstance(entry, dict):
+                        plugins_cfg[plugin_id] = {"enabled": False}
+            else:
+                if plugin_id in seeded_set:
+                    continue
+                should_copy = True
+                existing = plugins_cfg.get(plugin_id)
+                entry = dict(existing) if isinstance(existing, dict) else {}
+                entry["enabled"] = False
+                plugins_cfg[plugin_id] = entry
                 seeded.append(plugin_id)
                 seeded_set.add(plugin_id)
-                entry = plugins_cfg.get(plugin_id)
-                if not isinstance(entry, dict):
-                    plugins_cfg[plugin_id] = {"enabled": False}
-            continue
-        if plugin_id in seeded_set:
-            continue
-        shutil.copytree(child, dest)
-        existing = plugins_cfg.get(plugin_id)
-        plugin_entry: dict[str, Any] = dict(existing) if isinstance(existing, dict) else {}
-        plugin_entry["enabled"] = False
-        plugins_cfg[plugin_id] = plugin_entry
-        seeded.append(plugin_id)
-        seeded_set.add(plugin_id)
-        copied.append(plugin_id)
+            if should_copy:
+                staged_dir = incoming / plugin_id
+                shutil.copytree(child, staged_dir)
+                staged.append((staged_dir, dest))
+                copied.append(plugin_id)
 
-    data["bundled_plugins_seeded"] = seeded
-    data["plugins"] = plugins_cfg
-    _write_config(config_path, data)
+        for staged_dir, dest in staged:
+            backup = previous / dest.name if dest.exists() else None
+            if backup is not None:
+                os.replace(dest, backup)
+            published.append((dest, backup))
+            os.replace(staged_dir, dest)
+        data["bundled_plugins_seeded"] = seeded
+        data["plugins"] = plugins_cfg
+        _write_config(config_path, data)
+    except BaseException:
+        try:
+            for dest, backup in reversed(published):
+                if dest.exists():
+                    shutil.rmtree(dest)
+                if backup is not None:
+                    os.replace(backup, dest)
+        except BaseException:
+            clean_work_dir = False
+            raise
+        raise
+    finally:
+        if clean_work_dir:
+            shutil.rmtree(work_dir, ignore_errors=True)
     return copied

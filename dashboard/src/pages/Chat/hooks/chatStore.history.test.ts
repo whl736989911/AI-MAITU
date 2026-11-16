@@ -1,15 +1,69 @@
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  AUTH_IDENTITY_CHANGED_EVENT,
+  clearAuthToken,
+  setAuthToken,
+} from "../../../api/request";
+import {
   appendUserMessage,
   captureHistoryBaseline,
+  clearChatStateForAuthChange,
+  getAuthIdentitySignal,
   getSnapshot,
   invalidateHistory,
   isHistoryStale,
   prependHistoryMessages,
+  readInputDraft,
   removeSession,
   setHistoryPage,
+  writeInputDraft,
   type ChatMessage,
 } from "./chatStore";
+
+describe("chat auth state cleanup", () => {
+  afterEach(() => {
+    clearChatStateForAuthChange();
+  });
+
+  it("clears cached messages, drafts, and pending sends when auth is cleared", () => {
+    setHistoryPage(SESSION, [makeMessage("account-a-message")], {
+      hasMore: false,
+      nextOffset: 1,
+    });
+    writeInputDraft("shared-agent", SESSION, "account A draft");
+    localStorage.setItem("octop.pendingChatMessage", "account A pending send");
+
+    const oldIdentitySignal = getAuthIdentitySignal();
+    window.dispatchEvent(new Event(AUTH_IDENTITY_CHANGED_EVENT));
+    expect(oldIdentitySignal.aborted).toBe(true);
+    expect(getAuthIdentitySignal().aborted).toBe(false);
+
+    expect(getSnapshot(SESSION).messages).toEqual([]);
+    expect(readInputDraft("shared-agent", SESSION)).toBe("");
+    expect(localStorage.getItem("octop.pendingChatMessage")).toBeNull();
+  });
+});
+
+describe("same-identity token renewal", () => {
+  it("preserves cached chat state when the JWT subject is unchanged", () => {
+    const token = (marker: string) =>
+      `header.${btoa(JSON.stringify({ sub: "same-user", marker }))}.signature`;
+    setAuthToken(token("before-renewal"));
+    setHistoryPage(SESSION, [makeMessage("same-user-message")], {
+      hasMore: false,
+      nextOffset: 1,
+    });
+
+    try {
+      setAuthToken(token("after-renewal"));
+      expect(
+        getSnapshot(SESSION).messages.map((message) => message.id),
+      ).toEqual(["same-user-message"]);
+    } finally {
+      clearAuthToken();
+    }
+  });
+});
 
 const SESSION = "test-thread-history";
 

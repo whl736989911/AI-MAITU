@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from deepagents.backends.local_shell import LocalShellBackend
 from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.infra.agents.builtin_skills import OCTOP_BUILTIN_SKILLS_ROOT
+from octop.infra.agents.experts import published_creation
 from octop.infra.agents.experts.catalog import (
     MANIFEST_FILENAME,
     WORKSPACE_MANIFEST_PATH,
@@ -22,18 +25,16 @@ from octop.infra.agents.experts.publish import (
     export_agent_workspace_to_dir,
     resolve_published_expert_slug,
 )
-from octop.infra.db.repos.published_experts import PublishedExpertRow
+from octop.infra.agents.experts.published_creation import refresh_published_expert
+from octop.infra.db.migrate import run_migrations
+from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos.published_experts import PublishedExpertRepo, PublishedExpertRow
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.users.identity import Role, User
-from octop.infra.utils.paths import PathLayout
 
 
 def _workspace(root: Path) -> BackendWorkspace:
     return BackendWorkspace(LocalShellBackend(root_dir=str(root), virtual_mode=False), root)
-
-
-def test_published_experts_dir_is_under_instance_root(tmp_path: Path) -> None:
-    assert PathLayout(tmp_path).published_experts_dir == tmp_path / "published_experts"
 
 
 def test_only_creator_or_admin_can_mutate_published_expert() -> None:
@@ -481,3 +482,371 @@ async def test_install_legacy_snapshot_writes_current_system_layout(tmp_path: Pa
     assert (installed_dir / ".maitu" / "skills" / "old" / "SKILL.md").read_bytes() == b"# Old skill"
     assert not (installed_dir / ".octop").exists()
     assert (installed_dir / ".maitu" / MANIFEST_FILENAME).is_file()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("unsafe_path", ["skills/Z:/payload.md", "skills/guide.md:payload"])
+async def test_export_snapshot_rejects_windows_drive_and_stream_components(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, unsafe_path: str
+) -> None:
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = _workspace(source_dir)
+    await source.aupload_bytes(MANIFEST_FILENAME, b"{}")
+    original_glob = BackendWorkspace.aglob
+    original_download = BackendWorkspace.adownload_bytes
+
+    async def backend_glob(workspace, pattern):
+        if workspace is source and pattern == "skills/**/*":
+            return SimpleNamespace(matches=[{"path": unsafe_path, "is_dir": False}])
+        return await original_glob(workspace, pattern)
+
+    async def backend_download(workspace, path):
+        if workspace is source and path == unsafe_path:
+            return b"untrusted backend content"
+        return await original_download(workspace, path)
+
+    monkeypatch.setattr(BackendWorkspace, "aglob", backend_glob)
+    monkeypatch.setattr(BackendWorkspace, "adownload_bytes", backend_download)
+    destination = tmp_path / "published"
+    destination.mkdir()
+    existing = destination / "existing.md"
+    existing.write_bytes(b"previous snapshot")
+
+    with pytest.raises(ValueError):
+        await export_agent_workspace_to_dir(workspace=source, dest=destination)
+    assert existing.read_bytes() == b"previous snapshot"
+    assert sorted(path.name for path in destination.iterdir()) == ["existing.md"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_metadata_update", [False, True])
+async def test_refresh_keeps_snapshot_and_repo_metadata_consistent_on_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    fail_metadata_update: bool,
+) -> None:
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = PublishedExpertRepo(pool)
+    row = repo.create(
+        id="01TESTEXPERT000000000010",
+        slug="refresh-target",
+        name="Original name",
+        description="Original description",
+        created_by="7",
+        source_agent_id="source-agent",
+        icon_name="original",
+        color="#111111",
+    )
+    snapshot_dir = tmp_path / "published" / row.id
+    snapshot_dir.mkdir(parents=True)
+    (snapshot_dir / MANIFEST_FILENAME).write_text('{"id":"refresh-target"}', encoding="utf-8")
+    (snapshot_dir / "SOUL.md").write_text("# Original", encoding="utf-8")
+
+    source_dir = tmp_path / "workspace"
+    source_dir.mkdir()
+    workspace = _workspace(source_dir)
+    await workspace.aupload_bytes("SOUL.md", b"# Refreshed")
+    registry = SimpleNamespace(
+        get_row=lambda _agent_id: None,
+        get_config=lambda _agent_id: {},
+    )
+    services = SimpleNamespace(
+        published_expert_repo=repo,
+        paths=SimpleNamespace(published_experts_dir=snapshot_dir.parent),
+    )
+    user = User(id=7, username="owner", role=Role.USER, display_name=None)
+
+    if fail_metadata_update:
+
+        def fail_update(*_args: Any, **_kwargs: Any) -> None:
+            raise RuntimeError("metadata update failed")
+
+        monkeypatch.setattr(repo, "update_snapshot_meta", fail_update)
+        with pytest.raises(RuntimeError, match="metadata update failed"):
+            await refresh_published_expert(
+                services=services,
+                registry=registry,
+                user=user,
+                expert_id=row.id,
+                source=SimpleNamespace(
+                    agent_id="source-agent",
+                    description="Refreshed description",
+                    icon="sparkles",
+                ),
+                workspace=workspace,
+                name="Refreshed name",
+                description="Refreshed description",
+            )
+        current = repo.get(row.id)
+        assert current is not None and current.name == "Original name"
+        assert (snapshot_dir / "SOUL.md").read_bytes() == b"# Original"
+    else:
+        updated = await refresh_published_expert(
+            services=services,
+            registry=registry,
+            user=user,
+            expert_id=row.id,
+            source=SimpleNamespace(
+                agent_id="source-agent",
+                description="Refreshed description",
+                icon="sparkles",
+            ),
+            workspace=workspace,
+            name="Refreshed name",
+            description="Refreshed description",
+        )
+        current = repo.get(row.id)
+        assert current is not None and current.name == updated.name == "Refreshed name"
+        assert current.description == "Refreshed description"
+        assert (snapshot_dir / "SOUL.md").read_bytes() == b"# Refreshed"
+    pool.close()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_failure_preserves_latest_committed_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = PublishedExpertRepo(pool)
+    row = repo.create(
+        id="01TESTEXPERT000000000011",
+        slug="concurrent-refresh",
+        name="Original",
+        description="Original description",
+        created_by="7",
+        source_agent_id="source-agent",
+    )
+    snapshot_dir = tmp_path / "published" / row.id
+    snapshot_dir.mkdir(parents=True)
+    (snapshot_dir / MANIFEST_FILENAME).write_text('{"id":"concurrent-refresh"}', encoding="utf-8")
+    (snapshot_dir / "SOUL.md").write_bytes(b"# Original")
+
+    workspace_a_dir = tmp_path / "workspace-a"
+    workspace_b_dir = tmp_path / "workspace-b"
+    workspace_a_dir.mkdir()
+    workspace_b_dir.mkdir()
+    workspace_a = _workspace(workspace_a_dir)
+    workspace_b = _workspace(workspace_b_dir)
+    await workspace_a.aupload_bytes("SOUL.md", b"# Refresh A")
+    await workspace_b.aupload_bytes("SOUL.md", b"# Refresh B")
+    registry = SimpleNamespace(get_row=lambda _agent_id: None, get_config=lambda _agent_id: {})
+    services = SimpleNamespace(
+        published_expert_repo=repo,
+        paths=SimpleNamespace(published_experts_dir=snapshot_dir.parent),
+    )
+    user = User(id=7, username="owner", role=Role.USER, display_name=None)
+
+    original_export = published_creation.export_agent_workspace_to_dir
+    refresh_a_waiting = asyncio.Event()
+    release_refresh_a = asyncio.Event()
+
+    async def delay_refresh_a(**kwargs: Any) -> list[str]:
+        if kwargs["workspace"] is workspace_a:
+            refresh_a_waiting.set()
+            await release_refresh_a.wait()
+        return await original_export(**kwargs)
+
+    original_update = repo.update_snapshot_meta
+
+    def fail_refresh_a(expert_id: str, **kwargs: Any) -> PublishedExpertRow:
+        if kwargs["name"] == "Refresh A":
+            raise RuntimeError("refresh A metadata failed")
+        return original_update(expert_id, **kwargs)
+
+    monkeypatch.setattr(published_creation, "export_agent_workspace_to_dir", delay_refresh_a)
+    monkeypatch.setattr(repo, "update_snapshot_meta", fail_refresh_a)
+
+    refresh_a = asyncio.create_task(
+        refresh_published_expert(
+            services=services,
+            registry=registry,
+            user=user,
+            expert_id=row.id,
+            source=SimpleNamespace(agent_id="source-agent", description="A", icon=""),
+            workspace=workspace_a,
+            name="Refresh A",
+            description="A",
+        )
+    )
+    await refresh_a_waiting.wait()
+    await refresh_published_expert(
+        services=services,
+        registry=registry,
+        user=user,
+        expert_id=row.id,
+        source=SimpleNamespace(agent_id="source-agent", description="B", icon=""),
+        workspace=workspace_b,
+        name="Refresh B",
+        description="B",
+    )
+    release_refresh_a.set()
+    with pytest.raises(RuntimeError, match="refresh A metadata failed"):
+        await refresh_a
+
+    current = repo.get(row.id)
+    assert current is not None and current.name == "Refresh B"
+    assert current.description == "B"
+    assert (snapshot_dir / "SOUL.md").read_bytes() == b"# Refresh B"
+    pool.close()
+
+
+@pytest.mark.asyncio
+async def test_unpublish_during_refresh_does_not_recreate_the_snapshot(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = PublishedExpertRepo(pool)
+    row = repo.create(
+        id="01TESTEXPERT000000000012",
+        slug="deleted-during-refresh",
+        name="Original",
+        description="Original description",
+        created_by="7",
+        source_agent_id="source-agent",
+    )
+    snapshot_dir = tmp_path / "published" / row.id
+    snapshot_dir.mkdir(parents=True)
+    (snapshot_dir / "SOUL.md").write_bytes(b"# Original")
+    source_dir = tmp_path / "workspace"
+    source_dir.mkdir()
+    workspace = _workspace(source_dir)
+    await workspace.aupload_bytes("SOUL.md", b"# Refreshed")
+    services = SimpleNamespace(
+        published_expert_repo=repo,
+        paths=SimpleNamespace(published_experts_dir=snapshot_dir.parent),
+    )
+    registry = SimpleNamespace(get_row=lambda _agent_id: None, get_config=lambda _agent_id: {})
+    user = User(id=7, username="owner", role=Role.USER, display_name=None)
+    original_export = published_creation.export_agent_workspace_to_dir
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_export(**kwargs: Any) -> list[str]:
+        started.set()
+        await release.wait()
+        return await original_export(**kwargs)
+
+    monkeypatch.setattr(published_creation, "export_agent_workspace_to_dir", delayed_export)
+    refresh = asyncio.create_task(
+        refresh_published_expert(
+            services=services,
+            registry=registry,
+            user=user,
+            expert_id=row.id,
+            source=SimpleNamespace(agent_id="source-agent", description="new", icon=""),
+            workspace=workspace,
+        )
+    )
+    await started.wait()
+    try:
+        await published_creation.unpublish_expert(services=services, user=user, expert_id=row.id)
+    finally:
+        release.set()
+    with pytest.raises(OctopError) as raised:
+        await refresh
+    assert raised.value.code == ErrorCode.NOT_FOUND
+    assert repo.get(row.id) is None
+    assert not snapshot_dir.exists()
+    pool.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["refresh", "unpublish"])
+async def test_install_pins_template_files_and_metadata_before_agent_creation(
+    tmp_path: Path, change: str
+) -> None:
+    pool = SqlitePool(tmp_path / "octop.db")
+    run_migrations(pool)
+    repo = PublishedExpertRepo(pool)
+    original = repo.create(
+        id="01TESTEXPERT000000000013",
+        slug="install-version",
+        name="Original template",
+        description="Original description",
+        created_by="7",
+        source_agent_id="source-agent",
+    )
+    snapshot = tmp_path / "published" / original.id
+    (snapshot / "skills" / "reference").mkdir(parents=True)
+    (snapshot / "SOUL.md").write_bytes(b"# Original persona")
+    (snapshot / "skills" / "reference" / "SKILL.md").write_bytes(b"# Original skill")
+    (snapshot / MANIFEST_FILENAME).write_text(
+        json.dumps({"welcome_message": {"en": "Original welcome"}}), encoding="utf-8"
+    )
+    services = SimpleNamespace(
+        published_expert_repo=repo,
+        paths=SimpleNamespace(published_experts_dir=snapshot.parent),
+    )
+    publisher = User(id=7, username="publisher", role=Role.USER, display_name=None)
+    installer = User(id=9, username="installer", role=Role.USER, display_name=None)
+    source_dir = tmp_path / "source"
+    source_dir.mkdir()
+    source = _workspace(source_dir)
+    await source.aupload_bytes("SOUL.md", b"# New persona")
+    source_registry = SimpleNamespace(get_row=lambda _id: None, get_config=lambda _id: {})
+    installed_dir = tmp_path / "installed"
+    installed_dir.mkdir()
+    installed_workspace = _workspace(installed_dir)
+
+    class Registry:
+        async def create(self, spec, *, defer_bootstrap, workspace_initializer):
+            if change == "refresh":
+                await refresh_published_expert(
+                    services=services,
+                    registry=source_registry,
+                    user=publisher,
+                    expert_id=original.id,
+                    source=SimpleNamespace(agent_id="source-agent", description="new", icon=""),
+                    workspace=source,
+                    name="New template",
+                    description="New description",
+                    welcome_message_en="New welcome",
+                )
+            else:
+                await published_creation.unpublish_expert(
+                    services=services, user=publisher, expert_id=original.id
+                )
+            row = SimpleNamespace(
+                id=42,
+                agent_id="installed-agent",
+                user_id=installer.id,
+                name=spec.name,
+                description=spec.description,
+                default_model=None,
+                last_state="stopped",
+            )
+            await workspace_initializer(row, installed_workspace)
+            return row
+
+        def is_bootstrapped(self, _agent_id):
+            return False
+
+    result = await published_creation.install_published_expert(
+        services=services,
+        registry=Registry(),
+        user=installer,
+        expert_id=original.id,
+        options=published_creation.PublishedExpertInstallOptions(name="Installed agent"),
+    )
+
+    assert result["description"] == original.description
+    assert (installed_dir / "SOUL.md").read_bytes() == b"# Original persona"
+    assert await installed_workspace.adownload_bytes("skills/reference/SKILL.md") == (
+        b"# Original skill"
+    )
+    installed_manifest = json.loads(
+        await installed_workspace.adownload_bytes(WORKSPACE_MANIFEST_PATH)
+    )
+    assert installed_manifest["welcome_message"]["en"] == "Original welcome"
+    current = repo.get(original.id)
+    if change == "refresh":
+        assert current is not None and current.description == "New description"
+        assert (snapshot / "SOUL.md").read_bytes() == b"# New persona"
+    else:
+        assert current is None and not snapshot.exists()
+    pool.close()

@@ -9,6 +9,7 @@ from pathlib import Path
 import pytest
 from octop_harness.plugins import PluginRegistry
 
+from octop.infra.agents.plugins import seed as seed_module
 from octop.infra.agents.plugins.manager import PluginManager
 from octop.infra.agents.plugins.seed import seed_bundled_plugins
 from octop.infra.errors import ErrorCode, OctopError
@@ -196,3 +197,99 @@ def test_seed_refuses_corrupt_config_and_preserves_bytes(tmp_path: Path) -> None
         )
     assert excinfo.value.code is ErrorCode.CONFIG_FILE_CORRUPT
     assert config_path.read_text(encoding="utf-8") == original
+
+
+@pytest.mark.parametrize("existing", [False, True], ids=["new-plugin", "upgrade"])
+@pytest.mark.parametrize("failure", ["copy", "publish", "config"])
+def test_seed_failure_restores_plugin_trees_and_config_before_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, existing: bool, failure: str
+) -> None:
+    bundled = tmp_path / "bundled"
+    _write_plugin(bundled, "a-new")
+    weather_source = _write_plugin(bundled, "weather", version="2.0.0")
+    (weather_source / "new.txt").write_bytes(b"new bundle")
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    weather = plugins_dir / "weather"
+    if existing:
+        _write_plugin(plugins_dir, "weather", version="1.0.0")
+        (weather / "old.txt").write_bytes(b"previous installation")
+        original_manifest = (weather / "plugin.yaml").read_bytes()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "unrelated": {"setting": "preserved"},
+                "plugins": {"weather": {"enabled": True}},
+                "bundled_plugins_seeded": ["weather"] if existing else [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    original_config = config_path.read_bytes()
+    with monkeypatch.context() as patch:
+        if failure == "copy":
+            original_copy = shutil.copytree
+
+            def failing_copy(src, dst, *args, **kwargs):
+                if Path(src) == weather_source:
+                    Path(dst).mkdir(parents=True)
+                    (Path(dst) / "plugin.yaml").write_bytes(
+                        (weather_source / "plugin.yaml").read_bytes()
+                    )
+                    raise OSError("copy interrupted")
+                return original_copy(src, dst, *args, **kwargs)
+
+            patch.setattr(seed_module.shutil, "copytree", failing_copy)
+        elif failure == "publish":
+            original_replace = seed_module.os.replace
+            failed = False
+
+            def failing_publish(src, dst):
+                nonlocal failed
+                if Path(dst) == weather and not failed:
+                    failed = True
+                    raise OSError("publish interrupted")
+                return original_replace(src, dst)
+
+            patch.setattr(seed_module.os, "replace", failing_publish)
+        else:
+
+            def failing_config(*_args, **_kwargs):
+                raise OSError("config interrupted")
+
+            patch.setattr(seed_module, "_write_config", failing_config)
+        with pytest.raises(OSError):
+            seed_bundled_plugins(
+                bundled_root=bundled, plugins_dir=plugins_dir, config_path=config_path
+            )
+
+    assert config_path.read_bytes() == original_config
+    assert not (plugins_dir / "a-new").exists()
+    if existing:
+        assert (weather / "old.txt").read_bytes() == b"previous installation"
+        assert (weather / "plugin.yaml").read_bytes() == original_manifest
+    else:
+        assert not weather.exists()
+
+    seed_bundled_plugins(bundled_root=bundled, plugins_dir=plugins_dir, config_path=config_path)
+    assert (weather / "new.txt").read_bytes() == b"new bundle"
+    assert (plugins_dir / "a-new" / "main.py").is_file()
+    saved = json.loads(config_path.read_text(encoding="utf-8"))
+    assert saved["unrelated"] == {"setting": "preserved"}
+    assert saved["plugins"]["a-new"]["enabled"] is False
+    assert saved["plugins"]["weather"]["enabled"] is existing
+
+
+def test_seed_preserves_a_non_directory_destination(tmp_path: Path) -> None:
+    bundled = tmp_path / "bundled"
+    _write_plugin(bundled, "weather", version="2.0.0")
+    plugins_dir = tmp_path / "plugins"
+    plugins_dir.mkdir()
+    collision = plugins_dir / "weather"
+    collision.write_bytes(b"unrelated file")
+    config_path = tmp_path / "config.json"
+    with pytest.raises(NotADirectoryError):
+        seed_bundled_plugins(bundled_root=bundled, plugins_dir=plugins_dir, config_path=config_path)
+    assert collision.read_bytes() == b"unrelated file"
+    assert not config_path.exists()

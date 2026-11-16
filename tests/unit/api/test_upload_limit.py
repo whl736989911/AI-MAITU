@@ -66,14 +66,30 @@ async def test_read_upload_capped_uses_caller_error_code() -> None:
     assert exc_info.value.code is ErrorCode.KNOWLEDGE_DOC_TOO_LARGE
 
 
-def test_text_document_pydantic_ceiling_follows_hard_cap() -> None:
-    from annotated_types import MaxLen
+@pytest.mark.parametrize("declared_size", [True, False], ids=["declared", "streamed"])
+@pytest.mark.asyncio
+async def test_workspace_archive_rejects_oversize_before_reading_entire_body(
+    monkeypatch: pytest.MonkeyPatch, declared_size: bool
+) -> None:
+    from types import SimpleNamespace
 
-    from octop.api.routers.knowledge_bases import CreateTextDocumentBody, UpdateTextDocumentBody
-    from octop.config import MAX_MAX_UPLOAD_MB, upload_mb_to_bytes
+    from octop.api.routers import workspace
 
-    ceiling = upload_mb_to_bytes(MAX_MAX_UPLOAD_MB)
-    for model in (CreateTextDocumentBody, UpdateTextDocumentBody):
-        field = model.model_fields["content"]
-        max_len = next(item.max_length for item in field.metadata if isinstance(item, MaxLen))
-        assert max_len == ceiling
+    data = b"x" * (4 * 1024 * 1024)
+    reader = _CountingReader(data, size=len(data) if declared_size else None)
+    monkeypatch.setattr(workspace, "_MAX_WORKSPACE_ARCHIVE_BYTES", 16 * 1024)
+
+    with pytest.raises(OctopError) as exc_info:
+        await workspace.import_workspace_archive(
+            "test-agent",
+            file=reader,
+            mode="merge",
+            as_user=None,
+            user=SimpleNamespace(),
+            server=SimpleNamespace(),
+        )
+
+    assert reader.bytes_pulled < len(data)
+    if declared_size:
+        assert reader.bytes_pulled == 0
+    assert exc_info.value.code is ErrorCode.ATTACHMENT_TOO_LARGE

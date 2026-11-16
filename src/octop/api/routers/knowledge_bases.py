@@ -6,7 +6,7 @@ import asyncio
 import json
 import logging
 import sys
-from collections.abc import Collection
+from collections.abc import Callable, Collection
 from contextlib import suppress
 from dataclasses import asdict
 from functools import partial
@@ -265,6 +265,22 @@ def _knowledge_service(server: OctopServer) -> KnowledgeService:
     if server.services is None:
         raise OctopError(ErrorCode.INTERNAL_ERROR, "knowledge services are not initialized")
     return KnowledgeService(server.services)
+
+
+async def _run_knowledge_io[T](
+    operation: Callable[[], T], *, after_commit: Callable[[T], object] | None = None
+) -> T:
+    worker = asyncio.get_running_loop().run_in_executor(None, operation)
+    try:
+        return await wait_owned_worker(worker)
+    finally:
+        if (
+            after_commit is not None
+            and worker.done()
+            and not worker.cancelled()
+            and worker.exception() is None
+        ):
+            after_commit(worker.result())
 
 
 def _enrichment_service(server: OctopServer) -> KnowledgeEnrichmentService:
@@ -938,11 +954,14 @@ async def put_metadata_schema(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> dict[str, Any]:
     try:
-        fields = _knowledge_service(server).update_metadata_schema(
-            kb_id,
-            actor_user_id=user.id,
-            schema=[field.model_dump() for field in body.fields],
-            is_admin=_is_admin(user),
+        fields = await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).update_metadata_schema,
+                kb_id,
+                actor_user_id=user.id,
+                schema=[field.model_dump() for field in body.fields],
+                is_admin=_is_admin(user),
+            )
         )
         return {"fields": fields}
     except Exception as exc:
@@ -965,12 +984,15 @@ async def patch_document_metadata(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> dict[str, Any]:
     try:
-        metadata = _knowledge_service(server).update_document_metadata(
-            kb_id,
-            doc_id,
-            actor_user_id=user.id,
-            metadata=body.metadata,
-            is_admin=_is_admin(user),
+        metadata = await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).update_document_metadata,
+                kb_id,
+                doc_id,
+                actor_user_id=user.id,
+                metadata=body.metadata,
+                is_admin=_is_admin(user),
+            )
         )
         return {"document_id": doc_id, "metadata": metadata}
     except Exception as exc:
@@ -1049,8 +1071,7 @@ async def enrich_document(
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
     try:
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
+        return await _run_knowledge_io(
             partial(
                 _enrichment_service(server).enrich_document,
                 kb_id,
@@ -1110,8 +1131,7 @@ async def apply_suggestion(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> dict[str, Any]:
     try:
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
+        return await _run_knowledge_io(
             partial(
                 _enrichment_service(server).apply_suggestion,
                 kb_id,
@@ -1139,8 +1159,7 @@ async def reject_suggestion(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> dict[str, Any]:
     try:
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
+        return await _run_knowledge_io(
             partial(
                 _enrichment_service(server).reject_suggestion,
                 kb_id,
@@ -1165,8 +1184,13 @@ async def delete_base(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> None:
     try:
-        _knowledge_service(server).delete_base(
-            kb_id, actor_user_id=user.id, is_admin=_is_admin(user)
+        await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).delete_base,
+                kb_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            )
         )
     except Exception as exc:
         raise _map_knowledge_error(
@@ -1220,8 +1244,14 @@ async def create_folder(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> dict[str, Any]:
     try:
-        folder = _knowledge_service(server).create_folder(
-            kb_id, actor_user_id=user.id, path=body.path, is_admin=_is_admin(user)
+        folder = await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).create_folder,
+                kb_id,
+                actor_user_id=user.id,
+                path=body.path,
+                is_admin=_is_admin(user),
+            )
         )
         return _row_payload(folder)
     except Exception as exc:
@@ -1245,20 +1275,24 @@ async def create_text_document(
     locale = resolve_request_locale(request)
     try:
         _require_usable(server, request)
-        document = _knowledge_service(server).create_text_document(
-            kb_id,
-            actor_user_id=user.id,
-            name=body.name,
-            format=body.format,
-            content=body.content,
-            is_admin=_is_admin(user),
-            path=body.path,
-            access_scope=body.access_scope,
-            access_permission=body.access_permission,
-            access_unit_key=body.access_unit_key,
+        services = server.services
+        assert services is not None
+        document = await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).create_text_document,
+                kb_id,
+                actor_user_id=user.id,
+                name=body.name,
+                format=body.format,
+                content=body.content,
+                is_admin=_is_admin(user),
+                path=body.path,
+                access_scope=body.access_scope,
+                access_permission=body.access_permission,
+                access_unit_key=body.access_unit_key,
+            ),
+            after_commit=lambda row: enqueue_index_document(services, kb_id, row.id),
         )
-        assert server.services is not None
-        enqueue_index_document(server.services, kb_id, document.id)
         return _row_payload(document)
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
@@ -1306,20 +1340,24 @@ async def upload_document(
             max_bytes=_max_upload_bytes(server),
             code=ErrorCode.KNOWLEDGE_DOC_TOO_LARGE,
         )
-        document = _knowledge_service(server).upload_document(
-            kb_id,
-            actor_user_id=user.id,
-            filename=upload.filename or "",
-            content_type=upload.content_type or "",
-            content=content,
-            is_admin=_is_admin(user),
-            path=path or upload.filename or "",
-            access_scope=access_scope,
-            access_permission=access_permission,
-            access_unit_key=access_unit_key,
+        services = server.services
+        assert services is not None
+        document = await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).upload_document,
+                kb_id,
+                actor_user_id=user.id,
+                filename=upload.filename or "",
+                content_type=upload.content_type or "",
+                content=content,
+                is_admin=_is_admin(user),
+                path=path or upload.filename or "",
+                access_scope=access_scope,
+                access_permission=access_permission,
+                access_unit_key=access_unit_key,
+            ),
+            after_commit=lambda row: enqueue_index_document(services, kb_id, row.id),
         )
-        assert server.services is not None
-        enqueue_index_document(server.services, kb_id, document.id)
         return _row_payload(document)
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
@@ -1338,8 +1376,7 @@ async def knowledge_coverage(
 ) -> KnowledgeCoverage:
     try:
         service = _knowledge_service(server)
-        data = await asyncio.get_running_loop().run_in_executor(
-            None,
+        data = await _run_knowledge_io(
             partial(
                 service.coverage,
                 kb_id,
@@ -1370,8 +1407,7 @@ async def read_knowledge_segment(
     """Recheck file ACL and source bytes; stale or offline originals yield no text."""
     try:
         service = _knowledge_service(server)
-        data = await asyncio.get_running_loop().run_in_executor(
-            None,
+        data = await _run_knowledge_io(
             partial(
                 service.read_segment,
                 kb_id,
@@ -1411,8 +1447,7 @@ async def search_documents(
     """Find authorized files and indexed excerpts without personal search policies."""
     try:
         service = _knowledge_service(server)
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
+        return await _run_knowledge_io(
             partial(
                 service.search,
                 kb_id=kb_id,
@@ -1456,8 +1491,7 @@ async def preview_document(
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
     try:
-        return await asyncio.get_running_loop().run_in_executor(
-            None,
+        return await _run_knowledge_io(
             partial(
                 _knowledge_service(server).preview_document,
                 kb_id,
@@ -1650,8 +1684,14 @@ async def get_text_document(
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> dict[str, Any]:
     try:
-        return _knowledge_service(server).read_text_document(
-            kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
+        return await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).read_text_document,
+                kb_id,
+                doc_id,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
         )
     except Exception as exc:
         raise _map_knowledge_error(
@@ -1674,15 +1714,19 @@ async def update_text_document(
     locale = resolve_request_locale(request)
     try:
         _require_usable(server, request)
-        document = _knowledge_service(server).update_text_document(
-            kb_id,
-            doc_id,
-            actor_user_id=user.id,
-            content=body.content,
-            is_admin=_is_admin(user),
+        services = server.services
+        assert services is not None
+        document = await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).update_text_document,
+                kb_id,
+                doc_id,
+                actor_user_id=user.id,
+                content=body.content,
+                is_admin=_is_admin(user),
+            ),
+            after_commit=lambda row: enqueue_index_document(services, kb_id, row.id),
         )
-        assert server.services is not None
-        enqueue_index_document(server.services, kb_id, doc_id)
         return _row_payload(document)
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
@@ -1701,12 +1745,15 @@ async def rename_document(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> dict[str, Any]:
     try:
-        document = _knowledge_service(server).rename_document(
-            kb_id,
-            doc_id,
-            actor_user_id=user.id,
-            new_name=body.new_name.strip(),
-            is_admin=_is_admin(user),
+        document = await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).rename_document,
+                kb_id,
+                doc_id,
+                actor_user_id=user.id,
+                new_name=body.new_name.strip(),
+                is_admin=_is_admin(user),
+            ),
         )
         return _row_payload(document)
     except Exception as exc:
@@ -1734,12 +1781,15 @@ async def move_document(
     user: User = Depends(require_permission("knowledge_bases")),
 ) -> dict[str, Any]:
     try:
-        document = _knowledge_service(server).move_document(
-            kb_id,
-            doc_id,
-            target_folder=body.target_folder,
-            actor_user_id=user.id,
-            is_admin=_is_admin(user),
+        document = await _run_knowledge_io(
+            partial(
+                _knowledge_service(server).move_document,
+                kb_id,
+                doc_id,
+                target_folder=body.target_folder,
+                actor_user_id=user.id,
+                is_admin=_is_admin(user),
+            ),
         )
         return _row_payload(document)
     except Exception as exc:
@@ -1762,8 +1812,7 @@ async def delete_document(
 ) -> None:
     try:
         service = _knowledge_service(server)
-        await asyncio.get_running_loop().run_in_executor(
-            None,
+        await _run_knowledge_io(
             partial(
                 service.delete_document,
                 kb_id,

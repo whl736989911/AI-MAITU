@@ -198,7 +198,7 @@ def _value_expr(field_key: str, field_type: str, dialect: str) -> str:
     """The SQL expression that yields one record field's comparable value."""
     if dialect == "postgresql":
         extracted = f"(values_json::jsonb->>'{field_key}')"
-        if field_type in {"number", "integer"}:
+        if field_type in {"number", "integer", "user"}:
             return (
                 f"(CASE WHEN jsonb_typeof(values_json::jsonb->'{field_key}') = 'number' "
                 f"THEN ({extracted})::numeric END)"
@@ -207,7 +207,7 @@ def _value_expr(field_key: str, field_type: str, dialect: str) -> str:
             return f"({extracted})::timestamptz"
         return extracted
     extracted = f"json_extract(values_json, '$.{field_key}')"
-    if field_type in {"number", "integer"}:
+    if field_type in {"number", "integer", "user"}:
         return (
             f"(CASE WHEN json_type(values_json, '$.{field_key}') IN ('integer', 'real') "
             f"THEN {extracted} END)"

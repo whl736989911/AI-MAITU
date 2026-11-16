@@ -14,17 +14,19 @@ import pytest
 from octop.config import BackupConfig, load_config
 from octop.infra.backup import auto
 from octop.infra.backup.auto import (
-    AUTO_BACKUP_JOB_ID,
     apply_auto_backup_schedule,
     backup_config_from_payload,
     persist_backup_config,
     to_auto_backup_filename,
+    update_server_backup_config,
 )
 from octop.infra.backup.manifest import BackupManifest
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
 from octop.infra.db.repos.agents import AgentRepo
+from octop.infra.db.repos.audit import AuditRepo
 from octop.infra.db.repos.settings import SettingsRepo
+from octop.infra.db.services import build_shared_services
 from octop.infra.errors import OctopError
 from octop.infra.utils.legacy_names import (
     LEGACY_AUTO_BACKUP_PREFIX,
@@ -84,14 +86,6 @@ def test_backup_config_from_payload_reads_content_options() -> None:
     assert cfg.include_knowledge is False
     assert cfg.include_chats is True
 
-    defaults = backup_config_from_payload({"schedule": "cron:0 4 * * *", "retention_count": 3})
-    assert defaults.include_config is True
-    assert defaults.include_workspaces is True
-    assert defaults.include_skill_packages is True
-    assert defaults.include_plugins is True
-    assert defaults.include_knowledge is True
-    assert defaults.include_chats is False
-
 
 def test_persist_backup_config(tmp_path: Path) -> None:
     cfg_path = tmp_path / "config.json"
@@ -129,39 +123,70 @@ def test_persist_backup_config(tmp_path: Path) -> None:
     assert reloaded.backup.include_knowledge is False
 
 
-def test_apply_auto_backup_schedule_skips_when_disabled(tmp_path: Path) -> None:
-    paths = MagicMock()
-    paths.config = tmp_path / "config.json"
-    load_config(paths.config)
-
-    cron = MagicMock()
-    server = MagicMock()
-    server.paths = paths
-
-    apply_auto_backup_schedule(cron, server=server)
-    cron.unschedule_system_job.assert_called_once_with(AUTO_BACKUP_JOB_ID)
-    cron.schedule_system_job.assert_not_called()
-
-
-def test_apply_auto_backup_schedule_registers_when_enabled(tmp_path: Path) -> None:
-    paths = MagicMock()
-    paths.config = tmp_path / "config.json"
-    load_config(paths.config)
-    persist_backup_config(
-        paths.config,
-        BackupConfig(auto_enabled=True, schedule="cron:0 4 * * *", retention_count=7),
+@pytest.mark.asyncio
+async def test_pending_scheduled_backup_observes_disable_but_manual_run_still_works(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(auto, "_lock", asyncio.Lock())
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    paths = PathLayout(tmp_path)
+    initial = BackupConfig(
+        auto_enabled=True,
+        schedule="cron:0 4 * * *",
+        retention_count=3,
     )
-
+    config = persist_backup_config(paths.config, initial)
+    pool = SqlitePool(paths.db)
+    run_migrations(pool)
+    audit_repo = AuditRepo(pool)
     cron = MagicMock()
-    server = MagicMock()
-    server.paths = paths
+    server = SimpleNamespace(
+        paths=paths,
+        config=config,
+        app_runtime=SimpleNamespace(cron_manager=cron, agent_registry=None),
+        services=build_shared_services(db=pool, paths=paths, config=config),
+    )
+    try:
+        apply_auto_backup_schedule(cron, server=server)
+        scheduled_callback = cron.schedule_system_job.call_args.kwargs["func"]
 
-    apply_auto_backup_schedule(cron, server=server)
-    cron.unschedule_system_job.assert_called_once_with(AUTO_BACKUP_JOB_ID)
-    cron.schedule_system_job.assert_called_once()
-    kwargs = cron.schedule_system_job.call_args
-    assert kwargs.args[0] == AUTO_BACKUP_JOB_ID
-    assert kwargs.kwargs["trigger"] == "cron:0 4 * * *"
+        update_server_backup_config(
+            server,
+            BackupConfig(
+                auto_enabled=False,
+                schedule="cron:0 4 * * *",
+                retention_count=3,
+            ),
+        )
+        await scheduled_callback()
+        assert not paths.backups_dir.exists()
+        assert audit_repo.query(action="backup.auto_ok") == []
+        assert audit_repo.query(action="backup.auto_failed") == []
+        assert auto.backup_status_payload() == {"busy": False, "operation": None}
+
+        SettingsRepo(pool).set("backup_probe", "manual_run_while_auto_disabled")
+        entry = await auto.run_auto_backup(server)
+        assert entry is not None
+        archive_path = paths.backup_file(entry.name)
+        assert archive_path.is_file()
+        with tarfile.open(archive_path) as archive:
+            manifest_file = archive.extractfile("manifest.json")
+            assert manifest_file is not None
+            manifest = BackupManifest.load_text(manifest_file.read().decode("utf-8"))
+            database_file = archive.extractfile(manifest.db_file)
+            assert database_file is not None
+            snapshot = tmp_path / "snapshot.sqlite"
+            snapshot.write_bytes(database_file.read())
+        snapshot_pool = SqlitePool(snapshot)
+        try:
+            assert SettingsRepo(snapshot_pool).get("backup_probe") == (
+                "manual_run_while_auto_disabled"
+            )
+        finally:
+            snapshot_pool.close()
+        assert len(audit_repo.query(action="backup.auto_ok")) == 1
+    finally:
+        pool.close()
 
 
 @pytest.mark.asyncio

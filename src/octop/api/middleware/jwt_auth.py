@@ -48,7 +48,7 @@ def install(app: Any, server: Any) -> None:
             access_token=request.query_params.get("access_token"),
         )
         try:
-            request.state.octop_user = authenticate_request(request, server)
+            request.state.octop_user = await authenticate_request(request, server)
         except OctopError as exc:
             # Middleware returns directly (skips FastAPI exception handlers).
             if exc.status >= 500:

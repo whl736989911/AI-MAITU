@@ -288,6 +288,15 @@ async def prepare_dashboard_turn(
     row = require_agent_row(agent_id, user=user, as_user=None, server=server)
     default_model = (row.default_model or "").strip() or None
 
+    model_ref = (turn.default_model or "").strip() or None
+    if (
+        model_ref is not None
+        and not server.app_runtime.agent_registry.providers.is_model_ref_usable(model_ref)
+    ):
+        raise OctopError(
+            ErrorCode.SLASH_BAD_ARGS,
+            "default_model must reference an enabled model",
+        )
     mcp_servers = await validate_chat_mcp_servers(server, user_id=user.id, names=turn.mcp_servers)
     skills = await validate_chat_skills(
         server,
@@ -317,15 +326,6 @@ async def prepare_dashboard_turn(
         thread_id=turn.thread_id,
         session_key=turn.session_key,
     )
-    model_ref = (turn.default_model or "").strip() or None
-    if (
-        model_ref is not None
-        and not server.app_runtime.agent_registry.providers.is_model_ref_usable(model_ref)
-    ):
-        raise OctopError(
-            ErrorCode.SLASH_BAD_ARGS,
-            "default_model must reference an enabled model",
-        )
     composer_updates: dict[str, Any] = {}
     if model_ref is not None:
         composer_updates["model_ref"] = model_ref

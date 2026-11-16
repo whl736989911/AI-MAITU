@@ -9,9 +9,12 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import threading
 import unicodedata
-from collections.abc import Sequence
+import weakref
+from collections.abc import Callable, Sequence
 from dataclasses import replace
+from functools import wraps
 from pathlib import Path
 from typing import Any, cast
 
@@ -26,6 +29,7 @@ from octop.infra.knowledge.files import (
     document_digest,
     document_path,
     file_digest,
+    knowledge_base_dir,
     write_document,
 )
 from octop.infra.knowledge.gate import assert_knowledge_usable, get_capability
@@ -159,6 +163,36 @@ def knowledge_suffix_for_content_type(content_type: str) -> str | None:
     return None
 
 
+_knowledge_mutation_locks: weakref.WeakValueDictionary[Path, threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+_knowledge_mutation_locks_guard = threading.Lock()
+
+
+def _knowledge_mutation_lock(kb_id: str) -> threading.RLock:
+    key = knowledge_base_dir(kb_id)
+    with _knowledge_mutation_locks_guard:
+        lock = _knowledge_mutation_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _knowledge_mutation_locks[key] = lock
+        return lock
+
+
+def _serialize_document_operation[Result, **Params](
+    operation: Callable[Params, Result],
+) -> Callable[Params, Result]:
+    """Keep a base's filenames, original bytes and rows consistent across service instances."""
+
+    @wraps(operation)
+    def serialized(*args: Params.args, **kwargs: Params.kwargs) -> Result:
+        kb_id = cast(str, args[1] if len(args) > 1 else kwargs["kb_id"])
+        with _knowledge_mutation_lock(kb_id):
+            return operation(*args, **kwargs)
+
+    return serialized
+
+
 class KnowledgeService:
     """Apply ownership while keeping control-plane rows and files synchronized."""
 
@@ -275,6 +309,7 @@ class KnowledgeService:
             visible_rows.append(row)
         return visible_rows
 
+    @_serialize_document_operation
     def create_folder(
         self, kb_id: str, *, actor_user_id: int, path: str, is_admin: bool = False
     ) -> KnowledgeDocumentRow:
@@ -466,7 +501,6 @@ class KnowledgeService:
             if kb_id is not None
             else self.list_visible_bases(actor_user_id=actor_user_id)
         )
-        collected: list[SearchHit] = []
         terms = query_terms(cleaned)
         restricted, readable = self.document_read_scope(actor_user_id, is_admin=is_admin)
         search_vector = query_vector
@@ -557,9 +591,16 @@ class KnowledgeService:
                 row.ordinal,
             )
         )
-        seen = {(hit.kb_id, hit.document_id, hit.segment_id, hit.version) for hit in collected}
+        collected: list[SearchHit] = []
+        seen: set[tuple[str, str, str, str, int]] = set()
         for result in hits:
-            identity = (result.kb_id, result.document_id, result.segment_id, result.version)
+            identity = (
+                result.kb_id,
+                result.document_id,
+                result.segment_id,
+                result.version,
+                result.ordinal,
+            )
             if identity not in seen:
                 collected.append(result)
                 seen.add(identity)
@@ -595,6 +636,7 @@ class KnowledgeService:
             return self._services.data_sources_repo.get(document.data_source_id) is not None
         return document_path(document.kb_id, document.id, document.filename).is_file()
 
+    @_serialize_document_operation
     def read_text_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> dict[str, str]:
@@ -606,6 +648,8 @@ class KnowledgeService:
         if document.is_dir:
             raise LookupError("knowledge document not found")
         self.require_document_readable(document, actor_user_id=actor_user_id, is_admin=is_admin)
+        if document.data_source_id:
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
         if document.content_type not in _TEXT_CONTENT_TYPES:
             raise ValueError("unsupported knowledge document content type: not editable text")
         raw = document_path(kb_id, doc_id, document.filename).read_bytes()
@@ -667,6 +711,7 @@ class KnowledgeService:
             access_unit_key=access_unit_key,
         )
 
+    @_serialize_document_operation
     def update_text_document(
         self,
         kb_id: str,
@@ -690,6 +735,8 @@ class KnowledgeService:
         if document is None or document.kb_id != kb_id:
             raise LookupError("knowledge document not found")
         self.require_document_writable(document, actor_user_id=actor_user_id)
+        if document.data_source_id:
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
         if document.is_dir:
             raise LookupError("knowledge document not found")
         if document.content_type not in _TEXT_CONTENT_TYPES:
@@ -944,6 +991,7 @@ class KnowledgeService:
         self.get_readable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         return _parse_metadata_schema(self._require_base(kb_id))
 
+    @_serialize_document_operation
     def update_metadata_schema(
         self,
         kb_id: str,
@@ -961,6 +1009,7 @@ class KnowledgeService:
         self._repo.update_base_metadata_schema(kb_id, encoded_schema)
         return normalized
 
+    @_serialize_document_operation
     def update_document_metadata(
         self,
         kb_id: str,
@@ -994,6 +1043,7 @@ class KnowledgeService:
             return base
         raise KnowledgeAccessDenied("knowledge base owner access is required", access=ACCESS_WRITE)
 
+    @_serialize_document_operation
     def upload_document(
         self,
         kb_id: str,
@@ -1056,6 +1106,7 @@ class KnowledgeService:
             raise
         return cast(KnowledgeDocumentRow, document)
 
+    @_serialize_document_operation
     def replace_document_content(
         self,
         kb_id: str,
@@ -1083,6 +1134,8 @@ class KnowledgeService:
         if document is None or document.kb_id != kb_id or document.is_dir:
             raise ValueError(f"knowledge document {doc_id!r} is not in this knowledge base")
         self.require_document_writable(document, actor_user_id=actor_user_id)
+        if document.data_source_id:
+            raise OctopError.localized(ErrorCode.FORBIDDEN)
         limit = self.max_document_bytes()
         if len(content) > limit:
             raise ValueError(f"knowledge document size exceeds maximum of {limit} bytes")
@@ -1103,7 +1156,7 @@ class KnowledgeService:
             raise ValueError("a knowledge document with this name already exists")
         previous_filename = document.filename
         write_document(kb_id, doc_id, name, content)
-        if previous_filename != name:
+        if document_path(kb_id, doc_id, previous_filename) != document_path(kb_id, doc_id, name):
             delete_document_file(kb_id, doc_id, previous_filename)
         self._repo.update_document(
             doc_id,
@@ -1117,6 +1170,7 @@ class KnowledgeService:
             chunk_count=0,
         )
         self._repo.clear_document_facts(doc_id)
+        self._repo.set_derived(doc_id, None)
         self._refresh_collections(kb_id, doc_id)
         refreshed = self._repo.get_document(doc_id)
         if refreshed is None:
@@ -1146,6 +1200,7 @@ class KnowledgeService:
             raise
         return cast(KnowledgeDocumentRow, document)
 
+    @_serialize_document_operation
     def delete_document(
         self, kb_id: str, doc_id: str, *, actor_user_id: int, is_admin: bool = False
     ) -> None:
@@ -1194,6 +1249,7 @@ class KnowledgeService:
             raise LookupError("knowledge document not found")
         return cast(KnowledgeDocumentRow, refreshed)
 
+    @_serialize_document_operation
     def rename_document(
         self,
         kb_id: str,
@@ -1246,6 +1302,7 @@ class KnowledgeService:
         self._refresh_collections(kb_id, doc_id)
         return cast(KnowledgeDocumentRow, result)
 
+    @_serialize_document_operation
     def move_document(
         self,
         kb_id: str,
@@ -1316,6 +1373,7 @@ class KnowledgeService:
                 self._refresh_collections(kb_id, row.id)
         return cast(KnowledgeDocumentRow, result)
 
+    @_serialize_document_operation
     def delete_base(self, kb_id: str, *, actor_user_id: int, is_admin: bool = False) -> None:
         self.require_owner(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         self._repo.delete_base(kb_id)

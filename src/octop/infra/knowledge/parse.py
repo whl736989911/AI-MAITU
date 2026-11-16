@@ -478,6 +478,21 @@ class _DocxPackagePart:
             )
 
 
+def _docx_cell_text(cell: Any) -> str:
+    """Keep nested text without inserting spaces between formatting runs."""
+    from docx.oxml.ns import qn
+
+    text_tag = qn("w:t")
+    separators = {qn("w:p"), qn("w:br"), qn("w:cr"), qn("w:tab")}
+    parts: list[str] = []
+    for node in cell.iter():
+        if node.tag == text_tag:
+            parts.append(node.text or "")
+        elif node.tag in separators:
+            parts.append(" ")
+    return "".join(parts).strip()
+
+
 def _docx_blocks(body: Any, part: Any) -> tuple[ParsedBlock, ...]:
     """Locate Word paragraphs, including nested containers, and table rows."""
     from docx.oxml.ns import qn
@@ -502,10 +517,7 @@ def _docx_blocks(body: Any, part: Any) -> tuple[ParsedBlock, ...]:
         elif element.tag == qn("w:tbl"):
             table_index += 1
             for row_index, row in enumerate(element.findall(qn("w:tr")), start=1):
-                cells = [
-                    " ".join(node.text or "" for node in cell.iter(qn("w:t"))).strip()
-                    for cell in row.findall(qn("w:tc"))
-                ]
+                cells = [_stringify_cell(_docx_cell_text(cell)) for cell in row.findall(qn("w:tc"))]
                 value = "\t".join(cells).strip()
                 if value:
                     blocks.append(
@@ -589,10 +601,7 @@ def _docx_tables(body: Any) -> tuple[ParsedTable, ...]:
         if next(element.iterancestors(qn("w:tbl")), None) is not None:
             continue
         rows = [
-            [
-                " ".join(node.text or "" for node in cell.iter(qn("w:t"))).strip()
-                for cell in row.findall(qn("w:tc"))
-            ]
+            [_docx_cell_text(cell) for cell in row.findall(qn("w:tc"))]
             for row in element.findall(qn("w:tr"))
         ]
         table = _table(f"Table {len(tables) + 1}", rows)

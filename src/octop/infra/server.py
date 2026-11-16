@@ -850,29 +850,66 @@ class OctopServer:
         resume_pending_index_jobs(self.services)
 
     async def _shutdown_business(self) -> None:
-        """Stop business components (license loss or server shutdown).
+        """Stop every business component, even if one component fails cleanup.
 
         Identity stores (user manager, trajectory/history) stay untouched.
         """
         rt = self.app_runtime
         assert rt is not None
+        failure: Exception | None = None
+        cancellation: asyncio.CancelledError | None = None
+
+        async def stop_component(name: str, stop: Callable[[], Awaitable[None]]) -> None:
+            nonlocal cancellation, failure
+
+            task = asyncio.ensure_future(stop())
+            while True:
+                try:
+                    await asyncio.shield(task)
+                    break
+                except asyncio.CancelledError as exc:
+                    if cancellation is None:
+                        cancellation = exc
+                    if not task.done():
+                        # Keep the component task shielded through repeated
+                        # cancellation of the outer shutdown task.
+                        continue
+                    if task.cancelled():
+                        logger.warning("business component shutdown was cancelled: %s", name)
+                    else:
+                        stop_exc = task.exception()
+                        if stop_exc is not None:
+                            logger.warning(
+                                "business component shutdown failed: %s: %s", name, stop_exc
+                            )
+                            if failure is None and isinstance(stop_exc, Exception):
+                                failure = stop_exc
+                    break
+                except Exception as exc:
+                    logger.exception("business component shutdown failed: %s", name)
+                    if failure is None:
+                        failure = exc
+                    break
+
         try:
             from octop.infra.knowledge.auto_sync import shutdown_auto_sync
 
-            await shutdown_auto_sync(self)
+            await stop_component("knowledge auto-sync", lambda: shutdown_auto_sync(self))
             if rt.proactive_scheduler is not None:
-                await rt.proactive_scheduler.shutdown()
+                await stop_component("proactive scheduler", rt.proactive_scheduler.shutdown)
             if rt.cron_manager is not None:
-                await rt.cron_manager.shutdown()
+                await stop_component("cron manager", rt.cron_manager.shutdown)
             if rt.gateway is not None:
-                await rt.gateway.shutdown()
+                await stop_component("gateway", rt.gateway.shutdown)
             if rt.agent_registry is not None:
-                await rt.agent_registry.shutdown()
-        finally:
+                await stop_component("agent registry", rt.agent_registry.shutdown)
             from octop.infra.knowledge.jobs import shutdown_index_jobs
 
             if self.services is not None:
-                await shutdown_index_jobs(self.services)
+                await stop_component(
+                    "knowledge index jobs", lambda: shutdown_index_jobs(self.services)
+                )
+        finally:
             rt.proactive_scheduler = None
             rt.cron_manager = None
             rt.gateway = None
@@ -881,6 +918,10 @@ class OctopServer:
             # harness runtime is gone; AgentManager.boot() rebuilds it.
             rt.business_running = False
             logger.info("octop business runtime stopped")
+        if cancellation is not None:
+            raise cancellation
+        if failure is not None:
+            raise failure
 
     def _emit_wizard_password(self, *, user_count: int) -> None:
         config = self.config

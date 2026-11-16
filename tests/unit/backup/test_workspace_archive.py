@@ -137,6 +137,70 @@ async def test_export_ignores_same_named_file_at_backend_root(tmp_path: Path) ->
 
 
 @pytest.mark.asyncio
+async def test_export_does_not_substitute_backend_root_for_deleted_workspace_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from octop.infra.backup import workspace_archive as archive_module
+
+    home = tmp_path / "backend"
+    directory = home / "workspace"
+    directory.mkdir(parents=True)
+    (home / "private.txt").write_bytes(b"backend-only secret")
+    removed = directory / "private.txt"
+    removed.write_bytes(b"workspace copy")
+    (directory / "keep.txt").write_bytes(b"retained workspace content")
+    backend = resolve_backend(
+        {"type": "filesystem", "root_dir": str(home), "virtual_mode": True},
+        workspace_dir=directory,
+    )
+    workspace = BackendWorkspace(backend, directory)
+    original_list = archive_module._list_file_paths
+
+    async def delete_after_listing(active):
+        paths = await original_list(active)
+        removed.unlink()
+        return paths
+
+    monkeypatch.setattr(archive_module, "_list_file_paths", delete_after_listing)
+    data = await export_workspace_zip(workspace)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        assert "private.txt" not in archive.namelist()
+        assert archive.read("keep.txt") == b"retained workspace content"
+
+
+@pytest.mark.asyncio
+async def test_replace_invalid_target_preserves_existing_workspace(tmp_path: Path) -> None:
+    from octop.infra.errors import OctopError
+
+    directory = tmp_path / "workspace"
+    outside = tmp_path / "outside"
+    directory.mkdir()
+    outside.mkdir()
+    original = directory / "original.txt"
+    original.write_bytes(b"original workspace")
+    protected = outside / "protected.txt"
+    protected.write_bytes(b"outside workspace")
+    try:
+        (directory / ".linked").symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable: {exc}")
+    backend = LocalShellBackend(root_dir=str(tmp_path), virtual_mode=False)
+    workspace = BackendWorkspace(backend, directory)
+    data = io.BytesIO()
+    with zipfile.ZipFile(data, "w") as archive:
+        archive.writestr("valid.txt", b"must not be written")
+        archive.writestr(".linked/protected.txt", b"must not escape")
+
+    with pytest.raises((PermissionError, OctopError)):
+        await import_workspace_zip(
+            workspace, data.getvalue(), mode="replace", local_workspace_dir=directory
+        )
+    assert original.read_bytes() == b"original workspace"
+    assert protected.read_bytes() == b"outside workspace"
+    assert not (directory / "valid.txt").exists()
+
+
+@pytest.mark.asyncio
 async def test_replace_import_preserves_hidden_state_omitted_by_old_archive(tmp_path: Path) -> None:
     """Replacing from an old archive must preserve hidden state it cannot restore."""
     ws = tmp_path / "ws"

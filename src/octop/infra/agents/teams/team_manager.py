@@ -32,6 +32,7 @@ from octop_harness.teams.util import (
 from octop.i18n import tr
 from octop.infra.agents.middleware.thread_artifacts import encode_team_artifact_ref
 from octop.infra.agents.teams.service import is_team_agent
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.process.history_projection import (
     live_message_inputs,
     message_inputs,
@@ -116,6 +117,9 @@ class TeamManager:
         session_key = None
         uid = _octop_user_id(call.user_id)
         group = self._is_group_dispatch(call)
+        if group:
+            await self._validate_team_dispatch_access(call, uid)
+        self._track_job(call, begin=True)
         extra = await self._member_runtime(call)
         question = ""
         dispatch_message = None
@@ -143,7 +147,6 @@ class TeamManager:
                 session_key = self._thread_registry.peer_session_key(
                     call.source_session_key, call.to_agent_id
                 )
-        self._track_job(call, begin=True)
         if thread_id and session_key and uid is not None:
             parts = session_key.split(":", 3)
             channel_type = parts[1] if len(parts) >= 2 else "dashboard"
@@ -161,12 +164,15 @@ class TeamManager:
                     question or str(call.message or ""),
                     turn_id=getattr(call, "job_id", None),
                 )
-        return _make_peer_session(
+        session = _make_peer_session(
             thread_id=thread_id,
             session_key=session_key,
             configurable=extra,
             message=question or dispatch_message,
         )
+        if group:
+            await self._validate_team_dispatch_access(call, uid)
+        return session
 
     async def record_peer_turn(
         self,
@@ -530,6 +536,7 @@ class TeamManager:
             stream_peer=self.stream_peer_to_room,
             stream_host=self.stream_host_followup_to_room,
             take_prompt=self.take_peer_prompt,
+            validate_peer=self._validate_team_dispatch_access,
         )
 
     # -- jobs / runtime -------------------------------------------------------
@@ -539,16 +546,40 @@ class TeamManager:
 
     def _track_job(self, call: PeerCall, *, begin: bool) -> None:
         host = self._agent_manager.get_row(call.from_agent_id)
-        if not is_team_agent(host):
+        job_id = getattr(call, "job_id", None)
+        if begin and not is_team_agent(host):
             return
         jobs = self._jobs()
         if jobs is None:
             return
-        job_id = getattr(call, "job_id", None)
         if begin:
             jobs.begin(call.from_agent_id, call.to_agent_id, job_id=job_id)
         else:
             jobs.end(call.from_agent_id, call.to_agent_id, job_id=job_id)
+
+    async def _validate_team_dispatch_access(
+        self,
+        call: PeerCall,
+        user_id: int | None = None,
+    ) -> None:
+        """Recheck the current roster and caller ACL before dispatching a queued peer."""
+        user_id = _octop_user_id(call.user_id) if user_id is None else user_id
+        host = self._agent_manager.get_row(call.from_agent_id)
+        if not is_team_agent(host):
+            return
+        repos = getattr(self._agent_manager, "_repos", None)
+        agent_repo = getattr(repos, "agent_repo", None)
+        teams = getattr(self._agent_manager, "teams", None)
+        if user_id is None or agent_repo is None or teams is None:
+            raise OctopError.localized(ErrorCode.FORBIDDEN, self._locale_for(user_id))
+        visible_ids = {row.agent_id for row in agent_repo.list_visible(user_id)}
+        roster = set(await teams.visible_member_ids(call.from_agent_id))
+        if (
+            call.from_agent_id not in visible_ids
+            or call.to_agent_id not in visible_ids
+            or call.to_agent_id not in roster
+        ):
+            raise OctopError.localized(ErrorCode.FORBIDDEN, self._locale_for(user_id))
 
     def _end_job_from_reply(self, event: ReplyEvent) -> None:
         jobs = self._jobs()
@@ -1402,6 +1433,7 @@ def wire_host_dispatch(
     stream_peer: Callable[..., Any] | None = None,
     stream_host: Callable[..., Any] | None = None,
     take_prompt: Callable[[str, str | None], tuple[str, str] | None] | None = None,
+    validate_peer: Callable[[PeerCall], Any] | None = None,
 ) -> None:
     """Patch harness TeamManager so async ``ask_agent`` uses inbox + room stream."""
     if harness_team is None:
@@ -1510,6 +1542,9 @@ def wire_host_dispatch(
             enrich = getattr(harness_team, "_enrich_request", None)
             if enrich is not None:
                 request = await enrich(to_agent_id, request)
+            call = PeerCall(**_supported_kwargs(PeerCall, peer_kwargs))
+            if validate_peer is not None:
+                await validate_peer(call)
             result = await stream_peer(
                 request,
                 room_thread_id=source_thread_id,
@@ -1518,7 +1553,6 @@ def wire_host_dispatch(
             payload = result if isinstance(result, dict) else {}
             after = getattr(harness_team, "_after_peer", None)
             if after is not None:
-                call = PeerCall(**_supported_kwargs(PeerCall, peer_kwargs))
                 try:
                     await after(call, str(getattr(request, "thread_id", None) or ""), payload)
                 except Exception:
