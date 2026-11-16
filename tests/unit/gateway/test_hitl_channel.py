@@ -238,6 +238,41 @@ async def test_coordinator_slash_approve_invalid_pending_id() -> None:
 
 
 @pytest.mark.asyncio
+async def test_coordinator_slash_approve_pending_id_rejects_other_user() -> None:
+    store = HitlPendingStore()
+    coordinator = HitlChannelCoordinator(store=store)
+    record = store.register(
+        thread_id="thr1",
+        agent_id="agent1",
+        user_id=1,
+        session_key="shared-session",
+        channel_type="feishu",
+        action_requests=[{"name": "execute", "args": {}}],
+        review_configs=None,
+    )
+    ctx = MagicMock()
+    ctx.session_key = "shared-session"
+    ctx.agent_id = "agent1"
+    ctx.user_id = 2
+    from octop_harness.slash import SlashCommand
+
+    agent_manager = MagicMock()
+    events = [
+        ev
+        async for ev in coordinator.iter_slash_resolution(
+            SlashCommand(name="approve", args=record.pending_id),
+            ctx,
+            agent_manager=agent_manager,
+            locale="en",
+        )
+    ]
+
+    assert events
+    agent_manager.resume_hitl.assert_not_called()
+    assert store.get(record.pending_id).status == "pending"  # type: ignore[union-attr]
+
+
+@pytest.mark.asyncio
 async def test_coordinator_resume_failure_keeps_pending() -> None:
     store = HitlPendingStore()
     coordinator = HitlChannelCoordinator(store=store)

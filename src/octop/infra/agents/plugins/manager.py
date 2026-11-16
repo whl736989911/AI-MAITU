@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -68,12 +68,7 @@ def _is_shipped_plugin(plugin_dir: Path, plugin_id: str) -> bool:
 
 
 def _read_global_plugins(config_path: Path) -> dict[str, bool]:
-    if not config_path.is_file():
-        return {}
-    try:
-        raw = json.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    raw = _read_plugin_config(config_path)
     plugins = raw.get("plugins")
     if not isinstance(plugins, dict):
         return {}
@@ -86,6 +81,14 @@ def _read_global_plugins(config_path: Path) -> dict[str, bool]:
     return out
 
 
+def _read_plugin_config(config_path: Path) -> dict[str, Any]:
+    try:
+        data = read_json_object(config_path)
+    except JsonFileCorruptError as exc:
+        raise corrupt_config_error(exc.path, exc.detail) from exc
+    return data if data is not None else {}
+
+
 def _write_global_plugin_enabled(config_path: Path, plugin_id: str, enabled: bool) -> None:
     """Merge ``plugins.<id>.enabled`` into ``config.json`` without dropping other keys.
 
@@ -93,12 +96,7 @@ def _write_global_plugin_enabled(config_path: Path, plugin_id: str, enabled: boo
     ``{}`` and writing back destroys every other setting, including the
     ``database`` section (issue #730).
     """
-    try:
-        data = read_json_object(config_path)
-    except JsonFileCorruptError as exc:
-        raise corrupt_config_error(exc.path, exc.detail) from exc
-    if data is None:
-        data = {}
+    data = _read_plugin_config(config_path)
     plugins = data.get("plugins")
     if not isinstance(plugins, dict):
         plugins = {}
@@ -370,11 +368,18 @@ class PluginManager:
                 ErrorCode.PLUGIN_INVALID_ARCHIVE,
                 f"invalid plugin manifest: {exc}",
             ) from exc
-        _write_global_plugin_enabled(self._config_path, plugin_id, enabled)
-        if enabled:
-            if PluginRegistry().get(plugin_id) is None:
+        newly_loaded = enabled and PluginRegistry().get(plugin_id) is None
+        if newly_loaded:
+            _read_plugin_config(self._config_path)
+        try:
+            if newly_loaded:
                 load_plugin_dir(plugin_dir, install_deps=False)
-        else:
+            _write_global_plugin_enabled(self._config_path, plugin_id, enabled)
+        except BaseException:
+            if newly_loaded:
+                unload_plugin(plugin_id)
+            raise
+        if not enabled:
             loaded = PluginRegistry().get(plugin_id)
             if loaded is not None:
                 self._tool_catalog[plugin_id] = [
@@ -486,15 +491,35 @@ class PluginManager:
                 "Only plugins shipped in this application may be installed.",
             )
         dest = self._plugins_dir / manifest.id
-        if dest.exists():
-            if not force:
-                raise OctopError(
-                    ErrorCode.PLUGIN_ALREADY_EXISTS,
-                    f"plugin already installed: {manifest.id}",
-                    details={"id": manifest.id},
-                )
-            shutil.rmtree(dest)
-        shutil.copytree(source, dest)
+        if dest.exists() and not force:
+            raise OctopError(
+                ErrorCode.PLUGIN_ALREADY_EXISTS,
+                f"plugin already installed: {manifest.id}",
+                details={"id": manifest.id},
+            )
+        if dest.is_symlink() or (dest.exists() and not dest.is_dir()):
+            raise NotADirectoryError(dest)
+        work_dir = Path(tempfile.mkdtemp(prefix=".plugin-install-", dir=self._plugins_dir))
+        clean_work_dir = True
+        try:
+            staged = work_dir / "incoming"
+            previous = work_dir / "previous"
+            shutil.copytree(source, staged)
+            if dest.exists():
+                os.replace(dest, previous)
+            try:
+                os.replace(staged, dest)
+            except BaseException:
+                if previous.exists():
+                    try:
+                        os.replace(previous, dest)
+                    except BaseException:
+                        clean_work_dir = False
+                        raise
+                raise
+        finally:
+            if clean_work_dir:
+                shutil.rmtree(work_dir, ignore_errors=True)
         unload_plugin(manifest.id)
         return load_plugin_dir(dest, install_deps=False)
 

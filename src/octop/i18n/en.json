@@ -970,6 +970,8 @@
       "corrections": "Corrections and supplements from later reads",
       "conflicts": "Conflicting evidence",
       "omissions": "Not covered by the current result",
+      "read_round_limit": "The collection read limit was reached; the remaining source content has not been read.",
+      "read_character_limit": "A source block exceeded the per-read character limit; its excerpt is partial and the remainder was not delivered.",
       "coverage": "Coverage",
       "topic_empty": "No topic result yet. Use organize to run prompt-directed extraction over the readable sources.",
       "reading_empty": "No verified reading entries have been recorded yet.",

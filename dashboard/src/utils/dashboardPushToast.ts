@@ -114,6 +114,21 @@ function sweepPushState(storage: Storage, now: number): void {
   }
   for (const key of stale) storage.removeItem(key);
 }
+export function clearSystemPushClaims(storage: Storage | null): void {
+  if (!storage) return;
+  try {
+    const keys: string[] = [];
+    for (let i = 0; i < storage.length; i++) {
+      const key = storage.key(i);
+      if (key?.startsWith(HANDLED_PREFIX) || key?.startsWith(LOCK_PREFIX)) {
+        keys.push(key);
+      }
+    }
+    for (const key of keys) storage.removeItem(key);
+  } catch {
+    // Storage can be unavailable in private browsing or restricted contexts.
+  }
+}
 
 export function wasPushHandled(
   storage: Storage,

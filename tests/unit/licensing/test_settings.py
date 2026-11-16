@@ -394,3 +394,25 @@ def test_clearing_keyring_override_keeps_deployment_managed(
         manager.require_business_access()
     assert locked.value.code is ErrorCode.INSTANCE_LICENSE_LOCKED
     assert env_keys.read_text(encoding="utf-8") == public_keys
+
+
+@pytest.mark.parametrize("source", ["config", "env"])
+@pytest.mark.parametrize(
+    "center_url",
+    [
+        "https://user:secret@license.example.test",
+        "https://license.example.test/nested",
+    ],
+)
+def test_load_rejects_invalid_preserved_center_url(
+    paths: PathLayout, monkeypatch: pytest.MonkeyPatch, center_url: str, source: str
+) -> None:
+    if source == "config":
+        paths.config.write_text(
+            json.dumps({"license": {"center_url": center_url}}), encoding="utf-8"
+        )
+    else:
+        monkeypatch.setenv("MAITU_LICENSE_CENTER_URL", center_url)
+
+    with pytest.raises(ValueError):
+        load_license_settings(paths, default_state_dir=paths.root / ".license")

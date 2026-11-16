@@ -970,6 +970,8 @@
       "corrections": "后续阅读的修正与补充",
       "conflicts": "证据冲突",
       "omissions": "当前结果未覆盖的内容",
+      "read_round_limit": "已达到集合读取上限，原件后续内容尚未读取。",
+      "read_character_limit": "原文区块超过单次读取字符上限；当前仅为部分摘录，剩余内容未交付。",
       "coverage": "整理覆盖情况",
       "topic_empty": "尚无主题结果。请使用整理功能，按提示词对可读原件进行抽取。",
       "reading_empty": "尚未积累经原文核验的阅读条目。",

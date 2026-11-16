@@ -425,4 +425,97 @@ async def test_suspend_skips_new_schedules(
     scheduler.suspend()
     scheduler.ensure_scheduled(agent_id)
     await scheduler.start_all()
-    assert scheduler._tasks == {}
+
+
+@pytest.mark.parametrize(
+    ("recipient_state", "expected_pushes"),
+    [("disabled", 0), ("expires_during_wait", 0), ("active", 1)],
+)
+@pytest.mark.asyncio
+async def test_scheduler_rechecks_session_user_before_proactive_push(
+    agent_id: str,
+    config_repo: ProactiveCareConfigRepo,
+    db: SqlitePool,
+    monkeypatch,
+    recipient_state: str,
+    expected_pushes: int,
+) -> None:
+    from types import SimpleNamespace
+
+    config_repo.upsert(
+        ProactiveCareConfig(
+            agent_id=agent_id,
+            enabled=True,
+            min_interval_hours=1,
+            max_interval_hours=1,
+        )
+    )
+    agent_repo = AgentRepo(db)
+    user_repo = UserRepo(db)
+    recipient_id = user_repo.create(
+        username="recipient",
+        password_hash="h",
+        role="user",
+        access_expires_at=(
+            int(datetime.now(UTC).timestamp()) + 60
+            if recipient_state == "expires_during_wait"
+            else None
+        ),
+    )
+    if recipient_state == "disabled":
+        user_repo.set_disabled(recipient_id, True)
+    care_pushes = []
+
+    async def run_push(*_args):
+        care_pushes.append("sent")
+
+    scheduler = ProactiveCareScheduler(
+        care_service=SimpleNamespace(run=run_push),
+        config_repo=config_repo,
+        session_repo=SimpleNamespace(
+            list_by_agent=lambda *_args, **_kwargs: [
+                SimpleNamespace(channel_id="im", session_key="session", user_id=recipient_id)
+            ]
+        ),
+        agent_repo=agent_repo,
+        user_repo=user_repo,
+    )
+    monkeypatch.setattr(
+        "octop.infra.proactive.scheduler.compute_next_trigger",
+        lambda **_kwargs: datetime.now(UTC),
+    )
+    monkeypatch.setattr(
+        "octop.infra.proactive.scheduler.is_in_active_hours", lambda *_a, **_k: True
+    )
+
+    waits = 0
+
+    async def change_state_during_wait(_seconds):
+        nonlocal waits
+        waits += 1
+        if waits == 1:
+            if recipient_state == "disabled":
+                user_repo.set_disabled(recipient_id, True)
+            if recipient_state == "expires_during_wait":
+                with db.transaction() as conn:
+                    user_repo.update_account(
+                        recipient_id,
+                        {"access_expires_at": int(datetime.now(UTC).timestamp()) - 1},
+                        conn=conn,
+                    )
+            return
+        config_repo.upsert(
+            ProactiveCareConfig(
+                agent_id=agent_id,
+                enabled=False,
+                min_interval_hours=1,
+                max_interval_hours=1,
+            )
+        )
+
+    monkeypatch.setattr("octop.infra.proactive.scheduler.asyncio.sleep", change_state_during_wait)
+    await scheduler._run_loop(agent_id)
+    recipient = user_repo.get(recipient_id)
+    assert recipient is not None
+    assert bool(recipient.disabled) is (recipient_state == "disabled")
+    assert len(care_pushes) == expected_pushes

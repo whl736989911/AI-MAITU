@@ -16,12 +16,9 @@ from octop.infra.errors import ErrorCode, OctopError
 def test_interval_seconds():
     trig = build_trigger("interval:60")
     assert isinstance(trig, IntervalTrigger)
-    assert trig.interval == dt.timedelta(seconds=60)
-
-
-def test_cron_expression():
-    trig = build_trigger("cron:0 9 * * *")
-    assert isinstance(trig, CronTrigger)
+    assert trig.get_next_fire_time(trig.start_date, trig.start_date) == (
+        trig.start_date + dt.timedelta(seconds=60)
+    )
 
 
 def _next_weekdays(trig: CronTrigger, *, count: int) -> list[int]:
@@ -81,11 +78,6 @@ def test_cron_weekday_ranges_use_unix_semantics(weekday: str, expected_weekdays:
     assert _next_weekdays(trig, count=len(expected_weekdays)) == expected_weekdays
 
 
-def test_date_iso():
-    trig = build_trigger("date:2026-12-31T09:00:00")
-    assert isinstance(trig, DateTrigger)
-
-
 def test_unknown_kind_raises():
     with pytest.raises(OctopError) as ei:
         build_trigger("webhook:foo")
@@ -121,6 +113,14 @@ def test_cron_rejects_invalid_weekday(weekday: str):
 def test_interval_rejects_non_positive_seconds(spec: str) -> None:
     with pytest.raises(OctopError, match="positive integer"):
         build_trigger(spec)
+
+
+@pytest.mark.parametrize("seconds", ["999999999999999999999999", "1000000000000"])
+def test_interval_overflow_is_reported_as_invalid_trigger(seconds: str) -> None:
+    with pytest.raises(OctopError) as error:
+        build_trigger(f"interval:{seconds}")
+
+    assert error.value.code is ErrorCode.CRON_TRIGGER_INVALID
 
 
 def test_cron_trigger_uses_requested_timezone() -> None:

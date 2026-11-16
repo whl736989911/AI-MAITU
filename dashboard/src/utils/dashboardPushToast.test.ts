@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import {
   claimSystemPush,
+  clearSystemPushClaims,
   parseDashboardPushFrame,
   readSystemNotifyPermission,
   shouldShowSystemPush,
@@ -110,5 +111,20 @@ describe("cross-tab push claim", () => {
     expect(claimSystemPush(null, "thread\\nreminder", "tab-a", 10_000)).toBe(
       false,
     );
+  });
+});
+
+describe("identity-scoped push state", () => {
+  it("clears push claims without clearing unrelated local storage", () => {
+    localStorage.clear();
+    expect(
+      claimSystemPush(localStorage, "thread\\nreminder", "tab-a", 10_000),
+    ).toBe(true);
+    localStorage.setItem("dashboard:preference", "dark");
+
+    clearSystemPushClaims(localStorage);
+
+    expect(localStorage.length).toBe(1);
+    expect(localStorage.getItem("dashboard:preference")).toBe("dark");
   });
 });

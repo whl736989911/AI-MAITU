@@ -960,6 +960,14 @@ source-ID/path identity as scans, so later syncs update the document rather than
 create a second copy. Parsing failures retain the saved original and expose the
 failure on the document; they do not undo a successful upload.
 
+The raw content-editor endpoints (`GET` / `PUT` on
+`/knowledge-bases/{kb}/documents/{doc}/content`) apply only to platform-stored
+Markdown/text originals. Source-linked documents return `403 FORBIDDEN` there
+and cannot be replaced through the platform content service. Read them through
+the original-reading or indexed-preview APIs; change existing bytes in the
+source folder and rescan. Enabling source uploads permits new files, not local
+shadow copies or overwrites of existing source originals.
+
 Sources default to read-only. Only the knowledge-base owner or system
 administrator may create a writable folder source, enable uploads, or change
 connection settings on an existing writable source. The dashboard exposes an

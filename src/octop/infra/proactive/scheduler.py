@@ -28,6 +28,7 @@ if TYPE_CHECKING:
     from octop.infra.db.repos.sessions import SessionRepo
     from octop.infra.db.repos.users import UserRepo
     from octop.infra.proactive.service import ProactiveCareService
+from octop.infra.users.capabilities import UserCapabilityPolicy
 from octop.infra.users.preferences import get_timezone_from_preferences_json
 
 _UTC_TZ_NAME = "UTC"
@@ -364,7 +365,14 @@ class ProactiveCareScheduler:
                 sessions[0],
             )
 
-            # Perform the push
+            # The push target is the session user, not necessarily the agent owner.
+            if not self._session_user_is_active(getattr(target_session, "user_id", None)):
+                logger.info(
+                    "ProactiveCareScheduler: target session user is inactive, skipping push "
+                    "agent=%s",
+                    agent_id,
+                )
+                continue
             try:
                 await self._care_service.run(agent_id, target_session.session_key)
             except Exception as exc:
@@ -375,6 +383,11 @@ class ProactiveCareScheduler:
                     exc_info=exc,
                 )
             # Regardless of success or failure, continue to the next scheduling round
+
+    def _session_user_is_active(self, user_id: int | None) -> bool:
+        if self._user_repo is None or user_id is None:
+            return True
+        return UserCapabilityPolicy.user_is_active(self._user_repo.get(user_id))
 
     def _resolve_tz_for_agent(self, agent_id: str) -> str:
         if self._agent_repo is None or self._user_repo is None:

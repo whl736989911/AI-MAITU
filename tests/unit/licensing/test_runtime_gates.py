@@ -44,7 +44,7 @@ async def test_cron_execution_is_denied_when_instance_license_is_revoked(
         cron_repo=cron_repo,
         audit_repo=audit_repo,
         user_policy=UserCapabilityPolicy(MagicMock()),
-        date_trigger=False,
+        trigger="cron:0 0 * * *",
     )
 
     with pytest.raises(OctopError) as exc_info:

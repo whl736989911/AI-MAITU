@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useSyncExternalStore } from "react";
+import { AUTH_IDENTITY_CHANGED_EVENT } from "../../../api/request";
 import { octopThreadsApi } from "../../../api/modules/octopThreads";
 import type { ThreadArtifact } from "../../../api/modules/octopThreads";
 import * as chatStore from "./chatStore";
@@ -277,7 +278,13 @@ async function fetchSessionsPage(
   agentId: string,
   limit: number,
 ): Promise<{ sessions: Session[]; hasMore: boolean }> {
-  const rows = await octopThreadsApi.list(agentId, limit + 1);
+  const identityGeneration = chatStore.getAuthIdentityGeneration();
+  const rows = await octopThreadsApi.list(agentId, limit + 1, {
+    signal: chatStore.getAuthIdentitySignal(),
+  });
+  if (chatStore.getAuthIdentityGeneration() !== identityGeneration) {
+    throw new Error("Authentication identity changed while loading sessions");
+  }
   const hasMore = rows.length > limit;
   const sessions = sortSessions(rows.slice(0, limit).map(toSession));
   return { sessions, hasMore };
@@ -345,8 +352,33 @@ export function resetSessionStoreForTests() {
   };
 }
 
+function clearSessionStoreForIdentityChange(): void {
+  _storeAgentId = null;
+  _sessions = [];
+  _loading = false;
+  _hasMore = false;
+  _loadingMore = false;
+  _loadedLimitByAgent.clear();
+  _pendingThreadIds.clear();
+  _snapshot = {
+    sessions: _sessions,
+    loading: _loading,
+    hasMore: _hasMore,
+    loadingMore: _loadingMore,
+  };
+  notifyListeners();
+}
+
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    AUTH_IDENTITY_CHANGED_EVENT,
+    clearSessionStoreForIdentityChange,
+  );
+}
+
 export function useSessions(agentId: string | null) {
   syncStoreToAgent(agentId);
+  const authIdentityGeneration = chatStore.getAuthIdentityGeneration();
   const { sessions, loading, hasMore, loadingMore } = useSyncExternalStore(
     subscribeSessionStore,
     getSessionSnapshot,
@@ -365,18 +397,23 @@ export function useSessions(agentId: string | null) {
           agentId,
           limit,
         );
+        if (chatStore.getAuthIdentityGeneration() !== authIdentityGeneration)
+          return _sessions;
         if (_storeAgentId !== agentId) return _sessions;
         applySessionPage(valid, more, limit, agentId, activeThreadId);
         return visibleSessionsForAgent(valid, agentId, activeThreadId);
       } catch {
         return _sessions;
       } finally {
-        if (_storeAgentId === agentId) {
+        if (
+          _storeAgentId === agentId &&
+          chatStore.getAuthIdentityGeneration() === authIdentityGeneration
+        ) {
           setModuleLoading(false);
         }
       }
     },
-    [agentId],
+    [agentId, authIdentityGeneration],
   );
 
   const loadMoreSessions = useCallback(
@@ -389,15 +426,19 @@ export function useSessions(agentId: string | null) {
           agentId,
           nextLimit,
         );
+        if (chatStore.getAuthIdentityGeneration() !== authIdentityGeneration)
+          return;
         if (_storeAgentId !== agentId) return;
         applySessionPage(valid, more, nextLimit, agentId, activeThreadId);
       } catch {
         /* ignore */
       } finally {
-        setModuleLoadingMore(false);
+        if (chatStore.getAuthIdentityGeneration() === authIdentityGeneration) {
+          setModuleLoadingMore(false);
+        }
       }
     },
-    [agentId],
+    [agentId, authIdentityGeneration],
   );
 
   const fetchAllSessions = useCallback(
@@ -408,13 +449,15 @@ export function useSessions(agentId: string | null) {
           agentId,
           50,
         );
+        if (chatStore.getAuthIdentityGeneration() !== authIdentityGeneration)
+          return;
         if (_storeAgentId !== agentId) return;
         applySessionPage(valid, more, valid.length, agentId, activeThreadId);
       } catch {
         /* ignore */
       }
     },
-    [agentId],
+    [agentId, authIdentityGeneration],
   );
 
   const ensureThreadInList = useCallback(
@@ -428,6 +471,8 @@ export function useSessions(agentId: string | null) {
           agentId,
           probeLimit,
         );
+        if (chatStore.getAuthIdentityGeneration() !== authIdentityGeneration)
+          return "unknown";
         // Agent switched while the probe was in flight — do not rewrite URL.
         if (_storeAgentId !== agentId) return "unknown";
         const found = valid.some((s) => s.id === threadId);
@@ -445,7 +490,7 @@ export function useSessions(agentId: string | null) {
         return "unknown";
       }
     },
-    [agentId],
+    [agentId, authIdentityGeneration],
   );
 
   // Fetch only: agent switches are synced in-render via syncStoreToAgent.
@@ -455,22 +500,28 @@ export function useSessions(agentId: string | null) {
     setModuleLoading(true);
     void (async () => {
       const requestedAgent = agentId;
+      const requestedGeneration = authIdentityGeneration;
       try {
         const { sessions: valid, hasMore: more } = await fetchSessionsPage(
           requestedAgent,
           SESSION_PAGE_SIZE,
         );
+        if (chatStore.getAuthIdentityGeneration() !== requestedGeneration)
+          return;
         if (_storeAgentId !== requestedAgent) return;
         applySessionPage(valid, more, SESSION_PAGE_SIZE, requestedAgent);
       } catch {
         /* ignore */
       } finally {
-        if (_storeAgentId === requestedAgent) {
+        if (
+          _storeAgentId === requestedAgent &&
+          chatStore.getAuthIdentityGeneration() === requestedGeneration
+        ) {
           setModuleLoading(false);
         }
       }
     })();
-  }, [agentId]);
+  }, [agentId, authIdentityGeneration]);
 
   useEffect(() => {
     return onSessionEvent((event) => {
@@ -502,9 +553,14 @@ export function useSessions(agentId: string | null) {
       channelType: "dashboard",
     };
     setModuleSessions((prev) => sortSessions([placeholder, ...prev]));
+    const identityGeneration = chatStore.getAuthIdentityGeneration();
+    const identitySignal = chatStore.getAuthIdentitySignal();
     const resolvedId = octopThreadsApi
-      .create(agentId)
+      .create(agentId, { signal: identitySignal })
       .then((created) => {
+        if (chatStore.getAuthIdentityGeneration() !== identityGeneration) {
+          return "";
+        }
         markPendingThread(created.thread_id);
         const now = Math.floor(Date.now() / 1000);
         const session = toSession({
@@ -524,6 +580,9 @@ export function useSessions(agentId: string | null) {
         return created.thread_id;
       })
       .catch(() => {
+        if (chatStore.getAuthIdentityGeneration() !== identityGeneration) {
+          return "";
+        }
         setModuleSessions((prev) => prev.filter((s) => s.id !== "__pending__"));
         return "";
       });

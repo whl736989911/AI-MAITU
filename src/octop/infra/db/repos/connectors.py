@@ -293,6 +293,29 @@ class ConnectorRepo:
                 (blob, expires_at, ts, ts, instance_id),
             )
 
+    def replace_credentials_if_unchanged(
+        self,
+        *,
+        instance_id: str,
+        expected_blob: bytes,
+        blob: bytes,
+        expires_at: int | None = None,
+    ) -> bool:
+        """Replace credentials only if no concurrent credential change occurred."""
+        ts = now_ts()
+        blob_column = (
+            "CAST(credential_blob AS BLOB)" if self._db.dialect == "sqlite" else "credential_blob"
+        )
+        with self._db.transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE connectors SET credential_blob = ?, credential_expires_at = ?, "
+                "credential_rotated_at = ?, updated_at = ? "
+                f"WHERE instance_id = ? AND {blob_column} = ?",
+                (blob, expires_at, ts, ts, instance_id, expected_blob),
+            )
+        updated_rows: int = cursor.rowcount
+        return updated_rows == 1
+
     def delete(self, instance_id: str) -> None:
         with self._db.transaction() as conn:
             conn.execute("DELETE FROM connectors WHERE instance_id = ?", (instance_id,))

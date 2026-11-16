@@ -58,10 +58,10 @@ def create(
     paths = _paths(home)
     config = load_config(paths.config)
     db = open_database(config, paths)
-    run_migrations(db)
-    services = build_shared_services(db=db, paths=paths, config=config)
-    rows = services.agent_repo.list_all()
     try:
+        run_migrations(db)
+        services = build_shared_services(db=db, paths=paths, config=config)
+        rows = services.agent_repo.list_all()
         with managed_tempdir(prefix="backup-cli-", root=paths.root / "tmp") as tmp:
             tmp_path = tmp / "backup.tar.gz"
             suggested = create_system_backup(
@@ -138,10 +138,10 @@ def auto_run(home: Path | None) -> None:
     paths = _paths(home)
     config = load_config(paths.config)
     db = open_database(config, paths)
-    run_migrations(db)
-    services = build_shared_services(db=db, paths=paths, config=config)
-    rows = services.agent_repo.list_all()
     try:
+        run_migrations(db)
+        services = build_shared_services(db=db, paths=paths, config=config)
+        rows = services.agent_repo.list_all()
         entry, deleted = create_and_store_auto_backup(
             paths=paths,
             agent_rows=rows,
@@ -195,13 +195,15 @@ def restore(
     paths = _paths(home)
     config = load_config(paths.config)
     db = open_database(config, paths)
-    result = restore_system_backup(
-        archive,
-        paths=paths,
-        pool=db,
-        db_config=config.database,
-        restore_config=not no_config,
-        owner_user_id=owner_user_id,
-    )
-    db.close()
+    try:
+        result = restore_system_backup(
+            archive,
+            paths=paths,
+            pool=db,
+            db_config=config.database,
+            restore_config=not no_config,
+            owner_user_id=owner_user_id,
+        )
+    finally:
+        db.close()
     click.echo(f"restored: {result}")

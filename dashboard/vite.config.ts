@@ -4,6 +4,7 @@ import react from "@vitejs/plugin-react";
 import { VitePWA } from "vite-plugin-pwa";
 import path from "path";
 import { monacoSameOrigin } from "./vite/monaco";
+import { isScopedApiRequest } from "./src/utils/pwaCacheBoundary";
 
 // serialize-javascript@7 (pulled in by vite-plugin-pwa → @rollup/plugin-terser)
 // expects Web Crypto globals during `vite build`. Node <19 does not define them.
@@ -227,6 +228,13 @@ export default defineConfig(({ mode }) => {
           skipWaiting: false,
           runtimeCaching: [
             {
+              // Private API responses carry bearer-authenticated user data.
+              // This route must precede every cache strategy and applies
+              // across the dashboard's own base path.
+              urlPattern: isScopedApiRequest,
+              handler: "NetworkOnly",
+            },
+            {
               // Always revalidate the HTML shell so a new deploy is picked up
               // without a hard refresh. Last good copy is kept for offline.
               urlPattern: ({ request }) => request.mode === "navigate",
@@ -261,17 +269,6 @@ export default defineConfig(({ mode }) => {
               options: {
                 cacheName: "3d-assets",
                 expiration: { maxEntries: 60, maxAgeSeconds: 7 * 24 * 60 * 60 },
-              },
-            },
-            {
-              // Read-only API calls (chat history, files, config).
-              // NetworkFirst ensures fresh data when online; cache used offline.
-              urlPattern: /^\/api\/(chats|agent\/files|agent\/memory)/,
-              handler: "NetworkFirst",
-              options: {
-                cacheName: "api-readonly",
-                networkTimeoutSeconds: 5,
-                expiration: { maxEntries: 50, maxAgeSeconds: 5 * 60 },
               },
             },
             {

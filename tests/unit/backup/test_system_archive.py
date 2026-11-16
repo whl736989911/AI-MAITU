@@ -3,15 +3,19 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import tarfile
+from collections.abc import Callable
 from contextlib import closing
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from octop.config import DatabaseConfig
+from octop.infra.backup import system_archive
 from octop.infra.backup.manifest import MANIFEST_VERSION, BackupManifest
 from octop.infra.backup.store import list_backup_files, place_backup_file
 from octop.infra.backup.system_archive import (
@@ -21,6 +25,7 @@ from octop.infra.backup.system_archive import (
 )
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos.settings import SettingsRepo
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.paths import PathLayout
 
@@ -30,6 +35,31 @@ def layout(tmp_path: Path) -> PathLayout:
     root = tmp_path / ".maitu"
     root.mkdir()
     return PathLayout(root)
+
+
+def _rewrite_manifest(
+    path: Path,
+    update: Callable[[dict[str, Any]], None],
+    extra_files: dict[str, bytes] | None = None,
+) -> None:
+    with tarfile.open(path, "r:gz") as archive:
+        members = []
+        for member in archive.getmembers():
+            stream = archive.extractfile(member) if member.isfile() else None
+            payload = stream.read() if stream is not None else None
+            if member.name == "manifest.json":
+                manifest = json.loads(payload)
+                update(manifest)
+                payload = json.dumps(manifest).encode()
+                member.size = len(payload)
+            members.append((member, payload))
+    with tarfile.open(path, "w:gz") as archive:
+        for member, payload in members:
+            archive.addfile(member, BytesIO(payload) if payload is not None else None)
+        for name, payload in (extra_files or {}).items():
+            member = tarfile.TarInfo(name)
+            member.size = len(payload)
+            archive.addfile(member, BytesIO(payload))
 
 
 def test_same_second_backups_preserve_both_snapshots(
@@ -112,39 +142,6 @@ def test_failed_sqlite_schema_upgrade_preserves_live_database(
         assert list((layout.root / "tmp").iterdir()) == []
     finally:
         pool.close()
-
-
-def test_manifest_roundtrip_includes_driver_fields() -> None:
-    m = BackupManifest(
-        manifest_version=1,
-        octop_version="0.0.0",
-        schema_version=1,
-        created_at="t",
-        home="/tmp",
-        db_file="db/maitu.dump",
-        database_driver="postgresql",
-        database_dump_format="pg_custom",
-    )
-    loaded = BackupManifest.load_text(m.to_json())
-    assert loaded.database_driver == "postgresql"
-    assert loaded.database_dump_format == "pg_custom"
-    assert loaded.db_file == "db/maitu.dump"
-
-
-def test_legacy_manifest_defaults_plugins_omitted() -> None:
-    loaded = BackupManifest.from_dict(
-        {
-            "manifest_version": 1,
-            "octop_version": "0.0.0",
-            "schema_version": 1,
-            "created_at": "t",
-            "home": "/tmp",
-        }
-    )
-    assert loaded.includes_skill_packages is True
-    assert loaded.includes_plugins is False
-    assert loaded.includes_knowledge is False
-    assert loaded.includes_chats is True
 
 
 def test_roundtrip_backup(layout: PathLayout, tmp_path: Path) -> None:
@@ -840,6 +837,36 @@ def test_restore_replaces_stale_plugin_files(layout: PathLayout, tmp_path: Path)
     assert not (restore_layout.plugins_dir / "stale").exists()
 
 
+def test_failed_archive_tree_copy_preserves_existing_destination(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    extracted = tmp_path / "extracted"
+    (extracted / "plugins" / "new").mkdir(parents=True)
+    (extracted / "plugins" / "new" / "one.txt").write_text("one", encoding="utf-8")
+    (extracted / "plugins" / "new" / "two.txt").write_text("two", encoding="utf-8")
+    dest = tmp_path / "live-plugins"
+    (dest / "old").mkdir(parents=True)
+    (dest / "old" / "keep.txt").write_text("preserve", encoding="utf-8")
+
+    original_copy2 = shutil.copy2
+    copies = 0
+
+    def fail_second_copy(source: Path, target: Path) -> str:
+        nonlocal copies
+        copies += 1
+        if copies == 2:
+            raise OSError("controlled copy failure")
+        return original_copy2(source, target)
+
+    monkeypatch.setattr(system_archive.shutil, "copy2", fail_second_copy)
+    with pytest.raises(OSError, match="controlled copy failure"):
+        system_archive._replace_tree_from_archive(extracted, dest, "plugins")
+
+    assert (dest / "old" / "keep.txt").read_text(encoding="utf-8") == "preserve"
+    assert not (dest / "new").exists()
+    assert list(tmp_path.glob(".live-plugins.restore-*")) == []
+
+
 def test_restore_replaces_stale_knowledge_files(layout: PathLayout, tmp_path: Path) -> None:
     pool = SqlitePool(layout.db)
     run_migrations(pool)
@@ -1445,3 +1472,145 @@ def test_suggested_backup_filename_uses_the_brand_prefix() -> None:
     name = suggested_backup_filename()
     assert name.startswith("maitu-backup-")
     assert name.endswith(".tar.gz")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("includes_knowledge", "false"),
+        ("agents", {"unexpected": {}}),
+        ("agents", [None]),
+        ("agents", [{"agent_id": "agent01", "name": "A", "workspace_included": "false"}]),
+        ("schema_version", float("inf")),
+    ],
+    ids=["string-flag", "non-list-agents", "non-object-agent", "workspace-flag", "overflow"],
+)
+def test_invalid_manifest_preserves_live_database_and_files(
+    layout: PathLayout, tmp_path: Path, field: str, value: object
+) -> None:
+    pool = SqlitePool(layout.db)
+    run_migrations(pool)
+    settings = SettingsRepo(pool)
+    settings.set("manifest_probe", "archive")
+    original = layout.knowledge_dir / "kb" / "notes.txt"
+    original.parent.mkdir(parents=True)
+    original.write_text("archived original", encoding="utf-8")
+    archive = tmp_path / "invalid-manifest.tar.gz"
+    try:
+        create_system_backup(
+            paths=layout,
+            agent_rows=[],
+            pool=pool,
+            db_config=DatabaseConfig(),
+            dest=archive,
+            include_config=False,
+            include_workspaces=False,
+            include_skill_packages=False,
+            include_plugins=False,
+            include_knowledge=True,
+            include_chats=True,
+        )
+        settings.set("manifest_probe", "live")
+        original.write_text("live original", encoding="utf-8")
+        _rewrite_manifest(archive, lambda manifest: manifest.update({field: value}))
+
+        with pytest.raises(OctopError) as error:
+            restore_system_backup(archive, paths=layout, pool=pool, db_config=DatabaseConfig())
+
+        assert error.value.code is ErrorCode.SLASH_BAD_ARGS
+        assert settings.get("manifest_probe") == "live"
+        assert original.read_text(encoding="utf-8") == "live original"
+    finally:
+        pool.close()
+
+
+@pytest.mark.parametrize(
+    "extra_files",
+    [
+        {"config/config.json": b'{"default_timezone": "UTC"}'},
+        {"config/env": b"OCTOP_BACKUP_PROBE=archive\n"},
+    ],
+    ids=["config", "environment"],
+)
+def test_restore_respects_excluded_configuration_files(
+    layout: PathLayout, tmp_path: Path, extra_files: dict[str, bytes]
+) -> None:
+    pool = SqlitePool(layout.db)
+    run_migrations(pool)
+    settings = SettingsRepo(pool)
+    settings.set("manifest_probe", "archive")
+    layout.config.write_text('{"default_timezone": "Asia/Shanghai"}', encoding="utf-8")
+    env_path = system_archive.env_file_path(layout.root)
+    env_path.write_text("OCTOP_BACKUP_PROBE=live\n", encoding="utf-8")
+    archive = tmp_path / "excluded-config.tar.gz"
+    try:
+        create_system_backup(
+            paths=layout,
+            agent_rows=[],
+            pool=pool,
+            db_config=DatabaseConfig(),
+            dest=archive,
+            include_config=False,
+            include_workspaces=False,
+            include_skill_packages=False,
+            include_plugins=False,
+            include_knowledge=False,
+            include_chats=True,
+        )
+        settings.set("manifest_probe", "live")
+        _rewrite_manifest(archive, lambda manifest: None, extra_files)
+
+        restore_system_backup(archive, paths=layout, pool=pool, db_config=DatabaseConfig())
+
+        assert settings.get("manifest_probe") == "archive"
+        assert json.loads(layout.config.read_text(encoding="utf-8")) == {
+            "default_timezone": "Asia/Shanghai"
+        }
+        assert env_path.read_text(encoding="utf-8") == "OCTOP_BACKUP_PROBE=live\n"
+    finally:
+        pool.close()
+
+
+def test_legacy_restore_preserves_unincluded_resource_trees(
+    layout: PathLayout, tmp_path: Path
+) -> None:
+    pool = SqlitePool(layout.db)
+    run_migrations(pool)
+    settings = SettingsRepo(pool)
+    settings.set("manifest_probe", "archive")
+    archive = tmp_path / "legacy-manifest.tar.gz"
+    try:
+        create_system_backup(
+            paths=layout,
+            agent_rows=[],
+            pool=pool,
+            db_config=DatabaseConfig(),
+            dest=archive,
+            include_config=False,
+            include_workspaces=False,
+            include_skill_packages=False,
+            include_plugins=False,
+            include_knowledge=False,
+            include_chats=True,
+        )
+
+        def omit_new_flags(manifest: dict[str, Any]) -> None:
+            manifest.pop("includes_plugins")
+            manifest.pop("includes_knowledge")
+
+        _rewrite_manifest(archive, omit_new_flags)
+        settings.set("manifest_probe", "live")
+        plugin = layout.plugins_dir / "custom" / "settings.json"
+        knowledge = layout.knowledge_dir / "kb" / "notes.txt"
+        plugin.parent.mkdir(parents=True)
+        knowledge.parent.mkdir(parents=True)
+        plugin.write_text("local plugin", encoding="utf-8")
+        knowledge.write_text("local knowledge", encoding="utf-8")
+
+        restore_system_backup(archive, paths=layout, pool=pool, db_config=DatabaseConfig())
+
+        assert settings.get("manifest_probe") == "archive"
+        assert plugin.read_text(encoding="utf-8") == "local plugin"
+        assert knowledge.read_text(encoding="utf-8") == "local knowledge"
+    finally:
+        pool.close()

@@ -68,12 +68,13 @@ def test_setup_completion_persists_and_invalidates_all_tokens() -> None:
     assert server.wizard_tokens.cleared is True
 
 
-def test_completed_single_admin_cannot_reissue_or_use_wizard_token() -> None:
+@pytest.mark.asyncio
+async def test_completed_single_admin_cannot_reissue_or_use_wizard_token() -> None:
     server = _server(values={"setup.state": "completed"}, users=1)
     with pytest.raises(OctopError) as exc:
         _enforce_wizard_token_phase(server)
     assert exc.value.code == ErrorCode.SETUP_REQUIRED
 
     with pytest.raises(OctopError) as exc:
-        _authorize_setup_mid_wizard("Bearer valid", server)
+        await _authorize_setup_mid_wizard("Bearer valid", server)
     assert exc.value.code == ErrorCode.SETUP_REQUIRED

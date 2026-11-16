@@ -7,8 +7,10 @@ deliberately unstamped) turn would see them.
 
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from types import SimpleNamespace
 from typing import Any
@@ -400,6 +402,44 @@ def test_closed_runtime_hands_out_no_services() -> None:
     )
     assert runtime.service(SHARED_NS) is None
     runtime.close()
+
+
+def test_concurrent_first_service_access_releases_duplicate_store_claims(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    barrier = threading.Barrier(2)
+
+    class Store:
+        references = 0
+        releases = 0
+
+        def acquire(self, _identity: Any, construct: Any) -> Any:
+            self.references += 1
+            barrier.wait()
+            return construct()
+
+        def release(self, _identity: Any) -> None:
+            self.references -= 1
+            self.releases += 1
+
+    store = Store()
+    monkeypatch.setattr(fm, "shared_memory_store", lambda: store)
+    monkeypatch.setattr(fm, "MemoryService", lambda memory, **_kwargs: memory)
+    runtime = FeatureMemoryRuntime(
+        agent_id=AGENT,
+        backend_type="sqlite",
+        backend_config={"db_path": "test.db"},
+    )
+    monkeypatch.setattr(runtime, "_construct", lambda _namespace: object())
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        services = list(pool.map(lambda _n: runtime.service(SHARED_NS), range(2)))
+
+    assert services[0] is services[1]
+    assert store.references == 1
+    runtime.close()
+    assert store.references == 0
+    assert store.releases == 2
 
 
 # ----------------------------------------------------------------------

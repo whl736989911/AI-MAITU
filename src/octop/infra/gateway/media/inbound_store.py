@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import mimetypes
 import re
 import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -19,6 +21,52 @@ from octop.infra.gateway.media.constants import INBOUND_DIR
 
 if TYPE_CHECKING:
     from octop_harness.backends.workspace import BackendWorkspace
+
+
+_INBOUND_WRITE_LOCKS: dict[str, tuple[asyncio.Lock, int]] = {}
+
+
+def _register_inbound_write_lock(key: str) -> tuple[str, asyncio.Lock]:
+    entry = _INBOUND_WRITE_LOCKS.get(key)
+    if entry is None:
+        lock = asyncio.Lock()
+        _INBOUND_WRITE_LOCKS[key] = (lock, 1)
+    else:
+        lock, users = entry
+        _INBOUND_WRITE_LOCKS[key] = (lock, users + 1)
+    return key, lock
+
+
+def _unregister_inbound_write_lock(key: str) -> None:
+    lock, users = _INBOUND_WRITE_LOCKS[key]
+    if users == 1:
+        del _INBOUND_WRITE_LOCKS[key]
+    else:
+        _INBOUND_WRITE_LOCKS[key] = (lock, users - 1)
+
+
+async def _write_inbound_locked(workspace: BackendWorkspace, stored_name: str, data: bytes) -> str:
+    root = await asyncio.to_thread(Path(workspace.workspace_dir).resolve)
+    key, lock = _register_inbound_write_lock(str(root))
+    try:
+        async with lock:
+            path = await _unique_inbound_path(workspace, stored_name)
+            upload = asyncio.create_task(workspace.aupload_bytes(path, data))
+            try:
+                await asyncio.shield(upload)
+            except asyncio.CancelledError:
+                # The backend may still be writing in a thread. Keep the name
+                # reserved until it really finishes, including repeated cancellation.
+                while not upload.done():
+                    with suppress(asyncio.CancelledError, Exception):
+                        await asyncio.shield(upload)
+                with suppress(asyncio.CancelledError, Exception):
+                    upload.result()
+                raise
+            return path
+    finally:
+        _unregister_inbound_write_lock(key)
+
 
 MAX_INBOUND_BYTES = upload_mb_to_bytes(DEFAULT_MAX_UPLOAD_MB)
 
@@ -413,8 +461,7 @@ async def write_inbound(
     if not Path(display_name).suffix:
         display_name = f"{display_name}{inbound_extension(display_name, normalized_type)}"
     stored_name = build_timestamped_inbound_name(display_name)
-    path = await _unique_inbound_path(workspace, stored_name)
-    await workspace.aupload_bytes(path, data)
+    path = await _write_inbound_locked(workspace, stored_name, data)
     return InboundFile(
         path=path,
         filename=display_name,

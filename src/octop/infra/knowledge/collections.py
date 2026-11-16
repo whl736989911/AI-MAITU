@@ -735,24 +735,52 @@ class KnowledgeCollectionService:
                 "reason": "nothing_verified",
             }
         inserted: builtins.list[dict[str, Any]] = []
-        for row in rows:
-            if self._repo.put_read(
-                evidence_id=row["evidence_id"],
-                kb_id=kb_id,
-                document_id=doc_id,
-                source_version=version,
-                kind=row["kind"],
-                status=row["status"],
-                locator=row["locator"],
-                text=row["text"],
-                summary=row["summary"],
-                images=row["images"],
-                read_by=actor_user_id,
-            ):
-                inserted.append(row)
+        # A source refresh may prune this document after the initial validation
+        # above. Serialize the final source check and evidence writes with that
+        # prune so a delayed read cannot restore evidence for a deleted or
+        # superseded source.
+        with _materialization_lock(doc_id):
+            current = self._knowledge.get_document(doc_id)
+            if current is None or current.kb_id != kb_id or current.is_dir:
+                return {
+                    "updated": 0,
+                    "collections": [],
+                    "topic_failure": None,
+                    "reason": "document_missing",
+                }
+            if str(current.content_hash or "") != version:
+                return {
+                    "updated": 0,
+                    "collections": [],
+                    "topic_failure": None,
+                    "reason": "stale_version",
+                }
+            restricted, readable = self._scope(kb_id, actor_user_id, is_admin)
+            if not self._may(doc_id, restricted, readable):
+                return {
+                    "updated": 0,
+                    "collections": [],
+                    "topic_failure": None,
+                    "reason": "access_denied",
+                }
+            for row in rows:
+                if self._repo.put_read(
+                    evidence_id=row["evidence_id"],
+                    kb_id=kb_id,
+                    document_id=doc_id,
+                    source_version=version,
+                    kind=row["kind"],
+                    status=row["status"],
+                    locator=row["locator"],
+                    text=row["text"],
+                    summary=row["summary"],
+                    images=row["images"],
+                    read_by=actor_user_id,
+                ):
+                    inserted.append(row)
         if not inserted:
             return {"updated": 0, "collections": [], "topic_failure": None, "reason": "duplicate"}
-        return self._fanout_read(kb_id, doc_id, document, inserted, actor_user_id, is_admin)
+        return self._fanout_read(kb_id, doc_id, current, inserted, actor_user_id, is_admin)
 
     @staticmethod
     def _evidence_rows(evidence: Mapping[str, object]) -> builtins.list[dict[str, Any]]:
@@ -1014,26 +1042,27 @@ class KnowledgeCollectionService:
             for row in self._repo.list_for_base(kb_id):
                 self._sync_target(row)
             return
-        document = self._knowledge.get_document(doc_id)
-        rows = {row.id: row for row in self._repo.collections_for_document(kb_id, doc_id)}
-        if document is None or document.kb_id != kb_id:
-            self._repo.prune_doc_reads(kb_id, doc_id)
+        with _materialization_lock(doc_id):
+            document = self._knowledge.get_document(doc_id)
+            rows = {row.id: row for row in self._repo.collections_for_document(kb_id, doc_id)}
+            if document is None or document.kb_id != kb_id:
+                self._repo.prune_doc_reads(kb_id, doc_id)
+                for topic in self._repo.topics_for_document(kb_id, doc_id):
+                    self._repo.remove_doc_topics(str(topic["collection_id"]), doc_id)
+                for row in rows.values():
+                    self._sync_target(row)
+                return
+            version = _version(document)
+            self._repo.prune_doc_reads(kb_id, doc_id, keep_version=version)
             for topic in self._repo.topics_for_document(kb_id, doc_id):
-                self._repo.remove_doc_topics(str(topic["collection_id"]), doc_id)
-            for row in rows.values():
-                self._sync_target(row)
-            return
-        version = _version(document)
-        self._repo.prune_doc_reads(kb_id, doc_id, keep_version=version)
-        for topic in self._repo.topics_for_document(kb_id, doc_id):
-            if topic["source_version"] != version:
-                self._repo.remove_doc_topics(
-                    str(topic["collection_id"]), doc_id, keep_version=version
-                )
-        for initial in rows.values():
-            row = self._sync_target(initial)
-            if document.is_dir or not _within(row, document.path):
-                self._repo.remove_doc_topics(row.id, doc_id, keep_version=version)
+                if topic["source_version"] != version:
+                    self._repo.remove_doc_topics(
+                        str(topic["collection_id"]), doc_id, keep_version=version
+                    )
+            for initial in rows.values():
+                row = self._sync_target(initial)
+                if document.is_dir or not _within(row, document.path):
+                    self._repo.remove_doc_topics(row.id, doc_id, keep_version=version)
 
     # ------------------------------------------------------------------
     # Prompt-directed generation
@@ -1170,9 +1199,13 @@ class KnowledgeCollectionService:
         actor_user_id: int,
         is_admin: bool,
     ) -> None:
-        blocks, needs_visual, embedded = self._read_all_text(
-            kb_id, document.id, actor_user_id, is_admin
-        )
+        (
+            blocks,
+            needs_visual,
+            embedded,
+            pagination_incomplete,
+            character_incomplete,
+        ) = self._read_all_text(kb_id, document.id, actor_user_id, is_admin)
         # Source reads may discover and replace the recorded content hash
         # (external documents often arrive unhashed), so synthesize against the
         # version that was actually read, not the pre-read row.
@@ -1194,6 +1227,14 @@ class KnowledgeCollectionService:
             )
             return
         evidence, truncated = self._clip_evidence(blocks)
+        read_limit_omission = (
+            self._t(
+                "read_character_limit" if character_incomplete else "read_round_limit",
+                self._locale(actor_user_id),
+            )
+            if pagination_incomplete
+            else ""
+        )
         if evidence:
             self._synthesize_text_topic(
                 collection,
@@ -1201,8 +1242,9 @@ class KnowledgeCollectionService:
                 version,
                 evidence,
                 llm,
-                clipped=truncated,
+                clipped=truncated or pagination_incomplete or character_incomplete,
                 embedded_images=embedded,
+                pagination_omission=read_limit_omission,
             )
             if embedded > 0:
                 self._augment_topic_with_embedded_images(
@@ -1216,24 +1258,27 @@ class KnowledgeCollectionService:
             return
         current = self._repo.get(collection.id)
         prompt_current = current is None or current.prompt == collection.prompt
+        topic_status = "partial" if pagination_incomplete else "ready"
         self._repo.put_topic(
             collection.id,
             document.id,
             version,
-            status="ready" if prompt_current else "stale",
+            status=topic_status if prompt_current else "stale",
             content="",
             summary="",
             citations=(),
             evidence_ids=(),
+            omissions=[read_limit_omission] if read_limit_omission else (),
         )
 
     def _read_all_text(
         self, kb_id: str, doc_id: str, actor_user_id: int, is_admin: bool
-    ) -> tuple[builtins.list[Mapping[str, Any]], bool, int]:
-        """Loop bounded source reads until complete; each read records evidence.
+    ) -> tuple[builtins.list[Mapping[str, Any]], bool, int, bool, bool]:
+        """Read bounded source pages and report any source or round omissions.
 
-        Returns the verified blocks, whether the source needs visual inspection,
-        and how many embedded images the source reports.
+        Returns verified blocks, visual-inspection need, embedded image count,
+        whether reading ended before all source evidence was delivered, and
+        whether a source block was clipped by the per-read character budget.
         """
         from octop.infra.knowledge.source_access import KnowledgeSourceService
 
@@ -1242,6 +1287,9 @@ class KnowledgeCollectionService:
         needs_visual = False
         embedded = 0
         start = 1
+        complete = False
+        pagination_incomplete = False
+        character_incomplete = False
         for _ in range(_MAX_TEXT_READ_ROUNDS):
             result = source.read_document(
                 kb_id,
@@ -1251,20 +1299,48 @@ class KnowledgeCollectionService:
                 start=start,
                 mode="text",
             )
+            try:
+                embedded = max(embedded, int(result.get("embedded_images") or 0))
+            except (TypeError, ValueError):
+                embedded = max(embedded, 0)
             if result.get("status") == "read":
                 for block in result.get("blocks") or []:
                     if isinstance(block, Mapping):
                         blocks.append(block)
             else:
-                needs_visual = True
-            try:
-                embedded = max(embedded, int(result.get("embedded_images") or 0))
-            except (TypeError, ValueError):
-                embedded = max(embedded, 0)
-            if result.get("images") or result.get("complete") or result.get("next_start") is None:
+                locator = result.get("locator")
+                # An empty text-only page is not a request for image inspection.
+                needs_visual = (
+                    needs_visual
+                    or bool(result.get("images"))
+                    or embedded > 0
+                    or (isinstance(locator, Mapping) and locator.get("kind") in {"page", "image"})
+                )
+            block_clipped = any(
+                isinstance(block, Mapping)
+                and isinstance(block.get("locator"), Mapping)
+                and "excerpt_characters" in block["locator"]
+                for block in result.get("blocks") or []
+            )
+            if result.get("truncated") and block_clipped:
+                character_incomplete = True
+            if result.get("images") or result.get("complete"):
+                complete = True
                 break
-            start = int(result["next_start"])
-        return blocks, needs_visual, embedded
+            next_start = result.get("next_start")
+            if next_start is None:
+                if result.get("truncated"):
+                    pagination_incomplete = True
+                complete = not pagination_incomplete and not character_incomplete
+                break
+            start = int(next_start)
+        return (
+            blocks,
+            needs_visual,
+            embedded,
+            pagination_incomplete or not complete,
+            character_incomplete,
+        )
 
     @staticmethod
     def _clip_evidence(
@@ -1301,6 +1377,7 @@ class KnowledgeCollectionService:
         *,
         clipped: bool,
         embedded_images: int = 0,
+        pagination_omission: str = "",
     ) -> None:
         if llm is None:
             self._repo.put_topic(
@@ -1340,6 +1417,14 @@ class KnowledgeCollectionService:
                 model_ref=llm[1],
             )
             return
+        if pagination_omission:
+            payload = {
+                **payload,
+                "omissions": [
+                    *(payload.get("omissions") or []),
+                    pagination_omission,
+                ],
+            }
         self._store_topic_payload(
             collection.id,
             document.id,

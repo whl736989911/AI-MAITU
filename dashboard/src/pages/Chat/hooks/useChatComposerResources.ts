@@ -1,4 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
+import { message } from "../../../utils/antdMessage";
+import { apiErrorMessage } from "../../../utils/apiError";
 import { connectorsApi } from "../../../api/modules/connectors";
 import { providerApi } from "../../../api/modules/provider";
 import { preferencesApi } from "../../../api/modules/preferences";
@@ -36,6 +39,7 @@ export function useChatComposerResources(
   stickyReasoningMode?: "auto" | "enabled" | "disabled" | null,
   stickyReasoningEffort?: string | null,
 ) {
+  const { t } = useTranslation();
   const user = useCurrentUser();
   const currentUserId = user?.id ?? null;
   const { agents } = useAgent();
@@ -400,6 +404,14 @@ export function useChatComposerResources(
     setSelectedKnowledgeBaseIds(ids);
   }, []);
 
+  const reportPreferenceSaveError = useCallback(
+    (err: unknown) => {
+      if (err instanceof DOMException && err.name === "AbortError") return;
+      message.error(apiErrorMessage(err, t("common.saveFailed"), t));
+    },
+    [t],
+  );
+
   const handleModelChange = useCallback(
     (model: string | null) => {
       setSelectedModel(model);
@@ -426,14 +438,22 @@ export function useChatComposerResources(
         activeThreadId &&
         !isPendingThread(activeThreadId)
       ) {
-        void octopThreadsApi.patch(resolvedAgentId, activeThreadId, {
-          model_ref: model,
-          reasoning_mode: nextMode,
-          reasoning_effort: nextEffort,
-        });
+        void octopThreadsApi
+          .patch(resolvedAgentId, activeThreadId, {
+            model_ref: model,
+            reasoning_mode: nextMode,
+            reasoning_effort: nextEffort,
+          })
+          .catch(reportPreferenceSaveError);
       }
     },
-    [activeThreadId, availableModels, modelReasoning, resolvedAgentId],
+    [
+      activeThreadId,
+      availableModels,
+      modelReasoning,
+      resolvedAgentId,
+      reportPreferenceSaveError,
+    ],
   );
 
   // Clear a saved thread override that this catalog no longer contains, and
@@ -484,13 +504,15 @@ export function useChatComposerResources(
         activeThreadId &&
         !isPendingThread(activeThreadId)
       ) {
-        void octopThreadsApi.patch(resolvedAgentId, activeThreadId, {
-          reasoning_mode: mode,
-          reasoning_effort: effort,
-        });
+        void octopThreadsApi
+          .patch(resolvedAgentId, activeThreadId, {
+            reasoning_mode: mode,
+            reasoning_effort: effort,
+          })
+          .catch(reportPreferenceSaveError);
       }
     },
-    [activeThreadId, resolvedAgentId, selectedModel],
+    [activeThreadId, resolvedAgentId, selectedModel, reportPreferenceSaveError],
   );
 
   return {

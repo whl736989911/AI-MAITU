@@ -48,6 +48,7 @@ class _Repo:
             created_at=1,
             updated_at=1,
             deleted_at=None,
+            responsible_user_id=3,
         )
 
     def add_notification(self, **kwargs: Any) -> bool:
@@ -70,6 +71,7 @@ async def test_dispatch_notifies_record_creator_and_owner_once() -> None:
         list=lambda: [
             SimpleNamespace(id=1, role="member", disabled=0),
             SimpleNamespace(id=2, role="member", disabled=0),
+            SimpleNamespace(id=3, role="member", disabled=0),
         ]
     )
     users.get = lambda user_id: next((user for user in users.list() if user.id == user_id), None)

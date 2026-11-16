@@ -48,7 +48,7 @@ async def dashboard_chat_ws(
         return
 
     try:
-        user = resolve_user_from_token(server, token)
+        user = await resolve_user_from_token(server, token)
     except OctopError as exc:
         await websocket.close(code=4001, reason=f"auth: {exc.code.value}")
         return
@@ -86,7 +86,7 @@ async def dashboard_chat_ws(
         while websocket.application_state == WebSocketState.CONNECTED:
             raw = await websocket.receive_text()
             try:
-                user = resolve_user_from_token(server, token)
+                user = await resolve_user_from_token(server, token)
             except OctopError as exc:
                 await send_frame(
                     {
@@ -202,7 +202,7 @@ async def dashboard_chat_ws(
                     continue
                 turn_id = await gateway.steer.active_turn_id(thread_id)
                 expected_turn_id = str(payload.get("expected_turn_id") or "").strip()
-                if turn_id is not None and expected_turn_id != turn_id:
+                if (turn_id is not None or expected_turn_id) and expected_turn_id != turn_id:
                     await send_frame(
                         {
                             "type": "error",
@@ -346,7 +346,13 @@ async def dashboard_chat_ws(
             metadata["octop_steering_turn_id"] = turn_id
             metadata["client_pending_id"] = client_pending_id
             inbound.metadata = metadata
-            channel_manager.enqueue(WS_CHANNEL_ID, inbound)
+            try:
+                channel_manager.enqueue(WS_CHANNEL_ID, inbound)
+            except Exception:
+                # begin_turn reserves the thread before the channel accepts
+                # work. Release that reservation when enqueue itself fails.
+                await gateway.complete_steering_turn(thread_id, turn_id, cancelled=True)
+                raise
 
     except WebSocketDisconnect:
         pass

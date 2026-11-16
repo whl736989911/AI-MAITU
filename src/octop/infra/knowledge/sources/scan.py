@@ -171,9 +171,11 @@ def plan_scan(
 
     for entry in entries:
         path = entry.path
-        seen.add(path)
         if entry.is_dir:
             continue
+        # Only a file can satisfy an indexed file row. If a file was replaced
+        # by a directory at the same path, it is absent from the file listing.
+        seen.add(path)
         row = by_path.get(path)
         settled, rewrite = _classify(
             entry,

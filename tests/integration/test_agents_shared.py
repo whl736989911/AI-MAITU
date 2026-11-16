@@ -90,6 +90,44 @@ async def test_shared_agent_appears_for_other_user(env) -> None:
     assert response.json()["is_owner"] is False
 
 
+async def test_shared_peer_cannot_overwrite_editable_workspace_document(env) -> None:
+    client, owner_auth, peer_auth, agent_id = await _shared_agent(env)
+    shared = await client.patch(
+        f"/api/agents/{agent_id}",
+        headers=owner_auth,
+        json={"is_shared": True},
+    )
+    assert shared.status_code == 200, shared.text
+
+    original = "# Owner document\n\nKeep this content.\n"
+    seeded = await client.put(
+        f"/api/agents/{agent_id}/workspace/doc",
+        headers=owner_auth,
+        params={"path": "report.docx"},
+        json={"content": original},
+    )
+    assert seeded.status_code == 200, seeded.text
+
+    refused = await client.put(
+        f"/api/agents/{agent_id}/workspace/doc",
+        headers=peer_auth,
+        params={"path": "report.docx"},
+        json={"content": "# Peer overwrite\n"},
+    )
+    assert refused.status_code == 403, refused.text
+
+    unchanged = await client.get(
+        f"/api/agents/{agent_id}/workspace/doc",
+        headers=owner_auth,
+        params={"path": "report.docx"},
+    )
+    assert unchanged.status_code == 200, unchanged.text
+
+    content = unchanged.json()["content"]
+    assert "Keep this content." in content
+    assert "Peer overwrite" not in content
+
+
 @pytest.mark.parametrize("agent_kind", ["agent", "feature"])
 async def test_shared_agent_keeps_owner_defaults_and_exposes_viewer_aliases(
     env, agent_kind: str

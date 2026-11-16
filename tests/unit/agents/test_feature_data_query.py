@@ -446,3 +446,65 @@ async def test_numeric_query_survives_older_text_values_after_schema_change(
         order_by=fdq.compile_order("score", "asc", obj, dialect="sqlite"),
     )
     assert [record.values["name"] for record in ordered] == ["Two", "Twelve", "Legacy text"]
+
+
+async def test_user_field_filters_and_sort_compare_user_ids_numerically(
+    db: SqlitePool, tmp_path: Path
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    workspace = BackendWorkspace(
+        LocalShellBackend(root_dir=str(root), virtual_mode=False), str(root)
+    )
+    repos = _simple_repos(db)
+    registry = _simple_registry(workspace)
+    legacy_schema = _schema()
+    next(field for field in legacy_schema["objects"][0]["fields"] if field["key"] == "owner")[
+        "type"
+    ] = "text"
+    await fd.save_schema(workspace, legacy_schema)
+    await fd.create_record(
+        repos,
+        workspace,
+        agent_id="feat-q",
+        object_key="deal",
+        values={"name": "Legacy text", "owner": "obsolete"},
+        user_id=1,
+        feature_active=True,
+        registry=registry,
+        timezone_name="UTC",
+    )
+    await fd.save_schema(workspace, _schema())
+    for name, owner in (("Ten", 10), ("Two", 2)):
+        await fd.create_record(
+            repos,
+            workspace,
+            agent_id="feat-q",
+            object_key="deal",
+            values={"name": name, "owner": owner},
+            user_id=1,
+            feature_active=True,
+            registry=registry,
+            timezone_name="UTC",
+        )
+    obj = _obj()
+    fragments, params, order = fdq.filters_from_request(
+        [{"field": "owner", "op": "ne", "value": 2}], "owner", "asc", obj, dialect=db.dialect
+    )
+    filtered, total = repos.feature_data_repo.list_records(
+        agent_id="feat-q",
+        object_key="deal",
+        user_id=1,
+        filter_fragments=fragments,
+        filter_params=params,
+        order_by=order,
+    )
+    assert total == 1
+    assert [record.values["name"] for record in filtered] == ["Ten"]
+    ordered, _ = repos.feature_data_repo.list_records(
+        agent_id="feat-q",
+        object_key="deal",
+        user_id=1,
+        order_by=fdq.compile_order("owner", "asc", obj, dialect=db.dialect),
+    )
+    assert [record.values["name"] for record in ordered] == ["Two", "Ten", "Legacy text"]

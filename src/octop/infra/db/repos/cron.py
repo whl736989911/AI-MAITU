@@ -121,7 +121,6 @@ class CronJobRow:
             "last_status": self.last_status,
         }
         if include_agent:
-            out["agent_id"] = self.agent_id
             out["last_error"] = self.last_error
         return out
 

@@ -109,15 +109,16 @@ export interface HistoryMigrationStatus {
 export const CHAT_HISTORY_PAGE_SIZE = 25;
 
 export const octopThreadsApi = {
-  list: (agentId: string, limit = 50) =>
+  list: (agentId: string, limit = 50, options: { signal?: AbortSignal } = {}) =>
     request<OctopThread[]>(
       `/agents/${encodeURIComponent(agentId)}/threads?limit=${limit}`,
+      { signal: options.signal },
     ),
 
-  create: (agentId: string) =>
+  create: (agentId: string, options: { signal?: AbortSignal } = {}) =>
     request<{ thread_id: string; session_key: string }>(
       `/agents/${encodeURIComponent(agentId)}/threads`,
-      { method: "POST" },
+      { method: "POST", signal: options.signal },
     ),
 
   historyMigrationStatus: (agentId: string) =>
@@ -134,7 +135,12 @@ export const octopThreadsApi = {
   history: (
     agentId: string,
     threadId: string,
-    params: { limit?: number; offset?: number; cursor?: string | null } = {},
+    params: {
+      limit?: number;
+      offset?: number;
+      cursor?: string | null;
+      signal?: AbortSignal;
+    } = {},
   ) => {
     const limit = params.limit ?? CHAT_HISTORY_PAGE_SIZE;
     const offset = params.offset ?? 0;
@@ -144,6 +150,7 @@ export const octopThreadsApi = {
       )}/history?limit=${limit}&offset=${offset}${
         params.cursor ? `&cursor=${encodeURIComponent(params.cursor)}` : ""
       }`,
+      { signal: params.signal },
     );
   },
 

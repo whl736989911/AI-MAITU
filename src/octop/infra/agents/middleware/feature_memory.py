@@ -205,11 +205,15 @@ class FeatureMemoryRuntime:
         service = MemoryService(memory, llm=self._llm, host="harness-agent")
         with self._lock:
             if self._closed:
-                store.release(identity)
-                return None
-            self._identities.setdefault(namespace, identity)
-            self._services[namespace] = service
-            return service
+                existing = None
+            else:
+                existing = self._services.get(namespace)
+                if existing is None:
+                    self._identities[namespace] = identity
+                    self._services[namespace] = service
+                    return service
+        store.release(identity)
+        return existing
 
     def _identity(self, namespace: str) -> MemoryIdentity | None:
         """The process-wide store key: namespace + backend location."""

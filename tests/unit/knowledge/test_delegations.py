@@ -50,10 +50,7 @@ def graph(tmp_path: Path):
     document = knowledge.create_document(
         kb_id=kb.id, filename="report.md", content_type="text/markdown", byte_size=8
     )
-    sharing.apply_change(
-        owner,
-        "knowledge_document",
-        document.id,
+    acl.upsert(
         AclEntry(
             "knowledge_document",
             document.id,
@@ -64,7 +61,7 @@ def graph(tmp_path: Path):
             grants=(("user", str(alice)),),
             permission="write",
             grant_delegation=(("user", str(alice)),),
-        ),
+        )
     )
     service = KnowledgeDelegationService(pool)
     try:
@@ -165,6 +162,91 @@ def test_delegation_never_exceeds_current_source_permission(graph):
     )
     right = graph.service.effective_rights(graph.kb.id, graph.document.id, actor_user_id=graph.bob)
     assert right.read and not right.write
+
+
+def test_acl_permission_narrowing_notifies_delegated_writer(graph):
+    graph.service.upsert_delegation(
+        graph.kb.id,
+        graph.document.id,
+        actor_user_id=graph.alice,
+        grantee_user_id=graph.bob,
+        can_delegate=False,
+    )
+    entry = graph.acl.get("knowledge_document", graph.document.id)
+    assert entry is not None
+    graph.sharing.apply_change(
+        graph.owner,
+        "knowledge_document",
+        graph.document.id,
+        AclEntry(
+            "knowledge_document",
+            graph.document.id,
+            graph.owner,
+            "private",
+            None,
+            entry.version,
+            grants=entry.grants,
+            permission="read",
+            grant_delegation=entry.grant_delegation,
+        ),
+    )
+
+    right = graph.service.effective_rights(graph.kb.id, graph.document.id, actor_user_id=graph.bob)
+    assert right.read and not right.write
+    events = graph.service.list_notifications(actor_user_id=graph.bob)["items"]
+    assert len(events) == 1
+    assert events[0]["resource_id"] == graph.document.id
+    assert events[0]["access_retained"] is True
+    notification = graph.service._notifications.get(events[0]["id"])
+    assert notification is not None
+    assert notification.payload["before"]["write"] is True
+    assert notification.payload["after"]["write"] is False
+
+
+def test_empty_knowledge_base_permission_narrowing_notifies_base_grantee(graph):
+    kb = graph.knowledge.create_base(owner_user_id=graph.owner, name="Empty base")
+    graph.sharing.apply_change(
+        graph.owner,
+        "knowledge_base",
+        kb.id,
+        AclEntry(
+            "knowledge_base",
+            kb.id,
+            graph.owner,
+            "private",
+            None,
+            0,
+            grants=(("user", str(graph.alice)),),
+            permission="write",
+        ),
+    )
+    entry = graph.acl.get("knowledge_base", kb.id)
+    assert entry is not None
+    graph.sharing.apply_change(
+        graph.owner,
+        "knowledge_base",
+        kb.id,
+        AclEntry(
+            "knowledge_base",
+            kb.id,
+            graph.owner,
+            "private",
+            None,
+            entry.version,
+            grants=entry.grants,
+            permission="read",
+        ),
+    )
+
+    events = graph.service.list_notifications(actor_user_id=graph.alice)["items"]
+    assert len(events) == 1
+    assert events[0]["kb_id"] == kb.id
+    assert events[0]["resource_id"] == kb.id
+    assert events[0]["access_retained"] is True
+    notification = graph.service._notifications.get(events[0]["id"])
+    assert notification is not None
+    assert notification.payload["before"]["write"] is True
+    assert notification.payload["after"]["write"] is False
 
 
 def test_revoking_source_cascades_and_notifies_each_affected_user(graph):

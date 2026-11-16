@@ -138,12 +138,12 @@ def _require_wizard_token(authorization: str | None, server: Any) -> str:
     return token
 
 
-def _authorize_setup_provider_test(authorization: str | None, server: Any) -> None:
+async def _authorize_setup_provider_test(authorization: str | None, server: Any) -> None:
     """Accept wizard token or admin JWT while setup is still in progress."""
-    _authorize_setup_mid_wizard(authorization, server)
+    await _authorize_setup_mid_wizard(authorization, server)
 
 
-def _authorize_setup_mid_wizard(authorization: str | None, server: Any) -> str | None:
+async def _authorize_setup_mid_wizard(authorization: str | None, server: Any) -> str | None:
     """Return wizard token when present; None when admin JWT is valid mid-setup."""
     _enforce_wizard_token_phase(server)
     token = _extract_bearer(authorization)
@@ -152,7 +152,7 @@ def _authorize_setup_mid_wizard(authorization: str | None, server: Any) -> str |
     um = server.user_manager
     if um is not None and um.count() == 1:
         try:
-            user = resolve_user_from_token(server, token)
+            user = await resolve_user_from_token(server, token)
             if user.is_admin:
                 return None
         except OctopError:
@@ -268,7 +268,7 @@ async def test_database(
     exists. Without this, an unauthenticated caller on a not-yet-finished instance
     could probe arbitrary database targets.
     """
-    _authorize_setup_mid_wizard(authorization, server)
+    await _authorize_setup_mid_wizard(authorization, server)
     from octop.infra.db.probe import probe_database
     from octop.infra.db.rebind import database_config_from_payload
 
@@ -293,7 +293,7 @@ async def apply_database(
     authority as ``initial-admin``: unauthenticated callers must not be able to
     redirect the control-plane database.
     """
-    _authorize_setup_mid_wizard(authorization, server)
+    await _authorize_setup_mid_wizard(authorization, server)
     from octop.infra.db.probe import probe_database
     from octop.infra.db.rebind import (
         assert_control_plane_database_empty,
@@ -399,7 +399,7 @@ async def test_provider_draft(
 ) -> dict[str, Any]:
     """Probe LLM connectivity for an unsaved wizard provider draft."""
     _enforce_wizard_token_phase(server)
-    _authorize_setup_provider_test(authorization, server)
+    await _authorize_setup_provider_test(authorization, server)
     if not body.api_key.strip():
         return {"ok": False, "error": "api_key is required"}
     row = make_probe_provider_row(
@@ -422,7 +422,7 @@ async def finish(
     _enforce_wizard_token_phase(server)
     require_database(server)
     assert server.user_manager is not None
-    wizard_token = _authorize_setup_mid_wizard(authorization, server)
+    wizard_token = await _authorize_setup_mid_wizard(authorization, server)
     if body.provider_draft is not None:
         try:
             await _apply_provider_draft(server, body.provider_draft)
@@ -471,7 +471,7 @@ async def setup_license_config(
     authorization: str | None = Header(default=None),
 ) -> dict[str, Any]:
     """Write public trust material collected by the wizard; no activation code here."""
-    _authorize_setup_mid_wizard(authorization, server)
+    await _authorize_setup_mid_wizard(authorization, server)
     if body.skip:
         return {"ok": True, "configured": False, "skipped": True}
     from octop.infra.licensing.settings import load_license_settings, write_license_files

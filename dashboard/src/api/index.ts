@@ -5,6 +5,7 @@ export {
   setAuthToken,
   getAuthToken,
   clearAuthToken,
+  AUTH_IDENTITY_CHANGED_EVENT,
   markSetupRequired,
   clearSetupRequired,
   isSetupRequiredKnown,

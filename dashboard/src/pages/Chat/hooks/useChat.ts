@@ -723,7 +723,12 @@ export function convertHistoryMessages(
 async function loadThreadHistory(
   agentId: string,
   threadId: string,
-  params: { limit?: number; offset?: number; cursor?: string | null } = {},
+  params: {
+    limit?: number;
+    offset?: number;
+    cursor?: string | null;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<{
   messages: ChatMessage[];
   hasMore: boolean;
@@ -744,7 +749,11 @@ async function loadThreadHistory(
     limit,
     offset,
     cursor: params.cursor,
+    signal: params.signal,
   });
+  if (params.signal?.aborted) {
+    throw new Error("Chat identity changed while loading history");
+  }
   if (history.thread_id !== threadId) {
     throw new Error("History response belongs to another thread");
   }
@@ -961,6 +970,7 @@ export function useChat(
       // (Weak resume: only the Stop control / cancelStream may send `cancel`.)
 
       const epoch = chatStore.beginHistoryRead(key);
+      const identitySignal = chatStore.getAuthIdentitySignal();
       const gen = ++loadGenRef.current;
       setHistoryLoading(true);
       const historyBaseline = chatStore.captureHistoryBaseline(key);
@@ -968,6 +978,7 @@ export function useChat(
       try {
         let loaded = await loadThreadHistory(agentId, targetThreadId, {
           offset: 0,
+          signal: identitySignal,
         });
         while (
           loaded.projectionLoading &&
@@ -987,6 +998,7 @@ export function useChat(
             return;
           loaded = await loadThreadHistory(agentId, targetThreadId, {
             offset: 0,
+            signal: identitySignal,
           });
         }
         if (
@@ -1064,6 +1076,7 @@ export function useChat(
     const offset = snap.historyNextOffset;
     const gen = loadGenRef.current;
     const epoch = chatStore.beginHistoryRead(key);
+    const identitySignal = chatStore.getAuthIdentitySignal();
     loadMoreInFlightRef.current = gen;
 
     try {
@@ -1075,6 +1088,7 @@ export function useChat(
       } = await loadThreadHistory(agentId, stableSessionId, {
         offset,
         cursor: snap.historyNextCursor,
+        signal: identitySignal,
       });
       if (
         loadGenRef.current !== gen ||
@@ -1134,6 +1148,7 @@ export function useChat(
       // Separate from loadGenRef: loadHistory may bump loadGen while we fetch.
       const gen = ++loadGenRef.current;
       const epoch = chatStore.beginHistoryRead(key);
+      const identitySignal = chatStore.getAuthIdentitySignal();
       refreshInFlightRef.current = gen;
       setHistoryRefreshing(true);
       const historyBaseline = chatStore.captureHistoryBaseline(key);
@@ -1145,7 +1160,10 @@ export function useChat(
           nextOffset,
           nextCursor,
           turnActive,
-        } = await loadThreadHistory(agentId, key, { offset: 0 });
+        } = await loadThreadHistory(agentId, key, {
+          offset: 0,
+          signal: identitySignal,
+        });
         if (
           loadGenRef.current !== gen ||
           !chatStore.isHistoryReadCurrent(key, epoch)

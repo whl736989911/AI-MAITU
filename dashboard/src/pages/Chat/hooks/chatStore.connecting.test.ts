@@ -45,6 +45,13 @@ class PendingWebSocket {
   }
 }
 
+class FailedWebSocket extends PendingWebSocket {
+  constructor(url: string) {
+    super(url);
+    this.close();
+  }
+}
+
 describe("history attachment while a first turn is connecting", () => {
   afterEach(() => {
     removeSession(SESSION);
@@ -142,5 +149,28 @@ describe("history attachment while a first turn is connecting", () => {
     });
 
     expect(getSnapshot(SESSION).activeTurnId).toBe("current-turn");
+  });
+
+  it("surfaces a connection failure when the socket closes before opening", async () => {
+    vi.stubGlobal("WebSocket", FailedWebSocket);
+
+    await sendTurn(
+      SESSION,
+      "question",
+      "agent-1",
+      "",
+      undefined,
+      undefined,
+      null,
+      SESSION,
+    );
+
+    const snapshot = getSnapshot(SESSION);
+    expect(snapshot.isStreaming).toBe(false);
+    expect(snapshot.messages.at(-1)).toMatchObject({
+      role: "assistant",
+      status: "error",
+      errorInfo: { code: "ws_error" },
+    });
   });
 });

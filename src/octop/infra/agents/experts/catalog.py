@@ -12,6 +12,7 @@ Templates are discovered at server start by :class:`ExpertCatalog`.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass, field, replace
@@ -263,13 +264,10 @@ def _render_bundled_contents(path: Path, contents: bytes) -> bytes:
     return rendered.encode("utf-8")
 
 
-async def seed_expert_directory(
-    *,
-    expert_dir: Path,
-    workspace: BackendWorkspace,
-    seed_paths: list[str] | None = None,
-) -> int:
-    """Upload expert template files, rendering only packaged prompt templates.
+def collect_expert_seed_files(
+    *, expert_dir: Path, seed_paths: list[str] | None = None
+) -> list[tuple[str, bytes]]:
+    """Collect template bytes, rendering only packaged prompt templates.
 
     ``seed_paths`` / :func:`discover_seed_paths` omit the library manifest so
     catalog ``Expert.files`` stays seed-content only; this helper always
@@ -293,9 +291,21 @@ async def seed_expert_directory(
         if bundled:
             contents = _render_bundled_contents(manifest_path, contents)
         pairs.append((WORKSPACE_MANIFEST_PATH, contents))
-    if not pairs:
-        return 0
-    await workspace.aupload_many(pairs)
+    return pairs
+
+
+async def seed_expert_directory(
+    *,
+    expert_dir: Path,
+    workspace: BackendWorkspace,
+    seed_paths: list[str] | None = None,
+) -> int:
+    """Upload the complete seed inventory without reading files on the event loop."""
+    pairs = await asyncio.to_thread(
+        collect_expert_seed_files, expert_dir=expert_dir, seed_paths=seed_paths
+    )
+    if pairs:
+        await workspace.aupload_many(pairs)
     return len(pairs)
 
 

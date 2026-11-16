@@ -113,6 +113,94 @@ def test_unindexed_reads_are_bounded_located_and_invalidate_old_versions(
     assert current.content_hash == changed["version"]
 
 
+def test_character_budget_paginates_at_block_boundaries_and_marks_partial_excerpts(
+    source_env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from octop.infra.knowledge import source_access
+
+    monkeypatch.setattr(source_access, "_MAX_TEXT", 100)
+    env = source_env
+    document, _ = _source(env, "long.txt", ("a" * 100 + "\nnext line\n").encode())
+
+    first = env.api.read_document(env.base.id, document.id, actor_user_id=env.reader)
+    assert first["text"] == "a" * 100
+    assert first["truncated"] is True and first["complete"] is False
+    assert first["locator"]["end"] == 1
+    assert first["next_start"] == 2
+
+    second = env.api.read_document(
+        env.base.id, document.id, actor_user_id=env.reader, start=first["next_start"]
+    )
+    assert second["text"] == "next line"
+    assert second["blocks"][0]["locator"] == {"line": 2}
+
+    oversized, _ = _source(
+        env, "oversized.txt", ("intro\n" + "b" * 101 + "\nfollowing line\n").encode()
+    )
+    prefix = env.api.read_document(env.base.id, oversized.id, actor_user_id=env.reader)
+    assert prefix["text"] == "intro"
+    assert prefix["next_start"] == 2
+    excerpt = env.api.read_document(
+        env.base.id, oversized.id, actor_user_id=env.reader, start=prefix["next_start"]
+    )
+    assert excerpt["blocks"][0]["locator"] == {"line": 2, "excerpt_characters": 100}
+    assert excerpt["next_start"] == 3
+    following = env.api.read_document(
+        env.base.id, oversized.id, actor_user_id=env.reader, start=excerpt["next_start"]
+    )
+    assert following["text"] == "following line"
+
+
+@pytest.mark.parametrize("suffix", ["txt", "docx", "xlsx", "pdf"])
+def test_budget_defers_whole_source_blocks_without_losing_content(
+    source_env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch, suffix: str
+) -> None:
+    from io import BytesIO
+
+    from octop.infra.knowledge import source_access
+
+    monkeypatch.setattr(source_access, "_MAX_TEXT", 100)
+    expected = [letter * 60 for letter in ("A", "B", "C")]
+    buffer = BytesIO()
+    if suffix == "txt":
+        data = ("\n".join(expected) + "\n").encode()
+    elif suffix == "docx":
+        from docx import Document
+
+        word = Document()
+        for text in expected:
+            word.add_paragraph(text)
+        word.save(buffer)
+        data = buffer.getvalue()
+    elif suffix == "xlsx":
+        from openpyxl import Workbook
+
+        workbook = Workbook()
+        for text in expected:
+            workbook.active.append([text])
+        workbook.save(buffer)
+        workbook.close()
+        data = buffer.getvalue()
+    else:
+        pymupdf = pytest.importorskip("pymupdf")
+        with pymupdf.open() as pdf:
+            for text in expected:
+                pdf.new_page().insert_text((72, 72), text)
+            data = pdf.tobytes()
+
+    env = source_env
+    document, _ = _source(env, f"budget.{suffix}", data)
+    delivered = []
+    for start in range(1, 4):
+        result = env.api.read_document(
+            env.base.id, document.id, actor_user_id=env.reader, start=start
+        )
+        assert result["locator"]["end"] == start
+        assert result["next_start"] == (start + 1 if start < 3 else None)
+        delivered.extend(block["text"].strip() for block in result["blocks"])
+    assert delivered == expected
+
+
 def test_source_listing_and_read_obey_folder_restrictions_and_explicit_grants(
     source_env: SimpleNamespace,
 ) -> None:

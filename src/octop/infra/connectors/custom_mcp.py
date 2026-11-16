@@ -360,7 +360,7 @@ def merge_preserved_oauth(
             if isinstance(old_oauth, dict) and str(old_oauth.get("access_token") or "").strip():
                 if spec.get("url") == old.get("url") and not client_changed:
                     spec[_OAUTH_KEY] = dict(old_oauth)
-                elif client:
+                else:
                     spec[_OAUTH_KEY] = {"required": True}
             elif isinstance(old_oauth, dict) and old_oauth.get("required") is True:
                 spec[_OAUTH_KEY] = {"required": True}

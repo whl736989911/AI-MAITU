@@ -19,10 +19,9 @@ The graph is a per-document set of edges ``(grantor → grantee, can_delegate)``
   cascade, computed to a fixpoint inside the caller's transaction), so a
   re-enabled root switch cannot resurrect revoked branches, and truly
   independent authorizations are preserved.
-* Users whose own individual grant or delegation edge was removed receive one
-  durable ``knowledge_access_notifications`` row per affected resource in the
-  *same* transaction, with ``access_retained`` distinguishing real loss from an
-  independent grant that keeps them reading.
+* Users who lose read or write access when an ACL narrows, or whose individual
+  grant/delegation edge is removed, receive a durable notification in the same
+  transaction; ``access_retained`` distinguishes independent remaining access.
 
 Everything a read path needs (lists, downloads, previews, search, agents,
 permission metadata) resolves through :meth:`derived_rights` /
@@ -615,9 +614,7 @@ class KnowledgeDelegationService:
         if post_ctx.base is None:
             return
         if resource_type == "knowledge_base":
-            affected = {
-                edge.document_id for edge in self._delegations.list_for_kb(kb_id, conn=conn)
-            }
+            affected = set(post_ctx.documents)
         else:
             document = post_ctx.documents.get(resource_id)
             if document is None:
@@ -642,13 +639,24 @@ class KnowledgeDelegationService:
         removed_by_doc: dict[str, list[Any]] = {}
         for doc_id in sorted(affected):
             removed_by_doc[doc_id] = self._strip_unsupported(post_ctx, doc_id)
-        if not (direct_removed or any(removed_by_doc.values())):
-            return
         events: list[_RevocationEvent] = []
         for removed in removed_by_doc.values():
             events.extend(
                 self._edge_events(post_ctx, removed, source=_SOURCE_ACL_CHANGE, pre_ctx=pre_ctx)
             )
+        recipients = {row.id for row in self._users.list(include_disabled=True)}
+        document_events = self._rights_loss_events(pre_ctx, post_ctx, affected, recipients)
+        events.extend(document_events)
+        if resource_type == "knowledge_base":
+            document_recipients = {event.recipient_user_id for event in events}
+            for user_id in sorted(recipients - direct_removed - document_recipients):
+                event = self._direct_grant_event(
+                    pre_ctx, post_ctx, resource_type, resource_id, user_id
+                )
+                if (event.before.read and not event.after.read) or (
+                    event.before.write and not event.after.write
+                ):
+                    events.append(event)
         for user_id in sorted(direct_removed):
             events.append(
                 self._direct_grant_event(pre_ctx, post_ctx, resource_type, resource_id, user_id)
@@ -755,6 +763,37 @@ class KnowledgeDelegationService:
             delegation_ids=(),
             grantor_user_id=None,
         )
+
+    def _rights_loss_events(
+        self,
+        pre_ctx: _KbContext,
+        post_ctx: _KbContext,
+        doc_ids: set[str],
+        user_ids: set[int],
+    ) -> list[_RevocationEvent]:
+        """Notify principals whose effective read or write rights were narrowed."""
+        events: list[_RevocationEvent] = []
+        for doc_id in sorted(doc_ids):
+            for user_id in sorted(user_ids):
+                before = self._rights(pre_ctx, doc_id, user_id)
+                after = self._rights(post_ctx, doc_id, user_id)
+                if not ((before.read and not after.read) or (before.write and not after.write)):
+                    continue
+                events.append(
+                    _RevocationEvent(
+                        recipient_user_id=user_id,
+                        kb_id=post_ctx.kb_id,
+                        resource_id=doc_id,
+                        resource_path=self._resource_path(post_ctx, doc_id),
+                        event_kind=EVENT_AUTHORIZATION_REVOKED,
+                        access_retained=after.any_access,
+                        before=before,
+                        after=after,
+                        delegation_ids=(),
+                        grantor_user_id=None,
+                    )
+                )
+        return events
 
     def _emit_events(
         self,

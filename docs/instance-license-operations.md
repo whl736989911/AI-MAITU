@@ -132,6 +132,8 @@ docker compose -f docker/docker-compose.yml \
 
 省略字段或提交 `null` 保留现值。中心地址显式提交空串后不再连接中心，已有凭据仍受原期限约束；CA 显式提交空串后使用系统信任库，不再回退环境 CA。清空公钥仅移除应用内覆盖，不移除部署环境提供的强制公钥，也不删除外部信任文件。
 
+授权中心必须使用不含用户凭据、子路径、查询串或片段的 HTTPS 根地址；仅显式启用回环调试时允许本机 HTTP。`config.json` 与 `MAITU_LICENSE_CENTER_URL` 在启动、重载时执行与设置页面相同的地址校验，非法值会被拒绝，不会继续作为中心地址使用。
+
 只提交公开 Ed25519 公钥和公开 PEM 证书，不要粘贴任何私钥。混入私钥、额外非证书内容或重复 KID 的材料会被拒绝；旧配置含私钥或中心 URL 凭证时，设置接口拒绝返回该配置，避免向企业管理员泄露。校验既有配置失败时不会先改写信任文件。
 
 实例身份、已验证的在线/离线凭据、共用版本栅栏和提醒账本存放在独立的授权状态 bind mount；业务数据备份不能覆盖它们。默认执行器使用镜像内 Bubblewrap，能读到 `/usr/local/maitu-venv` 的只读 Python 环境，但不能访问授权目录、源码或宿主 Docker socket。Compose 默认不挂载 Docker socket；独立 Docker 执行路径仅由可信运维显式启用，宿主更新器运行于单独的 systemd 服务，不向客户业务容器开放。Linux 镜像包含 LibreOffice / Bubblewrap，用户命名空间必须由宿主 AppArmor/内核策略允许；见 [Docker 部署说明](../docker/README_CN.md#执行沙箱与浏览器linux)。Windows 部署还需要设置真实 NTFS ACL，不能把 `chmod` 当作 NTFS 权限隔离。

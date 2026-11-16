@@ -17,17 +17,21 @@
  */
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import type * as ReactI18next from "react-i18next";
 import type * as RequestApi from "../../../api/request";
 import type { OctopAgent } from "../../../context/AgentContext";
 import zh from "../../../locales/zh.json";
 
-const { requestMock } = vi.hoisted(() => ({ requestMock: vi.fn() }));
+const { requestMock, requestBlobMock, roleMock } = vi.hoisted(() => ({
+  requestMock: vi.fn(),
+  requestBlobMock: vi.fn(),
+  roleMock: { value: "user" as string | null },
+}));
 
 vi.mock("../../../api/request", async (importOriginal) => {
   const actual = await importOriginal<typeof RequestApi>();
-  return { ...actual, request: requestMock, requestBlob: vi.fn() };
+  return { ...actual, request: requestMock, requestBlob: requestBlobMock };
 });
 
 vi.mock("@/utils/antdMessage", () => ({
@@ -39,7 +43,9 @@ vi.mock("@/utils/antdMessage", () => ({
   },
 }));
 
-vi.mock("../../../hooks/useUserRole", () => ({ useUserRole: () => "user" }));
+vi.mock("../../../hooks/useUserRole", () => ({
+  useUserRole: () => roleMock.value,
+}));
 
 /** A caller who may read the deployment's own list (``agents.py``'s ``users``). */
 const CALLER = { id: 5, username: "ops", role: "user", permissions: ["users"] };
@@ -119,6 +125,8 @@ let deployment: OctopAgent[] = [];
 
 beforeEach(() => {
   requestMock.mockReset();
+  requestBlobMock.mockReset();
+  roleMock.value = "user";
   requestMock.mockImplementation(async (url: string): Promise<unknown> => {
     if (url === "/agents?scope=all") return deployment;
     // The deployment's kinds, as ``/agents/kinds`` answers them — the whole
@@ -133,7 +141,13 @@ beforeEach(() => {
         ),
       };
     }
-    if (url.startsWith("/usage/summary")) {
+    if (url === "/users") {
+      return [
+        { id: 1, username: "alice", display_name: "同名用户" },
+        { id: 2, username: "bob", display_name: "同名用户" },
+      ];
+    }
+    if (url.includes("/usage/summary")) {
       const params = new URLSearchParams(url.slice(url.indexOf("?") + 1));
       return emptySummary(params.get("granularity") ?? "");
     }
@@ -218,4 +232,141 @@ describe("Token Usage's per-kind views", () => {
     expect(screen.queryByText("专家分布")).toBeNull();
     expect(screen.queryByText("功能分布")).toBeNull();
   });
+  it("disambiguates same-name users in the filter", async () => {
+    roleMock.value = "admin";
+    deployment = [];
+    render(<TokenUsagePage />);
+
+    await screen.findByText("全部用户");
+    fireEvent.mouseDown(screen.getAllByRole("combobox")[0]!);
+
+    expect(await screen.findByText("同名用户 (alice)")).toBeInTheDocument();
+    expect(screen.getByText("同名用户 (bob)")).toBeInTheDocument();
+  });
+});
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
+}
+
+function reportText(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(blob);
+  });
+}
+
+describe("Token Usage privilege boundaries", () => {
+  it.each([null, "user"] as const)(
+    "drops loaded administrator totals when the role becomes %s",
+    async (role) => {
+      roleMock.value = "admin";
+      deployment = [];
+      const fallback = requestMock.getMockImplementation()!;
+      const memberData = deferred<unknown>();
+      requestMock.mockImplementation((url: string) => {
+        if (!url.includes("/usage/summary")) return fallback(url);
+        if (roleMock.value !== "admin") return memberData.promise;
+        return Promise.resolve({
+          ...(emptySummary("by_day") as object),
+          input_tokens: 917,
+          output_tokens: 23,
+          total_tokens: 940,
+        });
+      });
+      const view = render(<TokenUsagePage />);
+      await screen.findByText("940");
+
+      roleMock.value = role;
+      view.rerender(<TokenUsagePage />);
+
+      expect(screen.queryByText("940")).toBeNull();
+      await act(async () => memberData.resolve(emptySummary("by_day")));
+    },
+  );
+
+  it("ignores administrator data that arrives after the role becomes unknown", async () => {
+    roleMock.value = "admin";
+    deployment = [];
+    const pending = deferred<unknown>();
+    const fallback = requestMock.getMockImplementation()!;
+    requestMock.mockImplementation((url: string) =>
+      url.includes("/usage/summary") ? pending.promise : fallback(url),
+    );
+    const view = render(<TokenUsagePage />);
+    roleMock.value = null;
+    view.rerender(<TokenUsagePage />);
+    await act(async () =>
+      pending.resolve({
+        ...(emptySummary("by_day") as object),
+        total_tokens: 940,
+      }),
+    );
+    expect(screen.queryByText("940")).toBeNull();
+  });
+
+  it.each(["success", "failure"])(
+    "discards a retired administrator export on %s and allows a new member export",
+    async (outcome) => {
+      roleMock.value = "admin";
+      deployment = [];
+      const pending = deferred<Blob>();
+      requestBlobMock.mockReturnValueOnce(pending.promise);
+      const urls = new Map<string, Blob>();
+      const downloads: Blob[] = [];
+      const OriginalURL = URL;
+      class DownloadURL extends OriginalURL {
+        static createObjectURL(value: Blob | MediaSource): string {
+          if (!(value instanceof Blob)) throw new Error("Expected report blob");
+          const url = `blob:report-${urls.size}`;
+          urls.set(url, value);
+          return url;
+        }
+        static revokeObjectURL(url: string): void {
+          urls.delete(url);
+        }
+      }
+      globalThis.URL = DownloadURL;
+      const click = vi
+        .spyOn(HTMLAnchorElement.prototype, "click")
+        .mockImplementation(function (this: HTMLAnchorElement) {
+          const blob = urls.get(this.href);
+          if (blob) downloads.push(blob);
+        });
+      try {
+        const view = render(<TokenUsagePage />);
+        const exportButton = await screen.findByRole("button", {
+          name: zh.tokenUsage.exportExcel,
+        });
+        fireEvent.click(exportButton);
+        roleMock.value = "user";
+        view.rerender(<TokenUsagePage />);
+        await act(async () => {
+          if (outcome === "success")
+            pending.resolve(new Blob(["admin-only-report"]));
+          else pending.reject(new Error("retired administrator export"));
+        });
+        requestBlobMock.mockResolvedValueOnce(new Blob(["member-only-report"]));
+        await act(async () => {
+          fireEvent.click(
+            screen.getByRole("button", { name: zh.tokenUsage.exportExcel }),
+          );
+        });
+        expect(await Promise.all(downloads.map(reportText))).toEqual([
+          "member-only-report",
+        ]);
+      } finally {
+        click.mockRestore();
+        globalThis.URL = OriginalURL;
+      }
+    },
+  );
 });

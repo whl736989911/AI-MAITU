@@ -529,7 +529,7 @@ async def mobile_stream_ws(
             await websocket.close(code=4001, reason="missing token")
             return
         try:
-            user: User = resolve_user_from_token(server, auth_token)
+            user: User = await resolve_user_from_token(server, auth_token)
         except Exception as exc:
             await _send_json(
                 websocket, {"type": "error", "code": "AUTH_FAILED", "message": str(exc)}

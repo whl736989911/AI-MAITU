@@ -295,7 +295,9 @@ class SharingService:
         self._require_admin(approver)
         if change.status != CHANGE_PENDING:
             raise ValueError(f"change {change_id!r} is {change.status!r}, not {CHANGE_PENDING!r}")
-        self._repo.set_change_status(change_id, CHANGE_REJECTED, reason=reason)
+        self._repo.set_change_status(
+            change_id, CHANGE_REJECTED, reason=reason, expected_status=CHANGE_PENDING
+        )
 
     def rollback(self, change_id: str, actor: int) -> str:
         """Request restoration through the normal ACL approval policy.

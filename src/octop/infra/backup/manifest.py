@@ -13,6 +13,14 @@ MANIFEST_VERSION = 1
 _NEW_DB_ARCHIVE_PATH = f"db/{BRAND_ID}.db"
 
 
+def _boolean_field(data: dict[str, Any], key: str, default: bool) -> bool:
+    """Parse a JSON boolean control flag without truthiness coercion."""
+    value = data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(key)
+    return value
+
+
 @dataclass
 class AgentBackupEntry:
     agent_id: str
@@ -60,20 +68,28 @@ class BackupManifest:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> BackupManifest:
-        agents_raw = data.get("agents") or []
+        try:
+            manifest_version = int(data.get("manifest_version", 0))
+            schema_version = int(data.get("schema_version", 0))
+        except OverflowError as exc:
+            raise ValueError("manifest_version/schema_version") from exc
+        agents_raw = data.get("agents", [])
+        if not isinstance(agents_raw, list):
+            raise ValueError("agents")
+        if any(not isinstance(row, dict) for row in agents_raw):
+            raise ValueError("agents[]")
         agents = [
             AgentBackupEntry(
                 agent_id=str(row.get("agent_id", "")),
                 name=str(row.get("name", "")),
-                workspace_included=bool(row.get("workspace_included", True)),
+                workspace_included=_boolean_field(row, "workspace_included", True),
             )
             for row in agents_raw
-            if isinstance(row, dict)
         ]
         return cls(
-            manifest_version=int(data.get("manifest_version", 0)),
+            manifest_version=manifest_version,
             octop_version=str(data.get("octop_version", "")),
-            schema_version=int(data.get("schema_version", 0)),
+            schema_version=schema_version,
             created_at=str(data.get("created_at", "")),
             home=str(data.get("home", "")),
             # LEGACY: archives written before the rename packed the old DB path;
@@ -82,19 +98,15 @@ class BackupManifest:
             database_driver=str(data.get("database_driver", "sqlite")),
             database_dump_format=str(data.get("database_dump_format", "sqlite_file")),
             agents=agents,
-            includes_config=bool(data.get("includes_config", True)),
-            includes_env=bool(data.get("includes_env", False)),
-            includes_skill_packages=bool(data.get("includes_skill_packages", True)),
+            includes_config=_boolean_field(data, "includes_config", True),
+            includes_env=_boolean_field(data, "includes_env", False),
+            includes_skill_packages=_boolean_field(data, "includes_skill_packages", True),
             # Older archives never packed ~/.octop/plugins; missing key means omit on restore.
-            includes_plugins=(
-                bool(data["includes_plugins"]) if "includes_plugins" in data else False
-            ),
+            includes_plugins=_boolean_field(data, "includes_plugins", False),
             # Older archives never packed ~/.octop/knowledge.
-            includes_knowledge=(
-                bool(data["includes_knowledge"]) if "includes_knowledge" in data else False
-            ),
+            includes_knowledge=_boolean_field(data, "includes_knowledge", False),
             # Legacy archives dumped the full database; missing key means chats are present.
-            includes_chats=bool(data["includes_chats"]) if "includes_chats" in data else True,
+            includes_chats=_boolean_field(data, "includes_chats", True),
         )
 
     @classmethod

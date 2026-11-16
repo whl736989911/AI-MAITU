@@ -901,6 +901,45 @@ class KnowledgeRepo:
             ).fetchall()
         return map_rows(rows, KnowledgeDocumentRow)
 
+    def delete_empty_source_folders(
+        self, data_source_id: str, paths: Collection[str]
+    ) -> list[KnowledgeDocumentRow]:
+        """Prune empty folders without touching files awaiting deletion confirmation."""
+        roots = {normalize_kb_path(path) for path in paths}
+        roots.discard("")
+        if not roots:
+            return []
+        with self._db.transaction() as conn:
+            rows = conn.execute(
+                "SELECT * FROM knowledge_documents WHERE data_source_id = ? AND is_dir = 1",
+                (data_source_id,),
+            ).fetchall()
+            candidates = [
+                KnowledgeDocumentRow.from_row(row)
+                for row in rows
+                if row["path"] in roots
+                or any(parent in roots for parent in ancestor_dirs(str(row["path"])))
+            ]
+            candidates.sort(key=lambda row: row.path.count("/"), reverse=True)
+            removed: list[KnowledgeDocumentRow] = []
+            for folder in candidates:
+                prefix = f"{folder.path}/"
+                child = conn.execute(
+                    "SELECT 1 FROM knowledge_documents WHERE kb_id = ? "
+                    "AND substr(path, 1, ?) = ? LIMIT 1",
+                    (folder.kb_id, len(prefix), prefix),
+                ).fetchone()
+                if child is not None:
+                    continue
+                conn.execute(
+                    "DELETE FROM knowledge_documents WHERE document_id = ? "
+                    "AND data_source_id = ? AND is_dir = 1",
+                    (folder.id, data_source_id),
+                )
+                self._acl.delete("knowledge_document", folder.id, conn=conn)
+                removed.append(folder)
+        return removed
+
     def record_observation(
         self, doc_id: str, *, size: int, modified_at: int | None, at: int
     ) -> None:

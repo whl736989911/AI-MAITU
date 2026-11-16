@@ -6,7 +6,7 @@ import asyncio
 import logging
 import threading
 from collections.abc import Callable, Iterator
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
@@ -151,11 +151,11 @@ def process_source_file(
     )
 
 
-def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> None:
+def _process(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> bool:
     """Index original-located text; embeddings are an optional ranking layer."""
     try:
         with _processing_lock:
-            _process_locked(services, kb_id, doc_id, parse_path=parse_path)
+            return _process_locked(services, kb_id, doc_id, parse_path=parse_path)
     finally:
         if getattr(services, "knowledge_collections_repo", None) is not None:
             from octop.infra.knowledge.collections import KnowledgeCollectionService
@@ -192,7 +192,38 @@ def _no_extractable_text(parsed: ParsedDocument) -> OctopError:
     )
 
 
-def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> None:
+def _document_is_current(services: Any, document: Any, kb_id: str) -> bool:
+    """Reject publication after a serialized source mutation superseded this run."""
+    current = services.knowledge_repo.get_document(document.id)
+    if current is None or current.kb_id != kb_id or current.is_dir:
+        return False
+    return current.status == "processing" and all(
+        getattr(current, field) == getattr(document, field)
+        for field in (
+            "filename",
+            "path",
+            "byte_size",
+            "content_hash",
+            "data_source_id",
+            "source_path",
+            "observed_size",
+            "observed_modified_at",
+        )
+    )
+
+
+def _mark_source_processed(repo: Any, document: Any) -> None:
+    if document.data_source_id:
+        repo.mark_source_processed(
+            document.id,
+            size=document.observed_size
+            if document.observed_size is not None
+            else document.byte_size,
+            modified_at=document.observed_modified_at,
+        )
+
+
+def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: ParsePath) -> bool:
     """Run one ingestion at a time, including its native model allocations."""
     repo = services.knowledge_repo
     document = repo.get_document(doc_id)
@@ -200,12 +231,18 @@ def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: Parse
     if document is None or document.kb_id != kb_id or base is None:
         raise LookupError("knowledge document or base not found")
     if document.is_dir:
-        return
+        return False
     repo.update_document(doc_id, status="processing", error_message="")
+    from octop.infra.knowledge.data_sources import _source_lock
+
+    publication_lock = (
+        _source_lock(document.data_source_id) if document.data_source_id else nullcontext()
+    )
     try:
         repo.clear_document_facts(doc_id)
     except Exception:
         logger.warning("knowledge fact cleanup failed for %s", doc_id, exc_info=True)
+    digest: str | None = None
     try:
         with parse_path(document) as path:
             digest = file_digest(path)
@@ -224,38 +261,48 @@ def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: Parse
         blocks = parsed.blocks or (
             ParsedBlock(text=text, kind="document", locator={"kind": "document"}),
         )
-        try:
-            facts = extract_facts(blocks)
-            repo.replace_document_facts(doc_id, kb_id, [asdict(fact) for fact in facts])
-        except Exception:
-            logger.warning("knowledge fact extraction failed for %s", doc_id, exc_info=True)
-        index = KnowledgeIndex(kb_id)
-        count = index.replace_doc_segments(doc_id, blocks, version=digest)
-        if not count:
-            raise _no_extractable_text(parsed)
-        dimension = 0
-        try:
-            assert_embedding_usable(
-                services.settings_repo.get, getattr(services, "provider_repo", None)
+        from octop.infra.knowledge.service import _knowledge_mutation_lock
+
+        with publication_lock, _knowledge_mutation_lock(kb_id):
+            if not _document_is_current(services, document, kb_id):
+                current = repo.get_document(doc_id)
+                if current is not None and current.status == "processing":
+                    repo.update_document(doc_id, status="pending", error_message="")
+                return True
+            try:
+                facts = extract_facts(blocks)
+                repo.replace_document_facts(doc_id, kb_id, [asdict(fact) for fact in facts])
+            except Exception:
+                logger.warning("knowledge fact extraction failed for %s", doc_id, exc_info=True)
+            index = KnowledgeIndex(kb_id)
+            count = index.replace_doc_segments(doc_id, blocks, version=digest)
+            if not count:
+                raise _no_extractable_text(parsed)
+            dimension = 0
+            try:
+                assert_embedding_usable(
+                    services.settings_repo.get, getattr(services, "provider_repo", None)
+                )
+                knobs = get_advanced_settings(services.settings_repo.get)
+                dimension = index.replace_doc_chunk_batches(
+                    doc_id, _embedding_batches(services, doc_id, blocks, knobs)
+                )
+            except Exception:
+                # A missing or unavailable model must not prevent local lexical search.
+                logger.info("optional knowledge embeddings unavailable for %s", doc_id)
+                index.delete_doc_chunks(doc_id)
+            repo.set_derived(doc_id, parsed.derived())
+            repo.update_document(
+                doc_id,
+                status="ready",
+                error_message="",
+                chunk_count=count,
+                content_hash=digest,
             )
-            knobs = get_advanced_settings(services.settings_repo.get)
-            dimension = index.replace_doc_chunk_batches(
-                doc_id, _embedding_batches(services, doc_id, blocks, knobs)
-            )
-        except Exception:
-            # A missing or unavailable model must not prevent local lexical search.
-            logger.info("optional knowledge embeddings unavailable for %s", doc_id)
-            index.delete_doc_chunks(doc_id)
-        repo.set_derived(doc_id, parsed.derived())
-        repo.update_document(
-            doc_id,
-            status="ready",
-            error_message="",
-            chunk_count=count,
-            content_hash=digest,
-        )
-        if dimension and base.embedding_dim != dimension:
-            repo.update_base(kb_id, embedding_dim=dimension)
+            if dimension and base.embedding_dim != dimension:
+                repo.update_base(kb_id, embedding_dim=dimension)
+            _mark_source_processed(repo, document)
+        return False
     except Exception as exc:
         from octop.infra.knowledge.legacy_office import LegacyConversionUnavailable
         from octop.infra.knowledge.processors import (
@@ -265,31 +312,39 @@ def _process_locked(services: Any, kb_id: str, doc_id: str, *, parse_path: Parse
             ARCHIVE_OCR_DISABLED,
         )
         from octop.infra.knowledge.processors.libredwg import CadProcessorUnavailable
+        from octop.infra.knowledge.service import _knowledge_mutation_lock
 
-        archive_reason: str | None = None
-        if isinstance(exc, ValueError) and str(exc).startswith(
-            "unsupported knowledge document extension:"
-        ):
-            archive_reason = ARCHIVE_NO_PROCESSOR
-        elif isinstance(exc, CadProcessorUnavailable):
-            archive_reason = ARCHIVE_CAD_UNAVAILABLE
-        elif isinstance(exc, LegacyConversionUnavailable):
-            archive_reason = ARCHIVE_LEGACY_OFFICE_UNAVAILABLE
-        elif isinstance(exc, RuntimeError) and str(exc) == "knowledge OCR is not enabled":
-            archive_reason = ARCHIVE_OCR_DISABLED
-        if archive_reason is not None:
-            KnowledgeIndex(kb_id).delete_doc(doc_id)
+        with publication_lock, _knowledge_mutation_lock(kb_id):
+            if not _document_is_current(services, document, kb_id):
+                current = repo.get_document(doc_id)
+                if current is not None and current.status == "processing":
+                    repo.update_document(doc_id, status="pending", error_message="")
+                return True
+            archive_reason: str | None = None
+            if isinstance(exc, ValueError) and str(exc).startswith(
+                "unsupported knowledge document extension:"
+            ):
+                archive_reason = ARCHIVE_NO_PROCESSOR
+            elif isinstance(exc, CadProcessorUnavailable):
+                archive_reason = ARCHIVE_CAD_UNAVAILABLE
+            elif isinstance(exc, LegacyConversionUnavailable):
+                archive_reason = ARCHIVE_LEGACY_OFFICE_UNAVAILABLE
+            elif isinstance(exc, RuntimeError) and str(exc) == "knowledge OCR is not enabled":
+                archive_reason = ARCHIVE_OCR_DISABLED
+            if archive_reason is not None:
+                KnowledgeIndex(kb_id).delete_doc(doc_id)
+                repo.update_document(
+                    doc_id,
+                    status="archive_only",
+                    error_message=archive_reason,
+                    chunk_count=0,
+                    content_hash=digest,
+                )
+                _mark_source_processed(repo, document)
+                return False
             repo.update_document(
-                doc_id,
-                status="archive_only",
-                error_message=archive_reason,
-                chunk_count=0,
-                content_hash=digest,
+                doc_id, status=failure_status(exc), error_message=str(exc), chunk_count=0
             )
-            return
-        repo.update_document(
-            doc_id, status=failure_status(exc), error_message=str(exc), chunk_count=0
-        )
         raise
 
 
@@ -300,44 +355,44 @@ def _process_current_document(services: Any, kb_id: str, doc_id: str) -> bool:
     if document is None or document.kb_id != kb_id:
         return False
     if not document.data_source_id:
-        process_document(services, kb_id, doc_id)
-        return False
-    from octop.infra.knowledge.data_sources import DataSourceService
+        from octop.infra.licensing import current_license
+
+        current_license().require_business_access()
+        return _process(
+            services,
+            kb_id,
+            doc_id,
+            parse_path=lambda row: _platform_file(kb_id, doc_id, row.filename),
+        )
+    from octop.infra.knowledge.data_sources import DataSourceService, _source_lock
+    from octop.infra.knowledge.service import _knowledge_mutation_lock
 
     source = services.data_sources_repo.get(document.data_source_id)
     if source is None:
         repo.update_document(doc_id, status="failed", error_message="knowledge source unavailable")
         return False
+    from octop.infra.licensing import current_license
+
+    current_license().require_business_access()
     try:
         connector = DataSourceService(services).connector(source)
-        process_source_file(
-            services,
-            kb_id,
-            doc_id,
-            connector=connector,
-            source_path=document.source_path,
-        )
     except Exception as exc:
-        repo.update_document(doc_id, status=failure_status(exc), error_message=str(exc))
+        with _source_lock(source.id), _knowledge_mutation_lock(kb_id):
+            if (
+                repo.get_document(doc_id) != document
+                or services.data_sources_repo.get(source.id) != source
+            ):
+                return True
+            repo.update_document(doc_id, status=failure_status(exc), error_message=str(exc))
         raise
-    current = repo.get_document(doc_id)
-    if current is None:
-        KnowledgeIndex(kb_id).delete_doc(doc_id)
-    elif (current.observed_size, current.observed_modified_at) != (
-        document.observed_size,
-        document.observed_modified_at,
-    ):
-        repo.update_document(doc_id, status="pending", error_message="")
-        return True
-    else:
-        repo.mark_source_processed(
-            doc_id,
-            size=document.observed_size
-            if document.observed_size is not None
-            else document.byte_size,
-            modified_at=document.observed_modified_at,
-        )
-    return False
+    # The processing chain records failures against its own source snapshot.
+    # Rewriting them here could overwrite a newer completed scan after it exits.
+    return _process(
+        services,
+        kb_id,
+        doc_id,
+        parse_path=lambda row: _source_path(connector, document.source_path, row.filename),
+    )
 
 
 def _leave_document_pending(services: Any, kb_id: str, doc_id: str) -> None:

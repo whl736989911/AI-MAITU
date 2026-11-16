@@ -1,11 +1,24 @@
 from __future__ import annotations
 
 import asyncio
+import time
+from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
 
 import pytest
 
+from octop.infra.db.migrate import run_migrations
+from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos.audit import AuditRepo
+from octop.infra.db.repos.data_sources import DataSourceRepo
+from octop.infra.db.repos.knowledge import KnowledgeRepo
+from octop.infra.db.repos.knowledge_collections import KnowledgeCollectionsRepo
+from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
+from octop.infra.db.repos.secrets import SecretRepo
+from octop.infra.db.repos.settings import SettingsRepo
+from octop.infra.db.repos.users import UserRepo
+from octop.infra.db.services import RepoBundle
 from octop.infra.knowledge import auto_sync
 
 
@@ -83,6 +96,118 @@ def test_disabled_knowledge_feature_skips_scans(monkeypatch):
     )
     asyncio.run(auto_sync.AutoSyncRunner(server).run())
     assert called == []
+
+
+@pytest.mark.parametrize(
+    ("disabled", "expires_at", "should_scan"),
+    [(True, None, False), (False, 1, False), (False, None, True)],
+)
+def test_scheduled_scan_respects_live_owner_account_state(
+    tmp_path: Path,
+    monkeypatch,
+    disabled: bool,
+    expires_at: int | None,
+    should_scan: bool,
+):
+    from octop.infra.knowledge import jobs
+    from octop.infra.knowledge.data_sources import DataSourceService, FolderSettings
+    from octop.infra.knowledge.gate import set_feature_enabled
+    from octop.infra.knowledge.sources.scan import DEBOUNCE_SECONDS
+    from octop.infra.utils.paths import PathLayout
+
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path / "home"))
+    db = SqlitePool(tmp_path / "auto-sync-owner.db")
+    run_migrations(db)
+    users = UserRepo(db)
+    user_id = users.create(
+        username="source-owner",
+        password_hash="h",
+        role="admin",
+        access_expires_at=None,
+    )
+    services = SimpleNamespace(
+        db=db,
+        repos=RepoBundle.from_pool(db),
+        config=SimpleNamespace(max_upload_bytes=1_000_000, max_upload_mb=1),
+        paths=PathLayout.from_env(),
+        knowledge_repo=KnowledgeRepo(db),
+        knowledge_collections_repo=KnowledgeCollectionsRepo(db),
+        data_sources_repo=DataSourceRepo(db),
+        knowledge_sync_runs_repo=KnowledgeSyncRunRepo(db),
+        settings_repo=SettingsRepo(db),
+        user_repo=users,
+        secret_repo=SecretRepo(db),
+        audit_repo=AuditRepo(db),
+        provider_repo=None,
+    )
+    set_feature_enabled(
+        services.settings_repo.get,
+        services.settings_repo.set,
+        enabled=True,
+        model=None,
+    )
+    source_service = DataSourceService(services)
+    base = services.knowledge_repo.create_base(owner_user_id=user_id, name="Docs")
+    root = tmp_path / "folder"
+    root.mkdir()
+    (root / "policy.md").write_text("refunds take five business days", encoding="utf-8")
+    source = source_service.create(
+        base.id,
+        actor_user_id=user_id,
+        name="Policies",
+        kind="local",
+        folder=FolderSettings(root_path=str(root), scan_interval_seconds=30),
+    )
+    settled_time = time.time() + 60
+    monkeypatch.setattr(auto_sync.time, "time", lambda: settled_time)
+    if disabled:
+        users.set_disabled(user_id, True)
+    if expires_at is not None:
+        with db.transaction() as conn:
+            users.update_account(user_id, {"access_expires_at": expires_at}, conn=conn)
+
+    monkeypatch.setattr(jobs, "assert_embedding_usable", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        jobs,
+        "embed_knowledge_texts",
+        lambda _services, texts: [[float(len(text)), 1.0, 0.0, 0.0] for text in texts],
+    )
+    jobs.reset_index_semaphore_for_tests()
+    indexing_tasks = []
+    enqueue = jobs.enqueue_index_document
+
+    def track_indexing_task(*args):
+        task = enqueue(*args)
+        indexing_tasks.append(task)
+        return task
+
+    monkeypatch.setattr(jobs, "enqueue_index_document", track_indexing_task)
+    server = SimpleNamespace(services=services)
+
+    async def run_sync():
+        nonlocal settled_time
+        runner = auto_sync.AutoSyncRunner(server)
+        await runner.run()
+        # Let both debounce and the configured source interval elapse.
+        settled_time += max(DEBOUNCE_SECONDS, source.scan_interval_seconds) + 1
+        await runner.run()
+        if indexing_tasks:
+            await asyncio.gather(*indexing_tasks)
+
+    try:
+        asyncio.run(run_sync())
+        runs = services.knowledge_sync_runs_repo.list_for_source(source.id)
+        documents = services.knowledge_repo.list_source_files(source.id)
+        files = [document for document in documents if not document.is_dir]
+        if should_scan:
+            assert len(runs) == 2 and all(run.status == "ok" for run in runs)
+            assert len(files) == 1 and files[0].status == "ready"
+        else:
+            assert runs == []
+            assert documents == []
+    finally:
+        db.close()
+        jobs.reset_index_semaphore_for_tests()
 
 
 def test_overlapping_ticks_are_skipped(monkeypatch):

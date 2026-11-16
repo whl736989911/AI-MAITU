@@ -67,6 +67,21 @@ async def test_access_expiry_deadline_renewal_and_permanent_access(env, monkeypa
     assert (await client.get("/api/auth/me", headers=auth)).status_code == 403
 
 
+async def test_existing_token_observes_account_disabled_by_another_worker(env):
+    client, server, admin = env
+    auth = await create_user(client, admin, username="cross-worker")
+    uid = await resolve_user_id(client, admin, "cross-worker")
+
+    # Simulate a separate worker committing the disable while this worker's
+    # UserManager still has the account cached as active.
+    with server.services.db.transaction() as conn:
+        server.services.user_repo.update_account(uid, {"disabled": True}, conn=conn)
+
+    denied = await client.get("/api/auth/me", headers=auth)
+    assert denied.status_code == 403, denied.text
+    assert denied.json()["error"]["code"] == "USER_DISABLED"
+
+
 async def test_only_system_admin_can_write_other_accounts_validity(env):
     client, _server, admin = env
     enterprise = await create_user(client, admin, username="enterprise", role="enterprise_admin")

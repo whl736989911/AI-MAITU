@@ -5,6 +5,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  useRef,
 } from "react";
 import type { ReactNode } from "react";
 import { setActiveAgentId } from "../api/request";
@@ -209,6 +210,7 @@ export function AgentProvider({ children }: { children: ReactNode }) {
   const [activeAgentId, setActiveAgentIdState] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const refreshRequestRef = useRef(0);
 
   const persistAndApply = useCallback((id: string | null) => {
     setActiveAgentIdState((prev) => {
@@ -226,12 +228,14 @@ export function AgentProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(
     async (options?: { silent?: boolean; force?: boolean }): Promise<void> => {
+      const requestId = ++refreshRequestRef.current;
       if (!options?.silent) {
         setLoading(true);
       }
       setError(null);
       try {
         const list = await fetchAgents();
+        if (requestId !== refreshRequestRef.current) return;
         // Only update state when content actually changed, to prevent
         // unnecessary re-renders of every component subscribed to this context
         // (the chat page polls every 10 s to refresh unread badges).
@@ -269,11 +273,15 @@ export function AgentProvider({ children }: { children: ReactNode }) {
           persistAndApply(null);
         }
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to load agents");
+        if (requestId === refreshRequestRef.current) {
+          setError(
+            err instanceof Error ? err.message : "Failed to load agents",
+          );
+        }
         // On failure, leave whatever previous state was — don't blow away
         // a valid selection just because a fetch hiccuped.
       } finally {
-        if (!options?.silent) {
+        if (requestId === refreshRequestRef.current) {
           setLoading(false);
         }
       }

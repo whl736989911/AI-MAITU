@@ -42,7 +42,8 @@ class TeamJobTracker:
         key = (team_agent_id, member_agent_id)
         with self._lock:
             if job_id:
-                self._jobs.pop(job_id, None)
+                if self._jobs.get(job_id) == key:
+                    self._jobs.pop(job_id)
                 return
             current = self._counts.get(key, 0) - 1
             if current <= 0:

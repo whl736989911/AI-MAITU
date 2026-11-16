@@ -1,13 +1,13 @@
 """Unit tests for storage backend browse helpers."""
 
-from __future__ import annotations
-
+import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from octop.infra.backend.browse import list_storage_backend_tree
+from octop.infra.backend.browse import _close_backend, list_storage_backend_tree
 from octop.infra.backend.probe import row_for_probe
 from octop.infra.db.repos.backends import BackendRow
 
@@ -137,3 +137,28 @@ async def test_list_storage_backend_tree_returns_entries(
     assert len(entries) == 2
     assert entries[0]["path"] == "a.txt"
     assert entries[1]["is_dir"] is True
+
+
+@pytest.mark.asyncio
+async def test_backend_close_finishes_before_propagating_cancellation() -> None:
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    closed = asyncio.Event()
+
+    async def aclose() -> None:
+        entered.set()
+        try:
+            await release.wait()
+        finally:
+            closed.set()
+
+    task = asyncio.create_task(_close_backend(SimpleNamespace(aclose=aclose)))
+    await entered.wait()
+    task.cancel()
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert closed.is_set()

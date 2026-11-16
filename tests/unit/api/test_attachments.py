@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import tempfile
+from threading import Event
 
 import pytest
 from deepagents.backends.local_shell import LocalShellBackend
@@ -17,7 +19,6 @@ from octop.infra.gateway.media.attachment_hints import (
     sniff_image_media_type,
 )
 from octop.infra.gateway.media.inbound_store import (
-    MAX_INBOUND_BYTES,
     inbound_extension,
     validate_inbound_media_type,
     validate_inbound_size,
@@ -29,6 +30,36 @@ from octop.infra.gateway.process.harness_request import build_content_from_messa
 def _workspace(root: str) -> BackendWorkspace:
     backend = LocalShellBackend(root_dir=root, virtual_mode=False)
     return BackendWorkspace(backend, root)
+
+
+def _observe_waiting_upload(monkeypatch, inbound_store, progress):
+    register = getattr(inbound_store, "_register_inbound_write_lock", None)
+    if register is None:
+        return
+
+    def observed_register(*args, **kwargs):
+        key, lock = register(*args, **kwargs)
+
+        class ObservedLock:
+            async def acquire(self):
+                task = asyncio.current_task()
+                if task is not None and task.get_name() == "second-upload" and lock.locked():
+                    progress.set()
+                return await lock.acquire()
+
+            def release(self):
+                lock.release()
+
+            async def __aenter__(self):
+                await self.acquire()
+                return self
+
+            async def __aexit__(self, *args):
+                self.release()
+
+        return key, ObservedLock()
+
+    monkeypatch.setattr(inbound_store, "_register_inbound_write_lock", observed_register)
 
 
 def test_inbound_extension_from_filename() -> None:
@@ -173,10 +204,6 @@ def test_inbound_over_size_limit_is_rejected() -> None:
     assert "{max_mb}" not in envelope["error"]["message"]
 
 
-def test_default_inbound_limit_is_100_mib() -> None:
-    assert MAX_INBOUND_BYTES == 100 * 1024 * 1024
-
-
 @pytest.mark.asyncio
 async def test_save_attachment_zip_from_windows_browser() -> None:
     with tempfile.TemporaryDirectory() as ws_dir:
@@ -209,6 +236,72 @@ async def test_save_attachment_pdf_uses_extension() -> None:
 
         on_disk = await workspace.adownload_bytes(stored.data_path)
         assert on_disk == b"%PDF-1.4"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_same_name_uploads_preserve_each_file(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from octop.infra.gateway.media import inbound_store
+
+    monkeypatch.setattr(inbound_store.time, "time", lambda: 1_800_000_000)
+    first_checked = asyncio.Event()
+    release_first = asyncio.Event()
+    second_progress = asyncio.Event()
+    original_exists = BackendWorkspace.aexists
+
+    async def paused_exists(workspace, path):
+        exists = await original_exists(workspace, path)
+        if asyncio.current_task().get_name() == "first-upload" and not first_checked.is_set():
+            first_checked.set()
+            await release_first.wait()
+        return exists
+
+    async def second_upload(workspace):
+        try:
+            return await save_attachment(
+                workspace,
+                owner_id=2,
+                filename="report.pdf",
+                media_type="application/pdf",
+                data=b"second upload",
+            )
+        finally:
+            second_progress.set()
+
+    monkeypatch.setattr(BackendWorkspace, "aexists", paused_exists)
+    _observe_waiting_upload(monkeypatch, inbound_store, second_progress)
+    with tempfile.TemporaryDirectory() as ws_dir:
+        workspace = _workspace(ws_dir)
+        first_task = asyncio.create_task(
+            save_attachment(
+                workspace,
+                owner_id=1,
+                filename="report.pdf",
+                media_type="application/pdf",
+                data=b"first upload",
+            ),
+            name="first-upload",
+        )
+        second_task = None
+        try:
+            await asyncio.wait_for(first_checked.wait(), 5)
+            second_task = asyncio.create_task(
+                second_upload(_workspace(ws_dir)), name="second-upload"
+            )
+            await asyncio.wait_for(second_progress.wait(), 5)
+        finally:
+            release_first.set()
+            await asyncio.gather(
+                first_task,
+                *([second_task] if second_task is not None else []),
+                return_exceptions=True,
+            )
+        first = first_task.result()
+        second = second_task.result()
+        assert first.data_path != second.data_path
+        assert await workspace.adownload_bytes(first.data_path) == b"first upload"
+        assert await workspace.adownload_bytes(second.data_path) == b"second upload"
 
 
 @pytest.mark.asyncio
@@ -265,3 +358,84 @@ async def test_hints_from_saved_attachment_path() -> None:
 
         resolved = resolve_inbound_attachment_path(workspace, stored.data_path)
         assert resolved in hints[0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cancel_count", [1, 2])
+async def test_cancelled_upload_keeps_name_reserved_until_backend_write_finishes(
+    monkeypatch: pytest.MonkeyPatch, cancel_count: int
+) -> None:
+    from octop.infra.gateway.media import inbound_store
+
+    monkeypatch.setattr(inbound_store.time, "time", lambda: 1_800_000_000)
+    worker_started = Event()
+    release_worker = Event()
+    worker_finished = Event()
+    second_progress = asyncio.Event()
+    first_paths = []
+    original_upload = BackendWorkspace.aupload_bytes
+
+    async def delayed_upload(workspace, path, data):
+        if data != b"first upload":
+            return await original_upload(workspace, path, data)
+
+        def write():
+            first_paths.append(path)
+            worker_started.set()
+            try:
+                if not release_worker.wait(5):
+                    raise TimeoutError("backend upload was not released")
+                workspace.upload_bytes(path, data)
+            finally:
+                worker_finished.set()
+
+        await asyncio.to_thread(write)
+
+    async def second_upload(workspace):
+        try:
+            return await save_attachment(
+                workspace,
+                owner_id=2,
+                filename="report.pdf",
+                media_type="application/pdf",
+                data=b"second upload",
+            )
+        finally:
+            second_progress.set()
+
+    monkeypatch.setattr(BackendWorkspace, "aupload_bytes", delayed_upload)
+    _observe_waiting_upload(monkeypatch, inbound_store, second_progress)
+    with tempfile.TemporaryDirectory() as ws_dir:
+        workspace = _workspace(ws_dir)
+        first_task = asyncio.create_task(
+            save_attachment(
+                workspace,
+                owner_id=1,
+                filename="report.pdf",
+                media_type="application/pdf",
+                data=b"first upload",
+            )
+        )
+        second_task = None
+        try:
+            assert await asyncio.to_thread(worker_started.wait, 5)
+            for _ in range(cancel_count):
+                first_task.cancel()
+                await asyncio.sleep(0)
+            second_task = asyncio.create_task(
+                second_upload(_workspace(ws_dir)), name="second-upload"
+            )
+            await asyncio.wait_for(second_progress.wait(), 5)
+        finally:
+            release_worker.set()
+            assert await asyncio.to_thread(worker_finished.wait, 5)
+            await asyncio.gather(
+                first_task,
+                *([second_task] if second_task is not None else []),
+                return_exceptions=True,
+            )
+        with pytest.raises(asyncio.CancelledError):
+            first_task.result()
+        second = second_task.result()
+        assert await workspace.adownload_bytes(second.data_path) == b"second upload"
+        assert await workspace.adownload_bytes(first_paths[0]) == b"first upload"

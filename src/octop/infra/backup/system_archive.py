@@ -480,21 +480,45 @@ def _iter_extracted_files(root: Path, prefix: str) -> list[tuple[str, Path]]:
 
 
 def _replace_tree_from_archive(extracted: Path, dest: Path, arc_name: str) -> int:
-    """Replace *dest* with files packed under *arc_name* in the extracted archive."""
-    if dest.exists():
-        shutil.rmtree(dest)
-    dest.mkdir(parents=True, exist_ok=True)
+    """Stage archive files before replacing the live tree."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    staged = dest.with_name(f".{dest.name}.restore-{uuid.uuid4().hex}")
+    previous = dest.with_name(f".{dest.name}.previous-{uuid.uuid4().hex}")
+    staged.mkdir()
     count = 0
-    prefix = f"{arc_name}/"
-    for rel, src_file in _iter_extracted_files(extracted, arc_name):
-        rest = rel[len(prefix) :]
-        if not rest:
-            continue
-        out = dest / rest
-        out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(src_file, out)
-        count += 1
-    return count
+    try:
+        prefix = f"{arc_name}/"
+        for rel, src_file in _iter_extracted_files(extracted, arc_name):
+            rest = rel[len(prefix) :]
+            if not rest:
+                continue
+            out = staged / rest
+            out.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src_file, out)
+            count += 1
+
+        had_previous = dest.exists() or dest.is_symlink()
+        if had_previous:
+            dest.replace(previous)
+        try:
+            staged.replace(dest)
+        except Exception:
+            if had_previous:
+                previous.replace(dest)
+            raise
+        if had_previous:
+            if previous.is_symlink() or not previous.is_dir():
+                previous.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(previous, ignore_errors=True)
+        return count
+    except Exception:
+        shutil.rmtree(staged, ignore_errors=True)
+        if (previous.exists() or previous.is_symlink()) and not (
+            dest.exists() or dest.is_symlink()
+        ):
+            previous.replace(dest)
+        raise
 
 
 def _upgrade_restore_database(
@@ -639,11 +663,11 @@ def restore_system_backup(
 
         if restore_config:
             cfg_path = extracted / _CONFIG_DIR / "config.json"
-            if cfg_path.is_file():
+            if manifest.includes_config and cfg_path.is_file():
                 paths.config.parent.mkdir(parents=True, exist_ok=True)
                 _filtered_config_file(cfg_path, paths.config)
             env_blob_path = extracted / _CONFIG_DIR / "env"
-            if env_blob_path.is_file():
+            if manifest.includes_env and env_blob_path.is_file():
                 env_path = env_file_path(paths.root)
                 env_path.parent.mkdir(parents=True, exist_ok=True)
                 _restore_env_preserving_license(env_blob_path, env_path)

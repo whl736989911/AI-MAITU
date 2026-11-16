@@ -142,7 +142,11 @@ class ConnectorService:
             if row is None or row.kind != "qcc" or row.status != "active":
                 return {}
             return self.decrypt(instance_id)
-        creds = self.decrypt(instance_id)
+        row = self._repo.get(instance_id)
+        if row is None or not row.credential_blob:
+            return {}
+        original_blob = row.credential_blob
+        creds = decrypt_credentials(self._secret_repo, original_blob)
         entry = get_catalog_entry(kind)
         if entry is None or entry.auth_kind != "oauth2":
             return creds
@@ -159,10 +163,23 @@ class ConnectorService:
                 settings_repo=self._settings_repo,
             )
         except Exception:
-            return creds
+            return self.decrypt(instance_id)
         creds.update(refreshed)
-        self.encrypt_and_store(instance_id=instance_id, payload=creds)
-        return creds
+        stored = dict(creds)
+        stored["instance_id"] = instance_id
+        expires = stored.get("expires_at")
+        exp = int(expires) if expires is not None else None
+        blob = encrypt_credentials(self._secret_repo, stored)
+        if self._repo.replace_credentials_if_unchanged(
+            instance_id=instance_id,
+            expected_blob=original_blob,
+            blob=blob,
+            expires_at=exp,
+        ):
+            return creds
+        # Reauthorization, credential replacement, or deletion won while the
+        # provider refresh was in flight; never return or persist the stale identity.
+        return self.decrypt(instance_id)
 
     async def _qcc_request(
         self, instance_id: str, resource: str, method: str, params: dict[str, Any]
@@ -329,7 +346,12 @@ class ConnectorService:
         return self._save_custom_servers(user_id, servers)
 
     async def ensure_fresh_custom_servers(self, user_id: int) -> dict[str, Any]:
-        servers = dict(self.get_custom_servers(user_id))
+        row = self._repo.get_by_user_kind(user_id, CUSTOM_MCP_KIND)
+        if row is None or not row.credential_blob:
+            return {}
+        original_blob = row.credential_blob
+        stored = decrypt_credentials(self._secret_repo, original_blob)
+        servers = dict(extract_servers(stored))
         changed = False
         now = int(time.time())
         for name, raw in list(servers.items()):
@@ -366,9 +388,20 @@ class ConnectorService:
             spec["oauth"] = refreshed
             servers[name] = spec
             changed = True
-        if not changed:
-            return servers
-        return self._save_custom_servers(user_id, servers)
+        if changed:
+            normalized = validate_servers_map(
+                servers, reserved_names=self.reserved_builtin_mcp_names(user_id)
+            )
+            stored.update(wrap_servers(normalized))
+            stored["instance_id"] = row.instance_id
+            self._repo.replace_credentials_if_unchanged(
+                instance_id=row.instance_id,
+                expected_blob=original_blob,
+                blob=encrypt_credentials(self._secret_repo, stored),
+            )
+        # A newer configuration or reauthorization always wins over this refresh,
+        # including when the provider failed or the connector was removed.
+        return self.get_custom_servers(user_id)
 
     def patch_custom_server_enabled(
         self,

@@ -10,6 +10,7 @@ from typing import Any
 
 from octop.infra.cron.manager import CronManager
 from octop.infra.db.repos.data_sources import KIND_LOCAL, KIND_SMB
+from octop.infra.users.capabilities import UserCapabilityPolicy
 
 logger = logging.getLogger(__name__)
 AUTO_SYNC_JOB_ID = "knowledge.data_sources.auto_sync"
@@ -85,11 +86,29 @@ class AutoSyncRunner:
             # wait a full configured interval instead of spinning every tick.
             if source.last_scan_at is not None and now - source.last_scan_at < interval:
                 continue
+            # Scheduled work runs under the knowledge base owner (or source
+            # creator). Revoke future scans when that principal is inactive.
+            source_user_id = self._source_user_id(services, source)
+            if (
+                source_user_id is not None
+                and hasattr(services, "user_repo")
+                and not UserCapabilityPolicy.user_is_active(services.user_repo.get(source_user_id))
+            ):
+                continue
+
             try:
                 from octop.infra.knowledge.data_sources import DataSourceService
                 from octop.infra.knowledge.jobs import enqueue_index_document
 
-                def scan_and_harvest(source_id: str) -> list[tuple[str, str]]:
+                def scan_and_harvest(source_id: str, user_id: int | None) -> list[tuple[str, str]]:
+                    # Revalidate in the worker immediately before the scan,
+                    # not only while selecting due sources on the event loop.
+                    if (
+                        user_id is not None
+                        and hasattr(services, "user_repo")
+                        and not UserCapabilityPolicy.user_is_active(services.user_repo.get(user_id))
+                    ):
+                        return []
                     DataSourceService(services).sync_scheduled(source_id)
                     return [
                         (document.kb_id, document.id)
@@ -99,13 +118,24 @@ class AutoSyncRunner:
 
                 loop = asyncio.get_running_loop()
                 pending_documents = await _await_worker(
-                    loop.run_in_executor(None, scan_and_harvest, source.id)
+                    loop.run_in_executor(None, scan_and_harvest, source.id, source_user_id)
                 )
                 for kb_id, document_id in pending_documents:
                     enqueue_index_document(services, kb_id, document_id)
             except Exception:
                 # The sync service persists the actual failure and its run row.
                 logger.exception("scheduled knowledge source scan failed: %s", source.id)
+
+    @staticmethod
+    def _source_user_id(services: Any, source: Any) -> int | None:
+        knowledge_repo = services.knowledge_repo
+        creator_user_id: int | None = getattr(source, "created_by", None)
+        if hasattr(knowledge_repo, "get_base") and hasattr(source, "knowledge_base_id"):
+            base = knowledge_repo.get_base(source.knowledge_base_id)
+            if base is not None:
+                owner_user_id: int | None = base.owner_user_id
+                return owner_user_id or creator_user_id
+        return creator_user_id
 
     async def shutdown(self) -> None:
         self._stopping.set()

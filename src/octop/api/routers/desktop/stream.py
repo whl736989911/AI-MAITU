@@ -280,7 +280,7 @@ async def desktop_stream_ws(
             await websocket.close(code=4001, reason="missing token")
             return
         try:
-            user = resolve_user_from_token(server, auth_token)
+            user = await resolve_user_from_token(server, auth_token)
         except Exception as exc:
             await _send_json(
                 websocket, {"type": "error", "code": "AUTH_FAILED", "message": str(exc)}

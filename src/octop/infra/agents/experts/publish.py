@@ -159,6 +159,8 @@ async def _write_workspace_snapshot(
         logical = _logical_seed_path(rel)
         if logical == MANIFEST_FILENAME:
             continue
+        if ":" in logical:
+            raise ValueError("snapshot paths cannot contain Windows drive or stream components")
         content = await workspace.adownload_bytes(rel)
         if content is None:
             continue

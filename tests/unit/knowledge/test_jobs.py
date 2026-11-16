@@ -7,6 +7,7 @@ import hashlib
 import threading
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -62,7 +63,16 @@ def test_enqueue_index_document_limits_concurrency(monkeypatch: pytest.MonkeyPat
 
 @pytest.mark.parametrize(
     "mode",
-    ["rerun", "stale_error", "shutdown", "shutdown_stale_error", "cancel", "cancel_stale_error"],
+    [
+        "rerun",
+        "stale_error",
+        "shutdown",
+        "shutdown_stale_error",
+        "cancel",
+        "cancel_stale_error",
+        "guarded",
+        "delete_guarded",
+    ],
 )
 @pytest.mark.asyncio
 async def test_update_during_active_indexing_reprocesses_latest_content(
@@ -98,6 +108,10 @@ async def test_update_during_active_indexing_reprocesses_latest_content(
     write_document(kb.id, document.id, document.filename, b"old text")
     entered = threading.Event()
     release = threading.Event()
+    latest_entered = threading.Event()
+    latest_release = threading.Event()
+    stale_processed = threading.Event()
+    allow_cleanup = threading.Event()
 
     def parse_after_update(path: Path, **_kwargs: object) -> ParsedDocument:
         text = path.read_text(encoding="utf-8")
@@ -106,9 +120,23 @@ async def test_update_during_active_indexing_reprocesses_latest_content(
             assert release.wait(timeout=5)
             if mode.endswith("stale_error"):
                 raise ValueError("stale content could not be parsed")
+        elif text == "new text" and mode == "guarded":
+            latest_entered.set()
+            assert latest_release.wait(timeout=5)
         return ParsedDocument(text=text)
 
     monkeypatch.setattr(jobs, "parse_document", parse_after_update)
+    if mode == "delete_guarded":
+        original_process = jobs._process
+
+        def pause_before_deleted_document_cleanup(*args: Any, **kwargs: Any) -> bool:
+            stale = original_process(*args, **kwargs)
+            if not stale_processed.is_set():
+                stale_processed.set()
+                assert allow_cleanup.wait(timeout=5)
+            return stale
+
+        monkeypatch.setattr(jobs, "_process", pause_before_deleted_document_cleanup)
     try:
         task = jobs.enqueue_index_document(services, kb.id, document.id)
         assert await asyncio.to_thread(entered.wait, 5)
@@ -116,7 +144,26 @@ async def test_update_during_active_indexing_reprocesses_latest_content(
             kb.id, document.id, actor_user_id=owner_id, content="new text"
         )
         jobs.enqueue_index_document(services, kb.id, document.id)
-        if mode.startswith("shutdown"):
+        if mode == "delete_guarded":
+            KnowledgeService(services).delete_document(kb.id, document.id, actor_user_id=owner_id)
+            jobs.enqueue_index_document(services, kb.id, document.id)
+            release.set()
+            assert await asyncio.to_thread(stale_processed.wait, 5)
+            assert repo.get_document(document.id) is None
+            assert KnowledgeIndex(kb.id).document_preview(document.id, max_chars=100) is None
+            allow_cleanup.set()
+            await task
+        elif mode == "guarded":
+            release.set()
+            assert await asyncio.to_thread(latest_entered.wait, 5)
+            pending = repo.get_document(document.id)
+            assert pending is not None
+            assert pending.status == "processing"
+            assert pending.content_hash == hashlib.sha256(b"new text").hexdigest()
+            assert KnowledgeIndex(kb.id).document_preview(document.id, max_chars=100) is None
+            latest_release.set()
+            await task
+        elif mode.startswith("shutdown"):
             shutdown = asyncio.create_task(jobs.shutdown_index_jobs(services))
             await asyncio.sleep(0)
             assert not shutdown.done()
@@ -145,14 +192,17 @@ async def test_update_during_active_indexing_reprocesses_latest_content(
         else:
             release.set()
             await task
-        updated = repo.get_document(document.id)
-        assert updated is not None
-        assert updated.status == "ready"
-        assert updated.content_hash == hashlib.sha256(b"new text").hexdigest()
-        hits = KnowledgeIndex(kb.id).search([1.0, 0.0], 10)
-        assert [hit.text for hit in hits] == ["new text"]
+        if mode != "delete_guarded":
+            updated = repo.get_document(document.id)
+            assert updated is not None
+            assert updated.status == "ready"
+            assert updated.content_hash == hashlib.sha256(b"new text").hexdigest()
+            hits = KnowledgeIndex(kb.id).search([1.0, 0.0], 10)
+            assert [hit.text for hit in hits] == ["new text"]
     finally:
         release.set()
+        latest_release.set()
+        allow_cleanup.set()
         try:
             await jobs.shutdown_index_jobs(services)
         finally:

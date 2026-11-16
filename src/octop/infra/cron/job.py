@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections.abc import Callable
 from typing import TYPE_CHECKING
 
 from octop.infra.cron.delivery import CronDeliveryCommand
@@ -35,10 +36,11 @@ class CronJob:
         mcp_servers: list[str] | None,
         user_id: int,
         delivery_service: CronDeliveryService,
-        date_trigger: bool,
+        trigger: str,
         cron_repo: CronJobRepo,
         audit_repo: AuditRepo,
         user_policy: UserCapabilityPolicy,
+        is_current: Callable[[], bool] | None = None,
     ) -> None:
         self._cron_id = cron_id
         self._name = name
@@ -51,10 +53,12 @@ class CronJob:
         self._mcp_servers = list(mcp_servers or [])
         self._user_id = user_id
         self._delivery_service = delivery_service
-        self._date_trigger = date_trigger
+        self._date_trigger = trigger.startswith("date:")
+        self._trigger = trigger
         self._cron_repo = cron_repo
         self._audit_repo = audit_repo
         self._user_policy = user_policy
+        self._is_current = is_current or (lambda: True)
 
     @classmethod
     def from_row(
@@ -65,6 +69,7 @@ class CronJob:
         cron_repo: CronJobRepo,
         audit_repo: AuditRepo,
         user_policy: UserCapabilityPolicy,
+        is_current: Callable[[], bool] | None = None,
     ) -> CronJob:
         return cls(
             cron_id=row.cron_id,
@@ -77,11 +82,12 @@ class CronJob:
             task_type=row.task_type,
             mcp_servers=row.mcp_servers,
             user_id=row.user_id,
-            date_trigger=row.trigger.startswith("date:"),
+            trigger=row.trigger,
             delivery_service=delivery_service,
             cron_repo=cron_repo,
             audit_repo=audit_repo,
             user_policy=user_policy,
+            is_current=is_current,
         )
 
     async def run(self, *, scheduled: bool = True) -> None:
@@ -91,6 +97,8 @@ class CronJob:
 
         current_license().require_business_access()
         self._user_policy.require_permissions(self._user_id, ())
+        if not self._is_current():
+            return
         if scheduled:
             current = self._cron_repo.get(self._cron_id)
             if current is None or not current.enabled:
@@ -99,51 +107,54 @@ class CronJob:
 
         from octop.infra.metrics import METRICS  # noqa: PLC0415
 
-        METRICS.inc("cron_runs_total")
         ts = int(time.time())
         if self._date_trigger and not self._cron_repo.claim_date_run(self._cron_id, ts=ts):
-            # A scheduled callback, manual run, or restart catch-up already owns
-            # this one-shot task.
+            # A scheduled callback, manual run, or replacement schedule owns it.
             self._cron_repo.update(self._cron_id, enabled=False)
             return
         try:
-            try:
-                await self._delivery_service.deliver(
-                    CronDeliveryCommand(
-                        cron_id=self._cron_id,
-                        cron_name=self._name,
-                        agent_id=self._agent_id,
-                        user_id=self._user_id,
-                        session_key=self._session_key,
-                        prompt=self._prompt,
-                        fresh_thread=self._fresh_thread,
-                        task_type=self._task_type,
-                        model=self._model,
-                        mcp_servers=tuple(self._mcp_servers),
-                    )
+            await self._delivery_service.deliver(
+                CronDeliveryCommand(
+                    cron_id=self._cron_id,
+                    cron_name=self._name,
+                    agent_id=self._agent_id,
+                    user_id=self._user_id,
+                    session_key=self._session_key,
+                    prompt=self._prompt,
+                    fresh_thread=self._fresh_thread,
+                    task_type=self._task_type,
+                    model=self._model,
+                    mcp_servers=tuple(self._mcp_servers),
                 )
-            except (Exception, asyncio.CancelledError) as exc:
-                METRICS.inc("cron_errors_total")
-                logger.exception("cron job %s failed", self._cron_id)
-                err = str(exc)
-                self._cron_repo.set_run_status(self._cron_id, ts=ts, status="error", error=err)
-                self._audit_repo.write(
-                    actor=ACTOR_SYSTEM,
-                    action="cron.run_failed",
-                    target=self._cron_id,
-                    payload=err,
-                )
-                if isinstance(exc, asyncio.CancelledError):
-                    raise
-                return
-            self._cron_repo.set_run_status(self._cron_id, ts=ts, status="ok", error=None)
+            )
+        except (Exception, asyncio.CancelledError) as exc:
+            METRICS.inc("cron_errors_total")
+            err = str(exc)
+            self._record_run_status(ts=ts, status="error", error=err)
             self._audit_repo.write(
                 actor=ACTOR_SYSTEM,
-                action="cron.run_ok",
+                action="cron.run_failed",
                 target=self._cron_id,
+                payload=err,
             )
-        finally:
-            # A date task is a one-shot even when delivery fails. Keep its row
-            # and final status for history; only disable future scheduling.
-            if self._date_trigger:
-                self._cron_repo.update(self._cron_id, enabled=False)
+            if isinstance(exc, asyncio.CancelledError):
+                raise
+            return
+
+        self._record_run_status(ts=ts, status="ok", error=None)
+        self._audit_repo.write(
+            actor=ACTOR_SYSTEM,
+            action="cron.run_ok",
+            target=self._cron_id,
+        )
+
+    def _run_state_is_current(self) -> bool:
+        current = self._cron_repo.get(self._cron_id)
+        return current is not None and current.trigger == self._trigger and self._is_current()
+
+    def _record_run_status(self, *, ts: int, status: str, error: str | None) -> None:
+        if not self._run_state_is_current():
+            return
+        self._cron_repo.set_run_status(self._cron_id, ts=ts, status=status, error=error)
+        if self._date_trigger:
+            self._cron_repo.update(self._cron_id, enabled=False)

@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from pathlib import Path
+from threading import Event, current_thread
 
 import pytest
 
@@ -550,3 +552,39 @@ def test_initial_private_acl_invalidates_a_pending_inherited_baseline(world: Wor
     assert current.visibility == "private"
     assert visible_to(world, world.other) == set()
     assert world.acl.get_change(pending.change_id).status == CHANGE_PENDING
+
+
+def test_rejection_cannot_overwrite_a_concurrent_approval(
+    world: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    seed_private(world)
+    pending = world.service.apply_change(
+        world.owner, "agent", "a1", entry(world, visibility="public")
+    )
+    checking_admin = Event()
+    release_check = Event()
+    original_require_admin = SharingService._require_admin
+
+    def paused_check(service: SharingService, user_id: int) -> None:
+        if current_thread().name.startswith("sharing-reject"):
+            checking_admin.set()
+            if not release_check.wait(5):
+                raise TimeoutError("administrator check was not released")
+        original_require_admin(service, user_id)
+
+    monkeypatch.setattr(SharingService, "_require_admin", paused_check)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="sharing-reject") as pool:
+        rejecting = pool.submit(
+            world.service.reject, pending.change_id, world.admin, reason="late rejection"
+        )
+        try:
+            assert checking_admin.wait(5)
+            world.service.approve(pending.change_id, world.admin)
+        finally:
+            release_check.set()
+        with pytest.raises(ValueError):
+            rejecting.result(timeout=5)
+    stored = world.acl.get_change(pending.change_id)
+    assert stored.status == CHANGE_APPLIED
+    assert stored.reason is None
+    assert "a1" in visible_to(world, world.other)

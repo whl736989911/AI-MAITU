@@ -704,6 +704,65 @@ async def test_custom_mcp_oauth_callback_applies_tokens(env):
     assert body["server_name"] == "my-oauth-mcp"
 
 
+async def test_oauth_provider_denial_deletes_secret_context(env):
+    c, srv, auth, _ = env
+    user_id = await resolve_user_id(c, auth, "admin")
+    state_id = new_ulid()
+    srv.services.repos.connector_repo.create_oauth_state(
+        state_id=state_id,
+        state="denied-oauth-state",
+        user_id=user_id,
+        kind="notion",
+        code_verifier="verifier",
+        redirect_after="/connectors",
+    )
+    save_oauth_ctx(
+        srv.services.settings_repo,
+        state_id,
+        {"flow": "custom_mcp", "client_secret": "one-time-client-secret"},
+    )
+
+    response = await c.get(
+        "/api/connectors/oauth/callback",
+        params={"error": "access_denied", "state": "denied-oauth-state"},
+    )
+
+    assert response.status_code == 400
+    assert srv.services.settings_repo.get(f"connector.oauth.ctx.{state_id}") is None
+
+
+async def test_oauth_callback_failure_deletes_secret_context(env):
+    c, srv, auth, _ = env
+    user_id = await resolve_user_id(c, auth, "admin")
+    state_id = new_ulid()
+    srv.services.repos.connector_repo.create_oauth_state(
+        state_id=state_id,
+        state="failed-oauth-state",
+        user_id=user_id,
+        kind="notion",
+        code_verifier="verifier",
+        redirect_after="/connectors",
+    )
+    save_oauth_ctx(
+        srv.services.settings_repo,
+        state_id,
+        {"flow": "custom_mcp", "client_secret": "one-time-client-secret"},
+    )
+
+    with patch(
+        "octop.api.routers.connectors.exchange_oauth_code",
+        new_callable=AsyncMock,
+        side_effect=ValueError("provider rejected code"),
+    ):
+        response = await c.get(
+            "/api/connectors/oauth/callback",
+            params={"code": "code", "state": "failed-oauth-state"},
+        )
+
+    assert response.status_code == 400
+    assert srv.services.settings_repo.get(f"connector.oauth.ctx.{state_id}") is None
+
+
 async def test_custom_mcp_oauth_start_unified(env):
     c, _, auth, _ = env
     put = await c.put(

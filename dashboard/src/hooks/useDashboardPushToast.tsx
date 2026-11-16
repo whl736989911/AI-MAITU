@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { useTranslation } from "react-i18next";
 import { useNavigate } from "react-router-dom";
 import { buildDashboardNotifyWsUrl } from "../api/modules/wsNotifications";
-import { getAuthToken } from "../api/request";
+import { AUTH_IDENTITY_CHANGED_EVENT, getAuthToken } from "../api/request";
 import { useAgent } from "../context/AgentContext";
 import { ExpertIcon } from "../pages/Experts/components/iconForName";
 import {
@@ -13,6 +13,7 @@ import {
 } from "../pages/Chat/hooks/chatStore";
 import {
   claimSystemPush,
+  clearSystemPushClaims,
   parseDashboardPushFrame,
   pushDedupeKey,
   readSystemNotifyPermission,
@@ -66,6 +67,9 @@ export function useDashboardPushToast(): void {
   useEffect(() => {
     const tabId = Math.random().toString(36).slice(2);
     let ws: WebSocket | null = null;
+    let identityGeneration = 0;
+    const pushNoticeKeys = new Set<string>();
+    const browserNotifications = new Set<Notification>();
 
     const onNotifyOpen = (event: MessageEvent) => {
       const data = event.data as { type?: string; path?: string } | null;
@@ -88,9 +92,48 @@ export function useDashboardPushToast(): void {
       }
     };
 
+    const closePushNotifications = () => {
+      for (const key of pushNoticeKeys) notificationRef.current.destroy(key);
+      pushNoticeKeys.clear();
+      for (const notice of browserNotifications) notice.close();
+      browserNotifications.clear();
+      const closeWorkerNotifications = (
+        registration: ServiceWorkerRegistration,
+      ) => {
+        void registration
+          .getNotifications()
+          .then((notices) =>
+            notices
+              .filter((notice) => {
+                const data = notice.data as {
+                  pushOwner?: unknown;
+                  pushGeneration?: unknown;
+                } | null;
+                return (
+                  notice.tag.startsWith("dash-push:") &&
+                  data?.pushOwner === tabId &&
+                  typeof data.pushGeneration === "number" &&
+                  data.pushGeneration < identityGeneration
+                );
+              })
+              .forEach((notice) => notice.close()),
+          )
+          .catch(() => undefined);
+      };
+      const registration = peekSystemNotifyRegistration();
+      if (registration) {
+        closeWorkerNotifications(registration);
+      } else if ("serviceWorker" in navigator) {
+        void navigator.serviceWorker.ready
+          .then(closeWorkerNotifications)
+          .catch(() => undefined);
+      }
+    };
+
     const showSystemNotification = (
       parsed: DashboardPushEvent,
       title: string,
+      generation: number,
     ) => {
       const path = `/chat/${parsed.agent_id}/${parsed.thread_id}`;
       const options: NotificationOptions & { renotify?: boolean } = {
@@ -99,44 +142,62 @@ export function useDashboardPushToast(): void {
         icon: new URL(publicUrl("brand/pwa-192.png"), window.location.href)
           .href,
         renotify: true,
-        data: { path },
+        data: { path, pushOwner: tabId, pushGeneration: generation },
       };
-      const registration = peekSystemNotifyRegistration();
-      if (registration) {
-        void registration.showNotification(title, options).catch(() => {
-          if (typeof Notification !== "undefined") {
-            const notice = new Notification(title, options);
-            notice.onclick = () => {
-              window.focus();
-              notice.close();
-              navigateRef.current(path);
-            };
-          }
-        });
-        return;
-      }
-      if ("serviceWorker" in navigator) {
-        void navigator.serviceWorker.ready
-          .then((ready) => ready.showNotification(title, options))
-          .catch(() => {
-            if (typeof Notification !== "undefined") {
-              const notice = new Notification(title, options);
-              notice.onclick = () => {
-                window.focus();
-                notice.close();
-                navigateRef.current(path);
-              };
-            }
-          });
-        return;
-      }
-      if (typeof Notification !== "undefined") {
+      const showFallback = () => {
+        if (
+          generation !== identityGeneration ||
+          typeof Notification === "undefined"
+        ) {
+          return;
+        }
         const notice = new Notification(title, options);
+        browserNotifications.add(notice);
+        notice.onclose = () => browserNotifications.delete(notice);
         notice.onclick = () => {
+          browserNotifications.delete(notice);
           window.focus();
           notice.close();
           navigateRef.current(path);
         };
+      };
+      const showWithWorker = (registration: ServiceWorkerRegistration) => {
+        if (generation !== identityGeneration) return;
+        void registration
+          .showNotification(title, options)
+          .then(() => {
+            if (generation !== identityGeneration) {
+              return registration
+                .getNotifications({ tag: options.tag })
+                .then((notices) =>
+                  notices
+                    .filter((notice) => {
+                      const data = notice.data as {
+                        pushOwner?: unknown;
+                        pushGeneration?: unknown;
+                      } | null;
+                      return (
+                        data?.pushOwner === tabId &&
+                        data.pushGeneration === generation
+                      );
+                    })
+                    .forEach((notice) => notice.close()),
+                );
+            }
+          })
+          .catch(showFallback);
+      };
+
+      if (generation !== identityGeneration) return;
+      const registration = peekSystemNotifyRegistration();
+      if (registration) {
+        showWithWorker(registration);
+      } else if ("serviceWorker" in navigator) {
+        void navigator.serviceWorker.ready
+          .then(showWithWorker)
+          .catch(showFallback);
+      } else {
+        showFallback();
       }
     };
 
@@ -164,6 +225,7 @@ export function useDashboardPushToast(): void {
         scheduleReconnect();
         return;
       }
+      const socketGeneration = identityGeneration;
       let socket: WebSocket;
       try {
         socket = new WebSocket(buildDashboardNotifyWsUrl());
@@ -182,9 +244,11 @@ export function useDashboardPushToast(): void {
       }
       ws = socket;
       socket.onopen = () => {
+        if (ws !== socket || socketGeneration !== identityGeneration) return;
         retry = 0;
       };
       socket.onmessage = (event) => {
+        if (ws !== socket || socketGeneration !== identityGeneration) return;
         let raw: unknown;
         try {
           raw = JSON.parse(String(event.data));
@@ -219,6 +283,7 @@ export function useDashboardPushToast(): void {
           ? tRef.current("chat.pushToast.title", { name: parsed.agent_name })
           : tRef.current("chat.pushToast.titleFallback");
         const noticeKey = `dash-push-${parsed.thread_id}-${Date.now()}`;
+        pushNoticeKeys.add(noticeKey);
         notificationRef.current.open({
           key: noticeKey,
           placement: "bottomRight",
@@ -241,9 +306,11 @@ export function useDashboardPushToast(): void {
           duration: null,
           closable: true,
           onClick: () => {
+            pushNoticeKeys.delete(noticeKey);
             notificationRef.current.destroy(noticeKey);
             navigateRef.current(`/chat/${parsed.agent_id}/${parsed.thread_id}`);
           },
+          onClose: () => pushNoticeKeys.delete(noticeKey),
         });
         const permission = readSystemNotifyPermission(
           window.isSecureContext,
@@ -257,7 +324,7 @@ export function useDashboardPushToast(): void {
           ) &&
           claimSystemPush(storage(), pushKey, tabId)
         ) {
-          showSystemNotification(parsed, title);
+          showSystemNotification(parsed, title, socketGeneration);
         }
       };
       socket.onclose = () => {
@@ -267,6 +334,24 @@ export function useDashboardPushToast(): void {
       };
     };
 
+    const onAuthIdentityChanged = () => {
+      identityGeneration += 1;
+      retry = 0;
+      clearReconnect();
+      const previous = ws;
+      ws = null;
+      if (previous) {
+        try {
+          previous.close();
+        } catch {
+          // ignore
+        }
+      }
+      closePushNotifications();
+      clearSystemPushClaims(storage());
+      connect();
+    };
+    window.addEventListener(AUTH_IDENTITY_CHANGED_EVENT, onAuthIdentityChanged);
     connect();
     const pingTimer = window.setInterval(() => {
       if (ws && ws.readyState === WebSocket.OPEN) {
@@ -280,12 +365,20 @@ export function useDashboardPushToast(): void {
 
     return () => {
       closed = true;
+      identityGeneration += 1;
+      window.removeEventListener(
+        AUTH_IDENTITY_CHANGED_EVENT,
+        onAuthIdentityChanged,
+      );
+      closePushNotifications();
       navigator.serviceWorker?.removeEventListener("message", onNotifyOpen);
       clearReconnect();
       window.clearInterval(pingTimer);
-      if (ws) {
+      const previous = ws;
+      ws = null;
+      if (previous) {
         try {
-          ws.close();
+          previous.close();
         } catch {
           // ignore
         }

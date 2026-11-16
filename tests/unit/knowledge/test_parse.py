@@ -388,6 +388,59 @@ def test_parse_docx_reports_headings_and_tables(tmp_path: Path) -> None:
     ]
 
 
+def test_parse_docx_table_keeps_word_break_separators(tmp_path: Path) -> None:
+    from docx import Document
+
+    document = Document()
+    cell = document.add_table(rows=1, cols=1).cell(0, 0)
+    cell.text = "first\nsecond"
+    path = tmp_path / "table-break.docx"
+    document.save(path)
+
+    parsed = parse_document(path)
+
+    assert parsed.tables[0].header == ("first second",)
+    assert [(block.text, block.locator) for block in parsed.blocks] == [
+        ("first second", {"table": 1, "row": 1})
+    ]
+
+
+def test_parse_docx_table_preserves_styled_word(tmp_path: Path) -> None:
+    from docx import Document
+
+    document = Document()
+    paragraph = document.add_table(rows=1, cols=1).cell(0, 0).paragraphs[0]
+    paragraph.add_run("INV-").bold = True
+    paragraph.add_run("2026")
+    path = tmp_path / "styled-table.docx"
+    document.save(path)
+
+    parsed = parse_document(path)
+    assert parsed.tables[0].header == ("INV-2026",)
+    assert [(block.text, block.locator) for block in parsed.blocks] == [
+        ("INV-2026", {"table": 1, "row": 1})
+    ]
+
+
+def test_parse_docx_table_preserves_nested_runs_between_paragraphs(tmp_path: Path) -> None:
+    cell = (
+        "<w:p><w:r><w:t>合同</w:t></w:r>"
+        '<w:ins w:id="1" w:author="reviewer">'
+        "<w:r><w:t>修订</w:t></w:r></w:ins>"
+        "<w:sdt><w:sdtContent><w:r><w:t>正文</w:t></w:r></w:sdtContent></w:sdt>"
+        "</w:p>" + _docx_paragraph("尾段")
+    )
+    path = _docx_with_body(
+        tmp_path / "nested-table.docx", f"<w:tbl><w:tr><w:tc>{cell}</w:tc></w:tr></w:tbl>"
+    )
+    parsed = parse_document(path)
+    expected = "合同修订正文 尾段"
+    assert parsed.tables[0].header == (expected,)
+    assert [(block.text, block.locator) for block in parsed.blocks] == [
+        (expected, {"table": 1, "row": 1})
+    ]
+
+
 def test_parse_xlsx_reports_one_table_per_sheet(tmp_path: Path) -> None:
     """The sheet a table came from is design §3.3's "工作表" locator."""
     from openpyxl import Workbook

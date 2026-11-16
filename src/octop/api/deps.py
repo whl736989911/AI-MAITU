@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -176,10 +177,10 @@ def _decode(server: OctopServer, token: str) -> dict[str, Any]:
         raise OctopError(ErrorCode.AUTH_FAILED, "invalid token") from exc
 
 
-def resolve_user_from_token(server: OctopServer, token: str) -> User:
+async def resolve_user_from_token(server: OctopServer, token: str) -> User:
     payload = _decode(server, token)
     assert server.user_manager is not None
-    user = server.user_manager.get_by_id(int(payload["sub"]))
+    user = await asyncio.to_thread(server.user_manager.resolve_active_by_id, int(payload["sub"]))
     if user is None:
         raise OctopError(ErrorCode.USER_DISABLED, "user not active")
     server.user_manager.raise_if_access_expired(user)
@@ -249,14 +250,14 @@ def request_unit_grants(request: Request, server: OctopServer, user: User) -> se
     return grants
 
 
-def authenticate_request(request: Request, server: OctopServer) -> User:
+async def authenticate_request(request: Request, server: OctopServer) -> User:
     raw = extract_raw_token(
         authorization=request.headers.get("authorization"),
         access_token=request.query_params.get("access_token"),
     )
     if not raw:
         raise OctopError(ErrorCode.AUTH_FAILED, "missing credentials")
-    return resolve_user_from_token(server, raw)
+    return await resolve_user_from_token(server, raw)
 
 
 async def current_user(
@@ -272,7 +273,7 @@ async def current_user(
         raw = extract_raw_token(authorization=authorization, access_token=access_token)
         if not raw:
             raise OctopError(ErrorCode.AUTH_FAILED, "missing credentials")
-        user = resolve_user_from_token(server, raw)
+        user = await resolve_user_from_token(server, raw)
     # Warm the per-request cache so every permission check on this request reuses
     # one org-unit lookup instead of querying per dependency.
     request_unit_grants(request, server, user)

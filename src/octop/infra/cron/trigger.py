@@ -98,7 +98,7 @@ def build_trigger(spec: str, *, timezone: str | None = None) -> BaseTrigger:
                 run_date=dt.datetime.fromisoformat(value),
                 timezone=timezone,
             )
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError, OverflowError) as exc:
         raise OctopError(
             ErrorCode.CRON_TRIGGER_INVALID,
             f"trigger spec {spec!r} could not be parsed: {exc}",

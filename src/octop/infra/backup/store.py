@@ -15,6 +15,7 @@ from octop.infra.backup.manifest import BackupManifest
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.utils.legacy_names import LEGACY_AUTO_BACKUP_PREFIX, LEGACY_BRAND
 from octop.infra.utils.paths import BRAND_ID, PathLayout
+from octop.infra.utils.tempfiles import managed_tempdir
 
 _BACKUP_SUFFIXES = (".tar.gz", ".tgz")
 _BACKUP_CREATED_RE = re.compile(
@@ -155,7 +156,7 @@ def peek_backup_contents(path: Path) -> BackupContentFlags:
         with tarfile.open(path, mode="r:*") as tf:
             # Stream the first member only — never getmember()/getmembers().
             info = tf.next()
-            if info is None or info.name not in _MANIFEST_MEMBER_NAMES:
+            if info is None or not info.isfile() or info.name not in _MANIFEST_MEMBER_NAMES:
                 return _FULL_CONTENTS
             member = tf.extractfile(info)
             if member is None:
@@ -187,7 +188,10 @@ def write_backup_file(paths: PathLayout, filename: str, data: bytes) -> BackupFi
     paths.ensure_backups_dir()
     safe = normalize_backup_filename(filename)
     dest = paths.backup_file(safe)
-    dest.write_bytes(data)
+    with managed_tempdir(prefix="backup-upload-", root=dest.parent) as staging:
+        temporary = staging / safe
+        temporary.write_bytes(data)
+        temporary.replace(dest)
     return backup_file_info(dest)
 
 
@@ -203,7 +207,10 @@ def place_backup_file(paths: PathLayout, filename: str, src: Path) -> BackupFile
     try:
         src.replace(dest)
     except OSError:
-        shutil.copy2(src, dest)
+        with managed_tempdir(prefix="backup-copy-", root=dest.parent) as staging:
+            temporary = staging / safe
+            shutil.copy2(src, temporary)
+            temporary.replace(dest)
         src.unlink(missing_ok=True)
     return backup_file_info(dest)
 

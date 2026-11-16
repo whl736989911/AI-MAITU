@@ -461,6 +461,29 @@ async def test_ws_cancel_frame_rejects_stale_turn_id(env: Any) -> None:
     cancel_spy.assert_called_once_with(aid, tid)
 
 
+async def test_ws_cancel_frame_rejects_stale_turn_when_thread_is_idle(env: Any) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    create = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    thread_id = create.json()["thread_id"]
+    cancel_spy = MagicMock(wraps=srv.app_runtime.agent_registry.cancel_stream)
+    srv.app_runtime.agent_registry.cancel_stream = cancel_spy
+
+    async with _chat_ws(c, aid, alice_auth) as ws:
+        await ws.send_json(
+            {
+                "type": "cancel",
+                "thread_id": thread_id,
+                "expected_turn_id": "already-finished",
+            }
+        )
+        rejected = await ws.receive_json()
+
+    assert rejected["type"] == "error"
+    assert rejected["code"] == "stale_turn"
+    assert rejected["turn_id"] is None
+    cancel_spy.assert_not_called()
+
+
 async def test_ws_emits_error_frame_on_exception(env: Any) -> None:
     c, srv, _fake, alice_auth, _bob_auth, aid = env
     agent = srv.app_runtime.agent_registry.get_agent(aid)
@@ -468,6 +491,51 @@ async def test_ws_emits_error_frame_on_exception(env: Any) -> None:
 
     chunks = await _consume_ws_turn(c, aid, alice_auth, text="err")
     assert chunks[-1]["type"] == "error"
+
+
+async def test_ws_invalid_model_does_not_create_a_dashboard_thread(env: Any) -> None:
+    c, _srv, _fake, alice_auth, _bob_auth, aid = env
+    before = await c.get(f"/api/agents/{aid}/threads", headers=alice_auth)
+    assert before.status_code == 200
+
+    chunks = await _consume_ws_turn(
+        c,
+        aid,
+        alice_auth,
+        text="hello",
+        extra={"model": "missing/model"},
+    )
+    after = await c.get(f"/api/agents/{aid}/threads", headers=alice_auth)
+    assert after.status_code == 200
+
+    assert any(chunk["type"] == "error" for chunk in chunks)
+    before_ids = {row["thread_id"] for row in before.json()}
+    after_ids = {row["thread_id"] for row in after.json()}
+    assert after_ids == before_ids
+
+
+async def test_ws_enqueue_failure_releases_active_turn(
+    env: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    c, srv, _fake, alice_auth, _bob_auth, aid = env
+    created = await c.post(f"/api/agents/{aid}/threads", headers=alice_auth)
+    thread_id = created.json()["thread_id"]
+    monkeypatch.setattr(
+        srv.app_runtime.gateway.channel_manager,
+        "enqueue",
+        MagicMock(side_effect=RuntimeError("queue unavailable")),
+    )
+
+    async with _chat_ws(c, aid, alice_auth) as ws:
+        await ws.send_json(
+            {"type": "user_turn", "text": "hello", "thread_id": thread_id},
+        )
+        error = await ws.receive_json()
+
+    assert error["type"] == "error"
+    assert error["message"] == "internal error"
+    assert await srv.app_runtime.gateway.steer.active_turn_id(thread_id) is None
 
 
 async def test_ws_bad_agent_rejected(env: Any) -> None:

@@ -169,6 +169,15 @@ def test_folders_are_listed_but_never_planned() -> None:
     assert [entry.path for entry in plan.deferred] == ["reports/q1.md"]
 
 
+def test_a_directory_does_not_count_as_an_indexed_file_being_seen() -> None:
+    """A file replaced by a folder is absent from the source's file listing."""
+    indexed = _indexed()
+    plan = plan_scan([_folder("a.md")], [indexed], now=_NOW)
+
+    assert plan.absent == [indexed]
+    assert plan.removed == []
+
+
 def test_a_source_without_timestamps_settles_on_size_alone() -> None:
     """An SMB server may report no modification time; size still catches a copy."""
     plan = plan_scan(

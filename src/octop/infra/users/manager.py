@@ -237,10 +237,17 @@ class UserManager:
         return self._users.get(username)
 
     def get_by_id(self, user_id: int) -> User | None:
-        for u in self._users.values():
-            if u.id == user_id:
-                return u
+        for user in self._users.values():
+            if user.id == user_id:
+                return user
         return None
+
+    def resolve_active_by_id(self, user_id: int) -> User | None:
+        """Load persisted active state for authorization, bypassing process cache."""
+        row = self._services.user_repo.get(user_id)
+        if row is None or row.disabled:
+            return None
+        return _user_from_row(row)
 
     def get_row(self, user_id: int) -> Any:
         """Return the raw UserRow (includes disabled flag) for admin read operations."""

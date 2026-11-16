@@ -217,6 +217,8 @@ def load_license_settings(paths: PathLayout, *, default_state_dir: Path) -> Lice
         source = "files"
     else:
         source = "none"
+    if center_url:
+        center_url = normalize_center_url(str(center_url), allow_loopback=allow_loopback)
     return LicenseSettings(
         center_url=str(center_url) if center_url else None,
         trusted_keys_file=keys_path,

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import shutil
+import tempfile
 from pathlib import Path
 
 from octop.infra.utils.paths import PathLayout
@@ -26,7 +28,15 @@ def document_path(kb_id: str, doc_id: str, filename: str) -> Path:
 
 def write_document(kb_id: str, doc_id: str, filename: str, content: bytes) -> Path:
     path = document_path(kb_id, doc_id, filename)
-    path.write_bytes(content)
+    fd, temporary = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
     return path
 
 

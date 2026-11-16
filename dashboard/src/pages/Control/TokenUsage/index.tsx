@@ -19,7 +19,14 @@
  * is listed, not what is counted.
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import {
   Alert,
   Button,
@@ -56,6 +63,7 @@ import { useUserRole } from "../../../hooks/useUserRole";
 import { useAgentKindPresence } from "../../../hooks/useAgentKindPresence";
 import type { AgentKindPresence } from "../../../utils/agentKindCounts";
 import { request, requestBlob } from "../../../api/request";
+import type { OctopRole } from "../../../api/modules/auth";
 import { useAgent } from "../../../context/AgentContext";
 import { useTheme } from "../../../context/ThemeContext";
 import { useBranding } from "../../../context/BrandingContext";
@@ -885,9 +893,13 @@ function DimensionView({
 }
 
 export default function TokenUsagePage() {
+  const role = useUserRole();
+  return <TokenUsageContent key={role ?? "pending"} role={role} />;
+}
+
+function TokenUsageContent({ role }: { role: OctopRole | null }) {
   const { t } = useTranslation();
   const { agents } = useAgent();
-  const role = useUserRole();
   const isAdmin = role === "admin";
   const isMobile = useIsMobile();
   /** Which kinds this deployment holds — which views there are to offer. */
@@ -911,6 +923,15 @@ export default function TokenUsagePage() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const summaryRequestGeneration = useRef(0);
+  const activeScope = useRef(true);
+
+  useLayoutEffect(() => {
+    activeScope.current = true;
+    return () => {
+      activeScope.current = false;
+    };
+  }, []);
 
   const agentNameById = useMemo(() => {
     const map = new Map<string, string>();
@@ -967,16 +988,25 @@ export default function TokenUsagePage() {
     [t],
   );
 
-  const userOptions = useMemo(
-    () => [
+  const userOptions = useMemo(() => {
+    const baseLabels = users.map(
+      (user) => user.display_name?.trim() || user.username,
+    );
+    const labelCounts = new Map<string, number>();
+    for (const label of baseLabels) {
+      labelCounts.set(label, (labelCounts.get(label) ?? 0) + 1);
+    }
+    return [
       { value: "all" as const, label: t("tokenUsage.allUsers") },
-      ...users.map((u) => ({
-        value: u.id,
-        label: u.display_name?.trim() || u.username,
+      ...users.map((user, index) => ({
+        value: user.id,
+        label:
+          (labelCounts.get(baseLabels[index]!) ?? 0) > 1
+            ? `${baseLabels[index]} (${user.username})`
+            : baseLabels[index]!,
       })),
-    ],
-    [users, t],
-  );
+    ];
+  }, [users, t]);
 
   /**
    * The kind-neutral half of the filter. "All experts" names the whole list a
@@ -1045,9 +1075,10 @@ export default function TokenUsagePage() {
   }, [isAdmin]);
 
   const refresh = useCallback(async () => {
-    // Wait for role resolution before the first admin-scoped fetch so we
-    // don't briefly show the caller's private totals then jump to global.
+    // Filter changes can overlap requests; only the latest selection may
+    // update visible totals or loading/error state.
     if (role === null) return;
+    const generation = ++summaryRequestGeneration.current;
     setLoading(true);
     setError(null);
     try {
@@ -1082,6 +1113,7 @@ export default function TokenUsagePage() {
             fetchSummary(windowKey, "by_model", agentFilter, adminUserFilter),
             fetchSummary(windowKey, "by_day", agentFilter, adminUserFilter),
           ]);
+        if (generation !== summaryRequestGeneration.current) return;
         setSummaryUser(userRes?.buckets ?? []);
         setTotals(expertRes ?? featureRes ?? dayRes);
         setSummaryExpert(
@@ -1102,6 +1134,7 @@ export default function TokenUsagePage() {
           agentFilter,
           adminUserFilter,
         );
+        if (generation !== summaryRequestGeneration.current) return;
         setTotals(res);
         // Both per-agent views bucket by ``agent_id``, and the server has
         // already narrowed each to its own kind.
@@ -1112,9 +1145,11 @@ export default function TokenUsagePage() {
         setDimBuckets(buckets);
       }
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : String(err));
+      if (generation === summaryRequestGeneration.current) {
+        setError(err instanceof Error ? err.message : String(err));
+      }
     } finally {
-      setLoading(false);
+      if (generation === summaryRequestGeneration.current) setLoading(false);
     }
   }, [
     view,
@@ -1138,6 +1173,7 @@ export default function TokenUsagePage() {
       const blob = await requestBlob(
         usageExportPath(windowKey, agentFilter, adminUserFilter),
       );
+      if (!activeScope.current) return;
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");
       link.href = url;
@@ -1148,9 +1184,9 @@ export default function TokenUsagePage() {
       link.click();
       URL.revokeObjectURL(url);
     } catch {
-      message.error(t("tokenUsage.exportFailed"));
+      if (activeScope.current) message.error(t("tokenUsage.exportFailed"));
     } finally {
-      setExporting(false);
+      if (activeScope.current) setExporting(false);
     }
   }, [windowKey, agentFilter, adminUserFilter, role, t]);
 

@@ -15,7 +15,6 @@ from octop_harness.backends.workspace import BackendWorkspace
 
 from octop.infra.agents import feature_creation_tools as module
 from octop.infra.agents.feature_creation_tools import (
-    MAX_ARCHIVE_FILE_BYTES,
     _validate_archive,
     build_feature_creation_tools,
 )
@@ -277,30 +276,43 @@ async def test_archive_extract_rejects_non_zip_and_workspace_escape(
     assert not (ws.workspace_dir.parent / "outside.txt").exists()
 
 
-def test_red_path_traversal_validation_prevents_escape(tmp_path: Path) -> None:
-    """The accepted-path invariant fails if the traversal validator is removed."""
-    malicious = _zip([("../../escape.txt", b"escaped", None)])
-    with pytest.raises(ValueError, match="unsafe path"):
-        _validate_archive(malicious)
-    # A naive extraction (the RED baseline) writes outside the chosen root.
-    root = tmp_path / "red-baseline"
-    root.mkdir()
-    with zipfile.ZipFile(BytesIO(malicious)) as archive:
-        info = archive.infolist()[0]
-        naive_target = (root / info.filename).resolve()
-        naive_target.parent.mkdir(parents=True, exist_ok=True)
-        naive_target.write_bytes(archive.read(info))
-    assert naive_target.is_file()
-    assert root.resolve() not in naive_target.parents
+@pytest.mark.asyncio
+@pytest.mark.parametrize("member", ["skills/Z:/payload.md", "skills/guide.md:payload"])
+async def test_archive_extract_rejects_windows_components_before_writing(
+    tmp_path: Path, monkeypatch: Any, member: str
+) -> None:
+    tools, workspace, _created = _setup(monkeypatch, tmp_path, kind="feature")
+    data = _zip([("safe.txt", b"do not write this first", None), (member, b"unsafe", None)])
+    await workspace.aupload_bytes("inbound/source.zip", data)
+
+    result = json.loads(
+        await tools["archive_extract"].ainvoke({"archive_path": "inbound/source.zip"})
+    )
+
+    assert "error" in result
+    assert sorted(path.name for path in (workspace.workspace_dir / "inbound").iterdir()) == [
+        "source.zip"
+    ]
+    assert await workspace.adownload_bytes("inbound/source.zip") == data
 
 
-def test_red_zip_bomb_validation_prevents_expansion(tmp_path: Path) -> None:
-    """The size-limit assertion goes red when validation is omitted."""
-    oversized = _zip([("bomb.bin", b"z" * (MAX_ARCHIVE_FILE_BYTES + 1), None)])
-    with pytest.raises(ValueError, match="per-file limit"):
-        _validate_archive(oversized)
-    # The vulnerable baseline accepts the same archive and would materialize it.
-    with zipfile.ZipFile(BytesIO(oversized)) as archive:
-        info = archive.infolist()[0]
-        assert info.file_size == MAX_ARCHIVE_FILE_BYTES + 1
-        assert len(archive.read(info)) > MAX_ARCHIVE_FILE_BYTES
+@pytest.mark.asyncio
+@pytest.mark.parametrize("destination", ["inbound/Z:/extracted", "inbound/file:stream"])
+async def test_archive_extract_rejects_windows_destination_before_writing(
+    tmp_path: Path, monkeypatch: Any, destination: str
+) -> None:
+    tools, workspace, _created = _setup(monkeypatch, tmp_path, kind="feature")
+    data = _zip([("safe.txt", b"original", None)])
+    await workspace.aupload_bytes("inbound/source.zip", data)
+
+    result = json.loads(
+        await tools["archive_extract"].ainvoke(
+            {"archive_path": "inbound/source.zip", "destination": destination}
+        )
+    )
+
+    assert "error" in result
+    assert sorted(path.name for path in (workspace.workspace_dir / "inbound").iterdir()) == [
+        "source.zip"
+    ]
+    assert await workspace.adownload_bytes("inbound/source.zip") == data

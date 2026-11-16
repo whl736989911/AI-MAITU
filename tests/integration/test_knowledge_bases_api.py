@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from octop.infra.knowledge.data_sources import DataSourceService, FolderSettings
-from octop.infra.knowledge.files import document_digest
+from octop.infra.knowledge.files import document_digest, document_path
 from octop.infra.knowledge.service import KnowledgeService
 from tests.support.auth import create_user, resolve_user_id
 
@@ -361,3 +363,164 @@ async def test_move_endpoint_relocates_folder_subtree_and_maps_move_errors(env: 
     )
     assert invalid.status_code == 404, invalid.text
     assert invalid.json()["error"]["code"] == "KNOWLEDGE_NOT_FOUND"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        "read_text_document",
+        "update_text_document",
+        "rename_document",
+        "move_document",
+        "create_text_document",
+        "upload_document",
+        "create_folder",
+        "delete_base",
+        "update_metadata_schema",
+        "update_document_metadata",
+    ],
+)
+async def test_document_io_keeps_other_requests_responsive(
+    env: Any, monkeypatch: pytest.MonkeyPatch, operation: str
+) -> None:
+    client, server, auth = env
+    services = server.services
+    services.settings_repo.set("knowledge_bases_enabled", "true")
+    monkeypatch.setattr(
+        "octop.infra.knowledge.service.assert_knowledge_usable",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "octop.api.routers.knowledge_bases.assert_knowledge_usable",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "octop.api.routers.knowledge_bases.enqueue_index_document",
+        lambda *_args: None,
+    )
+    actor = await resolve_user_id(client, auth, "admin")
+    knowledge = KnowledgeService(services)
+    base_id = (
+        await _private_base_id(server, actor)
+        if operation == "delete_base"
+        else knowledge.enterprise_space().id
+    )
+    document = knowledge.create_text_document(
+        base_id,
+        actor_user_id=actor,
+        name="notes",
+        format="md",
+        content="# Initial\n",
+        is_admin=True,
+    )
+    knowledge.create_folder(base_id, actor_user_id=actor, path="target", is_admin=True)
+    if operation == "update_document_metadata":
+        knowledge.update_metadata_schema(
+            base_id, actor_user_id=actor, schema=[{"key": "io_marker", "type": "text"}]
+        )
+    original_path = document_path(base_id, document.id, document.filename)
+    root = f"/api/knowledge-bases/{base_id}/documents"
+    requests: dict[str, tuple[str, str, dict[str, Any]]] = {
+        "read_text_document": ("GET", f"{root}/{document.id}/content", {}),
+        "update_text_document": (
+            "PUT",
+            f"{root}/{document.id}/content",
+            {"json": {"content": "# Updated\n"}},
+        ),
+        "rename_document": (
+            "POST",
+            f"{root}/{document.id}/rename",
+            {"json": {"new_name": "renamed.md"}},
+        ),
+        "move_document": (
+            "POST",
+            f"{root}/{document.id}/move",
+            {"json": {"target_folder": "target"}},
+        ),
+        "create_text_document": (
+            "POST",
+            f"{root}/text",
+            {"json": {"name": "fresh", "format": "md", "content": "# Fresh\n"}},
+        ),
+        "upload_document": (
+            "POST",
+            root,
+            {"files": {"upload": ("uploaded.txt", b"Uploaded\n", "text/plain")}},
+        ),
+        "create_folder": (
+            "POST",
+            f"/api/knowledge-bases/{base_id}/folders",
+            {"json": {"path": "fresh_folder"}},
+        ),
+        "delete_base": ("DELETE", f"/api/knowledge-bases/{base_id}", {}),
+        "update_metadata_schema": (
+            "PUT",
+            f"/api/knowledge-bases/{base_id}/metadata-schema",
+            {"json": {"fields": [{"key": "io_marker", "type": "text"}]}},
+        ),
+        "update_document_metadata": (
+            "PATCH",
+            f"{root}/{document.id}/metadata",
+            {"json": {"metadata": {"io_marker": "edited"}}},
+        ),
+    }
+    loop = asyncio.get_running_loop()
+    main_thread = threading.get_ident()
+    entered = asyncio.Event()
+    release = threading.Event()
+    original = getattr(KnowledgeService, operation)
+
+    def slow_io(self: KnowledgeService, *args: Any, **kwargs: Any) -> Any:
+        # Fail immediately on the old blocking path rather than deadlocking the test loop.
+        assert threading.get_ident() != main_thread
+        loop.call_soon_threadsafe(entered.set)
+        release.wait()
+        return original(self, *args, **kwargs)
+
+    monkeypatch.setattr(KnowledgeService, operation, slow_io)
+    method, url, options = requests[operation]
+    pending = asyncio.create_task(client.request(method, url, headers=auth, **options))
+    entered_wait = asyncio.create_task(entered.wait())
+    try:
+        done, _ = await asyncio.wait({pending, entered_wait}, return_when=asyncio.FIRST_COMPLETED)
+        assert entered_wait in done, (await pending).text
+        listed = await client.get(root, headers=auth)
+        assert listed.status_code == 200, listed.text
+        assert not pending.done()
+    finally:
+        release.set()
+        entered_wait.cancel()
+        result = await pending
+
+    expected_status = {
+        "create_text_document": 201,
+        "upload_document": 201,
+        "create_folder": 201,
+        "delete_base": 204,
+    }.get(operation, 200)
+    assert result.status_code == expected_status, result.text
+    if operation == "read_text_document":
+        assert result.json()["text"] == "# Initial\n"
+    elif operation == "update_text_document":
+        content = await client.get(f"{root}/{document.id}/content", headers=auth)
+        assert content.status_code == 200, content.text
+        assert content.json()["text"] == "# Updated\n"
+    elif operation == "rename_document":
+        assert services.knowledge_repo.get_document(document.id).filename == "renamed.md"
+    elif operation == "move_document":
+        assert services.knowledge_repo.get_document(document.id).path == "target/notes.md"
+    elif operation == "create_text_document":
+        assert result.json()["filename"] == "fresh.md"
+    elif operation == "upload_document":
+        assert result.json()["filename"] == "uploaded.txt"
+    elif operation == "create_folder":
+        folder = services.knowledge_repo.get_document_by_path(base_id, "fresh_folder")
+        assert folder is not None and folder.is_dir
+    elif operation == "update_metadata_schema":
+        schema = knowledge.get_metadata_schema(base_id, actor_user_id=actor)
+        assert [field["key"] for field in schema] == ["io_marker"]
+    elif operation == "update_document_metadata":
+        assert services.knowledge_repo.get_document(document.id).metadata == {"io_marker": "edited"}
+    else:
+        assert services.knowledge_repo.get_base(base_id) is None
+        assert not original_path.exists()

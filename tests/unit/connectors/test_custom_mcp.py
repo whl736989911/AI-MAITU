@@ -218,6 +218,32 @@ def test_oauth_client_is_redacted_and_preserved_without_revealing_secret():
     assert "client_secret" not in changed["oauth_client"]
 
 
+def test_url_change_invalidates_oauth_and_marks_reauthorization_required():
+    from octop.infra.connectors.custom_mcp import merge_preserved_oauth
+
+    changed = merge_preserved_oauth(
+        {
+            "server": {
+                "transport": "streamable_http",
+                "url": "https://new.example.com/mcp",
+            }
+        },
+        {
+            "server": {
+                "transport": "streamable_http",
+                "url": "https://old.example.com/mcp",
+                "oauth": {
+                    "access_token": "old-token",
+                    "refresh_token": "old-refresh",
+                    "oauth_issuer": "https://auth.example.com",
+                },
+            }
+        },
+    )["server"]
+
+    assert changed["oauth"] == {"required": True}
+
+
 def test_oauth_client_endpoints_require_https_and_both_endpoints():
     base = {
         "transport": "streamable_http",
@@ -542,3 +568,188 @@ async def test_ensure_fresh_custom_servers_keeps_valid_token_when_refresh_fails(
     preview = svc.get_custom_servers_for_api(uid)
     assert preview["srv"]["oauth"]["configured"] is True
     assert svc.get_custom_servers(uid)["srv"]["oauth"]["access_token"] == "still-valid"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["reauthorize", "clear", "delete"])
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_oauth_refresh_does_not_overwrite_concurrent_reauthorization(
+    svc: ConnectorService,
+    db: SqlitePool,
+    change: str,
+    refresh_fails: bool,
+) -> None:
+    import asyncio
+    import time
+    from unittest.mock import patch
+
+    uid = _ensure_user(db)
+    iid = new_ulid()
+    svc._repo.create(  # noqa: SLF001
+        instance_id=iid,
+        user_id=uid,
+        kind="notion",
+        display_name="Notion",
+        mcp_server_name=mcp_server_name("notion", iid),
+    )
+    svc.encrypt_and_store(
+        instance_id=iid,
+        payload={
+            "access_token": "expired-access",
+            "refresh_token": "old-refresh",
+            "expires_at": int(time.time()) - 1,
+            "oauth_client_id": "client",
+        },
+    )
+    refresh_started = asyncio.Event()
+    release_refresh = asyncio.Event()
+
+    async def slow_refresh(**_kwargs: object) -> dict[str, object]:
+        refresh_started.set()
+        await release_refresh.wait()
+        if refresh_fails:
+            raise ValueError("provider refused the retired refresh token")
+        return {
+            "access_token": "refreshed-old-account",
+            "refresh_token": "old-refresh-rotated",
+            "expires_at": int(time.time()) + 3600,
+        }
+
+    with patch(
+        "octop.infra.connectors.service.refresh_oauth_credentials",
+        side_effect=slow_refresh,
+    ):
+        refresh_task = asyncio.create_task(svc.ensure_fresh_credentials(iid, "notion"))
+        try:
+            await refresh_started.wait()
+            if change == "reauthorize":
+                svc.encrypt_and_store(
+                    instance_id=iid,
+                    payload={
+                        "access_token": "new-account-access",
+                        "refresh_token": "new-account-refresh",
+                        "expires_at": int(time.time()) + 3600,
+                        "oauth_client_id": "client",
+                    },
+                )
+            elif change == "clear":
+                svc._repo.upsert_credentials(instance_id=iid, blob=b"")
+            else:
+                svc._repo.delete(iid)
+        finally:
+            release_refresh.set()
+        returned = await refresh_task
+
+    if change == "reauthorize":
+        assert returned["access_token"] == "new-account-access"
+        assert svc.decrypt(iid)["refresh_token"] == "new-account-refresh"
+    else:
+        assert returned == {}
+        assert svc.decrypt(iid) == {}
+
+
+@pytest.mark.asyncio
+async def test_oauth_refresh_updates_legacy_text_credentials(
+    svc: ConnectorService, db: SqlitePool
+) -> None:
+    import time
+    from unittest.mock import AsyncMock, patch
+
+    uid = _ensure_user(db)
+    iid = new_ulid()
+    svc._repo.create(
+        instance_id=iid,
+        user_id=uid,
+        kind="notion",
+        display_name="Notion",
+        mcp_server_name=mcp_server_name("notion", iid),
+    )
+    svc.encrypt_and_store(
+        instance_id=iid,
+        payload={"access_token": "expired", "refresh_token": "old", "expires_at": 1},
+    )
+    original_blob = svc._repo.get(iid).credential_blob
+    with db.transaction() as conn:
+        conn.execute(
+            "UPDATE connectors SET credential_blob = ? WHERE instance_id = ?",
+            (original_blob.decode("ascii"), iid),
+        )
+    refreshed = {
+        "access_token": "fresh-access",
+        "refresh_token": "rotated-refresh",
+        "expires_at": int(time.time()) + 3600,
+    }
+    with patch(
+        "octop.infra.connectors.service.refresh_oauth_credentials",
+        new_callable=AsyncMock,
+        return_value=refreshed,
+    ):
+        returned = await svc.ensure_fresh_credentials(iid, "notion")
+    assert returned["access_token"] == "fresh-access"
+    assert svc.decrypt(iid)["refresh_token"] == "rotated-refresh"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("change", ["reauthorize", "remove"])
+@pytest.mark.parametrize("refresh_fails", [False, True])
+async def test_custom_oauth_refresh_preserves_concurrent_credential_changes(
+    svc: ConnectorService, db: SqlitePool, change: str, refresh_fails: bool
+) -> None:
+    import asyncio
+    import time
+    from unittest.mock import patch
+
+    uid = _ensure_user(db)
+    svc.put_custom_servers(
+        uid, {"srv": {"transport": "streamable_http", "url": "https://example.com/mcp"}}
+    )
+    svc.apply_custom_server_oauth(
+        uid,
+        "srv",
+        {"access_token": "expired", "refresh_token": "old", "expires_at": 1},
+        issuer="https://example.com",
+        resource="https://example.com/mcp",
+    )
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def refresh(oauth):
+        started.set()
+        await release.wait()
+        if refresh_fails:
+            raise ValueError("provider refused the retired credentials")
+        return {
+            **oauth,
+            "access_token": "refreshed-old-account",
+            "refresh_token": "rotated-old-account",
+            "expires_at": int(time.time()) + 3600,
+        }
+
+    with patch("octop.infra.connectors.service.refresh_custom_mcp_oauth", side_effect=refresh):
+        refreshing = asyncio.create_task(svc.ensure_fresh_custom_servers(uid))
+        try:
+            await started.wait()
+            if change == "remove":
+                svc.put_custom_servers(uid, {})
+            else:
+                svc.apply_custom_server_oauth(
+                    uid,
+                    "srv",
+                    {
+                        "access_token": "new-account",
+                        "refresh_token": "new-refresh",
+                        "expires_at": int(time.time()) + 3600,
+                    },
+                    issuer="https://example.com",
+                    resource="https://example.com/mcp",
+                )
+        finally:
+            release.set()
+        returned = await refreshing
+    current = svc.get_custom_servers(uid)
+    if change == "remove":
+        assert returned == {}
+        assert current == {}
+    else:
+        assert returned["srv"]["oauth"]["access_token"] == "new-account"
+        assert current["srv"]["oauth"]["refresh_token"] == "new-refresh"

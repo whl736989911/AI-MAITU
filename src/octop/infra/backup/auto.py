@@ -218,7 +218,7 @@ def create_and_store_auto_backup(
 
 
 async def run_auto_backup(server: OctopServer) -> BackupFileInfo | None:
-    """Run one automatic backup cycle. Returns ``None`` when skipped (busy/disabled)."""
+    """Run one automatic backup cycle. Returns ``None`` when skipped (busy)."""
     if _lock.locked():
         logger.info("auto backup skipped: another backup is already running")
         return None
@@ -300,6 +300,10 @@ def apply_auto_backup_schedule(cron_manager: CronManager, *, server: OctopServer
         return
 
     async def _run() -> None:
+        current_config = server.config
+        if current_config is None or not current_config.backup.auto_enabled:
+            logger.info("auto backup skipped: automatic backups are disabled")
+            return
         await run_auto_backup(server)
 
     cron_manager.schedule_system_job(
