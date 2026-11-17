@@ -69,6 +69,62 @@ async def test_duplicate_username_rejected(manager: UserManager):
     assert ei.value.code is ErrorCode.USERNAME_TAKEN
 
 
+@pytest.mark.parametrize("email", [None, "loser@example.com"])
+async def test_create_username_race_reports_username_taken(
+    manager: UserManager, monkeypatch: pytest.MonkeyPatch, email: str | None
+):
+    repo = manager._services.user_repo
+    create = repo.create
+
+    def create_after_winning_race(**kwargs):
+        create(
+            username=kwargs["username"],
+            password_hash="winner",
+            role=kwargs["role"],
+            email="winner@example.com",
+        )
+        return create(**kwargs)
+
+    monkeypatch.setattr(repo, "create", create_after_winning_race)
+    with pytest.raises(OctopError) as exc_info:
+        await manager.create(
+            username="racing-user",
+            password="TestPass12",
+            role=Role.USER,
+            email=email,
+        )
+
+    assert exc_info.value.code is ErrorCode.USERNAME_TAKEN
+    assert repo.get_by_username("racing-user").email == "winner@example.com"
+
+
+async def test_create_email_race_reports_email_taken(
+    manager: UserManager, monkeypatch: pytest.MonkeyPatch
+):
+    repo = manager._services.user_repo
+    create = repo.create
+
+    def create_after_winning_race(**kwargs):
+        create(
+            username="email-winner",
+            password_hash="winner",
+            role=kwargs["role"],
+            email="racing@example.com",
+        )
+        return create(**kwargs)
+
+    monkeypatch.setattr(repo, "create", create_after_winning_race)
+    with pytest.raises(OctopError) as exc_info:
+        await manager.create(
+            username="email-loser",
+            password="TestPass12",
+            role=Role.USER,
+            email="racing@example.com",
+        )
+
+    assert exc_info.value.code is ErrorCode.EMAIL_TAKEN
+
+
 async def test_authenticate_success(manager: UserManager):
     await manager.create(username="a", password="TestPass12", role=Role.USER)
     user = await manager.authenticate("a", "TestPass12")
@@ -302,6 +358,40 @@ async def test_sso_login_rejects_expired_user(manager: UserManager):
         )
     assert exc_info.value.code is ErrorCode.ACCESS_EXPIRED
     assert exc_info.value.details == {"notice": "SSO notice", "expires_at": 1}
+
+
+async def test_bind_sso_identity_rejects_persisted_expiry_without_mutating_account(
+    manager: UserManager,
+):
+    provider_id = _insert_sso_provider(manager, kind="feishu")
+    user = await manager.create(
+        username="expiring-bind",
+        password="TestPass12",
+        role=Role.USER,
+        email="old@example.com",
+    )
+    with manager._services.db.transaction() as conn:
+        manager._services.user_repo.update_account(
+            user.id,
+            {"access_expires_at": 1, "access_notice": "Renewal required"},
+            conn=conn,
+        )
+
+    with pytest.raises(OctopError) as exc_info:
+        await manager.bind_sso_identity(
+            user_id=user.id,
+            provider_id=provider_id,
+            subject="expired-bind-subject",
+            claims={"email": "new@example.com", "name": "New Profile"},
+        )
+
+    assert exc_info.value.code is ErrorCode.ACCESS_EXPIRED
+    assert exc_info.value.details == {"notice": "Renewal required", "expires_at": 1}
+    row = manager.get_row(user.id)
+    assert row.email == "old@example.com"
+    assert row.display_name is None
+    assert manager.list_sso_identities(user.id) == []
+    assert manager._services.audit_repo.query(action="user.sso_bind") == []
 
 
 async def test_capability_policy_treats_expired_user_as_inactive(manager: UserManager):

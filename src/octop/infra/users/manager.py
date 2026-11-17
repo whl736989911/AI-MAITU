@@ -184,11 +184,20 @@ class UserManager:
                     access_notice=access_notice,
                 )
             except Exception as exc:
-                if _is_unique_violation(exc) and normalized_email is not None:
-                    raise OctopError(
-                        ErrorCode.EMAIL_TAKEN,
-                        f"email {normalized_email!r} already exists",
-                    ) from exc
+                if _is_unique_violation(exc):
+                    if self._services.user_repo.get_by_username(cleaned_username) is not None:
+                        raise OctopError(
+                            ErrorCode.USERNAME_TAKEN,
+                            f"username {cleaned_username!r} already exists",
+                        ) from exc
+                    if (
+                        normalized_email is not None
+                        and self._services.user_repo.get_by_email(normalized_email) is not None
+                    ):
+                        raise OctopError(
+                            ErrorCode.EMAIL_TAKEN,
+                            f"email {normalized_email!r} already exists",
+                        ) from exc
                 raise
             user = User(
                 id=uid,
@@ -354,6 +363,7 @@ class UserManager:
                 raise OctopError(ErrorCode.NOT_FOUND, "user not found")
             if row.disabled:
                 raise OctopError(ErrorCode.USER_DISABLED, "user is disabled")
+            self.raise_if_access_expired(row)
             owner = self._services.user_repo.get_by_sso(provider_id, subject)
             if owner is not None and owner.id != row.id:
                 raise OctopError(
