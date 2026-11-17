@@ -1,119 +1,44 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  canDownloadKnowledgeOriginal,
   canPreviewKnowledgeDocument,
-  canRichPreviewKnowledgeDocument,
-  isRichPreviewFilename,
+  isEditableKnowledgeDocument,
 } from "./knowledgeDocPreview";
 
-describe("canPreviewKnowledgeDocument", () => {
-  it("allows rich and text preview types", () => {
-    expect(canPreviewKnowledgeDocument({ filename: "a.pdf" })).toBe(true);
-    expect(canPreviewKnowledgeDocument({ filename: "a.docx" })).toBe(true);
-    expect(canPreviewKnowledgeDocument({ filename: "a.xlsx" })).toBe(true);
-    expect(canPreviewKnowledgeDocument({ filename: "a.md" })).toBe(true);
-    expect(canPreviewKnowledgeDocument({ filename: "a.csv" })).toBe(true);
-    expect(canPreviewKnowledgeDocument({ filename: "a.xml" })).toBe(true);
-    // Legacy Word has no in-browser renderer, but the server extracts it, so
-    // the Eye is enabled and shows the extracted text (design §6.1).
-    expect(canPreviewKnowledgeDocument({ filename: "a.doc" })).toBe(true);
-    expect(canPreviewKnowledgeDocument({ filename: "a.ppt" })).toBe(true);
+describe("source-backed knowledge document actions", () => {
+  it("allows original-backed previews without exposing platform text editing", () => {
+    const sourceDocument = {
+      filename: "source.md",
+      content_type: "text/markdown",
+      data_source_id: "source-1",
+      has_original: true,
+    };
+
+    expect(canPreviewKnowledgeDocument(sourceDocument)).toBe(true);
+    expect(isEditableKnowledgeDocument(sourceDocument)).toBe(false);
   });
 
-  it("rejects directories and unknown binaries", () => {
-    expect(canPreviewKnowledgeDocument({ is_dir: true, filename: "d" })).toBe(
-      false,
+  it("keeps source-path search hits previewable when original availability is unknown", () => {
+    const searchHitWithoutLoadedDocument = {
+      filename: "source.md",
+      source_path: "nested/source.md",
+    };
+
+    expect(canPreviewKnowledgeDocument(searchHitWithoutLoadedDocument)).toBe(
+      true,
     );
-    expect(canPreviewKnowledgeDocument({ filename: "photo.bin" })).toBe(false);
-    expect(canPreviewKnowledgeDocument({ filename: "archive.zip" })).toBe(
+    expect(isEditableKnowledgeDocument(searchHitWithoutLoadedDocument)).toBe(
       false,
     );
   });
 
-  it("offers extracted CAD text but not an unavailable processor preview", () => {
-    expect(
-      canPreviewKnowledgeDocument({ filename: "图纸.dwg", status: "ready" }),
-    ).toBe(true);
-    expect(
-      canPreviewKnowledgeDocument({ filename: "图纸.dxf", status: "ready" }),
-    ).toBe(true);
-    expect(canRichPreviewKnowledgeDocument({ filename: "图纸.dwg" })).toBe(
-      false,
-    );
+  it("does not offer preview when a source document has no readable original", () => {
     expect(
       canPreviewKnowledgeDocument({
-        filename: "图纸.dwg",
-        status: "archive_only",
-      }),
-    ).toBe(false);
-    expect(
-      canPreviewKnowledgeDocument({
-        filename: "图纸.doc",
-        status: "archive_only",
-      }),
-    ).toBe(false);
-    expect(
-      canDownloadKnowledgeOriginal({
-        filename: "图纸.dwg",
-        has_original: true,
-      }),
-    ).toBe(true);
-  });
-});
-
-describe("canDownloadKnowledgeOriginal", () => {
-  it("allows uploaded office/pdf originals", () => {
-    expect(canDownloadKnowledgeOriginal({ filename: "a.pdf" })).toBe(true);
-    expect(canDownloadKnowledgeOriginal({ filename: "a.docx" })).toBe(true);
-  });
-
-  it("allows in-app md/txt notes when the file exists on disk", () => {
-    expect(canDownloadKnowledgeOriginal({ filename: "note.md" })).toBe(true);
-    expect(
-      canDownloadKnowledgeOriginal({
-        filename: "note.txt",
-        content_type: "text/plain",
-      }),
-    ).toBe(true);
-  });
-
-  it("hides download when the original is missing", () => {
-    expect(
-      canDownloadKnowledgeOriginal({
-        filename: "a.pdf",
+        filename: "source.md",
+        data_source_id: "source-1",
         has_original: false,
       }),
     ).toBe(false);
-    expect(
-      canDownloadKnowledgeOriginal({
-        filename: "note.md",
-        has_original: false,
-      }),
-    ).toBe(false);
-  });
-});
-
-describe("canRichPreviewKnowledgeDocument", () => {
-  it("requires original and a supported office/pdf extension", () => {
-    expect(canRichPreviewKnowledgeDocument({ filename: "a.pdf" })).toBe(true);
-    expect(canRichPreviewKnowledgeDocument({ filename: "a.docx" })).toBe(true);
-    // `.xls` is readable by the bundled spreadsheet reader; the two legacy
-    // formats with no in-browser renderer are not, so they fall back to the
-    // text the server extracted (design §6.1).
-    expect(canRichPreviewKnowledgeDocument({ filename: "a.xls" })).toBe(true);
-    expect(canRichPreviewKnowledgeDocument({ filename: "a.doc" })).toBe(false);
-    expect(canRichPreviewKnowledgeDocument({ filename: "a.ppt" })).toBe(false);
-    expect(
-      canRichPreviewKnowledgeDocument({
-        filename: "a.pdf",
-        has_original: false,
-      }),
-    ).toBe(false);
-  });
-
-  it("treats unknown has_original as attemptable for citation preview", () => {
-    expect(isRichPreviewFilename("a.pdf")).toBe(true);
-    expect(canRichPreviewKnowledgeDocument({ filename: "a.pdf" })).toBe(true);
   });
 });

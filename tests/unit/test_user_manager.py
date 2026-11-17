@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -73,6 +74,35 @@ async def test_authenticate_success(manager: UserManager):
     user = await manager.authenticate("a", "TestPass12")
     assert user is not None
     assert user.username == "a"
+
+
+async def test_authenticate_returns_persisted_access_state_not_stale_cache(
+    manager: UserManager,
+):
+    """A login reports the row it verified, not a cached profile from another worker."""
+    user = await manager.create(username="a", password="TestPass12", role=Role.USER)
+    deadline = int(time.time()) + 3600
+    with manager._services.db.transaction() as conn:
+        manager._services.user_repo.update_account(
+            user.id,
+            {
+                "role": "admin",
+                "access_expires_at": deadline,
+                "access_notice": "Renewed elsewhere",
+            },
+            conn=conn,
+        )
+
+    logged_in = await manager.authenticate("a", "TestPass12")
+
+    assert logged_in is not None
+    assert logged_in.role is Role.ADMIN
+    assert logged_in.access_expires_at == deadline
+    assert logged_in.access_notice == "Renewed elsewhere"
+    cached = manager.get("a")
+    assert cached is not None
+    assert cached.role is Role.ADMIN
+    assert cached.access_expires_at == deadline
 
 
 async def test_authenticate_by_email(manager: UserManager):
@@ -330,6 +360,32 @@ async def test_bind_sso_identity_links_current_user_and_rejects_taken_identity(
     assert bound.display_name == "Alice"
     identities = manager.list_sso_identities(local.id)
     assert [(item.kind, item.subject) for item in identities] == [("feishu", "union-alice")]
+
+
+async def test_bind_sso_identity_returns_committed_profile_not_stale_cache(
+    manager: UserManager,
+):
+    """Bind returns the persisted account so its response cannot show old validity."""
+    provider_id = _insert_sso_provider(manager, kind="feishu")
+    user = await manager.create(username="a", password="TestPass12", role=Role.USER)
+    deadline = int(time.time()) + 3600
+    with manager._services.db.transaction() as conn:
+        manager._services.user_repo.update_account(
+            user.id,
+            {"access_expires_at": deadline, "access_notice": "Renewed elsewhere"},
+            conn=conn,
+        )
+
+    bound = await manager.bind_sso_identity(
+        user_id=user.id,
+        provider_id=provider_id,
+        subject="union-a",
+        claims={"name": "A"},
+    )
+
+    assert bound.access_expires_at == deadline
+    assert bound.access_notice == "Renewed elsewhere"
+    assert manager.get("a").access_expires_at == deadline
 
 
 async def test_bind_multiple_sso_identities_on_same_user(manager: UserManager):

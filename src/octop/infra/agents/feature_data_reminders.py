@@ -50,14 +50,16 @@ async def dispatch_due_feature_reminders(server: Any) -> int:
         record = repo.get_record(reminder.record_id)
         agent = repos.agent_repo.get(reminder.agent_id)
         if record is None or record.deleted_at is not None or agent is None:
-            repo.set_reminder_schedule(reminder.id, next_notify_at=None, last_notified_at=None)
+            repo.complete_reminder(reminder.id, status="dismissed")
             continue
         workspace = server.app_runtime.agent_registry.workspace_for_agent(reminder.agent_id)
-        thresholds: list[int] = []
         obj: dict[str, Any] | None = None
+        thresholds: list[int] = []
+        schema_known = False
         if workspace is not None:
             loaded = await fd.load_schema(workspace)
             if loaded.schema is not None:
+                schema_known = True
                 try:
                     obj = fd.object_definition(loaded.schema, reminder.object_key)
                     field = fd.field_definition(obj, reminder.field_key)
@@ -66,6 +68,9 @@ async def dispatch_due_feature_reminders(server: Any) -> int:
                     )
                 except Exception:
                     thresholds = []
+        if schema_known and not thresholds:
+            repo.dismiss_reminders_for_field(record.id, reminder.field_key)
+            continue
         try:
             due_day = date.fromisoformat(reminder.due_at)
         except ValueError:
@@ -81,6 +86,25 @@ async def dispatch_due_feature_reminders(server: Any) -> int:
                 ):
                     threshold = candidate
                     break
+        current_schedule = [
+            (
+                _local_midnight_timestamp(due_day - timedelta(days=day), zone),
+                day,
+            )
+            for day in thresholds
+        ]
+        if schema_known and threshold is None and due_ts > now:
+            elapsed_thresholds = [(at, day) for at, day in current_schedule if at <= now]
+            if elapsed_thresholds:
+                threshold = max(elapsed_thresholds)[1]
+            elif current_schedule:
+                next_notify: int | None = min(at for at, _day in current_schedule)
+                repo.set_reminder_schedule(
+                    reminder.id,
+                    next_notify_at=next_notify,
+                    last_notified_at=reminder.last_notified_at,
+                )
+                continue
         cycle = f"{reminder.due_at}:{threshold if threshold is not None else 'due'}"
         if all(hasattr(repos, name) for name in ("user_repo", "resource_acl_repo")):
             try:

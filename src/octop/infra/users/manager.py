@@ -383,11 +383,7 @@ class UserManager:
             self._services.audit_repo.write(
                 actor=row.username, action="user.sso_bind", target=row.username
             )
-            cached = self._users.get(row.username)
-            if cached is None:
-                cached = _user_from_row(row)
-                self._users[row.username] = cached
-            return cached
+            return self._reload_user(row.id)
 
     async def unbind_sso_identity(self, *, user_id: int, kind: str) -> User:
         async with self._lock:
@@ -400,7 +396,7 @@ class UserManager:
             identities = self._services.user_repo.list_sso_identities(row.id)
             linked = next((item for item in identities if item.provider_id == provider.id), None)
             if linked is None:
-                return self._cached_or_row_user(row)
+                return self._reload_user(row.id)
             remaining = [item for item in identities if item.provider_id != provider.id]
             if row.password_hash is None and not remaining:
                 raise OctopError(
@@ -411,17 +407,23 @@ class UserManager:
             self._services.audit_repo.write(
                 actor=row.username, action="user.sso_unbind", target=row.username
             )
-            return self._cached_or_row_user(row)
+            return self._reload_user(row.id)
 
     def list_sso_identities(self, user_id: int) -> builtins.list[Any]:
         return self._services.user_repo.list_sso_identities(user_id)
 
-    def _cached_or_row_user(self, row: Any) -> User:
-        cached = self._users.get(row.username)
-        if cached is not None:
-            return cached
+    def _reload_user(self, user_id: int) -> User:
+        """Return the committed profile for a response, refreshing the cache.
+
+        Response paths must not reuse a cached ``User``: another worker may have
+        renewed the deadline or changed role/permissions since this process
+        cached it, and the caller is about to render (or sign) that profile.
+        """
+        row = self._services.user_repo.get(user_id)
+        if row is None:
+            raise OctopError(ErrorCode.NOT_FOUND, "user not found")
         user = _user_from_row(row)
-        self._users[row.username] = user
+        self._users[user.username] = user
         return user
 
     def raise_if_login_locked(self, username: str) -> None:
@@ -505,10 +507,12 @@ class UserManager:
             return None
         self.raise_if_access_expired(row)
         self._services.user_repo.clear_login_lockout(row.id)
-        user = self._users.get(row.username)
-        if user is None:
-            user = _user_from_row(row)
-            self._users[row.username] = user
+        # The row just verified the password, disabled flag and deadline, so it
+        # is also the profile this login must return. Reusing a cached ``User``
+        # would let another worker's earlier role/permission/deadline change
+        # linger in the token claims and the login response.
+        user = _user_from_row(row)
+        self._users[row.username] = user
         self._services.audit_repo.write(actor=row.username, action="auth.login")
         return user
 

@@ -1715,6 +1715,69 @@ async def test_malformed_source_document_does_not_block_other_indexing(
     assert {hit.document_id for hit in hits} == {healthy.id}
 
 
+def test_queued_source_worker_uses_reconfigured_root(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_root = _local_root(tmp_path / "old")
+    new_root = _local_root(tmp_path / "new")
+    old_text = "oldbeacon source payload"
+    new_text = "newbeacon source payload"
+    (old_root / "policy.md").write_text(old_text, encoding="utf-8")
+    (new_root / "policy.md").write_text(new_text, encoding="utf-8")
+    base, source = _scanned_source(env, people.owner, old_root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert document is not None
+    entered = Event()
+    release = Event()
+    outcomes: Queue[object] = Queue()
+    original_connector = DataSourceService.connector
+
+    def pause_with_old_connector(service, row):
+        connector = original_connector(service, row)
+        if current_thread() is worker and not entered.is_set():
+            entered.set()
+            assert release.wait(10)
+        return connector
+
+    def run() -> None:
+        try:
+            outcomes.put(jobs_module._process_current_document(env.services, base.id, document.id))
+        except BaseException as exc:
+            outcomes.put(exc)
+
+    monkeypatch.setattr(DataSourceService, "connector", pause_with_old_connector)
+    worker = Thread(target=run)
+    worker.start()
+    try:
+        assert entered.wait(10)
+        env.sources.update_source(
+            source.id, actor_user_id=people.owner, folder=FolderSettings(root_path=str(new_root))
+        )
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive()
+        assert outcomes.get_nowait() is False
+        current = env.services.knowledge_repo.get_document(document.id)
+        assert current.status == "ready"
+        assert current.content_hash == document_digest(new_text.encode())
+        assert KnowledgeIndex(base.id).document_preview(document.id, max_chars=100) == new_text
+        assert not env.knowledge.search(
+            kb_id=base.id, actor_user_id=people.owner, query="oldbeacon"
+        )
+        hits = env.knowledge.search(kb_id=base.id, actor_user_id=people.owner, query="newbeacon")
+        assert {hit.document_id for hit in hits} == {document.id}
+    finally:
+        release.set()
+        worker.join(10)
+        assert not worker.is_alive()
+
+
 @pytest.mark.parametrize("stage", ["parse", "connector", "published"])
 def test_superseded_source_completion_preserves_newer_index(
     env: SimpleNamespace,
@@ -1947,6 +2010,89 @@ def test_deleting_a_folder_source_leaves_uploaded_documents_alone(
 
     assert env.services.knowledge_repo.get_document(uploaded.id) is not None
     assert env.services.knowledge_repo.count_documents(base.id) == 1
+
+
+@pytest.mark.parametrize("target", ["", "reports"])
+def test_deleting_source_preserves_platform_files_moved_into_its_folders(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path, target: str
+) -> None:
+    root = _local_root(tmp_path)
+    (root / "reports").mkdir()
+    (root / "reports" / "certificate.txt").write_text("source certificate", encoding="utf-8")
+    base, source = _scanned_source(env, people.owner, root)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    payload = b"preservedhandbook platform original"
+    uploaded = env.knowledge.upload_document(
+        base.id,
+        actor_user_id=people.owner,
+        filename="handbook.txt",
+        content_type="text/plain",
+        content=payload,
+    )
+    jobs_module.process_document(env.services, base.id, uploaded.id)
+    destination = f"{source.id}/{target}".rstrip("/")
+    moved = env.knowledge.move_document(
+        base.id, uploaded.id, actor_user_id=people.owner, target_folder=destination
+    )
+
+    env.sources.delete(source.id, actor_user_id=people.owner)
+
+    retained = env.services.knowledge_repo.get_document(uploaded.id)
+    assert retained is not None
+    assert retained.path == moved.path
+    assert retained.data_source_id is None
+    folder = env.services.knowledge_repo.get_document_by_path(base.id, destination)
+    assert folder is not None and folder.is_dir and folder.data_source_id is None
+    assert env.services.knowledge_repo.count_documents(base.id) == 1
+    with KnowledgeSourceService(env.services).open_original(
+        base.id, retained.id, actor_user_id=people.owner
+    ) as original:
+        assert original.read_bytes() == payload
+    assert any(
+        hit.document_id == retained.id
+        for hit in env.knowledge.search(
+            actor_user_id=people.owner, kb_id=base.id, query="preservedhandbook"
+        )
+    )
+    assert (root / "policy.md").is_file()
+    assert env.services.data_sources_repo.get(source.id) is None
+
+
+def test_deleting_source_preserves_another_source_moved_under_its_folder(
+    env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
+) -> None:
+    outer_root = _local_root(tmp_path / "outer")
+    base, outer = _scanned_source(env, people.owner, outer_root)
+    inner_root = _local_root(tmp_path / "inner")
+    inner = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Independent source",
+        kind="local",
+        folder=FolderSettings(root_path=str(inner_root)),
+    )
+    env.sources.sync(outer.id, actor_user_id=people.owner)
+    env.sources.sync(inner.id, actor_user_id=people.owner)
+    folder = env.services.knowledge_repo.get_document_by_path(base.id, inner.id)
+    assert folder is not None
+    document = next(
+        row for row in env.services.knowledge_repo.list_source_files(inner.id) if not row.is_dir
+    )
+    env.knowledge.move_document(
+        base.id, folder.id, actor_user_id=people.owner, target_folder=outer.id
+    )
+
+    env.sources.delete(outer.id, actor_user_id=people.owner)
+
+    assert env.services.data_sources_repo.get(inner.id) is not None
+    retained = env.services.knowledge_repo.get_document(document.id)
+    assert retained is not None and retained.data_source_id == inner.id
+    assert retained.path == f"{outer.id}/{inner.id}/policy.md"
+    assert env.services.knowledge_repo.get_base(base.id).doc_count == 1
+    with KnowledgeSourceService(env.services).open_original(
+        base.id, document.id, actor_user_id=people.owner
+    ) as original:
+        assert original.read_bytes() == b"refunds take five days"
 
 
 def test_a_changed_file_is_reindexed(

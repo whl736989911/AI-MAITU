@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -122,3 +123,38 @@ async def test_oauth_callback_accepts_dingtalk_auth_code(
     )
     assert response.status_code == 302
     assert seen["code"] == "ding-auth"
+
+
+async def test_oauth_unbind_reports_committed_profile_after_other_worker_update(client) -> None:
+    """The unbind response must reflect the persisted account, not a cached profile."""
+    c, srv, home = client
+    await bootstrap_admin(c, home)
+    auth = bearer(await login(c))
+    uid = (await c.get("/api/auth/me", headers=auth)).json()["id"]
+    provider = srv.services.sso_repo.upsert_by_kind(
+        "feishu",
+        enabled=True,
+        display_name="Feishu",
+        issuer="",
+        client_id="cli_test",
+        client_secret_enc=b"secret",
+        scopes="",
+        dashboard_origin=None,
+    )
+    srv.services.user_repo.upsert_sso_identity(uid, provider_id=provider.id, subject="union-test")
+    deadline = int(time.time()) + 3600
+
+    # Simulate another worker renewing the account after this one cached it.
+    with srv.services.db.transaction() as conn:
+        srv.services.user_repo.update_account(
+            uid,
+            {"access_expires_at": deadline, "access_notice": "续期成功。"},
+            conn=conn,
+        )
+
+    response = await c.post("/api/auth/oauth/unbind", headers=auth, json={"kind": "feishu"})
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["access_expires_at"] == deadline
+    assert body["access_notice"] == "续期成功。"
+    assert body["sso_linked"] is False

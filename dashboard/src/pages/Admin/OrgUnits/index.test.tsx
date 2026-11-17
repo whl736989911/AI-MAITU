@@ -155,6 +155,19 @@ beforeEach(() => {
         }
         return { unit_key: "acme-sales", permissions: stored };
       }
+      if (url === "/org-units/acme-sales" && init?.method === "PATCH") {
+        saved.push({
+          url,
+          method: "PATCH",
+          body: init.body ? JSON.parse(init.body) : null,
+        });
+        return {
+          key: "acme-sales",
+          label: { zh: "销售部", en: "Sales" },
+          parent_key: "acme",
+          sort_order: 0,
+        };
+      }
       throw new Error(`unexpected request: ${url}`);
     },
   );
@@ -309,5 +322,30 @@ describe("Admin → Org units: department module grants", () => {
     // Reads are the ``users`` key, not a role.
     expect(await screen.findByText("销售部")).toBeVisible();
     expect(findButtonByText(document.body, "模块授权")).toBeUndefined();
+  });
+
+  it("edits a scoped unit without turning its external parent into a move", async () => {
+    visibleUnits = [{ ...UNITS[0], parent_key: "acme" }];
+    renderPage({ ...EMPLOYEE, role: "unit_admin", org_unit: "acme-sales" });
+
+    const editButton = await waitForButtonByText(document.body, "编辑");
+    await userEvent.click(editButton);
+    const dialog = await screen.findByRole("dialog", { hidden: true });
+    await waitFor(() => expect(dialog).toBeVisible());
+    expect(within(dialog).getByText("acme")).toBeVisible();
+    const englishName = within(dialog).getByLabelText("英文名");
+    await userEvent.clear(englishName);
+    await userEvent.type(englishName, "Sales team");
+    await userEvent.click(
+      within(dialog).getByRole("button", { name: /保\s*存/ }),
+    );
+
+    await waitFor(() => expect(saved).toHaveLength(1));
+    expect(saved[0]).toMatchObject({
+      url: "/org-units/acme-sales",
+      method: "PATCH",
+      body: { label_zh: "销售部", label_en: "Sales team" },
+    });
+    expect(saved[0].body).not.toHaveProperty("parent_key");
   });
 });

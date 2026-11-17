@@ -197,6 +197,10 @@ async def update_me(
         await server.user_manager.set_display_name(user.username, body.display_name)
     if "locale" in provided:
         await server.user_manager.set_locale(user.username, body.locale)
-    updated = server.user_manager.get(user.username)
-    assert updated is not None
+    # Read the committed profile instead of the process cache: an account
+    # created on another worker (or after this worker booted) authenticates
+    # from the database but may have no cached ``User`` here.
+    updated = server.user_manager.resolve_active_by_id(user.id)
+    if updated is None:
+        raise OctopError(ErrorCode.USER_DISABLED, "user not active")
     return _user_json(updated, server=server, locale=updated.locale)

@@ -82,6 +82,32 @@ async def test_existing_token_observes_account_disabled_by_another_worker(env):
     assert denied.json()["error"]["code"] == "USER_DISABLED"
 
 
+async def test_login_response_reports_access_state_committed_by_another_worker(env):
+    client, server, admin = env
+    await create_user(client, admin, username="renewed-elsewhere")
+    uid = await resolve_user_id(client, admin, "renewed-elsewhere")
+    deadline = int(time.time()) + 3600
+
+    # Another worker renews the account while this one still holds its old
+    # profile. The login verifies the persisted row, so its response (and the
+    # token claims signed from it) must use that row too.
+    with server.services.db.transaction() as conn:
+        server.services.user_repo.update_account(
+            uid,
+            {"access_expires_at": deadline, "access_notice": "续期成功。"},
+            conn=conn,
+        )
+
+    response = await client.post(
+        "/api/auth/login",
+        json={"username": "renewed-elsewhere", "password": "TestPass12"},
+    )
+    assert response.status_code == 200, response.text
+    profile = response.json()["user"]
+    assert profile["access_expires_at"] == deadline
+    assert profile["access_notice"] == "续期成功。"
+
+
 async def test_only_system_admin_can_write_other_accounts_validity(env):
     client, _server, admin = env
     enterprise = await create_user(client, admin, username="enterprise", role="enterprise_admin")

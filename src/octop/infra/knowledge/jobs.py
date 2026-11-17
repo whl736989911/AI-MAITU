@@ -375,6 +375,7 @@ def _process_current_document(services: Any, kb_id: str, doc_id: str) -> bool:
 
     current_license().require_business_access()
     try:
+        source_credentials = services.data_sources_repo.get_credentials(source.id)
         connector = DataSourceService(services).connector(source)
     except Exception as exc:
         with _source_lock(source.id), _knowledge_mutation_lock(kb_id):
@@ -385,13 +386,26 @@ def _process_current_document(services: Any, kb_id: str, doc_id: str) -> bool:
                 return True
             repo.update_document(doc_id, status=failure_status(exc), error_message=str(exc))
         raise
+
+    def current_source_path(row: Any) -> AbstractContextManager[Path]:
+        current_source = services.data_sources_repo.get(row.data_source_id)
+        if current_source is None:
+            raise LookupError("knowledge source unavailable")
+        current_credentials = services.data_sources_repo.get_credentials(current_source.id)
+        current_connector = connector
+        if current_source != source or current_credentials != source_credentials:
+            current_connector = DataSourceService(services).connector(current_source)
+        return _source_path(current_connector, row.source_path, row.filename)
+
+    # The parser queue may outlive the connector's settings. Resolve again after
+    # entering processing; later changes are rejected by the publication guard.
     # The processing chain records failures against its own source snapshot.
     # Rewriting them here could overwrite a newer completed scan after it exits.
     return _process(
         services,
         kb_id,
         doc_id,
-        parse_path=lambda row: _source_path(connector, document.source_path, row.filename),
+        parse_path=current_source_path,
     )
 
 

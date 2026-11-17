@@ -80,7 +80,11 @@ from octop.infra.knowledge.relpath import (
     path_basename,
     path_parent,
 )
-from octop.infra.knowledge.service import KnowledgeService, knowledge_content_type
+from octop.infra.knowledge.service import (
+    KnowledgeService,
+    _serialize_document_operation,
+    knowledge_content_type,
+)
 from octop.infra.knowledge.source_crypto import decrypt_source_secret, encrypt_source_secret
 from octop.infra.knowledge.sources import (
     ScanPlan,
@@ -567,16 +571,26 @@ class DataSourceService:
                 self._delete_source_files(base.id, ds_id, actor_user_id=actor_user_id)
             self._repo.delete(ds_id)
 
+    @_serialize_document_operation
     def _delete_source_files(self, kb_id: str, data_source_id: str, *, actor_user_id: int) -> None:
-        """Drop a folder source's index along with its source rows."""
+        """Drop only this source's index, retaining folders needed by other files."""
         rows = self._knowledge_repo.list_source_files(data_source_id)
+        folders = {row.path: row for row in rows if row.is_dir}
+        retained: set[str] = set()
+        for document in self._knowledge_repo.list_documents(kb_id):
+            if document.data_source_id == data_source_id:
+                continue
+            for parent in ancestor_dirs(document.path):
+                if folder := folders.get(parent):
+                    retained.add(folder.id)
         for row in rows:
             self._knowledge.require_document_writable(row, actor_user_id=actor_user_id)
         index = KnowledgeIndex(kb_id)
         for row in [entry for entry in rows if not entry.is_dir]:
             index.delete_doc(row.id)
             self._knowledge_repo.delete_document(row.id)
-        for row in [entry for entry in rows if entry.is_dir]:
+        self._knowledge_repo.detach_source_folders(data_source_id, retained)
+        for row in [entry for entry in rows if entry.is_dir and entry.id not in retained]:
             self._knowledge_repo.delete_document(row.id)
         self._knowledge._refresh_collections(kb_id, "")
 

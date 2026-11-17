@@ -127,7 +127,6 @@ async def test_write_then_read_roundtrip(env: Any) -> None:
     assert body["content"] == payload
 
 
-
 async def test_read_missing_file_404(env: Any) -> None:
     c, _srv, auth, aid = env
     r = await c.get(

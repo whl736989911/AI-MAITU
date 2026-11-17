@@ -6,7 +6,7 @@ import asyncio
 import contextlib
 import os
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from starlette.websockets import WebSocketState
@@ -159,7 +159,7 @@ async def test_terminal_websocket_fails_closed_before_shell_spawn(
     spawn = Mock(side_effect=AssertionError("PTY spawn must never run"))
     monkeypatch.setattr(terminal, "_spawn_pty_session", spawn)
     monkeypatch.setenv("MAITU_LICENSE_TRUSTED_KEYS_FILE", "test-trusted-keys.json")
-    monkeypatch.setattr(terminal, "resolve_user_from_token", lambda *_args: Mock())
+    monkeypatch.setattr(terminal, "resolve_user_from_token", AsyncMock(return_value=Mock()))
 
     await terminal.terminal_ws(websocket, agent_id="agent", token=token)
 

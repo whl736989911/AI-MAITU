@@ -54,7 +54,7 @@ from octop.infra.agents.providers.onnx_service import (
 )
 from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge.enrichment import KnowledgeEnrichmentService
-from octop.infra.knowledge.files import document_path, file_digest
+from octop.infra.knowledge.files import file_digest
 from octop.infra.knowledge.gate import (
     assert_knowledge_usable,
     get_capability,
@@ -305,7 +305,7 @@ def _metadata_filter(raw: str | None) -> dict[str, Any] | None:
     return {str(key): value for key, value in parsed.items()}
 
 
-def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any]:
+def _row_payload(row: Any, *, has_original: bool) -> dict[str, Any]:
     payload = asdict(row)
     # The stored structure (design §3.4) is a cache, not an API value: shipping
     # it raw would send every table twice — the text already carries them — so
@@ -315,11 +315,6 @@ def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any
     payload["metadata"] = getattr(row, "metadata", {})
     payload["document_id"] = row.id
     payload["title"] = getattr(row, "title", "")
-    if has_original is None:
-        if getattr(row, "is_dir", False):
-            has_original = False
-        else:
-            has_original = document_path(row.kb_id, row.id, row.filename).is_file()
     payload["has_original"] = bool(has_original)
     archive_reason = getattr(row, "error_message", None)
     payload["archive_reason"] = (
@@ -328,6 +323,13 @@ def _row_payload(row: Any, *, has_original: bool | None = None) -> dict[str, Any
         else None
     )
     return payload
+
+
+async def _document_payload(row: Any, server: OctopServer) -> dict[str, Any]:
+    service = _knowledge_service(server)
+    return await _run_knowledge_io(
+        lambda: _row_payload(row, has_original=service.document_has_original(row))
+    )
 
 
 def _owner_fields(server: OctopServer, owner_user_id: int | None) -> dict[str, str | None]:
@@ -1215,16 +1217,21 @@ async def list_documents(
     user: User = Depends(require_any_permission(*KNOWLEDGE_PAGE_KEYS)),
 ) -> list[dict[str, Any]]:
     try:
-        return [
-            _row_payload(document)
-            for document in _knowledge_service(server).list_documents(
-                kb_id,
-                actor_user_id=user.id,
-                is_admin=_is_admin(user),
-                prefix=prefix,
-                metadata_filters=_metadata_filter(metadata),
-            )
-        ]
+        service = _knowledge_service(server)
+
+        def load_payloads() -> list[dict[str, Any]]:
+            return [
+                _row_payload(document, has_original=service.document_has_original(document))
+                for document in service.list_documents(
+                    kb_id,
+                    actor_user_id=user.id,
+                    is_admin=_is_admin(user),
+                    prefix=prefix,
+                    metadata_filters=_metadata_filter(metadata),
+                )
+            ]
+
+        return await _run_knowledge_io(load_payloads)
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
@@ -1253,7 +1260,7 @@ async def create_folder(
                 is_admin=_is_admin(user),
             )
         )
-        return _row_payload(folder)
+        return _row_payload(folder, has_original=False)
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
@@ -1293,7 +1300,7 @@ async def create_text_document(
             ),
             after_commit=lambda row: enqueue_index_document(services, kb_id, row.id),
         )
-        return _row_payload(document)
+        return await _document_payload(document, server)
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
 
@@ -1358,7 +1365,7 @@ async def upload_document(
             ),
             after_commit=lambda row: enqueue_index_document(services, kb_id, row.id),
         )
-        return _row_payload(document)
+        return await _document_payload(document, server)
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
 
@@ -1727,7 +1734,7 @@ async def update_text_document(
             ),
             after_commit=lambda row: enqueue_index_document(services, kb_id, row.id),
         )
-        return _row_payload(document)
+        return await _document_payload(document, server)
     except Exception as exc:
         raise _map_knowledge_error(exc, locale=locale, server=server) from exc
 
@@ -1755,7 +1762,7 @@ async def rename_document(
                 is_admin=_is_admin(user),
             ),
         )
-        return _row_payload(document)
+        return await _document_payload(document, server)
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
@@ -1791,7 +1798,7 @@ async def move_document(
                 is_admin=_is_admin(user),
             ),
         )
-        return _row_payload(document)
+        return await _document_payload(document, server)
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server
@@ -1840,12 +1847,13 @@ async def reindex_document(
 ) -> dict[str, Any]:
     try:
         _require_usable(server, request)
-        document = _knowledge_service(server).reindex_document(
+        service = _knowledge_service(server)
+        document = service.reindex_document(
             kb_id, doc_id, actor_user_id=user.id, is_admin=_is_admin(user)
         )
         assert server.services is not None
         enqueue_index_document(server.services, kb_id, doc_id)
-        return _row_payload(document)
+        return await _document_payload(document, server)
     except Exception as exc:
         raise _map_knowledge_error(
             exc, locale=resolve_request_locale(request), server=server

@@ -230,6 +230,12 @@ export interface FeatureDataNotification {
   channel?: string;
   read_at: number | null;
   created_at: number;
+  /**
+   * Whether this caller may close the reminder. Completing stops every
+   * recipient's future thresholds, so the server still requires record-write;
+   * a read-only recipient's list says ``false`` and the UI hides the action.
+   */
+  can_complete: boolean;
 }
 
 /** A page of records to read. */

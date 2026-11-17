@@ -202,6 +202,81 @@ async def test_record_lifecycle_history_visibility_and_reminders(
     assert published.visibility == "feature"
 
 
+async def test_restoring_a_cleared_reminder_date_reopens_the_schedule(
+    db: SqlitePool, workspace: BackendWorkspace
+) -> None:
+    repos = _Repos(db)
+    registry = _Registry(workspace)
+    repo = repos.feature_data_repo
+    await fd.save_schema(workspace, _schema())
+    record = await fd.create_record(
+        repos,
+        workspace,
+        agent_id="feat-supplier",
+        object_key="supplier",
+        values={"name": "Acme", "expires_at": "2030-01-01"},
+        user_id=1,
+        feature_active=True,
+        registry=registry,
+        timezone_name="UTC",
+    )
+    [scheduled] = repo.list_reminders(record.id)
+    assert scheduled.due_at == "2030-01-01"
+    assert scheduled.status == "open"
+    assert scheduled.next_notify_at is not None
+
+    cleared = await fd.update_record(
+        repos,
+        workspace,
+        agent_id="feat-supplier",
+        record_id=record.id,
+        values={"expires_at": ""},
+        expected_revision=1,
+        user_id=1,
+        registry=registry,
+        timezone_name="UTC",
+    )
+    assert cleared.revision == 2
+    [dismissed] = repo.list_reminders(record.id)
+    assert (dismissed.due_at, dismissed.status, dismissed.next_notify_at) == (
+        "2030-01-01",
+        "dismissed",
+        None,
+    )
+
+    restored = await fd.update_record(
+        repos,
+        workspace,
+        agent_id="feat-supplier",
+        record_id=record.id,
+        values={"expires_at": "2030-01-01"},
+        expected_revision=2,
+        user_id=1,
+        registry=registry,
+        timezone_name="UTC",
+    )
+    assert restored.revision == 3
+    [reopened] = repo.list_reminders(record.id)
+    assert reopened.id == scheduled.id
+    assert reopened.due_at == "2030-01-01"
+    assert reopened.status == "open"
+    assert reopened.next_notify_at is not None
+
+    repo.complete_reminder(reopened.id)
+    await fd.update_record(
+        repos,
+        workspace,
+        agent_id="feat-supplier",
+        record_id=record.id,
+        values={"name": "Acme updated"},
+        expected_revision=3,
+        user_id=1,
+        registry=registry,
+        timezone_name="UTC",
+    )
+    assert repo.get_reminder(reopened.id).status == "done"
+
+
 async def test_attachment_versions_are_stored_in_workspace(
     db: SqlitePool, workspace: BackendWorkspace
 ) -> None:

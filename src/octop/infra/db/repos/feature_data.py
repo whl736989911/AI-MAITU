@@ -537,9 +537,13 @@ class FeatureDataRepo:
             ).fetchone()
             if row:
                 reminder_id = str(row["id"])
+                # Clearing a date (or removing its threshold) dismisses the
+                # schedule; bringing the same due date back re-opens exactly that
+                # schedule. An explicitly completed (``done``) reminder stays done.
                 conn.execute(
-                    "UPDATE feature_data_reminders SET title = ?, next_notify_at = ?, updated_at = ? "
-                    "WHERE id = ?",
+                    "UPDATE feature_data_reminders SET title = ?, next_notify_at = ?, "
+                    "status = CASE WHEN status = 'dismissed' THEN 'open' ELSE status END, "
+                    "updated_at = ? WHERE id = ?",
                     (title, next_notify_at, timestamp, reminder_id),
                 )
             else:

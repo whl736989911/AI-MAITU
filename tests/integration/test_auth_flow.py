@@ -117,6 +117,25 @@ async def test_patch_me_clears_display_name(client) -> None:
     assert r.json()["display_name"] is None
 
 
+async def test_patch_me_works_without_a_process_cached_user(client) -> None:
+    """A worker that booted before the account existed still updates the profile."""
+    c, srv, home = client
+    await bootstrap_admin(c, home)
+    tok = (
+        await c.post("/api/auth/login", json={"username": "admin", "password": "TestPass12"})
+    ).json()["access_token"]
+    auth = {"Authorization": f"Bearer {tok}"}
+
+    # Drop this worker's in-memory users, as on a worker that started before
+    # the account was created; the database row is still the source of truth.
+    await srv.user_manager.shutdown_all()
+
+    r = await c.patch("/api/auth/me", json={"display_name": "Renamed"}, headers=auth)
+    assert r.status_code == 200, r.text
+    assert r.json()["display_name"] == "Renamed"
+    assert (await c.get("/api/auth/me", headers=auth)).json()["display_name"] == "Renamed"
+
+
 async def test_patch_me_requires_auth(client) -> None:
     c, _srv, home = client
     await bootstrap_admin(c, home)

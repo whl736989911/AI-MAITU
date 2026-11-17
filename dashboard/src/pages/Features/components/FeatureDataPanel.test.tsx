@@ -14,6 +14,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -84,6 +85,7 @@ import type {
   FeatureDataFile,
 } from "../../../api/modules/featureData";
 import FeatureDataPanel from "./FeatureDataPanel";
+import FeatureDataRecords from "./FeatureDataRecords";
 
 const OBJECT: FeatureDataObject = {
   key: "supplier",
@@ -356,6 +358,82 @@ describe("<FeatureDataPanel /> reading", () => {
     ).not.toBeInTheDocument();
     expect(await panel.findByText("ACME")).toBeVisible();
   });
+
+  it("offers only the empty check for a file field filter", async () => {
+    // A file value lives in its attachments, so the server accepts only
+    // ``is_empty``; the row must not render a value box whose every entry
+    // would come back as a 400.
+    api.listRecords.mockResolvedValue({ records: [], total: 0 });
+    const fileObject: FeatureDataObject = {
+      key: "documents",
+      fields: [
+        { key: "license", type: "file" },
+        { key: "name", type: "text" },
+      ],
+    };
+    const { container } = render(
+      <FeatureDataRecords
+        agentId="agent-1"
+        object={fileObject}
+        canWrite
+        canManage
+      />,
+    );
+    const panel = within(container);
+    await waitFor(() => expect(api.listRecords).toHaveBeenCalled());
+    await act(async () => {
+      fireEvent.click(
+        panel.getByRole("button", { name: "features.data.addFilter" }),
+      );
+    });
+    expect(
+      panel.getByText("features.data.filterOps.is_empty"),
+    ).toBeInTheDocument();
+    expect(
+      panel.queryByLabelText("features.data.filterValue"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("drops stale filter values when the same object's field type changes", async () => {
+    const original: FeatureDataObject = {
+      key: "documents",
+      fields: [{ key: "state", type: "text" }],
+    };
+    const { container, rerender } = render(
+      <FeatureDataRecords
+        agentId="agent-1"
+        object={original}
+        canWrite
+        canManage
+      />,
+    );
+    const panel = within(container);
+    fireEvent.click(
+      panel.getByRole("button", { name: "features.data.addFilter" }),
+    );
+    const value = panel.getByLabelText("features.data.filterValue");
+    fireEvent.change(value, { target: { value: "old free text" } });
+    expect(value).toHaveValue("old free text");
+
+    rerender(
+      <FeatureDataRecords
+        agentId="agent-1"
+        object={{
+          ...original,
+          fields: [{ key: "state", type: "enum", options: ["active"] }],
+        }}
+        canWrite
+        canManage
+      />,
+    );
+
+    await waitFor(() =>
+      expect(
+        panel.queryByLabelText("features.data.filterValue"),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
   it.each([
     {
       label: "pinned",
@@ -648,6 +726,7 @@ describe("<FeatureDataPanel /> notifications", () => {
         body: "ACME's license expires in 30 days",
         read_at: null,
         created_at: 100,
+        can_complete: true,
       },
     ]);
     const panel = await renderPanel();
@@ -675,5 +754,29 @@ describe("<FeatureDataPanel /> notifications", () => {
     await waitFor(() =>
       expect(api.completeReminder).toHaveBeenCalledWith("agent-1", "rem-1"),
     );
+  });
+
+  it("hides completion for a reader who may not write the record", async () => {
+    // Completing closes the reminder for every recipient, so the server keeps
+    // the record-write rule; a read-only recipient must not be offered it.
+    api.notifications.mockResolvedValue([
+      {
+        id: "note-2",
+        reminder_id: "rem-2",
+        title: "License expires soon",
+        body: "",
+        read_at: null,
+        created_at: 100,
+        can_complete: false,
+      },
+    ]);
+    const panel = await renderPanel();
+    fireEvent.click(panel.getByText("features.data.tabNotifications"));
+
+    expect(await panel.findByText("License expires soon")).toBeInTheDocument();
+    expect(panel.getByText(/features\.data\.markRead/)).toBeInTheDocument();
+    expect(
+      panel.queryByText("features.data.completeReminder"),
+    ).not.toBeInTheDocument();
   });
 });

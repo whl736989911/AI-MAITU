@@ -901,6 +901,19 @@ class KnowledgeRepo:
             ).fetchall()
         return map_rows(rows, KnowledgeDocumentRow)
 
+    def detach_source_folders(self, data_source_id: str, folder_ids: Collection[str]) -> None:
+        """Keep surviving folders when their registered source is removed."""
+        if not folder_ids:
+            return
+        ts = now_ts()
+        with self._db.transaction() as conn:
+            for folder_id in folder_ids:
+                conn.execute(
+                    "UPDATE knowledge_documents SET data_source_id = NULL, updated_at = ? "
+                    "WHERE document_id = ? AND data_source_id = ? AND is_dir = 1",
+                    (ts, folder_id, data_source_id),
+                )
+
     def delete_empty_source_folders(
         self, data_source_id: str, paths: Collection[str]
     ) -> list[KnowledgeDocumentRow]:

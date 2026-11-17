@@ -7,8 +7,10 @@ export function isEditableKnowledgeDocument(doc: {
   is_dir?: boolean;
   content_type?: string;
   filename?: string;
+  data_source_id?: string;
+  source_path?: string;
 }): boolean {
-  if (doc.is_dir) return false;
+  if (doc.is_dir || doc.data_source_id || doc.source_path) return false;
   const ct = (doc.content_type || "").toLowerCase();
   if (ct === "text/plain" || ct === "text/markdown") return true;
   const name = (doc.filename || "").toLowerCase();
@@ -94,9 +96,13 @@ export function canPreviewKnowledgeDocument(doc: {
   content_type?: string;
   filename?: string;
   has_original?: boolean;
+  data_source_id?: string;
+  source_path?: string;
   status?: string;
 }): boolean {
   if (doc.is_dir) return false;
+  if ((doc.data_source_id || doc.source_path) && doc.has_original === false)
+    return false;
   if (doc.status === "archive_only" || doc.status === "unsupported")
     return false;
   if (isKnowledgeMarkdownDocument(doc) || isEditableKnowledgeDocument(doc)) {

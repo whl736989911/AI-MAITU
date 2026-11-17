@@ -178,7 +178,13 @@ type PreviewTarget = Pick<KnowledgeDocument, "id" | "filename"> &
   Partial<
     Pick<
       KnowledgeDocument,
-      "path" | "is_dir" | "content_type" | "has_original" | "title"
+      | "path"
+      | "is_dir"
+      | "content_type"
+      | "has_original"
+      | "title"
+      | "data_source_id"
+      | "source_path"
     >
   >;
 function hideAbsolutePath(value: string): string {
@@ -472,6 +478,7 @@ export default function KnowledgeBasesPage() {
   const [previewText, setPreviewText] = useState("");
   const [previewKind, setPreviewKind] = useState<DocKind | null>(null);
   const [previewDocId, setPreviewDocId] = useState<string | null>(null);
+  const [previewBaseId, setPreviewBaseId] = useState<string | null>(null);
   const [previewHasOriginal, setPreviewHasOriginal] = useState(false);
   const [previewAsMarkdown, setPreviewAsMarkdown] = useState(false);
   const [previewMaximized, setPreviewMaximized] = useState(false);
@@ -494,6 +501,7 @@ export default function KnowledgeBasesPage() {
   const [textEditorLoading, setTextEditorLoading] = useState(false);
   const [textEditorSaving, setTextEditorSaving] = useState(false);
   const [textEditorDocId, setTextEditorDocId] = useState<string | null>(null);
+  const textEditorRequestRef = useRef(0);
   const [textEditorName, setTextEditorName] = useState("");
   const [textEditorFormat, setTextEditorFormat] =
     useState<TextDocumentFormat>("md");
@@ -682,6 +690,7 @@ export default function KnowledgeBasesPage() {
     setEvidenceLoadError(null);
     setPreviewOpen(false);
     setPreviewKind(null);
+    setPreviewBaseId(null);
     setPreviewDocId(null);
     setPreviewHasOriginal(false);
     setPreviewAsMarkdown(false);
@@ -944,7 +953,7 @@ export default function KnowledgeBasesPage() {
     } catch (error) {
       message.error(apiErrorMessage(error, t("knowledgeBases.loadFailed"), t));
     }
-  }, [t]);
+  }, [message, t]);
 
   const loadCapability = useCallback(async () => {
     try {
@@ -961,7 +970,7 @@ export default function KnowledgeBasesPage() {
     } catch (error) {
       message.error(apiErrorMessage(error, t("knowledgeBases.loadFailed"), t));
     }
-  }, [t]);
+  }, [message, t]);
 
   const loadEmbeddingOptions = useCallback(
     async (allOnnx = false) => {
@@ -991,7 +1000,7 @@ export default function KnowledgeBasesPage() {
         setOnnxExpanding(false);
       }
     },
-    [t],
+    [message, t],
   );
 
   const loadOcrOptions = useCallback(async () => {
@@ -1003,7 +1012,7 @@ export default function KnowledgeBasesPage() {
       message.error(apiErrorMessage(error, t("knowledgeBases.loadFailed"), t));
       return undefined;
     }
-  }, [t]);
+  }, [message, t]);
 
   const stopOnnxDownloadWatch = useCallback(() => {
     if (onnxDownloadTimer.current) {
@@ -1055,7 +1064,7 @@ export default function KnowledgeBasesPage() {
       }
       message.error(error || t("models.onnxDownloadFailed"));
     },
-    [loadEmbeddingOptions, stopOnnxDownloadWatch, t],
+    [loadEmbeddingOptions, message, stopOnnxDownloadWatch, t],
   );
 
   const watchOnnxDownloadStatus = useCallback(
@@ -1137,7 +1146,7 @@ export default function KnowledgeBasesPage() {
         }
       }
     },
-    [t],
+    [message, t],
   );
 
   const applyMetadataFilter = useCallback(async () => {
@@ -1203,6 +1212,9 @@ export default function KnowledgeBasesPage() {
   }, []);
 
   useEffect(() => {
+    closePreview();
+    textEditorRequestRef.current += 1;
+    setTextEditorOpen(false);
     uploadTargetsRequestRef.current += 1;
     setUploadDialogOpen(false);
     setQueuedUploadFiles([]);
@@ -1222,7 +1234,7 @@ export default function KnowledgeBasesPage() {
     setSearchHits([]);
     setSearchLoading(false);
     setSearchSubmitted(false);
-  }, [selected?.id]);
+  }, [closePreview, selected?.id]);
   useEffect(() => {
     const requestId = ++uploadAccessRequestRef.current;
     setUploadAccessOptions([]);
@@ -1278,6 +1290,7 @@ export default function KnowledgeBasesPage() {
   }, [
     currentFolder,
     currentFolderIsSourceTree,
+    message,
     selected?.id,
     t,
     uploadDialogOpen,
@@ -1355,7 +1368,12 @@ export default function KnowledgeBasesPage() {
   };
 
   const selectBase = (base: KnowledgeBase) => {
-    if (base.id !== selected?.id) void loadDetail(base.id);
+    if (base.id !== selected?.id) {
+      closePreview();
+      textEditorRequestRef.current += 1;
+      setTextEditorOpen(false);
+      void loadDetail(base.id);
+    }
     if (isMobile) setMobilePane("detail");
   };
 
@@ -2033,6 +2051,7 @@ export default function KnowledgeBasesPage() {
       setEvidenceLoadError(null);
       previewTextAbortRef.current = abort;
       setPreviewOpen(true);
+      setPreviewBaseId(selected.id);
       setPreviewFilename(document.filename);
       setPreviewTitle(document.title || "");
       setPreviewKind(kind);
@@ -2052,8 +2071,19 @@ export default function KnowledgeBasesPage() {
       }
       setPreviewLoading(true);
       try {
-        // Prefer raw UTF-8 for editable text so markdown preview matches the file.
-        if (asMarkdown || isEditableKnowledgeDocument(document)) {
+        if (document.data_source_id || document.source_path) {
+          const original = await knowledgeBasesApi.fetchDocumentFile(
+            selected.id,
+            document.id,
+            undefined,
+            "inline",
+            undefined,
+            abort.signal,
+          );
+          const text = await original.text();
+          if (abort.signal.aborted) return;
+          setPreviewText(text.trim() ? text : t("knowledgeBases.previewEmpty"));
+        } else if (asMarkdown || isEditableKnowledgeDocument(document)) {
           const payload = await knowledgeBasesApi.getTextDocument(
             selected.id,
             document.id,
@@ -2139,13 +2169,16 @@ export default function KnowledgeBasesPage() {
           filename: hit.filename,
           path: hit.path,
           is_dir: false,
-          has_original: knownDocument?.has_original ?? false,
+          has_original: knownDocument?.has_original,
+          data_source_id: knownDocument?.data_source_id,
+          source_path: hit.source_path,
           title: hit.title,
         });
         return;
       }
 
       const requestId = ++evidenceRequestRef.current;
+      setPreviewBaseId(selected.id);
       setPreviewOpen(true);
       setPreviewLoading(true);
       setPreviewFilename(hideAbsolutePath(hit.filename));
@@ -2193,11 +2226,13 @@ export default function KnowledgeBasesPage() {
     documentId: string,
     filename: string,
     version?: string,
+    baseId?: string,
   ) => {
-    if (!selected) return;
+    const knowledgeBaseId = baseId ?? selected?.id;
+    if (!knowledgeBaseId) return;
     try {
       const blob = await knowledgeBasesApi.fetchDocumentFile(
-        selected.id,
+        knowledgeBaseId,
         documentId,
         version,
         "attachment",
@@ -2220,18 +2255,18 @@ export default function KnowledgeBasesPage() {
       onProgress?: (loaded: number, total: number) => void,
       signal?: AbortSignal,
     ) => {
-      if (!selected || !previewDocId) {
+      if (!previewBaseId || !previewDocId) {
         throw new Error("missing knowledge document preview target");
       }
       if (previewKind === "dwg") {
         return knowledgeBasesApi.renderDocument(
-          selected.id,
+          previewBaseId,
           previewDocId,
           signal,
         );
       }
       return knowledgeBasesApi.fetchDocumentFile(
-        selected.id,
+        previewBaseId,
         previewDocId,
         previewCitation?.version,
         "inline",
@@ -2239,7 +2274,7 @@ export default function KnowledgeBasesPage() {
         signal,
       );
     },
-    [selected, previewDocId, previewCitation?.version, previewKind],
+    [previewBaseId, previewDocId, previewCitation?.version, previewKind],
   );
 
   useEffect(() => {
@@ -2323,6 +2358,7 @@ export default function KnowledgeBasesPage() {
   ]);
 
   const openCreateTextDocument = () => {
+    textEditorRequestRef.current += 1;
     setTextEditorMode("create");
     setTextEditorDocId(null);
     setTextEditorName("");
@@ -2334,6 +2370,7 @@ export default function KnowledgeBasesPage() {
 
   const openEditTextDocument = async (document: KnowledgeDocument) => {
     if (!selected) return;
+    const requestId = ++textEditorRequestRef.current;
     setTextEditorMode("edit");
     setTextEditorDocId(document.id);
     setTextEditorName(document.filename);
@@ -2351,6 +2388,7 @@ export default function KnowledgeBasesPage() {
         selected.id,
         document.id,
       );
+      if (textEditorRequestRef.current !== requestId) return;
       setTextEditorContent(payload.text);
       setTextEditorName(payload.filename);
       setTextEditorFormat(
@@ -2360,12 +2398,14 @@ export default function KnowledgeBasesPage() {
           : "md",
       );
     } catch (error) {
+      if (textEditorRequestRef.current !== requestId) return;
       setTextEditorOpen(false);
       message.error(
         apiErrorMessage(error, t("knowledgeBases.editDocumentFailed"), t),
       );
     } finally {
-      setTextEditorLoading(false);
+      if (textEditorRequestRef.current === requestId)
+        setTextEditorLoading(false);
     }
   };
 
@@ -3926,6 +3966,7 @@ export default function KnowledgeBasesPage() {
                   previewDocId,
                   previewFilename,
                   previewCitation?.version,
+                  previewBaseId ?? undefined,
                 )
               }
             >
@@ -4064,6 +4105,7 @@ export default function KnowledgeBasesPage() {
                         previewDocId,
                         previewFilename,
                         previewCitation?.version,
+                        previewBaseId ?? undefined,
                       )
                   : undefined
               }

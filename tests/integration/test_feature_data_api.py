@@ -294,3 +294,68 @@ async def test_filters_sort_can_write_handover_and_selectors(env_with_provider) 
     )
     assert file_download.status_code == 200
     assert "filename*=UTF-8''" in file_download.headers["content-disposition"]
+
+
+async def test_only_record_writers_are_offered_and_allowed_to_complete(
+    env_with_provider,
+) -> None:
+    client, server, admin_auth = env_with_provider
+    author = await create_user(client, admin_auth, username="reminder_author")
+    recipient = await create_user(client, admin_auth, username="reminder_recipient")
+    author_id = await resolve_user_id(client, admin_auth, "reminder_author")
+    recipient_id = await resolve_user_id(client, admin_auth, "reminder_recipient")
+    await _create_feature(client, author)
+    await _activate_workflow(client, author)
+    base = f"/api/agents/{AGENT_ID}/feature-data"
+
+    saved = await client.put(base + "/schema", headers=admin_auth, json={"schema": _schema()})
+    assert saved.status_code == 200, saved.text
+    created = await client.post(
+        base + "/supplier/records",
+        headers=author,
+        json={"values": {"name": "Acme", "expires_at": "2030-01-01"}},
+    )
+    assert created.status_code == 200, created.text
+    record = created.json()
+    [reminder] = record["reminders"]
+
+    # The colleague may reach the feature and read the shared record, but the
+    # record belongs to its creator for writes.
+    grant = await client.post(
+        "/api/sharing/acl/feature/data-test",
+        headers=admin_auth,
+        json={
+            "visibility": "private",
+            "grants": [{"grantee_type": "user", "grantee_id": str(recipient_id)}],
+        },
+    )
+    assert grant.status_code == 200, grant.text
+    read = await client.get(base + f"/records/{record['id']}", headers=recipient)
+    assert read.status_code == 200, read.text
+    assert read.json()["can_write"] is False
+
+    # Both received the reminder (recipients are resolved by read access), but
+    # completing closes it for everyone and therefore keeps the record-write rule.
+    repo = server.services.repos.feature_data_repo
+    for user_id in (author_id, recipient_id):
+        assert repo.add_notification(
+            agent_id=AGENT_ID,
+            user_id=user_id,
+            reminder_id=reminder["id"],
+            cycle_key=f"{reminder['due_at']}:30",
+            title="Acme",
+            body="expires soon",
+        )
+    listed = await client.get(base + "/notifications", headers=recipient)
+    assert listed.status_code == 200, listed.text
+    [recipient_note] = listed.json()["notifications"]
+    assert recipient_note["can_complete"] is False
+    denied = await client.post(f"{base}/reminders/{reminder['id']}/complete", headers=recipient)
+    assert denied.status_code == 403
+
+    owner = await client.get(base + "/notifications", headers=author)
+    assert owner.status_code == 200, owner.text
+    [author_note] = owner.json()["notifications"]
+    assert author_note["can_complete"] is True
+    completed = await client.post(f"{base}/reminders/{reminder['id']}/complete", headers=author)
+    assert completed.status_code == 200, completed.text

@@ -65,6 +65,7 @@
 - 写 schema：功能管理者（`feature_can_manage`，通过 `AgentCapability.CONFIGURATION`）。
 - 建记录：任何可访问功能者；`created_by=caller`。
 - 改/删/附件上传：私有草稿仅创建人；共享记录由当前责任人（未交接时为创建人）或功能管理者维护。交接保留原始创建人及审计，但原创建人不再仅凭创建身份获得写权限。
+- 完成提醒沿用记录写权限，并停止该提醒面向全部收件人的后续阈值通知；收到通知只证明发送时可读，不授予完成权限。标记已读仅修改调用者自己的通知。
 - 记录可见性：
   - `private`：仅创建人（管理者也不越过；审计例外后续再加）。
   - `feature`：跟随功能 ACL；私有草稿不得通过交接转为共享或被接管。
@@ -100,9 +101,9 @@
 - `POST /records/{record_id}/files/{field_key}` multipart `file`, `note?` → 新版本
 - `GET /records/{record_id}/files` → 附件及版本
 - `GET /records/{record_id}/files/{file_id}/download` → 文件
-- `GET /notifications?unread_only=` → 当前用户站内通知
+- `GET /notifications?unread_only=` → 当前用户站内通知；每条包含服务端按当前记录权限计算的 `can_complete: boolean`
 - `POST /notifications/{id}/read` → 标记已读
-- `POST /reminders/{id}/complete` → 完成提醒
+- `POST /reminders/{id}/complete` → 完成共享提醒，要求当前可读且可写该记录
 
 记录引用必须指向存在、未删除、对象类型匹配且当前调用者可读的记录，同时满足目标功能 ACL 与记录可见性。知识引用按当前知识库/文档 ACL 和定位信息校验。每次读取都重新解析权限；撤权后响应和历史记录中的引用值脱敏，不能泄露标题、路径或正文。`stale` 表示当前原件与固定版本不同，不代表历史字节仍可取回。
 
@@ -110,6 +111,7 @@
 
 - 记录创建/更新时，从 schema 的日期字段计算提醒行；`due_at` 为 ISO 日期。
 - 每个 `(record_id, field_key, due_at)` 唯一；状态 `open|done|dismissed`。
+- 清空日期会撤销对应提醒；恢复同一到期日时，将原提醒从 `dismissed` 重新置为 `open`，保留标识及通知历史。已经显式完成的 `done` 状态不会被无关字段编辑重新打开。
 - 站内通知：`feature_data_notifications`，每个提醒每个用户每个阈值一条，去重；`channel` 字段当前固定 `in_app`，后续邮件/IM 适配器复用同一提醒源。
 - 默认收件人为记录创建人 + 功能所有者；可用 `reminder_recipients` 声明责任人、用户字段、组织单元字段及已存在角色。组织单元含子单位；动态角色与组织单元在发送时解析，且收件人必须为有效用户并当前可读该功能和记录。
 - 定时扫描：每 1 分钟；到期前阈值 90/60/30 天；业务日期按服务端时区计算。触发后写通知并推进 `next_notify_at`。

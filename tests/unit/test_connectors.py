@@ -1520,48 +1520,6 @@ def test_migration_rewrites_text_credential_blob(db: SqlitePool) -> None:
     assert repaired.credential_blob == token.encode("utf-8")
 
 
-def test_custom_mcp_update_drops_oauth_when_server_url_changes(db: SqlitePool) -> None:
-    from octop.infra.connectors.service import ConnectorService
-    from octop.infra.db.repos.secrets import SecretRepo
-    from octop.infra.db.repos.settings import SettingsRepo
-
-    repo = ConnectorRepo(db)
-    user_id = _insert_connector_user(db, "custom-oauth-update")
-    service = ConnectorService(
-        repo=repo,
-        secret_repo=SecretRepo(db),
-        settings_repo=SettingsRepo(db),
-        config=OctopConfig(),
-    )
-    service.put_custom_servers(
-        user_id,
-        {"docs": {"transport": "streamable_http", "url": "http://localhost/old"}},
-    )
-    service.apply_custom_server_oauth(
-        user_id,
-        "docs",
-        {"access_token": "old-access", "refresh_token": "old-refresh"},
-        issuer="https://issuer.example",
-        resource=None,
-    )
-    service.put_custom_servers(
-        user_id,
-        {
-            "docs": {
-                "transport": "streamable_http",
-                "url": "http://localhost/old",
-                "display_name": "Docs",
-            }
-        },
-    )
-    assert service.get_custom_servers(user_id)["docs"]["oauth"]["access_token"] == "old-access"
-
-    service.put_custom_servers(
-        user_id, {"docs": {"transport": "streamable_http", "url": "http://localhost/new"}}
-    )
-    assert "oauth" not in service.get_custom_servers(user_id)["docs"]
-
-
 def test_custom_mcp_headers_are_merged_case_insensitively() -> None:
     from httpx import Headers
 

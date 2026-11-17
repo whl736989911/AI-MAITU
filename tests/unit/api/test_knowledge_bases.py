@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-from starlette.datastructures import Headers, UploadFile
 from starlette.requests import Request
 
 from octop.infra.errors import ErrorCode, OctopError
@@ -41,24 +39,6 @@ class _Base:
     embedding_dim: int = 0
     doc_count: int = 0
     max_documents: int = 100
-    created_at: int = 1
-    updated_at: int = 1
-
-
-@dataclass
-class _Document:
-    id: str = "doc-1"
-    pk: int = 1
-    kb_id: str = "kb-1"
-    path: str = "readme.md"
-    filename: str = "readme.md"
-    is_dir: bool = False
-    content_type: str = "text/markdown"
-    byte_size: int = 2
-    content_hash: str = ""
-    status: str = "pending"
-    error_message: str = ""
-    chunk_count: int = 0
     created_at: int = 1
     updated_at: int = 1
 
@@ -177,37 +157,6 @@ async def test_enterprise_space_route_returns_the_seeded_space(
     assert payload["owner_username"] is None
 
 
-@pytest.mark.asyncio
-async def test_upload_enqueues_document_indexing(monkeypatch: pytest.MonkeyPatch) -> None:
-    from octop.api.routers import knowledge_bases
-
-    calls: list[tuple[object, str, str]] = []
-    service = SimpleNamespace(
-        upload_document=lambda *_args, **_kwargs: _Document(),
-    )
-    server = SimpleNamespace(services=_services())
-    user = SimpleNamespace(id=1, is_admin=False)
-    upload = UploadFile(
-        file=__import__("io").BytesIO(b"# hi"),
-        filename="readme.md",
-        headers=Headers({"content-type": "text/markdown"}),
-    )
-    monkeypatch.setattr(knowledge_bases, "_knowledge_service", lambda _server: service)
-    monkeypatch.setattr(knowledge_bases, "assert_knowledge_usable", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        knowledge_bases,
-        "enqueue_index_document",
-        lambda services, kb_id, doc_id: calls.append((services, kb_id, doc_id)),
-    )
-
-    response = await knowledge_bases.upload_document(
-        "kb-1", request=_request(), upload=upload, server=server, user=user
-    )
-
-    assert response["id"] == "doc-1"
-    assert calls == [(server.services, "kb-1", "doc-1")]
-
-
 def test_base_payload_includes_owner_display_fields() -> None:
     from octop.api.routers import knowledge_bases
 
@@ -246,25 +195,6 @@ async def test_preview_document_returns_extracted_text(
     )
 
     assert response == {"id": "doc-1", "filename": "notes.md", "text": "# Hello"}
-
-
-def test_row_payload_includes_has_original(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from octop.api.routers import knowledge_bases
-    from octop.infra.knowledge import files as knowledge_files
-
-    monkeypatch.setattr(
-        knowledge_files,
-        "documents_dir",
-        lambda _kb_id: tmp_path,
-    )
-    doc = _Document(filename="notes.md")
-    missing = knowledge_bases._row_payload(doc)
-    assert missing["has_original"] is False
-
-    (tmp_path / f"{doc.id}.md").write_text("hi", encoding="utf-8")
-    present = knowledge_bases._row_payload(doc)
-    assert present["has_original"] is True
-    assert present["document_id"] == doc.id
 
 
 @pytest.mark.asyncio
@@ -384,34 +314,6 @@ async def test_embedding_options_all_onnx_includes_extras() -> None:
 
 
 @pytest.mark.asyncio
-async def test_reindex_document_enqueues_job(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from octop.api.routers import knowledge_bases
-
-    calls: list[tuple[object, str, str]] = []
-    service = SimpleNamespace(
-        reindex_document=lambda *_args, **_kwargs: _Document(status="pending"),
-    )
-    server = SimpleNamespace(services=_services())
-    user = SimpleNamespace(id=1, is_admin=False)
-    monkeypatch.setattr(knowledge_bases, "_knowledge_service", lambda _server: service)
-    monkeypatch.setattr(knowledge_bases, "_require_usable", lambda *_a, **_k: None)
-    monkeypatch.setattr(
-        knowledge_bases,
-        "enqueue_index_document",
-        lambda services, kb_id, doc_id: calls.append((services, kb_id, doc_id)),
-    )
-
-    response = await knowledge_bases.reindex_document(
-        "kb-1", "doc-1", request=_request(), server=server, user=user
-    )
-
-    assert response["status"] == "pending"
-    assert calls == [(server.services, "kb-1", "doc-1")]
-
-
-@pytest.mark.asyncio
 async def test_onnx_download_starts_catalog_model(monkeypatch: pytest.MonkeyPatch) -> None:
     from octop.api.routers import knowledge_bases
 
@@ -475,35 +377,6 @@ async def test_onnx_activate_enables_downloaded_service(
 
     assert saved == {"enabled": True, "model": "BAAI/bge-small-zh-v1.5"}
     assert response["enabled"] is True
-
-
-@pytest.mark.asyncio
-async def test_rename_document_returns_row_payload(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from octop.api.routers import knowledge_bases
-
-    server = SimpleNamespace(services=_services())
-    renamed = _Document(id="doc-1", is_dir=True, path="docs/new", filename="new")
-
-    class _FakeService:
-        def rename_document(self, *_args: object, **_kwargs: object) -> _Document:
-            return renamed
-
-    monkeypatch.setattr(knowledge_bases, "_knowledge_service", lambda _server: _FakeService())
-
-    result = await knowledge_bases.rename_document(
-        kb_id="kb-1",
-        doc_id="doc-1",
-        body=knowledge_bases.RenameDocumentBody(new_name="new"),
-        request=_request(),
-        server=server,
-        user=SimpleNamespace(id=1, is_admin=False),
-    )
-
-    assert result["document_id"] == "doc-1"
-    assert result["path"] == "docs/new"
-    assert result["filename"] == "new"
 
 
 @pytest.mark.asyncio

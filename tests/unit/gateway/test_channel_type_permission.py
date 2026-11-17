@@ -27,7 +27,12 @@ from octop_gateway.models import (
     TextContent,
 )
 
-from octop.api.routers.org_units import OrgUnitPermissionsBody, set_org_unit_permissions
+from octop.api.routers.org_units import (
+    OrgUnitPatchBody,
+    OrgUnitPermissionsBody,
+    patch_org_unit,
+    set_org_unit_permissions,
+)
 from octop.config import OctopConfig
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
@@ -259,6 +264,54 @@ async def test_secondary_department_grant_changes_update_live_channels(tmp_path:
         server=server,
     )
     assert _CHANNEL in _manager(gw).live
+
+
+@pytest.mark.asyncio
+async def test_reparent_revokes_inherited_channel_for_moved_unit_and_child_members(
+    tmp_path: Path,
+) -> None:
+    gw, moving_member = _gateway(tmp_path, owner_permissions=["channels"])
+    units = gw._repos.org_unit_repo
+    units.create(key="old-root", label_zh="旧企业", label_en="Old")
+    units.create(key="new-root", label_zh="新企业", label_en="New")
+    units.create(key="moving", label_zh="迁移部门", label_en="Moving", parent_key="old-root")
+    units.create(key="child", label_zh="子部门", label_en="Child", parent_key="moving")
+    units.set_grants("old-root", ["channel_feishu"])
+    gw._repos.user_repo.set_org_unit(moving_member, "moving")
+    child_member = gw._repos.user_repo.create(
+        username="child-member",
+        password_hash="h",
+        role="user",
+        permissions=["channels"],
+        org_unit="child",
+    )
+    AgentRepo(gw._repos.db).create(agent_id="agent2", user_id=child_member, name="bot2")
+    ChannelRepo(gw._repos.db).create(
+        channel_id="ch-feishu-child",
+        agent_id="agent2",
+        user_id=child_member,
+        kind="feishu",
+        name="feishu",
+        config_json='{"app_id":"x","app_secret":"y"}',
+    )
+    for channel in gw._repos.channel_repo.list_all():
+        await gw._start_channel(channel)
+    assert set(_manager(gw).live) == {_CHANNEL, "ch-feishu-child"}
+
+    server = SimpleNamespace(
+        services=SimpleNamespace(repos=gw._repos),
+        app_runtime=SimpleNamespace(gateway=gw),
+    )
+    await patch_org_unit(
+        "moving",
+        OrgUnitPatchBody(parent_key="new-root"),
+        actor=SimpleNamespace(id=999, is_admin=True),
+        server=server,
+    )
+
+    assert _manager(gw).live == {}
+    assert gw.get_runtime_status(_CHANNEL).reason == "permission"
+    assert gw.get_runtime_status("ch-feishu-child").reason == "permission"
 
 
 @pytest.mark.asyncio

@@ -217,6 +217,10 @@ async def test_admin_can_query_other_user_via_as_user(env: Any) -> None:
     repo = srv.services.usage_repo
     repo.record(agent_id="y", user_id=ctx["alice_id"], input_tokens=10, output_tokens=5)
 
+    # A worker that booted before the account existed has no cached User; the
+    # target is still a real account, so the admin query must not 404.
+    await srv.user_manager.shutdown_all()
+
     r = await c.get(
         f"/api/usage/summary?granularity=total&as_user={ctx['alice_id']}",
         headers=admin_auth,

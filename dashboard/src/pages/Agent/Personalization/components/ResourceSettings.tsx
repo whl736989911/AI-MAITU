@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Tabs } from "antd";
 import { useTranslation } from "react-i18next";
 import { useCurrentUser } from "../../../../hooks/useCurrentUser";
@@ -58,6 +58,13 @@ export default function ResourceSettings({
   const [mounted, setMounted] = useState<Set<PersonalizationTab>>(
     () => new Set(activeTab ? [activeTab] : []),
   );
+
+  useEffect(() => {
+    if (!activeTab) return;
+    setMounted((current) =>
+      current.has(activeTab) ? current : new Set(current).add(activeTab),
+    );
+  }, [activeTab]);
 
   if (!activeTab) return null;
   return (

@@ -105,8 +105,22 @@ class ChangeListResponse(BaseModel):
     changes: list[dict[str, Any]]
 
 
+class NotificationItem(BaseModel):
+    id: str
+    agent_id: str
+    reminder_id: str
+    title: str
+    body: str
+    channel: str
+    read_at: int | None
+    created_at: int
+    can_complete: bool = Field(
+        description="Whether the current caller has record write access to complete this reminder."
+    )
+
+
 class NotificationResponse(BaseModel):
-    notifications: list[dict[str, Any]]
+    notifications: list[NotificationItem]
 
 
 class PrincipalListResponse(BaseModel):
@@ -154,6 +168,36 @@ def _record_read(record: Any, user: Any) -> None:
         raise OctopError(ErrorCode.FORBIDDEN, "private feature data record is not visible")
     if record.deleted_at is not None:
         raise OctopError(ErrorCode.NOT_FOUND, "feature data record not found")
+
+
+def _reminder_completable(
+    repo: Any, row: Any, user: Any, server: OctopServer, reminder_id: str
+) -> bool:
+    """Whether this caller may close the reminder — the complete endpoint's rule.
+
+    Notifications reach every current reader of the record, but completing closes
+    the reminder for all recipients, so it stays limited to record writers. The
+    list reports that verdict so the UI never offers an action the server refuses.
+    """
+    reminder = repo.get_reminder(reminder_id)
+    if reminder is None or reminder.agent_id != row.agent_id:
+        return False
+    record = repo.get_record(reminder.record_id)
+    if (
+        record is None
+        or record.deleted_at is not None
+        or record.agent_id != row.agent_id
+        or not can_read_record(record, user_id=int(user.id))
+    ):
+        return False
+    repos = _services(server).repos
+    return can_write_record(
+        record,
+        row,
+        user_id=int(user.id),
+        user_repo=repos.user_repo,
+        org_unit_repo=repos.org_unit_repo,
+    )
 
 
 async def _workspace(agent_id: str, user: Any, server: OctopServer, *, write: bool) -> Any:
@@ -311,24 +355,30 @@ async def get_notifications(
     server: OctopServer = Depends(get_server),
     user: Any = Depends(current_user),
 ) -> NotificationResponse:
-    _feature_row(agent_id, user, server)
+    row = _feature_row(agent_id, user, server)
     repo = _services(server).repos.feature_data_repo
     rows = repo.list_notifications(agent_id=agent_id, user_id=user.id, unread_only=unread_only)
-    return NotificationResponse(
-        notifications=[
-            {
-                "id": row.id,
-                "agent_id": row.agent_id,
-                "reminder_id": row.reminder_id,
-                "title": row.title,
-                "body": row.body,
-                "channel": row.channel,
-                "read_at": row.read_at,
-                "created_at": row.created_at,
-            }
-            for row in rows
-        ]
-    )
+    completable: dict[str, bool] = {}
+    notifications: list[NotificationItem] = []
+    for item in rows:
+        if item.reminder_id not in completable:
+            completable[item.reminder_id] = _reminder_completable(
+                repo, row, user, server, item.reminder_id
+            )
+        notifications.append(
+            NotificationItem(
+                id=item.id,
+                agent_id=item.agent_id,
+                reminder_id=item.reminder_id,
+                title=item.title,
+                body=item.body,
+                channel=item.channel,
+                read_at=item.read_at,
+                created_at=item.created_at,
+                can_complete=completable[item.reminder_id],
+            )
+        )
+    return NotificationResponse(notifications=notifications)
 
 
 @router.post(

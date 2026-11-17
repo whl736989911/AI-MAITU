@@ -33,6 +33,23 @@ async def test_both_upload_destinations_and_source_rescan(env: Any, tmp_path: Pa
     ds_id = created.json()["id"]
     synced = await client.post(f"/api/data-sources/{ds_id}/sync", headers=auth)
     assert synced.status_code == 200, synced.text
+    listed = await client.get(f"/api/knowledge-bases/{kb_id}/documents", headers=auth)
+    assert listed.status_code == 200, listed.text
+    scanned = next(row for row in listed.json() if row["source_path"] == "reports/existing.txt")
+    assert scanned["data_source_id"] == ds_id
+    assert scanned["has_original"] is True
+    original = await client.get(
+        f"/api/knowledge-bases/{kb_id}/documents/{scanned['id']}/file",
+        headers=auth,
+        params={"disposition": "inline"},
+    )
+    assert original.status_code == 200, original.text
+    assert original.content == b"existing document"
+    rebuilt = await client.post(
+        f"/api/knowledge-bases/{kb_id}/documents/{scanned['id']}/reindex", headers=auth
+    )
+    assert rebuilt.status_code == 200, rebuilt.text
+    assert rebuilt.json()["has_original"] is True
     targets = await client.get(f"/api/knowledge-bases/{kb_id}/upload-targets", headers=auth)
     assert targets.status_code == 200, targets.text
     assert targets.json() == [{"id": ds_id, "name": "Company source", "folders": ["", "reports"]}]
@@ -47,6 +64,7 @@ async def test_both_upload_destinations_and_source_rescan(env: Any, tmp_path: Pa
     assert platform.status_code == 201, platform.text
     platform_doc = platform.json()
     assert platform_doc["data_source_id"] is None
+    assert platform_doc["has_original"] is True
     assert document_path(kb_id, platform_doc["id"], "platform.txt").read_bytes() == platform_bytes
 
     source_bytes = b"source-owned calibration evidence"

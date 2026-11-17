@@ -253,9 +253,10 @@ export default function AdminOrgUnitsPage() {
       modalMode === "edit" && editTarget
         ? collectSubtreeKeys(units, editTarget.key)
         : undefined;
-    const options = mayCreateRoot
-      ? [{ value: ROOT_VALUE, label: t("orgUnits.parentRoot") }]
-      : [];
+    const options: { value: string; label: string; disabled?: boolean }[] =
+      mayCreateRoot
+        ? [{ value: ROOT_VALUE, label: t("orgUnits.parentRoot") }]
+        : [];
     const walk = (nodes: OrgUnitNode[], parentLabel: string | null) => {
       for (const node of nodes) {
         // Skipping the subtree, not just the unit: either choice would make the
@@ -271,6 +272,20 @@ export default function AdminOrgUnitsPage() {
       }
     };
     walk(tree, null);
+    // A scoped unit may retain a parent outside the operator's management
+    // scope. Show its public key as a read-only current value, not as a parent
+    // they can newly select.
+    if (
+      modalMode === "edit" &&
+      editTarget?.parent_key &&
+      !options.some((option) => option.value === editTarget.parent_key)
+    ) {
+      options.push({
+        value: editTarget.parent_key,
+        label: editTarget.parent_key,
+        disabled: true,
+      });
+    }
     return options;
   }, [tree, units, modalMode, editTarget, t, lang, mayCreateRoot]);
 
@@ -340,11 +355,12 @@ export default function AdminOrgUnitsPage() {
         const body: OrgUnitUpdateBody = {
           label_zh: values.label_zh.trim(),
           label_en: values.label_en.trim(),
-          // Always sent: the form shows the stored parent, so re-sending it
-          // keeps it, and the root sentinel is the explicit ``null`` that lifts
-          // a unit back to the top level.
-          parent_key: parentKey,
         };
+        // Omission means "keep" in PATCH. Re-sending an external parent would
+        // turn an ordinary label edit into a forbidden cross-scope move.
+        if (parentKey !== editTarget.parent_key) {
+          body.parent_key = parentKey;
+        }
         if (typeof values.sort_order === "number") {
           body.sort_order = values.sort_order;
         }
@@ -360,19 +376,22 @@ export default function AdminOrgUnitsPage() {
     }
   };
 
-  const handleDelete = async (row: OrgUnit) => {
-    setDeletingKey(row.key);
-    setRefusal(null);
-    try {
-      await orgUnitsApi.remove(row.key);
-      message.success(t("orgUnits.deleteSuccess"));
-    } catch (err) {
-      setRefusal(describeRefusal(err, t("orgUnits.actionFailed"), t));
-    } finally {
-      setDeletingKey(null);
-      await load();
-    }
-  };
+  const handleDelete = useCallback(
+    async (row: OrgUnit) => {
+      setDeletingKey(row.key);
+      setRefusal(null);
+      try {
+        await orgUnitsApi.remove(row.key);
+        message.success(t("orgUnits.deleteSuccess"));
+      } catch (err) {
+        setRefusal(describeRefusal(err, t("orgUnits.actionFailed"), t));
+      } finally {
+        setDeletingKey(null);
+        await load();
+      }
+    },
+    [load, t],
+  );
 
   /**
    * ── module grants (design §2.1/§2.3) ──
@@ -589,6 +608,7 @@ export default function AdminOrgUnitsPage() {
     deletingKey,
     openEdit,
     openGrants,
+    handleDelete,
     unitByKey,
   ]);
 

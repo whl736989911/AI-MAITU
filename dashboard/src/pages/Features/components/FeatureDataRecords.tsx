@@ -26,6 +26,8 @@ import { PlusOutlined } from "@ant-design/icons";
 import { message } from "@/utils/antdMessage";
 
 import type {
+  FeatureDataField,
+  FeatureDataFieldType,
   FeatureDataFilter,
   FeatureDataObject,
   FeatureDataPrincipal,
@@ -46,6 +48,55 @@ import {
 } from "../utils/featureData";
 import styles from "./FeatureDataPanel.module.less";
 const PAGE_SIZE = 10;
+
+type FilterOp = FeatureDataFilter["op"];
+
+/**
+ * The operators the server accepts per field type (``feature_data_query``).
+ *
+ * Keeping this table beside the controls is what stops the filter row from
+ * offering a combination the API always refuses: a ``file``/``knowledge_ref``
+ * value can only be tested for emptiness, and reference/user identity supports
+ * no ordering or containment.
+ */
+const FILTER_OPS_BY_TYPE: Record<FeatureDataFieldType, FilterOp[]> = {
+  text: ["eq", "ne", "contains", "in", "is_empty"],
+  textarea: ["eq", "ne", "contains", "in", "is_empty"],
+  enum: ["eq", "ne", "contains", "in", "is_empty"],
+  org_unit: ["eq", "ne", "contains", "in", "is_empty"],
+  number: ["eq", "ne", "gt", "gte", "lt", "lte", "in", "is_empty"],
+  integer: ["eq", "ne", "gt", "gte", "lt", "lte", "in", "is_empty"],
+  date: ["eq", "ne", "gt", "gte", "lt", "lte", "is_empty"],
+  datetime: ["eq", "ne", "gt", "gte", "lt", "lte", "is_empty"],
+  boolean: ["eq", "ne", "is_empty"],
+  record_ref: ["eq", "ne", "in", "is_empty"],
+  user: ["eq", "ne", "in", "is_empty"],
+  knowledge_ref: ["is_empty"],
+  file: ["is_empty"],
+};
+
+const DEFAULT_FILTER_OPS: FilterOp[] = [
+  "eq",
+  "ne",
+  "contains",
+  "in",
+  "is_empty",
+];
+
+function filterOps(field: FeatureDataField | undefined): FilterOp[] {
+  return field ? FILTER_OPS_BY_TYPE[field.type] : DEFAULT_FILTER_OPS;
+}
+
+/** The filter a newly added/retargeted row starts from, always server-legal. */
+function initialFilter(field: FeatureDataField): FeatureDataFilter {
+  const ops = filterOps(field);
+  const op = ops.includes("eq") ? "eq" : ops[0];
+  return {
+    field: field.key,
+    op,
+    value: op === "is_empty" ? undefined : "",
+  };
+}
 
 export interface FeatureDataRecordsProps {
   agentId: string;
@@ -161,14 +212,16 @@ export default function FeatureDataRecords({
     };
   }, [load]);
 
-  // A new object starts at its first page with no search.
+  // Schema changes can invalidate both filter fields and sortable columns.
   useEffect(() => {
     setPage(1);
     setQuery("");
     setSearch("");
     setSelected(null);
     setFilters([]);
-  }, [object.key]);
+    setSortBy("updated_at");
+    setSortOrder("desc");
+  }, [object.key, object.fields]);
 
   const handleOpen = async (record: FeatureDataRecord) => {
     const requestedObject = object.key;
@@ -405,10 +458,7 @@ export default function FeatureDataRecords({
           onClick={() => {
             const field = objectFields(object)[0];
             if (field)
-              setFilters((current) => [
-                ...current,
-                { field: field.key, op: "eq", value: "" },
-              ]);
+              setFilters((current) => [...current, initialFilter(field)]);
           }}
         >
           {t("features.data.addFilter")}
@@ -417,6 +467,11 @@ export default function FeatureDataRecords({
           const field =
             objectFields(object).find((item) => item.key === filter.field) ??
             objectFields(object)[0];
+          const numericValue =
+            field?.type === "number" ||
+            field?.type === "integer" ||
+            field?.type === "user";
+          const ops = filterOps(field);
           return (
             <Space key={`${index}-${filter.field}`} size="small">
               <Select
@@ -428,24 +483,21 @@ export default function FeatureDataRecords({
                 }))}
                 onChange={(fieldKey) =>
                   setFilters((current) =>
-                    current.map((item, at) =>
-                      at === index ? { ...item, field: fieldKey } : item,
-                    ),
+                    current.map((item, at) => {
+                      if (at !== index) return item;
+                      const next = objectFields(object).find(
+                        (candidate) => candidate.key === fieldKey,
+                      );
+                      if (!next) return { ...item, field: fieldKey };
+                      return initialFilter(next);
+                    }),
                   )
                 }
               />
               <Select
                 aria-label={t("features.data.filterOperator")}
                 value={filter.op}
-                options={(field?.type === "number" ||
-                field?.type === "integer" ||
-                field?.type === "date" ||
-                field?.type === "datetime"
-                  ? ["eq", "ne", "gt", "gte", "lt", "lte", "in", "is_empty"]
-                  : field?.type === "boolean"
-                  ? ["eq", "ne", "is_empty"]
-                  : ["eq", "ne", "contains", "in", "is_empty"]
-                ).map((op) => ({
+                options={ops.map((op) => ({
                   value: op,
                   label: t(`features.data.filterOps.${op}`),
                 }))}
@@ -455,7 +507,7 @@ export default function FeatureDataRecords({
                       at === index
                         ? {
                             ...item,
-                            op: op as FeatureDataFilter["op"],
+                            op: op as FilterOp,
                             value:
                               op === "is_empty" ? undefined : item.value ?? "",
                           }
@@ -492,7 +544,7 @@ export default function FeatureDataRecords({
                   type={
                     filter.op === "in"
                       ? "text"
-                      : field?.type === "integer" || field?.type === "number"
+                      : numericValue
                       ? "number"
                       : field?.type === "date"
                       ? "date"
@@ -513,10 +565,7 @@ export default function FeatureDataRecords({
                     const parseValue = (part: string) => {
                       const trimmed = part.trim();
                       if (!trimmed) return "";
-                      return field?.type === "number" ||
-                        field?.type === "integer"
-                        ? Number(trimmed)
-                        : trimmed;
+                      return numericValue ? Number(trimmed) : trimmed;
                     };
                     const value =
                       filter.op === "in"
@@ -524,7 +573,7 @@ export default function FeatureDataRecords({
                             .split(",")
                             .map(parseValue)
                             .filter((item) => item !== "")
-                        : field?.type === "number" || field?.type === "integer"
+                        : numericValue
                         ? raw === ""
                           ? ""
                           : Number(raw)

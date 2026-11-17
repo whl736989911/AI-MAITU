@@ -1,10 +1,9 @@
 /**
- * The caller's in-app notifications, and the reminders behind them.
+ * Caller-scoped notification inbox.
  *
- * A notification says a date is coming up. Marking it read is one action; the
- * reminder behind it is closed by "complete", which stops future thresholds from
- * firing. Both are per-caller, so this list is the caller's own view and never an
- * inbox for somebody else.
+ * Reading a notification changes only this caller's state. Completing a
+ * reminder stops future thresholds for all recipients and requires record
+ * write access.
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -149,7 +148,8 @@ export default function FeatureDataNotifications({
                     {t("features.data.markRead")}
                   </Button>
                 ) : null}
-                {notification.reminder_id ? (
+                {notification.reminder_id &&
+                notification.can_complete === true ? (
                   <Button
                     size="small"
                     type="text"

@@ -51,6 +51,36 @@ async def test_admin_can_get_alices_agent_via_as_user(env: Any) -> None:
     assert r.json()["agent_id"] == ctx["alice_agent_id"]
 
 
+async def test_admin_as_user_accepts_account_missing_from_worker_cache(env: Any) -> None:
+    """``?as_user=`` checks the database, not this process's boot-time user cache."""
+    c, srv, admin_auth, alice_auth, _bob_auth, ctx = env
+    created = await c.post("/api/agents", headers=alice_auth, json={"name": "alice-owned"})
+    assert created.status_code == 201, created.text
+    agent_id = created.json()["agent_id"]
+
+    # Drop this worker's cache as if it had started before alice's account was
+    # created; alice is still a persisted active account.
+    await srv.user_manager.shutdown_all()
+
+    r = await c.get(f"/api/agents/{agent_id}/threads?as_user={ctx['alice_id']}", headers=admin_auth)
+    assert r.status_code == 200, r.text
+
+    cached = srv.user_manager.resolve_active_by_id(ctx["alice_id"])
+    assert cached is not None
+    srv.user_manager.register_cached_user(cached)
+    srv.services.user_repo.set_disabled(ctx["alice_id"], True)
+    disabled = await c.get(
+        f"/api/agents/{agent_id}/threads?as_user={ctx['alice_id']}", headers=admin_auth
+    )
+    assert disabled.status_code == 404, disabled.text
+
+    srv.services.user_repo.set_disabled(ctx["alice_id"], False)
+    restored = await c.get(
+        f"/api/agents/{agent_id}/threads?as_user={ctx['alice_id']}", headers=admin_auth
+    )
+    assert restored.status_code == 200, restored.text
+
+
 async def test_non_admin_list_is_mine_only(env: Any) -> None:
     c, _srv, _admin_auth, _, bob_auth, ctx = env
     r = await c.get("/api/agents", headers=bob_auth)

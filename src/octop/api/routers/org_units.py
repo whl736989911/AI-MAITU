@@ -269,7 +269,8 @@ async def patch_org_unit(
     """
     repo = server.services.repos.org_unit_repo
     scope = scope_for(actor, repo)
-    if repo.get(unit_key) is None:
+    current = repo.get(unit_key)
+    if current is None:
         raise _missing_unit(unit_key)
     assert_may_manage_unit(scope, unit_key, action="edit this unit")
 
@@ -296,6 +297,10 @@ async def patch_org_unit(
         sort_order=body.sort_order if body.sort_order is not None else UNSET,
     )
     assert updated is not None  # exists: checked above, and ``key`` is immutable
+    if "parent_key" in body.model_fields_set and updated.parent_key != current.parent_key:
+        # Inherited department grants can change when a subtree moves, revoking
+        # channel capabilities even though no user's direct membership changed.
+        await sync_channel_runtime(server, user_ids=unit_member_ids(server, unit_key))
     return _unit_payload(updated)
 
 

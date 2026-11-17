@@ -255,7 +255,7 @@ def require_agent_row(
     if as_user is not None and as_user != user.id:
         if not user.is_admin:
             raise OctopError(ErrorCode.FORBIDDEN, "as_user requires admin")
-        target = server.user_manager.get_by_id(as_user)
+        target = server.user_manager.resolve_active_by_id(as_user)
         if target is None:
             raise OctopError(ErrorCode.NOT_FOUND, f"user {as_user} not found")
         if row.user_id is not None and row.user_id != as_user:
