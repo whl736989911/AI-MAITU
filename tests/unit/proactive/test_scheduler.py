@@ -134,6 +134,34 @@ def test_compute_next_trigger_returns_future():
         assert result > now
 
 
+@pytest.mark.parametrize("window_minutes", [1, 30, 120, 121])
+@pytest.mark.parametrize("timezone_name", ["UTC", "Asia/Shanghai"])
+def test_next_trigger_jitter_stays_inside_active_window(
+    monkeypatch: pytest.MonkeyPatch, window_minutes: int, timezone_name: str
+) -> None:
+    monkeypatch.setattr("random.randint", lambda low, high: high)
+    now = datetime(2026, 7, 1, 20, 0, tzinfo=UTC)
+    end_minutes = 9 * 60 + window_minutes
+    end = f"{end_minutes // 60:02d}:{end_minutes % 60:02d}"
+
+    result = compute_next_trigger(
+        now=now,
+        active_hours_start="09:00",
+        active_hours_end=end,
+        min_interval_hours=1,
+        max_interval_hours=1,
+        timezone_name=timezone_name,
+    )
+
+    assert result > now
+    assert is_in_active_hours(
+        result,
+        active_hours_start="09:00",
+        active_hours_end=end,
+        timezone_name=timezone_name,
+    )
+
+
 # ---------------------------------------------------------------------------
 # is_in_active_hours tests
 # ---------------------------------------------------------------------------

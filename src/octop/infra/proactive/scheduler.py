@@ -91,8 +91,9 @@ def compute_next_trigger(
     if start_t <= candidate_t < end_t:
         return candidate.astimezone(UTC)
 
-    # Outside active hours -> shift to next active-hours start + random(0, 120min)
-    random_offset_minutes = random.randint(0, 120)
+    # Outside active hours: shift to the next start, with jitter inside that window.
+    active_window_minutes = (end_t.hour - start_t.hour) * 60 + end_t.minute - start_t.minute
+    random_offset_minutes = random.randint(0, min(120, active_window_minutes - 1))
 
     # Find the start of the next active-hours window
     # First try today's active_hours_start
