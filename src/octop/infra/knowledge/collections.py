@@ -1447,18 +1447,26 @@ class KnowledgeCollectionService:
         is_admin: bool,
     ) -> None:
         """Fold sequential, grounded visual observations into the text topic."""
+        receipts: builtins.list[dict[str, Any]] = []
+        observations: builtins.list[dict[str, Any]] = []
+        inspection_error = ""
         try:
-            payload, receipts, observations = self._visual_topic_payload(
-                kb_id, collection, doc_id, version, llm, actor_user_id, is_admin
-            )
-        except Exception as error:
-            self._mark_embedded_pending(
-                collection.id,
+            payload = self._visual_topic_payload(
+                kb_id,
+                collection,
                 doc_id,
                 version,
-                f"embedded image inspection failed: {error}"[:300],
                 llm,
+                actor_user_id,
+                is_admin,
+                receipts=receipts,
+                observations=observations,
             )
+        except Exception as error:
+            payload = None
+            inspection_error = f"embedded image inspection failed: {error}"[:300]
+        document = self._knowledge.get_document(doc_id)
+        if document is None or _version(document) != version:
             return
         topic = next(
             (
@@ -1475,7 +1483,9 @@ class KnowledgeCollectionService:
         citations: builtins.list[dict[str, Any]] = list(topic["citations"])
         evidence_ids: builtins.list[str] = list(topic["evidence_ids"])
         omissions: builtins.list[str] = list(topic["omissions"])
-        if not receipts:
+        if inspection_error:
+            omissions.append(inspection_error)
+        elif not receipts:
             omissions.append("embedded images could not be read for visual inspection")
         elif payload is None:
             omissions.append(
@@ -1507,41 +1517,6 @@ class KnowledgeCollectionService:
             summary=summary,
             citations=citations,
             evidence_ids=evidence_ids,
-            corrections=topic["corrections"],
-            conflicts=list(topic["conflicts"]),
-            omissions=omissions[:20],
-            model_ref=llm[1] if llm else str(topic["model_ref"]),
-            generated_at=topic["generated_at"],
-        )
-
-    def _mark_embedded_pending(
-        self,
-        collection_id: str,
-        doc_id: str,
-        version: str,
-        reason: str,
-        llm: tuple[Any, str] | None,
-    ) -> None:
-        topic = next(
-            (
-                item
-                for item in self._repo.topics(collection_id)
-                if item["document_id"] == doc_id and item["source_version"] == version
-            ),
-            None,
-        )
-        if topic is None:
-            return
-        omissions = list(topic["omissions"]) + [reason]
-        self._repo.put_topic(
-            collection_id,
-            doc_id,
-            version,
-            status="partial",
-            content=str(topic["content"]),
-            summary=str(topic["summary"]),
-            citations=list(topic["citations"]),
-            evidence_ids=list(topic["evidence_ids"]),
             corrections=topic["corrections"],
             conflicts=list(topic["conflicts"]),
             omissions=omissions[:20],
@@ -1710,17 +1685,14 @@ class KnowledgeCollectionService:
         llm: tuple[Any, str] | None,
         actor_user_id: int,
         is_admin: bool,
-    ) -> tuple[
-        dict[str, Any] | None,
-        builtins.list[dict[str, Any]],
-        builtins.list[dict[str, Any]],
-    ]:
+        *,
+        receipts: builtins.list[dict[str, Any]],
+        observations: builtins.list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
         """Inspect one image per request and combine bounded textual observations."""
         from octop.infra.knowledge.source_access import KnowledgeSourceService
 
         source = KnowledgeSourceService(self._services)
-        receipts: builtins.list[dict[str, Any]] = []
-        observations: builtins.list[dict[str, Any]] = []
         notes: builtins.list[dict[str, Any]] = []
         omissions: builtins.list[str] = []
         conflicts: builtins.list[str] = []
@@ -1760,7 +1732,7 @@ class KnowledgeCollectionService:
                 raise ValueError("image delivery receipt is unavailable")
             receipts.append({"evidence_id": receipt_id, "locator": dict(receipt["locator"])})
             if llm is None:
-                return None, receipts, observations
+                return None
             for image in result.get("images") or []:
                 location = dict(image.get("locator") or {})
                 evidence = [
@@ -1841,7 +1813,7 @@ class KnowledgeCollectionService:
             last["conflicts"] = list(
                 dict.fromkeys([*conflicts, *[str(item) for item in last.get("conflicts") or []]])
             )
-        return last, receipts, observations
+        return last
 
     def _synthesize_visual_topic(
         self,
@@ -1853,25 +1825,49 @@ class KnowledgeCollectionService:
         actor_user_id: int,
         is_admin: bool,
     ) -> None:
+        receipts: builtins.list[dict[str, Any]] = []
+        observations: builtins.list[dict[str, Any]] = []
+        inspection_error = ""
         try:
-            payload, receipts, observations = self._visual_topic_payload(
-                kb_id, collection, doc_id, version, llm, actor_user_id, is_admin
+            payload = self._visual_topic_payload(
+                kb_id,
+                collection,
+                doc_id,
+                version,
+                llm,
+                actor_user_id,
+                is_admin,
+                receipts=receipts,
+                observations=observations,
             )
         except Exception as error:
+            payload = None
+            inspection_error = (
+                f"visual interpretation failed: {str(error) or type(error).__name__}"[:500]
+            )
+        document = self._knowledge.get_document(doc_id)
+        if document is None or _version(document) != version:
+            return
+        supporting = [*receipts, *observations]
+        if inspection_error:
+            current = self._repo.get(collection.id)
             self._repo.put_topic(
                 collection.id,
                 doc_id,
                 version,
-                status="needs_visual",
+                status=(
+                    "stale"
+                    if current is None or current.prompt != collection.prompt
+                    else "needs_visual"
+                ),
                 content="",
                 summary="",
-                citations=(),
-                evidence_ids=(),
-                error=f"visual interpretation failed: {str(error) or type(error).__name__}"[:500],
+                citations=[{**item, "quote": ""} for item in supporting],
+                evidence_ids=[item["evidence_id"] for item in supporting],
+                error=inspection_error,
                 model_ref=llm[1] if llm else "",
             )
             return
-        supporting = [*receipts, *observations]
         if payload is None or llm is None:
             self._repo.put_topic(
                 collection.id,

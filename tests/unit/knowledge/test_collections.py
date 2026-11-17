@@ -889,9 +889,6 @@ def test_large_image_topics_inspect_every_region_without_unbounded_requests(
         assert topic["status"] == "partial"
         assert payload["coverage"]["failed"] == 0
         assert len(observations) == 5
-        assert {item["evidence_id"] for item in observations}.issubset(
-            {item["evidence_id"] for item in topic["citations"]}
-        )
         regions = [item["locator"] for item in observations]
         assert any(region["image_part"] == "overview" for region in regions)
         assert any(
@@ -903,6 +900,85 @@ def test_large_image_topics_inspect_every_region_without_unbounded_requests(
         )
         rendered = state.api.documents(state.kb.id, collection["id"], actor_user_id=state.owner)
         assert all(item["evidence_id"] in rendered["reading_document"] for item in observations)
+    observation_ids = {item["evidence_id"] for item in observations}
+    assert observation_ids.issubset({item["evidence_id"] for item in topic["citations"]})
+    assert observation_ids.issubset(set(topic["evidence_ids"]))
+
+
+def test_embedded_image_failure_retains_text_and_completed_visual_evidence(
+    setup: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import io
+    import json
+
+    from docx import Document
+    from langchain_core.messages import AIMessage
+    from PIL import Image
+
+    from octop.infra.knowledge.files import document_digest, write_document
+
+    state = setup
+    office = Document()
+    office.add_paragraph("Renewal is required every five days.")
+    for color in ("red", "blue"):
+        with Image.new("RGB", (32, 32), color) as image, io.BytesIO() as encoded:
+            image.save(encoded, format="PNG")
+            encoded.seek(0)
+            office.add_picture(encoded)
+    with io.BytesIO() as output:
+        office.save(output)
+        data = output.getvalue()
+    document = state.knowledge.create_document(
+        kb_id=state.kb.id,
+        filename="renewal.docx",
+        path="renewal.docx",
+        content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        byte_size=len(data),
+        content_hash=document_digest(data),
+        status="discovered",
+    )
+    write_document(state.kb.id, document.id, document.filename, data)
+    [collection] = state.api.create(
+        state.kb.id, [document.id], prompt="renewal policy", actor_user_id=state.owner
+    )
+
+    class MixedModel:
+        images = 0
+
+        async def ainvoke(self, messages):
+            if isinstance(messages[-1].content, list):
+                self.images += 1
+                if self.images == 2:
+                    raise RuntimeError("second image failed")
+                return AIMessage(
+                    content=json.dumps(
+                        {"content": "A red component is shown.", "coverage": "partial"}
+                    )
+                )
+            return AIMessage(
+                content=json.dumps(
+                    {
+                        "content": "Renewal is required every five days.",
+                        "citations": [{"index": 1}],
+                    }
+                )
+            )
+
+    monkeypatch.setattr(
+        KnowledgeCollectionService, "_resolve_llm", lambda self: (MixedModel(), "test/mixed")
+    )
+    state.api.generate(state.kb.id, collection["id"], actor_user_id=state.owner)
+    repo = state.services.knowledge_collections_repo
+    [observation] = [
+        item
+        for item in repo.reads_for_documents(state.kb.id, [document.id])
+        if item["kind"] == "interpretation"
+    ]
+    [topic] = repo.topics(collection["id"])
+    assert topic["status"] == "partial"
+    assert topic["content"] == "Renewal is required every five days."
+    assert observation["evidence_id"] in topic["evidence_ids"]
+    assert observation["evidence_id"] in {item["evidence_id"] for item in topic["citations"]}
 
 
 def test_deleted_target_collection_is_hidden_from_other_readers(setup) -> None:
