@@ -87,6 +87,35 @@ def normalize_ragflow_dataset_ids(raw: Any) -> list[str]:
     return list(dict.fromkeys(ids))
 
 
+def merge_instance_credentials(
+    kind: str,
+    old: dict[str, Any],
+    patch: dict[str, Any],
+) -> dict[str, Any]:
+    """Merge submitted credentials, allowing explicit clears for optional public fields."""
+    entry = get_catalog_entry(kind)
+    merged = dict(old)
+    if entry is None:
+        return merged | {
+            key: value
+            for key, value in patch.items()
+            if value is not None and not (isinstance(value, str) and not value.strip())
+        }
+    clearable = {
+        field.key: field
+        for field in entry.credential_fields
+        if not field.required and not field.secret
+    }
+    for key, value in patch.items():
+        if value is None or (isinstance(value, str) and not value.strip()):
+            field = clearable.get(key)
+            if field is not None:
+                merged[key] = [] if field.field_type == "tags" else value
+            continue
+        merged[key] = value
+    return merged
+
+
 def mcp_server_name(kind: str, instance_id: str) -> str:
     return f"{kind}__{instance_id}"
 

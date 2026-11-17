@@ -44,13 +44,19 @@ def remove_connector_cli_dirs(kind: str, *keys: str, keep: set[str] | None = Non
     """Best-effort remove ``~/.octop/connector-cli/<kind>/<key>/`` trees."""
     if kind not in _CLI_KINDS:
         return
-    retain = {str(k).strip() for k in (keep or set()) if str(k).strip()}
     layout = PathLayout.from_env()
+    retain = {
+        layout.connector_cli_instance_dir(kind, str(key).strip()).name
+        for key in (keep or set())
+        if str(key).strip()
+    }
     for raw in keys:
         key = str(raw or "").strip()
-        if not key or key in retain:
+        if not key:
             continue
         path = layout.connector_cli_instance_dir(kind, key)
+        if path.name in retain:
+            continue
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
 

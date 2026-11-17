@@ -33,7 +33,11 @@ from octop.infra.connectors.custom_mcp import (
     wrap_servers,
 )
 from octop.infra.connectors.default_open import merge_mcp_servers_with_defaults, read_default_open
-from octop.infra.connectors.gateway.cli_dirs import resolve_cli_config_key
+from octop.infra.connectors.gateway.cli_dirs import (
+    cleanup_creds_cli_dirs,
+    cleanup_keys_for_creds,
+    resolve_cli_config_key,
+)
 from octop.infra.connectors.gateway.feishu_user_auth import (
     complete_user_device_login,
     start_user_device_login,
@@ -105,12 +109,13 @@ class ConnectorService:
             return {}
         return decrypt_credentials(self._secret_repo, row.credential_blob)
 
-    def encrypt_and_store(
+    def prepare_credentials_for_storage(
         self,
         *,
         instance_id: str,
         payload: dict[str, Any],
-    ) -> None:
+    ) -> tuple[bytes, int | None]:
+        """Encrypt credentials with stable instance-scoped internal auth preserved."""
         stored = dict(payload)
         row = self._repo.get(instance_id)
         if row is not None:
@@ -129,8 +134,18 @@ class ConnectorService:
         stored["instance_id"] = instance_id
         expires_at = stored.get("expires_at")
         exp = int(expires_at) if expires_at is not None else None
-        blob = encrypt_credentials(self._secret_repo, stored)
-        self._repo.upsert_credentials(instance_id=instance_id, blob=blob, expires_at=exp)
+        return encrypt_credentials(self._secret_repo, stored), exp
+
+    def encrypt_and_store(
+        self,
+        *,
+        instance_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        blob, expires_at = self.prepare_credentials_for_storage(
+            instance_id=instance_id, payload=payload
+        )
+        self._repo.upsert_credentials(instance_id=instance_id, blob=blob, expires_at=expires_at)
 
     async def ensure_fresh_credentials(
         self,
@@ -180,6 +195,42 @@ class ConnectorService:
         # Reauthorization, credential replacement, or deletion won while the
         # provider refresh was in flight; never return or persist the stale identity.
         return self.decrypt(instance_id)
+
+    async def cleanup_cli_dirs_after_change(
+        self,
+        kind: str,
+        old_creds: dict[str, Any],
+        new_creds: dict[str, Any] | None = None,
+        *,
+        exclude_instance_id: str,
+    ) -> None:
+        """Best-effort remove rotated CLI state only when no instance owns it."""
+        if kind not in ("feishu-cli", "wecom-cli"):
+            return
+        try:
+            retained: set[str] = set()
+            for row in self._repo.list_by_kind(kind):
+                if row.instance_id == exclude_instance_id:
+                    continue
+                # Unreadable credentials make ownership uncertain: keep all state.
+                creds = self.decrypt(row.instance_id)
+                retained.update(
+                    cleanup_keys_for_creds(kind, {**creds, "instance_id": row.instance_id})
+                )
+            if new_creds is not None:
+                retained.update(
+                    cleanup_keys_for_creds(kind, {**new_creds, "instance_id": exclude_instance_id})
+                )
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                lambda: cleanup_creds_cli_dirs(
+                    kind,
+                    {**old_creds, "instance_id": exclude_instance_id},
+                    keep=retained,
+                ),
+            )
+        except Exception:
+            logger.warning("failed to clean connector CLI state for %s", exclude_instance_id)
 
     async def _qcc_request(
         self, instance_id: str, resource: str, method: str, params: dict[str, Any]
@@ -768,6 +819,7 @@ class ConnectorService:
     ) -> dict[str, Any]:
         """Finish device login and persist ``default_as=user`` on the instance."""
         _inst, creds = self._require_feishu_cli_instance(instance_id, user_id)
+        old_creds = dict(creds)
         app_id = str(creds.get("app_id") or "").strip()
         app_secret = str(creds.get("app_secret") or "").strip()
         device_code = str(device_code or "").strip()
@@ -794,4 +846,7 @@ class ConnectorService:
         creds["default_as"] = "user"
         creds["cli_config_key"] = cli_key
         self.encrypt_and_store(instance_id=instance_id, payload=creds)
+        await self.cleanup_cli_dirs_after_change(
+            "feishu-cli", old_creds, creds, exclude_instance_id=instance_id
+        )
         return {**result, "cli_config_key": cli_key, "default_as": "user"}

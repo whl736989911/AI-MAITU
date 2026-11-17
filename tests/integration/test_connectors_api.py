@@ -8,9 +8,12 @@ from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
+from octop.api.routers.internal_mcp import _service
 from octop.infra.connectors.catalog import get_catalog_entry
 from octop.infra.connectors.custom_mcp import CUSTOM_MCP_KIND
 from octop.infra.connectors.oauth.registry import save_oauth_ctx
+from octop.infra.errors import ErrorCode, OctopError
+from octop.infra.utils.paths import PathLayout
 from octop.infra.utils.ulid import new_ulid
 from tests.support.app import octop_client, write_octop_config
 from tests.support.auth import auth_header, bootstrap_admin, create_user, resolve_user_id
@@ -431,6 +434,188 @@ async def test_patch_instance_status(env):
     )
     assert r2.status_code == 200
     assert r2.json()["status"] == "disabled"
+
+
+async def test_patch_invalid_status_is_atomic(env):
+    c, server, auth, _ = env
+    created = await c.post(
+        "/api/connector-instances",
+        headers=auth,
+        json={
+            "kind": "tencent-docs",
+            "display_name": "original",
+            "description": "original description",
+            "shared": True,
+            "credentials": {"token": "original-token"},
+        },
+    )
+    assert created.status_code == 201
+    instance_id = created.json()["instance_id"]
+    service = _service(server)
+    before_row = server.services.repos.connector_repo.get(instance_id)
+    before_credentials = service.decrypt(instance_id)
+
+    response = await c.patch(
+        f"/api/connector-instances/{instance_id}",
+        headers=auth,
+        json={
+            "display_name": "renamed",
+            "shared": False,
+            "description": "changed description",
+            "credentials": {"token": "new-token"},
+            "status": "invalid",
+        },
+    )
+
+    assert response.status_code == 400
+    after_row = server.services.repos.connector_repo.get(instance_id)
+    after = await c.get(f"/api/connector-instances/{instance_id}", headers=auth)
+    assert after.status_code == 200
+    assert after.json()["display_name"] == "original"
+    assert after.json()["shared"] is True
+    assert after.json()["config"]["description"] == "original description"
+    assert after.json()["status"] == "active"
+    assert after_row.credential_blob == before_row.credential_blob
+    assert service.decrypt(instance_id) == before_credentials
+
+
+async def test_patch_rolls_back_metadata_credentials_and_acl_on_late_failure(env, monkeypatch):
+    c, server, auth, _ = env
+    created = await c.post(
+        "/api/connector-instances",
+        headers=auth,
+        json={
+            "kind": "tencent-docs",
+            "display_name": "original",
+            "description": "original description",
+            "shared": True,
+            "credentials": {"token": "original-token"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    instance_id = created.json()["instance_id"]
+    repo = server.services.repos.connector_repo
+    before = repo.get(instance_id)
+    write_acl = repo._acl.set_visibility
+
+    def fail_after_writing_acl(*args, **kwargs):
+        write_acl(*args, **kwargs)
+        raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "controlled ACL failure")
+
+    monkeypatch.setattr(repo._acl, "set_visibility", fail_after_writing_acl)
+    response = await c.patch(
+        f"/api/connector-instances/{instance_id}",
+        headers=auth,
+        json={
+            "display_name": "renamed",
+            "description": "changed description",
+            "shared": False,
+            "credentials": {"token": "new-token"},
+            "status": "disabled",
+        },
+    )
+
+    assert response.status_code == 400, response.text
+    assert repo.get(instance_id) == before
+    detail = await c.get(f"/api/connector-instances/{instance_id}", headers=auth)
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["shared"] is True
+
+
+async def test_patch_weknora_clears_optional_public_fields_only(env):
+    c, server, auth, _ = env
+    created = await c.post(
+        "/api/connector-instances",
+        headers=auth,
+        json={
+            "kind": "weknora",
+            "display_name": "WeKnora",
+            "credentials": {
+                "base_url": "http://127.0.0.1:8080",
+                "api_key": "configured-key",
+                "tenant_id": "tenant-1",
+                "knowledge_base_ids": ["kb-1"],
+            },
+        },
+    )
+    assert created.status_code == 201, created.text
+    instance_id = created.json()["instance_id"]
+    response = await c.patch(
+        f"/api/connector-instances/{instance_id}",
+        headers=auth,
+        json={
+            "credentials": {
+                "api_key": " ",
+                "tenant_id": None,
+                "knowledge_base_ids": "",
+            }
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    detail = await c.get(f"/api/connector-instances/{instance_id}", headers=auth)
+    assert detail.status_code == 200
+    assert detail.json()["credentials_preview"]["api_key_configured"] is True
+
+    stored = _service(server).decrypt(instance_id)
+    assert stored["api_key"] == "configured-key"
+    assert "tenant_id" not in stored
+    assert "knowledge_base_ids" not in stored
+
+
+async def test_cli_state_cleanup_respects_shared_ownership(env, monkeypatch, tmp_path: Path):
+    c, server, auth, _ = env
+    monkeypatch.setenv("MAITU_HOME", str(tmp_path))
+    monkeypatch.setenv("OCTOP_HOME", str(tmp_path))
+    layout = PathLayout.from_env()
+    old_dir = layout.ensure_connector_cli_instance_dir("wecom-cli", "old-key")
+    new_dir = layout.ensure_connector_cli_instance_dir("wecom-cli", "new-key")
+    for path in (old_dir, new_dir):
+        (path / "state.json").write_text("{}", encoding="utf-8")
+    first = await c.post(
+        "/api/connector-instances",
+        headers=auth,
+        json={
+            "kind": "wecom-cli",
+            "display_name": "first",
+            "credentials": {
+                "bot_id": "bot-one",
+                "bot_secret": "secret-one",
+                "cli_config_key": "old-key",
+            },
+        },
+    )
+    second = await c.post(
+        "/api/connector-instances",
+        headers=auth,
+        json={
+            "kind": "wecom-cli",
+            "display_name": "second",
+            "credentials": {
+                "bot_id": "bot-two",
+                "bot_secret": "secret-two",
+                "cli_config_key": "new-key",
+            },
+        },
+    )
+    assert first.status_code == second.status_code == 201
+    first_id, second_id = first.json()["instance_id"], second.json()["instance_id"]
+    patched = await c.patch(
+        f"/api/connector-instances/{first_id}",
+        headers=auth,
+        json={"credentials": {"cli_config_key": "new-key"}},
+    )
+    assert patched.status_code == 200, patched.text
+    assert _service(server).decrypt(first_id)["cli_config_key"] == "new-key"
+    assert not old_dir.exists()
+    assert new_dir.exists()
+
+    deleted = await c.delete(f"/api/connector-instances/{first_id}", headers=auth)
+    assert deleted.status_code == 204
+    assert new_dir.exists()
+    deleted = await c.delete(f"/api/connector-instances/{second_id}", headers=auth)
+    assert deleted.status_code == 204
+    assert not new_dir.exists()
 
 
 async def test_catalog_weknora_ragflow_dify_last(env):

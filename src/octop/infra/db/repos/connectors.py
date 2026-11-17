@@ -234,49 +234,60 @@ class ConnectorRepo:
                 (config_json, now_ts(), instance_id),
             )
 
-    def update_metadata(
+    def patch_instance(
         self,
         instance_id: str,
         *,
-        display_name: str | None = None,
-        shared: bool | None = None,
+        fields: dict[str, Any],
     ) -> None:
-        """Rename a connector and/or publish it, in one transaction.
-
-        Sharing writes ``resource_acl`` alone (schema v21 dropped the legacy
-        ``connectors.shared`` column), so the ACL row cannot disagree with a
-        column that no longer exists.
-        """
+        """Apply a connector PATCH atomically, including credential and ACL changes."""
+        allowed = {
+            "display_name",
+            "status",
+            "config_json",
+            "credential_blob",
+            "credential_expires_at",
+        }
+        unknown = set(fields) - allowed - {"shared"}
+        if unknown:
+            raise ValueError(f"unsupported connector patch fields: {sorted(unknown)}")
         updates: list[str] = []
-        params: list[object] = []
-        if display_name is not None:
-            updates.append("display_name = ?")
-            params.append(display_name)
-        if not updates and shared is None:
-            return
+        params: list[Any] = []
+        for name in (
+            "display_name",
+            "status",
+            "config_json",
+            "credential_blob",
+            "credential_expires_at",
+        ):
+            if name in fields:
+                updates.append(f"{name} = ?")
+                params.append(fields[name])
+        timestamp = now_ts()
+        if "credential_blob" in fields:
+            updates.append("credential_rotated_at = ?")
+            params.append(timestamp)
         with self._db.transaction() as conn:
             if updates:
                 updates.append("updated_at = ?")
-                params.extend((now_ts(), instance_id))
+                params.extend((timestamp, instance_id))
                 conn.execute(
                     f"UPDATE connectors SET {', '.join(updates)} WHERE instance_id = ?",
                     tuple(params),
                 )
-            if shared is None:
-                return
-            row = conn.execute(
-                "SELECT user_id FROM connectors WHERE instance_id = ?", (instance_id,)
-            ).fetchone()
-            if row is None:
-                return
-            self._acl.set_visibility(
-                "connector",
-                instance_id,
-                VISIBILITY_PUBLIC if shared else VISIBILITY_PRIVATE,
-                owner_user_id=row["user_id"],
-                unit_key=None,
-                conn=conn,
-            )
+            if "shared" in fields:
+                row = conn.execute(
+                    "SELECT user_id FROM connectors WHERE instance_id = ?", (instance_id,)
+                ).fetchone()
+                if row is not None:
+                    self._acl.set_visibility(
+                        "connector",
+                        instance_id,
+                        VISIBILITY_PUBLIC if fields["shared"] else VISIBILITY_PRIVATE,
+                        owner_user_id=row["user_id"],
+                        unit_key=None,
+                        conn=conn,
+                    )
 
     def upsert_credentials(
         self,

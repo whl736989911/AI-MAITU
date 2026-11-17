@@ -20,6 +20,7 @@ from octop.i18n import tr
 from octop.infra.auth.sso.redirect_after import sanitize_redirect_after
 from octop.infra.connectors.builder import (
     mcp_server_name,
+    merge_instance_credentials,
     normalize_weiyun_mcp_token,
     validate_create_credentials,
 )
@@ -40,7 +41,6 @@ from octop.infra.connectors.default_open import (
     build_instance_config_json,
     read_default_open,
 )
-from octop.infra.connectors.gateway.cli_dirs import cleanup_creds_cli_dirs
 from octop.infra.connectors.gateway.cli_install import (
     cli_install_status,
     get_cli_install_spec,
@@ -358,20 +358,6 @@ async def _prepare_credentials(
             raise ValueError("token is required")
         cred_payload = {"token": token}
     return validate_create_credentials(kind, cred_payload)
-
-
-def _merge_credentials(
-    old: dict[str, Any],
-    new: dict[str, Any],
-) -> dict[str, Any]:
-    merged = dict(old)
-    for key, value in new.items():
-        if value is None:
-            continue
-        if isinstance(value, str) and not value.strip():
-            continue
-        merged[key] = value
-    return merged
 
 
 def _credentials_preview(kind: str, creds: dict[str, Any]) -> dict[str, Any]:
@@ -834,37 +820,24 @@ async def patch_instance(
             ErrorCode.CONNECTOR_INVALID_CREDENTIALS,
             "status or default_open is required",
         )
+    svc = _connector_service(server)
+    fields: dict[str, Any] = {}
     if body.display_name is not None:
         display_name = body.display_name.strip()
         if not display_name:
             raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "display_name is required")
-        svc = _connector_service(server)
         if repo.name_exists(
             inst.user_id, display_name, exclude_instance_id=instance_id
         ) or _custom_name_exists(svc, inst.user_id, display_name):
             _raise_name_taken(display_name)
-        repo.update_metadata(instance_id, display_name=display_name)
-    if body.shared is not None:
-        repo.update_metadata(instance_id, shared=body.shared)
-    if body.credentials is not None:
-        svc = _connector_service(server)
-        merged = _merge_credentials(svc.decrypt(instance_id), body.credentials)
-        try:
-            prepared = await _prepare_credentials(inst.kind, merged, server.services.settings_repo)
-        except ValueError as exc:
-            raise OctopError(
-                ErrorCode.CONNECTOR_INVALID_CREDENTIALS,
-                str(exc),
-                details={"reason": str(exc)},
-            ) from exc
-        svc.encrypt_and_store(instance_id=instance_id, payload=prepared)
+        fields["display_name"] = display_name
     if body.status is not None:
         status = body.status.strip()
         if status not in ("active", "disabled"):
             raise OctopError(
                 ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "status must be active or disabled"
             )
-        repo.update_status(instance_id, status)
+        fields["status"] = status
     if body.default_open is not None or body.description is not None:
         config = dict(ConnectorRepo.parse_config_json(inst))
         if body.default_open is not None:
@@ -875,13 +848,43 @@ async def patch_instance(
         if body.description is not None:
             description = body.description.strip()
             if not description:
-                raise OctopError(
-                    ErrorCode.CONNECTOR_INVALID_CREDENTIALS,
-                    "description is required",
-                )
+                raise OctopError(ErrorCode.CONNECTOR_INVALID_CREDENTIALS, "description is required")
             config["description"] = description
-        repo.update_config_json(
-            instance_id, json.dumps(config, ensure_ascii=False) if config else None
+        fields["config_json"] = json.dumps(config, ensure_ascii=False) if config else None
+    old_creds: dict[str, Any] | None = None
+    prepared_creds: dict[str, Any] | None = None
+    if body.credentials is not None:
+        old_creds = svc.decrypt(instance_id)
+        merged = merge_instance_credentials(inst.kind, old_creds, body.credentials)
+        try:
+            prepared_creds = await _prepare_credentials(
+                inst.kind, merged, server.services.settings_repo
+            )
+        except ValueError as exc:
+            raise OctopError(
+                ErrorCode.CONNECTOR_INVALID_CREDENTIALS,
+                str(exc),
+                details={"reason": str(exc)},
+            ) from exc
+        blob, expires_at = svc.prepare_credentials_for_storage(
+            instance_id=instance_id, payload=prepared_creds
+        )
+        fields["credential_blob"] = blob
+        fields["credential_expires_at"] = expires_at
+    if body.shared is not None:
+        fields["shared"] = body.shared
+    repo.patch_instance(instance_id, fields=fields)
+    if (
+        old_creds is not None
+        and prepared_creds is not None
+        and inst.kind
+        in (
+            "feishu-cli",
+            "wecom-cli",
+        )
+    ):
+        await svc.cleanup_cli_dirs_after_change(
+            inst.kind, old_creds, prepared_creds, exclude_instance_id=instance_id
         )
     inst = repo.get(instance_id)
     assert inst is not None
@@ -931,16 +934,18 @@ async def delete_instance(
     # published to everyone must still trigger the all-user reload below.
     was_shared = _shared(server, instance_id)
     cli_creds: dict[str, Any] | None = None
+    svc = _connector_service(server)
     if inst.kind in ("feishu-cli", "wecom-cli") and inst.has_credentials:
         try:
-            cli_creds = _connector_service(server).decrypt(instance_id)
+            cli_creds = svc.decrypt(instance_id)
         except Exception:
-            cli_creds = {"instance_id": instance_id}
-        else:
-            cli_creds = {**cli_creds, "instance_id": instance_id}
+            # Unknown ownership must preserve any CLI state on disk.
+            cli_creds = None
     repo.delete(instance_id)
     if cli_creds is not None:
-        cleanup_creds_cli_dirs(inst.kind, cli_creds)
+        await svc.cleanup_cli_dirs_after_change(
+            inst.kind, cli_creds, exclude_instance_id=instance_id
+        )
     _schedule_connector_reload(server, user_id, all_users=was_shared)
     server.services.audit_repo.write(
         actor=user.username,
