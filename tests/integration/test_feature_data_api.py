@@ -359,3 +359,51 @@ async def test_only_record_writers_are_offered_and_allowed_to_complete(
     assert author_note["can_complete"] is True
     completed = await client.post(f"{base}/reminders/{reminder['id']}/complete", headers=author)
     assert completed.status_code == 200, completed.text
+
+
+async def test_notification_read_rejects_a_different_feature_without_mutation(
+    env_with_provider,
+) -> None:
+    client, server, admin_auth = env_with_provider
+    author = await create_user(client, admin_auth, username="notification_author")
+    author_id = await resolve_user_id(client, admin_auth, "notification_author")
+    await _create_feature(client, author)
+    await _activate_workflow(client, author)
+    other = await client.post(
+        "/api/features",
+        headers=author,
+        json={"feature_id": "other-data", "name": "Other feature"},
+    )
+    assert other.status_code == 201, other.text
+    base = f"/api/agents/{AGENT_ID}/feature-data"
+    schema = await client.put(base + "/schema", headers=admin_auth, json={"schema": _schema()})
+    assert schema.status_code == 200, schema.text
+    created = await client.post(
+        base + "/supplier/records",
+        headers=author,
+        json={"values": {"name": "Acme", "expires_at": "2030-01-01"}},
+    )
+    assert created.status_code == 200, created.text
+    [reminder] = created.json()["reminders"]
+    repo = server.services.repos.feature_data_repo
+    assert repo.add_notification(
+        agent_id=AGENT_ID,
+        user_id=author_id,
+        reminder_id=reminder["id"],
+        cycle_key="expiry",
+        title="Acme",
+        body="expires soon",
+    )
+    [notification] = repo.list_notifications(agent_id=AGENT_ID, user_id=author_id)
+
+    wrong_feature = await client.post(
+        f"/api/agents/feat-other-data/feature-data/notifications/{notification.id}/read",
+        headers=author,
+    )
+    assert wrong_feature.status_code == 404, wrong_feature.text
+    unread = repo.list_notifications(agent_id=AGENT_ID, user_id=author_id, unread_only=True)
+    assert [item.id for item in unread] == [notification.id]
+
+    own_feature = await client.post(f"{base}/notifications/{notification.id}/read", headers=author)
+    assert own_feature.status_code == 200, own_feature.text
+    assert repo.list_notifications(agent_id=AGENT_ID, user_id=author_id, unread_only=True) == []

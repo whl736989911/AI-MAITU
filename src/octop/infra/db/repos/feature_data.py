@@ -385,11 +385,13 @@ class FeatureDataRepo:
 
     def publish_record(self, record_id: str) -> FeatureDataRecordRow | None:
         with self._db.transaction() as conn:
-            conn.execute(
+            cursor = conn.execute(
                 "UPDATE feature_data_records SET visibility = 'feature', revision = revision + 1, "
-                "updated_at = ? WHERE id = ? AND deleted_at IS NULL",
+                "updated_at = ? WHERE id = ? AND deleted_at IS NULL AND visibility = 'private'",
                 (now_ts(), record_id),
             )
+            if cursor.rowcount != 1:
+                return None
         return self.get_record(record_id)
 
     def soft_delete(self, record_id: str) -> bool:
@@ -708,12 +710,12 @@ class FeatureDataRepo:
             for row in rows
         ]
 
-    def mark_notification_read(self, notification_id: str, user_id: int) -> bool:
+    def mark_notification_read(self, notification_id: str, user_id: int, *, agent_id: str) -> bool:
         with self._db.transaction() as conn:
             cursor = conn.execute(
                 "UPDATE feature_data_notifications SET read_at = ? "
-                "WHERE id = ? AND user_id = ? AND read_at IS NULL",
-                (now_ts(), notification_id, user_id),
+                "WHERE id = ? AND user_id = ? AND agent_id = ? AND read_at IS NULL",
+                (now_ts(), notification_id, user_id, agent_id),
             )
         return bool(cursor.rowcount == 1)
 

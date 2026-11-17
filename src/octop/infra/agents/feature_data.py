@@ -679,8 +679,13 @@ def publish_record(
     record = repo.get_record(record_id)
     if record is None or record.agent_id != agent_id or record.deleted_at is not None:
         raise OctopError(ErrorCode.NOT_FOUND, f"feature data record {record_id!r} not found")
+    if record.visibility == "feature":
+        return record
     updated = repo.publish_record(record_id)
-    assert updated is not None
+    if updated is None:
+        raise OctopError(
+            ErrorCode.WORKFLOW_CHANGE_CONFLICT, "feature data record was changed by another user"
+        )
     repo.add_change(
         record_id=record_id,
         agent_id=agent_id,

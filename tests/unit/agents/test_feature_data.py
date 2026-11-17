@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -17,7 +19,7 @@ from octop.infra.db.repos.feature_data import FeatureDataRepo
 from octop.infra.db.repos.org_units import OrgUnitRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
 from octop.infra.db.repos.users import UserRepo
-from octop.infra.errors import OctopError
+from octop.infra.errors import ErrorCode, OctopError
 
 
 class _Repos:
@@ -456,3 +458,80 @@ async def test_required_computed_field_rejects_missing_source_without_insert(
     )
     assert records == []
     assert total == 0
+
+
+@pytest.mark.parametrize("feature_active", [False, True])
+async def test_publishing_a_record_twice_preserves_revision_and_history(
+    db: SqlitePool, workspace: BackendWorkspace, feature_active: bool
+) -> None:
+    repos = _Repos(db)
+    await fd.save_schema(workspace, _schema())
+    record = await fd.create_record(
+        repos,
+        workspace,
+        agent_id="feat-supplier",
+        object_key="supplier",
+        values={"name": "Acme"},
+        user_id=1,
+        feature_active=feature_active,
+        registry=_Registry(workspace),
+        timezone_name="UTC",
+    )
+    repo = repos.feature_data_repo
+
+    first = fd.publish_record(repo, agent_id=record.agent_id, record_id=record.id, user_id=1)
+    second = fd.publish_record(repo, agent_id=record.agent_id, record_id=record.id, user_id=1)
+
+    assert first.visibility == second.visibility == "feature"
+    assert first.revision == second.revision == record.revision + (0 if feature_active else 1)
+    assert [change.kind for change in repo.list_changes(record.id)] == (
+        ["create"] if feature_active else ["publish", "create"]
+    )
+
+
+async def test_competing_publishes_create_only_one_revision_and_history_entry(
+    db: SqlitePool, workspace: BackendWorkspace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repos = _Repos(db)
+    await fd.save_schema(workspace, _schema())
+    record = await fd.create_record(
+        repos,
+        workspace,
+        agent_id="feat-supplier",
+        object_key="supplier",
+        values={"name": "Acme"},
+        user_id=1,
+        feature_active=False,
+        registry=_Registry(workspace),
+        timezone_name="UTC",
+    )
+    repo = repos.feature_data_repo
+    lookup = repo.get_record
+    barrier = threading.Barrier(2)
+    entered = threading.local()
+
+    def read_before_either_publish(record_id: str):
+        snapshot = lookup(record_id)
+        if not getattr(entered, "read", False):
+            entered.read = True
+            barrier.wait(timeout=10)
+        return snapshot
+
+    monkeypatch.setattr(repo, "get_record", read_before_either_publish)
+
+    def publish() -> str:
+        try:
+            fd.publish_record(repo, agent_id=record.agent_id, record_id=record.id, user_id=1)
+        except OctopError as error:
+            assert error.code is ErrorCode.WORKFLOW_CHANGE_CONFLICT
+            return "conflict"
+        return "published"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        pending = [executor.submit(publish) for _ in range(2)]
+        outcomes = sorted(item.result(timeout=15) for item in pending)
+
+    assert outcomes == ["conflict", "published"]
+    stored = lookup(record.id)
+    assert stored is not None and stored.revision == record.revision + 1
+    assert [change.kind for change in repo.list_changes(record.id)] == ["publish", "create"]

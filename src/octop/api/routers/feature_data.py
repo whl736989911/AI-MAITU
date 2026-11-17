@@ -393,7 +393,7 @@ async def read_notification(
 ) -> dict[str, Any]:
     _feature_row(agent_id, user, server)
     changed = _services(server).repos.feature_data_repo.mark_notification_read(
-        notification_id, user.id
+        notification_id, user.id, agent_id=agent_id
     )
     if not changed:
         raise OctopError(ErrorCode.NOT_FOUND, "notification not found or already read")
