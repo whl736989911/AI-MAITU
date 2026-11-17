@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import re
 import weakref
 from collections.abc import Mapping, Sequence
@@ -335,6 +336,81 @@ def _problems_in_inputs(node: Any, problems: list[str]) -> None:
             missing = [item for item in required if item not in properties]
             if missing:
                 problems.append(f"inputs.required names unknown fields: {', '.join(missing)}")
+
+
+def validate_workflow_run_inputs(definition: Mapping[str, Any], values: Any) -> list[str]:
+    """Return reasons an explicit run's submitted values do not match its inputs."""
+    if not isinstance(values, Mapping):
+        return ["inputs must be an object"]
+
+    inputs = definition.get("inputs")
+    properties = inputs.get("properties") if isinstance(inputs, Mapping) else None
+    properties = properties if isinstance(properties, Mapping) else {}
+    problems: list[str] = []
+
+    for name in sorted(set(values) - set(properties)):
+        problems.append(f"inputs contains unknown field {name!r}")
+
+    required = inputs.get("required", []) if isinstance(inputs, Mapping) else []
+    required_names = set(required) if isinstance(required, list) else set()
+    for name, spec in properties.items():
+        if not isinstance(name, str) or not isinstance(spec, Mapping):
+            continue
+        if name not in values:
+            if name in required_names:
+                problems.append(f"inputs.{name} is required")
+            continue
+        value = values[name]
+        field_type = spec.get("type")
+        if field_type == "string":
+            valid = isinstance(value, str)
+        elif field_type == "number":
+            valid = _workflow_run_value_matches("number", value)
+        elif field_type == "integer":
+            valid = _workflow_run_value_matches("integer", value)
+        elif field_type == "boolean":
+            valid = isinstance(value, bool)
+        elif field_type == "array":
+            items = spec.get("items")
+            item_type = items.get("type", "string") if isinstance(items, Mapping) else "string"
+            valid = isinstance(value, list) and all(
+                _workflow_run_value_matches(item_type, item) for item in value
+            )
+        elif field_type == "file":
+            valid = (
+                isinstance(value, list)
+                and all(isinstance(item, str) and item.strip() for item in value)
+                if spec.get("multiple") is True
+                else isinstance(value, str) and bool(value.strip())
+            )
+        else:
+            valid = False
+        if not valid:
+            problems.append(f"inputs.{name} has an invalid {field_type!r} value")
+            continue
+        if name in required_names and (
+            isinstance(value, str) and not value.strip() or isinstance(value, list) and not value
+        ):
+            problems.append(f"inputs.{name} is required")
+        if field_type == "string" and isinstance(value, str):
+            enum = spec.get("enum")
+            if isinstance(enum, list) and value not in enum:
+                problems.append(f"inputs.{name} must be one of the declared values")
+    return problems
+
+
+def _workflow_run_value_matches(field_type: Any, value: Any) -> bool:
+    if field_type == "string":
+        return isinstance(value, str)
+    if field_type == "number":
+        return (isinstance(value, int) and not isinstance(value, bool)) or (
+            isinstance(value, float) and math.isfinite(value)
+        )
+    if field_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    if field_type == "boolean":
+        return isinstance(value, bool)
+    return False
 
 
 def _problems_in_name_list(node: Any, where: str, problems: list[str]) -> None:

@@ -23,6 +23,7 @@ from octop.infra.agents.feature_workflow import (
     save_workflow,
 )
 from octop.infra.agents.middleware.feature_workflow import CONFIGURABLE_FEATURE_LOCALE_KEY
+from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.gateway.process import processor as processor_module
 from octop.infra.gateway.process.processor import GlobalProcessor
 from octop.infra.gateway.slash.dispatcher import SlashDispatcher
@@ -264,6 +265,96 @@ async def test_an_ordinary_turn_is_not_a_run(tmp_path: Path, monkeypatch: Any) -
         meta={},
     )
 
+    run_repo.record.assert_not_called()
+
+
+def _heterogeneous_workflow_inputs() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "required": ["count", "enabled", "choice", "numbers", "single", "label"],
+        "properties": {
+            "count": {"type": "integer", "title": {"zh": "数量", "en": "Count"}},
+            "ratio": {"type": "number", "title": {"zh": "比例", "en": "Ratio"}},
+            "enabled": {"type": "boolean", "title": {"zh": "启用", "en": "Enabled"}},
+            "choice": {
+                "type": "string",
+                "enum": ["one", "two"],
+                "title": {"zh": "选项", "en": "Choice"},
+            },
+            "numbers": {
+                "type": "array",
+                "items": {"type": "integer"},
+                "title": {"zh": "数字", "en": "Numbers"},
+            },
+            "label": {"type": "string", "title": {"zh": "标签", "en": "Label"}},
+            "single": {"type": "file", "title": {"zh": "文件", "en": "File"}},
+            "many": {
+                "type": "file",
+                "multiple": True,
+                "title": {"zh": "多个文件", "en": "Files"},
+            },
+        },
+    }
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        None,
+        {"label": ""},
+        {"count": "bad"},
+        {"ratio": float("inf")},
+        {"count": True},
+        {"choice": "not-declared"},
+        {"numbers": [1, "bad"]},
+        {"numbers": []},
+        {"single": ["x"]},
+        {"many": "not-a-list"},
+        {"many": [""]},
+        {"many": ["inbound/a.pdf", " "]},
+        {"ghost": True},
+    ],
+)
+@pytest.mark.asyncio
+async def test_invalid_run_inputs_are_refused_before_recording(
+    tmp_path: Path, monkeypatch: Any, overrides: dict[str, Any] | None
+) -> None:
+    root = tmp_path / "ws"
+    root.mkdir()
+    workspace = await _workspace_with_workflow(root)
+    definition = _definition()
+    definition["inputs"] = _heterogeneous_workflow_inputs()
+    await save_workflow(workspace, definition)
+    row = SimpleNamespace(kind="feature", name="报价助手", default_model=None)
+    run_repo = MagicMock()
+    processor = _processor(monkeypatch, row, workspace, run_repo=run_repo)
+    values = {
+        "count": 1,
+        "ratio": 1.5,
+        "enabled": False,
+        "choice": "one",
+        "numbers": [1],
+        "single": "inbound/old-workspace.pdf",
+        "many": ["inbound/a.pdf"],
+        "label": "valid",
+    }
+    if overrides is None:
+        values = {}
+    else:
+        values.update(overrides)
+    run = {} if overrides is None else {"inputs": values}
+
+    with pytest.raises(OctopError) as caught:
+        await processor._build_dashboard_request(
+            _msg({FEATURE_RUN_META_KEY: run}),
+            agent_id="feat-quote-helper",
+            user_id=42,
+            session_key="sk",
+            thread_id="thr-1",
+            meta={FEATURE_RUN_META_KEY: run},
+        )
+
+    assert caught.value.code is ErrorCode.FEATURE_RUN_REQUEST_INVALID
     run_repo.record.assert_not_called()
 
 

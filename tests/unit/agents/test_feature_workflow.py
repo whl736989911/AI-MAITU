@@ -25,6 +25,7 @@ from octop.infra.agents.feature_workflow import (
     slugify_step_id,
     validate_references,
     validate_workflow,
+    validate_workflow_run_inputs,
 )
 from octop.infra.errors import ErrorCode, OctopError
 
@@ -81,6 +82,23 @@ def _definition(**overrides: Any) -> dict[str, Any]:
     }
     document.update(overrides)
     return document
+
+
+@pytest.mark.parametrize(
+    ("field_type", "value"),
+    [("integer", 0), ("boolean", False), ("number", 0.0), ("number", 10**400)],
+)
+def test_required_run_inputs_accept_zero_false_and_large_finite_integers(
+    field_type: str, value: Any
+) -> None:
+    definition = _definition(
+        inputs={
+            "type": "object",
+            "required": ["value"],
+            "properties": {"value": {"type": field_type, "title": {"zh": "值", "en": "Value"}}},
+        }
+    )
+    assert validate_workflow_run_inputs(definition, {"value": value}) == []
 
 
 def test_well_formed_active_definition_is_accepted() -> None:

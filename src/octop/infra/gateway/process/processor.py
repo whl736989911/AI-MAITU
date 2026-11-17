@@ -37,6 +37,7 @@ from octop.infra.agents.feature_workflow import (
     WorkflowRunContext,
     feature_memory_stage,
     load_workflow,
+    validate_workflow_run_inputs,
     workflow_status,
 )
 from octop.infra.agents.kinds import feature_id_of_agent, is_feature_agent
@@ -1683,10 +1684,24 @@ class GlobalProcessor:
         # silently publish an unfinished definition to its callers.
         if workflow_status(loaded.definition) != STATUS_ACTIVE and row.user_id != user_id:
             return None
-        values = run_payload.get("inputs") if run_payload else None
-        attachments = run_payload.get("attachments") if run_payload else None
-        submitted = dict(values) if isinstance(values, Mapping) else {}
-        if run_payload:
+        if run_payload is not None:
+            values = run_payload.get("inputs", {})
+            submitted = dict(values) if isinstance(values, Mapping) else values
+            problems = validate_workflow_run_inputs(loaded.definition, submitted)
+            if problems:
+                reason = "; ".join(problems)
+                raise OctopError.localized(
+                    ErrorCode.FEATURE_RUN_REQUEST_INVALID,
+                    locale,
+                    details={"reason": reason},
+                    reason=reason,
+                )
+            assert isinstance(submitted, Mapping)
+            submitted = dict(submitted)
+        else:
+            submitted = {}
+        attachments = run_payload.get("attachments") if run_payload is not None else None
+        if run_payload is not None:
             self._record_feature_run(
                 agent_id=agent_id,
                 user_id=user_id,
