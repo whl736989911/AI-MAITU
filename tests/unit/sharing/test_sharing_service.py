@@ -500,6 +500,62 @@ def test_a_repeated_widening_reuses_the_pending_change(world: World) -> None:
     assert len(pending) == 1
 
 
+@pytest.mark.parametrize("intervening", ["different-pending", "long-applied-history"])
+def test_repeated_widening_finds_an_older_matching_pending_change(
+    world: World, monkeypatch: pytest.MonkeyPatch, intervening: str
+) -> None:
+    timestamps = iter(range(1000))
+    monkeypatch.setattr("octop.infra.sharing.service.now_ts", lambda: next(timestamps))
+    seed_private(world)
+    first = world.service.apply_change(
+        world.owner, "agent", "a1", entry(world, visibility="public")
+    )
+    assert first.status == CHANGE_PENDING
+    if intervening == "different-pending":
+        other = world.service.apply_change(
+            world.owner,
+            "agent",
+            "a1",
+            replace(entry(world, visibility="public"), permission="write"),
+        )
+        assert other.status == CHANGE_PENDING and other.change_id != first.change_id
+    else:
+        for _ in range(12):
+            granted = world.service.apply_change(
+                world.owner, "agent", "a1", entry(world, grants=(("user", str(world.other)),))
+            )
+            restored = world.service.apply_change(world.owner, "agent", "a1", entry(world))
+            assert granted.status == restored.status == CHANGE_APPLIED
+
+    repeated = world.service.apply_change(
+        world.owner, "agent", "a1", entry(world, visibility="public")
+    )
+
+    assert repeated.status == CHANGE_PENDING
+    assert repeated.change_id == first.change_id
+
+
+def test_pending_change_from_a_different_base_is_not_reused(world: World) -> None:
+    seed_private(world)
+    original = world.service.apply_change(
+        world.owner, "agent", "a1", entry(world, visibility="public")
+    )
+    moved = world.service.apply_change(
+        world.owner, "agent", "a1", entry(world, visibility="unit", unit_key="sales")
+    )
+    assert original.status == CHANGE_PENDING
+    assert moved.status == CHANGE_APPLIED
+
+    fresh = world.service.apply_change(
+        world.owner, "agent", "a1", entry(world, visibility="public")
+    )
+
+    assert fresh.status == CHANGE_PENDING
+    assert fresh.change_id != original.change_id
+    world.service.approve(fresh.change_id, world.admin)
+    assert world.acl.get("agent", "a1").visibility == "public"
+
+
 def test_approve_ignores_a_version_bump_that_kept_the_state(world: World) -> None:
     """The base state, not the counter, decides whether approval is still valid."""
     seed_private(world)

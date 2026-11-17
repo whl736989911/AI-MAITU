@@ -619,6 +619,17 @@ class ResourceAclRepo:
             ).fetchall()
         return map_rows(rows, AclChangeRow)
 
+    def list_pending_for_resource(self, resource_type: str, resource_id: str) -> list[AclChangeRow]:
+        """All pending transitions on one resource, not a history-page window."""
+        with self._db.connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM resource_acl_changes "
+                "WHERE resource_type = ? AND resource_id = ? AND status = ? "
+                "ORDER BY created_at DESC, id DESC",
+                (resource_type, resource_id, CHANGE_PENDING),
+            ).fetchall()
+        return map_rows(rows, AclChangeRow)
+
     def list_pending_changes(
         self, *, status: str = CHANGE_PENDING, limit: int = 50
     ) -> list[AclChangeRow]:

@@ -153,9 +153,11 @@ class SharingService:
             owner_user_id=before.owner_user_id,
             version=before.version + 1,
         )
+        before_state = _acl_state_key(before)
+        after_state = _acl_state_key(after)
         # A first explicit private ACL stops inheritance even if its fields match
         # the synthetic default. Only an already-persisted policy can be a no-op.
-        if persisted_before is not None and _acl_state_key(after) == _acl_state_key(before):
+        if persisted_before is not None and after_state == before_state:
             # Re-saving the current state is not a change. Writing it would bump the
             # version and silently invalidate every pending approval on this resource.
             return ChangeResult(
@@ -164,10 +166,11 @@ class SharingService:
                 impact_scope=IMPACT_SELF,
                 entry=before,
             )
-        for parked in self._repo.list_changes(resource_type, resource_id, limit=20):
-            if parked.status != CHANGE_PENDING:
-                continue
-            if _logged_acl_state_key(parked, parked.after_json) == _acl_state_key(after):
+        for parked in self._repo.list_pending_for_resource(resource_type, resource_id):
+            if (
+                _logged_acl_state_key(parked, parked.before_json) == before_state
+                and _logged_acl_state_key(parked, parked.after_json) == after_state
+            ):
                 # The same widening is already waiting for approval: returning it
                 # keeps a double submit from parking two changes on one base.
                 return ChangeResult(
@@ -176,7 +179,6 @@ class SharingService:
                     impact_scope=parked.impact_scope,
                     entry=before,
                 )
-            break
         impact = impact_scope(before, after)
         status = CHANGE_PENDING if requires_approval(before, after) else CHANGE_APPLIED
         change = AclChangeRow(
