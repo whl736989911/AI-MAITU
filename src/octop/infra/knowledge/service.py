@@ -1226,6 +1226,9 @@ class KnowledgeService:
             KnowledgeIndex(kb_id).delete_doc(row.id)
             delete_document_file(kb_id, row.id, row.filename)
             delete_document_previews(kb_id, row.id)
+        for row in removed:
+            if row.id != doc_id:
+                self._refresh_collections(kb_id, row.id)
         self._refresh_collections(kb_id, doc_id)
 
     def reindex_document(

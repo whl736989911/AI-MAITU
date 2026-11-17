@@ -369,7 +369,8 @@ def test_observation_requires_image_receipt_and_grounded_locator(setup) -> None:
         )
 
 
-def test_deleted_source_prunes_evidence_and_topic_state(setup) -> None:
+@pytest.mark.parametrize("delete_folder", [False, True])
+def test_deleted_source_prunes_evidence_and_topic_state(setup, delete_folder: bool) -> None:
     state = setup
     collection = state.api.create(
         state.kb.id, [state.child.id], prompt="payment", actor_user_id=state.owner
@@ -380,8 +381,21 @@ def test_deleted_source_prunes_evidence_and_topic_state(setup) -> None:
         _read_evidence("v1", "needle source body"),
         actor_user_id=state.owner,
     )
-    state.knowledge.delete_document(state.child.id)
-    state.api.refresh_for_document(state.kb.id, state.child.id)
+    state.services.knowledge_collections_repo.put_topic(
+        collection["id"],
+        state.child.id,
+        "v1",
+        status="ready",
+        content="needle topic body",
+        summary="payment",
+        citations=(),
+        evidence_ids=("source:v1:b1",),
+        model_ref="test/model",
+    )
+    target = state.folder if delete_folder else state.child
+    KnowledgeService(state.services).delete_document(
+        state.kb.id, target.id, actor_user_id=state.owner
+    )
     assert (
         state.services.knowledge_collections_repo.reads_for_documents(state.kb.id, [state.child.id])
         == []

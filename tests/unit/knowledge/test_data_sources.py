@@ -41,6 +41,7 @@ from octop.infra.errors import ErrorCode, OctopError
 from octop.infra.knowledge import data_sources as data_sources_module
 from octop.infra.knowledge import jobs as jobs_module
 from octop.infra.knowledge import service as service_module
+from octop.infra.knowledge.collections import KnowledgeCollectionService
 from octop.infra.knowledge.data_sources import (
     DataSourceService,
     DataSourceSyncFailed,
@@ -1981,6 +1982,28 @@ def test_deleting_a_folder_source_takes_its_index_with_it(
     _settle(env, source.id)
     env.sources.sync(source.id, actor_user_id=people.owner)
     _finish_pending(env, source.id)
+    env.services.settings_repo.set("knowledge_bases_enabled", "true")
+    [document] = [
+        row for row in env.services.knowledge_repo.list_source_files(source.id) if not row.is_dir
+    ]
+    collections = KnowledgeCollectionService(env.services)
+    [collection] = collections.create(
+        base.id, [document.id], prompt="refunds", actor_user_id=people.owner
+    )
+    evidence = KnowledgeSourceService(env.services).read_document(
+        base.id, document.id, actor_user_id=people.owner
+    )
+    env.services.knowledge_collections_repo.put_topic(
+        collection["id"],
+        document.id,
+        document.content_hash,
+        status="ready",
+        content="Refunds take five days",
+        summary="Refund policy",
+        citations=(),
+        evidence_ids=(evidence["evidence_id"],),
+        model_ref="test/model",
+    )
     assert env.services.knowledge_repo.count_documents(base.id) == 1
     assert _indexed_text(base.id) != ""
 
@@ -1990,6 +2013,8 @@ def test_deleting_a_folder_source_takes_its_index_with_it(
     assert env.services.knowledge_repo.get_base(base.id).doc_count == 0
     assert _indexed_text(base.id) == ""
     assert env.services.data_sources_repo.get(source.id) is None
+    assert env.services.knowledge_collections_repo.reads_for_documents(base.id, [document.id]) == []
+    assert env.services.knowledge_collections_repo.topics(collection["id"]) == []
 
 
 def test_deleting_a_folder_source_leaves_uploaded_documents_alone(

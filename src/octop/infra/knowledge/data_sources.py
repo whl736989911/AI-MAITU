@@ -592,6 +592,9 @@ class DataSourceService:
         self._knowledge_repo.detach_source_folders(data_source_id, retained)
         for row in [entry for entry in rows if entry.is_dir and entry.id not in retained]:
             self._knowledge_repo.delete_document(row.id)
+        for row in rows:
+            if row.id not in retained:
+                self._knowledge._refresh_collections(kb_id, row.id)
         self._knowledge._refresh_collections(kb_id, "")
 
     def sync(self, ds_id: str, *, actor_user_id: int, is_admin: bool = False) -> DataSourceRow:
