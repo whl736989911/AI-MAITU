@@ -65,6 +65,11 @@ class KnowledgeEnrichmentService:
             raise LookupError("knowledge document not found")
         knowledge.get_writable_base(kb_id, actor_user_id=actor_user_id, is_admin=is_admin)
         knowledge.require_document_writable(document, actor_user_id=actor_user_id)
+        if not document.content_hash:
+            raise OctopError(
+                ErrorCode.KNOWLEDGE_INDEX_NOT_READY,
+                "the document has no indexed source version yet",
+            )
         preview = knowledge.preview_document(
             kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
         )
@@ -93,25 +98,24 @@ class KnowledgeEnrichmentService:
                     "the document changed while the suggestion was being generated",
                 )
             knowledge.require_document_writable(current, actor_user_id=actor_user_id)
-            if document.content_hash:
-                from octop.infra.knowledge.source_access import KnowledgeSourceService
-                from octop.infra.knowledge.sources import SourceError
+            from octop.infra.knowledge.source_access import KnowledgeSourceService
+            from octop.infra.knowledge.sources import SourceError
 
-                try:
-                    with KnowledgeSourceService(self._services).open_original(
-                        kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
-                    ) as original:
-                        current_digest = file_digest(original)
-                except (OSError, SourceError) as exc:
-                    raise OctopError(
-                        ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
-                        "the document source changed or became unavailable while the suggestion was generated",
-                    ) from exc
-                if current_digest != document.content_hash:
-                    raise OctopError(
-                        ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
-                        "the document source changed while the suggestion was being generated",
-                    )
+            try:
+                with KnowledgeSourceService(self._services).open_original(
+                    kb_id, doc_id, actor_user_id=actor_user_id, is_admin=is_admin
+                ) as original:
+                    current_digest = file_digest(original)
+            except (OSError, SourceError) as exc:
+                raise OctopError(
+                    ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                    "the document source changed or became unavailable while the suggestion was generated",
+                ) from exc
+            if current_digest != document.content_hash:
+                raise OctopError(
+                    ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                    "the document source changed while the suggestion was being generated",
+                )
             summary = str(payload.get("summary") or "").strip()[:_MAX_SUMMARY_CHARS]
             raw_keywords = payload.get("keywords")
             keywords = []
@@ -184,26 +188,21 @@ class KnowledgeEnrichmentService:
                 ErrorCode.KNOWLEDGE_INDEX_NOT_READY,
                 "the document changed and is waiting for reindexing",
             )
-        if (
-            suggestion["content_hash"]
-            and document.content_hash
-            and suggestion["content_hash"] != document.content_hash
-        ):
+        if not suggestion["content_hash"] or suggestion["content_hash"] != document.content_hash:
             raise OctopError(
                 ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
                 "the document changed after this suggestion was generated",
             )
-        if suggestion["content_hash"]:
-            from octop.infra.knowledge.source_access import KnowledgeSourceService
+        from octop.infra.knowledge.source_access import KnowledgeSourceService
 
-            with KnowledgeSourceService(self._services).open_original(
-                kb_id, document.id, actor_user_id=actor_user_id, is_admin=is_admin
-            ) as original:
-                if file_digest(original) != suggestion["content_hash"]:
-                    raise OctopError(
-                        ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
-                        "the original changed after this suggestion was generated",
-                    )
+        with KnowledgeSourceService(self._services).open_original(
+            kb_id, document.id, actor_user_id=actor_user_id, is_admin=is_admin
+        ) as original:
+            if file_digest(original) != suggestion["content_hash"]:
+                raise OctopError(
+                    ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED,
+                    "the original changed after this suggestion was generated",
+                )
         schema = knowledge.get_metadata_schema(
             kb_id, actor_user_id=actor_user_id, is_admin=is_admin
         )

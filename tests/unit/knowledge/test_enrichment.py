@@ -395,3 +395,66 @@ def test_concurrent_reject_cannot_succeed_after_review_is_applied(
         == "applied"
     )
     assert env.services.knowledge_repo.get_document(document.id).metadata == {"drawing_no": "A-102"}
+
+
+@pytest.mark.parametrize("status", ["pending", "ready"])
+def test_enrichment_refuses_a_document_without_a_source_version(
+    env: SimpleNamespace, status: str
+) -> None:
+    owner, kb, document, _knowledge = _setup(env)
+    env.services.knowledge_repo.update_document(document.id, status=status, content_hash="")
+    enrichment = KnowledgeEnrichmentService(env.services)
+
+    with pytest.raises(OctopError) as error:
+        enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+
+    assert error.value.code is ErrorCode.KNOWLEDGE_INDEX_NOT_READY
+    assert enrichment.list_suggestions(kb.id, actor_user_id=owner) == []
+
+
+def test_legacy_unversioned_suggestion_cannot_apply_to_changed_content(
+    env: SimpleNamespace,
+) -> None:
+    owner, kb, document, _knowledge = _setup(env)
+    repo = env.services.knowledge_repo
+    suggestion = repo.create_suggestion(
+        suggestion_id="legacy-unversioned",
+        document_id=document.id,
+        kb_id=kb.id,
+        content_hash="",
+        summary="Old suggestion",
+        keywords=[],
+        fields={"drawing_no": "OLD"},
+        model="test/model",
+    )
+    changed = b"changed document"
+    write_document(kb.id, document.id, document.filename, changed)
+    repo.update_document(document.id, status="ready", content_hash=document_digest(changed))
+
+    with pytest.raises(OctopError) as error:
+        KnowledgeEnrichmentService(env.services).apply_suggestion(
+            kb.id, suggestion["suggestion_id"], actor_user_id=owner
+        )
+
+    assert error.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
+    assert repo.get_document(document.id).metadata == {}
+    assert repo.get_suggestion(suggestion["suggestion_id"])["status"] == "pending"
+
+
+def test_versioned_suggestion_cannot_apply_after_document_version_is_cleared(
+    env: SimpleNamespace,
+) -> None:
+    owner, kb, document, _knowledge = _setup(env)
+    enrichment = KnowledgeEnrichmentService(env.services)
+    suggestion = enrichment.enrich_document(kb.id, document.id, actor_user_id=owner, llm=object())
+    env.services.knowledge_repo.update_document(document.id, content_hash="")
+
+    with pytest.raises(OctopError) as error:
+        enrichment.apply_suggestion(kb.id, suggestion["suggestion_id"], actor_user_id=owner)
+
+    assert error.value.code is ErrorCode.KNOWLEDGE_SOURCE_VERSION_CHANGED
+    assert env.services.knowledge_repo.get_document(document.id).metadata == {}
+    assert (
+        env.services.knowledge_repo.get_suggestion(suggestion["suggestion_id"])["status"]
+        == "pending"
+    )
