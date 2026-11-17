@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,14 +15,19 @@ from langgraph.config import var_child_runnable_config
 
 from octop.infra.db.migrate import run_migrations
 from octop.infra.db.pool import SqlitePool
+from octop.infra.db.repos.data_sources import KIND_SMB, DataSourceRepo
 from octop.infra.db.repos.knowledge import KnowledgeRepo
 from octop.infra.db.repos.knowledge_collections import KnowledgeCollectionsRepo
+from octop.infra.db.repos.knowledge_sync_runs import KnowledgeSyncRunRepo
 from octop.infra.db.repos.resource_acl import ResourceAclRepo
+from octop.infra.db.repos.secrets import SecretRepo
 from octop.infra.db.repos.users import UserRepo
 from octop.infra.knowledge.collections import KnowledgeCollectionService
 from octop.infra.knowledge.default_open import stamp_turn_knowledge_config
 from octop.infra.knowledge.files import document_digest, write_document
 from octop.infra.knowledge.source_access import KnowledgeSourceService
+from octop.infra.knowledge.sources import SourceError
+from octop.infra.knowledge.sources import smb as smb_module
 from octop.infra.knowledge.tools import build_knowledge_tools
 from octop.infra.sharing import AclEntry
 from octop.infra.utils.paths import PathLayout
@@ -49,6 +56,9 @@ def source_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Simp
         user_repo=users,
         knowledge_repo=knowledge,
         knowledge_collections_repo=KnowledgeCollectionsRepo(pool),
+        data_sources_repo=DataSourceRepo(pool),
+        knowledge_sync_runs_repo=KnowledgeSyncRunRepo(pool),
+        secret_repo=SecretRepo(pool),
         paths=PathLayout.from_env(),
     )
     try:
@@ -76,6 +86,52 @@ def _source(env: SimpleNamespace, filename: str, data: bytes, *, path: str | Non
     )
     original = write_document(env.base.id, document.id, filename, data)
     return document, original
+
+
+def test_open_original_cannot_serve_a_stale_smb_path_after_root_change(
+    source_env: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = source_env
+    source = env.services.data_sources_repo.create(
+        knowledge_base_id=env.base.id,
+        name="SMB",
+        kind=KIND_SMB,
+        created_by=env.owner,
+        server="fileserver",
+        share="company",
+        root_path="",
+    )
+    data = b"former share-root content"
+    document = env.services.knowledge_repo.create_document(
+        kb_id=env.base.id,
+        filename="notes.md",
+        path=f"{source.id}/notes.md",
+        content_type="text/markdown",
+        byte_size=len(data),
+        content_hash=document_digest(data),
+        status="ready",
+        data_source_id=source.id,
+        source_path="notes.md",
+    )
+    env.services.data_sources_repo.update_source_fields(source.id, root_path="reports")
+
+    class FakeSmb:
+        @contextmanager
+        def open_file(self, path: str, mode: str = "rb", **_kwargs: str):
+            assert mode == "rb"
+            yield io.BytesIO({r"\\fileserver\company\notes.md": data}[path])
+
+        def lstat(self, _path: str, **_kwargs: str) -> SimpleNamespace:
+            return SimpleNamespace(st_file_attributes=0)
+
+    monkeypatch.setattr(smb_module, "_smbclient", FakeSmb)
+
+    with (
+        pytest.raises(SourceError),
+        env.api.open_original(env.base.id, document.id, actor_user_id=env.owner),
+    ):
+        pytest.fail("stale share-root content must not be yielded")
 
 
 @pytest.mark.parametrize("encoding", ["utf-8-sig", "gb18030"])

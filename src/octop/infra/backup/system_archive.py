@@ -9,7 +9,10 @@ import os
 import shutil
 import tarfile
 import uuid
+from collections.abc import Callable
+from contextlib import suppress
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -27,7 +30,13 @@ from octop.infra.backup.chats import (
     strip_chat_tables_from_sqlite_file,
 )
 from octop.infra.backup.manifest import MANIFEST_VERSION, AgentBackupEntry, BackupManifest
-from octop.infra.backup.pg_dump import dump_postgres, restore_postgres
+from octop.infra.backup.pg_dump import (
+    PostgresObjectInventory,
+    capture_postgres_inventory,
+    drop_postgres_objects_added_since,
+    dump_postgres,
+    restore_postgres,
+)
 from octop.infra.backup.snapshot import (
     capture_jwt_secret_from_pool,
     capture_users_from_pool,
@@ -118,11 +127,18 @@ def _filtered_config_file(source: Path, dest: Path) -> None:
     dest.write_text(json.dumps(raw, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
-def _restore_env_preserving_license(source: Path, dest: Path) -> None:
-    """Restore archived environment settings while retaining local trust values."""
+def _restore_env_preserving_license(
+    source: Path, dest: Path, *, preserved_source: Path | None = None
+) -> None:
+    """Restore archived environment settings while retaining local trust values.
+
+    ``preserved_source`` defaults to *dest*; staged restores pass the live env
+    file so trust values are read before the staged file replaces it.
+    """
     preserved: dict[str, str] = {}
-    if dest.is_file():
-        for line in dest.read_text(encoding="utf-8").splitlines():
+    current = dest if preserved_source is None else preserved_source
+    if current.is_file():
+        for line in current.read_text(encoding="utf-8").splitlines():
             stripped = line.lstrip()
             if stripped.startswith(_PROTECTED_ENV_PREFIX) and "=" in stripped:
                 name = stripped.split("=", 1)[0]
@@ -479,12 +495,128 @@ def _iter_extracted_files(root: Path, prefix: str) -> list[tuple[str, Path]]:
     return out
 
 
-def _replace_tree_from_archive(extracted: Path, dest: Path, arc_name: str) -> int:
-    """Stage archive files before replacing the live tree."""
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    staged = dest.with_name(f".{dest.name}.restore-{uuid.uuid4().hex}")
+class _RestoreJournal:
+    """Undo live mutations unless the whole restore finishes successfully."""
+
+    def __init__(self) -> None:
+        self._rollbacks: list[tuple[str, Callable[[], None]]] = []
+        self._cleanups: list[Callable[[], None]] = []
+
+    def rollback_on_failure(self, label: str, undo: Callable[[], None]) -> None:
+        self._rollbacks.append((label, undo))
+
+    def cleanup_on_success(self, cleanup: Callable[[], None]) -> None:
+        self._cleanups.append(cleanup)
+
+    def __enter__(self) -> _RestoreJournal:
+        return self
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        if exc is not None:
+            for label, undo in reversed(self._rollbacks):
+                try:
+                    undo()
+                except Exception as rollback_exc:
+                    logger.exception("restore rollback failed for %s", label)
+                    if hasattr(exc, "add_note"):
+                        exc.add_note(f"restore rollback failed for {label}: {rollback_exc}")
+        else:
+            for cleanup in reversed(self._cleanups):
+                try:
+                    cleanup()
+                except Exception:
+                    logger.warning("restore cleanup failed", exc_info=True)
+
+
+def _path_present(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def _remove_path(path: Path) -> None:
+    if not _path_present(path):
+        return
+    if path.is_symlink() or not path.is_dir():
+        path.unlink(missing_ok=True)
+    else:
+        shutil.rmtree(path)
+
+
+def _remove_empty_dir(path: Path) -> None:
+    # A directory that received unrelated concurrent data is not ours to delete.
+    with suppress(OSError):
+        path.rmdir()
+
+
+def _ensure_directory(path: Path, journal: _RestoreJournal) -> None:
+    """Create *path* and record the directories this restore created."""
+    missing: list[Path] = []
+    probe = path
+    while not _path_present(probe):
+        missing.append(probe)
+        parent = probe.parent
+        if parent == probe:
+            break
+        probe = parent
+    for directory in reversed(missing):
+        directory.mkdir(exist_ok=True)
+        journal.rollback_on_failure(
+            f"directory {directory}",
+            partial(_remove_empty_dir, directory),
+        )
+
+
+def _restore_published_path(dest: Path, previous: Path, had_previous: bool) -> None:
+    _remove_path(dest)
+    if had_previous and _path_present(previous):
+        previous.replace(dest)
+
+
+def _restore_workspace_symlink(dest: Path, target: str) -> None:
+    _remove_path(dest)
+    os.symlink(target, dest)
+
+
+def _restore_file_copy(backup: Path, dest: Path) -> None:
+    shutil.copy2(backup, dest)
+
+
+def _publish_file(staged: Path, dest: Path, journal: _RestoreJournal) -> None:
+    """Atomically publish *staged* over *dest*, retaining the old file."""
     previous = dest.with_name(f".{dest.name}.previous-{uuid.uuid4().hex}")
+    had_previous = _path_present(dest)
+    if had_previous and dest.is_file():
+        # Writing into the live file used to keep its permissions (e.g. 0600 env).
+        shutil.copymode(dest, staged)
+    if had_previous:
+        dest.replace(previous)
+    try:
+        staged.replace(dest)
+    except Exception:
+        if had_previous:
+            try:
+                previous.replace(dest)
+            except Exception:
+                logger.exception("failed to put back %s after a failed publish", dest)
+        raise
+    journal.rollback_on_failure(
+        f"file {dest}",
+        lambda: _restore_published_path(dest, previous, had_previous),
+    )
+    journal.cleanup_on_success(lambda: _remove_path(previous))
+
+
+def _stage_tree_from_archive(
+    extracted: Path,
+    dest: Path,
+    arc_name: str,
+    journal: _RestoreJournal,
+) -> tuple[Path, int]:
+    """Copy archive files into a staging directory next to *dest*."""
+    _ensure_directory(dest.parent, journal)
+    staged = dest.with_name(f".{dest.name}.restore-{uuid.uuid4().hex}")
     staged.mkdir()
+    journal.rollback_on_failure(f"staged tree {staged}", lambda: _remove_path(staged))
+    journal.cleanup_on_success(lambda: _remove_path(staged))
     count = 0
     try:
         prefix = f"{arc_name}/"
@@ -496,29 +628,32 @@ def _replace_tree_from_archive(extracted: Path, dest: Path, arc_name: str) -> in
             out.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(src_file, out)
             count += 1
-
-        had_previous = dest.exists() or dest.is_symlink()
-        if had_previous:
-            dest.replace(previous)
-        try:
-            staged.replace(dest)
-        except Exception:
-            if had_previous:
-                previous.replace(dest)
-            raise
-        if had_previous:
-            if previous.is_symlink() or not previous.is_dir():
-                previous.unlink(missing_ok=True)
-            else:
-                shutil.rmtree(previous, ignore_errors=True)
-        return count
     except Exception:
         shutil.rmtree(staged, ignore_errors=True)
-        if (previous.exists() or previous.is_symlink()) and not (
-            dest.exists() or dest.is_symlink()
-        ):
-            previous.replace(dest)
         raise
+    return staged, count
+
+
+def _publish_staged_tree(staged: Path, dest: Path, journal: _RestoreJournal) -> None:
+    """Publish a staged tree, retaining the previous tree for rollback."""
+    previous = dest.with_name(f".{dest.name}.previous-{uuid.uuid4().hex}")
+    had_previous = _path_present(dest)
+    if had_previous:
+        dest.replace(previous)
+    try:
+        staged.replace(dest)
+    except Exception:
+        if had_previous:
+            try:
+                previous.replace(dest)
+            except Exception:
+                logger.exception("failed to put back %s after a failed publish", dest)
+        raise
+    journal.rollback_on_failure(
+        f"tree {dest}",
+        lambda: _restore_published_path(dest, previous, had_previous),
+    )
+    journal.cleanup_on_success(lambda: _remove_path(previous))
 
 
 def _upgrade_restore_database(
@@ -536,6 +671,22 @@ def _upgrade_restore_database(
                 "runtime_schema_version": runtime_schema_version,
             },
         ) from exc
+
+
+def _rollback_postgres_database(
+    pool: DatabasePool,
+    conninfo: str,
+    live_dump: Path,
+    inventory: PostgresObjectInventory,
+) -> None:
+    """Remove archive-only objects, then atomically replay the pre-restore dump."""
+    removed = drop_postgres_objects_added_since(pool, inventory)
+    if removed:
+        logger.info(
+            "removed %d PostgreSQL object(s) introduced by the failed restore",
+            removed,
+        )
+    restore_postgres(conninfo, live_dump, single_transaction=True)
 
 
 def restore_system_backup(
@@ -567,6 +718,14 @@ def restore_system_backup(
     For LightClaw migration archives, ``owner_user_id`` (typically the admin
     performing the restore) receives all imported ``user_id`` ownership. When
     omitted, the first preserved admin (else first preserved user) is used.
+
+    Resource trees and configuration are staged before the live database is
+    replaced. The database is snapshotted, replaced files/trees are retained,
+    and every applied change is journaled: a later failure rolls the database,
+    configuration, workspaces, and trees back to their prior state unless the
+    rollback I/O itself fails (logged and attached to the raised error).
+    PostgreSQL rollback first drops objects introduced only by the archive,
+    then replays the pre-restore dump in one transaction.
     """
     with managed_tempdir(prefix="backup-restore-", root=paths.root / "tmp") as tmp:
         extracted = Path(tmp) / "extracted"
@@ -626,136 +785,222 @@ def restore_system_backup(
             finally:
                 staged_pool.close()
 
-        saved_chats = (
-            capture_chat_tables(pool, Path(tmp) / "preserved-chats.sqlite")
-            if not manifest.includes_chats
-            else None
-        )
-
-        # Capture current login credentials before overwriting the DB (only when needed).
-        saved_users: list[tuple[object, ...]] = []
-        saved_jwt: bytes | None = None
-        if effective_preserve_users and pool is not None:
-            saved_users = capture_users_from_pool(pool)
-            saved_jwt = capture_jwt_secret_from_pool(pool)
-
-        effective_owner: int | None = None
-        if is_migration:
-            effective_owner = owner_user_id
-            if effective_owner is None:
-                effective_owner = infer_owner_user_id(saved_users)
-            if effective_owner is not None and saved_users:
-                saved_ids = {int(str(row[0])) for row in saved_users}
-                if int(effective_owner) not in saved_ids:
-                    raise OctopError(
-                        ErrorCode.SLASH_BAD_ARGS,
-                        f"owner_user_id={effective_owner} is not among current users",
-                        status=400,
+        with _RestoreJournal() as journal:
+            staged_config: Path | None = None
+            staged_env: Path | None = None
+            if restore_config:
+                cfg_path = extracted / _CONFIG_DIR / "config.json"
+                if manifest.includes_config and cfg_path.is_file():
+                    _ensure_directory(paths.config.parent, journal)
+                    staged_config = paths.config.with_name(
+                        f".{paths.config.name}.restore-{uuid.uuid4().hex}"
+                    )
+                    journal.rollback_on_failure(
+                        f"staged config {staged_config}",
+                        lambda: _remove_path(staged_config),
+                    )
+                    journal.cleanup_on_success(lambda: _remove_path(staged_config))
+                    _filtered_config_file(cfg_path, staged_config)
+                env_blob_path = extracted / _CONFIG_DIR / "env"
+                if manifest.includes_env and env_blob_path.is_file():
+                    env_path = env_file_path(paths.root)
+                    _ensure_directory(env_path.parent, journal)
+                    staged_env = env_path.with_name(f".{env_path.name}.restore-{uuid.uuid4().hex}")
+                    journal.rollback_on_failure(
+                        f"staged env {staged_env}",
+                        lambda: _remove_path(staged_env),
+                    )
+                    journal.cleanup_on_success(lambda: _remove_path(staged_env))
+                    _restore_env_preserving_license(
+                        env_blob_path, staged_env, preserved_source=env_path
                     )
 
-        ownership_remap: dict[str, int] | None = None
-        if pool.dialect == "postgresql":
-            restore_postgres(db_config.postgresql_conninfo(), db_path)
-            _upgrade_restore_database(pool, manifest, runtime_schema_version)
-        else:
-            assert isinstance(pool, SqlitePool)
-            restore_sqlite_into_pool(db_path, pool)
+            staged_skill: tuple[Path, int] | None = None
+            staged_plugins: tuple[Path, int] | None = None
+            staged_knowledge: tuple[Path, int] | None = None
+            staged_collections: tuple[Path, int] | None = None
+            if manifest.includes_skill_packages:
+                staged_skill = _stage_tree_from_archive(
+                    extracted, paths.skill_packages_dir, _SKILL_PACKAGES_DIR, journal
+                )
+            if manifest.includes_plugins:
+                staged_plugins = _stage_tree_from_archive(
+                    extracted, paths.plugins_dir, _PLUGINS_DIR, journal
+                )
+            if manifest.includes_knowledge:
+                staged_knowledge = _stage_tree_from_archive(
+                    extracted, paths.knowledge_dir, _KNOWLEDGE_DIR, journal
+                )
+                staged_collections = _stage_tree_from_archive(
+                    extracted,
+                    paths.knowledge_collections_dir,
+                    _KNOWLEDGE_COLLECTIONS_DIR,
+                    journal,
+                )
 
-        if restore_config:
-            cfg_path = extracted / _CONFIG_DIR / "config.json"
-            if manifest.includes_config and cfg_path.is_file():
-                paths.config.parent.mkdir(parents=True, exist_ok=True)
-                _filtered_config_file(cfg_path, paths.config)
-            env_blob_path = extracted / _CONFIG_DIR / "env"
-            if manifest.includes_env and env_blob_path.is_file():
-                env_path = env_file_path(paths.root)
-                env_path.parent.mkdir(parents=True, exist_ok=True)
-                _restore_env_preserving_license(env_blob_path, env_path)
+            saved_chats = (
+                capture_chat_tables(pool, Path(tmp) / "preserved-chats.sqlite")
+                if not manifest.includes_chats
+                else None
+            )
 
-        # Migration ownership remap must run after the target owner exists and
-        # before pruning backup placeholder users (avoids ON DELETE CASCADE).
-        if saved_users and pool is not None:
-            upsert_users_into_pool(pool, saved_users)
-            if is_migration and effective_owner is not None:
-                ownership_remap = remap_ownership_to_user(pool, int(effective_owner))
-            prune_users_not_in(pool, [row[0] for row in saved_users])
+            # Capture current login credentials before overwriting the DB (only when needed).
+            saved_users: list[tuple[object, ...]] = []
+            saved_jwt: bytes | None = None
+            if effective_preserve_users and pool is not None:
+                saved_users = capture_users_from_pool(pool)
+                saved_jwt = capture_jwt_secret_from_pool(pool)
 
-        # Migration backups ship a foreign ``secrets`` table. Prefer the current
-        # instance's JWT secret so outstanding sessions stay valid; only seed a
-        # fresh key when this instance never had one.
-        if effective_preserve_users and pool is not None:
-            if saved_jwt is not None:
-                restore_jwt_secret_into_pool(pool, saved_jwt)
+            effective_owner: int | None = None
+            if is_migration:
+                effective_owner = owner_user_id
+                if effective_owner is None:
+                    effective_owner = infer_owner_user_id(saved_users)
+                if effective_owner is not None and saved_users:
+                    saved_ids = {int(str(row[0])) for row in saved_users}
+                    if int(effective_owner) not in saved_ids:
+                        raise OctopError(
+                            ErrorCode.SLASH_BAD_ARGS,
+                            f"owner_user_id={effective_owner} is not among current users",
+                            status=400,
+                        )
+
+            ownership_remap: dict[str, int] | None = None
+            if pool.dialect == "postgresql":
+                postgres_conninfo = db_config.postgresql_conninfo()
+                live_dump = Path(tmp) / "live-database.dump"
+                # A failed restore must be able to put the live database back,
+                # including removing objects only the archive introduced.
+                dump_postgres(postgres_conninfo, live_dump)
+                postgres_inventory = capture_postgres_inventory(pool)
+                journal.rollback_on_failure(
+                    "postgresql database",
+                    lambda: _rollback_postgres_database(
+                        pool,
+                        postgres_conninfo,
+                        live_dump,
+                        postgres_inventory,
+                    ),
+                )
+                restore_postgres(postgres_conninfo, db_path)
+                _upgrade_restore_database(pool, manifest, runtime_schema_version)
             else:
-                SecretRepo(pool).get_or_create("jwt", lambda: os.urandom(32))
-
-        restored_workspaces = 0
-        prefix = f"{_WORKSPACES_DIR}/"
-        agent_repo = AgentRepo(pool)
-        workspace_by_agent: dict[str, Path] = {}
-        system_path_by_agent: dict[str, str] = {}
-        for rel, src_file in _iter_extracted_files(extracted, _WORKSPACES_DIR):
-            file_rel = rel[len(prefix) :]
-            if "/" not in file_rel:
-                continue
-            agent_id, _, rest = file_rel.partition("/")
-            if not agent_id or not rest:
-                continue
-            dest_root = workspace_by_agent.get(agent_id)
-            if dest_root is None:
-                agent_row = agent_repo.get(agent_id)
-                dest_root = workspace_dir_from_config_json(
-                    None if agent_row is None else agent_row.config_json,
-                    paths=paths,
-                    agent_id=agent_id,
+                assert isinstance(pool, SqlitePool)
+                live_snapshot = Path(tmp) / "live-database.sqlite"
+                snapshot_sqlite_file(pool.path, live_snapshot)
+                journal.rollback_on_failure(
+                    "sqlite database",
+                    lambda: restore_sqlite_into_pool(live_snapshot, pool),
                 )
-                workspace_by_agent[agent_id] = dest_root
-                system_path_by_agent[agent_id] = (
-                    _system_files_path_from_row(agent_row) if agent_row is not None else ""
+                restore_sqlite_into_pool(db_path, pool)
+
+            if staged_config is not None:
+                _ensure_directory(paths.config.parent, journal)
+                _publish_file(staged_config, paths.config, journal)
+            if staged_env is not None:
+                env_path = env_file_path(paths.root)
+                _ensure_directory(env_path.parent, journal)
+                _publish_file(staged_env, env_path, journal)
+
+            # Migration ownership remap must run after the target owner exists and
+            # before pruning backup placeholder users (avoids ON DELETE CASCADE).
+            if saved_users and pool is not None:
+                upsert_users_into_pool(pool, saved_users)
+                if is_migration and effective_owner is not None:
+                    ownership_remap = remap_ownership_to_user(pool, int(effective_owner))
+                prune_users_not_in(pool, [row[0] for row in saved_users])
+
+            # Migration backups ship a foreign ``secrets`` table. Prefer the current
+            # instance's JWT secret so outstanding sessions stay valid; only seed a
+            # fresh key when this instance never had one.
+            if effective_preserve_users and pool is not None:
+                if saved_jwt is not None:
+                    restore_jwt_secret_into_pool(pool, saved_jwt)
+                else:
+                    SecretRepo(pool).get_or_create("jwt", lambda: os.urandom(32))
+
+            restored_workspaces = 0
+            prefix = f"{_WORKSPACES_DIR}/"
+            agent_repo = AgentRepo(pool)
+            workspace_by_agent: dict[str, Path] = {}
+            system_path_by_agent: dict[str, str] = {}
+            workspace_backup_root = Path(tmp) / "workspace-backups"
+            workspace_backup_root.mkdir(parents=True, exist_ok=True)
+            for rel, src_file in _iter_extracted_files(extracted, _WORKSPACES_DIR):
+                file_rel = rel[len(prefix) :]
+                if "/" not in file_rel:
+                    continue
+                agent_id, _, rest = file_rel.partition("/")
+                if not agent_id or not rest:
+                    continue
+                dest_root = workspace_by_agent.get(agent_id)
+                if dest_root is None:
+                    agent_row = agent_repo.get(agent_id)
+                    dest_root = workspace_dir_from_config_json(
+                        None if agent_row is None else agent_row.config_json,
+                        paths=paths,
+                        agent_id=agent_id,
+                        ensure=False,
+                    )
+                    workspace_by_agent[agent_id] = dest_root
+                    system_path_by_agent[agent_id] = (
+                        _system_files_path_from_row(agent_row) if agent_row is not None else ""
+                    )
+                dest = dest_root / rest
+                if not manifest.includes_chats and is_chat_workspace_rel(
+                    Path(rest),
+                    system_files_path=system_path_by_agent.get(agent_id, ""),
+                ):
+                    continue
+                _ensure_directory(dest.parent, journal)
+                if dest.is_symlink():
+                    link_target = os.readlink(dest)
+                    journal.rollback_on_failure(
+                        f"workspace symlink {dest}",
+                        partial(_restore_workspace_symlink, dest, link_target),
+                    )
+                    dest.unlink()
+                elif dest.exists():
+                    backup = workspace_backup_root / f"file-{uuid.uuid4().hex}"
+                    shutil.copy2(dest, backup)
+                    journal.rollback_on_failure(
+                        f"workspace file {dest}",
+                        partial(_restore_file_copy, backup, dest),
+                    )
+                else:
+                    journal.rollback_on_failure(
+                        f"workspace file {dest}",
+                        partial(dest.unlink, missing_ok=True),
+                    )
+                shutil.copy2(src_file, dest)
+                restored_workspaces += 1
+
+            restored_skill_package_files = 0
+            if staged_skill is not None:
+                _publish_staged_tree(staged_skill[0], paths.skill_packages_dir, journal)
+                restored_skill_package_files = staged_skill[1]
+
+            restored_plugin_files = 0
+            if staged_plugins is not None:
+                _publish_staged_tree(staged_plugins[0], paths.plugins_dir, journal)
+                restored_plugin_files = staged_plugins[1]
+
+            restored_knowledge_files = 0
+            if staged_knowledge is not None:
+                _publish_staged_tree(staged_knowledge[0], paths.knowledge_dir, journal)
+                restored_knowledge_files = staged_knowledge[1]
+            if staged_collections is not None:
+                _publish_staged_tree(
+                    staged_collections[0],
+                    paths.knowledge_collections_dir,
+                    journal,
                 )
-            dest = dest_root / rest
-            if not manifest.includes_chats and is_chat_workspace_rel(
-                Path(rest),
-                system_files_path=system_path_by_agent.get(agent_id, ""),
-            ):
-                continue
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src_file, dest)
-            restored_workspaces += 1
+                restored_knowledge_files += staged_collections[1]
 
-        restored_skill_package_files = 0
-        if manifest.includes_skill_packages:
-            restored_skill_package_files = _replace_tree_from_archive(
-                extracted,
-                paths.skill_packages_dir,
-                _SKILL_PACKAGES_DIR,
+            preserved_chat_rows, skipped_chat_rows = (
+                restore_preserved_chats(pool, saved_chats) if saved_chats is not None else (0, 0)
             )
-
-        restored_plugin_files = 0
-        if manifest.includes_plugins:
-            restored_plugin_files = _replace_tree_from_archive(
-                extracted,
-                paths.plugins_dir,
-                _PLUGINS_DIR,
-            )
-
-        restored_knowledge_files = 0
-        if manifest.includes_knowledge:
-            restored_knowledge_files = _replace_tree_from_archive(
-                extracted,
-                paths.knowledge_dir,
-                _KNOWLEDGE_DIR,
-            )
-            restored_knowledge_files += _replace_tree_from_archive(
-                extracted,
-                paths.knowledge_collections_dir,
-                _KNOWLEDGE_COLLECTIONS_DIR,
-            )
-
-        preserved_chat_rows, skipped_chat_rows = (
-            restore_preserved_chats(pool, saved_chats) if saved_chats is not None else (0, 0)
-        )
-        schema_version = _current_version(pool)
+            schema_version = _current_version(pool)
 
     result: dict[str, Any] = {
         "schema_version": schema_version,

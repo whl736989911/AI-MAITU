@@ -986,7 +986,7 @@ class KnowledgeRepo:
             )
 
     def mark_delete_pending(self, doc_id: str, *, since: int) -> None:
-        """Start the confirmation window for a file the source did not list.
+        """Start the confirmation window for an entry the source did not list.
 
         Only the timestamp moves. The status stays whatever the file's content
         made it, because it is the *only* writer of that column's meaning: a
@@ -1003,7 +1003,7 @@ class KnowledgeRepo:
             )
 
     def clear_delete_pending(self, doc_id: str) -> None:
-        """The file is back (or was never gone): drop the pending deletion."""
+        """The entry is back (or was never gone): drop the pending deletion."""
         with self._db.transaction() as conn:
             conn.execute(
                 "UPDATE knowledge_documents SET delete_pending_since = NULL, updated_at = ? "

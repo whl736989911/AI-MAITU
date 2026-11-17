@@ -1154,6 +1154,138 @@ def _finish_pending(env: SimpleNamespace, source_id: str) -> None:
                 pass
 
 
+def test_files_only_listing_keeps_source_parent_present(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [now_ts()]
+    monkeypatch.setattr(data_sources_module, "now_ts", lambda: clock[0])
+    root = tmp_path / "files-only"
+    (root / "reports").mkdir(parents=True)
+    _source_file(root, "reports/policy.md", "current policy")
+    original_walk = LocalFolderConnector.walk
+
+    def files_only(connector):
+        return [entry for entry in original_walk(connector) if not entry.is_dir]
+
+    monkeypatch.setattr(LocalFolderConnector, "walk", files_only)
+    base = _base(env, people.owner)
+    source = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Scoped policies",
+        kind="local",
+        folder=FolderSettings(root_path=str(root), read_only=False),
+    )
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    report = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/reports")
+    assert report is not None and report.is_dir
+
+    clock[0] += DELETE_CONFIRM_SECONDS + 1
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    current = env.services.knowledge_repo.get_document(report.id)
+    assert current is not None and current.id == report.id
+    assert current.delete_pending_since is None
+    assert "reports" in env.sources.upload_targets(base.id, actor_user_id=people.owner)[0].folders
+
+
+def test_empty_source_folder_is_stable_and_offered_as_upload_target(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    clock = [now_ts()]
+    monkeypatch.setattr(data_sources_module, "now_ts", lambda: clock[0])
+    root = tmp_path / "folder"
+    root.mkdir()
+    empty = root / "reports"
+    empty.mkdir()
+    base = _base(env, people.owner)
+    source = env.sources.create(
+        base.id,
+        actor_user_id=people.owner,
+        name="Writable policies",
+        kind="local",
+        folder=FolderSettings(root_path=str(root), read_only=False),
+    )
+
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    report = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/reports")
+    assert report is not None and report.is_dir
+    assert "reports" in env.sources.upload_targets(base.id, actor_user_id=people.owner)[0].folders
+
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    again = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/reports")
+    assert again is not None and again.id == report.id
+
+    empty.rmdir()
+    clock[0] += 1
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    assert env.services.knowledge_repo.get_document(report.id) is not None
+
+    empty.mkdir()
+    clock[0] += 1
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    recovered = env.services.knowledge_repo.get_document(report.id)
+    assert recovered is not None and recovered.id == report.id
+    assert recovered.delete_pending_since is None
+
+    empty.rmdir()
+    clock[0] += 3600
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    assert env.services.knowledge_repo.get_document(report.id) is not None
+    clock[0] += DELETE_CONFIRM_SECONDS - 1
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    assert env.services.knowledge_repo.get_document(report.id) is not None
+    clock[0] += 1
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    assert env.services.knowledge_repo.get_document(report.id) is None
+
+
+def test_missing_source_timestamp_hashes_processed_content(
+    env: SimpleNamespace,
+    people: SimpleNamespace,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = _local_root(tmp_path)
+    path = _source_file(root, "policy.md", "old searchable phrase")
+    base, source = _scanned_source(env, people.owner, root)
+    original_walk = LocalFolderConnector.walk
+
+    def _without_timestamps(connector):
+        return [replace(entry, modified_at=None) for entry in original_walk(connector)]
+
+    monkeypatch.setattr(LocalFolderConnector, "walk", _without_timestamps)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
+    document = env.services.knowledge_repo.get_document_by_path(base.id, f"{source.id}/policy.md")
+    assert document is not None
+    old_hash = document.content_hash
+
+    path.write_text("new searchable phrase", encoding="utf-8")
+    _settle(env, source.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    _finish_pending(env, source.id)
+    replaced = env.services.knowledge_repo.get_document(document.id)
+    assert replaced is not None
+    assert replaced.content_hash != old_hash
+    preview = KnowledgeIndex(base.id).document_preview(document.id, max_chars=1000)
+    assert preview is not None
+    assert "new searchable phrase" in preview
+    assert "old searchable phrase" not in preview
+
+    chunks_before = _chunk_count(base.id)
+    env.sources.sync(source.id, actor_user_id=people.owner)
+    assert _chunk_count(base.id) == chunks_before
+    assert _last_run(env, source.id).updated == 0
+
+
 def test_scan_defers_a_new_file_then_indexes_it_once_it_settles(
     env: SimpleNamespace, people: SimpleNamespace, tmp_path: Path
 ) -> None:

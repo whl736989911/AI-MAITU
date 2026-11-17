@@ -115,6 +115,7 @@ class SmbConnector:
         relative = _clean_relative(path)
         if not relative:
             raise SourceError("empty source path")
+        self._assert_within_root(relative)
         self._assert_not_reparse_path(client, relative)
         try:
             with client.open_file(self._unc(relative), mode="rb", **self._credentials()) as handle:
@@ -131,6 +132,7 @@ class SmbConnector:
         relative = _clean_relative(path)
         if not relative:
             raise SourceError("empty source path")
+        self._assert_within_root(relative)
         self._assert_not_reparse_path(client, relative)
         try:
             with (
@@ -167,6 +169,14 @@ class SmbConnector:
 
     def _unc(self, relative: str) -> str:
         return self.unc_root + ("\\" + relative.replace("/", "\\") if relative else "")
+
+    def _assert_within_root(self, relative: str) -> None:
+        """Reject stale walk paths outside the currently configured source root."""
+        inside_root = (
+            not self._root or relative == self._root or relative.startswith(self._root + "/")
+        )
+        if not inside_root:
+            raise SourceError(f"source path escapes the configured source root: {relative}")
 
     def _assert_not_reparse_path(self, client: Any, relative: str) -> None:
         """Keep direct reads within the non-reparse paths exposed by a scan."""

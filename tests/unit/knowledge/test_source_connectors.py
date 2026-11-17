@@ -681,6 +681,43 @@ def test_smb_read_returns_the_file_bytes(fake_smb: _FakeSmbClient) -> None:
     assert _smb_connector().read_bytes("reports/q1.txt") == b"quarter"
 
 
+@pytest.mark.parametrize("method", ["read_bytes", "copy_to"])
+@pytest.mark.parametrize("path", ["notes.md", "reports-old/secret.txt"])
+def test_smb_reads_refuse_paths_outside_the_configured_root(
+    fake_smb: _FakeSmbClient,
+    tmp_path: Path,
+    method: str,
+    path: str,
+) -> None:
+    outside = _unc(*path.split("/"))
+    fake_smb._files[outside] = b"outside configured root"
+    connector = _smb_connector(root_path="reports")
+    destination = tmp_path / "copy.txt"
+    destination.write_bytes(b"preserve on failure")
+
+    with pytest.raises(SourceError):
+        if method == "read_bytes":
+            connector.read_bytes(path)
+        else:
+            connector.copy_to(path, destination)
+
+    assert not any(call[0] == "open_file" and call[1] == outside for call in fake_smb.calls)
+    assert destination.read_bytes() == b"preserve on failure"
+
+
+def test_smb_read_and_copy_allow_nested_paths_under_configured_root(
+    fake_smb: _FakeSmbClient,
+    tmp_path: Path,
+) -> None:
+    connector = _smb_connector(root_path="reports")
+    destination = tmp_path / "copy.txt"
+
+    assert connector.read_bytes("reports/q1.txt") == b"quarter"
+    connector.copy_to("reports/q1.txt", destination)
+
+    assert destination.read_bytes() == b"quarter"
+
+
 def test_smb_credentials_travel_as_arguments_and_never_in_the_path(
     fake_smb: _FakeSmbClient,
 ) -> None:

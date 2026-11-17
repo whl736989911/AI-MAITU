@@ -83,6 +83,10 @@ class ScanPlan:
     observations: dict[str, tuple[int, int | None]] = field(default_factory=dict)
     """``path -> (size, modified_at)`` to remember for the next scan."""
     unchanged: list[SourceEntry] = field(default_factory=list)
+    folders: list[SourceEntry] = field(default_factory=list)
+    """Listed folders to materialize; never included in file scan counts."""
+    verify_hash: list[SourceEntry] = field(default_factory=list)
+    """Processed, same-size files without a reliable timestamp to hash-check."""
 
     @property
     def counts(self) -> dict[str, int]:
@@ -157,13 +161,10 @@ def plan_scan(
     debounce_seconds: int = DEBOUNCE_SECONDS,
     confirm_seconds: int = DELETE_CONFIRM_SECONDS,
 ) -> ScanPlan:
-    """Compare what the source reported against what is indexed.
+    """Compare source files and return listed folders separately.
 
-    ``entries`` is everything the source listed, folders included; only files
-    are planned, because a folder has nothing to parse. A file the index has not
-    seen yet is still an :attr:`ScanPlan.added` candidate once it settles: the
-    index row is created from the plan, so a first sighting only records what
-    was seen and the next scan decides.
+    Folders are materialized by the caller but do not participate in file
+    debounce, removal, or run counts.
     """
     by_path = {row.source_path: row for row in indexed}
     plan = ScanPlan()
@@ -172,9 +173,8 @@ def plan_scan(
     for entry in entries:
         path = entry.path
         if entry.is_dir:
+            plan.folders.append(entry)
             continue
-        # Only a file can satisfy an indexed file row. If a file was replaced
-        # by a directory at the same path, it is absent from the file listing.
         seen.add(path)
         row = by_path.get(path)
         settled, rewrite = _classify(
@@ -192,19 +192,17 @@ def plan_scan(
         )
         if indexed_and_same:
             plan.unchanged.append(entry)
+            if entry.modified_at is None:
+                plan.verify_hash.append(entry)
             continue
         if settled:
-            # A file that was never indexed — or was seen but not processed — is
-            # an addition; only a previously indexed file can be an update.
             (plan.updated if row is not None and row.processed else plan.added).append(entry)
         else:
             plan.deferred.append(entry)
 
     for row in indexed:
-        if row.source_path in seen:
-            continue
-        _plan_missing(row, plan, now=now, confirm_seconds=confirm_seconds)
-
+        if row.source_path not in seen:
+            _plan_missing(row, plan, now=now, confirm_seconds=confirm_seconds)
     return plan
 
 

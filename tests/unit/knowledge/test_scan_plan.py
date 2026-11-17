@@ -162,11 +162,25 @@ def test_a_file_that_reappears_is_not_scheduled_for_removal() -> None:
     assert [entry.path for entry in plan.unchanged] == ["a.md"]
 
 
-def test_folders_are_listed_but_never_planned() -> None:
+def test_folders_are_reported_separately_and_never_counted_as_files() -> None:
     plan = plan_scan([_folder("reports"), _file("reports/q1.md")], [], now=_NOW)
 
     assert [row.source_path for row in plan.absent] == []
     assert [entry.path for entry in plan.deferred] == ["reports/q1.md"]
+    assert [entry.path for entry in plan.folders] == ["reports"]
+
+
+def test_processed_file_without_timestamp_requires_hash_verification() -> None:
+    entry = _file("a.md", size=10, modified_at=None)
+    plan = plan_scan(
+        [entry],
+        [_indexed(modified_at=None, observed_modified_at=None)],
+        now=_NOW,
+    )
+
+    assert plan.unchanged == [entry]
+    assert plan.verify_hash == [entry]
+    assert plan.updated == []
 
 
 def test_a_directory_does_not_count_as_an_indexed_file_being_seen() -> None:

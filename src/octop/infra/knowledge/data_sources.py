@@ -87,6 +87,7 @@ from octop.infra.knowledge.service import (
 )
 from octop.infra.knowledge.source_crypto import decrypt_source_secret, encrypt_source_secret
 from octop.infra.knowledge.sources import (
+    DELETE_CONFIRM_SECONDS,
     ScanPlan,
     SourceConnector,
     SourceEntry,
@@ -921,12 +922,20 @@ class DataSourceService:
                 exclude_globs=data_source.exclude_globs,
             )
             now = now_ts()
-            indexed = [
-                row
-                for row in self._knowledge_repo.list_source_files(data_source.id)
-                if not row.is_dir
-            ]
+            source_rows = self._knowledge_repo.list_source_files(data_source.id)
+            indexed = [row for row in source_rows if not row.is_dir]
             plan = plan_scan(entries, [row.scan_row() for row in indexed], now=now)
+            if plan.verify_hash:
+                from octop.infra.knowledge.jobs import _source_path
+
+                by_path = {row.source_path: row for row in indexed}
+                for entry in plan.verify_hash:
+                    row = by_path[entry.path]
+                    with _source_path(connector, entry.path, row.filename) as current:
+                        digest = file_digest(current)
+                    if not row.content_hash or digest != row.content_hash:
+                        plan.unchanged.remove(entry)
+                        plan.updated.append(entry)
             counts = self._apply_plan(base, data_source, plan, indexed=indexed, now=now)
             self._repo.mark_sync(data_source.id, status=SYNC_OK, error=None, synced_at=now)
             self._repo.mark_scan(data_source.id, at=now, ok=True)
@@ -985,6 +994,41 @@ class DataSourceService:
             normalize_kb_path(f"{data_source.id}/{path}") for path in plan.observations
         )
         self._knowledge_repo.delete_empty_source_folders(data_source.id, replacement_paths)
+        # Directories share the file deletion-confirmation state, not last-seen time.
+        listed_folders = {entry.path for entry in plan.folders}
+        # A scoped connector may list children without their root directory.
+        for visible in (plan.folders, plan.added, plan.updated, plan.deferred, plan.unchanged):
+            for entry in visible:
+                parent = entry.path.rpartition("/")[0]
+                while parent:
+                    listed_folders.add(parent)
+                    parent = parent.rpartition("/")[0]
+        source_prefix = f"{data_source.id}/"
+        source_folders = [
+            row
+            for row in self._knowledge_repo.list_source_files(data_source.id)
+            if row.is_dir and row.path.startswith(source_prefix)
+        ]
+        confirmed_missing: list[str] = []
+        for folder in source_folders:
+            relative = folder.path[len(source_prefix) :]
+            if relative in listed_folders:
+                if folder.delete_pending_since is not None:
+                    self._knowledge_repo.clear_delete_pending(folder.id)
+                continue
+            if folder.delete_pending_since is None:
+                self._knowledge_repo.mark_delete_pending(folder.id, since=now)
+            elif now - folder.delete_pending_since >= DELETE_CONFIRM_SECONDS:
+                confirmed_missing.append(folder.path)
+        if confirmed_missing:
+            self._knowledge_repo.delete_empty_source_folders(data_source.id, confirmed_missing)
+        for entry in plan.folders:
+            full_path = normalize_kb_path(f"{data_source.id}/{entry.path}")
+            existing = self._knowledge_repo.get_document_by_path(base.id, full_path)
+            if existing is not None and not existing.is_dir:
+                # A file-to-folder replacement still waits for file confirmation.
+                continue
+            self._knowledge_repo.ensure_folder(base.id, full_path, data_source_id=data_source.id)
         by_path = {row.source_path: row for row in indexed}
 
         # 1. Observations first. A same-source directory may still contain files

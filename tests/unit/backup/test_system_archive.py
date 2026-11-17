@@ -837,34 +837,212 @@ def test_restore_replaces_stale_plugin_files(layout: PathLayout, tmp_path: Path)
     assert not (restore_layout.plugins_dir / "stale").exists()
 
 
-def test_failed_archive_tree_copy_preserves_existing_destination(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "failure_stage",
+    ["tree-stage-copy", "workspace-copy", "final-tree-publish"],
+    ids=["stage", "copy", "tree"],
+)
+def test_restore_failure_rolls_back_database_config_workspace_and_trees(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_stage: str,
 ) -> None:
-    extracted = tmp_path / "extracted"
-    (extracted / "plugins" / "new").mkdir(parents=True)
-    (extracted / "plugins" / "new" / "one.txt").write_text("one", encoding="utf-8")
-    (extracted / "plugins" / "new" / "two.txt").write_text("two", encoding="utf-8")
-    dest = tmp_path / "live-plugins"
-    (dest / "old").mkdir(parents=True)
-    (dest / "old" / "keep.txt").write_text("preserve", encoding="utf-8")
+    """Failures before or after live publication must not leave a partial restore."""
+    source_layout = PathLayout(tmp_path / "source")
+    source_layout.root.mkdir()
+    source_pool = SqlitePool(source_layout.db)
+    run_migrations(source_pool)
+    try:
+        settings = SettingsRepo(source_pool)
+        settings.set("manifest_probe", "archive")
+        with source_pool.connect() as conn:
+            conn.execute(
+                "INSERT INTO users(id, username, password_hash, role, created_at)"
+                " VALUES (1, 'alice', 'archive-hash', 'admin', 1)"
+            )
+            conn.execute(
+                "INSERT INTO agents(agent_id, user_id, name, created_at, updated_at)"
+                " VALUES ('agent01', 1, 'Archived Agent', 1, 1)"
+            )
+        source_ws = source_layout.ensure_agent_workspace("agent01")
+        (source_ws / "SOUL.md").write_text("archive-soul", encoding="utf-8")
+        (source_ws / "01-before.txt").write_text("archive-before", encoding="utf-8")
+        (source_ws / "99-fail.txt").write_text("archive-fail", encoding="utf-8")
+        source_skill = source_layout.skill_packages_dir / "pkg-new" / "SKILL.md"
+        source_skill.parent.mkdir(parents=True)
+        source_skill.write_text("archive-skill", encoding="utf-8")
+        source_plugin = source_layout.plugins_dir / "new" / "plugin.yaml"
+        source_plugin.parent.mkdir(parents=True)
+        source_plugin.write_text("archive-plugin", encoding="utf-8")
+        source_kb = source_layout.knowledge_dir / "kb" / "new.md"
+        source_kb.parent.mkdir(parents=True)
+        source_kb.write_text("archive-kb", encoding="utf-8")
+        source_collection = source_layout.knowledge_collections_dir / "coll" / "new.md"
+        source_collection.parent.mkdir(parents=True)
+        source_collection.write_text("archive-collection", encoding="utf-8")
+        source_layout.config.write_text('{"default_timezone": "UTC"}', encoding="utf-8")
+        system_archive.env_file_path(source_layout.root).write_text(
+            "OCTOP_BACKUP_PROBE=archive\n", encoding="utf-8"
+        )
+
+        class Row:
+            agent_id = "agent01"
+            name = "Archived Agent"
+
+        archive = tmp_path / "rollback.tar.gz"
+        create_system_backup(
+            paths=source_layout,
+            agent_rows=[Row()],
+            pool=source_pool,
+            db_config=DatabaseConfig(),
+            dest=archive,
+            include_chats=True,
+        )
+    finally:
+        source_pool.close()
+
+    target_layout = PathLayout(tmp_path / "target")
+    target_layout.root.mkdir()
+    target_pool = SqlitePool(target_layout.db)
+    run_migrations(target_pool)
+    live_settings = SettingsRepo(target_pool)
+    live_settings.set("manifest_probe", "live")
+    with target_pool.connect() as conn:
+        conn.execute(
+            "INSERT INTO users(id, username, password_hash, role, created_at)"
+            " VALUES (1, 'bob', 'live-hash', 'admin', 1)"
+        )
+        conn.execute(
+            "INSERT INTO agents(agent_id, user_id, name, created_at, updated_at)"
+            " VALUES ('agent01', 1, 'Live Agent', 1, 1)"
+        )
+    target_ws = target_layout.ensure_agent_workspace("agent01")
+    (target_ws / "SOUL.md").write_text("live-soul", encoding="utf-8")
+    (target_ws / "notes.txt").write_text("live-notes", encoding="utf-8")
+    live_skill = target_layout.skill_packages_dir / "keep" / "SKILL.md"
+    live_skill.parent.mkdir(parents=True)
+    live_skill.write_text("live-skill", encoding="utf-8")
+    live_plugin = target_layout.plugins_dir / "keep" / "plugin.yaml"
+    live_plugin.parent.mkdir(parents=True)
+    live_plugin.write_text("live-plugin", encoding="utf-8")
+    live_kb = target_layout.knowledge_dir / "kb" / "live.md"
+    live_kb.parent.mkdir(parents=True)
+    live_kb.write_text("live-kb", encoding="utf-8")
+    live_collection = target_layout.knowledge_collections_dir / "coll" / "live.md"
+    live_collection.parent.mkdir(parents=True)
+    live_collection.write_text("live-collection", encoding="utf-8")
+    live_config_text = '{"default_timezone": "Asia/Shanghai"}'
+    target_layout.config.write_text(live_config_text, encoding="utf-8")
+    target_env = system_archive.env_file_path(target_layout.root)
+    live_env_text = "OCTOP_BACKUP_PROBE=live\nOCTOP_LICENSE_SERVER_URL=https://trusted.example\n"
+    target_env.write_text(live_env_text, encoding="utf-8")
 
     original_copy2 = shutil.copy2
-    copies = 0
+    original_replace = Path.replace
+    published: list[str] = []
+    failure = OSError("controlled restore failure")
 
-    def fail_second_copy(source: Path, target: Path) -> str:
-        nonlocal copies
-        copies += 1
-        if copies == 2:
-            raise OSError("controlled copy failure")
-        return original_copy2(source, target)
+    def recording_copy2(source: Path, target: Path) -> str:
+        if (
+            failure_stage == "tree-stage-copy"
+            and Path(target).name == "plugin.yaml"
+            and any(part.startswith(".plugins.restore-") for part in Path(target).parts)
+        ):
+            assert SettingsRepo(target_pool).get("manifest_probe") == "live"
+            assert target_layout.config.read_text(encoding="utf-8") == live_config_text
+            original_copy2(source, target)
+            raise failure
+        if failure_stage == "workspace-copy" and Path(target) == target_ws / "99-fail.txt":
+            # The later failure happens with the archive database and config live.
+            assert SettingsRepo(target_pool).get("manifest_probe") == "archive"
+            assert (
+                json.loads(target_layout.config.read_text(encoding="utf-8"))["default_timezone"]
+                == "UTC"
+            )
+            assert "OCTOP_BACKUP_PROBE=archive" in target_env.read_text(encoding="utf-8")
+            # Simulate a copy that created its destination and then failed.
+            original_copy2(source, target)
+            raise failure
+        result = original_copy2(source, target)
+        if Path(target).resolve().is_relative_to(target_ws.resolve()):
+            published.append(f"workspace:{Path(target).name}")
+        return result
 
-    monkeypatch.setattr(system_archive.shutil, "copy2", fail_second_copy)
-    with pytest.raises(OSError, match="controlled copy failure"):
-        system_archive._replace_tree_from_archive(extracted, dest, "plugins")
+    def recording_replace(self: Path, target: Path) -> Path:
+        if failure_stage == "final-tree-publish" and self.name.startswith(
+            ".knowledge-collections.restore-"
+        ):
+            # Earlier database/config/workspace/tree commits are already live.
+            assert SettingsRepo(target_pool).get("manifest_probe") == "archive"
+            assert (target_ws / "SOUL.md").read_text(encoding="utf-8") == "archive-soul"
+            assert (target_layout.skill_packages_dir / "pkg-new" / "SKILL.md").read_text(
+                encoding="utf-8"
+            ) == "archive-skill"
+            assert (target_layout.plugins_dir / "new" / "plugin.yaml").read_text(
+                encoding="utf-8"
+            ) == "archive-plugin"
+            assert (target_layout.knowledge_dir / "kb" / "new.md").read_text(
+                encoding="utf-8"
+            ) == "archive-kb"
+            raise failure
+        result = original_replace(self, target)
+        if ".restore-" in self.name and target.name in {
+            "config.json",
+            "env",
+            "skill-packages",
+            "plugins",
+            "knowledge",
+        }:
+            published.append(target.name)
+        return result
 
-    assert (dest / "old" / "keep.txt").read_text(encoding="utf-8") == "preserve"
-    assert not (dest / "new").exists()
-    assert list(tmp_path.glob(".live-plugins.restore-*")) == []
+    monkeypatch.setattr(system_archive.shutil, "copy2", recording_copy2)
+    monkeypatch.setattr(Path, "replace", recording_replace)
+
+    try:
+        with pytest.raises(OSError) as error:
+            restore_system_backup(
+                archive,
+                paths=target_layout,
+                pool=target_pool,
+                db_config=DatabaseConfig(),
+            )
+
+        assert error.value is failure
+        if failure_stage == "tree-stage-copy":
+            assert published == []
+        else:
+            assert "config.json" in published
+            assert "env" in published
+            assert "workspace:01-before.txt" in published
+            if failure_stage == "final-tree-publish":
+                assert {"skill-packages", "plugins", "knowledge"} <= set(published)
+
+        assert live_settings.get("manifest_probe") == "live"
+        with target_pool.connect() as conn:
+            assert conn.execute("SELECT username FROM users").fetchone()[0] == "bob"
+            assert conn.execute("SELECT name FROM agents").fetchone()[0] == "Live Agent"
+
+        assert target_layout.config.read_text(encoding="utf-8") == live_config_text
+        assert target_env.read_text(encoding="utf-8") == live_env_text
+        assert (target_ws / "SOUL.md").read_text(encoding="utf-8") == "live-soul"
+        assert (target_ws / "notes.txt").read_text(encoding="utf-8") == "live-notes"
+        assert not (target_ws / "01-before.txt").exists()
+        assert not (target_ws / "99-fail.txt").exists()
+
+        assert live_skill.read_text(encoding="utf-8") == "live-skill"
+        assert not (target_layout.skill_packages_dir / "pkg-new").exists()
+        assert live_plugin.read_text(encoding="utf-8") == "live-plugin"
+        assert not (target_layout.plugins_dir / "new").exists()
+        assert live_kb.read_text(encoding="utf-8") == "live-kb"
+        assert not (target_layout.knowledge_dir / "kb" / "new.md").exists()
+        assert live_collection.read_text(encoding="utf-8") == "live-collection"
+        assert not (target_layout.knowledge_collections_dir / "coll" / "new.md").exists()
+
+        assert list(target_layout.root.glob(".*.previous-*")) == []
+        assert list(target_layout.root.glob(".*.restore-*")) == []
+    finally:
+        target_pool.close()
 
 
 def test_restore_replaces_stale_knowledge_files(layout: PathLayout, tmp_path: Path) -> None:
