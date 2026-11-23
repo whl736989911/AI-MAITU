@@ -92,6 +92,8 @@ describe("authentication identity changes", () => {
     const changed = vi.fn();
     window.addEventListener(AUTH_IDENTITY_CHANGED_EVENT, changed);
 
+    localStorage.removeItem("auth_token");
+
     window.dispatchEvent(
       new StorageEvent("storage", {
         key: "auth_token",

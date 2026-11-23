@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import type { ChatMessage } from "../hooks/useChat";
 import type { AssistantTurnSplit } from "../utils/messageContent";
-import { countProcessStats } from "../utils/messageContent";
 import { partitionPinnedTools } from "../../../plugins/toolRenderers/isPinnedToolUi";
 import { useToolRendererVersion } from "../../../plugins/toolRenderers";
 import AssistantProcessSummary from "./AssistantProcessSummary";
@@ -21,8 +20,7 @@ interface TurnProcessBlocksProps {
 }
 
 function hasFoldContent(split: AssistantTurnSplit): boolean {
-  const { toolCount, thinkingCount } = countProcessStats(split);
-  return toolCount > 0 || thinkingCount > 0;
+  return split.processSteps.length > 0;
 }
 
 /** Process summary (fold) and rich tool UIs as **sibling** blocks — not nested. */

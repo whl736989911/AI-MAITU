@@ -1,10 +1,13 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  octopThreadsApi,
+  type OctopThreadHistory,
+} from "../../../api/modules/octopThreads";
 import { AUTH_IDENTITY_CHANGED_EVENT } from "../../../api/request";
 import * as chatStore from "./chatStore";
 import { useChat } from "./useChat";
 
-import type { OctopThreadHistory } from "../../../api/modules/octopThreads";
 const thread = "versioned-history-test";
 const otherThread = "versioned-history-other-thread";
 

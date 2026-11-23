@@ -79,7 +79,9 @@ from octop.infra.gateway.process.message_keys import (
 )
 from octop.infra.gateway.process.stream_project import (
     StreamProjectionState,
+    dashboard_tool_results,
     enrich_tool_stream_chunk,
+    full_tool_call_chunks,
     project_stream,
 )
 from octop.infra.gateway.process.usage_record import UsageTracker, record_turn_usage
@@ -1209,12 +1211,47 @@ class GlobalProcessor:
         persist_failed_turn = False
         harness_workspace = harness_workspace_for_agent(self._agent_manager, agent_id)
         usage_tracker = UsageTracker()
+        emitted_tool_call_ids: set[str] = set()
 
         try:
             async for chunk in _stream_in_hitl_scope(
                 self._agent_manager.stream(agent_id, request), thread_id
             ):
                 usage_tracker.observe(chunk)
+                if chunk.get("type") == "tool_call_chunk":
+                    call_id = chunk.get("id")
+                    if isinstance(call_id, str) and call_id:
+                        emitted_tool_call_ids.add(call_id)
+                elif chunk.get("type") == "tool_result":
+                    current = dashboard_tool_results(chunk)
+                    if current is None:
+                        continue
+                    chunk = current
+                    result_messages = chunk.get("messages")
+                    for message in result_messages if isinstance(result_messages, list) else []:
+                        call_id = getattr(message, "tool_call_id", None)
+                        if not call_id and isinstance(message, dict):
+                            call_id = message.get("tool_call_id")
+                        if isinstance(call_id, str) and call_id:
+                            emitted_tool_call_ids.add(call_id)
+                full_calls = full_tool_call_chunks(chunk)
+                for call_chunk in full_calls:
+                    call_id = call_chunk["id"]
+                    if call_id in emitted_tool_call_ids:
+                        continue
+                    emitted_tool_call_ids.add(call_id)
+                    call_chunk = enrich_tool_stream_chunk(
+                        call_chunk,
+                        locale,
+                        agent_manager=self._agent_manager,
+                        agent_id=agent_id,
+                        user_id=user_id,
+                    )
+                    history_tracker.observe(call_chunk)
+                    self._observe_trajectory(
+                        agent_id=agent_id, thread_id=thread_id, chunk=call_chunk, enabled=traj_on
+                    )
+                    yield stamp_team_host_chunk(call_chunk, agent_id, team_host)
                 if chunk.get("type") == "tool_result" and harness_workspace is not None:
                     chunk = await enrich_tool_result_with_backend(
                         chunk,
@@ -1352,6 +1389,11 @@ class GlobalProcessor:
                 fallback_request=resume_request,
             ):
                 usage_tracker.observe(chunk)
+                if chunk.get("type") == "tool_result":
+                    current = dashboard_tool_results(chunk)
+                    if current is None:
+                        continue
+                    chunk = current
                 history_tracker.observe(chunk)
                 from octop.infra.history.recorder import flush_tracker  # noqa: PLC0415
 

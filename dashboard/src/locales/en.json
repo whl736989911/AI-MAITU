@@ -3770,9 +3770,15 @@
       "retry": "Retry failed chats"
     },
     "thinking": "Thinking",
-    "continuing": "Continuing",
-    "generating": "Generating",
-    "generatingWithElapsed": "Generating · {{seconds}}s",
+    "liveProgress": {
+      "waiting": "Waiting for a response",
+      "thinking": "Thinking",
+      "tools": "Running tools",
+      "continuing": "Waiting for the next step",
+      "writing": "Writing the response",
+      "toolFailed": "Failed",
+      "elapsed": "{{seconds}}s"
+    },
     "scrollToBottom": "Back to bottom",
     "turnTimeline": {
       "label": "Conversation turns",
@@ -3821,6 +3827,7 @@
     "processSummary": "Called {{tools}} tools, {{thinking}} deep thoughts",
     "processSummaryToolsOnly": "Called {{tools}} tools",
     "processSummaryThinkingOnly": "{{thinking}} deep thoughts",
+    "processActivity": "Activity",
     "send": "Send",
     "stop": "Stop",
     "queue": {

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import AsyncIterator
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -78,6 +79,83 @@ def _dedup_tool_result_messages(
     if len(new_messages) == len(messages):
         return chunk
     return {**chunk, "messages": new_messages}
+
+
+def _message_type(message: Any) -> Any:
+    if isinstance(message, dict):
+        return message.get("type") or message.get("role")
+    return getattr(message, "type", None)
+
+
+def _messages_in_current_turn(messages: list[Any]) -> list[Any]:
+    # History repair and context compaction may emit a full message replay.
+    # Earlier turns must not reappear as live activity.
+    for index in range(len(messages) - 1, -1, -1):
+        if _message_type(messages[index]) in ("human", "user"):
+            return messages[index + 1 :]
+    return messages
+
+
+def dashboard_tool_results(chunk: dict[str, Any]) -> dict[str, Any] | None:
+    messages = chunk.get("messages")
+    if not isinstance(messages, list):
+        return chunk
+    current = _messages_in_current_turn(messages)
+    tools = [
+        message
+        for message in current
+        if _message_type(message) == "tool"
+        or (isinstance(message, dict) and message.get("tool_call_id"))
+    ]
+    if not tools:
+        return None
+    return chunk if len(tools) == len(messages) else {**chunk, "messages": tools}
+
+
+def full_tool_call_chunks(chunk: dict[str, Any]) -> list[dict[str, Any]]:
+    """Project complete AI tool calls carried by node updates as stream chunks."""
+    if chunk.get("type") != "state_update":
+        return []
+    data = chunk.get("data")
+    messages = data.get("messages") if isinstance(data, dict) else None
+    if not isinstance(messages, list):
+        return []
+
+    out: list[dict[str, Any]] = []
+    for message in _messages_in_current_turn(messages):
+        if isinstance(message, dict):
+            payload = message.get("data")
+            payload = payload if isinstance(payload, dict) else message
+            msg_type = message.get("type") or payload.get("type") or payload.get("role")
+            calls = payload.get("tool_calls") or payload.get("tool_call_chunks")
+        else:
+            msg_type = getattr(message, "type", None)
+            calls = getattr(message, "tool_calls", None) or getattr(
+                message, "tool_call_chunks", None
+            )
+        if msg_type not in ("ai", "assistant") or not isinstance(calls, list):
+            continue
+        for index, call in enumerate(calls):
+            if not isinstance(call, dict):
+                continue
+            name = call.get("name")
+            call_id = call.get("id")
+            if not isinstance(name, str) or not name or not isinstance(call_id, str) or not call_id:
+                continue
+            args = call.get("args", "")
+            if not isinstance(args, str):
+                args = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
+            out.append(
+                {
+                    "type": "tool_call_chunk",
+                    "id": call_id,
+                    "name": name,
+                    "args": args,
+                    "index": call.get("index", index),
+                    "node": chunk.get("node"),
+                }
+            )
+    return out
 
 
 def enrich_tool_stream_chunk(

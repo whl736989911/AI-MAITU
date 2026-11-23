@@ -47,7 +47,7 @@ function AssistantProcessSummary({
     setExpanded(isStreaming);
   }, [isStreaming]);
 
-  if (toolCount === 0 && thinkingCount === 0) return null;
+  if (split.processSteps.length === 0) return null;
 
   const summaryText =
     toolCount > 0 && thinkingCount > 0
@@ -61,10 +61,12 @@ function AssistantProcessSummary({
           tools: toolCount,
           defaultValue: "已调用 {{tools}} 次工具",
         })
-      : t("chat.processSummaryThinkingOnly", {
+      : thinkingCount > 0
+      ? t("chat.processSummaryThinkingOnly", {
           thinking: thinkingCount,
           defaultValue: "{{thinking}} 次深度思考",
-        });
+        })
+      : t("chat.processActivity");
 
   return (
     <div className={styles.processSummary}>
@@ -94,6 +96,10 @@ function AssistantProcessSummary({
                   content={step.item.content}
                   isStreaming={!!step.item.isStreaming && isStreaming}
                 />
+              </div>
+            ) : step.kind === "text" ? (
+              <div key={step.message.id} className={styles.processTextItem}>
+                <Markdown content={step.content} />
               </div>
             ) : (
               <div key={step.message.id} className={styles.processToolItem}>

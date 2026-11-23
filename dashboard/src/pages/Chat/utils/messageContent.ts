@@ -53,6 +53,7 @@ export interface ThinkingProcessItem {
 
 export type ProcessStep =
   | { kind: "thinking"; item: ThinkingProcessItem }
+  | { kind: "text"; message: ChatMessage; content: string }
   | { kind: "tool"; message: ChatMessage };
 
 export interface AssistantTurnSplit {
@@ -65,56 +66,41 @@ export interface AssistantTurnSplit {
 export function splitAssistantTurn(
   messages: ChatMessage[],
 ): AssistantTurnSplit {
-  let answerIdx = -1;
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const { textContent } = deriveMessageContent(messages[i]);
-    if (textContent.trim()) {
-      answerIdx = i;
-      break;
-    }
-  }
+  const content = messages.map(deriveMessageContent);
+  let answerIdx = content.length - 1;
+  while (answerIdx >= 0 && !content[answerIdx].textContent) answerIdx--;
 
   const tools: ChatMessage[] = [];
   const thinkings: ThinkingProcessItem[] = [];
   const processSteps: ProcessStep[] = [];
 
-  const pushMessageSteps = (msg: ChatMessage, thinkingStreaming = false) => {
-    const { thinkingParts } = deriveMessageContent(msg);
+  for (const [index, msg] of messages.entries()) {
+    const { thinkingParts, textContent } = content[index];
     const thinkingContent = thinkingParts.join("").trim();
     if (thinkingContent) {
       const item: ThinkingProcessItem = {
         messageId: msg.id,
         content: thinkingContent,
-        isStreaming: thinkingStreaming,
+        isStreaming: msg.status === "streaming" && !textContent,
       };
       thinkings.push(item);
       processSteps.push({ kind: "thinking", item });
+    }
+    if (index !== answerIdx && textContent) {
+      processSteps.push({ kind: "text", message: msg, content: textContent });
     }
     if (msg.toolData) {
       tools.push(msg);
       processSteps.push({ kind: "tool", message: msg });
     }
+  }
+
+  return {
+    tools,
+    thinkings,
+    processSteps,
+    answerMessage: answerIdx === -1 ? null : messages[answerIdx],
   };
-
-  if (answerIdx === -1) {
-    for (const msg of messages) {
-      pushMessageSteps(msg, msg.status === "streaming");
-    }
-    return { tools, thinkings, processSteps, answerMessage: null };
-  }
-
-  for (let i = 0; i < answerIdx; i++) {
-    pushMessageSteps(messages[i]);
-  }
-
-  const answerMessage = messages[answerIdx];
-  pushMessageSteps(
-    answerMessage,
-    answerMessage.status === "streaming" &&
-      !deriveMessageContent(answerMessage).textContent.trim(),
-  );
-
-  return { tools, thinkings, processSteps, answerMessage };
 }
 
 export function toAnswerOnlyMessage(message: ChatMessage): ChatMessage {
