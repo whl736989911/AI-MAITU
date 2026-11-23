@@ -1,43 +1,39 @@
 import { useTranslation } from "react-i18next";
 import { useElapsedSince } from "../../../hooks/useElapsedSeconds";
+import type { ChatGeneratingPhase } from "./generatingGate";
 import styles from "../index.module.less";
 
 interface GeneratingIndicatorProps {
   onCancel?: () => void;
-  /** When set, appends elapsed seconds (useful while waiting for the first token). */
+  /** Wall-clock start of the current turn, including waits between tool calls. */
   startedAt?: number | null;
-  showElapsed?: boolean;
+  phase: ChatGeneratingPhase;
 }
 
-/** Single bottom waiting state for the whole turn — replaces thinking/continuing. */
+/** A single status derived from the turn's received events. */
 export default function GeneratingIndicator({
   onCancel,
   startedAt = null,
-  showElapsed = false,
+  phase,
 }: GeneratingIndicatorProps) {
   const { t } = useTranslation();
-  const elapsedAnchor =
-    startedAt != null && startedAt > 0 ? startedAt : Date.now();
-  const elapsed = useElapsedSince(elapsedAnchor);
-  const showTimer = Boolean(showElapsed && startedAt != null && startedAt > 0);
+  const elapsed = useElapsedSince(startedAt ?? 0);
+  const label = t(`chat.liveProgress.${phase}`);
 
   return (
     <div className={styles.turnInset}>
-      <div
-        className={styles.generatingIndicator}
-        role="status"
-        aria-live="polite"
-      >
+      <div className={styles.generatingIndicator} role="status">
         <span className={styles.thinkingDot} />
         <span className={styles.thinkingDot} />
         <span className={styles.thinkingDot} />
         <span className={styles.generatingText}>
-          {showTimer
-            ? t("chat.generatingWithElapsed", {
-                seconds: elapsed,
-                defaultValue: "生成中 · {{seconds}}s",
-              })
-            : t("chat.generating", "生成中")}
+          {label}
+          {startedAt ? (
+            <span aria-hidden="true">
+              {" · "}
+              {t("chat.liveProgress.elapsed", { seconds: elapsed })}
+            </span>
+          ) : null}
         </span>
         {onCancel && (
           <button

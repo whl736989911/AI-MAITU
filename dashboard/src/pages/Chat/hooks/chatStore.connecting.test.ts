@@ -18,6 +18,7 @@ class PendingWebSocket {
   static readonly CLOSED = 3;
   static instances: PendingWebSocket[] = [];
   readyState = PendingWebSocket.CONNECTING;
+  deferTurn = false;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -27,8 +28,13 @@ class PendingWebSocket {
     PendingWebSocket.instances.push(this);
   }
 
+  received(frame: object): void {
+    this.onmessage?.({ data: JSON.stringify(frame) });
+  }
+
   send(data: string): void {
     const frame = JSON.parse(data) as { type: string };
+    if (this.deferTurn && frame.type === "user_turn") return;
     const responses =
       frame.type === "user_turn"
         ? [{ type: "token", content: "replacement answer" }, { type: "done" }]
@@ -172,5 +178,63 @@ describe("history attachment while a first turn is connecting", () => {
       status: "error",
       errorInfo: { code: "ws_error" },
     });
+  });
+
+  it("shows every live result without borrowing a different tool's call", async () => {
+    vi.stubGlobal("WebSocket", PendingWebSocket);
+    const turn = sendTurn(
+      SESSION,
+      "check",
+      "main",
+      "",
+      undefined,
+      undefined,
+      null,
+      SESSION,
+    );
+    const socket = PendingWebSocket.instances[0];
+    socket.deferTurn = true;
+    socket.readyState = PendingWebSocket.OPEN;
+    socket.onopen?.();
+    socket.received({ type: "tool_call_chunk", id: "a", name: "read_file" });
+    socket.received({
+      type: "tool_call_chunk",
+      id: "b",
+      index: 1,
+      name: "web_fetch",
+    });
+    socket.received({
+      type: "tool_result",
+      messages: [
+        {
+          tool_call_id: "c",
+          name: "current_time",
+          content: "missing start frame",
+        },
+        { tool_call_id: "b", status: "error", content: "fetch refused" },
+      ],
+    });
+    const rows = () =>
+      getSnapshot(SESSION).messages.filter((message) => message.toolData);
+    expect(
+      rows().map(({ status, toolData }) => [
+        toolData?.callId,
+        status,
+        toolData?.output,
+      ]),
+    ).toEqual([
+      ["a", "streaming", undefined],
+      ["b", "error", "fetch refused"],
+      ["c", "done", "missing start frame"],
+    ]);
+    socket.received({
+      type: "tool_result",
+      messages: [{ tool_call_id: "a", content: "file read" }],
+    });
+    expect(rows()[0].toolData?.output).toBe("file read");
+    expect(getSnapshot(SESSION).isStreaming).toBe(true);
+    socket.received({ type: "done" });
+    await turn;
+    expect(getSnapshot(SESSION).isStreaming).toBe(false);
   });
 });

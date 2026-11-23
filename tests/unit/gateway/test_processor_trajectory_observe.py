@@ -8,6 +8,7 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langchain_core.messages import AIMessage
 from octop_gateway.models import ChannelSubject, InboundMessage, TextContent
 from tests.support.fakes import fake_thread_registry
 
@@ -47,14 +48,17 @@ def _processor(
     *,
     trajectory_service: object | None,
     enable_trajectory: bool = True,
+    stream_chunks: list[dict[str, Any]] | None = None,
 ) -> GlobalProcessor:
     async def _stream(*_args: object, **_kwargs: object):
-        yield dict(_TOOL_CHUNK)
+        for chunk in stream_chunks if stream_chunks is not None else [_TOOL_CHUNK]:
+            yield dict(chunk)
 
     agent_manager = MagicMock()
     agent_manager.stream = _stream
     agent_manager.merge_turn_mcp_servers = MagicMock(return_value=None)
     agent_manager.prepare_chat_mcp = AsyncMock(return_value=[])
+    agent_manager.resolve_tool_display_name_for_chat.side_effect = lambda **kw: kw["tool_name"]
 
     agent_row = MagicMock()
     agent_row.user_id = 1
@@ -103,6 +107,58 @@ async def test_iter_turn_chunks_observes_tool_chunk() -> None:
     assert agent_id == "agent-1"
     assert thread_id == "thread-1"
     assert chunk["name"] == "read_file"
+
+
+@pytest.mark.asyncio
+async def test_iter_turn_chunks_projects_full_ai_tool_calls() -> None:
+    processor = _processor(
+        trajectory_service=None,
+        stream_chunks=[
+            {
+                "type": "state_update",
+                "node": "agent",
+                "data": {
+                    "messages": [
+                        AIMessage(
+                            content="",
+                            tool_calls=[
+                                {
+                                    "id": "call-1",
+                                    "name": "read_file",
+                                    "args": {"path": "a.py"},
+                                },
+                                {
+                                    "id": "call-2",
+                                    "name": "search",
+                                    "args": {"query": "b.py"},
+                                },
+                            ],
+                        )
+                    ]
+                },
+            },
+            {
+                "type": "tool_result",
+                "messages": [
+                    {"tool_call_id": "call-1", "name": "read_file", "content": "a"},
+                    {"tool_call_id": "call-2", "name": "search", "content": "b"},
+                ],
+            },
+        ],
+    )
+
+    chunks = [chunk async for chunk in processor.iter_turn_chunks(_dashboard_msg())]
+    calls = [chunk for chunk in chunks if chunk.get("type") == "tool_call_chunk"]
+
+    assert [(call["id"], call["name"], call["args"]) for call in calls] == [
+        ("call-1", "read_file", '{"path":"a.py"}'),
+        ("call-2", "search", '{"query":"b.py"}'),
+    ]
+
+    tool_results = [chunk for chunk in chunks if chunk.get("type") == "tool_result"]
+    assert len(tool_results) == 1
+    assert len(tool_results[0]["messages"]) == 2
+    assert chunks[-1]["type"] == "done"
 
 
 @pytest.mark.asyncio

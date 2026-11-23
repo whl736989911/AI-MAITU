@@ -332,13 +332,12 @@ export default function MessageList(props: MessageListProps) {
   const useVirtual =
     useVirtualLocked || messageGroups.length >= VIRTUALIZE_THRESHOLD;
 
-  const lastMsg = messages[messages.length - 1];
-  const { showFooter: showGenerating, showElapsed: isAwaitingAssistantReply } =
-    chatGeneratingPhase({
-      isStreaming: Boolean(isStreaming),
-      loading: Boolean(loading),
-      lastMessageRole: lastMsg?.role,
-    });
+  const generatingPhase = chatGeneratingPhase(
+    messages,
+    Boolean(isStreaming),
+    loading,
+  );
+  const showGenerating = generatingPhase !== null;
 
   const stableSessionKey = sessionKey || "__default__";
 
@@ -770,11 +769,11 @@ export default function MessageList(props: MessageListProps) {
   const footer = useMemo(
     () => (
       <>
-        {showGenerating && (
+        {generatingPhase && (
           <div className={styles.generatingSlot}>
             <GeneratingIndicator
               startedAt={thinkingStartedAt}
-              showElapsed={isAwaitingAssistantReply}
+              phase={generatingPhase}
               onCancel={onCancel}
             />
           </div>
@@ -782,13 +781,7 @@ export default function MessageList(props: MessageListProps) {
         {refreshFooter}
       </>
     ),
-    [
-      showGenerating,
-      thinkingStartedAt,
-      isAwaitingAssistantReply,
-      onCancel,
-      refreshFooter,
-    ],
+    [generatingPhase, thinkingStartedAt, onCancel, refreshFooter],
   );
 
   const hasFooter = showGenerating || Boolean(refreshFooter);

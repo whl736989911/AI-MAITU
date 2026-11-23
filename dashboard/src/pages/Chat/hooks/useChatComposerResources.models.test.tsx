@@ -13,7 +13,8 @@ vi.mock("../../../api/modules/preferences", () => ({
 vi.mock("../../../api/modules/octopThreads", () => ({
   octopThreadsApi: { patch: vi.fn().mockResolvedValue({}) },
 }));
-vi.mock("../../../api/request", () => ({
+vi.mock(import("../../../api/request"), async (importOriginal) => ({
+  ...(await importOriginal()),
   request: vi.fn().mockResolvedValue(null),
 }));
 vi.mock("../../../api/modules/knowledgeBases", () => ({

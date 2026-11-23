@@ -49,6 +49,7 @@ export function DefaultToolRenderer({
   displayName: displayNameProp,
   args,
   output,
+  status,
   isStreaming,
   hideMediaPreview = false,
   onAcpPermissionSelect,
@@ -124,11 +125,18 @@ export function DefaultToolRenderer({
         : null,
     [toolData.arguments, toolName, toolData.output],
   );
-  const statusLabel = completed
-    ? t("common.done", "Done")
-    : isStreaming
-    ? t("common.running", "Running")
-    : t("common.pending", "Pending");
+  const statusLabel =
+    status === "error"
+      ? t("chat.liveProgress.toolFailed")
+      : completed
+      ? t("common.done", "Done")
+      : isStreaming
+      ? t("common.running", "Running")
+      : t("common.pending", "Pending");
+  const resultPreview =
+    !expanded && hasResult && !mediaOnly
+      ? formattedOutput?.trimStart().slice(0, 180).replace(/\s+/g, " ").trim()
+      : "";
   const deferredLabel = resolveDeferredToolLabel(
     toolName,
     toolData.arguments,
@@ -150,7 +158,12 @@ export function DefaultToolRenderer({
           {deferredLabel ??
             resolveToolLabel(toolName, displayNameProp, displayName)}
         </code>
-        <span className={styles.inlineToolStatus}>{statusLabel}</span>
+        <span
+          className={styles.inlineToolStatus}
+          data-error={status === "error" || undefined}
+        >
+          {statusLabel}
+        </span>
         <ChevronRight
           size={14}
           className={`${styles.inlineToolChevron} ${
@@ -158,6 +171,12 @@ export function DefaultToolRenderer({
           }`}
         />
       </button>
+      {resultPreview && (
+        <p className={styles.inlineToolResultPreview}>
+          <span>{t("chatUsage.result", "Result")}:</span> {resultPreview}
+          {formattedOutput.trimStart().length > 180 ? "…" : ""}
+        </p>
+      )}
 
       {!hideMediaPreview && structuredOutput.images.length > 0 && (
         <div className={styles.inlineToolMediaPreview}>

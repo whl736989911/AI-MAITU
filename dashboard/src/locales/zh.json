@@ -3770,9 +3770,15 @@
       "retry": "重试失败项"
     },
     "thinking": "正在思考",
-    "continuing": "继续生成中",
-    "generating": "生成中",
-    "generatingWithElapsed": "生成中 · {{seconds}}s",
+    "liveProgress": {
+      "waiting": "正在等待回复",
+      "thinking": "正在思考",
+      "tools": "正在执行工具",
+      "continuing": "等待生成下一步",
+      "writing": "正在输出回复",
+      "toolFailed": "失败",
+      "elapsed": "{{seconds}} 秒"
+    },
     "scrollToBottom": "回到底部",
     "turnTimeline": {
       "label": "对话回合",
@@ -3821,6 +3827,7 @@
     "processSummary": "已调用 {{tools}} 次工具，{{thinking}} 次深度思考",
     "processSummaryToolsOnly": "已调用 {{tools}} 次工具",
     "processSummaryThinkingOnly": "{{thinking}} 次深度思考",
+    "processActivity": "执行过程",
     "send": "发送",
     "stop": "停止",
     "queue": {

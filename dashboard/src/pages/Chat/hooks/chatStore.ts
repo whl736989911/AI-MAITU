@@ -1293,7 +1293,7 @@ function handleHarnessChunk(
       upsertToolCall(state, chunk, sessionId);
       break;
     case "tool_result":
-      closeToolCall(state, chunk.messages, sessionId);
+      closeToolCalls(state, chunk.messages, sessionId);
       break;
     case "done":
       state.activeTurnId = null;
@@ -1546,16 +1546,6 @@ function unregisterToolCallKeys(
   }
 }
 
-function extractToolCallIdFromResult(messages: unknown[]): string | undefined {
-  for (const raw of messages) {
-    if (!raw || typeof raw !== "object") continue;
-    const obj = raw as Record<string, unknown>;
-    const tid = obj.tool_call_id ?? obj.toolCallId;
-    if (typeof tid === "string" && tid.trim()) return tid.trim();
-  }
-  return undefined;
-}
-
 function upsertToolCall(
   state: SessionStreamState,
   chunk: ToolCallChunk,
@@ -1622,140 +1612,145 @@ function upsertToolCall(
   });
 }
 
-/** Close the tool bubble that matches ``tool_call_id`` in the result, or the
- *  most recently opened streaming tool bubble as a fallback. */
-function extractToolResultOutput(messages: unknown[]): string {
-  const mediaTypes = new Set(["image", "file", "audio", "video"]);
-  for (const raw of messages) {
-    if (!raw || typeof raw !== "object") continue;
-    const obj = raw as Record<string, unknown>;
-    const content = obj.content;
-
-    if (Array.isArray(content)) {
-      const hasMedia = content.some(
-        (part) =>
-          part &&
-          typeof part === "object" &&
-          mediaTypes.has(String((part as Record<string, unknown>).type || "")),
-      );
-      if (hasMedia) {
+/** Read the displayable payload from one result, not the whole batch. */
+function extractToolResultOutput(result: Record<string, unknown>): string {
+  const content = result.content;
+  if (Array.isArray(content) && content.length > 0) {
+    const textParts: string[] = [];
+    for (const part of content) {
+      if (typeof part === "string") {
+        textParts.push(part);
+        continue;
+      }
+      if (!part || typeof part !== "object") continue;
+      const block = part as Record<string, unknown>;
+      if (["image", "file", "audio", "video"].includes(String(block.type))) {
         return JSON.stringify(content);
       }
-      const textParts: string[] = [];
-      for (const part of content) {
-        if (
-          part &&
-          typeof part === "object" &&
-          typeof (part as Record<string, unknown>).text === "string"
-        ) {
-          textParts.push(String((part as Record<string, unknown>).text));
-        }
-      }
-      if (textParts.length > 0) {
-        return textParts.join("\n");
-      }
-      // Non-text structured blocks (rare) — keep JSON for UI parsers.
-      if (content.length > 0) {
-        return JSON.stringify(content);
-      }
-      continue;
+      if (typeof block.text === "string") textParts.push(block.text);
     }
+    return textParts.length > 0
+      ? textParts.join("\n")
+      : JSON.stringify(content);
+  }
+  if (content && !Array.isArray(content) && typeof content === "object") {
+    return JSON.stringify(content);
+  }
+  if (typeof content === "string" && content) return content;
 
-    // Already-parsed JSON object (e.g. octop_ui envelope) — must not drop.
-    if (content && typeof content === "object") {
-      return JSON.stringify(content);
-    }
-
-    if (typeof content === "string" && content) {
-      return content;
-    }
-
-    // Some runtimes put the payload on ``output`` / ``artifact`` instead.
-    for (const key of ["output", "artifact", "result"] as const) {
-      const v = obj[key];
-      if (typeof v === "string" && v) return v;
-      if (v && typeof v === "object") return JSON.stringify(v);
-    }
+  for (const key of ["output", "artifact", "result"] as const) {
+    const value = result[key];
+    if (typeof value === "string" && value) return value;
+    if (value && typeof value === "object") return JSON.stringify(value);
   }
   return "";
 }
 
-function closeToolCall(
+function closeToolCalls(
   state: SessionStreamState,
   messages: unknown[],
   sessionId?: string,
 ): void {
-  const toolCallId = extractToolCallIdFromResult(messages);
+  for (const raw of messages) {
+    if (!raw || typeof raw !== "object") continue;
+    const result = raw as Record<string, unknown>;
+    const id = result.tool_call_id ?? result.toolCallId;
+    const callId = typeof id === "string" ? id.trim() : "";
+    if (!callId && result.type !== "tool" && result.role !== "tool") continue;
+    closeToolCall(state, result, callId, sessionId);
+  }
+}
+
+function closeToolCall(
+  state: SessionStreamState,
+  result: Record<string, unknown>,
+  toolCallId: string,
+  sessionId?: string,
+): void {
+  const resultName = typeof result.name === "string" ? result.name : undefined;
+  const displayName =
+    typeof result.display_name === "string" ? result.display_name : undefined;
+  const mappedId = toolCallId ? state.toolCallIdIndex[toolCallId] : undefined;
   let toolIdx = -1;
 
   if (toolCallId) {
-    const mapped = state.toolCallIdIndex[toolCallId];
-    if (mapped) {
-      toolIdx = state.messages.findIndex((m) => m.id === mapped);
-    }
-    if (toolIdx < 0) {
-      for (let i = state.messages.length - 1; i >= 0; i--) {
-        const m = state.messages[i];
-        if (
-          m.role === "assistant" &&
-          m.toolData?.callId === toolCallId &&
-          m.status === "streaming"
-        ) {
-          toolIdx = i;
-          break;
-        }
-      }
-    }
-  }
-
-  if (toolIdx < 0) {
     for (let i = state.messages.length - 1; i >= 0; i--) {
-      const m = state.messages[i];
-      if (m.role === "assistant" && m.toolData && m.status === "streaming") {
+      const message = state.messages[i];
+      if (message.role === "user") break;
+      if (
+        message.toolData &&
+        (message.id === mappedId || message.toolData.callId === toolCallId)
+      ) {
         toolIdx = i;
         break;
       }
     }
+  } else {
+    // An unkeyed result is usable only if it identifies a single live call.
+    for (let i = state.messages.length - 1; i >= 0; i--) {
+      const message = state.messages[i];
+      if (message.role === "user") break;
+      if (
+        message.toolData &&
+        message.status === "streaming" &&
+        (!resultName || message.toolData.name === resultName)
+      ) {
+        if (toolIdx >= 0) return;
+        toolIdx = i;
+      }
+    }
   }
-  if (toolIdx < 0) return;
   const target = state.messages[toolIdx];
-  const output = extractToolResultOutput(messages);
-  const explicitToolError = messages.some(
-    (raw) =>
-      raw !== null &&
-      typeof raw === "object" &&
-      (raw as Record<string, unknown>).status === "error",
-  );
+  // If the start frame was not observed (e.g. reconnect), still retain the
+  // result without closing a different call that happens to be running.
+  if (!target && !toolCallId && !resultName) return;
+  if (target?.toolData?.output !== undefined) return;
+  const output = extractToolResultOutput(result);
+  const explicitToolError = result.status === "error";
   const feedback = parseToolExecutionFeedback(output);
   const isToolError = explicitToolError || feedback?.isError === true;
   const errorCode = feedback?.code || (isToolError ? "tool_error" : undefined);
-  state.messages = [
-    ...state.messages.slice(0, toolIdx),
-    {
-      ...target,
-      status: isToolError ? "error" : "done",
-      errorInfo: isToolError
-        ? {
-            message: feedback?.message || output,
-            code: errorCode,
-            source: "tool_result",
-            retryable: feedback?.retryable,
-          }
-        : undefined,
-      toolData: {
-        ...(target.toolData ?? {}),
-        output,
-        errorCode,
-      },
+  const message: ChatMessage = {
+    ...(target ?? {
+      id: generateId(),
+      role: "assistant",
+      content: "",
+      timestamp: Date.now(),
+    }),
+    status: isToolError ? "error" : "done",
+    errorInfo: isToolError
+      ? {
+          message: feedback?.message || output,
+          code: errorCode,
+          source: "tool_result",
+          retryable: feedback?.retryable,
+        }
+      : undefined,
+    toolData: {
+      ...target?.toolData,
+      name: target?.toolData?.name || resultName,
+      displayName: target?.toolData?.displayName || displayName,
+      callId: target?.toolData?.callId || toolCallId || undefined,
+      output,
+      errorCode,
     },
-    ...state.messages.slice(toolIdx + 1),
-  ];
-  unregisterToolCallKeys(state, target.id);
+  };
+  if (target) {
+    state.messages = [
+      ...state.messages.slice(0, toolIdx),
+      message,
+      ...state.messages.slice(toolIdx + 1),
+    ];
+    unregisterToolCallKeys(state, target.id);
+  } else {
+    sealPriorStreamingAssistants(state);
+    state.messages = [...state.messages, message];
+  }
   emitToolEvent({
     kind: "toolDone",
     sessionId: sessionId ?? "",
-    toolName: target.toolData?.name ?? "",
-    toolId: target.toolData?.callId ?? "",
+    toolName: message.toolData?.name ?? "",
+    toolId: message.toolData?.callId ?? "",
   });
 }
 

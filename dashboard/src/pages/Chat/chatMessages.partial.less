@@ -659,7 +659,7 @@
 
 .generatingText {
   font-size: 12px;
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
   margin-left: 4px;
 }
 
@@ -721,9 +721,13 @@
 
 .inlineToolStatus {
   margin-left: auto;
-  color: var(--fn-text-tertiary);
+  color: var(--fn-text-secondary);
   font-size: 12px;
   flex-shrink: 0;
+
+  &[data-error] {
+    color: var(--fn-color-danger);
+  }
 }
 
 .inlineToolChevron {
@@ -734,6 +738,21 @@
 
 .inlineToolChevronOpen {
   transform: rotate(90deg);
+}
+
+.inlineToolResultPreview {
+  margin: 3px 0 0;
+  padding: 0 10px;
+  overflow: hidden;
+  color: var(--fn-text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+
+  span {
+    font-weight: 600;
+  }
 }
 
 .inlineToolDetails {
@@ -1154,6 +1173,15 @@
   word-wrap: break-word;
   overflow-wrap: break-word;
 }
+
+.processTextItem {
+  min-width: 0;
+  padding: 0 10px;
+  overflow-wrap: anywhere;
+  color: var(--fn-text-primary);
+  font-size: 13px;
+}
+
 .processToolItem {
   min-width: 0;
 }

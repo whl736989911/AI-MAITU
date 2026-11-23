@@ -1,51 +1,48 @@
 import { describe, expect, it } from "vitest";
-import { chatGeneratingPhase, shouldShowGenerating } from "./generatingGate";
+import type { ChatMessage } from "../hooks/useChat";
+import { chatGeneratingPhase } from "./generatingGate";
 
-describe("shouldShowGenerating", () => {
-  it("is true while streaming and not loading history", () => {
-    expect(shouldShowGenerating({ isStreaming: true, loading: false })).toBe(
-      true,
-    );
-  });
-
-  it("is false when not streaming", () => {
-    expect(shouldShowGenerating({ isStreaming: false })).toBe(false);
-  });
-
-  it("is false while the initial history spinner is up", () => {
-    expect(shouldShowGenerating({ isStreaming: true, loading: true })).toBe(
-      false,
-    );
-  });
-});
+const user: ChatMessage = {
+  id: "u",
+  role: "user",
+  content: "Find it",
+  timestamp: 1,
+};
+const tool: ChatMessage = {
+  id: "t",
+  role: "assistant",
+  content: "",
+  timestamp: 2,
+  toolData: { name: "web_fetch" },
+  status: "streaming",
+};
 
 describe("chatGeneratingPhase", () => {
-  it("shows footer while streaming and elapsed while awaiting first assistant", () => {
+  it("follows actual progress even between tool output and model text", () => {
+    expect(chatGeneratingPhase([tool, user], true)).toBe("waiting");
+    expect(chatGeneratingPhase([user, tool], true)).toBe("tools");
+    const completed = { ...tool, status: "done" as const };
+    expect(chatGeneratingPhase([user, completed], true)).toBe("continuing");
     expect(
-      chatGeneratingPhase({
-        isStreaming: true,
-        loading: false,
-        lastMessageRole: "user",
-      }),
-    ).toEqual({ showFooter: true, showElapsed: true });
+      chatGeneratingPhase(
+        [
+          user,
+          completed,
+          { ...tool, toolData: undefined, content: "Found it" },
+        ],
+        true,
+      ),
+    ).toBe("writing");
+    expect(chatGeneratingPhase([user, completed], false)).toBeNull();
   });
 
-  it("hides elapsed once an assistant bubble exists", () => {
-    expect(
-      chatGeneratingPhase({
-        isStreaming: true,
-        lastMessageRole: "assistant",
-      }),
-    ).toEqual({ showFooter: true, showElapsed: false });
-  });
-
-  it("hides footer during initial history load", () => {
-    expect(
-      chatGeneratingPhase({
-        isStreaming: true,
-        loading: true,
-        lastMessageRole: "user",
-      }),
-    ).toEqual({ showFooter: false, showElapsed: false });
+  it("does not show running tools while awaiting explicit approval", () => {
+    const approval: ChatMessage = {
+      ...tool,
+      id: "approval",
+      toolData: undefined,
+      hitlData: { action_requests: [], status: "pending" },
+    };
+    expect(chatGeneratingPhase([user, approval, tool], true)).toBeNull();
   });
 });

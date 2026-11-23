@@ -253,7 +253,7 @@ describe("useDashboardPushToast account changes", () => {
     resolveReady = (value) => readyDeferred.resolve(value);
     Object.defineProperty(navigator, "serviceWorker", {
       configurable: true,
-      value: { ready },
+      value: Object.assign(new EventTarget(), { ready }),
     });
     render(<Harness />);
     push(FakeSocket.instances[0]!, "a-thread");

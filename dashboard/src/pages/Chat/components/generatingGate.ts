@@ -1,26 +1,38 @@
-/**
- * Whether the chat footer should show the unified "generating" indicator.
- * One bottom status for the whole turn (no separate thinking / continuing).
- */
-export function shouldShowGenerating(opts: {
-  isStreaming: boolean;
-  loading?: boolean;
-}): boolean {
-  return Boolean(opts.isStreaming && !opts.loading);
-}
+import type { ChatMessage } from "../hooks/useChat";
 
-/**
- * Footer + elapsed timer phase for the unified generating indicator.
- * Elapsed only while we are still waiting for the first assistant bubble.
- */
-export function chatGeneratingPhase(opts: {
-  isStreaming: boolean;
-  loading?: boolean;
-  lastMessageRole?: string | null;
-}): { showFooter: boolean; showElapsed: boolean } {
-  const showFooter = shouldShowGenerating(opts);
-  const showElapsed = Boolean(
-    showFooter && (!opts.lastMessageRole || opts.lastMessageRole === "user"),
-  );
-  return { showFooter, showElapsed };
+export type ChatGeneratingPhase =
+  | "waiting"
+  | "thinking"
+  | "tools"
+  | "continuing"
+  | "writing";
+
+export function chatGeneratingPhase(
+  messages: readonly ChatMessage[],
+  isStreaming: boolean,
+  loading?: boolean,
+): ChatGeneratingPhase | null {
+  if (!isStreaming || loading) return null;
+
+  let latest: ChatGeneratingPhase = "waiting";
+  let runningTools = false;
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const message = messages[index];
+    if (message.role === "user") break;
+    if (message.hitlData?.status === "pending") return null;
+    if (message.toolData && message.status === "streaming") runningTools = true;
+    if (latest !== "waiting" || message.role !== "assistant") continue;
+    if (message.toolData) {
+      latest = "continuing";
+    } else if (message.status === "streaming") {
+      const lastBlock =
+        message.contentBlocks?.[message.contentBlocks.length - 1];
+      if (lastBlock?.type === "thinking") latest = "thinking";
+      else if (message.content || lastBlock?.type === "text")
+        latest = "writing";
+    } else {
+      latest = "continuing";
+    }
+  }
+  return runningTools ? "tools" : latest;
 }
