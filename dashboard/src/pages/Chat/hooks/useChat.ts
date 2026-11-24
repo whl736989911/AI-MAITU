@@ -728,6 +728,7 @@ async function loadThreadHistory(
     offset?: number;
     cursor?: string | null;
     signal?: AbortSignal;
+    retryProjection?: boolean;
   } = {},
 ): Promise<{
   messages: ChatMessage[];
@@ -750,12 +751,16 @@ async function loadThreadHistory(
     offset,
     cursor: params.cursor,
     signal: params.signal,
+    ...(params.retryProjection ? { retryProjection: true } : {}),
   });
   if (params.signal?.aborted) {
     throw new Error("Chat identity changed while loading history");
   }
   if (history.thread_id !== threadId) {
     throw new Error("History response belongs to another thread");
+  }
+  if (history.history_status === "failed") {
+    throw new Error("Legacy history projection failed");
   }
   const artifacts: ThreadArtifact[] = Array.isArray(history.artifacts)
     ? history.artifacts.filter(
@@ -812,9 +817,9 @@ export function useChat(
 ) {
   const stableSessionId = sessionId || "__empty__";
   const [historyError, setHistoryError] = useState(false);
-  const failedHistoryOperation = useRef<"initial" | "older" | "latest">(
-    "initial",
-  );
+  const failedHistoryOperation = useRef<
+    "initial" | "older" | "latest" | "reconnect"
+  >("initial");
   useEffect(() => {
     setHistoryError(false);
   }, [stableSessionId]);
@@ -871,9 +876,6 @@ export function useChat(
   const attachAfterHistory = useCallback(
     (key: string, targetThreadId: string) => {
       if (!agentId || !targetThreadId) return;
-      // No post-stream refreshHistory here: full replace can wipe prepended
-      // older pages and fight “load earlier / jump to bottom” UX. Seal via
-      // stream chunks / done; user overscroll refresh remains available.
       void chatStore.attachThread(key, agentId, targetThreadId);
     },
     [agentId],
@@ -930,7 +932,7 @@ export function useChat(
         reasoningEffort,
         featureRun,
         conversationMode,
-        userMessageId,
+        userMsg.id,
       );
     },
     [stableSessionId],
@@ -941,7 +943,7 @@ export function useChat(
   }, [stableSessionId]);
 
   const loadHistory = useCallback(
-    async (targetThreadId: string) => {
+    async (targetThreadId: string, retryProjection = false) => {
       const key = targetThreadId || "__empty__";
       const snap = chatStore.getSnapshot(key);
 
@@ -957,6 +959,7 @@ export function useChat(
       // and nothing would refetch them before a page reload.
       const liveTurn = snap.isStreaming || chatStore.hasLiveSocket(key);
       if (
+        !retryProjection &&
         (snap.messages.length > 0 || liveTurn) &&
         !chatStore.isHistoryStale(key)
       ) {
@@ -979,6 +982,7 @@ export function useChat(
         let loaded = await loadThreadHistory(agentId, targetThreadId, {
           offset: 0,
           signal: identitySignal,
+          retryProjection,
         });
         while (
           loaded.projectionLoading &&
@@ -1085,11 +1089,13 @@ export function useChat(
         hasMore,
         nextOffset,
         nextCursor,
+        projectionLoading,
       } = await loadThreadHistory(agentId, stableSessionId, {
         offset,
         cursor: snap.historyNextCursor,
         signal: identitySignal,
       });
+      if (projectionLoading) throw new Error("History projection is not ready");
       if (
         loadGenRef.current !== gen ||
         !chatStore.isHistoryReadCurrent(key, epoch)
@@ -1128,7 +1134,7 @@ export function useChat(
    * stream that left the last assistant turn incomplete in memory.
    */
   const refreshHistory = useCallback(
-    async (targetSessionId?: string) => {
+    async (targetSessionId?: string, reconcileTurn = false) => {
       const key = targetSessionId || stableSessionId;
       const snap = chatStore.getSnapshot(key);
       if (
@@ -1154,16 +1160,45 @@ export function useChat(
       const historyBaseline = chatStore.captureHistoryBaseline(key);
 
       try {
-        const {
-          messages: latest,
-          hasMore,
-          nextOffset,
-          nextCursor,
-          turnActive,
-        } = await loadThreadHistory(agentId, key, {
+        const page = await loadThreadHistory(agentId, key, {
           offset: 0,
           signal: identitySignal,
         });
+        if (page.projectionLoading)
+          throw new Error("History projection is not ready");
+        let { hasMore, nextOffset, nextCursor } = page;
+        let latest = page.messages;
+        const turnActive = page.turnActive;
+        let confirmedUserId: string | undefined;
+        if (reconcileTurn) {
+          let userIndex = snap.messages.length - 1;
+          while (userIndex >= 0 && snap.messages[userIndex].role !== "user")
+            userIndex--;
+          const userId = snap.messages[userIndex]?.id;
+          // Fetch back to the user message before replacing a split turn.
+          const pages = [latest];
+          let oldest = latest;
+          while (
+            userId &&
+            !oldest.some((message) => message.id === userId) &&
+            loadGenRef.current === gen &&
+            chatStore.isHistoryReadCurrent(key, epoch)
+          ) {
+            if (!hasMore) throw new Error("Reconnected turn is not in history");
+            const older = await loadThreadHistory(agentId, key, {
+              offset: nextOffset,
+              cursor: nextCursor,
+              signal: identitySignal,
+            });
+            if (older.projectionLoading)
+              throw new Error("History projection is not ready");
+            oldest = older.messages;
+            pages.push(oldest);
+            ({ hasMore, nextOffset, nextCursor } = older);
+          }
+          confirmedUserId = userId;
+          if (pages.length > 1) latest = pages.reverse().flat();
+        }
         if (
           loadGenRef.current !== gen ||
           !chatStore.isHistoryReadCurrent(key, epoch)
@@ -1171,13 +1206,18 @@ export function useChat(
           return;
 
         const current = chatStore.getSnapshot(key);
-        const olderPrefix = retainedHistoryPrefix(latest, current.messages);
+        const olderPrefix = retainedHistoryPrefix(
+          latest,
+          current.messages,
+          confirmedUserId,
+        );
         chatStore.setHistoryPage(
           key,
           mergeHistoryWithLocalTail(
             latest,
             current.messages,
             current.isStreaming,
+            confirmedUserId,
           ),
           {
             hasMore: olderPrefix.length > 0 ? current.historyHasMore : hasMore,
@@ -1189,12 +1229,15 @@ export function useChat(
             turnActive,
           },
         );
+        setHistoryError(false);
       } catch {
         if (
           loadGenRef.current === gen &&
           chatStore.isHistoryReadCurrent(key, epoch)
         ) {
-          failedHistoryOperation.current = "latest";
+          failedHistoryOperation.current = reconcileTurn
+            ? "reconnect"
+            : "latest";
           setHistoryError(true);
         }
       } finally {
@@ -1207,11 +1250,23 @@ export function useChat(
     [agentId, stableSessionId, historyRefreshing, historyLoading],
   );
 
+  useEffect(
+    () =>
+      chatStore.onStreamEvent((event) => {
+        if (event.reconcileHistory && event.sessionId === stableSessionId) {
+          void refreshHistory(stableSessionId, true);
+        }
+      }),
+    [refreshHistory, stableSessionId],
+  );
+
   const retryHistory = useCallback(async () => {
     if (failedHistoryOperation.current === "older") await loadMoreHistory();
+    else if (failedHistoryOperation.current === "reconnect")
+      await refreshHistory(stableSessionId, true);
     else if (failedHistoryOperation.current === "latest")
       await refreshHistory();
-    else await loadHistory(stableSessionId);
+    else await loadHistory(stableSessionId, true);
   }, [loadMoreHistory, refreshHistory, loadHistory, stableSessionId]);
 
   const clearMessages = useCallback(() => {

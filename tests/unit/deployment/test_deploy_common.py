@@ -12,6 +12,7 @@ from scripts.deployment.common import (
     configuration_transaction,
     ensure_directory,
     load_manifest,
+    save_manifest,
 )
 
 
@@ -51,6 +52,29 @@ def test_invalid_deployment_record_is_not_treated_as_first_install(tmp_path: Pat
     (tmp_path / "center.json").write_text("{broken", encoding="utf-8")
     with pytest.raises(DeploymentError, match="损坏"):
         load_manifest(tmp_path, "center")
+
+
+def test_platform_manifest_reopens_an_existing_deployment(tmp_path: Path) -> None:
+    path = tmp_path / "platform.json"
+    path.write_text(
+        '{"role":"platform","version":1,"data_dir":"/srv/customer-data"}', encoding="utf-8"
+    )
+    legacy = load_manifest(tmp_path, "platform")
+    assert legacy is not None
+    configured = {**legacy, "version": 2, "state": "CONFIGURED"}
+    save_manifest(tmp_path, "platform", configured)
+    assert load_manifest(tmp_path, "platform") == configured
+
+    save_manifest(tmp_path, "platform", {**configured, "state": "ACTIVE"})
+    assert load_manifest(tmp_path, "platform") == {**configured, "state": "ACTIVE"}
+
+
+def test_center_does_not_accept_the_platform_schema_version(tmp_path: Path) -> None:
+    center = {"role": "center", "version": 1}
+    save_manifest(tmp_path, "center", center)
+    with pytest.raises(DeploymentError, match="version=1"):
+        save_manifest(tmp_path, "center", {**center, "version": 2})
+    assert load_manifest(tmp_path, "center") == center
 
 
 @pytest.mark.skipif(

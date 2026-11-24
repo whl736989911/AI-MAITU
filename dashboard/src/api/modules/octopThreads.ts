@@ -140,6 +140,7 @@ export const octopThreadsApi = {
       offset?: number;
       cursor?: string | null;
       signal?: AbortSignal;
+      retryProjection?: boolean;
     } = {},
   ) => {
     const limit = params.limit ?? CHAT_HISTORY_PAGE_SIZE;
@@ -149,7 +150,7 @@ export const octopThreadsApi = {
         threadId,
       )}/history?limit=${limit}&offset=${offset}${
         params.cursor ? `&cursor=${encodeURIComponent(params.cursor)}` : ""
-      }`,
+      }${params.retryProjection ? "&retry_projection=true" : ""}`,
       { signal: params.signal },
     );
   },

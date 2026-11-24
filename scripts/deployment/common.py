@@ -26,6 +26,7 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 MARKER = "# Managed by maitu deploy.sh"
+PLATFORM_MANIFEST_VERSION = 2
 
 
 class DeploymentError(RuntimeError):
@@ -264,15 +265,21 @@ def load_manifest(config_dir: Path, role: str) -> dict[str, Any] | None:
         data = json.loads(path.read_text(encoding="utf-8"))
     except (ValueError, OSError) as exc:
         raise DeploymentError(f"无法读取部署记录 {path}，不会将损坏记录当作全新部署。") from exc
-    if not isinstance(data, dict) or data.get("version") != 1 or data.get("role") != role:
+    versions = (1, PLATFORM_MANIFEST_VERSION) if role == "platform" else (1,)
+    if (
+        not isinstance(data, dict)
+        or data.get("version") not in versions
+        or data.get("role") != role
+    ):
         raise DeploymentError(f"不兼容的部署记录：{path}")
     return data
 
 
 def save_manifest(config_dir: Path, role: str, data: dict[str, Any]) -> None:
+    version = PLATFORM_MANIFEST_VERSION if role == "platform" else 1
+    if data.get("version") != version or data.get("role") != role:
+        raise DeploymentError(f"部署记录必须标明 version={version} 和正确 role。")
     ensure_directory(config_dir)
-    if data.get("version") != 1 or data.get("role") != role:
-        raise DeploymentError("部署记录必须标明 version=1 和正确 role。")
     atomic_write(config_dir / f"{role}.json", json.dumps(data, ensure_ascii=False, indent=2) + "\n")
 
 
