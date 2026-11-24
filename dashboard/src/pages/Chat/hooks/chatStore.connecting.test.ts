@@ -1,4 +1,6 @@
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { octopThreadsApi } from "../../../api/modules/octopThreads";
 import {
   appendUserMessage,
   attachThread,
@@ -8,6 +10,7 @@ import {
   sendTurn,
   setHistoryPage,
 } from "./chatStore";
+import { useChat } from "./useChat";
 
 const SESSION = "test-fork-connecting";
 
@@ -19,6 +22,7 @@ class PendingWebSocket {
   static instances: PendingWebSocket[] = [];
   readyState = PendingWebSocket.CONNECTING;
   deferTurn = false;
+  turnActive = false;
   onopen: (() => void) | null = null;
   onmessage: ((event: { data: string }) => void) | null = null;
   onclose: (() => void) | null = null;
@@ -38,7 +42,7 @@ class PendingWebSocket {
     const responses =
       frame.type === "user_turn"
         ? [{ type: "token", content: "replacement answer" }, { type: "done" }]
-        : [{ type: "turn_status", active: false }];
+        : [{ type: "turn_status", active: this.turnActive }];
     for (const response of responses) {
       this.onmessage?.({ data: JSON.stringify(response) });
     }
@@ -61,6 +65,7 @@ class FailedWebSocket extends PendingWebSocket {
 describe("history attachment while a first turn is connecting", () => {
   afterEach(() => {
     removeSession(SESSION);
+    vi.restoreAllMocks();
     vi.unstubAllGlobals();
     PendingWebSocket.instances.length = 0;
   });
@@ -179,6 +184,62 @@ describe("history attachment while a first turn is connecting", () => {
       errorInfo: { code: "ws_error" },
     });
   });
+
+  it.each([false, true])(
+    "recovers a dropped turn across history pages (server still active: %s)",
+    async (turnActive) => {
+      vi.stubGlobal("WebSocket", PendingWebSocket);
+      const history = vi.spyOn(octopThreadsApi, "history");
+      setHistoryPage(
+        SESSION,
+        [{ id: "old", role: "user", content: "older history", timestamp: 1 }],
+        { hasMore: true, nextOffset: 25, nextCursor: "old-boundary" },
+      );
+      const { result } = renderHook(() => useChat(SESSION, "main"));
+      await act(async () => {
+        result.current.sendMessage("edited question", "", "main");
+        const socket = PendingWebSocket.instances[0];
+        socket.deferTurn = true;
+        socket.readyState = PendingWebSocket.OPEN;
+        socket.onopen?.();
+        socket.received({ type: "token", content: "partial answer" });
+        socket.close();
+      });
+      const user = getSnapshot(SESSION).messages[1];
+      history
+        .mockResolvedValueOnce({
+          thread_id: SESSION,
+          messages: [{ id: "final", role: "assistant", content: "complete" }],
+          has_more: true,
+          next_cursor: "latest-boundary",
+        })
+        .mockResolvedValueOnce({
+          thread_id: SESSION,
+          messages: [{ id: user.id, role: "user", content: user.content }],
+          has_more: true,
+        });
+      await waitFor(() => expect(PendingWebSocket.instances).toHaveLength(2), {
+        timeout: 2000,
+      });
+      await act(async () => {
+        const socket = PendingWebSocket.instances[1];
+        socket.turnActive = turnActive;
+        socket.readyState = PendingWebSocket.OPEN;
+        socket.onopen?.();
+        if (turnActive) {
+          expect(history).not.toHaveBeenCalled();
+          socket.received({ type: "done" });
+        }
+      });
+      await waitFor(() =>
+        expect(
+          result.current.messages.map((message) => message.content),
+        ).toEqual(["older history", "edited question", "complete"]),
+      );
+      expect(getSnapshot(SESSION).historyNextCursor).toBe("old-boundary");
+      expect(history).toHaveBeenCalledTimes(2);
+    },
+  );
 
   it("shows every live result without borrowing a different tool's call", async () => {
     vi.stubGlobal("WebSocket", PendingWebSocket);

@@ -43,10 +43,15 @@ function newSendIndex(tail: ChatMessage[], loadedIds: Set<string>): number {
 export function retainedHistoryPrefix(
   loaded: ChatMessage[],
   current: ChatMessage[],
+  confirmedUserId?: string,
 ): ChatMessage[] {
   const ids = new Set(loaded.map((message) => message.id));
   const overlap = current.findIndex((message) => ids.has(message.id));
-  if (overlap <= 0 || current[overlap].localPending) return [];
+  if (
+    overlap <= 0 ||
+    (current[overlap].localPending && current[overlap].id !== confirmedUserId)
+  )
+    return [];
   const prefix = current.slice(0, overlap);
   return prefix.every(
     (message) => !message.localPending && message.status !== "streaming",
@@ -59,6 +64,7 @@ export function mergeHistoryWithLocalTail(
   loaded: ChatMessage[],
   current: ChatMessage[],
   isStreaming = false,
+  confirmedUserId?: string,
 ): ChatMessage[] {
   if (!current.length) return loaded;
   const loadedIds = new Set(loaded.map((message) => message.id));
@@ -77,7 +83,7 @@ export function mergeHistoryWithLocalTail(
       break;
     }
   }
-  const olderPrefix = retainedHistoryPrefix(loaded, current);
+  const olderPrefix = retainedHistoryPrefix(loaded, current, confirmedUserId);
   const localTail = current.slice(lastOverlap + 1);
   const base = [...olderPrefix, ...loaded];
   if (!localTail.length) return base;

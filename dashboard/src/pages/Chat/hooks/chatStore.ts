@@ -292,6 +292,7 @@ export type StreamEventKind = "streamStart" | "streamEnd" | "streamResume";
 export interface StreamEvent {
   kind: StreamEventKind;
   sessionId: string;
+  reconcileHistory?: boolean;
 }
 export type SlashActionEvent = {
   action: string;
@@ -1987,7 +1988,7 @@ export async function attachThread(
   state.abortController = controller;
 
   let finished = false;
-  const finish = () => {
+  const finish = (serverFinished = false) => {
     if (finished) return;
     finished = true;
     clearStreamingFlags(state);
@@ -2001,7 +2002,13 @@ export async function attachThread(
     state.streamBlockType = "";
     sealInFlightAssistantMessages(state);
     notify(state);
-    emitStreamEvent({ kind: "streamEnd", sessionId });
+    emitStreamEvent({
+      kind: "streamEnd",
+      sessionId,
+      reconcileHistory:
+        serverFinished &&
+        (Boolean(opts?.afterUnexpectedDrop) || resumeAttempt > 0),
+    });
     onStreamEnd?.();
   };
 
@@ -2086,7 +2093,7 @@ export async function attachThread(
             }
             clearLiveSocket(sessionId, ws);
             if (state.isStreaming) {
-              finish();
+              finish(true);
             } else if (state.abortController === controller) {
               state.abortController = previousController;
             }
@@ -2110,7 +2117,7 @@ export async function attachThread(
             // ignore
           }
           clearLiveSocket(sessionId, ws);
-          finish();
+          finish(data.type === "done");
         }
       } catch {
         // ignore malformed frames

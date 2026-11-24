@@ -306,6 +306,32 @@ async def test_get_legacy_history_enqueues_without_reading_checkpoint(
 
 
 @pytest.mark.asyncio
+async def test_failed_legacy_history_requires_an_explicit_retry() -> None:
+    server = MagicMock()
+    _acl_owner(server, 1)
+    server.app_runtime.gateway.thread_registry.get_thread.return_value = MagicMock(
+        agent_id="agt_1", user_id=1, artifacts=()
+    )
+    repo = server.services.thread_message_repo
+    repo.projection_status.return_value = "failed"
+    queue = server.app_runtime.gateway.history_backfill
+    user = MagicMock(id=1)
+
+    failed = await history_mod.get_thread_history("agt_1", "thr_legacy", user=user, server=server)
+    assert failed["history_status"] == "failed"
+    assert failed["history_loading"] is False
+    queue.enqueue.assert_not_called()
+
+    queue.enqueue.return_value = True
+    retried = await history_mod.get_thread_history(
+        "agt_1", "thr_legacy", user=user, server=server, retry_projection=True
+    )
+    assert retried["history_status"] == "queued"
+    assert retried["history_loading"] is True
+    repo.mark_projection.assert_called_once_with("thr_legacy", "queued")
+
+
+@pytest.mark.asyncio
 async def test_history_migration_status_is_scoped_to_effective_user() -> None:
     server = MagicMock()
     _acl_owner(server, 7)

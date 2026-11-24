@@ -15,6 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from . import bundle
 from .common import (
+    PLATFORM_MANIFEST_VERSION,
     ROOT,
     DeploymentError,
     ask,
@@ -705,7 +706,7 @@ def deploy(config_dir: Path) -> None:
         "project_name": project_name,
     }
     details = {
-        "version": 2,
+        "version": PLATFORM_MANIFEST_VERSION,
         "role": "platform",
         "source_root": str(source_root),
         "env_file": str(env_file),

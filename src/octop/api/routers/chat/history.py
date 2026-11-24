@@ -369,6 +369,7 @@ async def get_thread_history(
     limit: int = HISTORY_DEFAULT_LIMIT,
     offset: int = 0,
     cursor: str | None = None,
+    retry_projection: bool = False,
     as_user: int | None = None,
     user: Any = Depends(current_user),
     server: Any = Depends(get_server),
@@ -378,6 +379,7 @@ async def get_thread_history(
     ``turn_active`` reports whether a turn is still streaming server-side, so a
     client that reloaded (or navigated away) can re-subscribe over the chat
     WebSocket instead of inferring liveness from the message list.
+    Set ``retry_projection`` only on an explicit retry of a failed legacy projection.
     """
     row = _require_thread(server, agent_id, thread_id, user, as_user)
     page_limit = _clamp_history_limit(limit)
@@ -419,8 +421,13 @@ async def get_thread_history(
     else:
         projection_repo = server.services.thread_message_repo
         projection_status = projection_repo.projection_status(thread_id)
-        history_loading = projection_status != "ready"
-        if history_loading:
+        history_loading = projection_status not in ("ready", "failed") or (
+            projection_status == "failed" and retry_projection
+        )
+        if projection_status == "failed" and not retry_projection:
+            messages = []
+            has_more = False
+        elif history_loading:
 
             async def _work() -> None:
                 await _backfill_thread_projection(
@@ -439,13 +446,13 @@ async def get_thread_history(
                 projection_repo.mark_projection(thread_id, "queued")
             messages = []
             has_more = False
-            projection_status = (
-                projection_status
-                if accepted and projection_status in ("queued", "running")
-                else "queued"
-                if accepted
-                else "pending"
-            )
+            if accepted:
+                if projection_status not in ("queued", "running"):
+                    projection_status = "queued"
+            elif projection_status == "failed":
+                history_loading = False
+            else:
+                projection_status = "pending"
         else:
             messages, has_more = await _load_projected_thread_messages(
                 server,

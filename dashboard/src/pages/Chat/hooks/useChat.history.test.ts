@@ -60,6 +60,38 @@ describe("history failures", () => {
     expect(chatStore.getSnapshot(thread).messages[0].content).toBe("restored");
   });
 
+  it("shows the projection failure and explicitly retries without hydrating an empty page", async () => {
+    const history = vi
+      .spyOn(octopThreadsApi, "history")
+      .mockResolvedValueOnce({
+        thread_id: thread,
+        messages: [],
+        has_more: false,
+        history_status: "failed",
+        history_loading: false,
+      })
+      .mockResolvedValueOnce({
+        thread_id: thread,
+        messages: [{ id: "old", role: "user", content: "restored history" }],
+        has_more: false,
+        history_status: "ready",
+      });
+    const { result } = renderHook(() => useChat(thread, "agent"));
+    await act(() => result.current.loadHistory(thread));
+    expect(result.current.historyLoading).toBe(false);
+    expect(result.current.historyHydrated).toBe(false);
+    expect(result.current.historyError).toBe(true);
+
+    await act(() => result.current.retryHistory());
+    expect(history).toHaveBeenLastCalledWith(
+      "agent",
+      thread,
+      expect.objectContaining({ retryProjection: true }),
+    );
+    expect(result.current.historyError).toBe(false);
+    expect(result.current.messages[0].content).toBe("restored history");
+  });
+
   it("refetches a thread cached as empty so background turns show up", async () => {
     chatStore.setHistoryPage(thread, [], {
       hasMore: false,
